@@ -1,0 +1,15 @@
+/target
+
+# Never commit other games' assets or anything extracted from them.
+/extracted/
+*.vpk
+*.bsp
+*.vtf
+*.vmt
+*.mdl
+*.vvd
+*.vtx
+*.rez
+
+# Local overrides (e.g. game install paths).
+/mashup.local.toml

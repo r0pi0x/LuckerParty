@@ -1,0 +1,26 @@
+[package]
+name = "mashup"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+
+[dependencies]
+bevy = "0.19.1"
+
+[features]
+# Faster iteration: link Bevy as a dynamic library. Use with
+# `cargo run --features dev`. Never enable for release builds.
+dev = ["bevy/dynamic_linking"]
+
+# Our own code: a little optimization so the game is playable in debug.
+[profile.dev]
+opt-level = 1
+
+# Dependencies (Bevy, parsers): fully optimized, compiled once and cached.
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+codegen-units = 1
+lto = "thin"

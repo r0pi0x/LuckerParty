@@ -1,0 +1,11 @@
+# Fast-build settings, adapted from Bevy 0.19.1's .cargo/config_fast_builds.toml.
+
+# Linux: rustc already uses LLD by default on x86_64-unknown-linux-gnu.
+# To try mold instead (`pacman -S mold`), uncomment:
+# [target.x86_64-unknown-linux-gnu]
+# rustflags = ["-Clink-arg=-fuse-ld=mold"]
+
+# Windows: use the LLD bundled with Rust instead of link.exe.
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"
+rustdocflags = ["-Clinker=rust-lld.exe"]
