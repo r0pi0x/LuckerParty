@@ -6,45 +6,17 @@ Things to build, **in priority order** (top first; reprioritized
 [plans/active/](plans/active/mvp-combat-arms-slice.md). Move items into a
 plan when work starts; delete them when done.
 
-## 1. In-game console and debug overlays
+## 1. Console, remaining
 
-Unlocks fast iteration on everything else (movement cvars, toggles,
-diagnostics without restarting).
+The console and overlays are in (src/console.rs, src/client/console.rs).
+Left for later:
 
-- **In-game console** (toggle with `~`, Source-style), feature rich:
-  - Commands and cvars from every system that registers them (movement
-    cvars like `sv_enablebunnyhopping`, `sv_airaccelerate`, `sv_gravity`;
-    `map`, `noclip`, `god`, `give`, `kill`, `setpos`/`getpos`, `exec`,
-    `bind`, `alias`, `echo`, `clear`, `quit`), each with help text, type,
-    default, min/max and "changed from default" marking.
-  - Tab completion of names and values (enum values, map names from the
-    install, file paths for `exec`), cycling with repeated Tab, and
-    inline suggestions as you type, ranked fuzzy matches.
-  - History (up/down, Ctrl+R reverse search), persisted across sessions;
-    `;`-separated commands; quoted arguments; `+`/`-` actions for binds.
-  - `find <text>` over names and help; `differences` lists cvars changed
-    from defaults; `reset <cvar>`/`resetall`; `cvarlist <prefix>`.
-  - Config files: autoexec.cfg at startup, `host_writeconfig` to save
-    binds and changed cvars; `exec` reads CS:S-style .cfg (surf/bhop/kz
-    configs work as-is, unknown cvars reported, not fatal).
-  - Output: colored by severity, log lines (warnings/errors from `log`)
-    mirrored in, scrollback with page up/down, selectable and copyable,
-    a filter box; timestamps on demand.
-  - Live values: `watch <cvar|expr>` overlays a value on the HUD (speed,
-    position, velocity, water level, ladder state); `toggle`, `incrementvar`
-    for binds; `wait` for scripted sequences.
-  - Remote: the same commands over the dev remote protocol, so scripts
-    and tests can drive it.
-- **Debug overlays, CS:S-style**, as console cvars:
-  - `cl_showpos 1`: map name, position, angles and velocity in the top
-    corner, as CS:S draws it.
-  - `cl_showfps 1` / `net_graph`-like FPS counter (frame time, min/max).
-  - Sound emitter markers: where each sound was emitted, with the entry
-    name (and wave) drawn at that spot for a few seconds after it plays,
-    fading out; filters by channel/name. Source has `snd_show`/
-    `snd_visualize` as a reference for the idea.
-  - Other Source debug text worth copying as we go (`developer 1`
-    notify lines, `cl_showpos 2`).
+- `god`, `give`, `impulse` once there are health and weapons; `net_graph`
+  beyond cl_showfps 2; `cl_showpos 2`; `developer 1` notify lines on the
+  HUD.
+- Select-and-copy in the output (clipboard); `con_dump` writes it to a
+  file meanwhile.
+- `map` without restarting (maps load at startup; `map` relaunches).
 
 ## 2. Weapons
 

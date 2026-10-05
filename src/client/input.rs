@@ -96,6 +96,7 @@ fn write_local_intent(
     scroll: Res<AccumulatedMouseScroll>,
     mut wheel: ResMut<WheelJump>,
     sensitivity: Res<MouseSensitivity>,
+    held: Option<Res<super::console::HeldActions>>,
 ) {
     if !cursor_grabbed(&cursor) {
         *wheel = WheelJump::default();
@@ -128,6 +129,18 @@ fn write_local_intent(
     intent.walk = keys.pressed(KeyCode::ShiftLeft);
     intent.fire = mouse.pressed(MouseButton::Left);
     intent.reload = keys.pressed(KeyCode::KeyR);
+    // Bound actions (`bind f +duck`) add to the keys.
+    if let Some(h) = held {
+        let add = |a: bool, b: bool| a as i8 as f32 - b as i8 as f32;
+        intent.move_axis += Vec2::new(add(h.moveright, h.moveleft), add(h.forward, h.back));
+        intent.move_axis = intent.move_axis.clamp(Vec2::NEG_ONE, Vec2::ONE);
+        intent.jump |= h.jump;
+        wheel.key_held |= h.jump;
+        intent.crouch |= h.duck;
+        intent.walk |= h.speed;
+        intent.sprint |= h.speed;
+        intent.fire |= h.attack;
+    }
 }
 
 #[cfg(test)]

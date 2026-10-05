@@ -3,6 +3,7 @@
 //! Simulation code must never depend on this module.
 
 pub mod capture;
+pub mod console;
 pub mod debug;
 pub mod input;
 
@@ -43,6 +44,10 @@ pub struct Args {
     pub cvars: Vec<(String, String)>,
     /// Source-style config files (`name value` per line) to apply.
     pub exec: Vec<PathBuf>,
+    /// Console commands from `+name args...` (Source style), run at startup.
+    pub console: Vec<String>,
+    /// Start with the console open.
+    pub console_open: bool,
 }
 
 const USAGE: &str = "\
@@ -63,7 +68,10 @@ usage: mashup [options]
   --debug-view <kind>       lighting (x0.25) | albedo, untonemapped, magenta background
   --views <file.json>       capture each view (name, position, yaw, pitch; engine space)
                             off-screen at 1280x720, then exit (use with --movement mashup:noclip)
-  --capture-dir <dir>       where --views writes <name>.png (default: current directory)";
+  --capture-dir <dir>       where --views writes <name>.png (default: current directory)
+  --console                 start with the console open (~ toggles it)
+  +<command> [args...]      run a console command at startup, Source style
+                            (e.g. +sv_airaccelerate 150 +cl_showpos 1 +bind f noclip)";
 
 impl Args {
     pub fn parse() -> Self {
@@ -86,8 +94,24 @@ impl Args {
         }
 
         let mut out = Self::default();
-        let mut it = args.into_iter();
+        let mut it = args.into_iter().peekable();
         while let Some(flag) = it.next() {
+            // `+command args...`: words up to the next option or +command.
+            if let Some(name) = flag.strip_prefix('+').filter(|n| !n.is_empty()) {
+                let mut line = vec![crate::console::quote(name)];
+                while let Some(next) = it.peek() {
+                    if next.starts_with('+') && next.len() > 1 || next.starts_with("--") {
+                        break;
+                    }
+                    line.push(crate::console::quote(&it.next().unwrap()));
+                }
+                out.console.push(line.join(" "));
+                continue;
+            }
+            if flag == "--console" {
+                out.console_open = true;
+                continue;
+            }
             if flag == "--help" || flag == "-h" {
                 println!("{USAGE}");
                 std::process::exit(0);
@@ -131,7 +155,12 @@ pub struct ClientPlugin {
 impl Plugin for ClientPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(ClientArgs(self.args.clone()))
-            .add_plugins((input::LocalInputPlugin, debug::DebugPlugin, capture::CapturePlugin))
+            .add_plugins((
+                input::LocalInputPlugin,
+                debug::DebugPlugin,
+                capture::CapturePlugin,
+                console::ConsoleUiPlugin,
+            ))
             .add_systems(PostStartup, spawn_local_player)
             .add_systems(Update, follow_eye);
 
@@ -139,7 +168,7 @@ impl Plugin for ClientPlugin {
         // (JSON-RPC on localhost:15702). See docs/OBSERVABILITY.md.
         #[cfg(feature = "dev")]
         app.add_plugins((
-            bevy::remote::RemotePlugin::default(),
+            bevy::remote::RemotePlugin::default().with_method_main("mashup/console", console::remote_exec),
             bevy::remote::http::RemoteHttpPlugin::default(),
         ));
     }

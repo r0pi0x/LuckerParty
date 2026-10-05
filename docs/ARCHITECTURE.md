@@ -16,6 +16,8 @@ file says where things are and which way dependencies may point.
                |
              slots               (registries, loadout, swapping)
                |
+            console              (cvars, commands, queue; games and client register)
+               |
              core                (shared vocabulary)
 ```
 
@@ -32,6 +34,8 @@ A module may use only the modules below it. Enforced by
 
 | Module | What it owns |
 |---|---|
+| `src/console.rs` | The console's core: cvar/command registry (`ConsoleAppExt::console_cvar`/`console_command`, `resource_cvar`), Source-style parsing (`;`, quotes, `//`), aliases, binds, `wait`, exec/config files, built-ins (help, find, cvarlist, differences, reset, toggle, incrementvar, watch, host_writeconfig, ...) |
+| `src/client/console.rs` | The in-game console UI (`~`): completion, fuzzy suggestions, history with Ctrl+R, scrollback/filter/timestamps, binds with `+`/`-` actions, log mirroring, overlays (cl_showpos, cl_showfps, snd_show, watch), client commands (noclip, getpos/setpos/setang, kill, map, quit), the `mashup/console` remote method |
 | `src/core.rs` | `Intent`, `Velocity`, `MovementState`, `Health`, `Team`, `SpawnPoint`, `LocalPlayer`, `SimTick`, the `SimSet` tick ordering; the collision world maps share with movement: `MapBrush`/`MapBrushes` (brush planes for exact swept-box movement, ladder flag), `MapBrushCollider`, `MapWater` volumes |
 | `src/slots.rs` | `MovementRegistry`, `Loadout`, `set_movement` (swap an entity's movement) |
 | `src/character.rs` | `character_bundle`, `spawn_character`, capsule size |

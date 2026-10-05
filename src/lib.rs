@@ -3,6 +3,7 @@
 
 pub mod character;
 pub mod client;
+pub mod console;
 pub mod core;
 pub mod games;
 pub mod greybox;
@@ -24,6 +25,6 @@ pub struct SimPlugins;
 impl Plugin for SimPlugins {
     fn build(&self, app: &mut App) {
         app.insert_resource(Time::<Fixed>::from_hz(DEFAULT_TICK_HZ))
-            .add_plugins((core::CorePlugin, movement::MovementPlugins));
+            .add_plugins((core::CorePlugin, console::ConsolePlugin, movement::MovementPlugins));
     }
 }

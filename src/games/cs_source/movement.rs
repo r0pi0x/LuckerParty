@@ -155,6 +155,36 @@ impl SourceMovementConfig {
         Ok(())
     }
 
+    /// A console variable's value, as `set_cvar` reads it.
+    pub fn get_cvar(&self, name: &str) -> Option<String> {
+        let b = |v: bool| if v { "1" } else { "0" }.to_string();
+        let f = |v: f32| {
+            let s = format!("{v}");
+            if s.contains('.') {
+                s.trim_end_matches('0').trim_end_matches('.').to_string()
+            } else {
+                s
+            }
+        };
+        Some(match name.to_ascii_lowercase().as_str() {
+            "sv_accelerate" => f(self.accelerate),
+            "sv_airaccelerate" => f(self.airaccelerate),
+            "sv_friction" => f(self.friction),
+            "sv_stopspeed" => f(self.stopspeed),
+            "sv_gravity" => f(self.gravity),
+            "sv_maxspeed" => f(self.maxspeed),
+            "sv_stepsize" => f(self.stepsize),
+            "sv_maxvelocity" => f(self.maxvelocity),
+            "sv_bounce" => f(self.bounce),
+            "sv_enablebunnyhopping" => b(self.enable_bunnyhopping),
+            "sv_autobunnyhopping" => b(self.auto_bunnyhopping),
+            "cl_forwardspeed" | "cl_sidespeed" => f(self.key_speed),
+            "sv_ladder_dampen" => f(self.ladder_dampen),
+            "sv_ladder_angle" => f(self.ladder_angle),
+            _ => return None,
+        })
+    }
+
     /// Apply a Source-style config (one `name value` per line, `//`
     /// comments); unknown variables are reported, not fatal.
     pub fn exec(&mut self, text: &str) -> Vec<String> {
@@ -425,8 +455,25 @@ pub struct SourceMovementPlugin;
 impl Plugin for SourceMovementPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SourceMovementConfig>()
-            .add_message::<crate::map::PlaySound>()
-            .register_movement::<SourceMovement>(ID)
+            .add_message::<crate::map::PlaySound>();
+        // Every movement cvar in the console, defaulting to CS:S's values.
+        let defaults = SourceMovementConfig::default();
+        for (name, help) in CVARS {
+            let name = *name;
+            crate::console::ConsoleAppExt::console_cvar(
+                app,
+                name,
+                help,
+                &defaults.get_cvar(name).unwrap_or_default(),
+                move |w| w.get_resource::<SourceMovementConfig>().and_then(|c| c.get_cvar(name)),
+                move |w, v| {
+                    w.get_resource_mut::<SourceMovementConfig>()
+                        .ok_or("no Source movement")?
+                        .set_cvar(name, v)
+                },
+            );
+        }
+        app.register_movement::<SourceMovement>(ID)
             .add_systems(FixedUpdate, step.in_set(SimSet::Movement))
             .add_plugins(super::pushaway::PushAwayPlugin);
     }

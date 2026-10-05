@@ -49,13 +49,19 @@ fn main() {
         }
     }
     app.add_plugins((
-        DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "mashup".into(),
+        DefaultPlugins
+            .set(WindowPlugin {
+                primary_window: Some(Window {
+                    title: "mashup".into(),
+                    ..default()
+                }),
+                ..default()
+            })
+            // Warnings and errors also show in the in-game console.
+            .set(bevy::log::LogPlugin {
+                custom_layer: client::console::log_layer,
                 ..default()
             }),
-            ..default()
-        }),
         PhysicsPlugins::default(),
         SimPlugins,
         mashup::games::cs_source::movement::SourceMovementPlugin,

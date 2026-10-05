@@ -13,6 +13,7 @@ use std::{
 /// Keep in sync with the layer diagram in docs/ARCHITECTURE.md.
 const ALLOWED: &[(&str, &[&str])] = &[
     ("core", &[]),
+    ("console", &["core"]),
     ("mount", &[]),
     ("slots", &["core"]),
     ("character", &["core", "slots"]),
@@ -22,13 +23,23 @@ const ALLOWED: &[(&str, &[&str])] = &[
     // `lib` = crate-root items such as `SimPlugins`.
     (
         "harness",
-        &["lib", "core", "slots", "character", "movement", "greybox", "map"],
+        &[
+            "lib",
+            "core",
+            "console",
+            "slots",
+            "character",
+            "movement",
+            "greybox",
+            "map",
+        ],
     ),
     (
         "client",
         &[
             "lib",
             "core",
+            "console",
             "slots",
             "character",
             "movement",
@@ -39,7 +50,10 @@ const ALLOWED: &[(&str, &[&str])] = &[
         ],
     ),
     // Game plugins: may use the shared layers, never another game.
-    ("games", &["core", "slots", "character", "movement", "mount", "map"]),
+    (
+        "games",
+        &["core", "console", "slots", "character", "movement", "mount", "map"],
+    ),
     // Binaries use the library through `mashup::`, not `crate::`.
     ("bin", &[]),
 ];

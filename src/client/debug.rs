@@ -39,7 +39,12 @@ fn keys(
     mut store: ResMut<GizmoConfigStore>,
     player: Single<(Entity, &MovementSlot), With<LocalPlayer>>,
     registry: Res<MovementRegistry>,
+    console: Option<Res<super::console::ConsoleUi>>,
 ) {
+    // Typing in the console isn't a shortcut.
+    if console.is_some_and(|c| c.open) {
+        return;
+    }
     if keys.just_pressed(KeyCode::F1) {
         release_cursor(&mut cursor);
     }

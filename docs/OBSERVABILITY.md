@@ -60,6 +60,18 @@ local player by mutating its `Intent`: local input rewrites it every frame
 Only `Reflect`-registered types are visible; register new core components in
 `CorePlugin`.
 
+## 3b. The console from outside
+
+- Command line, Source style: `cargo run --features dev -- +sv_airaccelerate
+  150 +cl_showpos 1 +bind f noclip` runs those console commands at startup;
+  `--console` starts with the console open (screenshots of it).
+- Remote: `curl -s localhost:15702 -d '{"jsonrpc":"2.0","id":1,
+  "method":"mashup/console","params":{"line":"getpos; cvarlist sv_"}}'`
+  runs a line now and returns the lines it printed.
+- Configs live in `~/.local/share/mashup/cfg` (Windows `%APPDATA%\mashup\cfg`):
+  config.cfg (written on quit when binds/cvars changed), autoexec.cfg,
+  history.txt; `exec name` runs name.cfg from there.
+
 ## 4. Logs
 
 `RUST_LOG=mashup=debug cargo run --features dev`. Log state changes that matter
