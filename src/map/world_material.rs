@@ -31,6 +31,8 @@ pub struct WorldParams {
     /// max density.
     pub fog_color: Vec4,
     pub fog_range: Vec4,
+    /// 1: bicubic lightmap sampling.
+    pub bicubic: f32,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]

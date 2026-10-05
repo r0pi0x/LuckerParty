@@ -394,6 +394,9 @@ pub fn source_look() -> crate::map::MapLook {
         anisotropy: 1,
         tonemapping: false,
         source_ldr_lightmaps: true,
+        // CS:S runs r_lightmap_bicubic 1 (read over RCON; seen in a
+        // RenderDoc capture as 4 taps per lightmap page).
+        bicubic_lightmaps: true,
     }
 }
 

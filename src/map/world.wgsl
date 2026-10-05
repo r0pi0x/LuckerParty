@@ -34,6 +34,34 @@ struct WorldParams {
     detail_scale: vec2<f32>,
     fog_color: vec4<f32>,
     fog_range: vec4<f32>,
+    bicubic: f32,
+}
+
+// A lightmap page, bilinear or bicubic B-spline (4 bilinear taps; the
+// sampler has already decoded sRGB, as the GPU does in CS:S).
+fn sample_lightmap(t: texture_2d<f32>, uv: vec2<f32>) -> vec3<f32> {
+    if params.bicubic < 0.5 {
+        return textureSampleLevel(t, lightmap_sampler, uv, 0.0).rgb;
+    }
+    let size = vec2<f32>(textureDimensions(t));
+    let p = uv * size - 0.5;
+    let i = floor(p);
+    let f = p - i;
+    let f2 = f * f;
+    let f3 = f2 * f;
+    let w0 = (-f3 + 3.0 * f2 - 3.0 * f + 1.0) / 6.0;
+    let w1 = (3.0 * f3 - 6.0 * f2 + 4.0) / 6.0;
+    let w2 = (-3.0 * f3 + 3.0 * f2 + 3.0 * f + 1.0) / 6.0;
+    let w3 = f3 / 6.0;
+    let g0 = w0 + w1;
+    let g1 = w2 + w3;
+    let h0 = (i - 1.0 + w1 / g0 + 0.5) / size;
+    let h1 = (i + 1.0 + w3 / g1 + 0.5) / size;
+    let a = textureSampleLevel(t, lightmap_sampler, vec2<f32>(h0.x, h0.y), 0.0).rgb;
+    let b = textureSampleLevel(t, lightmap_sampler, vec2<f32>(h1.x, h0.y), 0.0).rgb;
+    let c = textureSampleLevel(t, lightmap_sampler, vec2<f32>(h0.x, h1.y), 0.0).rgb;
+    let d = textureSampleLevel(t, lightmap_sampler, vec2<f32>(h1.x, h1.y), 0.0).rgb;
+    return g0.y * (g0.x * a + g1.x * b) + g1.y * (g0.x * c + g1.x * d);
 }
 
 // Source range fog: toward the fog color by f^2, f from view depth.
@@ -102,7 +130,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     if params.alpha_cutoff > 0.0 && albedo.a < params.alpha_cutoff {
         discard;
     }
-    var light = textureSample(lightmap, lightmap_sampler, in.uv_b).rgb;
+    var light = sample_lightmap(lightmap, in.uv_b);
     if params.bumped > 0.5 {
         var n = textureSample(normal_texture, normal_sampler, in.uv).xyz * 2.0 - 1.0;
         if params.blend > 0.5 && params.blend_normal > 0.5 {
@@ -118,9 +146,9 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         );
         w = w * w;
         w = w / max(w.x + w.y + w.z, 1e-4);
-        light = w.x * textureSample(lightmap_b0, lightmap_sampler, in.uv_b).rgb
-            + w.y * textureSample(lightmap_b1, lightmap_sampler, in.uv_b).rgb
-            + w.z * textureSample(lightmap_b2, lightmap_sampler, in.uv_b).rgb;
+        light = w.x * sample_lightmap(lightmap_b0, in.uv_b)
+            + w.y * sample_lightmap(lightmap_b1, in.uv_b)
+            + w.z * sample_lightmap(lightmap_b2, in.uv_b);
     }
     light = light * params.lightmap_scale;
     if params.debug_view == 1.0 {

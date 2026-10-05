@@ -10,8 +10,9 @@ use crate::map::MapLightmap;
 
 const LUMP_LIGHTING: usize = 8;
 const LUMP_LIGHTING_HDR: usize = 53;
-/// Empty luxels around each face's block so filtering doesn't bleed.
-const PAD: u32 = 1;
+/// Luxels around each face's block, copied from its edge, so filtering
+/// doesn't bleed into neighbours: 2 covers bicubic sampling's reach.
+const PAD: u32 = 2;
 const ATLAS_WIDTH: u32 = 1024;
 
 /// The raw lighting lump: LDR if present, else HDR.

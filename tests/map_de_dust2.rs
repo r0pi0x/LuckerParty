@@ -707,3 +707,28 @@ fn world_fog() {
     assert_eq!(fog.color, [197.0 / 255.0, 196.0 / 255.0, 165.0 / 255.0]);
     assert_eq!(fog.max_density, 1.0);
 }
+
+#[test]
+#[ignore]
+fn debug_lightmap_texel_percentiles() {
+    let Some(map) = dust2() else { return };
+    let lm = map.lightmap.as_ref().unwrap();
+    let mut v: Vec<u8> = Vec::new();
+    let mut push = |rgb: &[[f32; 3]]| {
+        for c in rgb.iter().flatten() {
+            let t = mashup::map::source_ldr_texel(*c);
+            if t > 0 {
+                v.push(t);
+            }
+        }
+    };
+    push(&lm.rgb);
+    if let Some(b) = &lm.bumped {
+        for p in b {
+            push(p);
+        }
+    }
+    v.sort();
+    let n = v.len();
+    println!("ours {n} {:?}", [0.1, 0.25, 0.5, 0.75, 0.9, 0.99].map(|p| v[(n as f64 * p) as usize]));
+}

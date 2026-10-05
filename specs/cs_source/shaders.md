@@ -485,6 +485,14 @@ The defaults for mat_specular, mat_bumpmap and mat_reducefillrate live in the en
 
 ## Open questions
 
+- **Measured in a RenderDoc capture of CS:S (2026-10-05; Linux, DXVK 2.3 / Vulkan, mat_hdr_level 0), de_dust2 wall draw:**
+  - The lightmap scale constant is 4.594794 = 2^2.2 (as derived above), in both the vertex and pixel shader constants.
+  - Base texture and lightmap are read through sRGB views (BC1_SRGB, B8G8R8A8_SRGB). The normal map is read raw (UNORM). The render target is an sRGB view. This is the pipeline described above.
+  - CS:S runs r_lightmap_bicubic 1 (set by the game's video settings; the registered default is 0). The shader takes 4 taps per lightmap page, i.e. the bicubic B-spline filter.
+  - Lightmap atlas texels reach 255 (the 99th percentile of non-black texels is 255), so the engine's encoding doesn't stop at 239 as derived above. The clamp rule is still to be measured.
+  - Fog constants: 1/(end − start) and start/(end − start) are passed for range fog, along with the linear fog colour.
+  - The ×1.22 brightness gap (above) is not a shader constant or colour-space difference. Next suspect: the lightmap texel encoding (compare a known luxel's texel).
+
 - **Measured in CS:S (refcmp, de_dust2, 2026-10-05, Linux build, mat_hdr_level 0):**
   - The game is 1.22× brighter, in linear light, than albedo × lighting with the LDR lightmap encoding and the 2^2.2 scale above (mean absolute error 0.071 over 5.4M pixels in 9 views).
   - The scale constant or the tone-map scale may differ from the derived values, or the Linux renderer's sRGB handling may differ.

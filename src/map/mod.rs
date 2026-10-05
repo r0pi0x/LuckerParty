@@ -319,6 +319,9 @@ pub struct MapLook {
     /// Store lightmaps the way Source's LDR path does (8-bit, gamma, 2x
     /// overbright), with its banding, clamp and gamma-space filtering.
     pub source_ldr_lightmaps: bool,
+    /// Sample lightmaps with a bicubic B-spline filter (4 bilinear taps)
+    /// instead of bilinear.
+    pub bicubic_lightmaps: bool,
 }
 
 impl Default for MapLook {
@@ -329,6 +332,7 @@ impl Default for MapLook {
             anisotropy: 8,
             tonemapping: true,
             source_ldr_lightmaps: false,
+            bicubic_lightmaps: false,
         }
     }
 }
@@ -566,6 +570,7 @@ fn spawn_map(
                         },
                         light_scale: data.look.light_scale,
                         lightmap_scale: if source_ldr { SOURCE_LIGHTMAP_SCALE } else { 1.0 },
+                        bicubic: if data.look.bicubic_lightmaps { 1.0 } else { 0.0 },
                         blend: if blended { 1.0 } else { 0.0 },
                         blend_masked: if blend.mask.is_some() { 1.0 } else { 0.0 },
                         blend_normal: if bumped && blend.normal_map.is_some() { 1.0 } else { 0.0 },
