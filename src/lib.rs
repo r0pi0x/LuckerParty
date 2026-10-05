@@ -4,8 +4,10 @@
 pub mod character;
 pub mod client;
 pub mod core;
+pub mod games;
 pub mod greybox;
 pub mod harness;
+pub mod mount;
 pub mod movement;
 pub mod slots;
 

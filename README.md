@@ -63,23 +63,33 @@ to undermines the "load from your own install" model. To survive game updates:
 
 - Parse at the format level, not the build level. Formats change far less
   often than content.
-- Import once into a local cache of neutral data on the user's machine (never
-  shipped). Matches load from the cache, so an update can't break content that
-  is already imported; re-import when the install changes.
+- Read assets straight from the game's own archives at runtime and convert
+  only what is actually loaded. Results that are expensive to produce
+  (decrypting and parsing a world, BSP to meshes) go into a local cache.
+- The cache is content-addressed: entries are keyed by a hash of the source
+  file's bytes plus our converter version, so a game update only re-converts
+  files whose bytes changed, and unchanged files are shared across builds.
+  Each build has a small manifest (asset ID to hash); entries no current
+  manifest references are deleted, and the cache has a size cap.
 - A "mount doctor" per game checks expected files and reports what is mounted,
   what changed and what failed. The multiplayer pre-match check uses it too.
 
-Supported sources are the Steam releases. An install is fingerprinted by its
-Steam build ID plus file hashes; we keep a short list of fingerprints we have
-tested, and the mount doctor warns on others.
+Supported sources are the Steam releases. An install is identified by its
+Steam build ID plus file hashes. That identifies which build is installed
+(the mount doctor warns on builds we haven't tested); it never names cache
+folders, so an update doesn't duplicate anything.
 
 Where imported data lives:
 
 - Converted files are still the publisher's assets. They follow the same rule
   as the originals: never in git, never in a distributed build.
-- The import cache is per user, outside the repository:
-  `~/.local/share/mashup/cache/<game>/<fingerprint>/` on Linux,
-  `%LOCALAPPDATA%\mashup\cache\<game>\<fingerprint>\` on Windows.
+- The cache is per user, outside the repository:
+  `~/.local/share/mashup/cache/` on Linux, `%LOCALAPPDATA%\mashup\cache\` on
+  Windows.
+- Development also has a `dump` tool that extracts an install's raw files into
+  a local folder outside the repo, for exploring formats and writing specs.
+  It shares the archive readers with the runtime mount; the game itself never
+  needs a full dump.
 - Moving assets between our own machines means copying the install or the
   cache directly (rsync, Syncthing), never through git.
 - Install paths (and Combat Arms keys) live in the gitignored
@@ -245,11 +255,14 @@ uses mounted; the server checks this before a match.
   installed files. Now operated by Valofe. Supported source: Steam app
   1263550, "Combat Arms: the Classic", Windows build (downloadable on Linux
   with SteamCMD). Tested build 25595979: 108 `.rez` archives in `Game/`.
-  - Every `.rez` starts with the standard plain-text RezMgr header. Its title
-    field differs: some archives say V1 and look fully
-    encrypted (8.0 bits/byte), others say `LithTech Resource File` and look
-    unencrypted (`TEXTURES.rez`: 4.7 bits/byte). To be confirmed by the
-    `rez_archive` spec.
+  - Every `.rez` starts with the standard plain-text RezMgr header. Its
+    title marks encryption: 4 archives say V1 and 36 say
+    V2 (two key schemes; all measure ~8.0 bits/byte), and 68
+    say `LithTech Resource File` (unencrypted; only BGM and MOVIES look
+    random, being compressed media). Even plain archives have no readable
+    file directory, so reading any of them waits on the `rez_archive` spec.
+    `cargo run --bin dump -- combat_arms --list` shows title and entropy per
+    archive.
   - The archives are encrypted, and the key lives in a packed
     executable. The mount takes keys as input from the gitignored
     `mashup.local.toml`, as a list keyed by an install fingerprint, so a key

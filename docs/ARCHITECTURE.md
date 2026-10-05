@@ -8,9 +8,9 @@ file says where things are and which way dependencies may point.
 ```
             client            (window, input, camera, debug, agent tools)
               |
-   harness    |    games/<name>   (one plugin per game; none yet)
-      \       |       /
-       movement   greybox        (slot implementations not owned by a game)
+   harness    |    games/<name>   (one module per game)
+      \       |       /    \
+       movement   greybox     mount   (mount: read-only VFS, local config)
             \     /
            character             (components every character has)
                |
@@ -37,6 +37,10 @@ A module may use only the modules below it. Enforced by
 | `src/character.rs` | `character_bundle`, `spawn_character`, capsule size |
 | `src/movement/` | `placeholder` (stand-in walking) and `noclip` Movement implementations |
 | `src/greybox.rs` | Map slot built in code; collision always, visuals only when rendering |
+| `src/mount/` | `Mount` (ordered layers, first match wins), `FileSource`, `LooseDir`, path normalization, `mashup.local.toml` loading |
+| `src/games/cs_source/` | VPK reader, the CS:S search path |
+| `src/games/combat_arms/` | `.rez` header probe (contents wait on the spec) |
+| `src/bin/dump.rs` | Dev tool: summarize, list and extract a game install's files |
 | `src/harness.rs` | `Sim`: headless app stepped by exact fixed ticks, for tests |
 | `src/client/` | Local input, first-person camera, debug UI, `--screenshot`, remote protocol |
 | `src/lib.rs` | `SimPlugins` (everything the simulation needs) |

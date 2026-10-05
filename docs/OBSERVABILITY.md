@@ -60,6 +60,22 @@ Only `Reflect`-registered types are visible; register new core components in
 `RUST_LOG=mashup=debug cargo run --features dev`. Log state changes that matter
 (movement swaps, mounts, match events) at `info`; per-tick detail at `trace`.
 
+## 5. Exploring game files
+
+`dump` lists, summarizes and extracts files from a game install, using the
+same readers as the runtime mount. Install paths come from
+`mashup.local.toml`.
+
+```
+cargo run --bin dump -- cs_source                      # counts and sizes by type
+cargo run --bin dump -- cs_source --list --filter de_dust2
+cargo run --bin dump -- cs_source --filter materials/de_dust --extract
+cargo run --bin dump -- combat_arms --list             # per-archive key title and entropy
+```
+
+Extraction goes to `~/.local/share/mashup/dump/<game>/` (or `--out`) and
+refuses any folder inside the repository.
+
 ## Planned
 
 - Per-tick JSONL traces of chosen entities, for comparing movement against

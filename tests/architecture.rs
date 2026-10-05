@@ -13,6 +13,7 @@ use std::{
 /// Keep in sync with the layer diagram in docs/ARCHITECTURE.md.
 const ALLOWED: &[(&str, &[&str])] = &[
     ("core", &[]),
+    ("mount", &[]),
     ("slots", &["core"]),
     ("character", &["core", "slots"]),
     ("movement", &["core", "slots", "character"]),
@@ -21,7 +22,9 @@ const ALLOWED: &[(&str, &[&str])] = &[
     ("harness", &["lib", "core", "slots", "character", "movement", "greybox"]),
     ("client", &["lib", "core", "slots", "character", "movement", "greybox"]),
     // Game plugins: may use the shared layers, never another game.
-    ("games", &["core", "slots", "character", "movement"]),
+    ("games", &["core", "slots", "character", "movement", "mount"]),
+    // Binaries use the library through `mashup::`, not `crate::`.
+    ("bin", &[]),
 ];
 
 fn root() -> PathBuf {
