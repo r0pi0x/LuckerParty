@@ -62,7 +62,11 @@ fn write_local_intent(
     if !cursor_grabbed(&cursor) {
         // Not playing (menu, inspector): stop moving, keep looking where we were.
         let (yaw, pitch) = (intent.yaw, intent.pitch);
-        **intent = Intent { yaw, pitch, ..default() };
+        **intent = Intent {
+            yaw,
+            pitch,
+            ..default()
+        };
         return;
     }
 

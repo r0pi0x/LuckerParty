@@ -1,15 +1,9 @@
-mod character;
-mod core;
-mod debug;
-mod greybox;
-mod input;
-mod movement;
-mod slots;
-
 use avian3d::prelude::*;
 use bevy::prelude::*;
+use mashup::{SimPlugins, client, greybox, movement, slots::Loadout};
 
 fn main() {
+    let args = client::Args::parse();
     App::new()
         .add_plugins((
             DefaultPlugins.set(WindowPlugin {
@@ -20,19 +14,12 @@ fn main() {
                 ..default()
             }),
             PhysicsPlugins::default(),
+            SimPlugins,
+            greybox::GreyboxMapPlugin,
         ))
-        // Placeholder tick rate until a ruleset or movement spec sets one.
-        .insert_resource(Time::<Fixed>::from_hz(64.0))
-        .insert_resource(slots::Loadout {
+        .insert_resource(Loadout {
             movement: movement::placeholder::ID,
         })
-        .add_plugins((
-            core::CorePlugin,
-            input::LocalInputPlugin,
-            character::CharacterPlugin,
-            movement::MovementPlugins,
-            greybox::GreyboxMapPlugin,
-            debug::DebugPlugin,
-        ))
+        .add_plugins(client::ClientPlugin { args })
         .run();
 }

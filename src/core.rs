@@ -83,6 +83,12 @@ pub struct SpawnPoint {
 #[reflect(Component)]
 pub struct LocalPlayer;
 
+/// Number of fixed ticks simulated so far. Tests and tools use it to step
+/// the simulation by exact ticks.
+#[derive(Resource, Reflect, Default, Clone, Copy, Debug)]
+#[reflect(Resource)]
+pub struct SimTick(pub u64);
+
 /// Ordering of the fixed-tick simulation. Game plugins put their systems in
 /// these sets so that, e.g., weapons always see this tick's movement state.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
@@ -102,6 +108,9 @@ impl Plugin for CorePlugin {
             .register_type::<Team>()
             .register_type::<SpawnPoint>()
             .register_type::<LocalPlayer>()
+            .register_type::<SimTick>()
+            .init_resource::<SimTick>()
+            .add_systems(FixedFirst, |mut tick: ResMut<SimTick>| tick.0 += 1)
             .configure_sets(FixedUpdate, (SimSet::Movement, SimSet::Weapons).chain());
     }
 }

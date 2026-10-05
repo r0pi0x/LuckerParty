@@ -1,11 +1,11 @@
-//! Spawning characters and the first-person camera.
+//! The components every character has, whatever controls it.
 
 use avian3d::prelude::*;
 use bevy::prelude::*;
 
 use crate::{
-    core::{Health, Intent, LocalPlayer, MovementState, SpawnPoint, Team, Velocity},
-    slots::{Loadout, set_movement},
+    core::{Health, Intent, MovementState, Team, Velocity},
+    slots::set_movement,
 };
 
 /// Standing collision capsule, shared by movement implementations until a
@@ -13,19 +13,6 @@ use crate::{
 pub const CAPSULE_RADIUS: f32 = 0.4;
 pub const CAPSULE_HEIGHT: f32 = 1.8;
 
-#[derive(Component)]
-pub struct FirstPersonCamera;
-
-pub struct CharacterPlugin;
-
-impl Plugin for CharacterPlugin {
-    fn build(&self, app: &mut App) {
-        app.add_systems(PostStartup, spawn_local_player)
-            .add_systems(Update, follow_eye);
-    }
-}
-
-/// The components every character has, whatever controls it.
 pub fn character_bundle(transform: Transform, team: Team) -> impl Bundle {
     (
         Name::new("Character"),
@@ -35,45 +22,22 @@ pub fn character_bundle(transform: Transform, team: Team) -> impl Bundle {
         MovementState::default(),
         Health::default(),
         team,
-        // The camera is a child; children need a visible parent.
+        // A camera or model may be attached as a child; children need a
+        // visible parent.
         Visibility::default(),
         RigidBody::Kinematic,
         Collider::capsule(CAPSULE_RADIUS, CAPSULE_HEIGHT - 2.0 * CAPSULE_RADIUS),
         // Movement implementations move the character; avian must not.
         CustomPositionIntegration,
         // Movement runs at a fixed tick; smooth it for rendering. Rotation is
-        // not eased: the camera takes look angles straight from `Intent`.
+        // not eased: cameras take look angles straight from `Intent`.
         TranslationInterpolation,
     )
 }
 
-fn spawn_local_player(mut commands: Commands, spawns: Query<&Transform, With<SpawnPoint>>, loadout: Res<Loadout>) {
-    let at = spawns.iter().next().copied().unwrap_or_default();
-    let player = commands
-        .spawn((character_bundle(at, Team(0)), LocalPlayer))
-        .with_child((
-            FirstPersonCamera,
-            Camera3d::default(),
-            Projection::Perspective(PerspectiveProjection {
-                fov: 74f32.to_radians(),
-                ..default()
-            }),
-        ))
-        .id();
-    commands.queue(set_movement(player, loadout.movement));
-}
-
-/// Place the camera at the movement implementation's eye position and aim it
-/// along the look angles.
-fn follow_eye(
-    players: Query<(&Intent, &MovementState, &Children), With<LocalPlayer>>,
-    mut cameras: Query<&mut Transform, With<FirstPersonCamera>>,
-) {
-    for (intent, state, children) in &players {
-        let mut cams = cameras.iter_many_mut(children);
-        while let Some(mut cam) = cams.fetch_next() {
-            cam.translation = state.eye_offset;
-            cam.rotation = intent.look_rotation();
-        }
-    }
+/// Spawn a character using Movement implementation `movement`.
+pub fn spawn_character(commands: &mut Commands, transform: Transform, team: Team, movement: &'static str) -> Entity {
+    let entity = commands.spawn(character_bundle(transform, team)).id();
+    commands.queue(set_movement(entity, movement));
+    entity
 }

@@ -25,12 +25,16 @@ const JUMP_SPEED: f32 = 6.5;
 /// Steepest walkable ground: cos(45 degrees).
 const MIN_GROUND_NORMAL_Y: f32 = 0.7;
 const GROUND_PROBE: f32 = 0.08;
+/// Upward speed above which we're airborne even if ground is near (m/s).
+const MAX_GROUNDED_RISE: f32 = JUMP_SPEED * 0.5;
 const STAND_EYE: f32 = 1.62 - CAPSULE_HEIGHT / 2.0;
 const CROUCH_EYE: f32 = 1.0 - CAPSULE_HEIGHT / 2.0;
 
 #[derive(Component, Default)]
 pub struct PlaceholderMovement {
     jump_held: bool,
+    /// Normal of the ground we stood on last tick.
+    ground_normal: Option<Vec3>,
 }
 
 pub struct PlaceholderMovementPlugin;
@@ -75,38 +79,52 @@ fn step(
         let t = 1.0 - (-response * dt).exp();
         let horizontal = Vec3::new(vel.x, 0.0, vel.z).lerp(wish, t);
 
-        // Vertical: gravity, jumping on a fresh press only.
-        let mut vertical = vel.y;
+        // Jumping needs a fresh press.
         let jumped = intent.jump && !me.jump_held && state.on_ground;
         me.jump_held = intent.jump;
-        if jumped {
-            vertical = JUMP_SPEED;
-        } else if state.on_ground {
-            vertical = vertical.min(0.0);
-        }
-        vertical -= GRAVITY * dt;
+
+        // On the ground, run along it and ignore gravity; slopes keep the
+        // horizontal speed. In the air, fall.
+        let desired = match (me.ground_normal, jumped) {
+            (Some(n), false) if n.y > 0.0 => {
+                // Lift the horizontal velocity onto the ground plane.
+                horizontal - Vec3::Y * (horizontal.dot(n) / n.y)
+            }
+            (_, true) => horizontal + Vec3::Y * JUMP_SPEED,
+            (_, false) => horizontal + Vec3::Y * (vel.y - GRAVITY * dt),
+        };
 
         let out = move_and_slide.move_and_slide(
             collider,
             transform.translation,
             transform.rotation,
-            horizontal + Vec3::Y * vertical,
+            desired,
             time.delta(),
             &config,
             &filter,
             |_| MoveAndSlideHitResponse::Accept,
         );
         let mut position = out.position;
-        let mut velocity = out.projected_velocity;
+        let velocity = out.projected_velocity;
 
         // Ground check, snapping down so we stick to ramps and small drops.
         let ground = move_and_slide
-            .cast_move(collider, position, transform.rotation, Vec3::NEG_Y * GROUND_PROBE, config.skin_width, &filter)
+            .cast_move(
+                collider,
+                position,
+                transform.rotation,
+                Vec3::NEG_Y * GROUND_PROBE,
+                config.skin_width,
+                &filter,
+            )
             .filter(|hit| hit.normal1.y >= MIN_GROUND_NORMAL_Y);
-        let on_ground = !jumped && velocity.y <= 0.0 && ground.is_some();
+        // Walking up a slope moves us upward too, so only rising faster than
+        // that counts as leaving the ground.
+        let on_ground = !jumped && velocity.y < MAX_GROUNDED_RISE && ground.is_some();
+        me.ground_normal = None;
         if let (true, Some(hit)) = (on_ground, ground) {
             position.y -= hit.distance;
-            velocity.y = 0.0;
+            me.ground_normal = Some(hit.normal1);
         }
 
         transform.translation = position;

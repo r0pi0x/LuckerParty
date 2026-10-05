@@ -13,7 +13,7 @@ bevy-inspector-egui = "0.37"
 [features]
 # Faster iteration: link Bevy as a dynamic library. Use with
 # `cargo run --features dev`. Never enable for release builds.
-dev = ["bevy/dynamic_linking"]
+dev = ["bevy/dynamic_linking", "bevy/bevy_remote"]
 
 # Our own code: a little optimization so the game is playable in debug.
 [profile.dev]
@@ -26,3 +26,11 @@ opt-level = 3
 [profile.release]
 codegen-units = 1
 lto = "thin"
+
+# Fast-to-rebuild optimized build for playtesting (e.g. on the Windows PC):
+# release speed without LTO's long link.
+[profile.playtest]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true

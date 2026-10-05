@@ -6,8 +6,8 @@ use bevy::{input::common_conditions::input_toggle_active, prelude::*, window::Cu
 use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
 
 use crate::{
+    client::input::release_cursor,
     core::{LocalPlayer, MovementState, Velocity},
-    input::release_cursor,
     slots::{MovementRegistry, MovementSlot, set_movement},
 };
 

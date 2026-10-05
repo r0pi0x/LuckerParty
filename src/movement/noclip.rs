@@ -25,10 +25,7 @@ impl Plugin for NoclipPlugin {
     }
 }
 
-fn step(
-    mut q: Query<(&Intent, &mut Transform, &mut Velocity, &mut MovementState), With<Noclip>>,
-    time: Res<Time>,
-) {
+fn step(mut q: Query<(&Intent, &mut Transform, &mut Velocity, &mut MovementState), With<Noclip>>, time: Res<Time>) {
     for (intent, mut transform, mut vel, mut state) in &mut q {
         let up = intent.jump as i8 as f32 - intent.crouch as i8 as f32;
         let local = Vec3::new(intent.move_axis.x, 0.0, -intent.move_axis.y).clamp_length_max(1.0);
