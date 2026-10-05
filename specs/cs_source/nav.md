@@ -107,7 +107,7 @@ Traverse ("how") codes: 0..3 = walk across side N/E/S/W, 4 = ladder up, 5 = ladd
 
 ### Ladder record
 
-V ≥ 7: 56 bytes. V = 6 has one extra byte after `dir` (an obsolete "dangling" bool).
+V ≥ 7: 60 bytes (the table below; verified on de_train: 41 ladders decode to the file end). V = 6 has one extra byte after `dir` (an obsolete "dangling" bool).
 
 | Field | Type | Meaning |
 |---|---|---|

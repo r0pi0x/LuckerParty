@@ -22,7 +22,7 @@ const ALLOWED: &[(&str, &[&str])] = &[
     ("map", &["core"]),
     ("weapon", &["core", "console", "map"]),
     ("rules", &["core", "console", "weapon"]),
-    ("bot", &["core", "console", "slots", "character"]),
+    ("bot", &["core", "console", "slots", "character", "map"]),
     // `lib` = crate-root items such as `SimPlugins`.
     (
         "harness",

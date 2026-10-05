@@ -25,7 +25,8 @@ framework, knife, AK-47, HUD, deathmatch and a first bot are in.
 
 - Merge the CS:S measurements (M1–M17): inaccuracy, recoil, hitgroups,
   falloff, armour, penetration, knife.
-- **Bot navigation** on CS:S's `.nav` meshes.
+- Bot behaviour: awareness (sound, memory), CS:S bot path costs and
+  route variety (nav spec open questions 2–4).
 - Hitboxes from player models; character, view and world models.
 - Impact decals, tracers, muzzle flash; explosion impulses.
 

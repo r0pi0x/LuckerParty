@@ -25,7 +25,7 @@ file says where things are and which way dependencies may point.
              core                (shared vocabulary)
 ```
 
-Exact edges: bot uses core, console, slots, character; rules uses core,
+Exact edges: bot uses core, console, slots, character, map; rules uses core,
 console, weapon; weapon uses core, console, map; map uses only core.
 
 A module may use only the modules below it. Enforced by
@@ -46,7 +46,7 @@ A module may use only the modules below it. Enforced by
 | `src/core.rs` | `Intent`, `Velocity`, `MovementState`, `Health`, `Damage`/`Died` messages (damage applied after weapons), `Hitgroup`, `MaxSpeed` (equipment speed cap), `Team`, `SpawnPoint`, `LocalPlayer`, `SimTick`, the `SimSet` tick ordering; the collision world maps share with movement: `MapBrush`/`MapBrushes` (brush planes for exact swept-box movement, ladder flag), `MapBrushCollider`, `MapWater` volumes |
 | `src/weapon/` | Weapons as parts (README, "Weapons and items"): `Trigger`, `Magazine` (cost), `Hitscan`/`Melee` (delivery), `DamageEffect`, `WeaponSounds`; `Inventory`, `WeaponState` timers, `WeaponRegistry`/`StartingWeapons`, `give`; selection and deploy before movement, the Source-style weapon frame in `SimSet::Weapons` (spec weapons.md 3–4), `WeaponEvent`s; console `give`, `slot1`–`slot5`, `lastinv` |
 | `src/rules.rs` | Deathmatch: the dead (`Dead`) stop acting and respawn at spawn points with fresh weapons after `mp_respawn_delay`; `Score` (kills, deaths) |
-| `src/bot.rs` | Bots: `Bot` brain writing `Intent` (nearest visible enemy, limited turn rate, reaction time, strafing; no navigation yet); `bot_add`, `bot_kick`, `bot_stop`, `bot_dont_shoot`, `bot_reaction`, `bot_turn_rate` |
+| `src/bot.rs` | Bots: `Bot` brain writing `Intent` (nearest visible enemy, limited turn rate, reaction time, strafing; otherwise walks the `NavMesh` toward the nearest enemy); `bot_add`, `bot_kick`, `bot_stop`, `bot_dont_shoot`, `bot_reaction`, `bot_turn_rate` |
 | `src/slots.rs` | `MovementRegistry`, `Loadout`, `set_movement` (swap an entity's movement) |
 | `src/character.rs` | `character_bundle`, `spawn_character`, capsule size |
 | `src/movement/` | `placeholder` (stand-in walking) and `noclip` Movement implementations |
@@ -54,11 +54,12 @@ A module may use only the modules below it. Enforced by
 | `src/mount/` | `Mount` (ordered layers, first match wins), `FileSource`, `LooseDir`, path normalization, `mashup.local.toml` loading |
 | `src/map/world_material.rs`, `world.wgsl` | World surfaces: texture x baked light with radiosity normal mapping (Source LightmappedGeneric at LDR) |
 | `src/map/mod.rs` | `MapData` (meters, Y up, meshes per material, textures, lightmap atlas, collision, prop models and placements, spawns, ropes) and `MapPlugin` that spawns it (re-exports the `core` collision types) |
+| `src/map/nav.rs` | `NavMesh` (any game): areas with corner heights, directed links and ladders in engine space; area queries, A* with the stock cost, crossing points, `route` |
 | `src/map/sound.rs` | Sounds for any game: entries and clips on `MapData`, `PlaySound` messages, playback (distance model, panning, pitch, channels) through Bevy audio, `SurfaceGrid` (surface under a point) |
 | `src/map/shadows.rs`, `shadow.wgsl` | Dynamic prop shadows (Source render-to-texture shadows): silhouettes rasterized into a coverage atlas, clipped onto world surfaces, multiplied over them |
 | `src/map/rope_material.rs`, `rope.wgsl` | Ropes as camera-facing strips (Source Cable shader, fake anti-aliasing back strip) |
 | `src/games/mod.rs` | `load_map("game:name")` dispatcher |
-| `src/games/cs_source/` | VPK reader, the CS:S search path, BSP to `MapData` (via `vbsp`), VMT/VTF materials (map pak first, then the mount), lightmap atlas from the lighting lump, brush collision hulls, static props and prop entities (`prop_physics*`, `prop_dynamic*`) via `vmdl`, ambient cubes and world lights for prop light probes, infodecals clipped onto faces, overlays (lump 45) clipped onto their listed faces, 2D sky and 3D skybox, ropes (simulated to rest), Source player movement (`cs_source:movement`: swept box, exact against brush planes, physics shape casts for props and displacements; ladders, water, walking), `.phy` collision models, surface properties, physics props (avian bodies) and the multiplayer push-away between players and props, WAV decoding (PCM, MS-ADPCM) and sound scripts, footstep/jump/landing/water sounds in movement, the knife and AK-47 (`weapons.rs`, script values; unmeasured rules marked), bullet and physics impact sounds (`impacts.rs`) |
+| `src/games/cs_source/` | VPK reader, the CS:S search path, BSP to `MapData` (via `vbsp`), VMT/VTF materials (map pak first, then the mount), lightmap atlas from the lighting lump, brush collision hulls, static props and prop entities (`prop_physics*`, `prop_dynamic*`) via `vmdl`, ambient cubes and world lights for prop light probes, infodecals clipped onto faces, overlays (lump 45) clipped onto their listed faces, 2D sky and 3D skybox, ropes (simulated to rest), Source player movement (`cs_source:movement`: swept box, exact against brush planes, physics shape casts for props and displacements; ladders, water, walking), `.phy` collision models, surface properties, physics props (avian bodies) and the multiplayer push-away between players and props, WAV decoding (PCM, MS-ADPCM) and sound scripts, footstep/jump/landing/water sounds in movement, the knife and AK-47 (`weapons.rs`, script values; unmeasured rules marked), bullet and physics impact sounds (`impacts.rs`), `.nav` meshes (`nav.rs`, versions 9 and 16) |
 | `src/games/combat_arms/` | `.rez` reader and the archive cipher payload decryption (from the spec), all archives as one mount |
 | `src/bin/refcmp.rs` | Dev tool: compare views against real CS:S (RCON-driven capture, metrics, side-by-sides) |
 | `src/bin/dump.rs` | Dev tool: summarize, list and extract a game install's files |

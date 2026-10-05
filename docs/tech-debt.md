@@ -6,7 +6,7 @@ Small, current, honest. Remove entries when fixed.
 |---|---|---|
 | weapon | Hitgroups come from height bands on the body's bounds (head above 83 %, etc.), not hitboxes; arms only at the body's edge | Characters are capsules until models load |
 | weapon | CS:S rules marked `UNMEASURED` in games/cs_source/weapons.rs (fixed spread cone, no recoil, community hitgroup and knife numbers, "set" refire); spread uses our own RNG, not Source's seeded generator; no penetration, armour, water or lag compensation | Measurements (spec M1–M17) are being taken |
-| bot | Bots have no navigation: they strafe in place and shoot what they see | Navigation is the next bot slice |
+| bot | Bots know where every enemy is (they hunt the nearest by position, not by sound or memory); route following is a simple point follower (no gap jumps, ladders untested, no obstacle avoidance); maps without a `.nav` leave bots standing | Enough for deathmatch practice on stock maps |
 | movement | Placeholder movement has no step-up (stairs block it) and doesn't shrink the collider when crouching | It gets replaced by spec-based movement |
 | movement | Ground check is one downward shape cast | Good enough until a spec defines grounding |
 | client | Mouse capture fights the inspector (F1 releases it; click recaptures) | Debug-only |

@@ -76,6 +76,12 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
     super::dust::add_dust(&bsp, &mut materials, &mut data);
     let surfaces = super::surfaceprops::SurfaceProps::load(&mut materials);
     data.sounds = std::sync::Arc::new(super::sound::load(&mut materials, name, &surfaces));
+    if let Some(bytes) = materials.read(&format!("maps/{}.nav", name.to_lowercase())) {
+        match super::nav::parse(&bytes) {
+            Ok((nav, _)) => data.nav = Some(std::sync::Arc::new(nav)),
+            Err(e) => data.warnings.push(e),
+        }
+    }
     super::decals::add_decals(&bsp, &layout, &mut materials, &mut data);
     super::overlays::add_overlays(&bsp, &bytes, &layout, &mut materials, &mut data);
     super::sky::add_sky(&bsp, &mut materials, &mut data);

@@ -18,6 +18,7 @@ use crate::core::{SpawnPoint, Team};
 pub use crate::core::{MapBrush, MapBrushCollider, MapBrushes, MapWater, MapWaterVolume, PropSurface};
 
 mod dust;
+pub mod nav;
 pub mod prop_material;
 pub mod rope_material;
 pub mod shadows;
@@ -366,6 +367,8 @@ pub struct MapData {
     pub playable: Option<(Vec3, Vec3)>,
     /// Sound entries, clips and surfaces the map uses.
     pub sounds: Arc<MapSounds>,
+    /// The bots' navigation mesh, if the game ships one for the map.
+    pub nav: Option<Arc<nav::NavMesh>>,
 }
 
 /// What the BSP leaf around a point can see of the sky.
@@ -1285,6 +1288,9 @@ fn spawn_map(
     }
 
     commands.insert_resource(sound::SoundBank(data.sounds.clone()));
+    if let Some(nav) = &data.nav {
+        commands.insert_resource((**nav).clone());
+    }
     commands.insert_resource(sound::SurfaceGrid::new(&data));
     if !brushes.is_empty() {
         commands.insert_resource(MapBrushes(brushes));

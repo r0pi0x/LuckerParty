@@ -1257,3 +1257,43 @@ fn impact_sounds() {
     assert!(heard.iter().any(|s| s == "weapon_ak47.single"), "{heard:?}");
     assert!(heard.iter().any(|s| s.ends_with(".bulletimpact")), "{heard:?}");
 }
+
+/// Bots walk dust2's navigation mesh (specs/cs_source/nav.md) toward an
+/// enemy they can't see, until they see them.
+#[test]
+fn bot_walks_the_nav_mesh_to_an_enemy() {
+    use mashup::games::cs_source::{
+        movement::{self, SourceMovementPlugin},
+        weapons::CsWeaponsPlugin,
+    };
+    let Some(map) = dust2() else { return };
+    let nav = map.nav.clone().expect("dust2 has a nav mesh");
+    let mut sim = Sim::new((MapPlugin::new(map.clone()), SourceMovementPlugin, CsWeaponsPlugin));
+    sim.set_tick_interval(mashup::games::cs_source::TICK_INTERVAL);
+    sim.app
+        .insert_resource(mashup::slots::Loadout { movement: movement::ID });
+    let middle = nav.places.iter().position(|p| p == "Middle").unwrap();
+    let area = nav.areas.iter().find(|a| a.place == Some(middle)).unwrap();
+    let stand = area.closest_point(area.center) + Vec3::Y * 1.0;
+    let player = sim.spawn_character(stand, movement::ID);
+    let bot = mashup::bot::add_bot(sim.app.world_mut(), Team(1)).expect("bot");
+    sim.app.world_mut().resource_mut::<mashup::bot::BotConfig>().dont_shoot = 1;
+    let start = sim.position(bot);
+    let start_dist = start.distance(stand);
+    let mut found = None;
+    for s in 0..60 {
+        sim.seconds(0.5);
+        if sim.app.world().get::<mashup::bot::Bot>(bot).unwrap().target == Some(player) {
+            found = Some(s as f32 * 0.5);
+            break;
+        }
+    }
+    let end = sim.position(bot);
+    assert!(
+        found.is_some(),
+        "bot never saw the player: {start} -> {end}, {start_dist:.1} m away at start, {:.1} m at the end",
+        end.distance(stand)
+    );
+    // It walked there: T spawn is ~36 m from Middle, out of sight.
+    assert!(start.distance(end) > 15.0, "walked only {:.1} m", start.distance(end));
+}

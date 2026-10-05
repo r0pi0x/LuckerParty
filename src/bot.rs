@@ -1,8 +1,9 @@
 //! Bots: characters whose intent comes from a brain instead of a keyboard
 //! (README, "Characters and control"), so they use the same movement and
-//! weapons as players. This first brain has no navigation: it strafes in
-//! place, turns toward the nearest enemy it can see at a limited turn rate
-//! and fires once it has seen them for a reaction time and is on target.
+//! weapons as players. The brain turns toward the nearest enemy it can see
+//! at a limited turn rate, strafes, and fires once it has seen them for a
+//! reaction time and is on target. With nobody in sight it walks the map's
+//! navigation mesh toward the nearest enemy.
 
 use std::sync::Arc;
 
@@ -10,9 +11,11 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 
 use crate::{
+    character::CAPSULE_HEIGHT,
     character::spawn_character,
     console::{Command, Console, resource_cvar},
     core::{Health, Intent, LocalPlayer, MovementState, SimSet, SpawnPoint, Team},
+    map::nav::{NavMesh, STEP_HEIGHT, flags},
     slots::{Loadout, MovementSlot},
 };
 
@@ -92,6 +95,13 @@ pub struct Bot {
     strafe: f32,
     strafe_left: f32,
     rng: u64,
+    /// Points to walk through (engine space) and the next one's index.
+    route: Vec<Vec3>,
+    next: usize,
+    /// Seconds until the route is recomputed.
+    repath: f32,
+    /// Where the bot was at the last progress check, and when that was.
+    progress: (Vec3, f32),
 }
 
 /// Spawn a bot on `team` at a spawn point (the team's, if the map has
@@ -159,6 +169,7 @@ fn think(
     )>,
     others: Query<(Entity, &Transform, &Team, &Health), With<Intent>>,
     spatial: SpatialQuery,
+    nav: Option<Res<NavMesh>>,
     cfg: Res<BotConfig>,
     time: Res<Time>,
 ) {
@@ -171,6 +182,8 @@ fn think(
         let eye = t.translation + state.eye_offset;
         // The nearest living enemy in sight.
         let mut best: Option<(Entity, Vec3, f32)> = None;
+        // The nearest living enemy anywhere, to hunt when none is in sight.
+        let mut hunt: Option<(Vec3, f32)> = None;
         for (e, ot, oteam, oh) in &others {
             if e == me || oteam == team || oh.current <= 0.0 {
                 continue;
@@ -178,6 +191,9 @@ fn think(
             let aim = ot.translation + Vec3::Y * AIM_HEIGHT;
             let to = aim - eye;
             let dist = to.length();
+            if hunt.is_none_or(|h| dist < h.1) {
+                hunt = Some((ot.translation, dist));
+            }
             if best.is_some_and(|b| b.2 <= dist) {
                 continue;
             }
@@ -234,7 +250,65 @@ fn think(
         } else {
             Vec2::ZERO
         };
+        intent.jump = false;
+        intent.crouch = false;
+        if bot.target.is_some() || cfg.stop != 0 {
+            bot.route.clear();
+            continue;
+        }
+        let (Some(nav), Some((goal, _))) = (nav.as_deref(), hunt) else {
+            continue;
+        };
+        let feet = t.translation - Vec3::Y * CAPSULE_HEIGHT / 2.0;
+        walk_route(
+            &mut bot,
+            &mut intent,
+            nav,
+            feet,
+            goal - Vec3::Y * CAPSULE_HEIGHT / 2.0,
+            &cfg,
+            dt,
+        );
     }
+}
+
+/// A route point counts as reached within this distance (2D), m.
+const REACHED: f32 = 25.0 * 0.0254;
+/// Seconds between route recomputations while walking.
+const REPATH_SECONDS: f32 = 1.0;
+/// Without this much progress in `STUCK_SECONDS`, repath (and jump).
+const STUCK_DISTANCE: f32 = 0.5;
+const STUCK_SECONDS: f32 = 1.5;
+
+/// Walk the navigation mesh toward `goal` (feet positions).
+fn walk_route(bot: &mut Bot, intent: &mut Intent, nav: &NavMesh, feet: Vec3, goal: Vec3, cfg: &BotConfig, dt: f32) {
+    bot.repath -= dt;
+    bot.progress.1 += dt;
+    let mut stuck = false;
+    if bot.progress.1 >= STUCK_SECONDS {
+        stuck = feet.distance(bot.progress.0) < STUCK_DISTANCE;
+        bot.progress = (feet, 0.0);
+    }
+    if bot.repath <= 0.0 || bot.next >= bot.route.len() || stuck {
+        bot.repath = REPATH_SECONDS;
+        bot.route = nav.route(feet, goal).unwrap_or_default();
+        bot.next = 0;
+    }
+    while bot.next < bot.route.len() && (bot.route[bot.next] - feet).xz().length() < REACHED {
+        bot.next += 1;
+    }
+    let Some(&point) = bot.route.get(bot.next) else { return };
+    let to = point - feet;
+    let want_yaw = (-to.x).atan2(-to.z);
+    let step = cfg.turn_rate.to_radians() * dt;
+    intent.yaw = wrap(intent.yaw + wrap(want_yaw - intent.yaw).clamp(-step, step));
+    intent.pitch -= intent.pitch.clamp(-step, step);
+    // Walk forward once roughly facing the point.
+    let off = wrap(want_yaw - intent.yaw).abs();
+    intent.move_axis = Vec2::new(0.0, if off < 1.0 { 1.0 } else { 0.0 });
+    // Jump up ledges higher than a step, and when stuck.
+    intent.jump = stuck || (to.y > STEP_HEIGHT && to.xz().length() < 1.5);
+    intent.crouch = nav.area_at(feet).is_some_and(|a| nav.areas[a].has(flags::CROUCH));
 }
 
 fn wrap(a: f32) -> f32 {
