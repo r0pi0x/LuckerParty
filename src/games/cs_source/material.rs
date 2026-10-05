@@ -37,6 +37,8 @@ pub struct Resolved {
     pub texture: Option<usize>,
     pub alpha: MapAlpha,
     pub double_sided: bool,
+    /// `$decalscale` (map units per texel) when the material is a decal.
+    pub decal_scale: Option<f32>,
 }
 
 pub struct MaterialLoader<'a> {
@@ -86,6 +88,7 @@ impl<'a> MaterialLoader<'a> {
                     texture: None,
                     alpha: MapAlpha::Opaque,
                     double_sided: false,
+                    decal_scale: None,
                 }
             }
         }
@@ -97,6 +100,7 @@ impl<'a> MaterialLoader<'a> {
             texture: None,
             alpha: MapAlpha::Opaque,
             double_sided: false,
+            decal_scale: None,
         };
         let vmt_path = format!("materials/{}.vmt", normalize(name));
         let Some(text) = self.read_text(&vmt_path) else {
@@ -121,10 +125,15 @@ impl<'a> MaterialLoader<'a> {
             MapAlpha::Opaque
         };
         let texture = material.base_texture().and_then(|t| self.texture(t));
+        let decal_scale = match &material {
+            vmt_parser::material::Material::LightMappedGeneric(m) if m.decal => Some(m.decal_scale),
+            _ => None,
+        };
         Resolved {
             texture,
             alpha,
             double_sided: material.no_cull(),
+            decal_scale,
         }
     }
 

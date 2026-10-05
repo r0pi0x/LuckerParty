@@ -48,7 +48,7 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
     let path = format!("maps/{name}.bsp");
     let bytes = mount.read(&path).map_err(|e| format!("{path}: {e}"))?;
     let bsp = Bsp::read(&bytes).map_err(|e| format!("{path}: {e}"))?;
-    let mut data = convert(&bsp, lightmap::lighting_lump(&bytes), name);
+    let (mut data, layout) = convert(&bsp, lightmap::lighting_lump(&bytes), name);
 
     let mut materials = MaterialLoader::new(&bsp, mount);
     for mesh in &mut data.meshes {
@@ -63,6 +63,7 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
         (&data.collision_positions, &data.collision_indices),
     );
     super::props::add_static_props(&bsp, &mut materials, &lighting, &occluders, &mut data);
+    super::decals::add_decals(&bsp, &layout, &mut materials, &mut data);
     data.warnings.extend(materials.missing);
     data.textures = materials.textures;
     Ok(data)
@@ -125,14 +126,25 @@ pub fn face_triangles(face: &vbsp::Handle<'_, vbsp::Face>) -> Vec<[(vbsp::Vector
     out
 }
 
+/// Where each world face's lighting landed in the atlas, for things that
+/// share a face's lighting later (decals).
+pub struct LightmapLayout {
+    /// Per world face (in `models[0].faces()` order): its block, if lit.
+    pub face_slots: Vec<Option<usize>>,
+    pub placements: Vec<lightmap::Placement>,
+    /// Block for drawn faces without lighting.
+    pub white: usize,
+}
+
 /// Geometry, collision, lightmaps and spawns, without materials.
 /// `lighting` is the BSP's lighting lump (see `lightmap::lighting_lump`).
-pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> MapData {
+pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> (MapData, LightmapLayout) {
     let mut by_material: BTreeMap<String, MapMesh> = BTreeMap::new();
     // Per mesh: each vertex's lightmap block slot and luxel coordinate,
     // resolved to atlas UVs once all blocks are packed.
     let mut pending_lm: BTreeMap<String, Vec<(Option<usize>, Vec2)>> = BTreeMap::new();
     let mut atlas = AtlasBuilder::default();
+    let mut face_slots: Vec<Option<usize>> = Vec::new();
     let mut data = MapData {
         name: format!("cs_source:{name}"),
         ..default()
@@ -141,6 +153,7 @@ pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> MapData {
     // The world is model 0; brush entities (doors, breakables) come later.
     let world = bsp.models().next().expect("BSP has no world model");
     for face in world.faces() {
+        face_slots.push(None);
         let tex = face.texture();
         let flags = tex.flags;
         if flags.intersects(NOT_DRAWN) && flags.intersects(NOT_SOLID) {
@@ -176,6 +189,7 @@ pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> MapData {
         }
 
         let slot = lightmap::face_samples(lighting, &face).map(|s| atlas.add(s));
+        *face_slots.last_mut().unwrap() = slot;
         let material = tex.name().to_lowercase();
         let mesh = by_material.entry(material.clone()).or_insert_with(|| MapMesh {
             material: material.clone(),
@@ -214,8 +228,12 @@ pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> MapData {
             })
             .collect();
     }
-    data.lightmap = Some(lightmap);
     data.meshes = by_material.into_values().filter(|m| !m.indices.is_empty()).collect();
+    let layout = LightmapLayout {
+        face_slots,
+        placements,
+        white,
+    };
 
     for ent in bsp.entities.iter() {
         let team = match ent.prop("classname") {
@@ -227,7 +245,8 @@ pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> MapData {
             data.spawns.push((to_engine(origin), team));
         }
     }
-    data
+    data.lightmap = Some(lightmap);
+    (data, layout)
 }
 
 /// Contents that stop players: solid world, glass, grates, player clips.

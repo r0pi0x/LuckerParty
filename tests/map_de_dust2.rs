@@ -379,3 +379,50 @@ fn prop_lighting_model_predicts_lightmaps() {
     assert!((0.8..1.25).contains(&median), "median predicted/actual {median}");
     assert!(within > 0.7, "only {:.0}% within 2x", within * 100.0);
 }
+
+#[test]
+fn decals_project_onto_surfaces() {
+    use mashup::games::cs_source::decals;
+
+    // Wall decals stay upright and unmirrored for someone facing the wall
+    // (Source space: Z up). With u to the right and v down, as images are
+    // stored, u x v points into the wall (away from the viewer).
+    for n in [
+        Vec3::X,
+        -Vec3::X,
+        Vec3::Y,
+        -Vec3::Y,
+        Vec3::new(1.0, 1.0, 0.0).normalize(),
+    ] {
+        let (right, down) = decals::basis(n);
+        assert!((down - -Vec3::Z).length() < 1e-5, "wall {n}: down is {down}");
+        assert!(right.cross(down).dot(n) < -0.99, "wall {n}: decal mirrored");
+    }
+
+    let Some(map) = dust2() else { return };
+    let decal_meshes: Vec<_> = map.meshes.iter().filter(|m| m.material.starts_with("decal:")).collect();
+    assert!(decal_meshes.len() >= 18, "{} decal materials", decal_meshes.len());
+    for m in &decal_meshes {
+        assert!(m.texture.is_some(), "{}: no texture", m.material);
+        assert_eq!(
+            m.lightmap_uvs.len(),
+            m.positions.len(),
+            "{}: decals share the surface's lighting",
+            m.material
+        );
+        assert!(
+            m.uvs
+                .iter()
+                .all(|uv| (-1e-3..=1.001).contains(&uv[0]) && (-1e-3..=1.001).contains(&uv[1])),
+            "{}: UVs outside the decal",
+            m.material
+        );
+    }
+    // dust2 has 135 infodecals; a few sit on props or brush entities.
+    let unplaced: usize = map
+        .warnings
+        .iter()
+        .find_map(|w| w.strip_suffix(" decals found no surface to project onto")?.parse().ok())
+        .unwrap_or(0);
+    assert!(unplaced <= 10, "{unplaced} decals unplaced");
+}

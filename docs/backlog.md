@@ -11,9 +11,8 @@ Counts are from de_dust2's entity lump and static prop lump.
 
 - **Baked per-vertex prop lighting (`.vhv`)** for maps that ship it (dust2
   doesn't; its props use the per-prop light probe, as in the game).
-- **Decals** (`infodecal`, 135): stains, posters, graffiti projected onto
-  world surfaces. Needs decal material loading and projection onto the
-  faces they touch.
+- **Remaining decals**: 6 of dust2's 135 sit on props or brush entities
+  rather than world faces; decals on displacements (none on dust2).
 - **Dust motes** (`func_dustmotes`, 2): the drifting particles in T house
   and inside long doors. Brush volumes that spawn slow-moving sprites;
   parameters (count, size, speed, color) come from the entity keys.
