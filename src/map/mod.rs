@@ -15,6 +15,7 @@ use bevy::{
 
 use crate::core::{SpawnPoint, Team};
 
+mod dust;
 pub mod rope_material;
 pub mod sprite_material;
 pub mod world_material;
@@ -217,6 +218,7 @@ pub struct MapData {
     /// The world's fog (not the 3D skybox's, which `sky_camera` has).
     pub fog: Option<MapFog>,
     pub sprites: Vec<MapSprite>,
+    pub dust: Vec<MapDust>,
     pub ropes: Vec<MapRope>,
 }
 
@@ -255,6 +257,28 @@ pub struct MapBrushes(pub Vec<MapBrush>);
 /// sweeps `MapBrushes` itself can leave it out of physics queries.
 #[derive(Component, Debug)]
 pub struct MapBrushCollider;
+
+/// A dust mote volume (`func_dustmotes`): slow specks spawned inside a box,
+/// fading in and out over their life and with distance
+/// (specs/cs_source/sprites_dust.md). Engine space, meters, seconds.
+#[derive(Clone, Debug)]
+pub struct MapDust {
+    pub min: Vec3,
+    pub max: Vec3,
+    /// Motes per second.
+    pub rate: f32,
+    /// Screen-constant size: half-width = size / 10000 x view depth.
+    pub size: (f32, f32),
+    /// Initial speed per axis, up to this (m/s).
+    pub speed: f32,
+    pub life: (f32, f32),
+    /// Not drawn beyond this view depth; fade toward it (meters).
+    pub fade_distance: f32,
+    /// sRGB color and alpha (0-1).
+    pub color: [f32; 4],
+    /// Index into `MapData::textures`.
+    pub texture: Option<usize>,
+}
 
 /// A camera-facing sprite (lamp glows): a quad parallel to the view plane,
 /// drawn additively (specs/cs_source/sprites_dust.md).
@@ -440,7 +464,10 @@ impl Plugin for MapPlugin {
                 ..default()
             })
             .add_systems(Startup, spawn_map)
-            .add_systems(Update, (attach_sky, attach_world_fog, glow_visibility))
+            .add_systems(
+                Update,
+                (attach_sky, attach_world_fog, glow_visibility, dust::update_dust),
+            )
             .add_systems(
                 PostUpdate,
                 follow_sky_camera.before(bevy::transform::TransformSystems::Propagate),
@@ -703,6 +730,30 @@ fn spawn_map(
             })
             .collect();
 
+        if view == MapDebugView::Normal {
+            for (i, dust) in data.dust.iter().enumerate() {
+                let mesh = meshes.add(dust::empty_mesh());
+                commands.spawn((
+                    Name::new(format!("Dust {i}")),
+                    MapPart,
+                    Mesh3d(mesh.clone()),
+                    MeshMaterial3d(materials.add(StandardMaterial {
+                        base_color_texture: dust.texture.map(|t| textures[t].clone()),
+                        unlit: true,
+                        alpha_mode: AlphaMode::Blend,
+                        double_sided: true,
+                        cull_mode: None,
+                        ..default()
+                    })),
+                    dust::DustEmitter::new(dust.clone(), mesh, i as u64 + 1),
+                    // The mesh moves with the motes; don't cull it by stale bounds.
+                    bevy::camera::visibility::NoFrustumCulling,
+                    bevy::light::NotShadowCaster,
+                    Transform::default(),
+                    ChildOf(root),
+                ));
+            }
+        }
         if let Some(sprite_materials) = sprite_materials.as_mut()
             && view == MapDebugView::Normal
         {

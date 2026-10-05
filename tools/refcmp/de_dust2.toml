@@ -74,3 +74,9 @@ angles = [10, 180]
 name = "glow_lamp"
 position = [-1406.0, 1050.0, 100.0]
 angles = [-55, 90]
+
+# Dust motes (func_dustmotes) inside long doors.
+[[view]]
+name = "dust_long_doors"
+position = [600.0, 380.0, 20.0]
+angles = [0, 70]

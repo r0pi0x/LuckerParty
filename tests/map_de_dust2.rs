@@ -756,3 +756,24 @@ fn sprites_load() {
         first.size
     );
 }
+
+/// dust2's two func_dustmotes volumes (T house, long doors): 300/s and
+/// 50/s, 3-5 s life, 15-unit motes, fading out by 512 units.
+#[test]
+fn dust_motes_load() {
+    let Some(map) = dust2() else { return };
+    assert_eq!(map.dust.len(), 2);
+    let mut rates: Vec<f32> = map.dust.iter().map(|d| d.rate).collect();
+    rates.sort_by(f32::total_cmp);
+    assert_eq!(rates, vec![50.0, 300.0]);
+    for d in &map.dust {
+        assert!(d.texture.is_some(), "particle/sparkles");
+        assert_eq!((d.life, d.size), ((3.0, 5.0), (15.0, 15.0)));
+        assert!((d.fade_distance - 512.0 * 0.0254).abs() < 1e-4);
+        let (lo, hi) = (d.min / 0.0254, d.max / 0.0254);
+        println!(
+            "dust volume (Source) x {:.0}..{:.0} y {:.0}..{:.0} z {:.0}..{:.0}",
+            lo.x, hi.x, -hi.z, -lo.z, lo.y, hi.y
+        );
+    }
+}

@@ -28,9 +28,6 @@ Counts are from de_dust2's entity lump and static prop lump.
 - **Verify inferred Source rules** with the comparison tool, using a local
   copy of a map with test entities added where dust2 has no example: floor
   and ceiling decal orientation, decal reach, overall brightness/tonemapping.
-- **Dust motes** (`func_dustmotes`, 2): the drifting particles in T house
-  and inside long doors. Brush volumes that spawn slow-moving sprites;
-  parameters (count, size, speed, color) come from the entity keys.
 - **Physics simulation** for `prop_physics_multiplayer` (75 on dust2,
   placed as static props now): pushable, shootable.
 - **Brush entities**: doors and visible `func_brush` if a map needs them

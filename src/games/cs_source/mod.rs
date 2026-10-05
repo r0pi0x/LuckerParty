@@ -3,6 +3,7 @@
 pub mod ambient;
 pub mod bsp;
 pub mod decals;
+pub mod dust;
 pub mod lightmap;
 pub mod material;
 pub mod mount;
