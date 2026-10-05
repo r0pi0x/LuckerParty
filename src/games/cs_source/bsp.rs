@@ -57,7 +57,12 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
         mesh.alpha = r.alpha;
         mesh.double_sided = r.double_sided;
     }
-    super::props::add_static_props(&bsp, &mut materials, &mut data);
+    let lighting = super::ambient::MapLighting::read(&bsp, &bytes);
+    let occluders = super::ambient::Occluders::new(
+        &shadow_hulls(&bsp),
+        (&data.collision_positions, &data.collision_indices),
+    );
+    super::props::add_static_props(&bsp, &mut materials, &lighting, &occluders, &mut data);
     data.warnings.extend(materials.missing);
     data.textures = materials.textures;
     Ok(data)
@@ -257,6 +262,27 @@ fn world_brushes(bsp: &Bsp) -> std::collections::BTreeSet<usize> {
 /// corners where three of its planes meet and no other plane cuts them off.
 pub fn brush_hulls(bsp: &Bsp) -> Vec<Vec<[f32; 3]>> {
     brush_hulls_indexed(bsp).into_iter().map(|(_, h)| h).collect()
+}
+
+/// Hulls that block light: player-solid brushes minus sky brushes (rays
+/// that reach the sky are lit).
+pub fn shadow_hulls(bsp: &Bsp) -> Vec<Vec<[f32; 3]>> {
+    brush_hulls_indexed(bsp)
+        .into_iter()
+        .filter(|(i, _)| {
+            let b = &bsp.brushes[*i];
+            !bsp.brush_sides[b.brush_side as usize..(b.brush_side + b.num_brush_sides) as usize]
+                .iter()
+                .any(|side| {
+                    side.texture_info >= 0
+                        && bsp
+                            .texture_info(side.texture_info as usize)
+                            .is_some_and(|t| t.flags.intersects(TextureFlags::SKY | TextureFlags::SKY2D))
+                })
+                && b.flags.intersects(BrushFlags::SOLID)
+        })
+        .map(|(_, h)| h)
+        .collect()
 }
 
 /// `brush_hulls` with each hull's brush index, for diagnostics.

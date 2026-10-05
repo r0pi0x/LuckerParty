@@ -7,8 +7,12 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 use vbsp::Bsp;
 
-use super::{bsp::to_engine, material::MaterialLoader};
-use crate::map::{MapData, MapMesh, MapModel, MapProp, PropSolid};
+use super::{
+    ambient::{self, MapLighting, Occluders},
+    bsp::{METERS_PER_UNIT, to_engine},
+    material::MaterialLoader,
+};
+use crate::map::{LightProbe, MapData, MapMesh, MapModel, MapProp, PropSolid};
 
 /// Source rotation (pitch about Y, yaw about Z, roll about X; degrees) in
 /// engine axes.
@@ -91,7 +95,13 @@ fn convert_model(model: &vmdl::Model, skin: i32, materials: &mut MaterialLoader)
 }
 
 /// Add the BSP's static props to `data`, loading each (model, skin) once.
-pub fn add_static_props(bsp: &Bsp, materials: &mut MaterialLoader, data: &mut MapData) {
+pub fn add_static_props(
+    bsp: &Bsp,
+    materials: &mut MaterialLoader,
+    lighting: &MapLighting,
+    occluders: &Occluders,
+    data: &mut MapData,
+) {
     let mut loaded: HashMap<(String, i32), Option<usize>> = HashMap::new();
     let mut failed: Vec<String> = Vec::new();
     for prop in bsp.static_props() {
@@ -111,10 +121,23 @@ pub fn add_static_props(bsp: &Bsp, materials: &mut MaterialLoader, data: &mut Ma
             }
         });
         let Some(model) = model else { continue };
+        let translation = to_engine(prop.origin);
+        let rotation = rotation(prop.angles);
+        // Like the game for maps without baked prop lighting: one lighting
+        // point per prop (its bounds' centre, or the mapper's lighting
+        // origin), so a prop is lit or shadowed as a whole.
+        let origin = if prop.flags.contains(vbsp::StaticPropLumpFlags::USE_LIGHTING_ORIGIN) {
+            to_engine(prop.lighting_origin)
+        } else {
+            let (lo, hi) = data.models[model].bounds;
+            translation + rotation * ((lo + hi) / 2.0)
+        };
+        let lighting = probe(bsp, lighting, occluders, origin);
         data.props.push(MapProp {
             model,
-            translation: to_engine(prop.origin),
-            rotation: rotation(prop.angles),
+            translation,
+            rotation,
+            lighting: Some(lighting),
             // Box solids collide as the model's bounds, like the game;
             // physics solids should use the .phy model, which isn't parsed
             // yet, so they fall back to the visible mesh.
@@ -128,4 +151,36 @@ pub fn add_static_props(bsp: &Bsp, materials: &mut MaterialLoader, data: &mut Ma
     failed.sort();
     failed.dedup();
     data.warnings.extend(failed);
+}
+
+/// The light probe at `origin`: ambient cube plus each light visible from
+/// there. If the point is buried in solid (no ambient samples), try nearby
+/// points: props such as window frames sit inside walls.
+pub fn probe(bsp: &Bsp, lighting: &MapLighting, occluders: &Occluders, origin: Vec3) -> LightProbe {
+    let offsets = [Vec3::ZERO, Vec3::Y, Vec3::X, -Vec3::X, Vec3::Z, -Vec3::Z, -Vec3::Y]
+        .into_iter()
+        .flat_map(|d| [0.0, 0.25, 0.5, 1.0].map(|k| d * k));
+    let (point, cube) = offsets
+        .map(|o| origin + o)
+        .map(|p| (p, lighting.ambient_at(bsp, p)))
+        .find(|(_, c)| c.0.iter().any(|v| v.max_element() > 0.0))
+        .unwrap_or((origin, Default::default()));
+    let lights = lighting
+        .lights
+        .iter()
+        .filter_map(|l| {
+            // Evaluate facing the light; the per-vertex normal applies the
+            // cosine at render time.
+            let to = match l {
+                ambient::WorldLight::Sky { direction, .. } => -*direction,
+                ambient::WorldLight::Point { position, .. } | ambient::WorldLight::Spot { position, .. } => {
+                    (*position - point).normalize_or_zero()
+                }
+            };
+            let (value, to, dist) = ambient::direct(l, point, to)?;
+            let start = point + to * (2.0 * METERS_PER_UNIT);
+            (value.max_element() > 0.002 && !occluders.blocked(start, to, dist)).then_some((to, value))
+        })
+        .collect();
+    LightProbe { cube: cube.0, lights }
 }

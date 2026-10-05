@@ -1,5 +1,6 @@
 //! Counter-Strike: Source (Steam app 240).
 
+pub mod ambient;
 pub mod bsp;
 pub mod lightmap;
 pub mod material;

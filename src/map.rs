@@ -85,6 +85,29 @@ pub enum PropSolid {
     Mesh,
 }
 
+/// Lighting for something without a lightmap, sampled at one point: light
+/// arriving from six axis directions (+X, -X, +Y, -Y, +Z, -Z) plus
+/// directional lights (direction toward the light, color), all in lightmap
+/// units. The same model Source uses for props and characters.
+#[derive(Clone, Debug, Default)]
+pub struct LightProbe {
+    pub cube: [Vec3; 6],
+    pub lights: Vec<(Vec3, Vec3)>,
+}
+
+impl LightProbe {
+    /// Light on a surface with normal `n`.
+    pub fn eval(&self, n: Vec3) -> Vec3 {
+        let c = &self.cube;
+        let pick = |v: f32, pos: Vec3, neg: Vec3| if v >= 0.0 { pos } else { neg };
+        let ambient =
+            pick(n.x, c[0], c[1]) * n.x * n.x + pick(n.y, c[2], c[3]) * n.y * n.y + pick(n.z, c[4], c[5]) * n.z * n.z;
+        self.lights
+            .iter()
+            .fold(ambient, |acc, (dir, color)| acc + *color * n.dot(*dir).max(0.0))
+    }
+}
+
 /// A placed model.
 #[derive(Clone, Debug)]
 pub struct MapProp {
@@ -93,6 +116,8 @@ pub struct MapProp {
     pub translation: Vec3,
     pub rotation: Quat,
     pub solid: PropSolid,
+    /// Baked lighting; lit by the scene's lights when absent.
+    pub lighting: Option<LightProbe>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -225,6 +250,7 @@ fn spawn_map(
     // render handles when rendering exists.
     let model_colliders: Vec<Option<Collider>> = data.models.iter().map(model_collider).collect();
     let mut model_parts: Vec<Vec<(Handle<Mesh>, Handle<StandardMaterial>)>> = Vec::new();
+    let mut lit_model_materials: Vec<Vec<Handle<StandardMaterial>>> = Vec::new();
 
     if let (Some(meshes), Some(materials), Some(images)) = (meshes.as_mut(), materials.as_mut(), images.as_mut()) {
         let textures: Vec<Handle<Image>> = data.textures.iter().map(|t| images.add(to_image(t))).collect();
@@ -263,6 +289,22 @@ fn spawn_map(
                     .collect()
             })
             .collect();
+        lit_model_materials = data
+            .models
+            .iter()
+            .map(|model| {
+                model
+                    .meshes
+                    .iter()
+                    .map(|m| {
+                        materials.add(StandardMaterial {
+                            unlit: true,
+                            ..build_material(m, &textures, lightmap_only)
+                        })
+                    })
+                    .collect()
+            })
+            .collect();
     }
 
     for (i, prop) in data.props.iter().enumerate() {
@@ -289,10 +331,31 @@ fn spawn_map(
             }
             _ => {}
         }
-        if let Some(parts) = model_parts.get(prop.model) {
-            let id = e.id();
-            for (mesh, material) in parts {
-                commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone()), ChildOf(id)));
+        let id = e.id();
+        match (&prop.lighting, meshes.as_mut(), lit_model_materials.get(prop.model)) {
+            // Baked: own mesh copy with per-vertex light, unlit material
+            // (texture x light, like the lightmapped world).
+            (Some(probe), Some(meshes), Some(mats)) => {
+                for (m, material) in data.models[prop.model].meshes.iter().zip(mats) {
+                    let colors: Vec<[f32; 4]> = m
+                        .normals
+                        .iter()
+                        .map(|n| {
+                            let l = probe.eval(prop.rotation * Vec3::from(*n));
+                            [l.x, l.y, l.z, 1.0]
+                        })
+                        .collect();
+                    let mut mesh = build_mesh(m, false);
+                    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+                    commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(material.clone()), ChildOf(id)));
+                }
+            }
+            _ => {
+                if let Some(parts) = model_parts.get(prop.model) {
+                    for (mesh, material) in parts {
+                        commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone()), ChildOf(id)));
+                    }
+                }
             }
         }
     }

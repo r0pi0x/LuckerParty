@@ -9,10 +9,8 @@ when work starts; delete them when done.
 
 Counts are from de_dust2's entity lump and static prop lump.
 
-- **Static prop lighting** (in progress): dust2 ships no per-vertex prop
-  lighting (`.vhv`), so light each prop like the game does: the leaf ambient
-  cube at the prop's lighting origin plus direct light from the map's lights
-  (sun with a shadow test), baked per vertex at load.
+- **Baked per-vertex prop lighting (`.vhv`)** for maps that ship it (dust2
+  doesn't; its props use the per-prop light probe, as in the game).
 - **Decals** (`infodecal`, 135): stains, posters, graffiti projected onto
   world surfaces. Needs decal material loading and projection onto the
   faces they touch.

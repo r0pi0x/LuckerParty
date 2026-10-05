@@ -328,3 +328,54 @@ fn props_load_and_windows_block() {
         still_open.iter().map(|i| map.props[*i].translation).collect::<Vec<_>>()
     );
 }
+
+/// The lighting model used for props (ambient cube + shadow-tested direct
+/// lights), evaluated at world surface points, must reproduce the map's own
+/// lightmaps there. Guards units, sun direction and shadow geometry.
+#[test]
+fn prop_lighting_model_predicts_lightmaps() {
+    use mashup::games::cs_source::{ambient, bsp};
+
+    let Some(map) = dust2() else { return };
+    let install = LocalConfig::load().unwrap().game_path(cs_source::GAME).unwrap();
+    let mount = cs_source::mount::open(&install).unwrap();
+    let bytes = mount.read("maps/de_dust2.bsp").unwrap();
+    let source = vbsp::Bsp::read(&bytes).unwrap();
+    let lighting = ambient::MapLighting::read(&source, &bytes);
+    let occluders = ambient::Occluders::new(
+        &bsp::shadow_hulls(&source),
+        (&map.collision_positions, &map.collision_indices),
+    );
+    let lm = map.lightmap.as_ref().unwrap();
+    let at = |uv: [f32; 2]| {
+        let x = ((uv[0] * lm.width as f32) as usize).min(lm.width as usize - 1);
+        let y = ((uv[1] * lm.height as f32) as usize).min(lm.height as usize - 1);
+        Vec3::from(lm.rgb[y * lm.width as usize + x]).element_sum() / 3.0
+    };
+    let mut ratios = Vec::new();
+    for m in &map.meshes {
+        for t in m.indices.as_chunks::<3>().0.iter().step_by(7) {
+            let c = t.map(|i| Vec3::from(m.positions[i as usize])).iter().sum::<Vec3>() / 3.0;
+            let uvs = t.map(|i| m.lightmap_uvs[i as usize]);
+            let uv = [
+                (uvs[0][0] + uvs[1][0] + uvs[2][0]) / 3.0,
+                (uvs[0][1] + uvs[1][1] + uvs[2][1]) / 3.0,
+            ];
+            let actual = at(uv);
+            if actual > 0.02 {
+                let n = Vec3::from(m.normals[t[0] as usize]);
+                ratios.push(lighting.light_at(&source, &occluders, c, n).element_sum() / 3.0 / actual);
+            }
+        }
+    }
+    ratios.sort_by(|a, b| a.total_cmp(b));
+    let median = ratios[ratios.len() / 2];
+    let within = ratios.iter().filter(|r| (0.5..2.0).contains(*r)).count() as f32 / ratios.len() as f32;
+    eprintln!(
+        "predicted/actual median {median:.2}, within 2x {:.0}% of {}",
+        within * 100.0,
+        ratios.len()
+    );
+    assert!((0.8..1.25).contains(&median), "median predicted/actual {median}");
+    assert!(within > 0.7, "only {:.0}% within 2x", within * 100.0);
+}
