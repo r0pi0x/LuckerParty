@@ -12,7 +12,9 @@ use super::{
     bsp::{METERS_PER_UNIT, to_engine},
     material::MaterialLoader,
 };
-use crate::map::{LightProbe, MapCollision, MapConvex, MapData, MapMesh, MapModel, MapProp, PropSolid};
+use crate::map::{
+    LightProbe, MapCollision, MapConvex, MapData, MapMesh, MapModel, MapPhysics, MapProp, PropSolid, PushAway,
+};
 
 /// Source rotation (pitch about Y, yaw about Z, roll about X; degrees) in
 /// engine axes.
@@ -139,6 +141,52 @@ fn load_collision(materials: &mut MaterialLoader, path: &str) -> Option<MapColli
     })
 }
 
+/// A physics prop's body (spec 3.1, 4.2): mass from its `.phy` (times
+/// `massscale`), friction and elasticity from its surface property, and how
+/// players interact with it. None for props that don't move.
+fn body(prop: &PropPlacement, model: &MapModel, surfaces: &super::surfaceprops::SurfaceProps) -> Option<MapPhysics> {
+    const MOTION_DISABLED: u32 = 0x8;
+    const FORCE_SERVER_SIDE: u32 = 0x2000;
+    let class = prop.class.as_deref()?;
+    if !class.starts_with("prop_physics") || prop.spawnflags & MOTION_DISABLED != 0 {
+        return None;
+    }
+    let c = model.collision.as_ref()?;
+    let mass = (c.mass * if prop.massscale > 0.0 { prop.massscale } else { 1.0 }).clamp(0.1, 50_000.0);
+    let surface = surfaces.get(&c.surfaceprop);
+    let push = if class == "prop_physics_multiplayer" {
+        let size = (model.bounds.1 - model.bounds.0) / METERS_PER_UNIT;
+        let auto = if size.x * size.y * size.z < 15.0f32.powi(3) {
+            PushAway::Ignore
+        } else if mass < 8.0 {
+            PushAway::NonSolid
+        } else {
+            PushAway::Solid
+        };
+        let mode = match prop.physicsmode {
+            1 => PushAway::Solid,
+            2 => PushAway::NonSolid,
+            3 => PushAway::Ignore,
+            _ => auto,
+        };
+        if prop.spawnflags & FORCE_SERVER_SIDE != 0 {
+            PushAway::NonSolid
+        } else {
+            mode
+        }
+    } else {
+        PushAway::Collide
+    };
+    Some(MapPhysics {
+        mass,
+        friction: surface.friction,
+        elasticity: surface.elasticity,
+        damping: c.damping,
+        rotdamping: c.rotdamping,
+        push,
+    })
+}
+
 fn v_src(v: Vec3) -> vbsp::Vector {
     vbsp::Vector { x: v.x, y: v.y, z: v.z }
 }
@@ -154,6 +202,10 @@ struct PropPlacement {
     lighting_origin: Option<vbsp::Vector>,
     /// Entity classname (None for static props).
     class: Option<String>,
+    /// Entity keys the physics uses: spawnflags, massscale, physicsmode.
+    spawnflags: u32,
+    massscale: f32,
+    physicsmode: i32,
 }
 
 pub fn add_static_props(
@@ -186,6 +238,9 @@ pub fn add_static_props(
                 .contains(vbsp::StaticPropLumpFlags::USE_LIGHTING_ORIGIN)
                 .then_some(prop.lighting_origin),
             class: None,
+            spawnflags: 0,
+            massscale: 0.0,
+            physicsmode: 0,
         });
     }
     placements.extend(entity_props(bsp));
@@ -224,6 +279,9 @@ fn entity_props(bsp: &Bsp) -> Vec<PropPlacement> {
                 solid,
                 lighting_origin: None,
                 class: Some(class.to_string()),
+                spawnflags: e.prop("spawnflags").and_then(|v| v.trim().parse().ok()).unwrap_or(0),
+                massscale: e.prop("massscale").and_then(|v| v.trim().parse().ok()).unwrap_or(0.0),
+                physicsmode: e.prop("physicsmode").and_then(|v| v.trim().parse().ok()).unwrap_or(0),
             })
         })
         .collect()
@@ -240,6 +298,7 @@ fn place_props(
     let mut loaded: HashMap<(String, i32), Option<usize>> = HashMap::new();
     let mut failed: Vec<String> = Vec::new();
     let bounds = super::bsp::playable_bounds(bsp);
+    let surfaces = super::surfaceprops::SurfaceProps::load(materials);
     for prop in placements {
         let key = (prop.model.clone(), prop.skin);
         let model = *loaded
@@ -268,6 +327,7 @@ fn place_props(
                 _ => {}
             }
         }
+        let physics = body(&prop, &data.models[model], &surfaces);
         let translation = to_engine(prop.origin);
         let rotation = rotation(prop.angles);
         // Like the game for maps without baked prop lighting: one lighting
@@ -290,6 +350,7 @@ fn place_props(
             lighting: Some(lighting),
             solid,
             casts_shadow: prop.class.is_some(),
+            physics,
         });
     }
     failed.sort();

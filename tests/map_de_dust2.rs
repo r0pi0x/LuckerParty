@@ -954,3 +954,90 @@ fn prop_shadows() {
     );
     assert!(built.atlas.coverage.iter().any(|c| *c > 0.99), "silhouettes drawn");
 }
+
+/// Physics props (specs/cs_source/physics_props.md): dust2's are
+/// prop_physics_multiplayer bodies with their .phy mass. They settle at map
+/// start without falling through the world, and a running player passes
+/// through a "solid"-mode one while shoving it away.
+#[test]
+fn physics_props_settle_and_get_pushed() {
+    use mashup::{
+        games::cs_source::movement::{self, SourceMovementPlugin, to_engine, to_source},
+        map::{PhysicsProp, PushAway},
+    };
+    let Some(map) = dust2() else { return };
+    let bodies: Vec<_> = map.props.iter().filter(|p| p.physics.is_some()).collect();
+    assert!(bodies.len() >= 60, "{} physics props", bodies.len());
+    let solid = bodies
+        .iter()
+        .filter(|p| p.physics.as_ref().unwrap().push == PushAway::Solid)
+        .count();
+    assert!(solid > 0, "some solid-mode props");
+
+    let mut sim = Sim::new((MapPlugin::new(map.clone()), SourceMovementPlugin));
+    sim.seconds(4.0);
+    let mut q = sim
+        .app
+        .world_mut()
+        .query::<(&Name, &Transform, &PhysicsProp, &avian3d::prelude::LinearVelocity)>();
+    // (prop index from "Prop {i}", position, body, velocity)
+    let props: Vec<(usize, Vec3, PhysicsProp, Vec3)> = q
+        .iter(sim.app.world())
+        .map(|(n, t, p, v)| (n.as_str()[5..].parse().unwrap(), t.translation, *p, v.0))
+        .collect();
+    assert_eq!(props.len(), bodies.len());
+    for (i, at, _, v) in &props {
+        let placed = &map.props[*i];
+        let drop = placed.translation.y - at.y;
+        assert!(drop < 0.5, "a prop at {} fell {drop} m", placed.translation);
+        assert!(
+            v.length() < 0.2,
+            "a prop at {} still moving at {} m/s",
+            placed.translation,
+            v.length()
+        );
+    }
+
+    // Run at a solid-mode prop from 100 units away, from whichever side
+    // is open: the player passes through it and shoves it.
+    let (index, target, _, _) = props
+        .iter()
+        .find(|(_, _, p, _)| p.push == PushAway::Solid)
+        .copied()
+        .unwrap();
+    let name = format!("Prop {index}");
+    let mut shoved = None;
+    for (dir, yaw) in [
+        (Vec3::X, 0.0f32),
+        (Vec3::NEG_X, 180.0),
+        (Vec3::Y, 90.0),
+        (Vec3::NEG_Y, 270.0),
+    ] {
+        let mut sim = Sim::new((MapPlugin::new(map.clone()), SourceMovementPlugin));
+        sim.seconds(4.0);
+        let start_feet = to_source(target) - dir * 100.0;
+        let p = sim.spawn_character(to_engine(start_feet + Vec3::Z * 60.0), movement::ID);
+        sim.seconds(0.5);
+        // Intent yaw 0 looks down -Z, which is Source yaw 90.
+        sim.intent(p).yaw = (yaw - 90.0f32).to_radians();
+        sim.intent(p).move_axis = Vec2::Y;
+        sim.seconds(1.5);
+        let travelled = (to_source(sim.position(p)) - start_feet).dot(dir);
+        if travelled < 100.0 {
+            continue;
+        }
+        let mut q = sim.app.world_mut().query::<(&Name, &Transform)>();
+        let moved = q
+            .iter(sim.app.world())
+            .find(|(n, _)| n.as_str() == name)
+            .map(|(_, t)| t.translation.distance(target) / 0.0254)
+            .unwrap();
+        shoved = Some((travelled, moved));
+        break;
+    }
+    let (travelled, moved) = shoved.expect("an open side to run from");
+    assert!(
+        moved > 10.0,
+        "the prop was shoved {moved} units (player ran {travelled})"
+    );
+}

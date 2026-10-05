@@ -306,6 +306,8 @@ pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> (MapData, LightmapLayo
     data.sky_camera = sky_camera(bsp);
     data.fog = world_fog(bsp);
     data.shadows = Some(shadow_control(bsp));
+    // Physics bodies fall at sv_gravity (800 units/s^2), read at load.
+    data.gravity = Some(800.0 * METERS_PER_UNIT);
     (data, layout)
 }
 

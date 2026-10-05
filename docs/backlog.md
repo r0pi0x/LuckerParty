@@ -37,8 +37,9 @@ Counts are from de_dust2's entity lump and static prop lump.
 - **Verify inferred Source rules** with the comparison tool, using a local
   copy of a map with test entities added where dust2 has no example: floor
   and ceiling decal orientation, decal reach, overall brightness/tonemapping.
-- **Physics simulation** for `prop_physics_multiplayer` (75 on dust2,
-  placed as static props now): pushable, shootable.
+- **Physics props, remaining**: bullet and explosion impulses (with
+  weapons), the player physics shadow for `prop_physics` (dust2 has none),
+  the model's `prop_data` physicsmode override, impact sounds.
 - **Brush entities**: doors and visible `func_brush` if a map needs them
   (dust2's one `func_brush` is render mode 10, never drawn).
 - **Prop collision from `.phy`** for physics-solid props (now the visible

@@ -314,7 +314,7 @@ pub struct Atlas {
 impl Atlas {
     /// Pack cells (size, coverage); returns each cell's (origin, size) in
     /// 0..1 atlas coordinates, inset half a texel against bleeding.
-    pub fn pack(cells: &[(u32, Vec<f32>)]) -> (Self, Vec<(Vec2, Vec2)>) {
+    pub fn pack(cells: &[(u32, Vec<f32>)]) -> (Self, Vec<(UVec2, (Vec2, Vec2))>) {
         let mut order: Vec<usize> = (0..cells.len()).collect();
         order.sort_by_key(|&i| std::cmp::Reverse(cells[i].0));
         let mut at = vec![UVec2::ZERO; cells.len()];
@@ -342,7 +342,7 @@ impl Atlas {
             let size = Vec2::new(ATLAS_WIDTH as f32, height as f32);
             let origin = (at[i].as_vec2() + 0.5) / size;
             let extent = Vec2::splat(*n as f32 - 1.0) / size;
-            rects.push((origin, extent));
+            rects.push((at[i], (origin, extent)));
         }
         (
             Self {
@@ -354,12 +354,24 @@ impl Atlas {
         )
     }
 
-    pub fn image(&self) -> Image {
-        let data = self
-            .coverage
+    /// Replace one cell's coverage.
+    pub fn write(&mut self, at: UVec2, n: u32, coverage: &[f32]) {
+        for cy in 0..n {
+            for cx in 0..n {
+                self.coverage[((at.y + cy) * self.width + at.x + cx) as usize] = coverage[(cy * n + cx) as usize];
+            }
+        }
+    }
+
+    pub fn bytes(&self) -> Vec<u8> {
+        self.coverage
             .iter()
             .map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8)
-            .collect();
+            .collect()
+    }
+
+    pub fn image(&self) -> Image {
+        let data = self.bytes();
         let mut image = Image::new(
             Extent3d {
                 width: self.width,
@@ -382,11 +394,23 @@ impl Atlas {
     }
 }
 
+/// One caster's place in the atlas.
+#[derive(Clone, Copy, Debug)]
+pub struct Cell {
+    /// Index in `MapData::props`.
+    pub prop: usize,
+    pub size: u32,
+    pub at: UVec2,
+    pub rect: (Vec2, Vec2),
+}
+
 /// Everything needed to draw the map's prop shadows.
 pub struct BuiltShadows {
     pub atlas: Atlas,
+    pub cells: Vec<Cell>,
     /// Per caster prop: its index in `MapData::props` and its shadow mesh.
     pub meshes: Vec<(usize, Mesh)>,
+    pub receivers: Receivers,
 }
 
 /// Build every caster's shadow (props marked `casts_shadow`, outside the
@@ -420,14 +444,54 @@ pub fn build(data: &MapData, settings: &MapShadows) -> BuiltShadows {
             )
         })
         .collect();
-    let (atlas, rects) = Atlas::pack(&cells);
+    let (atlas, placed) = Atlas::pack(&cells);
     let receivers = Receivers::new(data);
+    let cells: Vec<Cell> = casters
+        .iter()
+        .zip(&placed)
+        .zip(&cells)
+        .map(|(((i, ..), (at, rect)), (size, _))| Cell {
+            prop: *i,
+            size: *size,
+            at: *at,
+            rect: *rect,
+        })
+        .collect();
     let meshes = casters
         .iter()
-        .zip(rects)
-        .filter_map(|((i, _, frame), rect)| shadow_mesh(frame, &receivers, rect).map(|m| (*i, m)))
+        .zip(&cells)
+        .filter_map(|((i, _, frame), cell)| shadow_mesh(frame, &receivers, cell.rect).map(|m| (*i, m)))
         .collect();
-    BuiltShadows { atlas, meshes }
+    BuiltShadows {
+        atlas,
+        cells,
+        meshes,
+        receivers,
+    }
+}
+
+/// A caster's shadow (silhouette into its atlas cell, and its mesh) for
+/// where its prop is now.
+pub fn rebuild(
+    data: &MapData,
+    settings: &MapShadows,
+    receivers: &Receivers,
+    atlas: &mut Atlas,
+    cell: &Cell,
+    translation: Vec3,
+    rotation: Quat,
+) -> Option<Mesh> {
+    let model = &data.models[data.props[cell.prop].model];
+    let frame = ShadowFrame::new(
+        model.bounds,
+        translation,
+        rotation,
+        settings.direction,
+        settings.distance,
+    );
+    let coverage = silhouette(model, &data.textures, &frame, translation, rotation, cell.size);
+    atlas.write(cell.at, cell.size, &coverage);
+    shadow_mesh(&frame, receivers, cell.rect)
 }
 
 #[derive(Clone, Copy, Debug, Default, bevy::render::render_resource::ShaderType)]

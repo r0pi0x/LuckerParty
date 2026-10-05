@@ -271,6 +271,35 @@ pub struct MapProp {
     /// Casts a dynamic shadow onto the world (Source: entity props, not
     /// static props, whose shadows are baked into lightmaps).
     pub casts_shadow: bool,
+    /// Simulated as a rigid body, when set.
+    pub physics: Option<MapPhysics>,
+}
+
+/// A physics prop's body (specs/cs_source/physics_props.md 3, 4).
+#[derive(Clone, Debug)]
+pub struct MapPhysics {
+    /// kg.
+    pub mass: f32,
+    pub friction: f32,
+    pub elasticity: f32,
+    pub damping: f32,
+    pub rotdamping: f32,
+    pub push: PushAway,
+}
+
+/// How a physics prop and players interact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PushAway {
+    /// Collides with players like a wall (pushed by their physics shadow).
+    Collide,
+    /// Players walk through it; it's shoved away from them, and pushes
+    /// them back (multiplayer "solid" mode).
+    Solid,
+    /// Players walk through it; it's shoved away from them.
+    NonSolid,
+    /// Players walk through it and don't push it (multiplayer client-side
+    /// props, with the default sv_pushaway_clientside 0).
+    Ignore,
 }
 
 /// Dynamic prop shadows (Source `shadow_control`, specs/cs_source/shadows_sky.md):
@@ -321,6 +350,8 @@ pub struct MapData {
     pub water: Vec<MapWaterVolume>,
     /// Dynamic prop shadows, when the game draws them.
     pub shadows: Option<MapShadows>,
+    /// Gravity for physics bodies, m/s^2 (downward), when the game sets it.
+    pub gravity: Option<f32>,
 }
 
 /// What the BSP leaf around a point can see of the sky.
@@ -579,6 +610,12 @@ impl Plugin for MapPlugin {
             })
             .add_systems(Startup, spawn_map)
             .add_systems(Update, (attach_sky, glow_visibility, dust::update_dust))
+            .add_systems(
+                PostUpdate,
+                update_prop_shadows
+                    .run_if(resource_exists::<Assets<Mesh>>.and_then(resource_exists::<Assets<Image>>))
+                    .after(bevy::transform::TransformSystems::Propagate),
+            )
             .add_systems(
                 PostUpdate,
                 // After propagation, so it sees this frame's (interpolated)
@@ -985,6 +1022,7 @@ fn spawn_map(
             let built = shadows::build(&data, settings);
             info!("prop shadows: {} casters reach the world", built.meshes.len());
             let atlas = images.add(built.atlas.image());
+            let atlas_handle = atlas.clone();
             let material = shadow_materials.add(shadows::ShadowMaterial {
                 params: shadows::ShadowParams {
                     color: shadows::shadow_color(settings.color),
@@ -994,18 +1032,33 @@ fn spawn_map(
                 },
                 atlas,
             });
+            let mut entities = std::collections::HashMap::new();
             for (prop, mesh) in built.meshes {
-                commands.spawn((
-                    Name::new(format!("Shadow of prop {prop}")),
-                    MapPart,
-                    PropShadow { prop },
-                    Mesh3d(meshes.add(mesh)),
-                    MeshMaterial3d(material.clone()),
-                    bevy::light::NotShadowCaster,
-                    Transform::default(),
-                    ChildOf(root),
-                ));
+                let e = commands
+                    .spawn((
+                        Name::new(format!("Shadow of prop {prop}")),
+                        MapPart,
+                        PropShadow { prop },
+                        Mesh3d(meshes.add(mesh)),
+                        MeshMaterial3d(material.clone()),
+                        bevy::light::NotShadowCaster,
+                        Transform::default(),
+                        ChildOf(root),
+                    ))
+                    .id();
+                entities.insert(prop, e);
             }
+            commands.insert_resource(ShadowState {
+                data: data.clone(),
+                settings: settings.clone(),
+                receivers: built.receivers,
+                atlas: built.atlas,
+                atlas_image: atlas_handle,
+                material,
+                cells: built.cells.into_iter().map(|c| (c.prop, c)).collect(),
+                entities,
+                root,
+            });
         }
     }
 
@@ -1048,7 +1101,9 @@ fn spawn_map(
             }
             (PropSolid::None, _) => Vec::new(),
         };
-        let prop_brush = (!prop.skybox && !no_prop_brushes && !pieces.is_empty()).then_some(());
+        // Bodies that move are swept through physics queries, not as brushes.
+        let dynamic = prop.physics.as_ref().filter(|_| !prop.skybox);
+        let prop_brush = (!prop.skybox && !no_prop_brushes && !pieces.is_empty() && dynamic.is_none()).then_some(());
         if prop_brush.is_some() {
             brushes.extend(
                 pieces
@@ -1058,12 +1113,34 @@ fn spawn_map(
         }
         let mut e = commands.spawn((
             Name::new(format!("Prop {i}")),
+            PropIndex(i),
             MapPart,
             Transform::from_translation(prop.translation).with_rotation(prop.rotation),
             Visibility::default(),
             ChildOf(root),
         ));
         match (prop.solid, &model_colliders[prop.model]) {
+            (PropSolid::Mesh, Some(collider)) if dynamic.is_some() => {
+                let p = dynamic.unwrap();
+                e.insert((
+                    RigidBody::Dynamic,
+                    collider.clone(),
+                    Mass(p.mass),
+                    Friction::new(p.friction),
+                    Restitution::new(p.elasticity),
+                    LinearDamping(p.damping),
+                    AngularDamping(p.rotdamping),
+                    // Source clamps every body to 2000 units/s and 3600 deg/s.
+                    MaxLinearSpeed(2000.0 * 0.0254),
+                    MaxAngularSpeed(3600f32.to_radians()),
+                    PhysicsProp {
+                        push: p.push,
+                        mass: p.mass,
+                        bounds: data.models[prop.model].bounds,
+                    },
+                    MapPropCollider,
+                ));
+            }
             (PropSolid::Mesh, Some(collider)) => {
                 e.insert((RigidBody::Static, collider.clone(), MapPropCollider));
                 if prop_brush.is_some() {
@@ -1141,6 +1218,9 @@ fn spawn_map(
 
     if !brushes.is_empty() {
         commands.insert_resource(MapBrushes(brushes));
+        if let Some(g) = data.gravity {
+            commands.insert_resource(Gravity(Vec3::NEG_Y * g));
+        }
         commands.insert_resource(MapWater(data.water.clone()));
     }
 
@@ -1330,6 +1410,89 @@ fn build_material(m: &MapMesh, textures: &[Handle<Image>], view: MapDebugView, l
         },
         lightmap_exposure: LIGHTMAP_EXPOSURE * scale * light_scale,
         ..default()
+    }
+}
+
+/// A simulated physics prop: how players interact with it, its mass (kg)
+/// and its model-space bounds.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct PhysicsProp {
+    pub push: PushAway,
+    pub mass: f32,
+    pub bounds: (Vec3, Vec3),
+}
+
+/// A prop entity's index in `MapData::props`.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct PropIndex(pub usize);
+
+/// What it takes to redraw prop shadows when props move.
+#[derive(Resource)]
+struct ShadowState {
+    data: Arc<MapData>,
+    settings: MapShadows,
+    receivers: shadows::Receivers,
+    atlas: shadows::Atlas,
+    atlas_image: Handle<Image>,
+    material: Handle<shadows::ShadowMaterial>,
+    cells: std::collections::HashMap<usize, shadows::Cell>,
+    entities: std::collections::HashMap<usize, Entity>,
+    root: Entity,
+}
+
+/// Redraw the shadows of physics props that moved (silhouette and mesh).
+fn update_prop_shadows(
+    mut commands: Commands,
+    state: Option<ResMut<ShadowState>>,
+    moved: Query<(&PropIndex, &Transform), (With<PhysicsProp>, Changed<Transform>)>,
+    mut images: ResMut<Assets<Image>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+) {
+    let Some(mut state) = state else { return };
+    let state = &mut *state;
+    let mut atlas_dirty = false;
+    for (index, t) in &moved {
+        let Some(cell) = state.cells.get(&index.0).copied() else {
+            continue;
+        };
+        let mesh = shadows::rebuild(
+            &state.data,
+            &state.settings,
+            &state.receivers,
+            &mut state.atlas,
+            &cell,
+            t.translation,
+            t.rotation,
+        );
+        atlas_dirty = true;
+        match (mesh, state.entities.get(&index.0).copied()) {
+            (Some(mesh), Some(e)) => {
+                commands.entity(e).insert(Mesh3d(meshes.add(mesh)));
+            }
+            (Some(mesh), None) => {
+                let e = commands
+                    .spawn((
+                        Name::new(format!("Shadow of prop {}", index.0)),
+                        MapPart,
+                        PropShadow { prop: index.0 },
+                        Mesh3d(meshes.add(mesh)),
+                        MeshMaterial3d(state.material.clone()),
+                        bevy::light::NotShadowCaster,
+                        Transform::default(),
+                        ChildOf(state.root),
+                    ))
+                    .id();
+                state.entities.insert(index.0, e);
+            }
+            (None, Some(e)) => {
+                commands.entity(e).despawn();
+                state.entities.remove(&index.0);
+            }
+            (None, None) => {}
+        }
+    }
+    if atlas_dirty && let Some(mut image) = images.get_mut(&state.atlas_image) {
+        image.data = Some(state.atlas.bytes());
     }
 }
 

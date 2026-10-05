@@ -11,9 +11,11 @@ pub mod movement;
 pub mod overlays;
 pub mod phy;
 pub mod props;
+pub mod pushaway;
 pub mod ropes;
 pub mod sky;
 pub mod sprites;
+pub mod surfaceprops;
 pub mod vpk;
 
 pub const GAME: &str = "cs_source";

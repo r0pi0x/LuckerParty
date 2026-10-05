@@ -16,7 +16,7 @@ use bevy::prelude::*;
 
 use crate::{
     core::{Intent, MovementState, SimSet, Velocity},
-    map::{MapBrushCollider, MapBrushes, MapWater},
+    map::{MapBrushCollider, MapBrushes, MapWater, PhysicsProp, PushAway},
     slots::RegisterSlots,
 };
 
@@ -405,7 +405,8 @@ impl Plugin for SourceMovementPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SourceMovementConfig>()
             .register_movement::<SourceMovement>(ID)
-            .add_systems(FixedUpdate, step.in_set(SimSet::Movement));
+            .add_systems(FixedUpdate, step.in_set(SimSet::Movement))
+            .add_plugins(super::pushaway::PushAwayPlugin);
     }
 }
 
@@ -673,6 +674,8 @@ struct Mover<'a, 'b, 'w, 's> {
     dt: f32,
     /// Water contents per test point (feet, waist, eye) this tick.
     water_cache: [Option<(Vec3, Option<bool>)>; 3],
+    /// Move input added by props pushing the player back (forward, side).
+    push_input: Vec2,
 }
 
 impl Mover<'_, '_, '_, '_> {
@@ -1292,8 +1295,8 @@ impl Mover<'_, '_, '_, '_> {
         let walk = if intent.walk { self.cfg.walk_speed } else { 1.0 };
         let max_speed = self.cfg.player_maxspeed.min(self.cfg.maxspeed) * walk;
         let (mut f, mut s) = (
-            intent.move_axis.y * self.cfg.key_speed,
-            intent.move_axis.x * self.cfg.key_speed,
+            intent.move_axis.y * self.cfg.key_speed + self.push_input.x,
+            intent.move_axis.x * self.cfg.key_speed + self.push_input.y,
         );
         let len = (f * f + s * s).sqrt();
         if len > max_speed {
@@ -1442,14 +1445,30 @@ fn step(
     brushes: Option<Res<MapBrushes>>,
     water: Option<Res<MapWater>>,
     brush_colliders: Query<Entity, With<MapBrushCollider>>,
+    props: Query<(Entity, &Transform, &PhysicsProp), Without<SourceMovement>>,
     cfg: Res<SourceMovementConfig>,
     time: Res<Time>,
 ) {
     let dt = time.delta_secs();
     for (entity, intent, mut me, mut transform, mut vel, mut state) in &mut q {
         // With brushes swept exactly, physics queries skip the same brushes.
-        let excluded =
-            std::iter::once(entity).chain(brushes.as_ref().map(|_| brush_colliders.iter()).into_iter().flatten());
+        // Players pass through multiplayer physics props (their own
+        // collision group); props that collide stay in.
+        let excluded = std::iter::once(entity)
+            .chain(brushes.as_ref().map(|_| brush_colliders.iter()).into_iter().flatten())
+            .chain(
+                props
+                    .iter()
+                    .filter(|(_, _, p)| p.push != PushAway::Collide)
+                    .map(|(e, ..)| e),
+            );
+        let (forward, right) = Mover::view(intent);
+        let push_input = super::pushaway::push_back(
+            super::pushaway::player_box(&transform, &me, &cfg),
+            forward,
+            right,
+            props.iter().map(|(_, t, p)| (t, p)),
+        );
         let tracer = Tracer {
             query: &query,
             filter: SpatialQueryFilter::from_excluded_entities(excluded),
@@ -1465,6 +1484,7 @@ fn step(
             me: &mut me,
             dt,
             water_cache: [None; 3],
+            push_input,
         };
         mover.tick(intent);
         let (feet, v) = (mover.feet, mover.v);
