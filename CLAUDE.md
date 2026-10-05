@@ -58,5 +58,8 @@ cargo run --profile playtest   # optimized, quick to rebuild; for playtesting
 
 ## Testing on Windows
 
-The games and the original source live on the Windows PC. It has its own
-checkout: `scripts\playtest.ps1` pulls and runs an optimized build.
+Remote: https://github.com/r0pi0x/LuckerParty (private). The games and the
+original source live on the Windows PC, which has its own checkout
+(`git clone https://github.com/r0pi0x/LuckerParty`); `scripts\playtest.ps1`
+pulls and runs an optimized build. Spec sessions there write into `specs/`
+in that checkout and push; implementation sessions pull them.
