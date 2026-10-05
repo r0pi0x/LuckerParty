@@ -385,13 +385,11 @@ pub fn world_fog(bsp: &Bsp) -> Option<crate::map::MapFog> {
 
 /// How CS:S presents maps at its LDR settings (mat_hdr_level 0,
 /// mat_trilinear 0, mat_forceaniso 1). Lightmaps use the engine's LDR
-/// encoding (specs/cs_source/shaders.md), no tonemapping. The spec expects
-/// no further scale in LDR, but `refcmp fit` on de_dust2 measures the real
-/// game 1.22x brighter than texture x decoded light (mean error 0.071 over
-/// 5.4M pixels); unexplained, see the spec's open questions.
+/// encoding (specs/cs_source/shaders.md, bump pages included), no
+/// tonemapping and no further scale: refcmp luma matches within ~1%.
 pub fn source_look() -> crate::map::MapLook {
     crate::map::MapLook {
-        light_scale: 1.22,
+        light_scale: 1.0,
         trilinear: false,
         anisotropy: 1,
         tonemapping: false,

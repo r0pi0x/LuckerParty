@@ -123,6 +123,23 @@ Status: draft
 - Three lightmap samples are taken at uv_lm + k · Δ for k = 1, 2, 3.
   - Δ is a per-vertex offset, equal to one page width in the atlas.
   - Page 0 (k = 0) is the flat-normal lightmap. The bump path does not read it.
+- **Bump page encoding at upload (LDR).** The three bump pages are **not** encoded with the flat page's gamma curve. A RenderDoc capture confirms this rule (see Test cases).
+  - The BSP stores each page as plain linear irradiance for its basis direction. Nothing is relative to the flat page and there is no change of basis.
+  - At upload, the pages are rescaled per luxel so that their mean equals the *gamma-encoded* flat value. Then they are written linearly, with no curve.
+  - The rule comes from a routine in the public SDK's radiosity compiler that the compiler never calls itself. Its counterpart, the flat/vertex conversion, says it matches the engine.
+  - Per luxel and per channel, with F = the flat page's linear value and P1, P2, P3 = the bump pages' linear values (each c·2^e/255):
+    - g = 0.5 · (i/1024)^(1/2.2), with i = round(F·1024) clamped to [0, 4095]. This is the flat page's own pre-quantisation encoding value: the flat texel is round(255·g).
+    - m = (P1 + P2 + P3)/3.
+    - s = g / m. If m = 0 for a channel, s = 0 for that channel.
+    - Q_k = P_k · s (per channel).
+  - **Over-range redistribution** ("trade directionality for brightness"):
+    - Treat Q1, Q2, Q3 as RGB colours. Sort them once by their largest channel, in descending order. Ties take the first matching order among (1,2,3), (1,3,2), (2,1,3), (2,3,1), (3,1,2), (3,2,1); the last pattern that matches wins.
+    - Process them one by one in that order. For colour X with largest channel M (using X's *current* value, which may have grown from earlier steps): if M > 1, set E = X·(M − 1)/M (a vector), X −= E, and add E/2 to each of the other two colours.
+    - Afterwards, each colour whose largest channel still exceeds 1 is scaled down by that channel (hue-preserving). Negative channels become 0.
+  - texel_k = round(255 · Q_k) per channel, clamped to 0..255. Alpha = 255.
+  - When the shader decodes these texels (sRGB decode × 2^2.2), it gets (2Q_k)^2.2. That is not P_k. In other words, the pages hold linearly scaled values that are later passed through a gamma decode.
+  - Consequence for flat-ish normals: since the shader's sum-normalised mix weights all three pages equally (1/3 each), it reproduces mean_k (2Q_k)^2.2. That differs from the flat page's F unless the Q_k are all equal. The look is part of the game, so reproduce it.
+  - Each page in the atlas also has 1-texel borders copied from its edge texels (observed in capture). Unbumped pages are assumed to have the same borders.
 - Weights: w_k = clamp(n · basis_k, 0, 1)². The clamp is applied first, then the square.
 - lighting = (Σ w_k · lm_k) / (Σ w_k) × lightmap_linear_scale × modulation.rgb, where lm_k are the decoded linear samples.
   - The normalisation by Σw means lighting never darkens just because the normal tilts.
@@ -394,6 +411,10 @@ For colour results the model is pure 2.2 power for both decode and encode, unles
 |---|---|---|---|
 | Luxel decode | luxel (128, 64, 255, e = −1) | decode | linear (0.25098, 0.12549, 0.5) |
 | Lightmap encode | L = 0, 0.01, 0.25, 1.0, 2.0, 4.0, 8.0 | texel byte | 0, 16, 68, 128, 175, 239, 239 |
+| Bump page encode (grey luxel, de_dust2 capture) | F = 1.73; P = (1.65, 0.31, 2.93) | g, s, Q before clamp | g = 0.64154, s = 0.39359, Q = (0.64942, 0.12201, 1.15320) |
+| same | (continued) | after redistribution → texels → shader decode (2t/255)^2.2 | Q = (0.72602, 0.19861, 1.0) → (185, 51, 255) → (2.268, 0.133, 4.595); measured 2.27, 0.13, 4.59 |
+| Bump page encode (capture, other end of row) | F = 1.64; P = (0.81, 0.29, 3.37) | texels → decode | Q = (0.54826, 0.32978, 1.0) → (140, 84, 255) → (1.228, 0.399, 4.595); measured 1.23, 0.40, 4.59 |
+| Bump page encode, no overflow | F = 1.0; P = (1.2, 0.9, 0.9) | texels | g = 0.5, s = 0.5, Q = (0.6, 0.45, 0.45) → (153, 115, 115) |
 | Lightmap decode | texel 128 | × 2^2.2 | 1.0086 (2.2 model); 0.99183 (sRGB) |
 | Lightmap decode | texel 64 | × 2^2.2 | 0.21952 (2.2); 0.23557 (sRGB) |
 | Unbumped brush | base byte 200, lightmap texel 128, $color 1 | output byte | 200.8 → 201 (2.2); 199.3 → 199 (sRGB) |
@@ -491,18 +512,19 @@ The defaults for mat_specular, mat_bumpmap and mat_reducefillrate live in the en
   - CS:S runs r_lightmap_bicubic 1 (set by the game's video settings; the registered default is 0). The shader takes 4 taps per lightmap page, i.e. the bicubic B-spline filter.
   - Lightmap atlas texels reach 255 (the 99th percentile of non-black texels is 255), so the engine's encoding doesn't stop at 239 as derived above. The clamp rule is still to be measured.
   - Fog constants: 1/(end − start) and start/(end − start) are passed for range fog, along with the linear fog colour.
-  - The ×1.22 brightness gap (above) is not a shader constant or colour-space difference. Next suspect: the lightmap texel encoding (compare a known luxel's texel).
+  - The ×1.22 brightness gap (below) is not a shader constant or colour-space difference. It was the bump page encoding (section 2, "Bump page encoding at upload").
 
 - **Measured in CS:S (refcmp, de_dust2, 2026-10-05, Linux build, mat_hdr_level 0):**
-  - The game is 1.22× brighter, in linear light, than albedo × lighting with the LDR lightmap encoding and the 2^2.2 scale above (mean absolute error 0.071 over 5.4M pixels in 9 views).
-  - The scale constant or the tone-map scale may differ from the derived values, or the Linux renderer's sRGB handling may differ.
+  - With every bump page encoded like the flat page, the game measured 1.22× brighter, in linear light, than albedo × lighting (mean absolute error 0.071 over 5.4M pixels in 9 views).
+  - With the bump page encoding in section 2 and no extra scale, mean luma matches within about 1% on all 14 refcmp views (2026-10-05), so linear light scale is 1.0 in LDR.
   - Bump pages with the basis order and the unflipped normal decode above match the game visually on dust2's A-site walls; a green flip visibly does not.
 
 1. **The exact lightmap scale constant.** The engine/shader-API value of the lightmap scale is not in the SDK. 2^2.2 = 4.5948 is derived from the published encoding (0.5 · L^(1/2.2)) and confirmed by the in-shader vertex path (2v)^2.2.
    - To check: in CS:S with mat_hdr_level 0, make a test map with a white base texture (255) and a luxel of exactly linear 1.0 (texel 128). The surface should read 255 (or 254 because of the sRGB curve); a scale of 4 would read about 243.
    - Also confirm that the engine encodes LDR lightmaps with the curve above (the compiler says so) and does not use the hardware sRGB curve.
-2. **Bumped page encoding.** The compiler contains an unused routine that rescales the three bump pages so their mean equals the gamma-encoded flat value, instead of gamma-encoding each page independently. This spec assumes each page is encoded independently with the same curve, which is consistent with the DX9 shader's linear, sum-normalised mix.
-   - To check: compare a bumped wall in game against both encodings.
+2. **Bumped page encoding: resolved.** The rescale-to-gamma-goal rule in section 2 matches a RenderDoc capture of de_dust2 TEMPLEWALL04 to 2 decimal places on both luxels checked. Still open:
+   - whether the redistribution step behaves as described when channels differ (the captured luxels were near-grey);
+   - whether the 1-texel copied borders also apply to the flat and unbumped pages.
 3. **Linear light scale and envmap scale in LDR.** These are expected to be 1.0. They are set by the shader API, which is not public.
 4. **Default alpha-test reference** when $alphatestreference is 0 or unset. It is set by the shader API; commonly cited values are 0.5 and 0.7. To check: fence or foliage textures with known alpha ramps.
 5. **Brush tangent streams.** It is assumed that the engine's per-vertex tangent S/T for flat brushes match the displacement builder (S/T axes orthogonalised against the normal). This affects only envmap reflection on bumped brushes; diffuse bump is fixed by the baked basis.

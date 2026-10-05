@@ -43,6 +43,52 @@ pub fn source_ldr_texel(l: f32) -> u8 {
     (255.0 * 0.5 * (i / 1024.0).powf(1.0 / 2.2)).round() as u8
 }
 
+/// Source LDR bump pages (specs/cs_source/shaders.md, "Bump page encoding
+/// at upload"): the three directional values of a luxel (linear) are
+/// scaled so their mean is the flat value's encoded level, overflow above 1
+/// is shared out to the other pages, and the result is stored linearly
+/// (the sampler's sRGB decode x 2^2.2 still applies when reading).
+pub fn source_ldr_bump_texels(flat: [f32; 3], pages: [[f32; 3]; 3]) -> [[u8; 3]; 3] {
+    let mut q = [[0.0f32; 3]; 3];
+    for c in 0..3 {
+        let i = (flat[c] * 1024.0).round().clamp(0.0, 4095.0);
+        let goal = 0.5 * (i / 1024.0).powf(1.0 / 2.2);
+        let mean = (pages[0][c] + pages[1][c] + pages[2][c]) / 3.0;
+        let s = if mean > 0.0 { goal / mean } else { 0.0 };
+        for k in 0..3 {
+            q[k][c] = pages[k][c] * s;
+        }
+    }
+    let max = |v: [f32; 3]| v[0].max(v[1]).max(v[2]);
+    // Order once by largest channel, descending; ties go to the last
+    // matching permutation in this list.
+    const ORDERS: [[usize; 3]; 6] = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
+    let m = q.map(max);
+    let order = ORDERS
+        .iter()
+        .rev()
+        .find(|o| m[o[0]] >= m[o[1]] && m[o[1]] >= m[o[2]])
+        .copied()
+        .unwrap_or([0, 1, 2]);
+    for &k in &order {
+        let top = max(q[k]);
+        if top > 1.0 {
+            let excess = q[k].map(|v| v * (top - 1.0) / top);
+            for c in 0..3 {
+                q[k][c] -= excess[c];
+                for other in (0..3).filter(|&o| o != k) {
+                    q[other][c] += excess[c] / 2.0;
+                }
+            }
+        }
+    }
+    q.map(|v| {
+        let top = max(v);
+        let v = if top > 1.0 { v.map(|x| x / top) } else { v };
+        v.map(|x| (255.0 * x.max(0.0)).round().clamp(0.0, 255.0) as u8)
+    })
+}
+
 /// An RGBA8 texture in sRGB, top row first.
 #[derive(Clone, Debug)]
 pub struct MapTexture {
@@ -577,6 +623,17 @@ fn spawn_map(
             .map(|l| images.add(world_layer(&l.rgb, l.width, l.height)));
         let bumped_lightmaps: Option<[Handle<Image>; 3]> = data.lightmap.as_ref().and_then(|l| {
             let b = l.bumped.as_ref()?;
+            if source_ldr {
+                // The game encodes the three pages together, against the flat one.
+                let mut texels: [Vec<u8>; 3] = std::array::from_fn(|_| Vec::with_capacity(l.rgb.len() * 4));
+                for (i, flat) in l.rgb.iter().enumerate() {
+                    let pages = source_ldr_bump_texels(*flat, [b[0][i], b[1][i], b[2][i]]);
+                    for (t, [r, g, b]) in texels.iter_mut().zip(pages) {
+                        t.extend([r, g, b, 255]);
+                    }
+                }
+                return Some(texels.map(|t| images.add(srgb8_image(t, l.width, l.height))));
+            }
             Some(std::array::from_fn(|i| {
                 images.add(world_layer(&b[i], l.width, l.height))
             }))
@@ -1058,6 +1115,11 @@ fn source_lightmap_image(rgb: &[[f32; 3]], width: u32, height: u32) -> Image {
     for [r, g, b] in rgb {
         data.extend([source_ldr_texel(*r), source_ldr_texel(*g), source_ldr_texel(*b), 255]);
     }
+    srgb8_image(data, width, height)
+}
+
+/// RGBA8 sRGB texels as a linearly filtered lightmap layer.
+fn srgb8_image(data: Vec<u8>, width: u32, height: u32) -> Image {
     let mut image = Image::new(
         Extent3d {
             width,

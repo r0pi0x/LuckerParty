@@ -109,7 +109,8 @@ cargo run --features dev --bin refcmp -- capture-ours --only a_sign
 - `refcmp fit` also captures mashup's `--debug-view albedo` and
   `--debug-view lighting` renders and fits, per pixel, how the real game
   combines texture and light. That is where `cs_source::bsp::source_look`
-  (exposure 1.22, no tonemapping, bilinear mip snapping) comes from.
+  (no tonemapping, bilinear mip snapping) comes from. Its 1.22 exposure
+  turned out to be the bump page encoding; `report`'s luma column checks it.
 - `refcmp` builds nothing: run `cargo build --features dev` after code
   changes, or it captures the old binary.
 - The report's `detail` column (correlation of high-pass detail) is noisy
