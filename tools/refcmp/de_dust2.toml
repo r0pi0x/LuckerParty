@@ -80,3 +80,15 @@ angles = [-55, 90]
 name = "dust_long_doors"
 position = [600.0, 380.0, 20.0]
 angles = [0, 70]
+
+# The same lamp with its glow's centre above the view: the glow must stay.
+[[view]]
+name = "glow_lamp_down"
+position = [-1406.0, 1050.0, 100.0]
+angles = [-10, 90]
+
+# Long A from the pit: props and overlays fade into the fog with the world.
+[[view]]
+name = "fog_long_a"
+position = [1300.0, 400.0, 70.0]
+angles = [5, 90]

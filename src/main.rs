@@ -62,6 +62,7 @@ fn main() {
         mashup::map::world_material::WorldMaterialPlugin,
         mashup::map::rope_material::RopeMaterialPlugin,
         mashup::map::sprite_material::SpriteMaterialPlugin,
+        mashup::map::prop_material::PropMaterialPlugin,
     ))
     // A game's maps run at that game's server tick.
     .insert_resource(match args.map.as_deref() {

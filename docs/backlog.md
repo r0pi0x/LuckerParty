@@ -39,8 +39,7 @@ Counts are from de_dust2's entity lump and static prop lump.
   `env_cubemap`); detail blend modes other than 0 and 1; `$basetexturetransform`
   (unused on dust2).
 - **Lightmap styles** (switchable lights) and bumped lightmaps.
-- **Tonemap** (`env_tonemap_controller`; HDR only). Fog on ropes, and
-  Source's fog curve (f²) on props (Bevy's linear fog for now).
+- **Tonemap** (`env_tonemap_controller`; HDR only). Fog on ropes.
 - **Prop shadows**: CS:S draws soft dynamic shadows under physics props
   (visible in refcmp `crates_b`).
 - **Sound**: `ambient_generic` and soundscapes, once there's an audio slot.

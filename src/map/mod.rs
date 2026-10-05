@@ -16,10 +16,12 @@ use bevy::{
 use crate::core::{SpawnPoint, Team};
 
 mod dust;
+pub mod prop_material;
 pub mod rope_material;
 pub mod sprite_material;
 pub mod world_material;
 
+use prop_material::{PropMaterial, PropParams};
 use rope_material::{RopeMaterial, RopeParams};
 use sprite_material::{SpriteMaterial, SpriteParams};
 use world_material::{WorldMaterial, WorldParams};
@@ -467,10 +469,7 @@ impl Plugin for MapPlugin {
                 ..default()
             })
             .add_systems(Startup, spawn_map)
-            .add_systems(
-                Update,
-                (attach_sky, attach_world_fog, glow_visibility, dust::update_dust),
-            )
+            .add_systems(Update, (attach_sky, glow_visibility, dust::update_dust))
             .add_systems(
                 PostUpdate,
                 follow_sky_camera.before(bevy::transform::TransformSystems::Propagate),
@@ -495,6 +494,7 @@ fn spawn_map(
     mut world_materials: Option<ResMut<Assets<WorldMaterial>>>,
     mut rope_materials: Option<ResMut<Assets<RopeMaterial>>>,
     mut sprite_materials: Option<ResMut<Assets<SpriteMaterial>>>,
+    mut prop_materials: Option<ResMut<Assets<PropMaterial>>>,
 ) {
     let data = &pending.0;
     let view = pending.1;
@@ -549,7 +549,8 @@ fn spawn_map(
     // render handles when rendering exists.
     let model_colliders: Vec<Option<Collider>> = data.models.iter().map(model_collider).collect();
     let mut model_parts: Vec<Vec<(Handle<Mesh>, Handle<StandardMaterial>)>> = Vec::new();
-    let mut lit_model_materials: Vec<Vec<Handle<StandardMaterial>>> = Vec::new();
+    // Per model mesh: [in the world (fogged), in the 3D skybox].
+    let mut lit_model_materials: Vec<Vec<[Handle<PropMaterial>; 2]>> = Vec::new();
 
     if let (Some(meshes), Some(materials), Some(images)) = (meshes.as_mut(), materials.as_mut(), images.as_mut()) {
         let textures: Vec<Handle<Image>> = data
@@ -585,11 +586,6 @@ fn spawn_map(
         {
             commands.insert_resource(MapSkybox(images.add(sky_image(sky, &data.textures))));
         }
-        if let Some(fog) = &data.fog
-            && view == MapDebugView::Normal
-        {
-            commands.insert_resource(WorldFog(fog.clone()));
-        }
         if let Some(cam) = &data.sky_camera
             && view == MapDebugView::Normal
         {
@@ -598,12 +594,8 @@ fn spawn_map(
         for m in &data.meshes {
             let lit = lightmap.as_ref().filter(|_| m.lightmap_uvs.len() == m.positions.len());
             // Lightmapped world surfaces: Source-style texture x baked light.
-            if let (Some(_), Some(lm), Some(world_materials), false) = (
-                lit,
-                world_lightmap.as_ref(),
-                world_materials.as_mut(),
-                m.material.starts_with("decal:"),
-            ) {
+            if let (Some(_), Some(lm), Some(world_materials)) = (lit, world_lightmap.as_ref(), world_materials.as_mut())
+            {
                 let [r, g, b] = m.color;
                 // Calibration hook: MASHUP_NORMAL_G_SIGN overrides the sign;
                 // 0 turns radiosity normal mapping off.
@@ -716,22 +708,44 @@ fn spawn_map(
                     .collect()
             })
             .collect();
-        lit_model_materials = data
-            .models
-            .iter()
-            .map(|model| {
-                model
-                    .meshes
-                    .iter()
-                    .map(|m| {
-                        materials.add(StandardMaterial {
-                            unlit: true,
-                            ..build_material(m, &textures, view, data.look.light_scale)
+        if let Some(prop_materials) = prop_materials.as_mut() {
+            let lighting_only = matches!(view, MapDebugView::Lighting { .. });
+            lit_model_materials = data
+                .models
+                .iter()
+                .map(|model| {
+                    model
+                        .meshes
+                        .iter()
+                        .map(|m| {
+                            let [r, g, b] = m.color;
+                            [false, true].map(|skybox| {
+                                prop_materials.add(PropMaterial {
+                                    params: PropParams {
+                                        base_color: if m.texture.is_some() || lighting_only {
+                                            Vec4::ONE
+                                        } else {
+                                            Color::srgb_u8(r, g, b).to_linear().to_vec4()
+                                        },
+                                        alpha_cutoff: if let MapAlpha::Mask(c) = m.alpha { c } else { 0.0 },
+                                        fog_color: fog_color(
+                                            data.fog.as_ref().filter(|_| view == MapDebugView::Normal && !skybox),
+                                        ),
+                                        fog_range: fog_range(data.fog.as_ref()),
+                                    },
+                                    base: m.texture.filter(|_| !lighting_only).map(|i| textures[i].clone()),
+                                    alpha_mode: match m.alpha {
+                                        MapAlpha::Opaque | MapAlpha::Mask(_) => AlphaMode::Opaque,
+                                        MapAlpha::Blend => AlphaMode::Blend,
+                                    },
+                                    double_sided: m.double_sided,
+                                })
+                            })
                         })
-                    })
-                    .collect()
-            })
-            .collect();
+                        .collect()
+                })
+                .collect();
+        }
 
         if view == MapDebugView::Normal {
             for (i, dust) in data.dust.iter().enumerate() {
@@ -775,6 +789,10 @@ fn spawn_map(
                         glow: sprite.glow,
                     })),
                     bevy::light::NotShadowCaster,
+                    // The quad is spread in the vertex shader, so the mesh's
+                    // own bounds are a point: culling would drop the sprite
+                    // as soon as its centre left the view.
+                    bevy::camera::visibility::NoFrustumCulling,
                     Transform::from_translation(sprite.position),
                     ChildOf(root),
                 ));
@@ -897,6 +915,7 @@ fn spawn_map(
             // (texture x light, like the lightmapped world).
             (Some(probe), Some(meshes), Some(mats)) => {
                 for (m, material) in data.models[prop.model].meshes.iter().zip(mats) {
+                    let material = &material[prop.skybox as usize];
                     let layer = layer_of(prop.skybox);
                     let colors: Vec<[f32; 4]> = m
                         .normals
@@ -1206,30 +1225,6 @@ fn fog_range(fog: Option<&MapFog>) -> Vec4 {
     fog.map_or(Vec4::new(0.0, 1.0, 0.0, 0.0), |f| {
         Vec4::new(f.start, f.end.max(f.start + 0.01), f.max_density, 0.0)
     })
-}
-
-/// The world's fog, for cameras (Bevy's own fog covers standard-material
-/// meshes such as props; its linear curve approximates Source's f^2).
-#[derive(Resource, Clone)]
-struct WorldFog(MapFog);
-
-fn attach_world_fog(
-    mut commands: Commands,
-    fog: Option<Res<WorldFog>>,
-    cameras: Query<Entity, (With<Camera3d>, Without<SkyboxCamera>, Without<bevy::pbr::DistanceFog>)>,
-) {
-    let Some(fog) = fog else { return };
-    for e in &cameras {
-        let [r, g, b] = fog.0.color;
-        commands.entity(e).insert(bevy::pbr::DistanceFog {
-            color: Color::srgb(r, g, b),
-            falloff: bevy::pbr::FogFalloff::Linear {
-                start: fog.0.start,
-                end: fog.0.end,
-            },
-            ..default()
-        });
-    }
 }
 
 /// Share of a prop's surface that must lie on its convex hull for the hull
