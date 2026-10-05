@@ -28,7 +28,6 @@ framework, knife, AK-47, HUD, deathmatch and a first bot are in.
 - **Bot navigation** on CS:S's `.nav` meshes.
 - Hitboxes from player models; character, view and world models.
 - Impact decals, tracers, muzzle flash; explosion impulses.
-- Spawn points keep their yaw (characters currently spawn facing -Z).
 
 ## 3. Sound, remaining
 

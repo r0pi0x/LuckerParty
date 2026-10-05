@@ -191,6 +191,8 @@ fn spawn_local_player(
         Some(pos) => Transform::from_translation(pos),
         None => spawns.iter().next().copied().unwrap_or_default(),
     };
+    // Face the way the spawn point does unless --look says otherwise.
+    let spawn_yaw = at.rotation.to_euler(EulerRot::YXZ).0.to_degrees();
     let movement = match &args.movement {
         Some(id) => match registry.get(id) {
             Some(m) => m.id,
@@ -204,7 +206,7 @@ fn spawn_local_player(
     };
 
     let player = spawn_character(&mut commands, at, Team(0), movement);
-    let look = args.look.unwrap_or_default();
+    let look = args.look.unwrap_or(Vec2::new(spawn_yaw, 0.0));
     commands
         .entity(player)
         .insert((

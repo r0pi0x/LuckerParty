@@ -39,6 +39,9 @@ fn converts_to_a_plausible_map() {
     let t = map.spawns.iter().filter(|(_, team)| *team == Some(Team(1))).count();
     let ct = map.spawns.iter().filter(|(_, team)| *team == Some(Team(2))).count();
     assert!(t >= 10 && ct >= 10, "{t} T spawns, {ct} CT spawns");
+    // Every spawn has a facing, and they aren't all the default.
+    assert_eq!(map.spawn_yaws.len(), map.spawns.len());
+    assert!(map.spawn_yaws.iter().any(|y| y.abs() > 0.1));
     assert!(
         map.meshes.iter().any(|m| m.material.starts_with("de_dust/")),
         "no de_dust materials"

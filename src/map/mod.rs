@@ -337,6 +337,9 @@ pub struct MapData {
     pub collision_brushes: Vec<MapBrush>,
     /// Feet positions.
     pub spawns: Vec<(Vec3, Option<Team>)>,
+    /// Each spawn's facing as an `Intent` yaw (radians, 0 = -Z), same order
+    /// as `spawns`; missing entries face -Z.
+    pub spawn_yaws: Vec<f32>,
     /// Things the importer couldn't load (missing materials etc.).
     pub warnings: Vec<String>,
     /// How the source game presents the map, so it can be reproduced.
@@ -1307,7 +1310,8 @@ fn spawn_map(
             Name::new(format!("Spawn {i}")),
             MapPart,
             SpawnPoint { team: *team },
-            Transform::from_translation(*feet + Vec3::Y * SPAWN_LIFT),
+            Transform::from_translation(*feet + Vec3::Y * SPAWN_LIFT)
+                .with_rotation(Quat::from_rotation_y(data.spawn_yaws.get(i).copied().unwrap_or(0.0))),
         ));
     }
 }

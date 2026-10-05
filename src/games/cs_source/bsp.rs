@@ -303,6 +303,14 @@ pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> (MapData, LightmapLayo
         };
         if let Some(origin) = ent.prop("origin").and_then(parse_vector) {
             data.spawns.push((to_engine(origin), team));
+            // Source yaw 0 faces +X (engine +X); intent yaw 0 faces -Z,
+            // which is Source yaw 90.
+            let yaw = ent
+                .prop("angles")
+                .and_then(parse_vector)
+                .map_or(0.0, |a| a.y)
+                .to_radians();
+            data.spawn_yaws.push(yaw - std::f32::consts::FRAC_PI_2);
         }
     }
     data.lightmap = Some(lightmap);
