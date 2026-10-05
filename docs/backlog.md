@@ -33,8 +33,8 @@ framework, knife, AK-47, HUD, deathmatch and a first bot are in.
 
 docs/plans/active/sound.md.
 
-- Physics impacts and scrapes (avian contact speeds; surfaceprops'
-  impact/scrape entries).
+- Scrapes (looping friction sounds): needs a stand-in for Source's
+  friction energy (spec open question 8); break sounds with breakables.
 - Map ambience: `ambient_generic`, soundscapes (selection by nearest
   visible env_soundscape, 3 s crossfade, random sounds).
 - Measure on the probe server: the distance curves (replace the H1/H2

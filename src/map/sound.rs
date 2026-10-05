@@ -67,6 +67,15 @@ pub struct MapSurface {
     pub step_right: Option<String>,
     /// Source game material letter ('C' concrete, 'D' dirt, ...).
     pub game_material: char,
+    pub bullet_impact: Option<String>,
+    pub impact_soft: Option<String>,
+    pub impact_hard: Option<String>,
+    /// How hard it sounds when hit (audiohardnessfactor).
+    pub hardness: f32,
+    /// Hitting something softer than this plays the soft impact.
+    pub hard_threshold: f32,
+    /// Impacts slower than this play the soft sound (0: no rule), u/s.
+    pub hard_min_velocity: f32,
 }
 
 /// Sound data the map carries.
@@ -333,4 +342,57 @@ impl SurfaceGrid {
         }
         best.map(|(_, id)| self.names[id as usize].as_str())
     }
+
+    /// The surface of the triangle nearest to `p` within `reach` meters
+    /// (bullet impacts on walls, contacts).
+    pub fn nearest(&self, p: Vec3, reach: f32) -> Option<&str> {
+        let lo = ((p.xz() - reach) / Self::CELL).floor().as_ivec2();
+        let hi = ((p.xz() + reach) / Self::CELL).floor().as_ivec2();
+        let mut best: Option<(f32, u16)> = None;
+        for gx in lo.x..=hi.x {
+            for gz in lo.y..=hi.y {
+                for &i in self.grid.get(&(gx, gz)).into_iter().flatten() {
+                    let (tri, id) = self.tris[i as usize];
+                    let d = closest_on_triangle(p, tri).distance_squared(p);
+                    if d <= reach * reach && best.is_none_or(|(bd, _)| d < bd) {
+                        best = Some((d, id));
+                    }
+                }
+            }
+        }
+        best.map(|(_, id)| self.names[id as usize].as_str())
+    }
+}
+
+/// The point of triangle `t` closest to `p`.
+fn closest_on_triangle(p: Vec3, [a, b, c]: [Vec3; 3]) -> Vec3 {
+    let (ab, ac, ap) = (b - a, c - a, p - a);
+    let (d1, d2) = (ab.dot(ap), ac.dot(ap));
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return a;
+    }
+    let bp = p - b;
+    let (d3, d4) = (ab.dot(bp), ac.dot(bp));
+    if d3 >= 0.0 && d4 <= d3 {
+        return b;
+    }
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        return a + ab * (d1 / (d1 - d3));
+    }
+    let cp = p - c;
+    let (d5, d6) = (ab.dot(cp), ac.dot(cp));
+    if d6 >= 0.0 && d5 <= d6 {
+        return c;
+    }
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        return a + ac * (d2 / (d2 - d6));
+    }
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && d4 - d3 >= 0.0 && d5 - d6 >= 0.0 {
+        return b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)));
+    }
+    let denom = 1.0 / (va + vb + vc);
+    a + ab * (vb * denom) + ac * (vc * denom)
 }

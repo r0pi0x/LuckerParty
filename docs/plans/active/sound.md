@@ -36,7 +36,10 @@ Started 2026-10-05, from specs/cs_source/sounds.md.
    entry/exit and swim strokes. CS:S's walk/duck silence assumed (walk
    key, duck key or ducked: silent) until measured. Not yet: the
    wading counter quirk shared by all players.
-3. [ ] Physics impacts and scrapes (avian contact speeds).
+3. [x] Bullet impacts (hit surface's bulletimpact, pellet grouping) and
+   physics impacts (avian's pre-solve approach speed, soft/hard choice,
+   per-frame queue and merging), `games/cs_source/impacts.rs`. Scrapes are
+   left: they need the engine's friction energy (spec open question 8).
 4. [ ] Map ambience: ambient_generic, soundscapes (selection, crossfade,
    random sounds).
 5. [x] Weapon sounds: fire, empty click, deploy, knife swings, reload parts at their animation times (sounds aren't yet tied to view-model events).

@@ -43,7 +43,9 @@ pub struct CsWeaponsPlugin;
 
 impl Plugin for CsWeaponsPlugin {
     fn build(&self, app: &mut App) {
-        app.register_weapon(KNIFE, knife).register_weapon(AK47, ak47);
+        app.register_weapon(KNIFE, knife)
+            .register_weapon(AK47, ak47)
+            .add_plugins(super::impacts::ImpactSoundsPlugin);
         let mut start = app.world_mut().get_resource_or_init::<StartingWeapons>();
         if start.0.is_empty() {
             // The best weapon is drawn: given last.

@@ -1191,3 +1191,69 @@ fn solid_props_have_step_surfaces() {
         .collect();
     assert!(names.len() >= 3, "surfaces: {names:?}");
 }
+
+/// Sounds written during a test.
+#[derive(Resource, Default)]
+struct Heard(Vec<String>);
+
+fn record_sounds(mut sounds: MessageReader<mashup::map::PlaySound>, mut heard: ResMut<Heard>) {
+    heard.0.extend(sounds.read().map(|s| s.entry.to_lowercase()));
+}
+
+/// Impact sounds (specs/cs_source/sounds.md 4): a physics prop dropped
+/// onto the ground plays its surface's impact, and a shot into a wall plays
+/// the wall's bullet impact.
+#[test]
+fn impact_sounds() {
+    use avian3d::prelude::{LinearVelocity, Position};
+    use mashup::{
+        games::cs_source::{movement::SourceMovementPlugin, weapons::CsWeaponsPlugin},
+        map::PhysicsProp,
+    };
+    let Some(map) = dust2() else { return };
+    let mut sim = Sim::new((MapPlugin::new(map.clone()), SourceMovementPlugin, CsWeaponsPlugin));
+    sim.app.init_resource::<Heard>().add_systems(Last, record_sounds);
+    sim.seconds(3.0);
+    sim.app.world_mut().resource_mut::<Heard>().0.clear();
+
+    // Lift the first physics prop 1.5 m and let it fall.
+    let mut q = sim
+        .app
+        .world_mut()
+        .query_filtered::<(Entity, &Name), With<PhysicsProp>>();
+    let mut props: Vec<(usize, Entity)> = q
+        .iter(sim.app.world())
+        .map(|(e, n)| (n.as_str()[5..].parse().unwrap(), e))
+        .collect();
+    props.sort();
+    let prop = props[0].1;
+    {
+        let w = sim.app.world_mut();
+        let mut e = w.entity_mut(prop);
+        let up = e.get::<Position>().unwrap().0 + Vec3::Y * 1.5;
+        e.get_mut::<Position>().unwrap().0 = up;
+        e.get_mut::<Transform>().unwrap().translation = up;
+        e.get_mut::<LinearVelocity>().unwrap().0 = Vec3::ZERO;
+        let _ = avian3d::prelude::WakeBody(prop).apply(w);
+    }
+    sim.seconds(2.0);
+    let heard = std::mem::take(&mut sim.app.world_mut().resource_mut::<Heard>().0);
+    assert!(
+        heard.iter().any(|s| s.contains(".impact")),
+        "no impact sound from the dropped prop: {heard:?}"
+    );
+
+    // CT spawn 0 faces a wall corner: fire the AK-47 into it.
+    let spawn = map.spawns[0].0 + Vec3::Y * 1.0;
+    let p = sim.spawn_character(spawn, mashup::games::cs_source::movement::ID);
+    sim.intent(p).yaw = map.spawn_yaws[0];
+    sim.seconds(1.2);
+    sim.app.world_mut().resource_mut::<Heard>().0.clear();
+    sim.intent(p).fire = true;
+    sim.ticks(1);
+    sim.intent(p).fire = false;
+    sim.ticks(2);
+    let heard = &sim.app.world().resource::<Heard>().0;
+    assert!(heard.iter().any(|s| s == "weapon_ak47.single"), "{heard:?}");
+    assert!(heard.iter().any(|s| s.ends_with(".bulletimpact")), "{heard:?}");
+}

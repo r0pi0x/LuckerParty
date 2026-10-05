@@ -177,6 +177,12 @@ pub fn load(materials: &mut MaterialLoader, map: &str, surfaces: &SurfaceProps) 
         .map(|s| s.to_lowercase())
         .collect();
     for name in surfaces.names() {
+        let num = |key: &str, fallback: f32| {
+            surfaces
+                .text(name, key)
+                .and_then(|v| v.parse::<f32>().ok())
+                .unwrap_or(fallback)
+        };
         let surface = MapSurface {
             step_left: surfaces.text(name, "stepleft"),
             step_right: surfaces.text(name, "stepright"),
@@ -185,13 +191,24 @@ pub fn load(materials: &mut MaterialLoader, map: &str, surfaces: &SurfaceProps) 
                 .and_then(|g| g.chars().next())
                 .unwrap_or('C')
                 .to_ascii_uppercase(),
+            bullet_impact: surfaces.text(name, "bulletimpact"),
+            impact_soft: surfaces.text(name, "impactsoft"),
+            impact_hard: surfaces.text(name, "impacthard"),
+            hardness: num("audiohardnessfactor", 1.0),
+            hard_threshold: num("impacthardthreshold", 0.5),
+            hard_min_velocity: num("audiohardminvelocity", 0.0),
         };
         wanted.extend(
-            surface
-                .step_left
-                .iter()
-                .chain(&surface.step_right)
-                .map(|s| s.to_lowercase()),
+            [
+                &surface.step_left,
+                &surface.step_right,
+                &surface.bullet_impact,
+                &surface.impact_soft,
+                &surface.impact_hard,
+            ]
+            .into_iter()
+            .flatten()
+            .map(|s| s.to_lowercase()),
         );
         out.surfaces.insert(name.clone(), surface);
     }

@@ -1196,6 +1196,8 @@ fn spawn_map(
                         bounds: data.models[prop.model].bounds,
                     },
                     MapPropCollider,
+                    // Impact sounds listen for its contacts.
+                    CollisionEventsEnabled,
                 ));
                 if let Some(s) = &model.surfaceprop {
                     e.insert(PropSurface(s.clone()));
