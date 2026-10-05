@@ -22,6 +22,8 @@ const LUMP_OVERLAYS: usize = 45;
 const OVERLAY_SIZE: usize = 352;
 /// Lift off the surface (map units) so overlays draw over it.
 const OFFSET: f32 = 0.1;
+/// Extra lift per render-order step, so overlapping overlays stack.
+const ORDER_STEP: f32 = 0.05;
 
 fn f32_at(b: &[u8], at: usize) -> f32 {
     f32::from_le_bytes(b[at..at + 4].try_into().unwrap())
@@ -72,7 +74,10 @@ pub fn add_overlays(
 
     for o in lump.as_chunks::<OVERLAY_SIZE>().0 {
         let texinfo = i16::from_le_bytes([o[4], o[5]]);
-        let face_count = (u16::from_le_bytes([o[6], o[7]]) & 0x3fff) as usize;
+        let packed = u16::from_le_bytes([o[6], o[7]]);
+        let face_count = (packed & 0x3fff) as usize;
+        // Render order (top 2 bits): higher orders draw over lower ones.
+        let lift = OFFSET + ORDER_STEP * (packed >> 14) as f32;
         let faces: Vec<usize> = (0..face_count.min(64))
             .map(|i| i32::from_le_bytes(o[8 + i * 4..12 + i * 4].try_into().unwrap()) as usize)
             .collect();
@@ -166,7 +171,7 @@ pub fn add_overlays(
                         let w_b = (p2 - a.0).perp_dot(c.0 - a.0) / (b.0 - a.0).perp_dot(c.0 - a.0);
                         let w_c = (b.0 - a.0).perp_dot(*p2 - a.0) / (b.0 - a.0).perp_dot(c.0 - a.0);
                         let uv = a.1 * (1.0 - w_b - w_c) + b.1 * w_b + c.1 * w_c;
-                        mesh.positions.push(to_engine(vb(*p + tnorm * OFFSET)).to_array());
+                        mesh.positions.push(to_engine(vb(*p + tnorm * lift)).to_array());
                         mesh.normals.push(engine_normal.to_array());
                         mesh.uvs.push(uv.to_array());
                         let luxel = if slot.is_some() { *luxel } else { Vec2::splat(0.5) };
