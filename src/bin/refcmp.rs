@@ -23,15 +23,15 @@ use mashup::{
 use serde::Deserialize;
 
 const USAGE: &str = "\
-usage: refcmp [all|capture-ref|capture-ours|report|fit|skyfit] [--views <file>] [--only <name>] [--keep-running]
+usage: refcmp [all|capture-ref|capture-ours|report|fit|skyconv] [--views <file>] [--only <name>] [--keep-running]
   all            capture both, then report (default)
   capture-ref    capture views in CS:S (Steam must be logged in on this machine)
   capture-ours   capture views in mashup
   report         compare existing captures
   fit            capture mashup's albedo and lighting debug views and fit how
                  CS:S combines texture and light, per pixel, against the reference
-  skyfit         render all 48 sky face candidates and pick, per cube face, the
-                 texture and orientation matching the reference sky (views named sky*)
+  skyconv        measure the engine's cubemap convention with an encoded debug
+                 sky, then fit each face's texture and orientation to the reference
   --views <file> views file (default: tools/refcmp/de_dust2.toml)
   --only <name>  only views whose name contains <name>
   --keep-running leave CS:S running after capturing (faster next time)";
@@ -71,7 +71,7 @@ fn main() -> ExitCode {
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
-            "all" | "capture-ref" | "capture-ours" | "report" | "fit" | "skyfit" => args.command = a,
+            "all" | "capture-ref" | "capture-ours" | "report" | "fit" | "skyconv" => args.command = a,
             "--views" => args.views = it.next().map(PathBuf::from).unwrap_or_default(),
             "--only" => args.only = it.next(),
             "--keep-running" => args.keep_running = true,
@@ -110,9 +110,9 @@ fn run(args: &Args) -> Result<(), String> {
     if all || args.command == "capture-ours" {
         capture_ours(&file, &ours_dir, &[])?;
     }
-    if args.command == "skyfit" {
+    if args.command == "skyconv" {
         file.view.retain(|v| v.name.starts_with("sky"));
-        skyfit(&file, &ref_dir, &out)?;
+        skyconv(&file, &ref_dir, &out)?;
     }
     if args.command == "fit" {
         let (albedo, lighting) = (out.join("ours_albedo"), out.join("ours_lighting"));
@@ -612,93 +612,202 @@ fn fit(file: &ViewsFile, ref_dir: &Path, albedo_dir: &Path, light_dir: &Path) ->
     Ok(())
 }
 
-// ------------------------------------------------------------------ skyfit
+// ----------------------------------------------------------------- skyconv
 
-fn skyfit(file: &ViewsFile, ref_dir: &Path, out: &Path) -> Result<(), String> {
+/// Per engine cube face: which direction component (0 x, 1 y, 2 z) and sign
+/// gives the face image's u and v, as `(component / |major axis| + 1) / 2`.
+type Convention = [((usize, f32), (usize, f32)); 6];
+
+fn view_direction(v: &SourceView, x: u32, y: u32, w: u32, h: u32) -> bevy::math::Vec3 {
     use bevy::math::{EulerRot, Quat, Vec3};
-    use mashup::games::cs_source::sky::SUFFIXES;
-
-    const CANDIDATES: usize = 48;
-    let mask_dir = out.join("ours_albedo");
-    std::fs::create_dir_all(&mask_dir).map_err(|e| e.to_string())?;
-    capture_ours(file, &mask_dir, &["--debug-view", "albedo"])?;
-    let dirs: Vec<PathBuf> = (0..CANDIDATES)
-        .map(|n| out.join("skyfit").join(n.to_string()))
-        .collect();
-    for (n, d) in dirs.iter().enumerate() {
-        std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
-        capture_ours_env(file, d, &[], &[("MASHUP_SKY_CANDIDATE", n.to_string())])?;
-        print!("\rrendered candidate {}/{CANDIDATES}", n + 1);
-        let _ = std::io::stdout().flush();
-    }
-    println!();
-
-    // error[face][candidate], over sky pixels whose view direction is
-    // dominated by that face's axis.
-    let mut err = vec![vec![0.0f64; CANDIDATES]; 6];
-    let mut count = [0usize; 6];
     let tan = (74f32.to_radians() / 2.0).tan();
+    let q = Quat::from_euler(
+        EulerRot::YXZ,
+        (v.angles[1] - 90.0).to_radians(),
+        (-v.angles[0]).to_radians(),
+        0.0,
+    );
+    let nx = (x as f32 + 0.5) / w as f32 * 2.0 - 1.0;
+    let ny = 1.0 - (y as f32 + 0.5) / h as f32 * 2.0;
+    (q * Vec3::new(nx * tan * w as f32 / h as f32, ny * tan, -1.0)).normalize()
+}
+
+fn major_face(d: bevy::math::Vec3) -> (usize, f32) {
+    let a = d.abs();
+    if a.x >= a.y && a.x >= a.z {
+        (if d.x > 0.0 { 0 } else { 1 }, a.x)
+    } else if a.y >= a.z {
+        (if d.y > 0.0 { 2 } else { 3 }, a.y)
+    } else {
+        (if d.z > 0.0 { 4 } else { 5 }, a.z)
+    }
+}
+
+fn skyconv(file: &ViewsFile, ref_dir: &Path, out: &Path) -> Result<(), String> {
+    let mask_dir = out.join("ours_albedo");
+    let debug_dir = out.join("skydebug");
+    for d in [&mask_dir, &debug_dir] {
+        std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
+    }
+    capture_ours(file, &mask_dir, &["--debug-view", "albedo"])?;
+    capture_ours_env(file, &debug_dir, &[], &[("MASHUP_SKY_DEBUG", "1".into())])?;
+    let load = |p: PathBuf| {
+        image::open(&p)
+            .map(|i| i.to_rgb8())
+            .map_err(|e| format!("{}: {e}", p.display()))
+    };
+    let is_sky = |m: &Rgb<u8>| m[0] > 250 && m[1] < 5 && m[2] > 250;
+
+    // 1. Measure the convention: which cube layer each view direction
+    //    samples, and how the layer's u and v follow the direction's
+    //    components (over the major axis).
+    let mut layer_for = [[0usize; 6]; 6]; // [direction major face][layer]
+    let mut sums = vec![[[0.0f64; 6]; 2]; 6]; // [layer][u|v][axis*2 + sign]
+    let mut counts = [0usize; 6];
     for v in &file.view {
-        let load = |p: PathBuf| {
-            image::open(&p)
-                .map(|i| i.to_rgb8())
-                .map_err(|e| format!("{}: {e}", p.display()))
-        };
-        let r = load(ref_dir.join(format!("{}.jpg", v.name)))?;
         let mask = load(mask_dir.join(format!("{}.png", v.name)))?;
-        let cands: Vec<RgbImage> = dirs
-            .iter()
-            .map(|d| load(d.join(format!("{}.png", v.name))))
-            .collect::<Result<_, _>>()?;
-        let (w, h) = r.dimensions();
-        let q = Quat::from_euler(
-            EulerRot::YXZ,
-            (v.angles[1] - 90.0).to_radians(),
-            (-v.angles[0]).to_radians(),
-            0.0,
-        );
-        for y in (0..h).step_by(2) {
-            for x in (0..w).step_by(2) {
-                let m = mask.get_pixel(x, y);
-                if !(m[0] > 250 && m[1] < 5 && m[2] > 250) {
+        let dbg = load(debug_dir.join(format!("{}.png", v.name)))?;
+        let (w, h) = dbg.dimensions();
+        for y in (0..h).step_by(3) {
+            for x in (0..w).step_by(3) {
+                if !is_sky(mask.get_pixel(x, y)) {
                     continue;
                 }
-                let nx = (x as f32 + 0.5) / w as f32 * 2.0 - 1.0;
-                let ny = 1.0 - (y as f32 + 0.5) / h as f32 * 2.0;
-                let d = q * Vec3::new(nx * tan * w as f32 / h as f32, ny * tan, -1.0);
-                let a = d.abs();
-                let face = if a.x >= a.y && a.x >= a.z {
-                    if d.x > 0.0 { 0 } else { 1 }
-                } else if a.y >= a.z {
-                    if d.y > 0.0 { 2 } else { 3 }
-                } else if d.z > 0.0 {
-                    4
-                } else {
-                    5
-                };
-                count[face] += 1;
-                let rp = r.get_pixel(x, y);
-                for (n, c) in cands.iter().enumerate() {
-                    let cp = c.get_pixel(x, y);
-                    err[face][n] += (0..3).map(|i| (rp[i] as f64 - cp[i] as f64).abs()).sum::<f64>() / (3.0 * 255.0);
+                let p = dbg.get_pixel(x, y);
+                let layer = ((p[2] as f32 - 20.0) / 40.0).round() as usize;
+                if layer > 5 || (p[2] as i32 - (layer as i32 * 40 + 20)).abs() > 6 {
+                    continue;
                 }
+                let dir = view_direction(v, x, y, w, h);
+                let (major, m) = major_face(dir);
+                layer_for[major][layer] += 1;
+                let d = dir / m;
+                let uv = [p[0] as f64 / 255.0 * 2.0 - 1.0, p[1] as f64 / 255.0 * 2.0 - 1.0];
+                for (c, value) in uv.iter().enumerate() {
+                    for axis in 0..3 {
+                        for (si, sign) in [1.0f64, -1.0].iter().enumerate() {
+                            sums[layer][c][axis * 2 + si] -= (value - sign * d[axis] as f64).abs();
+                        }
+                    }
+                }
+                counts[layer] += 1;
             }
         }
     }
     let names = ["+X", "-X", "+Y", "-Y", "+Z", "-Z"];
-    println!("best candidate per engine face (mean abs error over sky pixels):");
-    for face in 0..6 {
-        if count[face] == 0 {
-            println!("  {}: no sky pixels in these views", names[face]);
+    let axis_name = ["x", "y", "z"];
+    // direction major face -> layer it samples
+    let mut layer_of_dir = [usize::MAX; 6];
+    for d in 0..6 {
+        if let Some((l, &c)) = layer_for[d].iter().enumerate().max_by_key(|(_, c)| **c)
+            && c > 0
+        {
+            layer_of_dir[d] = l;
+        }
+    }
+    let mut conv: Convention = [((0, 1.0), (0, 1.0)); 6];
+    println!("measured cubemap convention:");
+    for l in 0..6 {
+        let dir = (0..6).find(|d| layer_of_dir[*d] == l);
+        if counts[l] == 0 || dir.is_none() {
+            println!("  layer {} ({}): not visible", l, names[l]);
             continue;
         }
-        let mut ranked: Vec<(usize, f64)> = err[face].iter().map(|e| e / count[face] as f64).enumerate().collect();
-        ranked.sort_by(|a, b| a.1.total_cmp(&b.1));
-        let show = |(n, e): (usize, f64)| format!("{}/{} {:.4}", SUFFIXES[n / 8], n % 8, e);
+        let pick = |c: usize| {
+            let (i, _) = sums[l][c].iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).unwrap();
+            (i / 2, if i % 2 == 0 { 1.0f32 } else { -1.0 })
+        };
+        conv[l] = (pick(0), pick(1));
+        let err = |c: usize| -sums[l][c].iter().cloned().fold(f64::MIN, f64::max) / counts[l] as f64;
         println!(
-            "  {} ({:>7} px): {}   next: {}, {}",
-            names[face],
-            count[face],
+            "  layer {} ({}) is seen looking {}: u = {}{}  v = {}{}   (residual {:.3}, {:.3}; {} px)",
+            l,
+            names[l],
+            names[dir.unwrap()],
+            if conv[l].0.1 > 0.0 { "+" } else { "-" },
+            axis_name[conv[l].0.0],
+            if conv[l].1.1 > 0.0 { "+" } else { "-" },
+            axis_name[conv[l].1.0],
+            err(0),
+            err(1),
+            counts[l]
+        );
+    }
+
+    // 2. With the convention known, fit each face's texture and orientation
+    //    to the reference sky on the CPU.
+    let map = mashup::games::load_map(&format!("cs_source:{}", file.map))?;
+    let sky = map.sky.as_ref().ok_or("map has no sky")?;
+    let suffix_textures: Vec<(&str, &mashup::map::MapTexture)> = {
+        use mashup::games::cs_source::sky::FACES;
+        FACES
+            .iter()
+            .map(|(sfx, face, _)| (*sfx, &map.textures[sky.faces[*face].0]))
+            .collect()
+    };
+    let sample = |t: &mashup::map::MapTexture, orient: u8, u: f32, v: f32| -> [f32; 3] {
+        let size = t.width;
+        let (x, y) = (
+            ((u * size as f32) as u32).min(size - 1),
+            ((v * size as f32) as u32).min(size - 1),
+        );
+        // Same transform as the engine's sky_image.
+        let (mut a, mut b) = (x, y);
+        for _ in 0..orient % 4 {
+            (a, b) = (b, size - 1 - a);
+        }
+        if orient >= 4 {
+            a = size - 1 - a;
+        }
+        let i = ((b * t.width + a) * 4) as usize;
+        [t.rgba8[i] as f32, t.rgba8[i + 1] as f32, t.rgba8[i + 2] as f32]
+    };
+    let mut err = vec![vec![0.0f64; 48]; 6];
+    let mut n = [0usize; 6];
+    for v in &file.view {
+        let r = load(ref_dir.join(format!("{}.jpg", v.name)))?;
+        let mask = load(mask_dir.join(format!("{}.png", v.name)))?;
+        let (w, h) = r.dimensions();
+        for y in (0..h).step_by(2) {
+            for x in (0..w).step_by(2) {
+                if !is_sky(mask.get_pixel(x, y)) {
+                    continue;
+                }
+                let d = view_direction(v, x, y, w, h);
+                let (major, m) = major_face(d);
+                let face = layer_of_dir[major];
+                if face > 5 {
+                    continue;
+                }
+                let d = d / m;
+                let ((ua, us), (va, vs)) = conv[face];
+                let u = (us * d[ua] + 1.0) / 2.0;
+                let vv = (vs * d[va] + 1.0) / 2.0;
+                let rp = r.get_pixel(x, y);
+                for (ci, (_, t)) in suffix_textures.iter().enumerate() {
+                    for orient in 0..8u8 {
+                        let c = sample(t, orient, u, vv);
+                        err[face][ci * 8 + orient as usize] +=
+                            (0..3).map(|k| (c[k] - rp[k] as f32).abs() as f64).sum::<f64>() / (3.0 * 255.0);
+                    }
+                }
+                n[face] += 1;
+            }
+        }
+    }
+    println!("best texture/orientation per cube layer with the measured convention:");
+    for f in 0..6 {
+        if n[f] == 0 {
+            println!("  {}: not visible", names[f]);
+            continue;
+        }
+        let mut ranked: Vec<(usize, f64)> = err[f].iter().map(|e| e / n[f] as f64).enumerate().collect();
+        ranked.sort_by(|a, b| a.1.total_cmp(&b.1));
+        let show = |(i, e): (usize, f64)| format!("{}/{} {:.4}", suffix_textures[i / 8].0, i % 8, e);
+        println!(
+            "  {} ({:>6} px): {}   next {}, {}",
+            names[f],
+            n[f],
             show(ranked[0]),
             show(ranked[1]),
             show(ranked[2])

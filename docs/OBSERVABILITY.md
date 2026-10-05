@@ -113,6 +113,10 @@ cargo run --features dev --bin refcmp -- capture-ours --only a_sign
 - The reference CS:S install runs at mat_hdr_level 0, mat_trilinear 0,
   mat_forceaniso 1, no AA (queried over RCON). HDR (level 2, the game's
   default) is not matched yet.
+- `refcmp skyconv` measures how the engine samples sky cubemaps (an encoded
+  debug sky, `MASHUP_SKY_DEBUG=1`) and fits each layer's texture and
+  orientation to the reference: Bevy's skybox flips z, so looking toward -Z
+  shows the +Z layer.
 - mashup renders views off-screen at 1280x720 (`--views`), matching CS:S's
   framing (90 degrees horizontal at 4:3 = 74 vertical).
 

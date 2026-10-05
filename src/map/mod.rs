@@ -800,7 +800,23 @@ fn sky_image(sky: &MapSky, textures: &[MapTexture]) -> Image {
         .max()
         .unwrap_or(1);
     let mut data = Vec::with_capacity((size * size * 4 * 6) as usize);
-    for (tex, turns) in sky.faces {
+    // Calibration hook for `refcmp skyconv`: each pixel encodes its own
+    // face (blue) and position (red = u, green = v).
+    let debug = std::env::var_os("MASHUP_SKY_DEBUG").is_some();
+    for (face, (tex, turns)) in sky.faces.into_iter().enumerate() {
+        if debug {
+            for y in 0..size {
+                for x in 0..size {
+                    data.extend_from_slice(&[
+                        (x * 255 / size) as u8,
+                        (y * 255 / size) as u8,
+                        face as u8 * 40 + 20,
+                        255,
+                    ]);
+                }
+            }
+            continue;
+        }
         let t = &textures[tex];
         for y in 0..size {
             for x in 0..size {
