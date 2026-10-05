@@ -1146,3 +1146,40 @@ fn footsteps() {
     sim.seconds(2.0);
     assert!(sim.app.world().resource::<Heard>().0.is_empty(), "walking is silent");
 }
+
+/// Footsteps on props (specs/cs_source/sounds.md 3): solid props carry a
+/// surface property (their collision model's, else the model's own), and
+/// the map's sounds know its steps. Names the scripts don't define (dust2's
+/// rock props say "stone") step as "default".
+#[test]
+fn solid_props_have_step_surfaces() {
+    let Some(map) = dust2() else { return };
+    let solid: Vec<_> = map
+        .props
+        .iter()
+        .filter(|p| !p.skybox && p.solid != mashup::map::PropSolid::None)
+        .collect();
+    assert!(solid.len() > 100, "only {} solid props", solid.len());
+    let none = solid
+        .iter()
+        .filter(|p| map.models[p.model].surfaceprop.is_none())
+        .count();
+    assert_eq!(none, 0, "{none} solid props have no surface property");
+    let steps = |name: &str| map.sounds.surface(name).is_some_and(|s| s.step_left.is_some());
+    assert!(steps("default"), "no default steps");
+    let known = solid
+        .iter()
+        .filter(|p| map.models[p.model].surfaceprop.as_deref().is_some_and(steps))
+        .count();
+    assert!(
+        known * 10 >= solid.len() * 9,
+        "only {known} of {} props have their own steps",
+        solid.len()
+    );
+    // Props aren't all the world's concrete: crates, metal and wood show up.
+    let names: std::collections::HashSet<_> = solid
+        .iter()
+        .filter_map(|p| map.models[p.model].surfaceprop.as_deref())
+        .collect();
+    assert!(names.len() >= 3, "surfaces: {names:?}");
+}

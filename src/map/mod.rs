@@ -15,7 +15,7 @@ use bevy::{
 
 use crate::core::{SpawnPoint, Team};
 // Collision-world types live in `core` (the greybox map uses them too).
-pub use crate::core::{MapBrush, MapBrushCollider, MapBrushes, MapWater, MapWaterVolume};
+pub use crate::core::{MapBrush, MapBrushCollider, MapBrushes, MapWater, MapWaterVolume, PropSurface};
 
 mod dust;
 pub mod prop_material;
@@ -203,6 +203,8 @@ pub struct MapModel {
     pub bounds: (Vec3, Vec3),
     /// The model's own collision model (Source `.phy`), when it has one.
     pub collision: Option<MapCollision>,
+    /// Surface property name (footsteps on the prop), lower-case.
+    pub surfaceprop: Option<String>,
 }
 
 /// A model's collision: convex pieces in model space, and the physics
@@ -1160,7 +1162,7 @@ fn spawn_map(
             brushes.extend(
                 pieces
                     .iter()
-                    .map(|planes| place_brush(planes, prop.translation, prop.rotation)),
+                    .map(|planes| place_brush(planes, prop.translation, prop.rotation, model.surfaceprop.clone())),
             );
         }
         let mut e = commands.spawn((
@@ -1192,9 +1194,15 @@ fn spawn_map(
                     },
                     MapPropCollider,
                 ));
+                if let Some(s) = &model.surfaceprop {
+                    e.insert(PropSurface(s.clone()));
+                }
             }
             (PropSolid::Mesh, Some(collider)) => {
                 e.insert((RigidBody::Static, collider.clone(), MapPropCollider));
+                if let Some(s) = &model.surfaceprop {
+                    e.insert(PropSurface(s.clone()));
+                }
                 if prop_brush.is_some() {
                     e.insert(MapBrushCollider);
                 }
@@ -1209,6 +1217,9 @@ fn spawn_map(
                     );
                     e.insert(RigidBody::Static).with_children(|c| {
                         let mut ec = c.spawn((child, MapPropCollider));
+                        if let Some(s) = &model.surfaceprop {
+                            ec.insert(PropSurface(s.clone()));
+                        }
                         if prop_brush.is_some() {
                             ec.insert(MapBrushCollider);
                         }
@@ -1698,7 +1709,7 @@ fn convex_planes(model: &MapModel, share: f32) -> Option<Vec<(Vec3, f32)>> {
 
 /// Model-space planes placed in the world, with the bounding box's planes
 /// added as bevels (so box sweeps stop at corners like Source's brushes).
-fn place_brush(planes: &[(Vec3, f32)], translation: Vec3, rotation: Quat) -> MapBrush {
+fn place_brush(planes: &[(Vec3, f32)], translation: Vec3, rotation: Quat, surface: Option<String>) -> MapBrush {
     let mut world: Vec<(Vec3, f32)> = planes
         .iter()
         .map(|(n, d)| {
@@ -1735,6 +1746,7 @@ fn place_brush(planes: &[(Vec3, f32)], translation: Vec3, rotation: Quat) -> Map
         min,
         max,
         ladder: false,
+        surface,
     }
 }
 

@@ -27,6 +27,7 @@ fn brush(planes: &[(Vec3, f32)], lo: Vec3, hi: Vec3) -> MapBrush {
         min: a.min(b),
         max: a.max(b),
         ladder: false,
+        surface: None,
     }
 }
 

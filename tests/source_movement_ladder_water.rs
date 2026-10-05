@@ -28,6 +28,10 @@ const DEEP: Vec3 = Vec3::new(-1500.0, 0.0, 0.0);
 /// whose top (60) is below eye height + 8.
 const SHALLOW: Vec3 = Vec3::new(1500.0, 0.0, 0.0);
 
+/// A 20-unit-tall prop (as a brush) standing on the floor.
+const PROP: Vec3 = Vec3::new(500.0, 0.0, 0.0);
+const PROP_TOP: f32 = 20.0;
+
 fn test_map(mut commands: Commands) {
     let mut brushes = vec![
         // Floor everywhere but the deep pool.
@@ -59,6 +63,15 @@ fn test_map(mut commands: Commands) {
         Vec3::new(SHALLOW.x + 600.0, 256.0, 60.0),
         false,
     ));
+    // A prop placed as a brush, with its own surface property.
+    brushes.push(MapBrush {
+        surface: Some("metal_box".into()),
+        ..brush(
+            PROP - Vec3::new(50.0, 50.0, 0.0),
+            PROP + Vec3::new(50.0, 50.0, PROP_TOP),
+            false,
+        )
+    });
     let water = |lo: Vec3, hi: Vec3| MapWaterVolume {
         brush: brush(lo, hi, false),
         slime: false,
@@ -401,4 +414,21 @@ fn holding_jump_keeps_the_water_jump() {
     }
     let feet = pl.feet();
     assert!(feet.z >= 59.0, "climbed out: {feet}");
+}
+
+/// Sound spec 3: footsteps use the ground trace's surface. Standing on a
+/// prop gives the prop's surface property, not the world floor's.
+#[test]
+fn standing_on_a_prop_uses_its_surface() {
+    let mut on_prop = Player::at(PROP + Vec3::Z * (PROP_TOP + 0.5), shared());
+    on_prop.sim.ticks(4);
+    assert!(on_prop.state().on_ground, "should stand on the prop");
+    assert_eq!(on_prop.state().surface.as_deref(), Some("metal_box"));
+
+    // The world floor beside it carries no surface of its own (it comes
+    // from the map's faces, absent here).
+    let mut on_floor = Player::at(PROP + Vec3::new(300.0, 0.0, 0.5), shared());
+    on_floor.sim.ticks(4);
+    assert!(on_floor.state().on_ground);
+    assert_eq!(on_floor.state().surface, None);
 }

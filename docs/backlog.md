@@ -11,6 +11,26 @@ when work starts; delete them when done.
   tonemapping, bloom); the reference install runs LDR. Compare and match
   both if players use HDR.
 - **More refcmp views** across dust2 (mid, long, B, spawns) and other maps.
+- **Debug overlays, CS:S-style**, toggled by console cvars (and a key or
+  flag until the console exists):
+  - `cl_showpos 1`: map name, position, angles and velocity in the top
+    corner, as CS:S draws it.
+  - `cl_showfps 1` / `net_graph`-like FPS counter (frame time, min/max).
+  - Sound emitter markers: where each sound was emitted, with the entry
+    name (and wave) drawn at that spot for a few seconds after it plays,
+    fading out; filters by channel/name. Source has `snd_show`/
+    `snd_visualize` as a reference for the idea.
+  - Other Source debug text worth copying as we go (`developer 1`
+    notify lines, `cl_showpos 2`).
+
+## Movement
+
+- **Walk + crouch is extremely slow.** Holding walk (+speed) while ducked
+  barely moves the player. specs/cs_source/movement.md ("Walking", walk +
+  duck) says CS:S does this too: wish speed 44.2, one tick of acceleration
+  smaller than friction's stop drop, so speed never builds. Check in the
+  real game first; if CS:S moves at a normal crouch-walk pace, the
+  measurement or the model is wrong and the spec needs a revision.
 
 ## Gameplay
 

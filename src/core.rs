@@ -133,6 +133,9 @@ pub struct MapBrush {
     pub max: Vec3,
     /// Climbable (Source: ladder contents).
     pub ladder: bool,
+    /// Surface property name (footsteps), lower-case, for brushes that
+    /// carry their own (props). None: look it up from the world's faces.
+    pub surface: Option<String>,
 }
 
 impl MapBrush {
@@ -151,6 +154,7 @@ impl MapBrush {
             min,
             max,
             ladder: false,
+            surface: None,
         }
     }
 
@@ -179,3 +183,8 @@ pub struct MapBrushes(pub Vec<MapBrush>);
 /// sweeps `MapBrushes` itself can leave it out of physics queries.
 #[derive(Component, Debug)]
 pub struct MapBrushCollider;
+
+/// A prop collider's surface property name (lower-case), reported by traces
+/// that hit it (footsteps).
+#[derive(Component, Clone, Debug)]
+pub struct PropSurface(pub String);

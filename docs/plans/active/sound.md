@@ -22,7 +22,11 @@ Started 2026-10-05, from specs/cs_source/sounds.md.
   precaching the entries a map uses).
 - **Surfaces:** world meshes carry their material's `$surfaceprop`; a
   grid of world triangles answers "surface under this point"; surface
-  properties give step sounds and the game material.
+  properties give step sounds and the game material. Props carry their
+  own (`.phy` surfaceprop, else the model's `$surfaceprop`) on their
+  brushes and colliders, and the ground trace reports it, so standing on
+  a prop uses the prop's steps. Names the scripts don't define step as
+  "default".
 
 ## Slices
 

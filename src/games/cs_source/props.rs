@@ -95,6 +95,7 @@ fn convert_model(model: &vmdl::Model, skin: i32, materials: &mut MaterialLoader)
         meshes,
         bounds: (a.min(b), a.max(b)),
         collision: None,
+        surfaceprop: None,
     }
 }
 
@@ -307,6 +308,15 @@ fn place_props(
                 Ok(m) => {
                     let mut model = convert_model(&m, prop.skin, materials);
                     model.collision = load_collision(materials, &prop.model);
+                    // What traces against the prop report: its collision
+                    // model's surface, else the model's own $surfaceprop.
+                    model.surfaceprop = model
+                        .collision
+                        .as_ref()
+                        .map(|c| c.surfaceprop.as_str())
+                        .filter(|s| !s.is_empty())
+                        .or(Some(m.surface_prop()).filter(|s| !s.is_empty()))
+                        .map(str::to_lowercase);
                     data.models.push(model);
                     Some(data.models.len() - 1)
                 }

@@ -17,7 +17,7 @@ use bevy::prelude::*;
 use crate::{
     core::{Intent, MovementState, SimSet, Velocity},
     map::{
-        MapBrushCollider, MapBrushes, MapWater, PhysicsProp, PlaySound, PushAway,
+        MapBrushCollider, MapBrushes, MapWater, PhysicsProp, PlaySound, PropSurface, PushAway,
         sound::{SoundBank, SurfaceGrid},
     },
     slots::RegisterSlots,
@@ -451,6 +451,18 @@ struct Trace {
     end: Vec3,
     normal: Vec3,
     start_solid: bool,
+    /// What was hit, when it carries its own surface property (props).
+    /// None for the world: footsteps look it up from the faces below.
+    surface: Option<HitSurface>,
+}
+
+/// Where a trace hit's surface property lives (`Tracer::surface_name`).
+#[derive(Clone, Copy, Debug)]
+enum HitSurface {
+    /// Index into `MapBrushes`.
+    Brush(usize),
+    /// A physics collider with a `PropSurface`.
+    Collider(Entity),
 }
 
 impl Trace {
@@ -468,6 +480,9 @@ struct Tracer<'a, 'w, 's> {
     brushes: Option<&'a MapBrushes>,
     water: Option<&'a MapWater>,
     surfaces: Option<&'a SurfaceGrid>,
+    /// Surface property of a physics collider (props), by entity.
+    prop_surfaces: &'a dyn Fn(Entity) -> Option<String>,
+
     sounds: Option<&'a crate::map::MapSounds>,
     /// Standing and ducked box heights.
     heights: (f32, f32),
@@ -476,12 +491,22 @@ struct Tracer<'a, 'w, 's> {
 /// Brush sweep result, engine space.
 struct BrushHit {
     ladder: bool,
+    /// The hit brush, when it has its own surface property.
+    surface: Option<usize>,
     fraction: f32,
     normal: Vec3,
     start_solid: bool,
 }
 
 impl Tracer<'_, '_, '_> {
+    /// The surface property name a trace hit carries, if any.
+    fn surface_name(&self, hit: HitSurface) -> Option<String> {
+        match hit {
+            HitSurface::Brush(i) => self.brushes?.0.get(i)?.surface.clone(),
+            HitSurface::Collider(e) => (self.prop_surfaces)(e),
+        }
+    }
+
     /// Sweep an axis-aligned box (centre `from` to `to`, half size `half`,
     /// engine meters) through the brushes: each brush's planes pushed out
     /// by the box's extent along their normals, then the centre's segment
@@ -490,6 +515,7 @@ impl Tracer<'_, '_, '_> {
         let eps = TRACE_BACKOFF * METERS_PER_UNIT;
         let mut out = BrushHit {
             ladder: false,
+            surface: None,
             fraction: 1.0,
             normal: Vec3::ZERO,
             start_solid: false,
@@ -499,7 +525,7 @@ impl Tracer<'_, '_, '_> {
         };
         let lo = from.min(to) - half - Vec3::splat(eps);
         let hi = from.max(to) + half + Vec3::splat(eps);
-        'brush: for b in &brushes.0 {
+        'brush: for (i, b) in brushes.0.iter().enumerate() {
             if b.max.cmplt(lo).any() || b.min.cmpgt(hi).any() {
                 continue;
             }
@@ -544,6 +570,7 @@ impl Tracer<'_, '_, '_> {
                 out.fraction = enter.max(0.0);
                 out.normal = clip;
                 out.ladder = b.ladder;
+                out.surface = b.surface.is_some().then_some(i);
             }
         }
         out
@@ -578,6 +605,7 @@ impl Tracer<'_, '_, '_> {
             end: to,
             normal: Vec3::ZERO,
             start_solid,
+            surface: None,
         };
         if len < 1e-6 {
             return Trace { end: from, ..miss };
@@ -591,6 +619,7 @@ impl Tracer<'_, '_, '_> {
             end: from + delta * brush.fraction,
             normal: to_source(brush.normal).normalize_or_zero(),
             start_solid,
+            surface: brush.surface.map(HitSurface::Brush),
         };
         let shape = Collider::cuboid(half.x * 2.0, half.y * 2.0, half.z * 2.0);
         let Ok(dir) = Dir3::new(to_engine(delta / len)) else {
@@ -622,6 +651,7 @@ impl Tracer<'_, '_, '_> {
                     end: from + delta * fraction,
                     normal: to_source(hit.normal1).normalize_or_zero(),
                     start_solid,
+                    surface: Some(HitSurface::Collider(hit.entity)),
                 };
             }
         }
@@ -936,7 +966,7 @@ impl Mover<'_, '_, '_, '_> {
             let (lo, hi) = self.trace.hull(self.me.ducked);
             let down = self.feet - Vec3::Z * GROUND_PROBE;
             let full = self.trace.sweep_box(lo, hi, self.feet, down);
-            let mut ground = (full.hit() && full.normal.z >= WALKABLE_NORMAL_Z).then_some(full.normal);
+            let mut ground = (full.hit() && full.normal.z >= WALKABLE_NORMAL_Z).then_some(full);
             if ground.is_none() {
                 let mid = Vec3::ZERO;
                 let quarters = [
@@ -947,14 +977,15 @@ impl Mover<'_, '_, '_, '_> {
                 ];
                 ground = quarters.iter().find_map(|(a, b)| {
                     let tr = self.trace.sweep_box(*a, *b, self.feet, down);
-                    (tr.hit() && tr.normal.z >= WALKABLE_NORMAL_Z).then_some(tr.normal)
+                    (tr.hit() && tr.normal.z >= WALKABLE_NORMAL_Z).then_some(tr)
                 });
             }
             self.me.on_ground = ground.is_some();
-            if let Some(n) = ground {
-                self.me.ground_normal = n;
+            if let Some(tr) = ground {
+                self.me.ground_normal = tr.normal;
                 self.v.z = 0.0;
-                self.record_surface();
+                let hit = tr.surface.and_then(|h| self.trace.surface_name(h));
+                self.record_surface(hit);
             } else if self.v.z > 0.0 {
                 self.me.surface_friction = UPWARD_AIR_FRICTION;
             }
@@ -962,19 +993,29 @@ impl Mover<'_, '_, '_, '_> {
         self.water_check();
     }
 
-    /// The surface under the feet (the ground just found).
-    fn record_surface(&mut self) {
-        if let Some(grid) = self.trace.surfaces
+    /// The surface under the feet: the ground trace's own (a prop's), else
+    /// the world face below (sound spec 3: the ground trace's surface).
+    fn record_surface(&mut self, hit: Option<String>) {
+        if hit.is_some() {
+            self.me.surface = hit;
+        } else if let Some(grid) = self.trace.surfaces
             && let Some(s) = grid.below(to_engine(self.feet + Vec3::Z), 6.0 * METERS_PER_UNIT)
         {
             self.me.surface = Some(s.to_string());
         }
     }
 
-    /// Play a footstep on `surface`: its left or right step, alternating
+    /// Play a footstep on `surface` (unknown names: "default"): its left or
+    /// right step, alternating
     /// (the first after spawn is a right step), at `volume`.
     fn play_step(&mut self, surface: &str, volume: f32) {
-        let Some(s) = self.trace.sounds.and_then(|b| b.surface(surface)) else {
+        // A name the surface scripts don't define (dust2's "stone" props)
+        // uses "default", whose steps every surface inherits.
+        let Some(s) = self
+            .trace
+            .sounds
+            .and_then(|b| b.surface(surface).or_else(|| b.surface("default")))
+        else {
             return;
         };
         let entry = if self.me.step_left { &s.step_left } else { &s.step_right };
@@ -1626,6 +1667,7 @@ fn step(
     brush_colliders: Query<Entity, With<MapBrushCollider>>,
     props: Query<(Entity, &Transform, &PhysicsProp), Without<SourceMovement>>,
     surfaces: Option<Res<SurfaceGrid>>,
+    prop_surfaces: Query<&PropSurface>,
     bank: Option<Res<SoundBank>>,
     mut play: MessageWriter<PlaySound>,
     cfg: Res<SourceMovementConfig>,
@@ -1651,12 +1693,14 @@ fn step(
             right,
             props.iter().map(|(_, t, p)| (t, p)),
         );
+        let prop_surface = |e: Entity| prop_surfaces.get(e).ok().map(|s| s.0.clone());
         let tracer = Tracer {
             query: &query,
             filter: SpatialQueryFilter::from_excluded_entities(excluded),
             brushes: brushes.as_deref(),
             water: water.as_deref(),
             surfaces: surfaces.as_deref(),
+            prop_surfaces: &prop_surface,
             sounds: bank.as_ref().map(|b| &*b.0),
             heights: (cfg.stand_height, cfg.duck_height),
         };

@@ -23,6 +23,7 @@ Small, current, honest. Remove entries when fixed.
 | movement | Source movement sweeps displacements and concave or rounded props (182 of dust2's 295) with avian shape casts; world brushes and convex props (hull within 1 cm of 75% of the surface, from the visible mesh, not `.phy`) are swept exactly | Exact on crates and boxes; terrain matches CS:S in movecmp |
 | map | Sprites: glow visibility is 5 line tests to the occlusion proxy (the game uses GPU occlusion queries) with no fade-in; sprite colors add in linear light (the game adds raw gamma values); render modes other than 3, 5 and 9 aren't drawn | dust2's lamp glows match CS:S closely (refcmp glow_lamp) |
 | map | Dust motes spawn in the brush model's bounds (the game keeps only points inside its brushes; dust2's volumes are boxes); no wind entities yet (dust2 has none) | Matches the spec on dust2 |
+| sound | A prop surface name the surface scripts don't define (dust2's 19 "stone" rock props) steps as "default"; the sound spec doesn't say what the engine does with unknown names | Assumed from "default" being every surface's base; check by ear in CS:S |
 | map | Maps load synchronously before the app starts | dust2 converts in well under a second |
 | deps | `vbsp` pulls `binrw` 0.14, which rustc flags as future-incompatible | Upstream; watch on Rust upgrades |
 | build | Windows build not yet verified | Needs the Windows PC set up (see plans) |

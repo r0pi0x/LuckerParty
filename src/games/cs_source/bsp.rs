@@ -612,6 +612,7 @@ fn map_brush(points: Vec<[f32; 3]>, planes: Vec<(Vec3, f32)>, ladder: bool) -> c
         min,
         max,
         ladder,
+        surface: None,
     }
 }
 
