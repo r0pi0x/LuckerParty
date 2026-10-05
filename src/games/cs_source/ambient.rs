@@ -17,6 +17,42 @@ fn lump(bytes: &[u8], index: usize) -> &[u8] {
     bytes.get(ofs..ofs + len).unwrap_or(&[])
 }
 
+/// A BSP leaf as stored (public BSP v20 description, lump 10). vbsp's own
+/// leaf list is re-sorted by cluster, so its indices don't match the tree's.
+#[derive(Clone, Copy, Debug)]
+pub struct RawLeaf {
+    pub contents: i32,
+    /// Leaf flags: 0x01 sees the 3D sky, 0x04 sees the 2D sky.
+    pub flags: u8,
+    pub mins: [i16; 3],
+    pub maxs: [i16; 3],
+}
+
+pub const CONTENTS_SOLID: i32 = 0x1;
+pub const LEAF_SKY: u8 = 0x01;
+pub const LEAF_SKY2D: u8 = 0x04;
+
+/// The world's leaves in tree order.
+pub fn raw_leaves(bytes: &[u8]) -> Vec<RawLeaf> {
+    const LUMP_LEAFS: usize = 10;
+    let version = bytes
+        .get(8 + LUMP_LEAFS * 16 + 8..8 + LUMP_LEAFS * 16 + 12)
+        .map_or(1, |v| i32::from_le_bytes(v.try_into().unwrap()));
+    // Version 0 leaves carry an ambient light cube (24 bytes) before the padding.
+    let size = if version == 0 { 56 } else { 32 };
+    let i16_at = |b: &[u8], at: usize| i16::from_le_bytes([b[at], b[at + 1]]);
+    lump(bytes, LUMP_LEAFS)
+        .chunks_exact(size)
+        .map(|b| RawLeaf {
+            contents: i32_at(b, 0),
+            // Area in the low 9 bits, flags in the high 7.
+            flags: (u16::from_le_bytes([b[6], b[7]]) >> 9) as u8,
+            mins: [i16_at(b, 8), i16_at(b, 10), i16_at(b, 12)],
+            maxs: [i16_at(b, 14), i16_at(b, 16), i16_at(b, 18)],
+        })
+        .collect()
+}
+
 fn f32_at(b: &[u8], at: usize) -> f32 {
     f32::from_le_bytes(b[at..at + 4].try_into().unwrap())
 }
@@ -88,17 +124,18 @@ pub struct MapLighting {
 const DWL_FLAGS_INAMBIENTCUBE: i32 = 1;
 
 impl MapLighting {
-    pub fn read(bsp: &Bsp, bytes: &[u8]) -> Self {
+    pub fn read(bytes: &[u8]) -> Self {
         let (mut index, mut samples) = (lump(bytes, 52), lump(bytes, 56));
         if index.is_empty() || samples.is_empty() {
             (index, samples) = (lump(bytes, 51), lump(bytes, 55));
         }
+        let raw = raw_leaves(bytes);
         let mut leaves = Vec::new();
         for (i, entry) in index.as_chunks::<4>().0.iter().enumerate() {
             let count = u16::from_le_bytes([entry[0], entry[1]]) as usize;
             let first = u16::from_le_bytes([entry[2], entry[3]]) as usize;
             let mut list = Vec::new();
-            if let Some(leaf) = bsp.leaf(i) {
+            if let Some(leaf) = raw.get(i) {
                 let lo = Vec3::new(leaf.mins[0] as f32, leaf.mins[1] as f32, leaf.mins[2] as f32);
                 let hi = Vec3::new(leaf.maxs[0] as f32, leaf.maxs[1] as f32, leaf.maxs[2] as f32);
                 for s in samples.as_chunks::<28>().0.iter().skip(first).take(count) {

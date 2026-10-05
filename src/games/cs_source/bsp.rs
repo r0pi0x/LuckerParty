@@ -63,7 +63,8 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
         mesh.alpha = r.alpha;
         mesh.double_sided = r.double_sided;
     }
-    let lighting = super::ambient::MapLighting::read(&bsp, &bytes);
+    data.sky_vis = Some(sky_vis(&bsp, &bytes));
+    let lighting = super::ambient::MapLighting::read(&bytes);
     let occluders = super::ambient::Occluders::new(
         &shadow_hulls(&bsp),
         (&data.collision_positions, &data.collision_indices),
@@ -356,6 +357,42 @@ fn sky_camera(bsp: &Bsp) -> Option<crate::map::MapSkyCamera> {
         .unwrap_or(16.0);
     let fog = parse_fog(&e);
     Some(crate::map::MapSkyCamera { origin, scale, fog })
+}
+
+/// The world's BSP tree with each leaf's sky visibility (leaf flags,
+/// specs/cs_source/shadows_sky.md).
+fn sky_vis(bsp: &Bsp, bytes: &[u8]) -> crate::map::MapSkyVis {
+    use super::ambient::{CONTENTS_SOLID, LEAF_SKY, LEAF_SKY2D, raw_leaves};
+    use crate::map::LeafSky;
+    let head = bsp.models.first().map_or(0, |m| m.head_node.max(0) as usize);
+    // Re-root at the world's head node (normally 0) by offsetting indices.
+    let nodes = bsp.nodes[head..]
+        .iter()
+        .map(|n| {
+            let child = |c: i32| if c >= 0 { c - head as i32 } else { c };
+            (n.plane_index as usize, [child(n.children[0]), child(n.children[1])])
+        })
+        .collect();
+    let planes = bsp
+        .planes
+        .iter()
+        .map(|p| (to_engine_dir(p.normal), p.dist * METERS_PER_UNIT))
+        .collect();
+    let leaves = raw_leaves(bytes)
+        .iter()
+        .map(|l| {
+            if l.contents & CONTENTS_SOLID != 0 {
+                LeafSky::Solid
+            } else if l.flags & LEAF_SKY != 0 {
+                LeafSky::Sky3d
+            } else if l.flags & LEAF_SKY2D != 0 {
+                LeafSky::Sky2d
+            } else {
+                LeafSky::None
+            }
+        })
+        .collect();
+    crate::map::MapSkyVis { planes, nodes, leaves }
 }
 
 /// Fog keys shared by `sky_camera` and `env_fog_controller`.

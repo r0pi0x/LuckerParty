@@ -271,6 +271,48 @@ pub struct MapData {
     pub sprites: Vec<MapSprite>,
     pub dust: Vec<MapDust>,
     pub ropes: Vec<MapRope>,
+    /// Which sky each part of the map can see (Source: BSP leaf flags). When
+    /// set, the camera draws the sky only from places that see it, and
+    /// clears to black inside solid.
+    pub sky_vis: Option<MapSkyVis>,
+}
+
+/// What the BSP leaf around a point can see of the sky.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LeafSky {
+    /// Inside solid: the view clears to black.
+    Solid,
+    /// No sky visible: nothing is drawn behind the world.
+    None,
+    /// The 2D sky only.
+    Sky2d,
+    /// The 3D skybox (with the 2D sky behind it).
+    Sky3d,
+}
+
+/// A BSP tree for point queries, in engine space (meters).
+#[derive(Clone, Debug, Default)]
+pub struct MapSkyVis {
+    /// Plane normal and distance.
+    pub planes: Vec<(Vec3, f32)>,
+    /// Plane index and children (front, back); a negative child `c` is
+    /// leaf `-c - 1`.
+    pub nodes: Vec<(usize, [i32; 2])>,
+    pub leaves: Vec<LeafSky>,
+}
+
+impl MapSkyVis {
+    pub fn at(&self, p: Vec3) -> LeafSky {
+        let mut node = 0i32;
+        while node >= 0 {
+            let Some(&(plane, children)) = self.nodes.get(node as usize) else {
+                return LeafSky::None;
+            };
+            let (n, d) = self.planes[plane];
+            node = if n.dot(p) - d >= 0.0 { children[0] } else { children[1] };
+        }
+        self.leaves.get((-node - 1) as usize).copied().unwrap_or(LeafSky::None)
+    }
 }
 
 /// A solid convex volume as planes: a point p is inside when n.p <= d for
@@ -492,6 +534,17 @@ pub struct SkyboxCamera;
 #[derive(Resource, Clone)]
 struct SkyCameraInfo(MapSkyCamera);
 
+/// The map's sky visibility, when it has one (see `MapSkyVis`).
+#[derive(Resource)]
+struct SkyVis(MapSkyVis);
+
+/// Set when the map has a real 3D skybox (not just the 2D-sky camera).
+#[derive(Resource)]
+struct ActiveMapHas3dSky;
+
+/// Holds nothing: the sky camera's layer when only the 2D sky shows.
+const EMPTY_LAYER: usize = 31;
+
 /// The map's sky cubemap, for cameras to show.
 #[derive(Resource, Clone)]
 pub struct MapSkybox(pub Handle<Image>);
@@ -651,6 +704,21 @@ fn spawn_map(
             && view == MapDebugView::Normal
         {
             commands.insert_resource(SkyCameraInfo(cam.clone()));
+            commands.insert_resource(ActiveMapHas3dSky);
+        }
+        if let Some(vis) = &data.sky_vis
+            && view == MapDebugView::Normal
+        {
+            commands.insert_resource(SkyVis(vis.clone()));
+            // The sky is drawn by a sky camera even without a 3D skybox, so
+            // it can be switched off where the map can't see it.
+            if data.sky_camera.is_none() {
+                commands.insert_resource(SkyCameraInfo(MapSkyCamera {
+                    origin: Vec3::ZERO,
+                    scale: 1.0,
+                    fog: None,
+                }));
+            }
         }
         for m in &data.meshes {
             let lit = lightmap.as_ref().filter(|_| m.lightmap_uvs.len() == m.positions.len());
@@ -1505,6 +1573,8 @@ fn layer_of(skybox: bool) -> bevy::camera::visibility::RenderLayers {
 fn follow_sky_camera(
     mut commands: Commands,
     info: Option<Res<SkyCameraInfo>>,
+    vis: Option<Res<SkyVis>>,
+    has_3d_sky: Option<Res<ActiveMapHas3dSky>>,
     main: Query<
         (
             &GlobalTransform,
@@ -1516,7 +1586,17 @@ fn follow_sky_camera(
         ),
         (With<Camera3d>, Without<SkyboxCamera>),
     >,
-    mut sky: Query<(Entity, &mut Transform, &mut GlobalTransform, &mut Projection), With<SkyboxCamera>>,
+    mut sky: Query<
+        (
+            Entity,
+            &mut Transform,
+            &mut GlobalTransform,
+            &mut Projection,
+            &mut Camera,
+            &mut bevy::camera::visibility::RenderLayers,
+        ),
+        With<SkyboxCamera>,
+    >,
 ) {
     let Some(info) = info else { return };
     let Some((main_tf, projection, target, tonemapping, main_entity, main_camera)) =
@@ -1527,14 +1607,40 @@ fn follow_sky_camera(
     let eye = main_tf.translation();
     let translation = info.0.origin + eye / info.0.scale;
     let rotation = main_tf.rotation();
-    if !matches!(main_camera.clear_color, ClearColorConfig::None) {
+    // Source: the sky is drawn only from leaves that see it; inside solid
+    // the view clears to black (specs/cs_source/shadows_sky.md). Leaves
+    // that see no sky show the previous frame in the game; black here.
+    let leaf = vis.as_ref().map_or(LeafSky::Sky3d, |v| v.0.at(eye));
+    let sky_on = matches!(leaf, LeafSky::Sky2d | LeafSky::Sky3d);
+    let layer = if leaf == LeafSky::Sky3d && has_3d_sky.is_some() {
+        SKYBOX_LAYER
+    } else {
+        EMPTY_LAYER
+    };
+    let clear = if sky_on {
+        ClearColorConfig::None
+    } else {
+        ClearColorConfig::Custom(Color::BLACK)
+    };
+    let same = match (main_camera.clear_color, clear) {
+        (ClearColorConfig::None, ClearColorConfig::None) => true,
+        (ClearColorConfig::Custom(a), ClearColorConfig::Custom(b)) => a == b,
+        _ => false,
+    };
+    if !same {
         commands.entity(main_entity).insert(Camera {
-            clear_color: ClearColorConfig::None,
+            clear_color: clear,
             ..main_camera.clone()
         });
     }
     match sky.single_mut() {
-        Ok((entity, mut tf, mut global, mut proj)) => {
+        Ok((entity, mut tf, mut global, mut proj, mut camera, mut layers)) => {
+            if camera.is_active != sky_on {
+                camera.is_active = sky_on;
+            }
+            if !layers.intersects(&bevy::camera::visibility::RenderLayers::layer(layer)) {
+                *layers = bevy::camera::visibility::RenderLayers::layer(layer);
+            }
             tf.translation = translation;
             tf.rotation = rotation;
             // Propagation has run: set the global transform too (no parent).
@@ -1566,7 +1672,7 @@ fn follow_sky_camera(
                     ..default()
                 }),
                 Transform::from_translation(translation).with_rotation(rotation),
-                bevy::camera::visibility::RenderLayers::layer(SKYBOX_LAYER),
+                bevy::camera::visibility::RenderLayers::layer(layer),
             ));
             if let Some(fog) = &info.0.fog {
                 let [r, g, b] = fog.color;

@@ -341,7 +341,7 @@ fn prop_lighting_model_predicts_lightmaps() {
     let mount = cs_source::mount::open(&install).unwrap();
     let bytes = mount.read("maps/de_dust2.bsp").unwrap();
     let source = vbsp::Bsp::read(&bytes).unwrap();
-    let lighting = ambient::MapLighting::read(&source, &bytes);
+    let lighting = ambient::MapLighting::read(&bytes);
     let occluders = ambient::Occluders::new(
         &bsp::shadow_hulls(&source),
         (&map.collision_positions, &map.collision_indices),
@@ -847,4 +847,54 @@ fn dust_motes_load() {
             lo.x, hi.x, -hi.z, -lo.z, lo.y, hi.y
         );
     }
+}
+
+/// Sky visibility from BSP leaves (specs/cs_source/shadows_sky.md): open
+/// ground sees the 3D sky, a point inside a wall is solid.
+#[test]
+fn sky_visibility_by_leaf() {
+    use mashup::map::LeafSky;
+    let Some(map) = dust2() else { return };
+    let vis = map.sky_vis.as_ref().expect("sky visibility");
+    let at = |x: f32, y: f32, z: f32| vis.at(Vec3::new(x, z, -y) * 0.0254);
+    // CT spawn, eye height.
+    assert_eq!(at(352.0, 2464.0, -24.0), LeafSky::Sky3d);
+    // The refcmp spot where CS:S shows black: inside solid.
+    assert_eq!(at(-1406.0, 900.0, 150.0), LeafSky::Solid);
+    // Far outside the map.
+    assert_eq!(at(0.0, 0.0, 20000.0), LeafSky::Solid);
+    let counts = [LeafSky::Solid, LeafSky::None, LeafSky::Sky2d, LeafSky::Sky3d]
+        .map(|k| vis.leaves.iter().filter(|l| **l == k).count());
+    println!("leaves solid/none/2d/3d: {counts:?}");
+    assert!(counts[1] > 0 && counts[3] > 0, "{counts:?}");
+}
+
+/// Ambient light samples sit inside their own leaf (leaves read in tree
+/// order, not vbsp's cluster-sorted order).
+#[test]
+fn ambient_samples_lie_in_their_leaf() {
+    let Some(_) = dust2() else { return };
+    let config = LocalConfig::load().unwrap();
+    let mount = cs_source::mount::open(&config.game_path(cs_source::GAME).unwrap()).unwrap();
+    let bytes = mount.read("maps/de_dust2.bsp").unwrap();
+    let bsp = vbsp::Bsp::read(&bytes).unwrap();
+    let leaves = cs_source::ambient::raw_leaves(&bytes);
+    let (mut inside, mut total) = (0, 0);
+    for (i, leaf) in leaves.iter().enumerate().filter(|(_, l)| l.contents & 1 == 0).take(400) {
+        let c = |k: usize| (leaf.mins[k] as f32 + leaf.maxs[k] as f32) / 2.0;
+        let p = vbsp::Vector {
+            x: c(0),
+            y: c(1),
+            z: c(2),
+        };
+        total += 1;
+        if cs_source::ambient::leaf_index(&bsp, p) == Some(i) {
+            inside += 1;
+        }
+    }
+    // Leaf boxes are bounds of convex cells, so most centres fall inside.
+    assert!(
+        inside * 10 >= total * 8,
+        "{inside}/{total} leaf centres map back to their leaf"
+    );
 }

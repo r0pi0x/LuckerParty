@@ -48,7 +48,16 @@ Status: draft
 | climb_speed | 200 | units/s | ladder climb speed per held key |
 | ladder_jump_off | 270 | units/s | speed along ladder normal when jumping off |
 | water_jump_up | 256 | units/s | upward speed of a water jump |
-| water_jump_push | 50 | units/s | speed away from the wall during a water jump |
+| water_jump_push | 50 | units/s | horizontal speed toward the wall (onto the ledge) during a water jump |
+| water_jump_reach | 24 | units | forward reach of both water-jump sweeps |
+| water_jump_eye_extra | 8 | units | second water-jump sweep starts this far above eye height |
+| water_jump_drop | 1024 | units | max depth of the ledge-floor sweep |
+| water_jump_min_vz | −180 | units/s | no water jump while sinking faster than this |
+| water_feet_probe | 1 | units | feet water test point above the box bottom |
+| swim_step_extra | 1 | units | swim stepping probes from step size + this above the destination |
+| ladder_floor_probe | 1 | units | point below the box bottom tested for "on floor" while on a ladder |
+| ladder_dismount_push | 200 | units/s | added along the ladder normal when on floor and pushing away |
+| water_current_scale | 50 | units/s per level | base velocity from current contents |
 | water_jump_time | 2000 | ms | water-jump duration |
 | water_wish_scale | 0.8 | – | wish speed multiplier in water |
 | water_sink | 60 | units/s | downward wish when no input in water |
@@ -126,7 +135,7 @@ Gravity is split into two half-steps around the move. This is exact for constant
 - First half (at the start of walking movement, when not in water at waist depth or deeper): vz −= g_scale × sv_gravity × dt/2. The base velocity's z × dt is also added to vz, and the base velocity's z is cleared.
 - Second half (after the move and ground re-detection, when not in water at waist depth or deeper, and not water-jumping): vz −= g_scale × sv_gravity × dt/2.
 - If the player is on ground at the end of the tick, vz = 0.
-- g_scale is the player's gravity multiplier (0 is treated as 1; ladders set it to 0 while attached).
+- g_scale is the player's gravity multiplier. A stored value of 0 means "default" and is treated as 1. Attaching to a ladder writes 0 to it, which therefore only resets it to the default. Ladder mode has no gravity because the ladder move never applies gravity, not because of this multiplier.
 
 At 800 gravity and 64 tick, each half-step is 6.25 units/s.
 
@@ -237,28 +246,136 @@ State: "ducked" (small box in use), "ducking" (in transition), a duck timer (ms)
 
 ### Ladders
 
-- Each tick (alive, not on a train, not noclip): if already on a ladder, probe toward −(last ladder normal). Otherwise probe along forward·f + right·s, normalized (3D view vectors, not flattened). This is skipped when there is no move input. The probe sweeps the box 2 units. If it hits a surface marked as ladder (ladder contents, or a climbable material), the player enters ladder mode. Otherwise a player in ladder mode returns to walking.
-- While on a ladder: gravity multiplier = 0. "On floor" = the point 1 unit below the box bottom is solid, or the player has ground.
-- Climb input comes from the buttons, not the analog move amounts: forward/back give ±200, left/right give ±200.
-- Jump held: leave ladder mode, v = ladder normal × 270.
-- Otherwise, with input: intended = forward_view × fwd + right_view × side. Split it into the part into the ladder face, normal_amount = intended · n, and the rest, lateral = intended − n·normal_amount. Let perp = normalize(up × n) (horizontal along the ladder) and ladder_up = n × perp. The velocity is lateral − ladder_up × normal_amount. So pushing into the ladder climbs. The direction depends on view pitch, and you can face up while moving down.
-  - CS:S-specific (in the shared file, compiled only for CS:S): build the desired direction in the normal/perp plane as perp·(perp·lateral) + n·normal_amount, normalized. If its dot with n is below sv_ladder_angle (−0.707), the perp part of lateral is scaled by sv_ladder_dampen (0.2) before use. This makes it hard to slide sideways off a ladder while climbing.
-  - If on floor and moving away from the ladder (normal_amount > 0), add n × 200 so the player can step off.
-- No input: v = 0 (hangs in place).
-- Ladder movement is: water check, the jump check as usual, add base velocity, slide move, subtract base velocity. No gravity, no friction.
-- Ground detection treats "on ladder and vz > 0" as airborne.
+**What counts as a ladder.** The ladder probe is a box sweep using the same solid mask as normal player movement (solid, player clip, window, grate, moveable, monster contents). It does not look for a separate ladder volume. The surface hit counts as a ladder if:
+- the hit brush carries the ladder contents flag, or
+- the hit surface's material is marked climbable.
 
-### Water (brief)
+A ladder must therefore be something the player collides with, such as a func_ladder brush or a solid/clip brush with the ladder flag or a climbable material. A ladder volume that does not block players is never hit. That a compiled func_ladder brush is player-solid is inferred from the mask, see Open questions.
 
-- Water level: 0 if the point 1 unit above the feet (box centre XY) is not water. 1 (feet) if it is. 2 (waist) if the box mid-height point is also water. 3 (eyes) if the eye point is also water.
-- At waist depth or deeper, the gravity halves are not applied. Movement is swimming:
-  - wish = forward·f + right·s using the full 3D view vectors. Plus: holding jump adds the client max speed upward. No input at all sinks at 60. Otherwise up move + clamp(2·f·forward_z, 0, client max speed) is added upward.
-  - The wish speed is capped at max speed, then multiplied by 0.8.
-  - Friction: speed × (1 − dt × sv_friction × surface_friction), zeroed below 0.1. (sv_waterfriction is defined but not used here.)
-  - Acceleration uses sv_accelerate (not sv_wateraccelerate). It adds along the wish direction up to wishspeed − newspeed (speed, not projection).
-  - Move: if the straight sweep is clear, try to "step" by sweeping down from the destination raised by step size + 1. Otherwise slide.
-- **Water jump** (only at exactly waist depth, vz ≥ −180, not backing into the wall): if a sweep 24 units forward from the box centre hits something, a sweep 24 forward at eye height + 8 is clear, and below that there is walkable ground within 1024 units, then: vz = 256, horizontal velocity is locked to 50 units/s away from the wall, the "jump held" flag is set, and this lasts 2000 ms (or until out of water). During it there is no friction, no acceleration and no gravity halves.
-- Water currents (contents flags) add 50 × water level units/s to base velocity in their direction.
+**Detection, every tick** (alive, not on a train, not noclip). It runs after ducking and before the move:
+1. Choose a probe direction d.
+   - Already in ladder mode: d = −(ladder normal stored last tick).
+   - Otherwise: d = normalize(F·f + R·s). F and R are the full 3D view forward and right vectors (pitch included, not flattened). f and s are the move inputs after the max-speed rescale and the ducked 1/3 scale. If f = s = 0, there is no detection and the player is not on a ladder.
+2. Sweep the current box (standing or ducked) from the origin to origin + 2·d.
+3. If the sweep hit nothing (fraction 1), or what it hit is not a ladder, detection fails. A player who was in ladder mode returns to walking this tick, keeping the current velocity.
+4. Otherwise enter or stay in ladder mode. Store the hit plane normal n (pointing out of the ladder toward the player); it is refreshed every tick. Then compute this tick's velocity (below).
+
+So to grab a ladder, be within 2 units of its face and press a direction whose 3D vector points into it. Looking far up or down while pressing forward shrinks the horizontal reach to 2·cos(pitch), and can make the probe hit the floor or ceiling instead.
+
+**On floor**: the point 1 unit below the box bottom (box centre x/y) has contents exactly equal to "solid", or the player currently has ground.
+
+**Climb input** comes from the held buttons, not the analog move amounts:
+- fwd = +200 if forward is held, −200 if back is held (0 if both or neither).
+- side = +200 if right is held, −200 if left is held.
+
+Max speed, the diagonal rescale and the ducked 1/3 scale do not affect climbing.
+
+**Velocity on the ladder** (replaces v each tick, so there is no momentum):
+- **Jump held** (no fresh press needed): leave ladder mode (walking from this tick on) and set v = 270·n. That tick then runs the normal walking move, see Per-tick order.
+- **No climb buttons held**: v = 0. The player hangs in place, with no gravity.
+- **Otherwise**:
+  1. u = F·fwd + R·side, using the 3D view vectors.
+  2. a = u·n (negative when pushing into the ladder). Into-face part c = a·n. Lateral part L = u − c.
+  3. perp = normalize(Z × n), horizontal and along the ladder face. ladder_up = n × perp, which is +Z for a vertical ladder.
+  4. CS:S-only dampening (in the shared file, compiled only for CS:S): let t = ladder_up·L and p = perp·L. Normalize (perp·p + c). If its dot with n is < sv_ladder_angle (default −0.707), replace L with ladder_up·t + perp·(sv_ladder_dampen·p), where sv_ladder_dampen defaults to 0.2. This applies when the push is mostly into the ladder (within about 45° of straight into it): the sideways part is cut to 20%. Pure sideways strafing is not damped.
+  5. v = L − ladder_up·a. The push into the face becomes climbing along ladder_up.
+  6. If on floor and a > 0 (pushing away from the ladder), add 200·n so the player can back off the bottom.
+
+**Consequences of the pitch mapping** (vertical ladder, facing it squarely, only forward held):
+- vertical speed = 200·(cos p − sin p), where p is the pitch (positive = looking down).
+- Level view climbs at 200. Looking up 45° climbs at 282.84, the maximum (200·√2).
+- Looking down 45° does not move. Looking further down while holding forward descends: at p = 89 the speed is −196.5.
+- Holding back reverses all of this.
+
+**The ladder move** (ladder move type):
+1. Water check.
+2. Jump check: only reachable when jump is not held, so it just clears the held flag.
+3. Add base velocity, slide move, subtract base velocity.
+
+There is no gravity, no friction, no stair stepping, no stick-to-ground, no landing check and no end-of-tick ground detection. In the slide move, the "airborne first plane" bounce path never applies to the ladder move type. Ground detection runs at the start of each ladder tick instead, because the move type is not walking. Moving up (vz > 0 from last tick) on a ladder always counts as airborne. Fall speed (−vz) is still recorded at the start of each tick without ground.
+
+**Entering and leaving:**
+- **Stepping on from the bottom**: walk at the ladder holding forward. When the box is within 2 units, detection succeeds and that tick's velocity is the ladder velocity. The walking move, friction and gravity do not run that tick.
+- **Getting off at the bottom**: holding back while on floor gives a = +200, so v = −ladder_up·200 + 200·n. The downward part is clipped by the floor and the player walks back at 200. In the air, holding back descends at 200 (level view).
+- **Getting off at the top**: when the box rises past the top of the ladder brush, the probe along −n hits nothing. The player returns to walking with the last ladder velocity (e.g. vz = 200), then rises about 200²/(2·800) = 25 more units under gravity while forward input carries them onto the ledge. If the forward probe still reaches ladder surface within 2 units, they re-attach instead.
+- **Jumping off**: v = 270·n, purely horizontal for a vertical ladder. After one tick the player is 4.22 units from the face, beyond the 2-unit reach, so detection fails even while still pressing toward it. If the player has ground and jump was not held last tick, the walking move on that same tick also performs a normal jump.
+
+**Ducking on a ladder**: ducking is processed before ladder detection and works as anywhere else. An in-air duck lifts the origin by the hull difference even on a ladder. The ducked box is used for the probe. Climb speed is unchanged, because the 1/3 scale only touches the move inputs, not the buttons.
+
+**Climb sounds** are played by player code not covered here and do not affect movement.
+
+### Water
+
+**Water level.** Three point-contents tests at the box centre x/y. A point counts as "wet" if its contents include water, slime or the "moveable" flag. The "moveable" flag is a quirk of the water mask.
+1. Feet point: origin.z + box min z + 1, i.e. 1 unit above the feet. If it is not wet, level 0 and water type "empty".
+2. If it is wet: level 1 (feet), and water type = that point's contents (water or slime). Then test the box mid-height point, origin.z + (min z + max z)/2: 36 standing, 18 ducked with the shared boxes. If wet: level 2 (waist).
+3. If level 2: test the eye point, origin.z + current eye height (it follows the duck transition). If wet: level 3 (eyes).
+
+"In water" for movement means level ≥ 2. The level is recomputed:
+- at the start of each walking tick
+- by every ground detection
+- after the water-jump move
+
+Within one tick, contents for each of the three points are cached. A test point within 1 unit of the last tested point for that slot reuses the old answer. The cache is cleared each tick.
+
+**Currents.** If the last point tested has current contents flags, base velocity gets 50 × level units/s along each flagged direction: +x for 0°, +y for 90°, −x for 180°, −y for 270°, and ±z for up/down. The "last point tested" is the deepest point reached.
+
+**Level 1 (feet only)**: ordinary walking/air movement with both gravity halves, ground friction and jumping. Water has no other effect.
+
+**Level ≥ 2: swimming.** Gravity is not applied at all. There is no buoyancy force: the only vertical pulls are the input-driven ones below. Per tick:
+1. **Water-jump check**, only at exactly level 2 (see Water jump).
+2. **Jump button**: if held, vz is set to 100 in water or 80 in slime (replaced, not added) and the ground is removed. This happens every tick it is held, with no release needed, and the swim move below then adjusts it. If not held, the jump-held flag is cleared.
+3. **Swim move:**
+   a. wishvel = F·f + R·s with the full 3D view vectors, then add an upward part:
+      - jump held: + client max speed (the weapon speed, e.g. 250)
+      - no forward, side or up input at all: −60 (drift down)
+      - otherwise: + up move + clamp(2·f·F_z, 0, client max speed). Looking up while moving forward exaggerates the climb, but looking down adds nothing extra (the clamp floor is 0).
+   b. wishspeed = |wishvel|, capped at M, then × 0.8. wishdir = wishvel normalized.
+   c. **Friction**: speed = |v| (3D). newspeed = speed − dt·speed·sv_friction·surface_friction. Set it to 0 if below 0.1, then scale v to it. This is proportional at all speeds, with no stop-speed term.
+   d. **Acceleration**, if wishspeed ≥ 0.1: add = wishspeed − newspeed (3D speed, not projection). If add > 0: amount = min(sv_accelerate·wishspeed·dt·surface_friction, add), and v += amount·wishdir.
+   e. Add base velocity. dest = origin + v·dt. Sweep to dest.
+      - If clear: sweep down from dest raised by (step size + 1) back to dest. If that does not start in solid, move to its end (this rides the player up onto steps of up to 19 units) and finish. If it starts in solid, do a normal slide move.
+      - If blocked: with no ground, slide move. With ground, stair stepping.
+   f. Subtract base velocity.
+4. Ground detection, then vz = 0 if grounded.
+
+There is no landing check and no second gravity half on swim ticks.
+
+Notes:
+- sv_wateraccelerate and sv_waterfriction exist, but the shared swim code does not read them. It uses sv_accelerate and sv_friction.
+- Surface friction is whatever the last ground detection left. While rising slowly in water with no ground (0 < vz ≤ 140) it becomes 0.25, which cuts both water friction and water acceleration to a quarter on the next tick. Holding jump in water hits this every tick.
+- Terminal speeds (sv_friction 4, sv_accelerate ≥ 4, surface friction 1):
+  - swimming with full input: 0.8·M (200 with M = 250)
+  - no-input sink: 48 (= 0.8·60)
+
+**Water jump** (climbing out at a ledge). Checked only at exactly level 2, and only when not already water-jumping. All of these must hold:
+1. vz ≥ −180.
+2. Not backing up: if horizontal speed ≠ 0, the horizontal velocity direction must have a non-negative dot product with the flattened view forward.
+3. Sweep the current box from the box centre (origin + (mins + maxs)/2) 24 units along the flattened forward. It must hit something, and the hit object must not be a physics object the player is carrying.
+4. Sweep the box from (origin.z + eye height + 8) at the same x/y, 24 units forward. It must hit nothing.
+5. From that second sweep's end, sweep down 1024 units. It must hit a plane with normal z ≥ 0.7.
+
+When all hold:
+- vz = 256.
+- The stored water-jump velocity = −50 × (normal of the wall hit in step 3). That is 50 units/s toward the wall, onto the ledge, not away from it.
+- The jump-held flag is set, so the player must re-press to jump.
+- The water-jump timer = 2000 ms.
+
+The rest of the tick that triggered it runs the normal swim move. With a level view and forward held, swim friction takes vz from 256 to 240, and no acceleration is added because 240 > 200. Horizontal velocity is not yet changed.
+
+**While water-jumping** (timer > 0), each tick replaces the whole walking movement:
+1. Water check. If the level is ≤ 1, apply the first gravity half only (−6.25 at 64 tick). At level ≥ 2, no gravity.
+2. Count the timer down by 1000·dt ms. If it reaches ≤ 0, or the water level is 0, the water jump ends: timer 0, flag cleared.
+3. Set horizontal velocity to the stored water-jump velocity, whether or not it ended this tick. vz is untouched.
+4. Slide move, then water check. Skip everything else: no jump check, friction, acceleration, ground detection, second gravity half or landing check.
+
+So vz holds constant while still waist-deep, then falls by only 6.25 per tick (half gravity) once only the feet are wet. The water jump does not end on landing, because no ground detection runs. It ends when the feet leave the water or after 2 s. A pressed jump does nothing during it.
+
+**Entering and leaving water.**
+- When the level changes between 0 and non-zero (either direction) across a tick, a swim sound plays and the server makes a splash.
+- The time of entry is recorded; it is not used by movement.
+- The shared code does not clamp or cut velocity on entry. A fall into deep water keeps its speed and is then slowed only by the proportional water friction (6.25% per tick).
+- Landing: there is no landing check on swim ticks (level ≥ 2), so there is no fall damage. A walking-tick landing at level 1 with fall speed ≥ 350 skips the damage and volume tiers. It still plays the landing sound and kicks the view roll at volume 0.5 (see Falling and landing).
 
 ### Falling and landing
 
@@ -329,11 +446,11 @@ One user command, walking move type, not in water:
 7. Ground: full ground detection runs here if the move type is not walking, or game code moved the player since the last tick (teleport, spawn, trigger push that sets position). Otherwise only: if vz > 250, remove ground.
 8. Remember the water level. If airborne, fall speed = −vz.
 9. Update the duck-jump eye offset (single-player only), then Ducking (incl. the 1/3 input crop when ducked on ground).
-10. Ladder check. It may switch to or from ladder mode and set v.
-11. By move type. For walking:
+10. Ladder detection (see Ladders). This runs after ducking. It may enter ladder mode and set v. It may leave ladder mode, keeping v. A jump off a ladder leaves ladder mode with v = 270·n.
+11. By move type. For ladder mode: water check, (jump-held flag cleared if not held), add base velocity, slide move, subtract base velocity, end. Ground detection for ladder mode already ran in step 7, because the move type was not walking then. For walking (including the tick a player leaves a ladder):
     a. Water check. If below waist depth, apply the first gravity half (and fold base vz in), then clamp velocity.
-    b. If water-jumping: apply water-jump velocity, slide move, water check, end.
-    c. If at waist depth or deeper: water-jump check, jump button, swim, ground detection, vz = 0 if grounded. End.
+    b. If water-jumping: count down the timer (end it if ≤ 0 or level 0), set horizontal v to the water-jump velocity, slide move, water check, end. Gravity this tick is only the half from (a), and only if level ≤ 1.
+    c. If at waist depth or deeper: water-jump check (level exactly 2), jump button (sets vz 100/80), swim move (friction, acceleration, step-or-slide), ground detection, vz = 0 if grounded. End: no gravity, no landing check.
     d. Jump button (or clear the held flag if not held).
     e. If on ground: vz = 0, then friction.
     f. Clamp velocity.
@@ -446,6 +563,46 @@ All at 64 tick (dt = 1/64), flat floor at z = 0 unless stated, sv_gravity 800, s
 | on ground into a 2-wall 90° corner | hold forward into it | contact tick | velocity → 0 (slides along the first wall into the second, whose clip leaves nothing) |
 | sv_maxvelocity 3500 | vz would be −3510 | after clamp | vz = −3500 |
 | ground material friction 0.25 (ice-like, × 1.25 = 0.3125) | hold forward from rest, accel 5 | 1 tick | speed 6.1035 |
+| **Ladders**: vertical ladder face 1 unit in front of the player, ladder normal n = (−1,0,0), player yaw 0 (facing it), in the air (not on floor), already in ladder mode (so the probe is along −n and pitch does not matter for attaching), unless stated | | | |
+| not on ladder, no keys | – | 1 tick | not attached (no probe without input); falls normally |
+| not on ladder, ladder 3 units away | hold forward | 1 tick | not attached (2-unit reach) |
+| pitch 0 | hold forward | 1 tick | attached; v = (0,0,200); z +3.125; no gravity |
+| pitch −45 (looking up) | hold forward | 1 tick | v = (0,0,282.843) |
+| pitch +45 | hold forward | 1 tick | v = (0,0,0) |
+| pitch +60 | hold forward | 1 tick | vz = 200·(0.5 − 0.866025) = −73.205 |
+| pitch +89 | hold forward | 1 tick | vz = −196.48 |
+| pitch −89 | hold forward | 1 tick | vz = +203.46 |
+| pitch 0 | hold back | 1 tick | v = (0,0,−200) |
+| pitch 0 | hold right only | 1 tick | v = (0,−200,0) (sideways along the face, no dampening: angle test gives dot 0) |
+| pitch 0 | hold forward + right | 1 tick | CS:S dampening applies (dot −0.70711 < −0.707): v = (0,−40,200). Without dampening it would be (0,−200,200). |
+| pitch −45 | hold forward + right | 1 tick | dot −0.57735, so no dampening: v = (0,−200,282.843) |
+| on ladder, mid-climb | release all keys | 1 tick | v = (0,0,0), hangs (no gravity, no momentum) |
+| on ladder | hold forward and duck | 1 tick | climb speed unchanged (200 at pitch 0) |
+| on ladder, in the air | press jump (no keys) | that tick | leaves ladder; v = (−270,0,·); walking air move: vz −6.25 during the move, −12.5 at the end; x −4.21875 |
+| same | hold forward toward the ladder | next tick | not re-attached (4.22 > 2 units) |
+| on ladder, on floor at the bottom | hold back, pitch 0 | 1 tick | pre-slide v = (−200,0,−200); floor clips it to (−200,0,0) |
+| climbing at vz 200, box rises past the ladder top | hold forward | the tick the probe misses | walking mode with v = (0,0,200); rises about 25 more units under gravity |
+| **Water**: sv_friction 4, M = client max speed = 250, surface friction 1 at start, no ground, water deep enough for level 3, unless stated | | | |
+| standing box, water surface at height H above the feet | – | level | 0 if H ≤ 1; 1 if 1 < H ≤ 36; 2 if 36 < H ≤ 64; 3 if H > 64 (an exact-surface point is ambiguous, avoid it in tests) |
+| ducked box, surface H | – | level | 2 if 18 < H ≤ 28; 3 if H > 28 |
+| level 3, at rest, sv_accelerate 5 | no input | ticks 1 / 2 | vz = −3.75 / −7.265625 (wish −60·0.8 = −48) |
+| same | no input | ticks 23 / 24 / 25 | −46.40 / −47.25 / −48.0, then stays −48 |
+| level 3, at rest, sv_accelerate 10 | no input | ticks 1 / 2 / 7 / 8 | −7.5 / −14.53 / −43.62 / −48.0 |
+| level 3, at rest, sv_accelerate 5, pitch 0 | hold forward | ticks 1 / 2 | speed 15.625 / 30.273 (horizontal) |
+| same | hold forward | ticks 24 / 25 | 196.88 / 200.0, then stays 200 |
+| level 3, at rest, sv_accelerate 5, pitch −30 | hold forward | tick 1 | v = 15.625 × (0.5, 0, 0.866025) = (7.8125, 0, 13.5316): it swims 60° up (forward·250 plus an extra 250 upward, then normalized) |
+| same | hold forward | tick 2 | speed 19.287, same direction: surface friction is 0.25 after tick 1 (rising, no ground), so friction −0.244 and accel +3.906 |
+| level 3, at rest, sv_accelerate 5, pitch +30 | hold forward | tick 1 | v = 15.625 × (0.866025, 0, −0.5): no extra downward exaggeration |
+| level 2 or 3, at rest, sv_accelerate 5, no move keys | hold jump | tick 1 | vz 100 → friction 93.75 → +15.625 → 109.375 |
+| same | hold jump | tick 2 and every tick after | 102.34375 (vz reset to 100; surface friction 0.25: −1.5625, +3.90625) |
+| same, sv_accelerate 10 | hold jump | tick 1 / tick 2+ | 125.0 / 106.25 |
+| level 2, facing a vertical wall 10 units ahead whose top is below eye height + 8, with walkable ground on top, and open space above it; horizontal speed 0, pitch 0 | hold forward | trigger tick | water jump starts: vz set to 256, then swim friction → 240 (no accel, 240 > 200); horizontal still 0 |
+| same | – | following ticks while level ≥ 2 | v = 50 toward the wall horizontally, vz stays 240 (no gravity) |
+| same | – | ticks at level 1 | vz drops 6.25 per tick (half gravity only); horizontal 50 toward the wall |
+| same | – | feet leave water (level 0) or 2000 ms pass (128 ticks) | water jump ends; normal walking/air movement from the next tick |
+| water jumping | press jump | – | no effect |
+| level 2, sinking at vz −200 | facing a ledge, hold forward | – | no water jump (vz < −180) |
+| falling at 600 into level-3 water | no input | first swim tick | no fall damage; speed × 0.9375 per tick toward the sink terminal (no velocity cut on entry) |
 
 ## CS:S values
 
@@ -522,4 +679,7 @@ Knife script: MaxPlayerSpeed 250, Damage 50, WeaponArmorRatio 1.7, Range 4096 (t
 11. **Fall damage formula as applied by CS:S:** the shared header gives the slope 100/(1024 − 580). CS:S applies the actual damage (and may scale it, e.g. ×1.25 is sometimes cited). Measure HP lost from known drop heights.
 12. **Client move key speeds:** cl_forwardspeed/cl_sidespeed/cl_backspeed in CS:S (believed 400 or 450). Only matters if they are below max speed, which they are not.
 13. **Ladder climb speed in CS:S:** shared is 200. Confirm.
-14. **Tick rate:** the reference listen server runs 66.67 tick. Bhop, surf and KZ community servers commonly run 66 or 100. The test cases above assume 64.
+14. **func_ladder solidity:** the ladder probe uses the player-solid mask, so a ladder must block the player to be found. Confirm how CS:S maps compile func_ladder brushes (contents seen by the probe) by reading the BSP brush contents of a ladder in a map with our loader, and confirm that the player rests against the ladder face.
+15. **Water currents and base velocity:** the shared code adds the current's 50 × level push to base velocity on every water check. That happens several times per tick, and the shared movement never resets base velocity. The engine or player code presumably resets it each tick. Measure drift speed in a current if any CS:S map has one; otherwise ignore.
+16. **CS:S ladder and water overrides:** confirm in the live game the 200 climb speed, the pitch-dependent climb speed (282.8 at 45° up), the 270 jump-off, the swim terminal of 0.8 × max speed, and the 256/50 water jump. CS:S code could override any of these.
+17. **Tick rate:** the reference listen server runs 66.67 tick. Bhop, surf and KZ community servers commonly run 66 or 100. The test cases above assume 64.

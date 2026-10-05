@@ -109,3 +109,9 @@ angles = [5, -90]
 name = "plastic_crate"
 position = [1320.0, 1260.0, 50.0]
 angles = [25, 90]
+
+# Inside solid near the lower tunnels: CS:S clears to black, no sky.
+[[view]]
+name = "in_solid"
+position = [-1406.0, 900.0, 150.0]
+angles = [0, 90]
