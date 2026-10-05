@@ -20,6 +20,9 @@ pub struct Intent {
     pub jump: bool,
     pub crouch: bool,
     pub sprint: bool,
+    /// The walk key (Source's +speed). Shift sets it along with `sprint`;
+    /// each movement reads the one it has.
+    pub walk: bool,
     pub fire: bool,
     pub reload: bool,
 }

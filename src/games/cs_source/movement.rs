@@ -67,6 +67,11 @@ pub struct SourceMovementConfig {
     pub bunnyhop_cap: f32,
     /// sv_autobunnyhopping: holding jump jumps again on landing.
     pub auto_bunnyhopping: bool,
+    /// Max speed scale while the walk key (+speed) is held: CS:S walks at
+    /// 0.52 x the weapon speed (130 with the knife), on the ground, in the
+    /// air and in water; the duck scale applies on top (measured with
+    /// movecmp).
+    pub walk_speed: f32,
     /// sv_ladder_dampen / sv_ladder_angle (CS:S): sideways ladder input is
     /// scaled by `ladder_dampen` when the push is mostly into the ladder
     /// (the angle test's dot below `ladder_angle`). Dampen 1 turns it off.
@@ -183,6 +188,7 @@ impl SourceMovementConfig {
             player_maxspeed: 250.0,
             key_speed: 450.0,
             duck_speed: 1.0 / 3.0,
+            walk_speed: 0.52,
             stand_height: 72.0,
             duck_height: 36.0,
             eye_stand: 64.0,
@@ -1281,7 +1287,10 @@ impl Mover<'_, '_, '_, '_> {
 
     fn tick(&mut self, intent: &Intent) {
         // Move input: full keys send key_speed, rescaled to the max speed.
-        let max_speed = self.cfg.player_maxspeed.min(self.cfg.maxspeed);
+        // Walking (+speed) lowers the max speed itself (CS:S, measured): the
+        // keys rescale to it, and swimming's wish speed is capped by it.
+        let walk = if intent.walk { self.cfg.walk_speed } else { 1.0 };
+        let max_speed = self.cfg.player_maxspeed.min(self.cfg.maxspeed) * walk;
         let (mut f, mut s) = (
             intent.move_axis.y * self.cfg.key_speed,
             intent.move_axis.x * self.cfg.key_speed,

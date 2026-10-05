@@ -125,6 +125,7 @@ fn write_local_intent(
     wheel.pending = (wheel.pending + notches).min(MAX_WHEEL_JUMPS);
     intent.crouch = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::KeyC);
     intent.sprint = keys.pressed(KeyCode::ShiftLeft);
+    intent.walk = keys.pressed(KeyCode::ShiftLeft);
     intent.fire = mouse.pressed(MouseButton::Left);
     intent.reload = keys.pressed(KeyCode::KeyR);
 }

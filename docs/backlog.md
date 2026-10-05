@@ -12,6 +12,20 @@ when work starts; delete them when done.
   both if players use HDR.
 - **More refcmp views** across dust2 (mid, long, B, spawns) and other maps.
 
+## Gameplay
+
+- **Sound effects**: an audio slot (Bevy audio or a mixer crate) playing the
+  game's own sounds from the user's install: footsteps by surface material
+  (Source surfaceprops), jump/land, ladder and water (splash, swim), weapon
+  fire/reload/dry, impacts by material, player hurt/death; positional with
+  distance falloff. Spec the CS:S sound rules (footstep cadence, volumes,
+  `sv_footsteps`, walk/duck silence) from the SDK first.
+- **Weapons**: the weapon slot from the MVP plan (trigger, cost, delivery,
+  effect; hitscan, health, crosshair, ammo HUD), with CS:S weapons from
+  their (locally decrypted) scripts and a spec for firing, spread/recoil,
+  damage by hitgroup and range, penetration, reloads and weapon speeds;
+  the knife first. View models and world models from the install.
+
 ## dust2 fidelity
 
 Counts are from de_dust2's entity lump and static prop lump.
@@ -40,4 +54,4 @@ Counts are from de_dust2's entity lump and static prop lump.
   reflection or fog. Water currents (base velocity) aren't applied.
 - **Prop shadows**: CS:S draws soft dynamic shadows under physics props
   (visible in refcmp `crates_b`).
-- **Sound**: `ambient_generic` and soundscapes, once there's an audio slot.
+- **Sound** (map): `ambient_generic` and soundscapes, once there's an audio slot.

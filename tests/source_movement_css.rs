@@ -203,3 +203,32 @@ fn console_variables() {
     assert_eq!(problems, vec!["unknown console variable sv_cheats".to_string()]);
     assert!(cfg.set_cvar("sv_friction", "fast").is_err());
 }
+
+/// CS:S walking (+speed), measured on the probe server with the knife: the
+/// max speed drops to 250 x 0.52 = 130. From rest the first tick adds
+/// 5 x 130 x 0.015 = 9.75, then 5.25 a tick below stopspeed, levelling off
+/// at 130. Walking ducked holds at 3.3149: one tick of acceleration at
+/// 250 x 0.52 x 0.34 = 44.2, which friction wipes every tick.
+#[test]
+fn walking() {
+    let mut pl = Player::new(&[]);
+    let i = pl.p;
+    pl.sim.intent(i).walk = true;
+    pl.sim.intent(i).move_axis = Vec2::Y;
+    let expected = [9.75, 15.0, 20.25, 25.5, 30.75];
+    for e in expected {
+        pl.tick();
+        assert!((pl.speed() - e).abs() < 1e-3, "walk speed {} vs {e}", pl.speed());
+    }
+    pl.sim.ticks(60);
+    assert!((pl.speed() - 130.0).abs() < 1e-3, "walk top speed {}", pl.speed());
+
+    pl.sim.intent(i).move_axis = Vec2::ZERO;
+    pl.sim.ticks(40);
+    pl.sim.intent(i).crouch = true;
+    pl.sim.intent(i).move_axis = Vec2::Y;
+    for _ in 0..30 {
+        pl.tick();
+        assert!((pl.speed() - 3.3149).abs() < 1e-3, "duck-walk speed {}", pl.speed());
+    }
+}

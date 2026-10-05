@@ -54,6 +54,8 @@ const IN_FORWARD: u32 = 1 << 3;
 const IN_BACK: u32 = 1 << 4;
 const IN_MOVELEFT: u32 = 1 << 9;
 const IN_MOVERIGHT: u32 = 1 << 10;
+/// The walk key (+speed).
+const IN_SPEED: u32 = 1 << 17;
 /// What a held move key sends (cl_forwardspeed / cl_sidespeed).
 const KEY: f32 = 400.0;
 
@@ -104,6 +106,10 @@ impl Input {
         self.buttons |= IN_DUCK;
         self
     }
+    fn walk(mut self) -> Self {
+        self.buttons |= IN_SPEED;
+        self
+    }
 }
 
 struct Scenario {
@@ -132,6 +138,13 @@ fn scenarios() -> Vec<Scenario> {
     jump.push(Input::idle(yaw).jump());
     jump.extend(vec![Input::idle(yaw); 60]);
     out.push(("jump", jump));
+
+    // Walking (+speed) from rest, then walking ducked.
+    let mut walk = settle();
+    walk.extend(vec![Input::idle(yaw).walk().forward(); 60]);
+    walk.extend(vec![Input::idle(yaw); 30]);
+    walk.extend(vec![Input::idle(yaw).walk().duck().forward(); 40]);
+    out.push(("walk", walk));
 
     let mut duck = settle();
     duck.extend(vec![Input::idle(yaw).duck(); 40]);
@@ -565,6 +578,7 @@ fn fuzz_scenarios(map_name: &str, map: &Arc<MapData>, f: &Fuzz, only: Option<&st
             let side = rng.pick(&[-1i8, 0, 0, 1]);
             let jump = rng.unit() < 0.3;
             let duck = rng.unit() < 0.15;
+            let walk = rng.unit() < 0.2;
             let turn = rng.range(-3.0, 3.0);
             let target_pitch = rng.range(-70.0, 70.0);
             for _ in 0..len {
@@ -584,6 +598,9 @@ fn fuzz_scenarios(map_name: &str, map: &Arc<MapData>, f: &Fuzz, only: Option<&st
                 }
                 if duck {
                     i = i.duck();
+                }
+                if walk {
+                    i = i.walk();
                 }
                 inputs.push(i);
             }
@@ -770,6 +787,7 @@ fn run_ours(map: &Arc<MapData>, s: &Scenario, theirs: &[State]) -> Vec<State> {
                 .get(t + 1)
                 .is_some_and(|x| x.ducked && !x.ground && x.buttons.is_some());
             intent.crouch = buttons & IN_DUCK != 0 || bot_ducked;
+            intent.walk = buttons & IN_SPEED != 0;
         }
         sim.ticks(1);
         out.push(state(&sim));
