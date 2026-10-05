@@ -59,6 +59,7 @@ fn main() {
         PhysicsPlugins::default(),
         SimPlugins,
         mashup::map::world_material::WorldMaterialPlugin,
+        mashup::map::rope_material::RopeMaterialPlugin,
     ))
     .insert_resource(Loadout {
         movement: movement::placeholder::ID,

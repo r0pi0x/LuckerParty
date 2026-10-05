@@ -15,8 +15,10 @@ use bevy::{
 
 use crate::core::{SpawnPoint, Team};
 
+pub mod rope_material;
 pub mod world_material;
 
+use rope_material::{RopeMaterial, RopeParams};
 use world_material::{WorldMaterial, WorldParams};
 
 /// Signs for normal maps' red and green channels in the world material.
@@ -168,6 +170,27 @@ pub struct MapData {
     pub look: MapLook,
     pub sky: Option<MapSky>,
     pub sky_camera: Option<MapSkyCamera>,
+    pub ropes: Vec<MapRope>,
+}
+
+/// A rope or cable: a line of points drawn as a strip that always faces the
+/// camera (the rope shader widens it per view). Source's Cable look:
+/// texture x normal map's blue squared x per-point light.
+#[derive(Clone, Debug, Default)]
+pub struct MapRope {
+    /// Engine space, meters.
+    pub points: Vec<Vec3>,
+    /// Texture V per point; U runs across the strip.
+    pub v: Vec<f32>,
+    /// Light per point, lightmap units (0-1).
+    pub light: Vec<Vec3>,
+    /// Full strip width, meters.
+    pub width: f32,
+    pub texture: Option<usize>,
+    pub normal_map: Option<usize>,
+    /// Texture and normal map of a translucent strip drawn behind the rope
+    /// that keeps thin, distant ropes visible (fake anti-aliasing).
+    pub back: Option<(Option<usize>, Option<usize>)>,
 }
 
 /// A 3D skybox: a miniature scene (meshes and props marked `skybox`) drawn
@@ -326,6 +349,7 @@ fn spawn_map(
     mut materials: Option<ResMut<Assets<StandardMaterial>>>,
     mut images: Option<ResMut<Assets<Image>>>,
     mut world_materials: Option<ResMut<Assets<WorldMaterial>>>,
+    mut rope_materials: Option<ResMut<Assets<RopeMaterial>>>,
 ) {
     let data = &pending.0;
     let view = pending.1;
@@ -514,6 +538,40 @@ fn spawn_map(
                     .collect()
             })
             .collect();
+
+        if let Some(rope_materials) = rope_materials.as_mut()
+            && view == MapDebugView::Normal
+        {
+            for (i, rope) in data.ropes.iter().enumerate() {
+                let mesh = meshes.add(rope_material::rope_mesh(rope));
+                let strips =
+                    rope.back
+                        .map(|(t, n)| (t, n, true))
+                        .into_iter()
+                        .chain([(rope.texture, rope.normal_map, false)]);
+                for (texture, normal, back) in strips {
+                    commands.spawn((
+                        Name::new(format!("Rope {i}{}", if back { " (back)" } else { "" })),
+                        MapPart,
+                        Mesh3d(mesh.clone()),
+                        MeshMaterial3d(rope_materials.add(RopeMaterial {
+                            params: RopeParams {
+                                width: rope.width,
+                                back: if back { 1.0 } else { 0.0 },
+                                light_scale: data.look.light_scale,
+                                has_normal_map: if normal.is_some() { 1.0 } else { 0.0 },
+                            },
+                            base: texture.map(|t| textures[t].clone()),
+                            normal: normal.map(|t| textures[t].clone()),
+                            blend: back,
+                        })),
+                        bevy::light::NotShadowCaster,
+                        Transform::default(),
+                        ChildOf(root),
+                    ));
+                }
+            }
+        }
     }
 
     for (i, prop) in data.props.iter().enumerate() {

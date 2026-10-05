@@ -128,8 +128,13 @@ impl<'a> MaterialLoader<'a> {
         } else {
             MapAlpha::Opaque
         };
-        let texture = material.base_texture().and_then(|t| self.texture(t, true));
-        let normal_map = material.bump_map().and_then(|t| self.texture(t, false));
+        // The parser's accessors skip some shaders' own fields (Cable).
+        let (base, bump) = match &material {
+            vmt_parser::material::Material::Cable(m) => (Some(m.base_texture.as_str()), m.bump_map.as_deref()),
+            m => (m.base_texture(), m.bump_map()),
+        };
+        let texture = base.and_then(|t| self.texture(t, true));
+        let normal_map = bump.and_then(|t| self.texture(t, false));
         let decal_scale = match &material {
             vmt_parser::material::Material::LightMappedGeneric(m) if m.decal => Some(m.decal_scale),
             _ => None,
