@@ -35,6 +35,9 @@ Counts are from de_dust2's entity lump and static prop lump.
   (unused on dust2).
 - **Lightmap styles** (switchable lights).
 - **Tonemap** (`env_tonemap_controller`; HDR only). Fog on ropes.
+- **Water surfaces**: swimming works (`MapWater`), but water faces draw as
+  plain textured surfaces, without the Water shader's refraction,
+  reflection or fog. Water currents (base velocity) aren't applied.
 - **Prop shadows**: CS:S draws soft dynamic shadows under physics props
   (visible in refcmp `crates_b`).
 - **Sound**: `ambient_generic` and soundscapes, once there's an audio slot.

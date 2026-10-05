@@ -308,3 +308,39 @@ fn find_props() {
         }
     }
 }
+
+/// Ladder brushes and water volumes in a map (MAP, default de_nuke).
+#[test]
+#[ignore]
+fn ladders_and_water() {
+    let name = std::env::var("MAP").unwrap_or("de_nuke".into());
+    let map = mashup::games::load_map(&format!("cs_source:{name}")).unwrap();
+    let ladders = map.collision_brushes.iter().filter(|b| b.ladder).count();
+    println!("{name}: {ladders} ladder brushes, {} water volumes", map.water.len());
+}
+
+/// Props within R units of a Source point (MAP, AT="x y z").
+#[test]
+#[ignore]
+fn props_near() {
+    let name = std::env::var("MAP").unwrap_or("de_nuke".into());
+    let map = mashup::games::load_map(&format!("cs_source:{name}")).unwrap();
+    let at: Vec<f32> = std::env::var("AT")
+        .unwrap()
+        .split_whitespace()
+        .map(|v| v.parse().unwrap())
+        .collect();
+    let at = Vec3::new(at[0], at[1], at[2]);
+    for p in &map.props {
+        let s = Vec3::new(p.translation.x, -p.translation.z, p.translation.y) / 0.0254;
+        if s.distance(at) < 200.0 {
+            let m = &map.models[p.model];
+            println!(
+                "{:?} at {s:.0} solid {:?} mats {:?}",
+                m.bounds,
+                p.solid,
+                m.meshes.iter().map(|m| &m.material).collect::<Vec<_>>()
+            );
+        }
+    }
+}

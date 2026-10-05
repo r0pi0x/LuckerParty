@@ -6,16 +6,17 @@
 //!
 //! The maths runs in Source units (inches, Z up) like the spec; the
 //! character's `Transform` (engine meters, Y up) is the centre of the
-//! standing box, so feet = origin - 36 units. Not implemented yet: water,
-//! ladders, base velocity (conveyors), view punch, fall damage (the landing
-//! speed is published for it).
+//! standing box, so feet = origin - 36 units. Ladders and water (swimming,
+//! water jumps) follow the spec's sections. Not implemented yet: base
+//! velocity (conveyors, water currents), view punch, fall damage (the
+//! landing speed is published for it).
 
 use avian3d::prelude::*;
 use bevy::prelude::*;
 
 use crate::{
     core::{Intent, MovementState, SimSet, Velocity},
-    map::{MapBrushCollider, MapBrushes},
+    map::{MapBrushCollider, MapBrushes, MapWater},
     slots::RegisterSlots,
 };
 
@@ -66,6 +67,11 @@ pub struct SourceMovementConfig {
     pub bunnyhop_cap: f32,
     /// sv_autobunnyhopping: holding jump jumps again on landing.
     pub auto_bunnyhopping: bool,
+    /// sv_ladder_dampen / sv_ladder_angle (CS:S): sideways ladder input is
+    /// scaled by `ladder_dampen` when the push is mostly into the ladder
+    /// (the angle test's dot below `ladder_angle`). Dampen 1 turns it off.
+    pub ladder_dampen: f32,
+    pub ladder_angle: f32,
 }
 
 /// Console variables players and server configs know, mapped onto the
@@ -83,6 +89,14 @@ pub const CVARS: &[(&str, &str)] = &[
     ("sv_enablebunnyhopping", "1 removes the jump speed cap"),
     ("sv_autobunnyhopping", "1: holding jump keeps jumping"),
     ("cl_forwardspeed", "what a held move key sends"),
+    (
+        "sv_ladder_dampen",
+        "sideways ladder input kept when climbing (CS:S 0.2)",
+    ),
+    (
+        "sv_ladder_angle",
+        "how squarely into a ladder the dampening starts (CS:S -0.707)",
+    ),
 ];
 
 impl SourceMovementConfig {
@@ -108,6 +122,8 @@ impl SourceMovementConfig {
             "sv_enablebunnyhopping" => self.enable_bunnyhopping = num()? != 0.0,
             "sv_autobunnyhopping" => self.auto_bunnyhopping = num()? != 0.0,
             "cl_forwardspeed" | "cl_sidespeed" => self.key_speed = num()?,
+            "sv_ladder_dampen" => self.ladder_dampen = num()?,
+            "sv_ladder_angle" => self.ladder_angle = num()?,
             other => return Err(format!("unknown console variable {other}")),
         }
         Ok(())
@@ -164,6 +180,9 @@ impl SourceMovementConfig {
             enable_bunnyhopping: true,
             bunnyhop_cap: 0.0,
             auto_bunnyhopping: false,
+            // The dampening is compiled only for CS:S; it's off here.
+            ladder_dampen: 1.0,
+            ladder_angle: -0.707,
         }
     }
 }
@@ -201,6 +220,7 @@ impl Default for SourceMovementConfig {
             // faster, whatever the weapon (1.1 x 260, the fastest weapon).
             enable_bunnyhopping: false,
             bunnyhop_cap: 286.0,
+            ladder_dampen: 0.2,
             ..Self::shared_code()
         }
     }
@@ -226,6 +246,24 @@ const DUCK_TIMER_START: f32 = 1000.0;
 const TIME_TO_DUCK: f32 = 0.4;
 const TIME_TO_UNDUCK: f32 = 0.2;
 const UPWARD_AIR_FRICTION: f32 = 0.25;
+
+// Ladders and water (spec "Ladders", "Water").
+const LADDER_REACH: f32 = 2.0;
+const LADDER_SPEED: f32 = 200.0;
+const LADDER_JUMP_OFF: f32 = 270.0;
+const LADDER_BACK_OFF: f32 = 200.0;
+const WATER_FEET_PROBE: f32 = 1.0;
+const SWIM_SINK: f32 = 60.0;
+const SWIM_WISH_SCALE: f32 = 0.8;
+const SWIM_JUMP_WATER: f32 = 100.0;
+const SWIM_JUMP_SLIME: f32 = 80.0;
+const WATER_JUMP_UP: f32 = 256.0;
+const WATER_JUMP_PUSH: f32 = 50.0;
+const WATER_JUMP_REACH: f32 = 24.0;
+const WATER_JUMP_EYE_EXTRA: f32 = 8.0;
+const WATER_JUMP_DROP: f32 = 1024.0;
+const WATER_JUMP_MIN_VZ: f32 = -180.0;
+const WATER_JUMP_TIME: f32 = 2000.0;
 
 /// How far sweeps stop short of what they hit, along the move. Our stand-in
 /// for the BSP trace's distance epsilon, so the box never rests touching.
@@ -296,6 +334,14 @@ pub struct SourceMovement {
     last_feet: Option<Vec3>,
     /// Jump stamina left, ms (CS:S).
     pub stamina: f32,
+    /// On a ladder: its surface normal (Source axes, out of the ladder).
+    pub ladder: Option<Vec3>,
+    /// 0 dry, 1 feet, 2 waist, 3 eyes.
+    pub water_level: u8,
+    pub in_slime: bool,
+    /// Water jump: time left (ms) and the horizontal velocity it holds.
+    pub water_jump_time: f32,
+    water_jump_vel: Vec3,
 }
 
 impl Default for SourceMovement {
@@ -318,6 +364,11 @@ impl Default for SourceMovement {
             last_nudge: f32::NEG_INFINITY,
             last_feet: None,
             stamina: 0.0,
+            ladder: None,
+            water_level: 0,
+            in_slime: false,
+            water_jump_time: 0.0,
+            water_jump_vel: Vec3::ZERO,
         }
     }
 }
@@ -344,6 +395,8 @@ pub fn to_engine(v: Vec3) -> Vec3 {
 /// Result of sweeping a box, as the spec's traces report it.
 #[derive(Clone, Copy, Debug)]
 struct Trace {
+    /// What was hit is a ladder.
+    ladder: bool,
     fraction: f32,
     /// Feet position at the end of the sweep.
     end: Vec3,
@@ -364,12 +417,14 @@ struct Tracer<'a, 'w, 's> {
     query: &'a SpatialQuery<'w, 's>,
     filter: SpatialQueryFilter,
     brushes: Option<&'a MapBrushes>,
+    water: Option<&'a MapWater>,
     /// Standing and ducked box heights.
     heights: (f32, f32),
 }
 
 /// Brush sweep result, engine space.
 struct BrushHit {
+    ladder: bool,
     fraction: f32,
     normal: Vec3,
     start_solid: bool,
@@ -383,6 +438,7 @@ impl Tracer<'_, '_, '_> {
     fn sweep_brushes(&self, half: Vec3, from: Vec3, to: Vec3) -> BrushHit {
         let eps = TRACE_BACKOFF * METERS_PER_UNIT;
         let mut out = BrushHit {
+            ladder: false,
             fraction: 1.0,
             normal: Vec3::ZERO,
             start_solid: false,
@@ -436,6 +492,7 @@ impl Tracer<'_, '_, '_> {
             if enter < leave && enter > -1.0 && enter < out.fraction {
                 out.fraction = enter.max(0.0);
                 out.normal = clip;
+                out.ladder = b.ladder;
             }
         }
         out
@@ -465,6 +522,7 @@ impl Tracer<'_, '_, '_> {
         let delta = to - from;
         let len = delta.length();
         let miss = Trace {
+            ladder: false,
             fraction: 1.0,
             end: to,
             normal: Vec3::ZERO,
@@ -477,6 +535,7 @@ impl Tracer<'_, '_, '_> {
         let half = Vec3::new(size.x, size.z, size.y) * METERS_PER_UNIT / 2.0;
         let brush = self.sweep_brushes(half, centre(from), centre(to));
         let mut best = Trace {
+            ladder: brush.ladder,
             fraction: brush.fraction,
             end: from + delta * brush.fraction,
             normal: to_source(brush.normal).normalize_or_zero(),
@@ -507,6 +566,7 @@ impl Tracer<'_, '_, '_> {
             let fraction = (travelled / len).clamp(0.0, 0.999_999);
             if fraction < best.fraction {
                 best = Trace {
+                    ladder: false,
                     fraction,
                     end: from + delta * fraction,
                     normal: to_source(hit.normal1).normalize_or_zero(),
@@ -553,6 +613,17 @@ impl Tracer<'_, '_, '_> {
     fn solid(&self, ducked: bool, feet: Vec3) -> bool {
         let (lo, hi) = self.hull(ducked);
         self.solid_box(lo, hi, feet)
+    }
+
+    /// Point contents: solid.
+    fn point_solid(&self, p: Vec3) -> bool {
+        self.solid_box(Vec3::splat(-0.05), Vec3::splat(0.05), p)
+    }
+
+    /// Point contents: water (`Some(false)`) or slime (`Some(true)`).
+    fn point_water(&self, p: Vec3) -> Option<bool> {
+        let at = to_engine(p);
+        self.water?.0.iter().find(|w| w.brush.contains(at)).map(|w| w.slime)
     }
 }
 
@@ -657,7 +728,7 @@ impl Mover<'_, '_, '_, '_> {
                 break;
             }
             planes.push(tr.normal);
-            if planes.len() == 1 && !self.me.on_ground {
+            if planes.len() == 1 && !self.me.on_ground && self.me.ladder.is_none() {
                 let overbounce = if tr.normal.z > WALKABLE_NORMAL_Z {
                     1.0
                 } else {
@@ -789,7 +860,8 @@ impl Mover<'_, '_, '_, '_> {
     /// each quarter of it, so edges and ridges still count as ground.
     fn categorize(&mut self) {
         self.me.surface_friction = 1.0;
-        if self.v.z > LEAVE_GROUND_VZ {
+        // Moving up on a ladder always counts as airborne.
+        if self.v.z > LEAVE_GROUND_VZ || (self.me.ladder.is_some() && self.v.z > 0.0) {
             self.me.on_ground = false;
         } else {
             let (lo, hi) = self.trace.hull(self.me.ducked);
@@ -816,6 +888,190 @@ impl Mover<'_, '_, '_, '_> {
             } else if self.v.z > 0.0 {
                 self.me.surface_friction = UPWARD_AIR_FRICTION;
             }
+        }
+        self.water_check();
+    }
+
+    /// Water level from three points at the box's centre line: 1 unit
+    /// above the feet, mid-box, and the eye.
+    fn water_check(&mut self) {
+        let height = if self.me.ducked {
+            self.trace.heights.1
+        } else {
+            self.trace.heights.0
+        };
+        let at = |z: f32| self.feet + Vec3::Z * z;
+        self.me.water_level = 0;
+        let Some(slime) = self.trace.point_water(at(WATER_FEET_PROBE)) else {
+            return;
+        };
+        self.me.in_slime = slime;
+        self.me.water_level = 1;
+        if self.trace.point_water(at(height / 2.0)).is_some() {
+            self.me.water_level = 2;
+            if self.trace.point_water(at(self.me.eye)).is_some() {
+                self.me.water_level = 3;
+            }
+        }
+    }
+
+    /// Full 3D view vectors (Source axes): forward and right.
+    fn view(intent: &Intent) -> (Vec3, Vec3) {
+        // Intent yaw 0 looks down engine -Z, which is Source yaw 90;
+        // intent pitch is up-positive, Source pitch down-positive.
+        let yaw = std::f32::consts::FRAC_PI_2 + intent.yaw;
+        let pitch = -intent.pitch;
+        let forward = Vec3::new(pitch.cos() * yaw.cos(), pitch.cos() * yaw.sin(), -pitch.sin());
+        let right = Vec3::new(yaw.sin(), -yaw.cos(), 0.0);
+        (forward, right)
+    }
+
+    /// Ladder detection (after ducking, before the move): probe 2 units
+    /// toward the ladder (along the last normal, or the 3D input direction)
+    /// and, on a ladder, set this tick's velocity.
+    fn ladder(&mut self, intent: &Intent, f: f32, s: f32) {
+        let (forward, right) = Self::view(intent);
+        let dir = match self.me.ladder {
+            Some(n) => -n,
+            None => {
+                if f == 0.0 && s == 0.0 {
+                    return;
+                }
+                (forward * f + right * s).normalize_or_zero()
+            }
+        };
+        let tr = self
+            .trace
+            .sweep(self.me.ducked, self.feet, self.feet + dir * LADDER_REACH);
+        if !tr.hit() || !tr.ladder {
+            self.me.ladder = None;
+            return;
+        }
+        let n = tr.normal;
+        self.me.ladder = Some(n);
+        if intent.jump {
+            // Off the ladder, pushed away from it; walking from this tick.
+            self.me.ladder = None;
+            self.v = n * LADDER_JUMP_OFF;
+            return;
+        }
+        let button = |x: f32| {
+            if x > 0.0 {
+                LADDER_SPEED
+            } else if x < 0.0 {
+                -LADDER_SPEED
+            } else {
+                0.0
+            }
+        };
+        let (fwd, side) = (button(intent.move_axis.y), button(intent.move_axis.x));
+        if fwd == 0.0 && side == 0.0 {
+            self.v = Vec3::ZERO;
+            return;
+        }
+        let u = forward * fwd + right * side;
+        let a = u.dot(n);
+        let into = n * a;
+        let mut lateral = u - into;
+        let perp = Vec3::Z.cross(n).normalize_or_zero();
+        let up = n.cross(perp);
+        // CS:S: mostly pushing into the ladder damps the sideways part.
+        let (t, p) = (up.dot(lateral), perp.dot(lateral));
+        if (perp * p + into).normalize_or_zero().dot(n) < self.cfg.ladder_angle {
+            lateral = up * t + perp * (self.cfg.ladder_dampen * p);
+        }
+        self.v = lateral - up * a;
+        let below = self.feet - Vec3::Z * 1.0;
+        let on_floor = self.me.on_ground || self.trace.point_solid(below);
+        if on_floor && a > 0.0 {
+            self.v += n * LADDER_BACK_OFF;
+        }
+    }
+
+    /// Climbing out of water at a ledge (only at waist depth).
+    fn water_jump_check(&mut self, intent: &Intent) {
+        if self.me.water_jump_time > 0.0 || self.v.z < WATER_JUMP_MIN_VZ {
+            return;
+        }
+        let yaw = std::f32::consts::FRAC_PI_2 + intent.yaw;
+        let flat = Vec3::new(yaw.cos(), yaw.sin(), 0.0);
+        let horizontal = self.v.with_z(0.0);
+        if horizontal.length_squared() > 0.0 && horizontal.normalize().dot(flat) < 0.0 {
+            return;
+        }
+        let height = if self.me.ducked {
+            self.trace.heights.1
+        } else {
+            self.trace.heights.0
+        };
+        let from = self.feet + Vec3::Z * (height / 2.0);
+        let wall = self.trace.sweep(self.me.ducked, from, from + flat * WATER_JUMP_REACH);
+        if !wall.hit() {
+            return;
+        }
+        let high = self.feet + Vec3::Z * (self.me.eye + WATER_JUMP_EYE_EXTRA);
+        let over = self.trace.sweep(self.me.ducked, high, high + flat * WATER_JUMP_REACH);
+        if over.hit() {
+            return;
+        }
+        let down = self
+            .trace
+            .sweep(self.me.ducked, over.end, over.end - Vec3::Z * WATER_JUMP_DROP);
+        if !down.hit() || down.normal.z < WALKABLE_NORMAL_Z {
+            return;
+        }
+        self.v.z = WATER_JUMP_UP;
+        self.me.water_jump_vel = -wall.normal * WATER_JUMP_PUSH;
+        self.me.jump_held = true;
+        self.me.water_jump_time = WATER_JUMP_TIME;
+    }
+
+    /// Swimming (waist deep or more): 3D wish, proportional friction, no
+    /// gravity; holding jump rises.
+    fn swim(&mut self, intent: &Intent, f: f32, s: f32, max_speed: f32) {
+        let (forward, right) = Self::view(intent);
+        let mut wish = forward * f + right * s;
+        if intent.jump {
+            wish.z += max_speed;
+        } else if f == 0.0 && s == 0.0 {
+            wish.z -= SWIM_SINK;
+        } else {
+            wish.z += (2.0 * f * forward.z).clamp(0.0, max_speed);
+        }
+        let wish_speed = wish.length().min(max_speed) * SWIM_WISH_SCALE;
+        let dir = wish.normalize_or_zero();
+        let speed = self.v.length();
+        let mut new_speed = speed - self.dt * speed * self.cfg.friction * self.me.surface_friction;
+        if new_speed < 0.1 {
+            new_speed = 0.0;
+        }
+        self.v = if speed > 0.0 {
+            self.v * (new_speed / speed)
+        } else {
+            Vec3::ZERO
+        };
+        if wish_speed >= 0.1 {
+            let add = wish_speed - new_speed;
+            if add > 0.0 {
+                let amount = (self.cfg.accelerate * wish_speed * self.dt * self.me.surface_friction).min(add);
+                self.v += dir * amount;
+            }
+        }
+        let dest = self.feet + self.v * self.dt;
+        let tr = self.trace.sweep(self.me.ducked, self.feet, dest);
+        if !tr.hit() {
+            // Ride up onto steps while swimming.
+            let top = dest + Vec3::Z * (self.cfg.stepsize + 1.0);
+            let settle = self.trace.sweep(self.me.ducked, top, dest);
+            if settle.start_solid {
+                self.slide();
+            } else {
+                self.feet = settle.end;
+            }
+        } else if self.me.on_ground {
+            self.step_move();
+        } else {
+            self.slide();
         }
     }
 
@@ -1007,9 +1263,10 @@ impl Mover<'_, '_, '_, '_> {
         if !self.check_stuck() {
             return;
         }
-        // Moved by game code (teleport, spawn): full ground detection now.
-        // Otherwise only rising fast removes the ground.
-        if self.me.last_feet.is_none_or(|f| f.distance_squared(self.feet) > 1e-4) {
+        // On a ladder, or moved by game code (teleport, spawn): full ground
+        // detection now. Otherwise only rising fast removes the ground.
+        let moved = self.me.last_feet.is_none_or(|f| f.distance_squared(self.feet) > 1e-4);
+        if self.me.ladder.is_some() || moved {
             self.categorize();
         } else if self.v.z > UNGROUND_VZ {
             self.me.on_ground = false;
@@ -1021,8 +1278,57 @@ impl Mover<'_, '_, '_, '_> {
         f *= scale;
         s *= scale;
 
-        self.half_gravity();
-        self.clamp_velocity();
+        self.ladder(intent, f, s);
+        if self.me.ladder.is_some() {
+            // Ladder move: no gravity, friction or ground snapping.
+            self.water_check();
+            if !intent.jump {
+                self.me.jump_held = false;
+            }
+            self.slide();
+            self.me.last_feet = Some(self.feet);
+            return;
+        }
+
+        self.water_check();
+        if self.me.water_level < 2 {
+            self.half_gravity();
+            self.clamp_velocity();
+        }
+        if self.me.water_jump_time > 0.0 {
+            self.me.water_jump_time -= 1000.0 * self.dt;
+            if self.me.water_jump_time <= 0.0 || self.me.water_level == 0 {
+                self.me.water_jump_time = 0.0;
+            }
+            self.v.x = self.me.water_jump_vel.x;
+            self.v.y = self.me.water_jump_vel.y;
+            self.slide();
+            self.water_check();
+            self.me.last_feet = Some(self.feet);
+            return;
+        }
+        if self.me.water_level >= 2 {
+            if self.me.water_level == 2 {
+                self.water_jump_check(intent);
+            }
+            if intent.jump {
+                self.v.z = if self.me.in_slime {
+                    SWIM_JUMP_SLIME
+                } else {
+                    SWIM_JUMP_WATER
+                };
+                self.me.on_ground = false;
+            } else {
+                self.me.jump_held = false;
+            }
+            self.swim(intent, f, s, max_speed);
+            self.categorize();
+            if self.me.on_ground {
+                self.v.z = 0.0;
+            }
+            self.me.last_feet = Some(self.feet);
+            return;
+        }
 
         if intent.jump {
             let fresh = !self.me.jump_held || self.cfg.auto_bunnyhopping;
@@ -1046,8 +1352,10 @@ impl Mover<'_, '_, '_, '_> {
         }
         self.categorize();
         self.clamp_velocity();
-        self.half_gravity();
-        self.clamp_velocity();
+        if self.me.water_level < 2 {
+            self.half_gravity();
+            self.clamp_velocity();
+        }
         if self.me.on_ground {
             self.v.z = 0.0;
             if self.me.fall_speed > 0.0 {
@@ -1070,6 +1378,7 @@ fn step(
     )>,
     query: SpatialQuery,
     brushes: Option<Res<MapBrushes>>,
+    water: Option<Res<MapWater>>,
     brush_colliders: Query<Entity, With<MapBrushCollider>>,
     cfg: Res<SourceMovementConfig>,
     time: Res<Time>,
@@ -1083,6 +1392,7 @@ fn step(
             query: &query,
             filter: SpatialQueryFilter::from_excluded_entities(excluded),
             brushes: brushes.as_deref(),
+            water: water.as_deref(),
             heights: (cfg.stand_height, cfg.duck_height),
         };
         let mut mover = Mover {

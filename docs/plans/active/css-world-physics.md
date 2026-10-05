@@ -41,5 +41,5 @@ with tests):
 - [x] 1 sky by leaf visibility
 - [ ] 2 `.phy` collision
 - [ ] 3 prop shadows
-- [ ] 4 ladders and water
+- [x] 4 ladders and water (spec cases in tests/source_movement_ladder_water.rs; de_nuke climb test waits on step 2: its ladder models' rungs block until props collide by `.phy`)
 - [ ] 5 physics simulation
