@@ -6,7 +6,9 @@ rust-version = "1.95"
 publish = false
 
 [dependencies]
+avian3d = "0.7"
 bevy = "0.19.1"
+bevy-inspector-egui = "0.37"
 
 [features]
 # Faster iteration: link Bevy as a dynamic library. Use with
