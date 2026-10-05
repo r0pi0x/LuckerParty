@@ -12,7 +12,7 @@ use bevy::prelude::*;
 use vbsp::Bsp;
 
 use super::{
-    bsp::{LightmapLayout, to_engine},
+    bsp::{LightmapLayout, face_triangles, to_engine},
     lightmap,
     material::MaterialLoader,
 };
@@ -106,83 +106,88 @@ pub fn add_overlays(
         let mut placed = false;
         for &fi in &faces {
             let Some(face) = bsp.face(fi) else { continue };
-            let tex = face.texture();
-            // Face polygon in overlay plane coordinates.
-            let poly: Vec<(Vec3, Vec2, Vec2)> = face
-                .vertices()
-                .map(|vert| {
-                    let p = Vec3::new(vert.position.x, vert.position.y, vert.position.z);
-                    let d = p - origin;
-                    (p, Vec2::new(d.dot(basis_u), d.dot(basis_v)), Vec2::ZERO)
-                })
-                .collect();
-            // Two triangles of the quad; texture coordinates by barycentrics.
-            for tri in [[0usize, 1, 2], [0, 2, 3]] {
-                let [a, b, c] = tri.map(|i| quad[i]);
-                let area = (b.0 - a.0).perp_dot(c.0 - a.0);
-                if area.abs() < 1e-6 {
-                    continue;
+            let slot = layout.face_slots.get(fi).copied().flatten();
+            let face_normal = face.normal();
+            let fnorm = Vec3::new(face_normal.x, face_normal.y, face_normal.z);
+            // The face as drawn: for displacements, the raised terrain
+            // triangles (not the flat base face, which lies under them),
+            // each vertex with its lightmap coordinates.
+            for tri3 in face_triangles(&face) {
+                let [pa, pb, pc] = tri3.map(|(v, _)| Vec3::new(v.x, v.y, v.z));
+                let mut tnorm = (pb - pa).cross(pc - pa).normalize_or_zero();
+                if tnorm.dot(fnorm) < 0.0 {
+                    tnorm = -tnorm;
                 }
-                let s = area.signum();
-                let mut piece = poly.clone();
-                for (p, q) in [(a.0, b.0), (b.0, c.0), (c.0, a.0)] {
-                    let edge = q - p;
-                    let n = Vec2::new(-edge.y, edge.x) * s;
-                    piece = clip(piece, n, n.dot(p));
-                    if piece.is_empty() {
-                        break;
+                // Triangle in overlay plane coordinates, carrying luxels.
+                let poly: Vec<(Vec3, Vec2, Vec2)> = tri3
+                    .iter()
+                    .map(|(v, luxel)| {
+                        let p = Vec3::new(v.x, v.y, v.z);
+                        let d = p - origin;
+                        (p, Vec2::new(d.dot(basis_u), d.dot(basis_v)), *luxel)
+                    })
+                    .collect();
+                // Two triangles of the quad; texture coordinates by barycentrics.
+                for tri in [[0usize, 1, 2], [0, 2, 3]] {
+                    let [a, b, c] = tri.map(|i| quad[i]);
+                    let area = (b.0 - a.0).perp_dot(c.0 - a.0);
+                    if area.abs() < 1e-6 {
+                        continue;
                     }
-                }
-                if piece.len() < 3 {
-                    continue;
-                }
-                placed = true;
-                let slot = layout.face_slots.get(fi).copied().flatten();
-                let mesh = meshes.entry(tex_name.clone()).or_insert_with(|| MapMesh {
-                    material: format!("decal:overlay:{tex_name}"),
-                    color: [255, 255, 255],
-                    texture: r.texture,
-                    alpha: if r.alpha == MapAlpha::Opaque {
-                        MapAlpha::Blend
-                    } else {
-                        r.alpha
-                    },
-                    ..default()
-                });
-                let face_normal = face.normal();
-                let fnorm = Vec3::new(face_normal.x, face_normal.y, face_normal.z);
-                let engine_normal = to_engine(vb(fnorm)).normalize_or_zero();
-                let base = mesh.positions.len() as u32;
-                for (p, p2, _) in &piece {
-                    // Barycentric texture coordinates within the triangle.
-                    let w_b = (p2 - a.0).perp_dot(c.0 - a.0) / (b.0 - a.0).perp_dot(c.0 - a.0);
-                    let w_c = (b.0 - a.0).perp_dot(*p2 - a.0) / (b.0 - a.0).perp_dot(c.0 - a.0);
-                    let uv = a.1 * (1.0 - w_b - w_c) + b.1 * w_b + c.1 * w_c;
-                    mesh.positions.push(to_engine(vb(*p + fnorm * OFFSET)).to_array());
-                    mesh.normals.push(engine_normal.to_array());
-                    mesh.uvs.push(uv.to_array());
-                    let luxel = if slot.is_some() {
-                        lightmap::luxel_coords(&tex, &face, vb(*p))
-                    } else {
-                        Vec2::splat(0.5)
-                    };
-                    mesh.lightmap_uvs.push(lightmap::atlas_uv(
-                        &atlas,
-                        layout.placements[slot.unwrap_or(layout.white)],
-                        luxel,
-                    ));
-                }
-                for i in 1..piece.len() as u32 - 1 {
-                    let [ia, ib, ic] = [base, base + i, base + i + 1];
-                    let (pa, pb, pc) = (
-                        Vec3::from(mesh.positions[ia as usize]),
-                        Vec3::from(mesh.positions[ib as usize]),
-                        Vec3::from(mesh.positions[ic as usize]),
-                    );
-                    if (pb - pa).cross(pc - pa).dot(engine_normal) < 0.0 {
-                        mesh.indices.extend([ia, ic, ib]);
-                    } else {
-                        mesh.indices.extend([ia, ib, ic]);
+                    let s = area.signum();
+                    let mut piece = poly.clone();
+                    for (p, q) in [(a.0, b.0), (b.0, c.0), (c.0, a.0)] {
+                        let edge = q - p;
+                        let n = Vec2::new(-edge.y, edge.x) * s;
+                        piece = clip(piece, n, n.dot(p));
+                        if piece.is_empty() {
+                            break;
+                        }
+                    }
+                    if piece.len() < 3 {
+                        continue;
+                    }
+                    placed = true;
+                    let mesh = meshes.entry(tex_name.clone()).or_insert_with(|| MapMesh {
+                        material: format!("decal:overlay:{tex_name}"),
+                        color: [255, 255, 255],
+                        texture: r.texture,
+                        alpha: if r.alpha == MapAlpha::Opaque {
+                            MapAlpha::Blend
+                        } else {
+                            r.alpha
+                        },
+                        ..default()
+                    });
+                    let engine_normal = to_engine(vb(tnorm)).normalize_or_zero();
+                    let base = mesh.positions.len() as u32;
+                    for (p, p2, luxel) in &piece {
+                        // Barycentric texture coordinates within the triangle.
+                        let w_b = (p2 - a.0).perp_dot(c.0 - a.0) / (b.0 - a.0).perp_dot(c.0 - a.0);
+                        let w_c = (b.0 - a.0).perp_dot(*p2 - a.0) / (b.0 - a.0).perp_dot(c.0 - a.0);
+                        let uv = a.1 * (1.0 - w_b - w_c) + b.1 * w_b + c.1 * w_c;
+                        mesh.positions.push(to_engine(vb(*p + tnorm * OFFSET)).to_array());
+                        mesh.normals.push(engine_normal.to_array());
+                        mesh.uvs.push(uv.to_array());
+                        let luxel = if slot.is_some() { *luxel } else { Vec2::splat(0.5) };
+                        mesh.lightmap_uvs.push(lightmap::atlas_uv(
+                            &atlas,
+                            layout.placements[slot.unwrap_or(layout.white)],
+                            luxel,
+                        ));
+                    }
+                    for i in 1..piece.len() as u32 - 1 {
+                        let [ia, ib, ic] = [base, base + i, base + i + 1];
+                        let (qa, qb, qc) = (
+                            Vec3::from(mesh.positions[ia as usize]),
+                            Vec3::from(mesh.positions[ib as usize]),
+                            Vec3::from(mesh.positions[ic as usize]),
+                        );
+                        if (qb - qa).cross(qc - qa).dot(engine_normal) < 0.0 {
+                            mesh.indices.extend([ia, ic, ib]);
+                        } else {
+                            mesh.indices.extend([ia, ib, ic]);
+                        }
                     }
                 }
             }
