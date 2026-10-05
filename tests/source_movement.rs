@@ -5,7 +5,9 @@
 use bevy::prelude::*;
 use mashup::{
     core::Velocity,
-    games::cs_source::movement::{self, SourceMovement, SourceMovementPlugin, to_engine, to_source},
+    games::cs_source::movement::{
+        self, SourceMovement, SourceMovementConfig, SourceMovementPlugin, to_engine, to_source,
+    },
     harness::Sim,
     map::{MapBrush, MapBrushes},
 };
@@ -56,6 +58,8 @@ impl Player {
     /// A player whose feet start at `feet`, settled for a few ticks.
     fn at(feet: Vec3) -> Self {
         let mut sim = Sim::new((TestMap, SourceMovementPlugin));
+        // The spec's test cases use the shared code's values.
+        sim.app.insert_resource(SourceMovementConfig::shared_code());
         let p = sim.spawn_character(to_engine(feet + Vec3::Z * 36.0), movement::ID);
         let mut me = Self { sim, p };
         me.look_yaw(0.0);
@@ -385,4 +389,20 @@ fn walks_down_a_step_without_falling() {
     }
     assert!(pl.feet().x > 600.0, "walked off the far edge");
     close(pl.feet().z, 0.0, 0.1, "down on the floor");
+}
+
+#[test]
+fn css_jump_reaches_its_measured_height() {
+    // CS:S's own jump (measured apex 54.75 at 66.67 tick); at 64 tick the
+    // same impulse peaks at 54.65.
+    let mut pl = Player::on_floor();
+    pl.sim.app.insert_resource(SourceMovementConfig::default());
+    let z0 = pl.feet().z;
+    pl.sim.intent(pl.p).jump = true;
+    let mut apex = 0.0f32;
+    for _ in 0..60 {
+        pl.tick();
+        apex = apex.max(pl.feet().z - z0);
+    }
+    close(apex, 54.654, 0.01, "CS:S jump apex at 64 tick");
 }

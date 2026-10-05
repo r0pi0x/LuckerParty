@@ -417,27 +417,30 @@ All at 64 tick (dt = 1/64), flat floor at z = 0 unless stated, sv_gravity 800, s
 
 ## CS:S values
 
-The local CS:S server was reachable over RCON once. It answered two queries before further RCON use in this session was blocked by the tool permission system, so the remaining values are not live-verified.
+Read over RCON from the reference install (Linux, version 11003710) on 2026-10-05, with a listen server on de_dust2. The weapon speeds come from the game's own weapon scripts, decrypted locally (files and key kept out of the repo).
 
-| Console variable | CS:S value | Source / status |
+| Console variable | CS:S value | Note |
 |---|---|---|
-| sv_accelerate | **5** (registered default "10") | live RCON, verified |
-| sv_friction | **4** | live RCON, verified |
-| sv_airaccelerate | 10 | SDK default for CS:S build; unverified live |
-| sv_stopspeed | 75 (public docs) vs 100 (SDK default) | unverified, conflict, see Open questions |
-| sv_gravity | 800 | SDK default; unverified live |
-| sv_maxspeed | 320 | SDK default; unverified live |
-| sv_stepsize | 18 | SDK default; unverified live |
-| sv_maxvelocity | 3500 | SDK default; unverified live |
-| sv_bounce | 0 | SDK default; unverified live |
-| sv_backspeed | 0.6 | SDK default (CS:S build); not read by the shared movement code |
-| sv_wateraccelerate / sv_waterfriction | 10 / 1 | SDK default; not read by the shared swim code |
-| sv_rollangle / sv_rollspeed | 0 / 200 | SDK default; no view roll from strafing |
-| sv_ladder_dampen / sv_ladder_angle | 0.2 / −0.707 | SDK, CS:S-only ladder tweak |
-| sv_enablebunnyhopping | 0 | public docs; CS:S-only cvar, not in shared code; unverified |
-| sv_noclipspeed / sv_noclipaccelerate | 5 / 5 | SDK default |
+| sv_accelerate | **5** | registered default 10 |
+| sv_friction | 4 | |
+| sv_airaccelerate | 10 | |
+| sv_stopspeed | **75** | registered default 100 (the shared code's value) |
+| sv_gravity | 800 | |
+| sv_maxspeed | 320 | |
+| sv_stepsize | 18 | |
+| sv_maxvelocity | 3500 | |
+| sv_bounce | 0 | |
+| sv_backspeed | 0.6 | not read by the shared movement code |
+| sv_wateraccelerate / sv_waterfriction | 10 / 1 | not read by the shared swim code |
+| sv_ladder_dampen / sv_ladder_angle | 0.2 / −0.707 | |
+| sv_enablebunnyhopping | 0 | CS:S-only |
+| sv_timebetweenducks | 0 | CS:S-only (duck spam limit, off) |
+| cl_forwardspeed / cl_sidespeed / cl_backspeed | **400** | key input before rescaling to max speed |
+| server tick rate | **66.67** (sv_maxupdaterate 66) | CS:S's default tick interval of 0.015 s |
 
-Weapon move speed (MaxPlayerSpeed in each weapon script, units/s). The scripts in the install are ICE-encrypted (.ctx). Decrypting them locally was blocked by the tool permission system in this session, so these are **public-documentation values, unverified**:
+**Jump (measured):** a standing jump on flat ground peaks at 54.75 units. With the per-tick order above at 66.67 tick, an impulse of √(2·800·57) = 301.993 units/s gives 54.748. The shared 268.33 gives 42.9. So CS:S's jump speed is 301.993 (a 57-unit jump), not the shared value.
+
+Weapon move speed (MaxPlayerSpeed, units/s):
 
 | Weapon | Max speed | Weapon | Max speed |
 |---|---|---|---|
@@ -447,18 +450,18 @@ Weapon move speed (MaxPlayerSpeed in each weapon script, units/s). The scripts i
 | p90 | 245 | aug | 221 |
 | m3 | 220 | scout | 260 |
 | xm1014 | 240 | awp | 210 |
-| galil | 240 | g3sg1, sg550 | 210 |
+| galil | **215** | g3sg1, sg550 | 210 |
 | famas | 220 | m249 | 220 |
 | hegrenade, flashbang, c4 | 250 | smokegrenade | 245 |
 
-Knife script: MaxPlayerSpeed 250 (unverified as above). The other knife script fields (weight, damage, etc.) were not read for the same reason.
+Knife script: MaxPlayerSpeed 250, Damage 50, WeaponArmorRatio 1.7, Range 4096 (the bullet-weapon field; the knife's swing reach is in code), Penetration 1.
 
 ## Open questions
 
-1. **Weapon speeds and knife script:** decrypt the .ctx scripts locally (outside the repo, key not committed) or measure top speed in game per weapon. Also check scoped speeds (AWP/scout/autos are slower zoomed; that is in CS:S code, not in scripts).
-2. **sv_accelerate 5 vs registered default 10:** RCON showed value 5, default 10. Find out whether CS:S itself sets 5 (game config or DLL at startup) or whether the local server config did. Check with `sv_accelerate` on a clean listen server with no server.cfg.
-3. **sv_stopspeed:** SDK says 100 for CS:S builds. Community docs say 75. Query it live. It changes the low-speed end of every friction test.
-4. **CS:S jump impulse:** CS:S overrides the jump. Widely cited as ≈301.99 units/s (√(2·800·57)), giving a ≈55-unit apex vs 42.93 in shared code. Measure: jump in place and log z per tick over RCON or a demo.
+1. **Scoped speeds:** weapon speeds are now read from the scripts. Still to check: scoped speeds (AWP/scout/autos are slower zoomed; that is in CS:S code, not in scripts).
+2. **sv_accelerate 5 and sv_stopspeed 75 vs registered defaults 10 and 100:** confirm they come from CS:S itself, not a local config.
+3. **Answered:** sv_stopspeed is 75 (see CS:S values).
+4. **Answered:** the CS:S jump impulse is 301.993 (see CS:S values).
 5. **CS:S hulls and eye heights:** CS:S is believed to use a 32×32×62 ducked box (not 36) and ducked eye ≈46, standing eye 64. The air-duck lift and the in-air unduck clearance both equal (standing height − ducked height), so they change with it (36 with the shared boxes). Measure with `cl_showpos`/getpos while standing vs ducked, and by finding the smallest vent you can enter.
 6. **CS:S duck behavior:** duck speed (CS:S slows while ducking/ducked: is it ×1/3 of input or a fixed fraction of max speed?), duck spam limit (sv_timebetweenducks or similar), whether the transition is still 0.4 s / 0.2 s, and any air-duck differences.
 7. **Landing slowdown / stamina:** CS:S reduces horizontal speed after landing and after jumps (a "stamina" or velocity modifier). This is not in shared code. Measure speed in the ticks after landing from walking jumps, bhop chains, and a fall.
@@ -468,4 +471,4 @@ Knife script: MaxPlayerSpeed 250 (unverified as above). The other knife script f
 11. **Fall damage formula as applied by CS:S:** the shared header gives the slope 100/(1024 − 580). CS:S applies the actual damage (and may scale it, e.g. ×1.25 is sometimes cited). Measure HP lost from known drop heights.
 12. **Client move key speeds:** cl_forwardspeed/cl_sidespeed/cl_backspeed in CS:S (believed 400 or 450). Only matters if they are below max speed, which they are not.
 13. **Ladder climb speed in CS:S:** shared is 200. Confirm.
-14. **Tick rate:** the prototype targets 64. Confirm what the local reference server runs (`sv_tickrate`/-tickrate). Classic CS:S servers ran 66 by default, which changes all per-tick numbers.
+14. **Tick rate:** the reference listen server runs 66.67 tick. Bhop, surf and KZ community servers commonly run 66 or 100. The test cases above assume 64.

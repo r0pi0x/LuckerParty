@@ -23,24 +23,22 @@ pub const ID: &str = "cs_source:movement";
 
 const METERS_PER_UNIT: f32 = 0.0254;
 
-/// Console variables and per-player values the movement reads. Defaults are
-/// CS:S's where verified, else the shared code's (see the spec's "CS:S
-/// values" and open questions).
+/// Console variables and per-player values the movement reads. `Default`
+/// is CS:S as measured on the reference install (RCON, 2026-10-05; see the
+/// spec's "CS:S values"); `shared_code` is the SDK's values, which the
+/// spec's test cases use.
 #[derive(Resource, Clone, Debug)]
 pub struct SourceMovementConfig {
-    /// sv_accelerate: 5 in CS:S (read live; the registered default is 10).
     pub accelerate: f32,
     pub airaccelerate: f32,
-    /// sv_friction: 4 (read live).
     pub friction: f32,
-    /// sv_stopspeed: 100 in the shared code; public docs say 75 for CS:S.
     pub stopspeed: f32,
     pub gravity: f32,
     pub maxspeed: f32,
     pub stepsize: f32,
     pub maxvelocity: f32,
     pub bounce: f32,
-    /// Shared-code jump speed; CS:S's own is unverified (~302?).
+    /// Jump speed, units/s.
     pub jump_impulse: f32,
     /// The held weapon's speed (knife: 250) until a weapon slot sets it.
     pub player_maxspeed: f32,
@@ -48,8 +46,9 @@ pub struct SourceMovementConfig {
     pub key_speed: f32,
 }
 
-impl Default for SourceMovementConfig {
-    fn default() -> Self {
+impl SourceMovementConfig {
+    /// The SDK 2013 shared movement code's values.
+    pub fn shared_code() -> Self {
         Self {
             accelerate: 5.0,
             airaccelerate: 10.0,
@@ -63,6 +62,20 @@ impl Default for SourceMovementConfig {
             jump_impulse: 268.328_16,
             player_maxspeed: 250.0,
             key_speed: 450.0,
+        }
+    }
+}
+
+impl Default for SourceMovementConfig {
+    /// CS:S: cvars read over RCON; jump speed sqrt(2 * 800 * 57), which
+    /// reproduces the measured standing-jump apex (54.75 units at the
+    /// server's 66.67 tick).
+    fn default() -> Self {
+        Self {
+            stopspeed: 75.0,
+            jump_impulse: (2.0f32 * 800.0 * 57.0).sqrt(),
+            key_speed: 400.0,
+            ..Self::shared_code()
         }
     }
 }
@@ -94,6 +107,9 @@ const UPWARD_AIR_FRICTION: f32 = 0.25;
 /// How far sweeps stop short of what they hit, along the move. Our stand-in
 /// for the BSP trace's distance epsilon, so the box never rests touching.
 const TRACE_BACKOFF: f32 = 0.031_25;
+/// Float noise allowance (meters) when deciding whether a sweep runs
+/// parallel to a brush plane: about a thousandth of a unit.
+const PARALLEL_SLOP: f32 = 2.5e-5;
 /// Solid tests use the box shrunk by this much, so resting contact (within
 /// the back-off) doesn't count as stuck.
 const SOLID_SKIN: f32 = 0.01;
@@ -221,8 +237,12 @@ impl Tracer<'_, '_, '_> {
                 let d2 = n.dot(to) - dist;
                 gets_out |= d2 > 0.0;
                 starts_out |= d1 > 0.0;
-                // Entirely in front of this plane: misses the brush.
-                if d1 > 0.0 && (d2 >= eps || d2 >= d1) {
+                // Entirely in front of this plane: misses the brush. Moving
+                // parallel to it counts as not entering, within float noise
+                // (planes and positions are meters at map scale), or a
+                // velocity just clipped along an angled surface would catch
+                // on it forever.
+                if d1 > 0.0 && (d2 >= eps || d2 >= d1 - PARALLEL_SLOP) {
                     continue 'brush;
                 }
                 if d1 <= 0.0 && d2 <= 0.0 {
@@ -303,9 +323,13 @@ impl Tracer<'_, '_, '_> {
             ignore_origin_penetration: true,
             ..default()
         };
+        // A surface that doesn't face against the move (we're sliding along
+        // it, or already leaving it) doesn't block it; physics casts still
+        // report such grazing contacts.
         if let Some(hit) = self
             .query
             .cast_shape(&shape, centre(from), Quat::IDENTITY, dir, &config, &self.filter)
+            .filter(|hit| hit.normal1.dot(*dir) < -1e-3)
         {
             let travelled = (hit.distance / METERS_PER_UNIT - TRACE_BACKOFF).max(0.0);
             let fraction = (travelled / len).clamp(0.0, 0.999_999);

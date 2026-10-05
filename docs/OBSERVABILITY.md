@@ -129,6 +129,23 @@ cargo run --features dev --bin refcmp -- capture-ours --only a_sign
 - mashup renders views off-screen at 1280x720 (`--views`), matching CS:S's
   framing (90 degrees horizontal at 4:3 = 74 vertical).
 
+## Measuring CS:S behaviour live
+
+The reference CS:S (see refcmp) can also be measured directly over RCON:
+- Client commands run too: `getpos` returns the local player's position,
+  `+jump`/`+forward`/`setang` move it. A `point_viewcontrol` holds the
+  view (and `getpos`) until removed (`ent_remove cam1`; a map reload
+  restores it for refcmp).
+- Console output that RCON doesn't return (e.g. `ent_dump`) goes to a file
+  with `con_logfile <name>` (under `cstrike/`).
+- `ent_fire player addoutput "targetname <x>"` names the player for
+  `ent_dump`/`ent_fire`.
+- Sampling `getpos` over RCON is ~20 Hz with timing noise; fine for
+  heights (jump apex), not for per-tick speeds. `host_timescale` slows the
+  game but doesn't remove the noise.
+- Weapon scripts are ICE-encrypted (`.ctx`); decrypt copies in a scratch
+  folder only, never in the repo.
+
 ## Planned
 
 - Per-tick JSONL traces of chosen entities, for comparing movement against
