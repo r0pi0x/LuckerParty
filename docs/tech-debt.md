@@ -18,6 +18,7 @@ Small, current, honest. Remove entries when fixed.
 | map | Decal reach (plane within 4 units or half the decal's smaller side, in front of the face) and floor/ceiling orientation (aligned to world X) are inferred, not from a spec; overlapping decals have no defined draw order | All dust2 wall decals read correctly; floors unverified |
 | map | 3D skybox content is found by the world's world_mins/world_maxs (computed by the map compiler without the skybox), with a 64-unit margin, not by BSP areas (the sky camera sits in area 0 with solid leaves) | Correct on dust2 |
 | map | Sky: the down face's orientation is assumed (never visible in the fitted views) | Rarely visible on dust2 |
+| map | Ropes: static parabola with width x2 and 0.35 of the full slack sag, both calibrated against CS:S on dust2, not specced (Source simulates ropes in client code) | Cables sit roughly where the game draws them |
 | map | Maps load synchronously before the app starts | dust2 converts in well under a second |
 | deps | `vbsp` pulls `binrw` 0.14, which rustc flags as future-incompatible | Upstream; watch on Rust upgrades |
 | build | Windows build not yet verified | Needs the Windows PC set up (see plans) |

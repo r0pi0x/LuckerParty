@@ -8,6 +8,7 @@ pub mod material;
 pub mod mount;
 pub mod overlays;
 pub mod props;
+pub mod ropes;
 pub mod sky;
 pub mod vpk;
 

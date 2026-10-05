@@ -33,7 +33,7 @@ Counts are from de_dust2's entity lump and static prop lump.
 - **Brush entities**: `func_brush` (1); doors if any map needs them.
 - **Prop collision from `.phy`** for physics-solid props (now the visible
   mesh).
-- **Ropes** (`move_rope`, 25) and **sprites** (`env_sprite`, 18; lamp glows).
+- **Sprites** (`env_sprite`, 18; lamp glows).
 - **Fire** (`env_fire`, 16) and other effects, if they show in normal play.
 - **Materials**: WorldVertexTransition blending on displacements,
   `$basetexturetransform`, env maps, detail textures.
