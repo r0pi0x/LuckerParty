@@ -46,6 +46,8 @@ pub struct Resolved {
     pub blend: Option<crate::map::MapBlend>,
     /// `$detail` with its scale, blend factor and mode (0 and 1 supported).
     pub detail: Option<crate::map::MapDetail>,
+    /// UnlitGeneric: drawn at the texture's own brightness, unlit.
+    pub unlit: bool,
 }
 
 pub struct MaterialLoader<'a> {
@@ -99,6 +101,7 @@ impl<'a> MaterialLoader<'a> {
                     normal_map: None,
                     blend: None,
                     detail: None,
+                    unlit: false,
                 }
             }
         }
@@ -114,6 +117,7 @@ impl<'a> MaterialLoader<'a> {
             normal_map: None,
             blend: None,
             detail: None,
+            unlit: false,
         };
         let vmt_path = format!("materials/{}.vmt", normalize(name));
         let Some(text) = self.read_text(&vmt_path) else {
@@ -190,6 +194,7 @@ impl<'a> MaterialLoader<'a> {
             normal_map,
             blend,
             detail,
+            unlit: matches!(material, vmt_parser::material::Material::UnlitGeneric(_)),
         }
     }
 

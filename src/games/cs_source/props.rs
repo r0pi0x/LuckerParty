@@ -58,6 +58,7 @@ fn convert_model(model: &vmdl::Model, skin: i32, materials: &mut MaterialLoader)
                 texture: r.texture,
                 alpha: r.alpha,
                 double_sided: r.double_sided,
+                unlit: r.unlit,
                 ..default()
             }
         });

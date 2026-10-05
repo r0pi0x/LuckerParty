@@ -98,6 +98,9 @@ pub struct MapMesh {
     pub blend_weights: Vec<f32>,
     /// A detail texture tiled over the base texture.
     pub detail: Option<MapDetail>,
+    /// Drawn at the texture's own brightness, ignoring lighting (Source's
+    /// UnlitGeneric).
+    pub unlit: bool,
 }
 
 /// Source `$detail`: a texture tiled `scale` times per base texture repeat
@@ -899,6 +902,9 @@ fn spawn_map(
                         .normals
                         .iter()
                         .map(|n| {
+                            if m.unlit {
+                                return [1.0, 1.0, 1.0, 1.0];
+                            }
                             let l = probe.eval(prop.rotation * Vec3::from(*n)) * probe_scale;
                             [l.x, l.y, l.z, 1.0]
                         })
