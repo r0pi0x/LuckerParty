@@ -458,7 +458,6 @@ fn spawn_map(
             .filter_map(|h| Collider::convex_hull(h.iter().map(|p| Vec3::from(*p)).collect()))
             .map(|c| (Vec3::ZERO, Quat::IDENTITY, c))
             .collect();
-        commands.insert_resource(MapBrushes(data.collision_brushes.clone()));
         commands.entity(root).with_child((
             Name::new("Map collision (solids)"),
             MapPart,
@@ -680,7 +679,37 @@ fn spawn_map(
         }
     }
 
+    // Exact brushes for movement that sweeps them (Source): the world's,
+    // plus props that are (close to) convex, in world space.
+    let mut brushes = data.collision_brushes.clone();
+    // Comparison hook: MASHUP_NO_PROP_BRUSHES=1 sweeps props as meshes.
+    let no_prop_brushes = std::env::var("MASHUP_NO_PROP_BRUSHES").is_ok_and(|v| v == "1");
+    let model_hulls: Vec<Option<Vec<(Vec3, f32)>>> = data
+        .models
+        .iter()
+        .map(|m| convex_planes(m, CONVEX_SURFACE_SHARE))
+        .collect();
+    info!(
+        "props: {} of {} models collide as exact convex brushes",
+        model_hulls.iter().filter(|h| h.is_some()).count(),
+        model_hulls.len()
+    );
+
     for (i, prop) in data.props.iter().enumerate() {
+        let prop_brush = match prop.solid {
+            PropSolid::Mesh => model_hulls[prop.model].as_ref(),
+            _ => None,
+        }
+        .cloned()
+        .or_else(|| {
+            let (lo, hi) = data.models[prop.model].bounds;
+            (prop.solid == PropSolid::Box && (hi - lo).min_element() > 0.0).then(|| MapBrush::from_box(lo, hi).planes)
+        })
+        .filter(|_| !prop.skybox && !no_prop_brushes)
+        .map(|planes| place_brush(&planes, prop.translation, prop.rotation));
+        if let Some(b) = &prop_brush {
+            brushes.push(b.clone());
+        }
         let mut e = commands.spawn((
             Name::new(format!("Prop {i}")),
             MapPart,
@@ -691,15 +720,24 @@ fn spawn_map(
         match (prop.solid, &model_colliders[prop.model]) {
             (PropSolid::Mesh, Some(collider)) => {
                 e.insert((RigidBody::Static, collider.clone()));
+                if prop_brush.is_some() {
+                    e.insert(MapBrushCollider);
+                }
             }
             (PropSolid::Box, _) => {
                 let (lo, hi) = data.models[prop.model].bounds;
                 let size = hi - lo;
                 if size.min_element() > 0.0 {
-                    e.insert(RigidBody::Static).with_child((
+                    let child = (
                         Collider::cuboid(size.x, size.y, size.z),
                         Transform::from_translation((lo + hi) / 2.0),
-                    ));
+                    );
+                    e.insert(RigidBody::Static).with_children(|c| {
+                        let mut ec = c.spawn(child);
+                        if prop_brush.is_some() {
+                            ec.insert(MapBrushCollider);
+                        }
+                    });
                 }
             }
             _ => {}
@@ -749,6 +787,10 @@ fn spawn_map(
                 }
             }
         }
+    }
+
+    if !brushes.is_empty() {
+        commands.insert_resource(MapBrushes(brushes));
     }
 
     commands.spawn((
@@ -932,6 +974,101 @@ fn build_material(m: &MapMesh, textures: &[Handle<Image>], view: MapDebugView, l
         },
         lightmap_exposure: LIGHTMAP_EXPOSURE * scale * light_scale,
         ..default()
+    }
+}
+
+/// Share of a prop's surface that must lie on its convex hull for the hull
+/// to stand in for it in exact (brush) collision. Crates and boxes with
+/// shallow panel insets pass; arches and other concave props don't.
+const CONVEX_SURFACE_SHARE: f32 = 0.75;
+const MAX_HULL_PLANES: usize = 48;
+/// How close (meters) a triangle must be to a hull face to count as on it.
+const ON_HULL: f32 = 0.01;
+
+/// A model's convex hull as planes (model space), if at least `share` of
+/// its surface area lies on the hull.
+fn convex_planes(model: &MapModel, share: f32) -> Option<Vec<(Vec3, f32)>> {
+    let points: Vec<Vec3> = model
+        .meshes
+        .iter()
+        .flat_map(|m| m.positions.iter().map(|p| Vec3::from(*p)))
+        .collect();
+    if points.len() < 4 {
+        return None;
+    }
+    let (verts, tris) = avian3d::parry::transformation::convex_hull(&points);
+    let mut planes: Vec<(Vec3, f32)> = Vec::new();
+    for t in &tris {
+        let [a, b, c] = t.map(|i| verts[i as usize]);
+        let n = (b - a).cross(c - a);
+        if n.length_squared() < 1e-12 {
+            continue;
+        }
+        let n = n.normalize();
+        let d = n.dot(a);
+        if !planes.iter().any(|(m, e)| m.dot(n) > 0.9999 && (e - d).abs() < 1e-4) {
+            planes.push((n, d));
+        }
+    }
+    // Rounded props (many faces) stay meshes: little to gain, slow to place.
+    if !(4..=MAX_HULL_PLANES).contains(&planes.len()) {
+        return None;
+    }
+    let (mut on, mut total) = (0.0f32, 0.0f32);
+    for m in &model.meshes {
+        for t in m.indices.as_chunks::<3>().0 {
+            let [a, b, c] = t.map(|i| Vec3::from(m.positions[i as usize]));
+            let area = (b - a).cross(c - a).length() / 2.0;
+            total += area;
+            if planes
+                .iter()
+                .any(|(n, d)| [a, b, c].iter().all(|p| (n.dot(*p) - d).abs() < ON_HULL))
+            {
+                on += area;
+            }
+        }
+    }
+    (total > 0.0 && on >= share * total).then_some(planes)
+}
+
+/// Model-space planes placed in the world, with the bounding box's planes
+/// added as bevels (so box sweeps stop at corners like Source's brushes).
+fn place_brush(planes: &[(Vec3, f32)], translation: Vec3, rotation: Quat) -> MapBrush {
+    let mut world: Vec<(Vec3, f32)> = planes
+        .iter()
+        .map(|(n, d)| {
+            let n2 = rotation * *n;
+            (n2, d + n2.dot(translation))
+        })
+        .collect();
+    // Corners: intersections of plane triples that lie inside all planes.
+    let mut corners = Vec::new();
+    for i in 0..world.len() {
+        for j in i + 1..world.len() {
+            for k in j + 1..world.len() {
+                let ((n1, d1), (n2, d2), (n3, d3)) = (world[i], world[j], world[k]);
+                let denom = n1.dot(n2.cross(n3));
+                if denom.abs() < 1e-6 {
+                    continue;
+                }
+                let p = (n2.cross(n3) * d1 + n3.cross(n1) * d2 + n1.cross(n2) * d3) / denom;
+                if world.iter().all(|(n, d)| n.dot(p) <= d + 1e-3) {
+                    corners.push(p);
+                }
+            }
+        }
+    }
+    let min = corners.iter().fold(Vec3::splat(f32::MAX), |a, c| a.min(*c));
+    let max = corners.iter().fold(Vec3::splat(f32::MIN), |a, c| a.max(*c));
+    for (n, d) in MapBrush::from_box(min, max).planes {
+        if !world.iter().any(|(m, e)| m.dot(n) > 0.9999 && (e - d).abs() < 1e-4) {
+            world.push((n, d));
+        }
+    }
+    MapBrush {
+        planes: world,
+        min,
+        max,
     }
 }
 

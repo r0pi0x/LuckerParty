@@ -566,3 +566,91 @@ fn displacement_texture_blending() {
         .count();
     assert!(mixed > 100, "only {mixed} partly blended vertices");
 }
+
+/// Convex solid props join the exact brush collision used by Source
+/// movement (crates and boxes), so sweeps against them get flat faces.
+#[test]
+fn convex_props_collide_as_brushes() {
+    let Some(map) = dust2() else { return };
+    let world = map.collision_brushes.len();
+    let props = map.props.iter().filter(|p| !p.skybox).count();
+    let sim = Sim::new(MapPlugin::new(map));
+    let all = sim.app.world().resource::<mashup::map::MapBrushes>().0.len();
+    println!("{} of {props} props as brushes", all - world);
+    assert!(
+        all - world > props / 4,
+        "only {} of {props} props became brushes",
+        all - world
+    );
+}
+
+/// Walking into a tall solid prop (crate, box) must not climb it: before
+/// convex props were exact brushes, contacts near a face's triangle
+/// diagonal gave tilted normals and players could run up vertical faces.
+/// (MASHUP_NO_PROP_BRUSHES=1 brings the old collision back to compare.)
+#[test]
+fn props_cannot_be_climbed_by_walking() {
+    use mashup::games::cs_source::movement::{self, SourceMovementPlugin};
+    let Some(map) = dust2() else { return };
+    let m = 0.0254;
+    // World boxes of tall, solid props from the map data.
+    let boxes: Vec<(Vec3, Vec3)> = map
+        .props
+        .iter()
+        .filter(|p| !p.skybox && p.solid != mashup::map::PropSolid::None)
+        .map(|p| {
+            let (lo, hi) = map.models[p.model].bounds;
+            let corners = (0..8).map(|i| {
+                let c = Vec3::new(
+                    if i & 1 == 0 { lo.x } else { hi.x },
+                    if i & 2 == 0 { lo.y } else { hi.y },
+                    if i & 4 == 0 { lo.z } else { hi.z },
+                );
+                p.translation + p.rotation * c
+            });
+            corners.fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(a, b), c| {
+                (a.min(c), b.max(c))
+            })
+        })
+        .filter(|(lo, hi)| hi.y - lo.y > 30.0 * m && (hi.x - lo.x) > 16.0 * m)
+        .collect();
+    let mut sim = Sim::new((MapPlugin::new(map), SourceMovementPlugin));
+    let mut tested = 0;
+    let mut worst = (0.0f32, Vec3::ZERO);
+    for (lo, hi) in boxes.iter().take(30) {
+        let centre = (*lo + *hi) / 2.0;
+        // Approach the -X face from 40 units out, at points along the face
+        // and at angles to it, running into it for a second.
+        for along in [-0.3f32, 0.0, 0.3] {
+            for angle in [-40.0f32, 0.0, 40.0] {
+                let z = centre.z + along * (hi.z - lo.z);
+                let start = Vec3::new(lo.x - 40.0 * m, lo.y + 37.0 * m, z);
+                let p = sim.spawn_character(start, movement::ID);
+                sim.ticks(20);
+                let before = sim.position(p);
+                // Yaw -90 degrees faces +X; turn by `angle`.
+                sim.intent(p).yaw = (-90.0 + angle).to_radians();
+                sim.intent(p).move_axis = Vec2::Y;
+                let mut top = before.y;
+                for _ in 0..64 {
+                    sim.ticks(1);
+                    top = top.max(sim.position(p).y);
+                }
+                let rise = (top - before.y) / m;
+                let height = (hi.y - (before.y - 36.0 * m)) / m;
+                // Count runs that started free and reached the prop.
+                let reached = sim.position(p).x > lo.x - 28.0 * m;
+                if height > 22.0 && reached && sim.state(p).on_ground {
+                    tested += 1;
+                    if rise > worst.0 {
+                        worst = (rise, centre);
+                    }
+                }
+                let _ = sim.app.world_mut().despawn(p);
+            }
+        }
+    }
+    println!("worst rise {:.1} units at {} over {tested} runs", worst.0, worst.1);
+    assert!(tested >= 20, "only {tested} runs");
+    assert!(worst.0 < 19.0, "climbed {:.1} units up a prop at {}", worst.0, worst.1);
+}

@@ -404,7 +404,11 @@ impl Tracer<'_, '_, '_> {
             .cast_shape(&shape, centre(from), Quat::IDENTITY, dir, &config, &self.filter)
             .filter(|hit| hit.normal1.dot(*dir) < -1e-3)
         {
-            let travelled = (hit.distance / METERS_PER_UNIT - TRACE_BACKOFF).max(0.0);
+            // Keep the margin along the surface normal, as Source's traces
+            // do (a margin along the move leaves a glancing box almost
+            // touching, which the stuck test then flags).
+            let facing = (-hit.normal1.dot(*dir)).max(0.05);
+            let travelled = (hit.distance / METERS_PER_UNIT - TRACE_BACKOFF / facing).max(0.0);
             let fraction = (travelled / len).clamp(0.0, 0.999_999);
             if fraction < best.fraction {
                 best = Trace {
