@@ -17,7 +17,7 @@ Status: draft
 - Movement runs once per user command. The time step `dt` is one server tick: 1/64 s = 0.015625 s on 64-tick servers (1/66 s on 66-tick, the CS:S default for older servers; all numbers below use 64). Nothing depends on render frame rate. A per-player time scale (normally 1) multiplies `dt`.
 - Timers in the duck/jump logic count in milliseconds. Each tick they go down by 1000·dt (15.625 ms at 64 tick) and stop at 0.
 - Collision is a swept axis-aligned box. Results: fraction of the sweep completed, end position, hit plane normal, "started in solid" and "entirely in solid".
-- Move inputs: forward, side and up amounts in units/s. Positive side means right. The client sends ±(cl_forwardspeed, cl_sidespeed, cl_backspeed) for the keys, which can be larger than the max speed. The server rescales them (see Wish direction).
+- Move inputs: forward, side and up amounts in units/s. Positive side means right. The client sends ±(cl_forwardspeed, cl_sidespeed, cl_backspeed) for the keys. These are 400 each in the CS:S build of the SDK client input code (450 in other games), and cl_upspeed is 320. These amounts can be larger than the max speed. The speed key does not change them (see Walking). The server rescales them (see Wish direction).
 
 ## Constants
 
@@ -81,7 +81,11 @@ Status: draft
 
 Inputs: view angles, forward move `f`, side move `s`, up move `u`, the player's current max speed (in CS:S this comes from the held weapon, see CS:S values), the client's max speed and the ground material.
 
-1. Effective max speed `M` = min(player max speed, client max speed if nonzero) × the ground material's max-speed factor (1 for normal materials). A map constraint can lower it further (not used in CS:S maps).
+1. Effective max speed `M`. Start from the player's own max-speed value P, which game code sets per player; in CS:S it comes from the weapon, lowered while walking (see Walking).
+   - The movement max speed is min(sv_maxspeed, P), where P is used only if it is > 0.
+   - The "client max speed" is P itself, and it lowers M further if nonzero. So M = min(sv_maxspeed, P) in practice.
+   - Multiply by the ground material's max-speed factor (1 for normal materials).
+   - A map constraint can lower it further (not used in CS:S maps).
 2. If √(f²+s²+u²) > M, scale f, s and u by M/√(f²+s²+u²). So holding forward+strafe is not faster than forward alone.
 3. If the player is frozen, on a train or dead, f = s = u = 0.
 4. If the player is fully ducked and on the ground, multiply f, s, u by 1/3 (once per tick; see Ducking).
@@ -90,6 +94,33 @@ Inputs: view angles, forward move `f`, side move `s`, up move `u`, the player's 
 7. If wishspeed > M, set wishspeed = M. Step 2 normally makes this a no-op.
 
 The view angles used are the command's angles plus the current punch angle. Yaw above 180 is wrapped to (−180, 180].
+
+### Walking (+speed)
+
+What the public SDK says:
+- **Client side:** holding the speed key sets the speed button bit in the user command, and that is all it does to movement. The client input code builds forward/side/up amounts from cl_forwardspeed, cl_sidespeed, cl_backspeed and cl_upspeed alone. The speed key does not scale them; there is no move-speed-key cvar in this code. Its only client-side numeric effect is on keyboard turning: turn rate × cl_anglespeedkey (0.67).
+- **Shared movement:** reads the speed bit only for spectator (observer) and noclip flight, where it halves the speed factor. Walking, air, water and ladder movement never look at it.
+- **What all the moves read** is the per-player max-speed value P, which game code sets:
+  - the ground and air wish cap: M = min(sv_maxspeed, P), applied to the input rescale and the wishspeed clamp
+  - the swim wish cap, M × 0.8
+  - the "jump held" swim lift, +P upward
+  - the clamp on the look-up swim lift, 0 to P
+
+  In the SDK's single-player game, the walk and sprint buttons are handled by game code that changes P. That is the Source pattern.
+- **CS:S's own walk code is not in the SDK.** The measurements match "walking lowers the player's max speed P" and rule out "walking scales the input":
+  - Ground acceleration from rest gains sv_accelerate × 130 × dt.
+  - The water lift and cap match only if P itself is lowered: 16/16 tick-exact runs.
+  - Input scaling cannot produce the water result, because the swim lift reads P, not the input.
+
+**CS:S walking model (measured):** while the speed button is held in this command, P = weapon max speed × 0.52 (130 with the knife), for that same tick. Everything that reads P or M follows from that. Nothing else changes: same friction and the same acceleration formulas, only the lower wish speed.
+
+Consequences (with M = 130 for the knife):
+- **Ground:** the wish speed is 130. Acceleration is sv_accelerate × 130 × dt per tick (10.156 at 64 tick, 9.75 at 0.015 s). Below sv_stopspeed (75), friction removes 75 × 4 × dt (4.6875 at 64 tick, 4.5 at 0.015 s). Speed levels off at exactly 130.
+- **Walk + duck:** the ducked input scale applies on top: wish = 250 × 0.52 × the ducked factor (0.34 measured in CS:S; 1/3 in shared code) = 44.2. One tick of acceleration (5 × 44.2 × dt = 3.4531 at 64 tick, 3.315 at 0.015 s) is smaller than the below-stopspeed friction drop. So every tick friction zeroes the speed, then acceleration adds that one tick's worth again. The speed holds at that value and never builds up.
+- **Air:** the amount added is sv_airaccelerate × 130 × dt (20.3125 at 64 tick, 19.5 at 0.015 s). This is below the 30 cap, so perpendicular air-strafing gains less while walking: |v|² grows by 20.3125² = 412.6 per tick instead of 900.
+- **Water:** swim wish cap 130 × 0.8 = 104. The jump-held lift adds +130 instead of +250.
+- **Ladders:** unaffected. Climb speed comes from the buttons (±200), not from P or M.
+- Footstep sounds, and whether walking is silent, are game code and not covered here.
 
 ### Ground friction
 
@@ -438,7 +469,7 @@ Punch is added to the view angles used for movement (step 1 of Wish direction).
 One user command, walking move type, not in water:
 
 1. Scale dt by the per-player time scale.
-2. Compute the effective max speed M. Rescale f, s, u to |(f,s,u)| ≤ M. Zero them if frozen or dead.
+2. Compute the effective max speed M from the player's max speed P. P already reflects this command's walk button (CS:S: × 0.52 while the speed button is held), applied before movement in the same tick. Rescale f, s, u to |(f,s,u)| ≤ M. Zero them if frozen or dead.
 3. Decay the punch angle. View angles = command angles + punch.
 4. Count down the duck, duck-jump, jump and swim-sound timers by 1000·dt ms.
 5. Compute the forward/right/up vectors from the view angles.
@@ -515,6 +546,17 @@ All at 64 tick (dt = 1/64), flat floor at z = 0 unless stated, sv_gravity 800, s
 | moving 250 on ground, sv_stopspeed 75 | no input | 18 / 19 ticks | 78.24 / 73.35 (then −4.6875 per tick) |
 | same | no input | stop tick, distance | stopped on tick 35; total ≈ 49.80 (±0.05) |
 | moving 0.9 on ground | no input or input giving < 1 | 1 tick | velocity exactly 0, no movement |
+| **Walking**: knife, P = 250 × 0.52 = 130 while the speed button is held, sv_accelerate 5, sv_stopspeed 75, 64 tick | | | |
+| at rest on ground | hold speed + forward | 1 / 2 ticks | 10.15625 / 15.625 (+5.46875 per tick below 75) |
+| same | hold speed + forward | 12 / 13 / 14 ticks | 70.3125 / 75.78125 / 81.20 (above 75: v' = 0.9375v + 10.15625) |
+| same | hold speed + forward | 28 / 29 ticks | 129.56 / exactly 130, then stays 130 |
+| same at dt = 0.015 (measured CS:S reference) | hold speed + forward | 1 tick, then per tick below 75 | +9.75, then +5.25; levels at 130.0 |
+| at rest on ground | hold speed + duck + forward (fully ducked) | every tick | 3.4531 at 64 tick (wish 44.2 with the CS:S 0.34 factor; 3.3854 with the shared 1/3), 3.3149 at dt 0.015 (measured); never grows |
+| airborne at rest horizontally, sv_airaccelerate 10 | hold speed + forward | 1 / 2 ticks | 20.3125 / 30 (capped at 30) |
+| airborne, v = (250,0) | hold speed + right only (⟂) | 1 tick | √(250² + 20.3125²) = 250.824 |
+| level 3 water, at rest | hold speed + forward, pitch 0 | until steady | swim speed tops out at 104 (130 × 0.8) |
+| level 3 water, at rest, no move keys | hold speed + jump | tick 1 / tick 2+ | vz 101.875 / 100.46875 (lift +130, cap 104; surface friction 0.25 from tick 2) |
+| on a ladder, pitch 0 | hold speed + forward | 1 tick | vz = 200 (walking does not slow climbing) |
 | standing on ground, jump not held last tick | press jump (standing) | jump tick | vz during move = 255.828; z after = 3.9973; vz at end = 249.578 |
 | same | no further input | ticks 2..21 | vz used for the move on tick k (k ≥ 2) = 243.328 − 12.5(k−2) |
 | same | – | apex | z = 42.928 at end of tick 21 (jump tick = 1) |
@@ -672,6 +714,7 @@ Knife script: MaxPlayerSpeed 250, Damage 50, WeaponArmorRatio 1.7, Range 4096 (t
 - **Contents cache**: confirmed at the water surface: the eye point tested dry at the start of a tick keeps answering dry after sinking 0.6 units that tick (level 2 for one more tick).
 - **Coincident faces**: where a player-clip face coincides with a ladder brush's face, the trace reports the clip, so the ladder isn't found from that side (de_nuke, ladder at (856..864, -1448..-1422)).
 - **Remembered ladder** (to check further): after using a ladder, CS:S grabbed the same ladder later with no input while falling past it; on a fresh map it doesn't. Not modelled.
+- **Walking (+speed)** (2026-10-05): lowers the max speed to 0.52 × the weapon speed (130 with the knife), on the ground, in the air and in water (wish cap 130 × 0.8). The swim lift while holding jump stays **260** in CS:S (it isn't lowered with the max speed as the SDK model in "Walking (+speed)" predicts): with walking, jumping and forward mixed at random, 16 of 16 water runs match tick-exact only that way. Ladders: no measured effect.
 - **Bots** duck on their own when they jump (inside the game, not through their buttons). Humans don't.
 - Still open from the fuzz: a one-tick-earlier landing on a ledge edge under water, and a few ladder runs (de_nuke) where on-ladder velocity or attachment differs after many ticks.
 
@@ -685,10 +728,10 @@ Knife script: MaxPlayerSpeed 250, Damage 50, WeaponArmorRatio 1.7, Range 4096 (t
 6. **CS:S duck behavior:** duck speed (CS:S slows while ducking/ducked: is it ×1/3 of input or a fixed fraction of max speed?), duck spam limit (sv_timebetweenducks or similar), whether the transition is still 0.4 s / 0.2 s, and any air-duck differences.
 7. **Answered (see CS:S values: jump stamina).** Was: **Landing slowdown / stamina:** CS:S reduces horizontal speed after landing and after jumps (a "stamina" or velocity modifier). This is not in shared code. Measure speed in the ticks after landing from walking jumps, bhop chains, and a fall.
 8. **Answered (see CS:S values: bunny-hop cap, 286).** Was: **Bunny-hop limit:** with sv_enablebunnyhopping 0, CS:S caps speed on jump (believed: if speed > 1.1 × max speed, scale down to 1.1 × max speed). Measure by jumping at > 275 units/s with a knife.
-9. **Walk key (+speed):** CS:S walking speed. Believed to be a fraction of max speed (≈0.52). Measure.
+9. **Answered (measured):** the walk key lowers the player's max speed to 0.52 × the weapon speed (see Walking). Still open: whether CS:S applies any delay when pressing or releasing it. The measurements show it acting on the same tick.
 10. **Backpedal:** whether sv_backspeed 0.6 is applied in CS:S. Measure backward top speed.
 11. **Fall damage formula as applied by CS:S:** the shared header gives the slope 100/(1024 − 580). CS:S applies the actual damage (and may scale it, e.g. ×1.25 is sometimes cited). Measure HP lost from known drop heights.
-12. **Client move key speeds:** cl_forwardspeed/cl_sidespeed/cl_backspeed in CS:S (believed 400 or 450). Only matters if they are below max speed, which they are not.
+12. **Answered (SDK client input code, CS:S build):** cl_forwardspeed, cl_sidespeed and cl_backspeed are 400 (cheat-protected), and cl_upspeed is 320. All are above every weapon speed, so the server rescale always applies.
 13. **Ladder climb speed in CS:S:** shared is 200. Confirm.
 14. **func_ladder solidity:** the ladder probe uses the player-solid mask, so a ladder must block the player to be found. Confirm how CS:S maps compile func_ladder brushes (contents seen by the probe) by reading the BSP brush contents of a ladder in a map with our loader, and confirm that the player rests against the ladder face.
 15. **Water currents and base velocity:** the shared code adds the current's 50 × level push to base velocity on every water check. That happens several times per tick, and the shared movement never resets base velocity. The engine or player code presumably resets it each tick. Measure drift speed in a current if any CS:S map has one; otherwise ignore.
