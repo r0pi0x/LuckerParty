@@ -1,0 +1,10 @@
+#!/usr/bin/env sh
+# Refuse commits while tests fail (CLAUDE.md: `cargo test` must pass).
+# Enable once per clone: git config core.hooksPath .githooks
+# Skip in an emergency with: git commit --no-verify
+set -e
+if ! cargo test --features dev --quiet >/tmp/mashup-pre-commit.log 2>&1; then
+    grep -E "panicked|FAILED|^error" /tmp/mashup-pre-commit.log | head -20
+    echo "pre-commit: tests failed (full log: /tmp/mashup-pre-commit.log); not committing." >&2
+    exit 1
+fi

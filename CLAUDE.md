@@ -49,7 +49,8 @@ cargo run --profile playtest   # optimized, quick to rebuild; for playtesting
 - Verify your own work with tests, screenshots or remote queries
   (docs/OBSERVABILITY.md) before calling it done. New behavior gets a
   scenario test.
-- Commit at working milestones; `cargo test` must pass.
+- Commit at working milestones; `cargo test` must pass. `.githooks/pre-commit`
+  enforces it (enable per clone: `git config core.hooksPath .githooks`).
 - Propose a plan before writing a new mount adapter or loader. Multi-session
   work gets a plan in `docs/plans/active/`, kept updated.
 - When something was hard because a tool, doc or check was missing, add it.
