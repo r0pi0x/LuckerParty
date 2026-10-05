@@ -11,6 +11,7 @@ struct PropParams {
     alpha_cutoff: f32,
     fog_color: vec4<f32>,
     fog_range: vec4<f32>,
+    translucent: f32,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> params: PropParams;
@@ -32,5 +33,5 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         let f = clamp(min(params.fog_range.z, (depth - params.fog_range.x) / (params.fog_range.y - params.fog_range.x)), 0.0, 1.0);
         rgb = mix(rgb, params.fog_color.rgb, f * f);
     }
-    return vec4<f32>(rgb, color.a);
+    return vec4<f32>(rgb, select(1.0, color.a, params.translucent > 0.5));
 }

@@ -293,3 +293,18 @@ fn texture_alpha_coverage() {
         }
     }
 }
+
+/// Positions (Source units) of props whose materials contain MAT.
+#[test]
+#[ignore]
+fn find_props() {
+    let map = mashup::games::load_map("cs_source:de_dust2").unwrap();
+    let name = std::env::var("MAT").unwrap_or("car".into());
+    for p in &map.props {
+        let model = &map.models[p.model];
+        if let Some(m) = model.meshes.iter().find(|m| m.material.contains(&name)) {
+            let s = Vec3::new(p.translation.x, -p.translation.z, p.translation.y) / 0.0254;
+            println!("{} at {:.0} {:.0} {:.0} skybox {}", m.material, s.x, s.y, s.z, p.skybox);
+        }
+    }
+}

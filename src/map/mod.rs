@@ -275,6 +275,8 @@ pub struct MapData {
     /// set, the camera draws the sky only from places that see it, and
     /// clears to black inside solid.
     pub sky_vis: Option<MapSkyVis>,
+    /// Water and slime volumes.
+    pub water: Vec<MapWaterVolume>,
 }
 
 /// What the BSP leaf around a point can see of the sky.
@@ -325,6 +327,8 @@ pub struct MapBrush {
     pub planes: Vec<(Vec3, f32)>,
     pub min: Vec3,
     pub max: Vec3,
+    /// Climbable (Source: ladder contents).
+    pub ladder: bool,
 }
 
 impl MapBrush {
@@ -338,9 +342,30 @@ impl MapBrush {
             (Vec3::Z, max.z),
             (Vec3::NEG_Z, -min.z),
         ];
-        Self { planes, min, max }
+        Self {
+            planes,
+            min,
+            max,
+            ladder: false,
+        }
+    }
+
+    /// Whether a point (engine space) is inside.
+    pub fn contains(&self, p: Vec3) -> bool {
+        p.cmpge(self.min).all() && p.cmple(self.max).all() && self.planes.iter().all(|(n, d)| n.dot(p) <= *d)
     }
 }
+
+/// A water (or slime) volume, for swimming.
+#[derive(Clone, Debug)]
+pub struct MapWaterVolume {
+    pub brush: MapBrush,
+    pub slime: bool,
+}
+
+/// The loaded map's water volumes (`MapData::water`).
+#[derive(Resource, Clone, Debug, Default)]
+pub struct MapWater(pub Vec<MapWaterVolume>);
 
 /// The loaded map's brushes (`MapData::collision_brushes`).
 #[derive(Resource, Clone, Debug, Default)]
@@ -746,6 +771,7 @@ fn spawn_map(
                         light_scale: data.look.light_scale,
                         lightmap_scale: if source_ldr { SOURCE_LIGHTMAP_SCALE } else { 1.0 },
                         bicubic: if data.look.bicubic_lightmaps { 1.0 } else { 0.0 },
+                        translucent: if m.alpha == MapAlpha::Blend { 1.0 } else { 0.0 },
                         blend: if blended { 1.0 } else { 0.0 },
                         blend_masked: if blend.mask.is_some() { 1.0 } else { 0.0 },
                         blend_normal: if bumped && blend.normal_map.is_some() { 1.0 } else { 0.0 },
@@ -861,6 +887,7 @@ fn spawn_map(
                                             data.fog.as_ref().filter(|_| view == MapDebugView::Normal && !skybox),
                                         ),
                                         fog_range: fog_range(data.fog.as_ref()),
+                                        translucent: if m.alpha == MapAlpha::Blend { 1.0 } else { 0.0 },
                                     },
                                     base: m.texture.filter(|_| !lighting_only).map(|i| textures[i].clone()),
                                     alpha_mode: match m.alpha {
@@ -1084,6 +1111,7 @@ fn spawn_map(
 
     if !brushes.is_empty() {
         commands.insert_resource(MapBrushes(brushes));
+        commands.insert_resource(MapWater(data.water.clone()));
     }
 
     commands.spawn((
@@ -1453,6 +1481,7 @@ fn place_brush(planes: &[(Vec3, f32)], translation: Vec3, rotation: Quat) -> Map
         planes: world,
         min,
         max,
+        ladder: false,
     }
 }
 

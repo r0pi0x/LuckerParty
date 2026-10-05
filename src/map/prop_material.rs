@@ -15,6 +15,9 @@ pub struct PropParams {
     pub fog_color: Vec4,
     /// Fog start, end (meters), max density.
     pub fog_range: Vec4,
+    /// 1 when alpha blended; otherwise the output alpha is 1 (see
+    /// `WorldParams::translucent`).
+    pub translucent: f32,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]

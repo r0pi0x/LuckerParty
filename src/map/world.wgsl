@@ -35,6 +35,7 @@ struct WorldParams {
     fog_color: vec4<f32>,
     fog_range: vec4<f32>,
     bicubic: f32,
+    translucent: f32,
 }
 
 // A lightmap page, bilinear or bicubic B-spline (4 bilinear taps; the
@@ -65,6 +66,11 @@ fn sample_lightmap(t: texture_2d<f32>, uv: vec2<f32>) -> vec3<f32> {
 }
 
 // Source range fog: toward the fog color by f^2, f from view depth.
+// Opaque surfaces write alpha 1 (see `translucent`).
+fn out_alpha(a: f32) -> f32 {
+    return select(1.0, a, params.translucent > 0.5);
+}
+
 fn apply_fog(color: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
     if params.fog_color.w < 0.5 {
         return color;
@@ -154,10 +160,10 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     if params.debug_view == 1.0 {
         albedo = vec4<f32>(1.0, 1.0, 1.0, albedo.a);
         light = light * 0.25;
-        return vec4<f32>(albedo.rgb * light, albedo.a);
+        return vec4<f32>(albedo.rgb * light, out_alpha(albedo.a));
     }
     if params.debug_view == 2.0 {
         return albedo;
     }
-    return vec4<f32>(apply_fog(albedo.rgb * light * params.light_scale, in.world_position.xyz), albedo.a);
+    return vec4<f32>(apply_fog(albedo.rgb * light * params.light_scale, in.world_position.xyz), out_alpha(albedo.a));
 }

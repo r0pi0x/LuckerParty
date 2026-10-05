@@ -33,6 +33,10 @@ pub struct WorldParams {
     pub fog_range: Vec4,
     /// 1: bicubic lightmap sampling.
     pub bicubic: f32,
+    /// 1 when alpha blended. Otherwise the output alpha is 1: textures
+    /// often keep other data in alpha (env map masks), and the camera's
+    /// output is composited over the sky camera by alpha.
+    pub translucent: f32,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]

@@ -273,6 +273,7 @@ pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> (MapData, LightmapLayo
 
     data.collision_hulls = brush_hulls(bsp);
     data.collision_brushes = collision_brushes(bsp);
+    data.water = water_volumes(bsp);
 
     let (lightmap, placements, white) = atlas.build();
     for (material, mesh) in by_material.iter_mut() {
@@ -480,14 +481,7 @@ pub fn brush_hulls(bsp: &Bsp) -> Vec<Vec<[f32; 3]>> {
 pub fn collision_brushes(bsp: &Bsp) -> Vec<crate::map::MapBrush> {
     brush_hulls_indexed(bsp)
         .into_iter()
-        .map(|(_, points, planes)| {
-            let (mut min, mut max) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
-            for p in &points {
-                min = min.min(Vec3::from(*p));
-                max = max.max(Vec3::from(*p));
-            }
-            crate::map::MapBrush { planes, min, max }
-        })
+        .map(|(i, points, planes)| map_brush(points, planes, bsp.brushes[i].flags.contains(BrushFlags::LADDER)))
         .collect()
 }
 
@@ -515,6 +509,37 @@ pub fn shadow_hulls(bsp: &Bsp) -> Vec<Vec<[f32; 3]>> {
 /// `brush_hulls` with each hull's brush index (for diagnostics) and its
 /// planes in engine space (outward normal, distance in meters).
 pub fn brush_hulls_indexed(bsp: &Bsp) -> Vec<(usize, Vec<[f32; 3]>, Vec<(Vec3, f32)>)> {
+    // Ladders block players too (you climb what you run into).
+    brush_volumes(bsp, PLAYER_SOLID.union(BrushFlags::LADDER))
+}
+
+/// Water and slime brushes as volumes.
+pub fn water_volumes(bsp: &Bsp) -> Vec<crate::map::MapWaterVolume> {
+    brush_volumes(bsp, BrushFlags::WATER.union(BrushFlags::SLIME))
+        .into_iter()
+        .map(|(i, points, planes)| crate::map::MapWaterVolume {
+            brush: map_brush(points, planes, false),
+            slime: !bsp.brushes[i].flags.contains(BrushFlags::WATER),
+        })
+        .collect()
+}
+
+fn map_brush(points: Vec<[f32; 3]>, planes: Vec<(Vec3, f32)>, ladder: bool) -> crate::map::MapBrush {
+    let (mut min, mut max) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+    for p in &points {
+        min = min.min(Vec3::from(*p));
+        max = max.max(Vec3::from(*p));
+    }
+    crate::map::MapBrush {
+        planes,
+        min,
+        max,
+        ladder,
+    }
+}
+
+/// World brushes with any of `mask`'s contents, as hulls and planes.
+fn brush_volumes(bsp: &Bsp, mask: BrushFlags) -> Vec<(usize, Vec<[f32; 3]>, Vec<(Vec3, f32)>)> {
     const EPS: f32 = 0.01;
     // Plane index (either side) -> centres of displacement base faces on it.
     let mut disp_bases: std::collections::HashMap<u16, Vec<Vec3>> = Default::default();
@@ -535,7 +560,7 @@ pub fn brush_hulls_indexed(bsp: &Bsp) -> Vec<(usize, Vec<[f32; 3]>, Vec<(Vec3, f
     let mut out = Vec::new();
     for index in world_brushes(bsp) {
         let brush = &bsp.brushes[index];
-        if !brush.flags.intersects(PLAYER_SOLID) {
+        if !brush.flags.intersects(mask) {
             continue;
         }
         let first = brush.brush_side as usize;
