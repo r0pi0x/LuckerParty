@@ -69,6 +69,38 @@ to undermines the "load from your own install" model. To survive game updates:
 - A "mount doctor" per game checks expected files and reports what is mounted,
   what changed and what failed. The multiplayer pre-match check uses it too.
 
+Supported sources are the Steam releases. An install is fingerprinted by its
+Steam build ID plus file hashes; we keep a short list of fingerprints we have
+tested, and the mount doctor warns on others.
+
+Where imported data lives:
+
+- Converted files are still the publisher's assets. They follow the same rule
+  as the originals: never in git, never in a distributed build.
+- The import cache is per user, outside the repository:
+  `~/.local/share/mashup/cache/<game>/<fingerprint>/` on Linux,
+  `%LOCALAPPDATA%\mashup\cache\<game>\<fingerprint>\` on Windows.
+- Moving assets between our own machines means copying the install or the
+  cache directly (rsync, Syncthing), never through git.
+- Install paths (and Combat Arms keys) live in the gitignored
+  `mashup.local.toml`; see `mashup.local.example.toml`.
+- Tests that need a real install skip when it isn't present.
+- Our own original assets (greybox textures, our sounds, UI) may be committed,
+  with Git LFS if they get large.
+
+How code refers to assets:
+
+- Game code uses stable namespaced IDs we own (`combat_arms:weapon/m4a1`),
+  never archive paths.
+- The importer builds the catalog mapping each ID to where the asset lives in
+  this install, following the game's own data (a weapon's data file names its
+  model and sounds) rather than hard-coded paths.
+- When a release moves something, a committed per-fingerprint alias file
+  records it; content hashes catch pure renames. File names and hashes are
+  facts about the game and may be committed; contents may not.
+- Importing writes a catalog snapshot (IDs, source paths, hashes; no content)
+  that we commit, so a game update shows up as a reviewable diff.
+
 ### Slots
 
 A match is a loadout that picks one implementation per slot. Each game
@@ -200,13 +232,24 @@ uses mounted; the server checks this before a match.
 
 ### Per-game notes
 
-- **Counter-Strike: Source.** Source 1 formats (VPK, BSP, MDL/VVD/VTX,
+- **Counter-Strike: Source.** Steam app 240, Linux build. Tested build
+  25338318: `de_dust2.bsp` is BSP version 20 (loose in `cstrike/maps/`); VPK
+  directories are version 2 (`cstrike/cstrike_pak_dir.vpk`, and
+  `hl2/hl2_textures_dir.vpk`, `hl2/hl2_misc_dir.vpk` for shared content).
+  Source 1 formats (VPK, BSP, MDL/VVD/VTX,
   VTF/VMT) are well documented. Valve's public Source SDK 2013 includes the
   shared movement code. Weapon stats live in `weapon_*.txt` scripts. Faithful
   rendering needs BSP lightmaps and Source material rules.
 - **Combat Arms.** LithTech Jupiter: `.rez` archives and LithTech model/world
   formats. Thin community tooling; expect format reverse engineering from
-  installed files. Now operated by Valofe.
+  installed files. Now operated by Valofe. Supported source: Steam app
+  1263550, "Combat Arms: the Classic", Windows build (downloadable on Linux
+  with SteamCMD). Tested build 25595979: 108 `.rez` archives in `Game/`.
+  - Every `.rez` starts with the standard plain-text RezMgr header. Its title
+    field differs: some archives say V1 and look fully
+    encrypted (8.0 bits/byte), others say `LithTech Resource File` and look
+    unencrypted (`TEXTURES.rez`: 4.7 bits/byte). To be confirmed by the
+    `rez_archive` spec.
   - The archives are encrypted, and the key lives in a packed
     executable. The mount takes keys as input from the gitignored
     `mashup.local.toml`, as a list keyed by an install fingerprint, so a key

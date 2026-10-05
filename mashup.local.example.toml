@@ -1,0 +1,10 @@
+# Copy to mashup.local.toml (gitignored) and edit. Machine-specific settings
+# that must never be committed: install paths, and later Combat Arms keys.
+
+[games.cs_source]
+# Folder containing cstrike/ and hl2/. Steam app 240.
+path = "~/games/counter-strike-source"
+
+[games.combat_arms]
+# Folder containing Game/*.rez. Steam app 1263550 (Combat Arms: the Classic).
+path = "~/games/combat-arms-classic"
