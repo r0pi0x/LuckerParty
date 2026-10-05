@@ -255,14 +255,13 @@ uses mounted; the server checks this before a match.
   installed files. Now operated by Valofe. Supported source: Steam app
   1263550, "Combat Arms: the Classic", Windows build (downloadable on Linux
   with SteamCMD). Tested build 25595979: 108 `.rez` archives in `Game/`.
-  - Every `.rez` starts with the standard plain-text RezMgr header. Its
-    title marks encryption: 4 archives say V1 and 36 say
-    V2 (two key schemes; all measure ~8.0 bits/byte), and 68
-    say `LithTech Resource File` (unencrypted; only BGM and MOVIES look
-    random, being compressed media). Even plain archives have no readable
-    file directory, so reading any of them waits on the `rez_archive` spec.
-    `cargo run --bin dump -- combat_arms --list` shows title and entropy per
-    archive.
+  - Format: specs/combat_arms/rez_archive.md. Header and directory are
+    always plaintext, so every archive lists its files. The header title
+    marks payload encryption: 4 archives V1
+    (ATTRIBUTES, XML, GMS, Language_Pack), 36 V2 (models,
+    textures, UI images, WORLDS/WORLDS4/WORLDS5), 68 plain.
+  - Readable today without keys: all plain archives, including 33 maps in
+    WORLDS2 and WORLDS3 (LithTech world format version 85).
   - The archives are encrypted, and the key lives in a packed
     executable. The mount takes keys as input from the gitignored
     `mashup.local.toml`, as a list keyed by an install fingerprint, so a key

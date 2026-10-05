@@ -70,10 +70,13 @@ same readers as the runtime mount. Install paths come from
 cargo run --bin dump -- cs_source                      # counts and sizes by type
 cargo run --bin dump -- cs_source --list --filter de_dust2
 cargo run --bin dump -- cs_source --filter materials/de_dust --extract
-cargo run --bin dump -- combat_arms --list             # per-archive key title and entropy
+cargo run --bin dump -- combat_arms --archives         # per-archive title, entropy, file count
+cargo run --bin dump -- combat_arms --list --filter worlds2
+cargo run --bin dump -- combat_arms --filter worlds2/warehouse.dat --extract
 ```
 
-Extraction goes to `~/.local/share/mashup/dump/<game>/` (or `--out`) and
+Encrypted Combat Arms archives list but skip extraction until their scheme's
+key is in `mashup.local.toml`. Extraction goes to `~/.local/share/mashup/dump/<game>/` (or `--out`) and
 refuses any folder inside the repository.
 
 ## Planned

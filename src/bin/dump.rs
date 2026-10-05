@@ -10,7 +10,10 @@ use std::{
 
 use mashup::{
     games::{combat_arms, cs_source},
-    mount::config::{LocalConfig, default_dump_dir},
+    mount::{
+        Mount,
+        config::{LocalConfig, default_dump_dir},
+    },
 };
 
 const USAGE: &str = "\
@@ -18,6 +21,7 @@ usage: dump <game> [options]
   games: cs_source, combat_arms
   (no option)          summary: file counts and sizes by extension
   --list               list every file with its size
+  --archives           combat_arms: per-archive title, entropy and file count
   --filter <text>      only paths containing <text> (case-insensitive)
   --extract            write the (filtered) files to --out
   --out <dir>          extraction folder (default: per-user data dir; never inside the repo)
@@ -26,6 +30,7 @@ usage: dump <game> [options]
 struct Args {
     game: String,
     list: bool,
+    archives: bool,
     extract: bool,
     filter: Option<String>,
     out: Option<PathBuf>,
@@ -41,6 +46,7 @@ fn parse() -> Result<Args, String> {
     let mut a = Args {
         game,
         list: false,
+        archives: false,
         extract: false,
         filter: None,
         out: None,
@@ -50,6 +56,7 @@ fn parse() -> Result<Args, String> {
         let mut value = || it.next().ok_or(format!("{flag}: missing value"));
         match flag.as_str() {
             "--list" => a.list = true,
+            "--archives" => a.archives = true,
             "--extract" => a.extract = true,
             "--filter" => a.filter = Some(value()?.to_lowercase()),
             "--out" => a.out = Some(value()?.into()),
@@ -113,6 +120,34 @@ fn human(bytes: u64) -> String {
 
 fn dump_cs_source(args: &Args, install: &Path) -> Result<(), String> {
     let mount = cs_source::mount::open(install).map_err(|e| e.to_string())?;
+    report(args, &mount, &[])
+}
+
+fn dump_combat_arms(args: &Args, install: &Path) -> Result<(), String> {
+    let keys = combat_arms::rez::keys_from_config(&LocalConfig::load()?)?;
+    let (mount, locked) = combat_arms::mount::open(install, &keys).map_err(|e| e.to_string())?;
+    if args.archives {
+        println!("{:>10}  {:7}  {:16}  {:>6}  name", "size", "entropy", "title", "files");
+        for layer in mount.layers() {
+            let path = PathBuf::from(layer.name());
+            let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            let header = combat_arms::rez::RezArchive::open(&path, &keys)
+                .map_err(|e| e.to_string())?
+                .header;
+            let entropy = combat_arms::rez::sample_entropy(&path, 1 << 20).map_err(|e| e.to_string())?;
+            let title: String = header.title.chars().take(16).collect();
+            let name = path.file_name().unwrap().to_string_lossy();
+            println!(
+                "{:>10}  {entropy:7.3}  {title:16}  {:>6}  {name}",
+                human(size),
+                layer.entries().len()
+            );
+        }
+    }
+    report(args, &mount, &locked)
+}
+
+fn report(args: &Args, mount: &Mount, locked: &[String]) -> Result<(), String> {
     let layers: Vec<String> = mount.layers().map(|l| l.name()).collect();
     let entries: Vec<_> = mount
         .entries()
@@ -122,7 +157,11 @@ fn dump_cs_source(args: &Args, install: &Path) -> Result<(), String> {
 
     if args.list {
         for (e, layer) in &entries {
-            println!("{:>10}  {}  [{}]", e.size, e.path, layer);
+            let archive = Path::new(&layers[*layer])
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy();
+            println!("{:>10}  {}  [{archive}]", e.size, e.path);
         }
     }
 
@@ -133,9 +172,13 @@ fn dump_cs_source(args: &Args, install: &Path) -> Result<(), String> {
         slot.0 += 1;
         slot.1 += e.size;
     }
-    println!("search path:");
-    for (i, l) in layers.iter().enumerate() {
-        println!("  [{i}] {l}");
+    if layers.len() <= 12 {
+        println!("search path:");
+        for (i, l) in layers.iter().enumerate() {
+            println!("  [{i}] {l}");
+        }
+    } else {
+        println!("search path: {} layers (--archives for details)", layers.len());
     }
     let total: u64 = entries.iter().map(|(e, _)| e.size).sum();
     println!("{} files, {}", entries.len(), human(total));
@@ -144,63 +187,35 @@ fn dump_cs_source(args: &Args, install: &Path) -> Result<(), String> {
     for (ext, (count, size)) in top.iter().take(15) {
         println!("  {ext:>8}: {count:>6} files, {}", human(*size));
     }
+    if !locked.is_empty() {
+        println!(
+            "{} archives are encrypted and have no key configured; their files list but won't extract: {}",
+            locked.len(),
+            locked.join(", ")
+        );
+    }
 
     if args.extract {
         let out = out_dir(args)?;
+        let (mut written, mut skipped) = (0, 0);
         for (e, _) in &entries {
+            let data = match mount.read(&e.path) {
+                Ok(d) => d,
+                Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+                    skipped += 1;
+                    continue;
+                }
+                Err(err) => return Err(format!("{}: {err}", e.path)),
+            };
             let dest = out.join(&e.path);
             fs::create_dir_all(dest.parent().unwrap()).map_err(|err| format!("{}: {err}", dest.display()))?;
-            let data = mount.read(&e.path).map_err(|err| format!("{}: {err}", e.path))?;
             fs::write(&dest, data).map_err(|err| format!("{}: {err}", dest.display()))?;
+            written += 1;
         }
-        println!("extracted {} files to {}", entries.len(), out.display());
-    }
-    Ok(())
-}
-
-fn dump_combat_arms(args: &Args, install: &Path) -> Result<(), String> {
-    let game_dir = install.join("Game");
-    let mut rez: Vec<_> = fs::read_dir(&game_dir)
-        .map_err(|e| format!("{}: {e}; is this a Combat Arms install?", game_dir.display()))?
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("rez")))
-        .filter(|p| {
-            let name = p.file_name().unwrap().to_string_lossy().to_lowercase();
-            args.filter.as_ref().is_none_or(|f| name.contains(f.as_str()))
-        })
-        .collect();
-    rez.sort();
-
-    let (mut v1, mut v2, mut total) = (0, 0, 0u64);
-    if args.list {
-        println!("{:>10}  {:7}  {:16}  name", "size", "entropy", "title");
-    }
-    for path in &rez {
-        let size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-        total += size;
-        let header = combat_arms::rez::RezHeader::read(path).map_err(|e| e.to_string())?;
-        let entropy = combat_arms::rez::sample_entropy(path, 1 << 20).map_err(|e| e.to_string())?;
-        match header.key_scheme() {
-            Some("V1") => v1 += 1,
-            Some(_) => v2 += 1,
-            None => {}
+        println!("extracted {written} files to {}", out.display());
+        if skipped > 0 {
+            println!("skipped {skipped} encrypted files (no key configured)");
         }
-        if args.list {
-            let title: String = header.title.chars().take(16).collect();
-            let name = path.file_name().unwrap().to_string_lossy();
-            println!("{:>10}  {entropy:7.3}  {title:16}  {name}", human(size));
-        }
-    }
-    println!(
-        "{} .rez archives, {}: {v1} keyed V1, {v2} keyed V2, {} plain (entropy near 8.0 = encrypted or compressed)",
-        rez.len(),
-        human(total),
-        rez.len() - v1 - v2
-    );
-    println!("contents: not readable yet; needs the rez_archive spec (see specs/README.md)");
-    if args.extract {
-        return Err("Combat Arms extraction needs the rez_archive spec first".into());
     }
     Ok(())
 }

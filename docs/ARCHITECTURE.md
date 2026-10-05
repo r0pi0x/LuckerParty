@@ -39,7 +39,7 @@ A module may use only the modules below it. Enforced by
 | `src/greybox.rs` | Map slot built in code; collision always, visuals only when rendering |
 | `src/mount/` | `Mount` (ordered layers, first match wins), `FileSource`, `LooseDir`, path normalization, `mashup.local.toml` loading |
 | `src/games/cs_source/` | VPK reader, the CS:S search path |
-| `src/games/combat_arms/` | `.rez` header probe (contents wait on the spec) |
+| `src/games/combat_arms/` | `.rez` reader and the archive cipher payload decryption (from the spec), all archives as one mount |
 | `src/bin/dump.rs` | Dev tool: summarize, list and extract a game install's files |
 | `src/harness.rs` | `Sim`: headless app stepped by exact fixed ticks, for tests |
 | `src/client/` | Local input, first-person camera, debug UI, `--screenshot`, remote protocol |
