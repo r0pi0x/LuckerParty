@@ -63,6 +63,7 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
         mesh.alpha = r.alpha;
         mesh.double_sided = r.double_sided;
         mesh.surface = r.surfaceprop;
+        mesh.envmap = r.envmap;
     }
     data.sky_vis = Some(sky_vis(&bsp, &bytes));
     let lighting = super::ambient::MapLighting::read(&bytes);
@@ -89,6 +90,7 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
     super::sky::add_sky(&bsp, &mut materials, &mut data);
     data.warnings.extend(materials.missing);
     data.textures = materials.textures;
+    data.cubemaps = materials.cubemaps;
     Ok(data)
 }
 

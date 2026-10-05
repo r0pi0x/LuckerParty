@@ -50,13 +50,17 @@ pub struct Resolved {
     pub unlit: bool,
     /// `$surfaceprop`: footstep and impact sounds, physics.
     pub surfaceprop: Option<String>,
+    /// `$envmap` with a baked cubemap.
+    pub envmap: Option<crate::map::MapEnvmap>,
 }
 
 pub struct MaterialLoader<'a> {
     bsp: &'a Bsp,
     mount: &'a Mount,
     pub textures: Vec<MapTexture>,
+    pub cubemaps: Vec<crate::map::MapCubemap>,
     by_path: HashMap<String, Option<usize>>,
+    cube_by_path: HashMap<String, Option<usize>>,
     /// Materials or textures that couldn't be loaded, with the reason.
     pub missing: Vec<String>,
 }
@@ -67,7 +71,9 @@ impl<'a> MaterialLoader<'a> {
             bsp,
             mount,
             textures: Vec::new(),
+            cubemaps: Vec::new(),
             by_path: HashMap::new(),
+            cube_by_path: HashMap::new(),
             missing: Vec::new(),
         }
     }
@@ -105,6 +111,7 @@ impl<'a> MaterialLoader<'a> {
                     detail: None,
                     unlit: false,
                     surfaceprop: None,
+                    envmap: None,
                 }
             }
         }
@@ -122,6 +129,7 @@ impl<'a> MaterialLoader<'a> {
             detail: None,
             unlit: false,
             surfaceprop: None,
+            envmap: None,
         };
         let vmt_path = format!("materials/{}.vmt", normalize(name));
         let Some(text) = self.read_text(&vmt_path) else {
@@ -204,7 +212,130 @@ impl<'a> MaterialLoader<'a> {
             detail,
             unlit: matches!(material, vmt_parser::material::Material::UnlitGeneric(_)),
             surfaceprop: material.surface_prop().map(str::to_lowercase),
+            envmap: self.envmap(&text, normal_map.is_some()),
         }
+    }
+
+    /// A material's keys (lower-case), with "patch" materials merged over
+    /// the material they include; nested blocks (proxies) are skipped.
+    fn keys(&self, text: &str, depth: u32) -> HashMap<String, String> {
+        let t = super::surfaceprops::tokens(text);
+        let mut out = HashMap::new();
+        if t.first().is_some_and(|s| s.eq_ignore_ascii_case("patch")) {
+            let include = t
+                .windows(2)
+                .find(|w| w[0].eq_ignore_ascii_case("include"))
+                .map(|w| w[1].clone());
+            if let Some(inc) = include.filter(|_| depth < 8)
+                && let Some(inner) = self.read_text(&inc)
+            {
+                out = self.keys(&inner, depth + 1);
+            }
+            // Keys inside "replace" / "insert" blocks override.
+            let mut i = 0;
+            while i < t.len() {
+                if (t[i].eq_ignore_ascii_case("replace") || t[i].eq_ignore_ascii_case("insert"))
+                    && t.get(i + 1).is_some_and(|s| s == "{")
+                {
+                    i += 2;
+                    while i + 1 < t.len() && t[i] != "}" {
+                        out.insert(t[i].to_lowercase(), t[i + 1].clone());
+                        i += 2;
+                    }
+                }
+                i += 1;
+            }
+            return out;
+        }
+        // shader { key value ... }: the first block's own keys only.
+        let mut level = 0;
+        let mut i = 0;
+        while i < t.len() {
+            match t[i].as_str() {
+                "{" => level += 1,
+                "}" => level -= 1,
+                key if level == 1 && t.get(i + 1).is_some_and(|v| v != "{" && v != "}") => {
+                    out.insert(key.to_lowercase(), t[i + 1].clone());
+                    i += 1;
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        out
+    }
+
+    /// `$envmap` and its modifiers, when it names a baked cubemap. The
+    /// world shader's fast path (spec Quirks) is applied here.
+    fn envmap(&mut self, text: &str, bumped: bool) -> Option<crate::map::MapEnvmap> {
+        use crate::map::EnvmapMask;
+        let keys = self.keys(text, 0);
+        let name = keys.get("$envmap")?.clone();
+        // Unpatched "env_cubemap" is assigned per object by the engine at
+        // run time (props); not handled yet.
+        if name.eq_ignore_ascii_case("env_cubemap") {
+            return None;
+        }
+        let cubemap = self.cubemap(&name)?;
+        let num = |k: &str, d: f32| keys.get(k).and_then(|v| vector(v)).map_or(d, |v| v[0]);
+        let flag = |k: &str| keys.get(k).is_some_and(|v| v.trim() != "0");
+        let mask = if flag("$normalmapalphaenvmapmask") && bumped {
+            EnvmapMask::NormalAlpha
+        } else if flag("$basealphaenvmapmask") {
+            EnvmapMask::BaseAlphaInverted
+        } else if let Some(m) = keys.get("$envmapmask").filter(|_| !bumped).cloned() {
+            self.texture(&m, false).map_or(EnvmapMask::None, EnvmapMask::Texture)
+        } else {
+            EnvmapMask::None
+        };
+        let tint = keys.get("$envmaptint").and_then(|v| vector(v)).unwrap_or([1.0; 3]);
+        let (mut contrast, mut saturation, mut fresnel) = (
+            num("$envmapcontrast", 0.0),
+            num("$envmapsaturation", 1.0),
+            num("$fresnelreflection", 1.0),
+        );
+        let honoured = (contrast > 0.0 && contrast != 1.0 && saturation != 1.0) || fresnel != 1.0;
+        if !honoured {
+            contrast = if contrast == 1.0 { 1.0 } else { 0.0 };
+            saturation = 1.0;
+            fresnel = 1.0;
+        }
+        Some(crate::map::MapEnvmap {
+            cubemap,
+            mask,
+            tint,
+            contrast,
+            saturation,
+            fresnel,
+        })
+    }
+
+    /// A cubemap texture's six faces (largest mip; sRGB).
+    fn cubemap(&mut self, name: &str) -> Option<usize> {
+        let path = format!("materials/{}.vtf", normalize(name).trim_end_matches(".vtf"));
+        if let Some(c) = self.cube_by_path.get(&path) {
+            return *c;
+        }
+        let decoded = self
+            .read(&path)
+            .ok_or_else(|| "not found".to_string())
+            .and_then(|b| cube_faces(&b));
+        let index = match decoded {
+            Ok((size, faces)) => {
+                self.cubemaps.push(crate::map::MapCubemap {
+                    name: path.clone(),
+                    size,
+                    faces,
+                });
+                Some(self.cubemaps.len() - 1)
+            }
+            Err(e) => {
+                self.missing.push(format!("{path}: {e}"));
+                None
+            }
+        };
+        self.cube_by_path.insert(path, index);
+        index
     }
 
     fn texture(&mut self, name: &str, srgb: bool) -> Option<usize> {
@@ -313,4 +444,82 @@ fn material_key<T: std::str::FromStr>(text: &str, key: &str) -> Option<T> {
             .parse()
             .ok()
     })
+}
+
+/// A VTF cubemap's six faces at full size, RGBA8. VTF stores mips smallest
+/// first, each mip holding every frame's faces; versions before 7.5 add a
+/// seventh (sphere map) face unless the first frame is 0xFFFF.
+fn cube_faces(bytes: &[u8]) -> Result<(u32, [Vec<u8>; 6]), String> {
+    use vtf::{image::VTFImage, resources::ResourceType};
+    const ENVMAP: u32 = 0x4000;
+    let vtf = vtf::from_bytes(bytes).map_err(|e| e.to_string())?;
+    let header = &vtf.header;
+    if header.flags & ENVMAP == 0 {
+        return Err("not a cubemap".into());
+    }
+    let minor = header.version[1];
+    let first_frame = u16::from_le_bytes([bytes[26], bytes[27]]);
+    let faces: usize = if minor < 5 && first_frame != 0xFFFF { 7 } else { 6 };
+    let format = header.highres_image_format;
+    let lowres_offset = match header
+        .resources
+        .get_by_type(ResourceType::VTF_LEGACY_RSRC_LOW_RES_IMAGE)
+    {
+        Some(r) => r.data,
+        None => header.header_size,
+    };
+    let data_start = match header.resources.get_by_type(ResourceType::VTF_LEGACY_RSRC_IMAGE) {
+        Some(r) => r.data as usize,
+        None => {
+            lowres_offset as usize
+                + header
+                    .lowres_image_format
+                    .frame_size(header.lowres_image_width as u32, header.lowres_image_height as u32)
+                    .unwrap_or(0) as usize
+        }
+    };
+    let size = |m: u32| -> Result<usize, String> {
+        let (w, h) = ((header.width as u32 >> m).max(1), (header.height as u32 >> m).max(1));
+        format.frame_size(w, h).map(|s| s as usize).map_err(|e| e.to_string())
+    };
+    let frames = header.frames.max(1) as usize;
+    let mut offset = data_start;
+    for m in 1..header.mipmap_count.max(1) as u32 {
+        offset += size(m)? * frames * faces;
+    }
+    let face_size = size(0)?;
+    if offset + face_size * 6 > bytes.len() {
+        return Err("cubemap data truncated".into());
+    }
+    let (w, h) = (header.width as u32, header.height as u32);
+    let mut single = header.clone();
+    single.mipmap_count = 1;
+    let face = |k: usize| -> Result<Vec<u8>, String> {
+        let img = VTFImage::new(
+            single.clone(),
+            format,
+            w as u16,
+            h as u16,
+            bytes,
+            offset + k * face_size,
+        );
+        Ok(img.decode(0).map_err(|e| e.to_string())?.to_rgba8().into_raw())
+    };
+    Ok((w, [face(0)?, face(1)?, face(2)?, face(3)?, face(4)?, face(5)?]))
+}
+
+/// "[a b c]", "a b c" or "a" as three numbers (a scalar repeats).
+fn vector(v: &str) -> Option<[f32; 3]> {
+    let parts: Vec<f32> = v
+        .trim()
+        .trim_start_matches(['[', '{'])
+        .trim_end_matches([']', '}'])
+        .split_whitespace()
+        .filter_map(|p| p.parse().ok())
+        .collect();
+    match parts.as_slice() {
+        [a] => Some([*a; 3]),
+        [a, b, c, ..] => Some([*a, *b, *c]),
+        _ => None,
+    }
 }

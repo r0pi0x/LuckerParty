@@ -194,8 +194,10 @@ fn spawn_local_player(
         Some(pos) => Transform::from_translation(pos),
         None => spawns.iter().next().copied().unwrap_or_default(),
     };
-    // Face the way the spawn point does unless --look says otherwise.
+    // Face the way the spawn point does unless --look says otherwise. The
+    // character itself is never rotated: the look angles turn the camera.
     let spawn_yaw = at.rotation.to_euler(EulerRot::YXZ).0.to_degrees();
+    let at = Transform::from_translation(at.translation);
     let movement = match &args.movement {
         Some(id) => match registry.get(id) {
             Some(m) => m.id,

@@ -37,6 +37,18 @@ pub struct WorldParams {
     /// often keep other data in alpha (env map masks), and the camera's
     /// output is composited over the sky camera by alpha.
     pub translucent: f32,
+    /// 1 when the surface reflects `envmap` (Source `$envmap`).
+    pub envmap: f32,
+    /// What scales the reflection: 0 nothing, 1 normal-map alpha, 2 one
+    /// minus base alpha, 3 `envmap_mask` colour.
+    pub envmap_mask: f32,
+    /// 1 when `normal` is bound (reflections follow the normal map).
+    pub has_normal: f32,
+    pub envmap_contrast: f32,
+    pub envmap_saturation: f32,
+    /// Fresnel R0; 1 = none.
+    pub envmap_fresnel: f32,
+    pub envmap_tint: Vec4,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
@@ -68,6 +80,12 @@ pub struct WorldMaterial {
     pub blend_mask: Option<Handle<Image>>,
     #[texture(13)]
     pub detail: Option<Handle<Image>>,
+    /// Cube texture sampled with Source-frame (Z-up) directions.
+    #[texture(14, dimension = "cube")]
+    #[sampler(15)]
+    pub envmap: Option<Handle<Image>>,
+    #[texture(16)]
+    pub envmap_mask: Option<Handle<Image>>,
     pub alpha_mode: AlphaMode,
     pub double_sided: bool,
 }

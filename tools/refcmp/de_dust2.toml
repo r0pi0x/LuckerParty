@@ -115,3 +115,20 @@ angles = [25, 90]
 name = "in_solid"
 position = [-1406.0, 900.0, 150.0]
 angles = [0, 90]
+
+# Lower tunnels' tile floor, from a cubemap sample point: reflections of the baked cubemaps ($envmap
+# masked by the normal map's alpha).
+[[view]]
+name = "tunnel_floor_e"
+position = [-896.0, 1440.0, -48.0]
+angles = [35, 0]
+
+[[view]]
+name = "tunnel_floor_n"
+position = [-896.0, 1440.0, -48.0]
+angles = [35, 90]
+
+[[view]]
+name = "tunnel_level_e"
+position = [-896.0, 1440.0, -48.0]
+angles = [0, 0]

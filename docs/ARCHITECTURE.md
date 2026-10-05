@@ -52,7 +52,7 @@ A module may use only the modules below it. Enforced by
 | `src/movement/` | `placeholder` (stand-in walking) and `noclip` Movement implementations |
 | `src/greybox.rs` | Map slot built in code (ramps, crates, a ladder, a water tank); collision always, visuals only when rendering |
 | `src/mount/` | `Mount` (ordered layers, first match wins), `FileSource`, `LooseDir`, path normalization, `mashup.local.toml` loading |
-| `src/map/world_material.rs`, `world.wgsl` | World surfaces: texture x baked light with radiosity normal mapping (Source LightmappedGeneric at LDR) |
+| `src/map/world_material.rs`, `world.wgsl` | World surfaces: texture x baked light with radiosity normal mapping, plus baked-cubemap reflections (Source LightmappedGeneric at LDR) |
 | `src/map/mod.rs` | `MapData` (meters, Y up, meshes per material, textures, lightmap atlas, collision, prop models and placements, spawns, ropes) and `MapPlugin` that spawns it (re-exports the `core` collision types) |
 | `src/map/nav.rs` | `NavMesh` (any game): areas with corner heights, directed links and ladders in engine space; area queries, A* with the stock cost, crossing points, `route` |
 | `src/map/soundscape.rs` | Soundscape playback: zone/emitter selection, looping ambience with crossfades, random one-shots |

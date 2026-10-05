@@ -7,6 +7,7 @@
 
 #import bevy_pbr::{
     forward_io::VertexOutput,
+    mesh_view_bindings::view,
     view_transformations::position_world_to_view,
 }
 
@@ -36,6 +37,14 @@ struct WorldParams {
     fog_range: vec4<f32>,
     bicubic: f32,
     translucent: f32,
+    envmap: f32,
+    // 0 none, 1 normal-map alpha, 2 one minus base alpha, 3 mask texture.
+    envmap_mask: f32,
+    has_normal: f32,
+    envmap_contrast: f32,
+    envmap_saturation: f32,
+    envmap_fresnel: f32,
+    envmap_tint: vec4<f32>,
 }
 
 // A lightmap page, bilinear or bicubic B-spline (4 bilinear taps; the
@@ -94,6 +103,51 @@ fn apply_fog(color: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
 @group(#{MATERIAL_BIND_GROUP}) @binding(11) var normal2_texture: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(12) var blend_mask: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(13) var detail_texture: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(14) var envmap_texture: texture_cube<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(15) var envmap_sampler: sampler;
+@group(#{MATERIAL_BIND_GROUP}) @binding(16) var envmap_mask_texture: texture_2d<f32>;
+
+const LUMA = vec3<f32>(0.299, 0.587, 0.114);
+
+// $envmap (specs/cs_source/shaders.md): the cubemap in the reflected view
+// direction, x mask x tint, then contrast, saturation and fresnel. The
+// normal follows the normal map through a screen-space tangent frame
+// (u and v directions), since world meshes carry no tangents.
+fn envmap_term(in: VertexOutput, n_ts: vec3<f32>, base_alpha: f32, normal_alpha: f32) -> vec3<f32> {
+    let p = in.world_position.xyz;
+    var n = normalize(in.world_normal);
+    if params.has_normal > 0.5 {
+        let dp1 = dpdx(p);
+        let dp2 = dpdy(p);
+        let duv1 = dpdx(in.uv);
+        let duv2 = dpdy(in.uv);
+        let dp2perp = cross(dp2, n);
+        let dp1perp = cross(n, dp1);
+        let t = dp2perp * duv1.x + dp1perp * duv2.x;
+        let b = dp2perp * duv1.y + dp1perp * duv2.y;
+        let inv = inverseSqrt(max(max(dot(t, t), dot(b, b)), 1e-12));
+        n = normalize(n_ts.x * t * inv + n_ts.y * b * inv + n_ts.z * n);
+    }
+    let v = view.world_position - p;
+    let r = 2.0 * dot(n, v) * n - dot(n, n) * v;
+    // Source's cubemap axes: x, -z, y of ours (Z up).
+    var spec = textureSample(envmap_texture, envmap_sampler, vec3<f32>(r.x, -r.z, r.y)).rgb;
+    var mask = vec3<f32>(1.0);
+    if params.envmap_mask > 0.5 && params.envmap_mask < 1.5 {
+        mask = vec3<f32>(normal_alpha);
+    } else if params.envmap_mask > 1.5 && params.envmap_mask < 2.5 {
+        mask = vec3<f32>(1.0 - base_alpha);
+    } else if params.envmap_mask > 2.5 {
+        mask = textureSample(envmap_mask_texture, base_sampler, in.uv).rgb;
+    }
+    spec = spec * mask * params.envmap_tint.rgb;
+    spec = mix(spec, spec * spec, params.envmap_contrast);
+    spec = mix(vec3<f32>(dot(spec, LUMA)), spec, params.envmap_saturation);
+    let r0 = params.envmap_fresnel;
+    let ndv = saturate(dot(n, normalize(v)));
+    spec = spec * (pow(1.0 - ndv, 5.0) * (1.0 - r0) + r0);
+    return spec;
+}
 
 // Basis directions of the three directional lightmap pages, in order
 // (specs/cs_source/shaders.md). Tangent space: x along texture u, y along
@@ -137,6 +191,12 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         discard;
     }
     var light = sample_lightmap(lightmap, in.uv_b);
+    // The normal map (tangent space, signs fixed), for bump lighting and
+    // reflections; its alpha can mask reflections.
+    let normal_texel = textureSample(normal_texture, normal_sampler, in.uv);
+    var n_ts = normal_texel.xyz * 2.0 - 1.0;
+    n_ts.x = n_ts.x * params.normal_x_sign;
+    n_ts.y = n_ts.y * params.normal_g_sign;
     if params.bumped > 0.5 {
         var n = textureSample(normal_texture, normal_sampler, in.uv).xyz * 2.0 - 1.0;
         if params.blend > 0.5 && params.blend_normal > 0.5 {
@@ -165,5 +225,9 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     if params.debug_view == 2.0 {
         return albedo;
     }
-    return vec4<f32>(apply_fog(albedo.rgb * light * params.light_scale, in.world_position.xyz), out_alpha(albedo.a));
+    var color = albedo.rgb * light * params.light_scale;
+    if params.envmap > 0.5 {
+        color = color + envmap_term(in, n_ts, albedo.a, normal_texel.a);
+    }
+    return vec4<f32>(apply_fog(color, in.world_position.xyz), out_alpha(albedo.a));
 }

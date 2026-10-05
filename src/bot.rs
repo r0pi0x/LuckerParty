@@ -133,14 +133,22 @@ pub fn add_bot(world: &mut World, team: Team) -> Option<Entity> {
         .next()
         .map(|m| m.0)
         .or_else(|| world.get_resource::<Loadout>().map(|l| l.movement))?;
+    let yaw = at.rotation.to_euler(EulerRot::YXZ).0;
     let mut commands = world.commands();
-    let e = spawn_character(&mut commands, at, team, movement);
+    // Characters aren't rotated; the spawn's facing becomes the look yaw.
+    let e = spawn_character(
+        &mut commands,
+        Transform::from_translation(at.translation),
+        team,
+        movement,
+    );
     commands.entity(e).insert((
         Name::new(format!("Bot {}", bots + 1)),
         Bot {
             rng: 0x2545_F491_4F6C_DD1D ^ (e.to_bits().wrapping_mul(0x9E37_79B9_7F4A_7C15)),
             ..default()
         },
+        Intent { yaw, ..default() },
     ));
     world.flush();
     Some(e)

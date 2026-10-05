@@ -158,6 +158,45 @@ pub struct MapMesh {
     pub unlit: bool,
     /// Surface property name (footsteps, impacts), lower-case.
     pub surface: Option<String>,
+    /// Reflection of a baked cubemap (Source `$envmap`).
+    pub envmap: Option<MapEnvmap>,
+}
+
+/// A baked environment cubemap: six square RGBA8 sRGB faces in the
+/// source game's face order and axes (Source: +X, -X, +Y, -Y, +Z, -Z in
+/// its Z-up frame), sampled with directions in that frame.
+#[derive(Clone, Debug)]
+pub struct MapCubemap {
+    pub name: String,
+    pub size: u32,
+    pub faces: [Vec<u8>; 6],
+}
+
+/// What scales a surface's reflection, per texel.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum EnvmapMask {
+    #[default]
+    None,
+    /// The normal map's alpha.
+    NormalAlpha,
+    /// One minus the base texture's alpha (Source's inverted mask).
+    BaseAlphaInverted,
+    /// A mask texture's colour (index into `MapData::textures`).
+    Texture(usize),
+}
+
+/// Reflection parameters (specs/cs_source/shaders.md, "$envmap"), after the
+/// shader's fast-path rule has been applied.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MapEnvmap {
+    /// Index into `MapData::cubemaps`.
+    pub cubemap: usize,
+    pub mask: EnvmapMask,
+    pub tint: [f32; 3],
+    pub contrast: f32,
+    pub saturation: f32,
+    /// Fresnel R0 (1: no fresnel).
+    pub fresnel: f32,
 }
 
 /// Source `$detail`: a texture tiled `scale` times per base texture repeat
@@ -327,6 +366,8 @@ pub struct MapData {
     pub name: String,
     pub meshes: Vec<MapMesh>,
     pub textures: Vec<MapTexture>,
+    /// Baked reflection cubemaps (`MapEnvmap::cubemap` indexes these).
+    pub cubemaps: Vec<MapCubemap>,
     pub lightmap: Option<MapLightmap>,
     pub models: Vec<MapModel>,
     pub props: Vec<MapProp>,
@@ -766,6 +807,7 @@ fn spawn_map(
             .iter()
             .map(|t| images.add(to_image(t, &data.look)))
             .collect();
+        let cubemaps: Vec<Handle<Image>> = data.cubemaps.iter().map(|c| images.add(cube_image(c))).collect();
         let lightmap = data
             .lightmap
             .as_ref()
@@ -876,9 +918,35 @@ fn spawn_map(
                             MapDebugView::Lighting { .. } => 1.0,
                             MapDebugView::Albedo => 2.0,
                         },
+                        envmap: if m.envmap.is_some() { 1.0 } else { 0.0 },
+                        envmap_mask: match m.envmap.map(|e| e.mask) {
+                            Some(EnvmapMask::NormalAlpha) if m.normal_map.is_some() => 1.0,
+                            Some(EnvmapMask::BaseAlphaInverted) => 2.0,
+                            Some(EnvmapMask::Texture(_)) => 3.0,
+                            _ => 0.0,
+                        },
+                        has_normal: if m.normal_map.is_some() && g_sign != 0.0 {
+                            1.0
+                        } else {
+                            0.0
+                        },
+                        envmap_contrast: m.envmap.map_or(0.0, |e| e.contrast),
+                        envmap_saturation: m.envmap.map_or(1.0, |e| e.saturation),
+                        envmap_fresnel: m.envmap.map_or(1.0, |e| e.fresnel),
+                        envmap_tint: m.envmap.map_or(Vec4::ONE, |e| Vec3::from_array(e.tint).extend(1.0)),
                     },
                     base: m.texture.map(|i| textures[i].clone()),
-                    normal: m.normal_map.filter(|_| bumped).map(|i| textures[i].clone()),
+                    // Bound for radiosity bump lighting, and for reflections
+                    // that follow the normal map.
+                    normal: m
+                        .normal_map
+                        .filter(|_| bumped || (m.envmap.is_some() && g_sign != 0.0))
+                        .map(|i| textures[i].clone()),
+                    envmap: m.envmap.map(|e| cubemaps[e.cubemap].clone()),
+                    envmap_mask: match m.envmap.map(|e| e.mask) {
+                        Some(EnvmapMask::Texture(i)) => Some(textures[i].clone()),
+                        _ => None,
+                    },
                     lightmap: Some(lm.clone()),
                     lightmap_b0: bumped_lightmaps.as_ref().map(|b| b[0].clone()),
                     lightmap_b1: bumped_lightmaps.as_ref().map(|b| b[1].clone()),
@@ -1390,6 +1458,35 @@ fn to_image(t: &MapTexture, look: &MapLook) -> Image {
             ImageFilterMode::Nearest
         },
         anisotropy_clamp: look.anisotropy.max(1),
+        ..default()
+    });
+    image
+}
+
+/// A baked cubemap as a cube texture (six sRGB layers, clamped, linear).
+fn cube_image(c: &MapCubemap) -> Image {
+    let data: Vec<u8> = c.faces.concat();
+    let mut image = Image::new(
+        Extent3d {
+            width: c.size,
+            height: c.size,
+            depth_or_array_layers: 6,
+        },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    image.texture_view_descriptor = Some(bevy::render::render_resource::TextureViewDescriptor {
+        dimension: Some(bevy::render::render_resource::TextureViewDimension::Cube),
+        ..default()
+    });
+    image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+        address_mode_u: ImageAddressMode::ClampToEdge,
+        address_mode_v: ImageAddressMode::ClampToEdge,
+        address_mode_w: ImageAddressMode::ClampToEdge,
+        mag_filter: ImageFilterMode::Linear,
+        min_filter: ImageFilterMode::Linear,
         ..default()
     });
     image

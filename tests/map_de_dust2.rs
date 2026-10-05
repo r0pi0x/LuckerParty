@@ -1278,6 +1278,9 @@ fn bot_walks_the_nav_mesh_to_an_enemy() {
     let player = sim.spawn_character(stand, movement::ID);
     let bot = mashup::bot::add_bot(sim.app.world_mut(), Team(1)).expect("bot");
     sim.app.world_mut().resource_mut::<mashup::bot::BotConfig>().dont_shoot = 1;
+    // Characters are never rotated; the spawn's facing is the look yaw.
+    let rot = sim.app.world().get::<Transform>(bot).unwrap().rotation;
+    assert!(rot.angle_between(Quat::IDENTITY) < 1e-4, "bot spawned rotated");
     let start = sim.position(bot);
     let start_dist = start.distance(stand);
     let mut found = None;
@@ -1334,4 +1337,33 @@ fn soundscapes_load() {
             "spawn {feet} is in no soundscape zone"
         );
     }
+}
+
+/// Reflections (specs/cs_source/shaders.md "$envmap"): the tunnel tile
+/// floor's patched materials point at baked cubemaps in the map's pak.
+#[test]
+fn envmaps_load() {
+    use mashup::map::EnvmapMask;
+    let Some(map) = dust2() else { return };
+    let tiles: Vec<_> = map
+        .meshes
+        .iter()
+        .filter(|m| m.material.to_lowercase().contains("tilefloor02"))
+        .collect();
+    assert!(!tiles.is_empty());
+    let with = tiles.iter().filter(|m| m.envmap.is_some()).count();
+    assert!(
+        with == tiles.len() && with >= 5,
+        "{with} of {} tile meshes reflect",
+        tiles.len()
+    );
+    let e = tiles.iter().find_map(|m| m.envmap).unwrap();
+    assert_eq!(e.mask, EnvmapMask::NormalAlpha);
+    // Fast path: $envmapsaturation .0001 with no contrast is ignored.
+    assert_eq!((e.contrast, e.saturation, e.fresnel), (0.0, 1.0, 1.0));
+    let c = &map.cubemaps[e.cubemap];
+    assert_eq!(c.size, 64);
+    assert!(c.faces.iter().all(|f| f.len() == 64 * 64 * 4));
+    // Faces differ (not six copies of one image).
+    assert_ne!(c.faces[4], c.faces[5]);
 }

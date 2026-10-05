@@ -49,11 +49,10 @@ docs/plans/active/sound.md.
 
 ## 5. Visual fidelity
 
-- **Reflective floors / env maps**: the lower tunnels' floor (and other
-  `$envmap` materials, incl. map-patched ones pointing at `env_cubemap`):
-  read the BSP's cubemap lump and baked cubemaps, pick the nearest per
-  surface, apply `$envmaptint`, `$envmapmask` / base or normal-map alpha
-  masks and fresnel as the shader spec describes; compare in refcmp.
+- **Env maps on props**: unpatched `env_cubemap` materials (models) take
+  the nearest cubemap at run time (BSP cubemap lump); the model shader's
+  envmap (gamma-converted tint, no fresnel). World reflections are in
+  (refcmp `tunnel_floor_*`).
 - **Tunnel lamp glows**: iterate on the brightness of the billboard
   glows (env_sprite) in dust2's tunnels against CS:S (refcmp
   `glow_lamp`, `glow_lamp_down`; RenderDoc a lamp draw for the sprite
