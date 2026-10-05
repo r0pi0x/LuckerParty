@@ -730,5 +730,29 @@ fn debug_lightmap_texel_percentiles() {
     }
     v.sort();
     let n = v.len();
-    println!("ours {n} {:?}", [0.1, 0.25, 0.5, 0.75, 0.9, 0.99].map(|p| v[(n as f64 * p) as usize]));
+    println!(
+        "ours {n} {:?}",
+        [0.1, 0.25, 0.5, 0.75, 0.9, 0.99].map(|p| v[(n as f64 * p) as usize])
+    );
+}
+
+/// dust2's 18 env_sprite lamp glows: 12 world-space glows (mode 9), 6
+/// additive (mode 5), sprites/glow (64 texels) at quantised scales.
+#[test]
+fn sprites_load() {
+    let Some(map) = dust2() else { return };
+    assert_eq!(map.sprites.len(), 18, "warnings: {:?}", map.warnings);
+    assert_eq!(map.sprites.iter().filter(|s| s.glow).count(), 12);
+    // Scale 0.8 is drawn at 0.75 (network quantisation).
+    let first = map
+        .sprites
+        .iter()
+        .find(|s| s.position.distance(Vec3::new(-1406.8, 320.0, -1152.38) * 0.0254) < 0.01)
+        .expect("lamp glow at -1406.8 1152.38 320");
+    let t = &map.textures[first.texture];
+    assert!(
+        (first.size.x - t.width as f32 * 0.75 * 0.0254).abs() < 1e-4,
+        "{:?}",
+        first.size
+    );
 }

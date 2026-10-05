@@ -11,6 +11,7 @@ pub mod overlays;
 pub mod props;
 pub mod ropes;
 pub mod sky;
+pub mod sprites;
 pub mod vpk;
 
 pub const GAME: &str = "cs_source";

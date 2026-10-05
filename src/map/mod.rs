@@ -16,9 +16,11 @@ use bevy::{
 use crate::core::{SpawnPoint, Team};
 
 pub mod rope_material;
+pub mod sprite_material;
 pub mod world_material;
 
 use rope_material::{RopeMaterial, RopeParams};
+use sprite_material::{SpriteMaterial, SpriteParams};
 use world_material::{WorldMaterial, WorldParams};
 
 /// Signs for normal maps' red and green channels in the world material.
@@ -214,6 +216,7 @@ pub struct MapData {
     pub sky_camera: Option<MapSkyCamera>,
     /// The world's fog (not the 3D skybox's, which `sky_camera` has).
     pub fog: Option<MapFog>,
+    pub sprites: Vec<MapSprite>,
     pub ropes: Vec<MapRope>,
 }
 
@@ -252,6 +255,26 @@ pub struct MapBrushes(pub Vec<MapBrush>);
 /// sweeps `MapBrushes` itself can leave it out of physics queries.
 #[derive(Component, Debug)]
 pub struct MapBrushCollider;
+
+/// A camera-facing sprite (lamp glows): a quad parallel to the view plane,
+/// drawn additively (specs/cs_source/sprites_dust.md).
+#[derive(Clone, Debug)]
+pub struct MapSprite {
+    /// Engine space, meters.
+    pub position: Vec3,
+    /// Index into `MapData::textures`.
+    pub texture: usize,
+    /// Full width and height, meters.
+    pub size: Vec2,
+    /// Color x texture is added to the image: RGB scale and alpha weight.
+    pub color: Vec4,
+    /// A glow: drawn over everything, faded by how much of its occlusion
+    /// proxy can be seen. Otherwise depth tested against the world.
+    pub glow: bool,
+    /// Glow occlusion proxy: half-diagonal of a square pulled this far
+    /// toward the viewer, meters.
+    pub proxy: f32,
+}
 
 /// A rope or cable: a line of points drawn as a strip that always faces the
 /// camera (the rope shader widens it per view). Source's Cable look:
@@ -417,7 +440,7 @@ impl Plugin for MapPlugin {
                 ..default()
             })
             .add_systems(Startup, spawn_map)
-            .add_systems(Update, (attach_sky, attach_world_fog))
+            .add_systems(Update, (attach_sky, attach_world_fog, glow_visibility))
             .add_systems(
                 PostUpdate,
                 follow_sky_camera.before(bevy::transform::TransformSystems::Propagate),
@@ -441,6 +464,7 @@ fn spawn_map(
     mut images: Option<ResMut<Assets<Image>>>,
     mut world_materials: Option<ResMut<Assets<WorldMaterial>>>,
     mut rope_materials: Option<ResMut<Assets<RopeMaterial>>>,
+    mut sprite_materials: Option<ResMut<Assets<SpriteMaterial>>>,
 ) {
     let data = &pending.0;
     let view = pending.1;
@@ -679,6 +703,35 @@ fn spawn_map(
             })
             .collect();
 
+        if let Some(sprite_materials) = sprite_materials.as_mut()
+            && view == MapDebugView::Normal
+        {
+            for (i, sprite) in data.sprites.iter().enumerate() {
+                let t = &data.textures[sprite.texture];
+                let mut e = commands.spawn((
+                    Name::new(format!("Sprite {i}")),
+                    MapPart,
+                    Mesh3d(meshes.add(sprite_material::sprite_mesh(UVec2::new(t.width, t.height)))),
+                    MeshMaterial3d(sprite_materials.add(SpriteMaterial {
+                        params: SpriteParams {
+                            color: sprite.color,
+                            size: sprite.size,
+                        },
+                        texture: Some(textures[sprite.texture].clone()),
+                        glow: sprite.glow,
+                    })),
+                    bevy::light::NotShadowCaster,
+                    Transform::from_translation(sprite.position),
+                    ChildOf(root),
+                ));
+                if sprite.glow {
+                    e.insert(GlowSprite {
+                        color: sprite.color,
+                        proxy: sprite.proxy,
+                    });
+                }
+            }
+        }
         if let Some(rope_materials) = rope_materials.as_mut()
             && view == MapDebugView::Normal
         {
@@ -754,7 +807,7 @@ fn spawn_map(
         ));
         match (prop.solid, &model_colliders[prop.model]) {
             (PropSolid::Mesh, Some(collider)) => {
-                e.insert((RigidBody::Static, collider.clone()));
+                e.insert((RigidBody::Static, collider.clone(), MapPropCollider));
                 if prop_brush.is_some() {
                     e.insert(MapBrushCollider);
                 }
@@ -768,7 +821,7 @@ fn spawn_map(
                         Transform::from_translation((lo + hi) / 2.0),
                     );
                     e.insert(RigidBody::Static).with_children(|c| {
-                        let mut ec = c.spawn(child);
+                        let mut ec = c.spawn((child, MapPropCollider));
                         if prop_brush.is_some() {
                             ec.insert(MapBrushCollider);
                         }
@@ -1009,6 +1062,77 @@ fn build_material(m: &MapMesh, textures: &[Handle<Image>], view: MapDebugView, l
         },
         lightmap_exposure: LIGHTMAP_EXPOSURE * scale * light_scale,
         ..default()
+    }
+}
+
+/// A prop's physics collider (sprite glows see through static props, as
+/// the game's line test ignores them).
+#[derive(Component)]
+struct MapPropCollider;
+
+/// A glow sprite: drawn over everything, faded by how much of its
+/// occlusion proxy is visible.
+#[derive(Component)]
+struct GlowSprite {
+    color: Vec4,
+    proxy: f32,
+}
+
+/// Glow visibility (specs/cs_source/sprites_dust.md, 5a): the game measures
+/// the visible fraction of a view-facing square (half-diagonal = proxy
+/// size) pulled the proxy size toward the eye, with occlusion queries. We
+/// approximate it with lines to the square's centre and corners, and fade
+/// the glow by the fraction that get through. Static props don't occlude.
+#[allow(clippy::type_complexity)]
+fn glow_visibility(
+    query: SpatialQuery,
+    cameras: Query<&GlobalTransform, (With<Camera3d>, Without<SkyboxCamera>)>,
+    ignored: Query<Entity, Or<(With<crate::core::Intent>, With<MapPropCollider>)>>,
+    mut glows: Query<(
+        &GlobalTransform,
+        &GlowSprite,
+        &MeshMaterial3d<SpriteMaterial>,
+        &mut Visibility,
+    )>,
+    materials: Option<ResMut<Assets<SpriteMaterial>>>,
+) {
+    let (Some(eye), Some(mut materials)) = (cameras.iter().next(), materials) else {
+        return;
+    };
+    let filter = SpatialQueryFilter::from_excluded_entities(ignored.iter());
+    let from = eye.translation();
+    let (right, up) = (eye.right().as_vec3(), eye.up().as_vec3());
+    for (glow, sprite, material, mut visibility) in &mut glows {
+        let p = glow.translation();
+        let centre = p + (from - p).normalize_or_zero() * sprite.proxy;
+        let r = sprite.proxy / std::f32::consts::SQRT_2;
+        let points = [
+            centre,
+            centre + (right + up) * r,
+            centre + (right - up) * r,
+            centre - (right + up) * r,
+            centre - (right - up) * r,
+        ];
+        let seen = points
+            .iter()
+            .filter(|to| {
+                Dir3::new(**to - from).map_or(true, |dir| {
+                    query.cast_ray(from, dir, from.distance(**to), true, &filter).is_none()
+                })
+            })
+            .count() as f32
+            / points.len() as f32;
+        visibility.set_if_neq(if seen > 0.0 {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        });
+        if let Some(mut m) = materials.get_mut(&material.0) {
+            let color = (sprite.color.truncate() * seen).extend(sprite.color.w);
+            if m.params.color != color {
+                m.params.color = color;
+            }
+        }
     }
 }
 

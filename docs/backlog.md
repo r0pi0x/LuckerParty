@@ -14,6 +14,11 @@ when work starts; delete them when done.
 
 ## dust2 fidelity
 
+- **Sky only through sky surfaces**: CS:S draws the sky where sky-textured
+  faces are, and black elsewhere (e.g. above nodraw ceilings in tunnels);
+  we draw the sky cubemap behind everything. Seen in refcmp at
+  (-1406, 900, 150), a spot inside solid where CS:S shows black.
+
 Counts are from de_dust2's entity lump and static prop lump.
 
 - **Baked per-vertex prop lighting (`.vhv`)** for maps that ship it (dust2
@@ -32,7 +37,6 @@ Counts are from de_dust2's entity lump and static prop lump.
   (dust2's one `func_brush` is render mode 10, never drawn).
 - **Prop collision from `.phy`** for physics-solid props (now the visible
   mesh).
-- **Sprites** (`env_sprite`, 18; lamp glows).
 - **Fire** (`env_fire`, 16) and other effects, if they show in normal play.
 - **Materials**: env maps (2 dust2 materials, plus map-patched ones with
   `env_cubemap`); detail blend modes other than 0 and 1; `$basetexturetransform`
