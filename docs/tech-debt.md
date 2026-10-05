@@ -4,6 +4,7 @@ Small, current, honest. Remove entries when fixed.
 
 | Area | Debt | Why it's OK for now |
 |---|---|---|
+| client | Shot effects are placeholders: tracer streaks (speed and frequency guessed) and dark discs for bullet marks, on static surfaces only | Until decals by surface and the games' sprites load |
 | weapon | Hitgroups come from height bands on the body's bounds (head above 83 %, etc.), not hitboxes; arms only at the body's edge | Characters are capsules until models load |
 | weapon | CS:S rules marked `UNMEASURED` in games/cs_source/weapons.rs (fixed spread cone, no recoil, community hitgroup and knife numbers, "set" refire); spread uses our own RNG, not Source's seeded generator; no penetration, armour, water or lag compensation | Measurements (spec M1–M17) are being taken |
 | bot | Bots know where every enemy is (they hunt the nearest by position, not by sound or memory); route following is a simple point follower (no gap jumps, ladders untested, no obstacle avoidance); maps without a `.nav` leave bots standing | Enough for deathmatch practice on stock maps |

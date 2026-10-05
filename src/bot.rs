@@ -33,6 +33,7 @@ impl Plugin for BotPlugin {
             "Seconds a bot needs to see you before firing.",
             |c| &mut c.reaction,
         );
+        resource_cvar::<BotConfig, f32>(app, "bot_aim_error", "Bot aim wobble, degrees.", |c| &mut c.aim_error);
         resource_cvar::<BotConfig, f32>(app, "bot_turn_rate", "Bot turn speed, degrees per second.", |c| {
             &mut c.turn_rate
         });
@@ -73,6 +74,8 @@ pub struct BotConfig {
     pub dont_shoot: u8,
     pub reaction: f32,
     pub turn_rate: f32,
+    /// Aim wobble, degrees (re-rolled every `AIM_REROLL` seconds).
+    pub aim_error: f32,
 }
 
 impl Default for BotConfig {
@@ -82,6 +85,7 @@ impl Default for BotConfig {
             dont_shoot: 0,
             reaction: 0.35,
             turn_rate: 360.0,
+            aim_error: 2.5,
         }
     }
 }
@@ -102,6 +106,8 @@ pub struct Bot {
     repath: f32,
     /// Where the bot was at the last progress check, and when that was.
     progress: (Vec3, f32),
+    /// Current aim offset (yaw, pitch radians) and seconds until re-rolled.
+    wobble: (Vec2, f32),
 }
 
 /// Spawn a bot on `team` at a spawn point (the team's, if the map has
@@ -155,6 +161,8 @@ impl Bot {
 const AIM_HEIGHT: f32 = 0.35;
 /// Fire when the aim is within this many degrees of the target.
 const FIRE_CONE_DEG: f32 = 3.0;
+/// Seconds between new aim wobbles.
+const AIM_REROLL: f32 = 0.4;
 
 #[allow(clippy::type_complexity)]
 fn think(
@@ -216,9 +224,14 @@ fn think(
                     bot.target = Some(e);
                     bot.seen = 0.0;
                 }
+                bot.wobble.1 -= dt;
+                if bot.wobble.1 <= 0.0 {
+                    let (a, r) = (bot.rand() * std::f32::consts::TAU, bot.rand().sqrt());
+                    bot.wobble = (Vec2::from_angle(a) * r * cfg.aim_error.to_radians(), AIM_REROLL);
+                }
                 let to = aim - eye;
-                let want_yaw = (-to.x).atan2(-to.z);
-                let want_pitch = to.y.atan2(to.xz().length());
+                let want_yaw = (-to.x).atan2(-to.z) + bot.wobble.0.x;
+                let want_pitch = to.y.atan2(to.xz().length()) + bot.wobble.0.y;
                 let step = cfg.turn_rate.to_radians() * dt;
                 let dyaw = wrap(want_yaw - intent.yaw);
                 intent.yaw = wrap(intent.yaw + dyaw.clamp(-step, step));

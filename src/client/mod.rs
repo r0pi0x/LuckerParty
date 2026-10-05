@@ -5,6 +5,7 @@
 pub mod capture;
 pub mod console;
 pub mod debug;
+pub mod effects;
 pub mod hud;
 pub mod input;
 
@@ -72,7 +73,8 @@ usage: mashup [options]
   --capture-dir <dir>       where --views writes <name>.png (default: current directory)
   --console                 start with the console open (~ toggles it)
   +<command> [args...]      run a console command at startup, Source style
-                            (e.g. +sv_airaccelerate 150 +cl_showpos 1 +bind f noclip)";
+                            (e.g. +sv_airaccelerate 150 +cl_showpos 1 +bind f noclip;
+                            ++attack holds an action, e.g. to fire in a --screenshot run)";
 
 impl Args {
     pub fn parse() -> Self {
@@ -162,6 +164,7 @@ impl Plugin for ClientPlugin {
                 capture::CapturePlugin,
                 console::ConsoleUiPlugin,
                 hud::HudPlugin,
+                effects::ShotEffectsPlugin,
             ))
             .add_systems(PostStartup, spawn_local_player)
             .add_systems(Update, follow_eye);

@@ -26,6 +26,9 @@ pub struct Cvar {
     pub default: String,
     /// Values to offer for completion (enums, booleans).
     pub values: Vec<String>,
+    /// Saved to config.cfg (Source's FCVAR_ARCHIVE): player preferences,
+    /// not test or server settings.
+    pub archive: bool,
     pub get: GetFn,
     pub set: SetFn,
 }
@@ -80,6 +83,13 @@ const MAX_ALIAS_DEPTH: usize = 32;
 impl Console {
     pub fn add_cvar(&mut self, cvar: Cvar) {
         self.cvars.insert(cvar.name.to_lowercase(), cvar);
+    }
+
+    /// Mark a cvar to be saved in config.cfg.
+    pub fn archive(&mut self, name: &str) {
+        if let Some(c) = self.cvars.get_mut(&name.to_lowercase()) {
+            c.archive = true;
+        }
     }
 
     pub fn add_command(&mut self, command: Command) {
@@ -321,6 +331,7 @@ impl ConsoleAppExt for App {
             } else {
                 Vec::new()
             },
+            archive: false,
             get: Arc::new(get),
             set: Arc::new(set),
         });
@@ -662,7 +673,7 @@ pub fn config_text(w: &mut World) -> String {
     for (k, v) in aliases {
         out += &format!("alias {} {}\n", quote(&k), quote(&v));
     }
-    for v in cvars {
+    for v in cvars.into_iter().filter(|v| v.archive) {
         if let Some(value) = (v.get)(w)
             && value != v.default
         {
@@ -731,6 +742,8 @@ mod tests {
     #[test]
     fn config_round_trip() {
         let mut first = app();
+        // Only archived cvars are saved.
+        first.world_mut().resource_mut::<Console>().archive("sv_speed");
         run(
             &mut first,
             "bind space \"+jump\"; bind mwheeldown +jump; alias hop \"echo hi; wait\"; sv_speed 320",
@@ -747,6 +760,15 @@ mod tests {
         assert_eq!(c.binds.get("space").map(String::as_str), Some("+jump"));
         assert_eq!(c.aliases.get("hop").map(String::as_str), Some("echo hi; wait"));
         assert!(run(&mut other, "sv_speed")[0].contains("\"320\""));
+        // Not archived: not saved.
+        other
+            .world_mut()
+            .resource_mut::<Console>()
+            .cvars
+            .get_mut("sv_speed")
+            .unwrap()
+            .archive = false;
+        assert!(!config_text(other.world_mut()).contains("sv_speed"));
     }
 
     #[test]

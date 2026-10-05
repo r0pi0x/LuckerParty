@@ -100,13 +100,18 @@ fn write_local_intent(
 ) {
     if !cursor_grabbed(&cursor) {
         *wheel = WheelJump::default();
-        // Not playing (menu, inspector): stop moving, keep looking where we were.
+        // Not playing (menu, inspector): stop moving, keep looking where we
+        // were. Console-held actions (`+attack` from a bind or script)
+        // still apply, as in Source.
         let (yaw, pitch) = (intent.yaw, intent.pitch);
         **intent = Intent {
             yaw,
             pitch,
             ..default()
         };
+        if let Some(h) = held {
+            apply_held(&mut intent, &mut wheel, &h);
+        }
         return;
     }
 
@@ -141,18 +146,22 @@ fn write_local_intent(
     intent.select = SLOTS.iter().position(|k| keys.pressed(*k)).map(|i| i as u8);
     // Bound actions (`bind f +duck`) add to the keys.
     if let Some(h) = held {
-        let add = |a: bool, b: bool| a as i8 as f32 - b as i8 as f32;
-        intent.move_axis += Vec2::new(add(h.moveright, h.moveleft), add(h.forward, h.back));
-        intent.move_axis = intent.move_axis.clamp(Vec2::NEG_ONE, Vec2::ONE);
-        intent.jump |= h.jump;
-        wheel.key_held |= h.jump;
-        intent.crouch |= h.duck;
-        intent.walk |= h.speed;
-        intent.sprint |= h.speed;
-        intent.fire |= h.attack;
-        intent.secondary |= h.attack2;
-        intent.reload |= h.reload;
+        apply_held(&mut intent, &mut wheel, &h);
     }
+}
+
+fn apply_held(intent: &mut Intent, wheel: &mut WheelJump, h: &super::console::HeldActions) {
+    let add = |a: bool, b: bool| a as i8 as f32 - b as i8 as f32;
+    intent.move_axis += Vec2::new(add(h.moveright, h.moveleft), add(h.forward, h.back));
+    intent.move_axis = intent.move_axis.clamp(Vec2::NEG_ONE, Vec2::ONE);
+    intent.jump |= h.jump;
+    wheel.key_held |= h.jump;
+    intent.crouch |= h.duck;
+    intent.walk |= h.speed;
+    intent.sprint |= h.speed;
+    intent.fire |= h.attack;
+    intent.secondary |= h.attack2;
+    intent.reload |= h.reload;
 }
 
 #[cfg(test)]

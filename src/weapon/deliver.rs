@@ -48,6 +48,7 @@ struct Hit {
     point: Vec3,
     dir: Vec3,
     distance: f32,
+    normal: Vec3,
 }
 
 impl Shot<'_, '_, '_> {
@@ -67,6 +68,7 @@ impl Shot<'_, '_, '_> {
             point: self.eye + *dir * hit.distance,
             dir: *dir,
             distance: hit.distance,
+            normal: hit.normal,
         })
     }
 
@@ -86,6 +88,7 @@ impl Shot<'_, '_, '_> {
                     from: self.eye,
                     to: hit.as_ref().map_or(self.eye + *dir * scan.range, |h| h.point),
                     hit: hit.as_ref().map(|h| h.entity),
+                    normal: hit.as_ref().map(|h| h.normal),
                 },
             });
             let Some(hit) = hit else { continue };
@@ -174,6 +177,7 @@ impl Shot<'_, '_, '_> {
                         point: h.point1,
                         dir: forward,
                         distance: h.distance,
+                        normal: -h.normal1,
                     });
                 }
             }

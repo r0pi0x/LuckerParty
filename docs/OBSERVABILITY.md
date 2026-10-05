@@ -65,6 +65,10 @@ Only `Reflect`-registered types are visible; register new core components in
 - Command line, Source style: `cargo run --features dev -- +sv_airaccelerate
   150 +cl_showpos 1 +bind f noclip` runs those console commands at startup;
   `--console` starts with the console open (screenshots of it).
+  `++attack` (one `+` for the command line, one for the action) holds an
+  action from the start, e.g. to fire in a `--screenshot` run; held
+  console actions work without mouse capture. Automated runs never write
+  config.cfg, and only archived cvars are saved there.
 - Remote: `curl -s localhost:15702 -d '{"jsonrpc":"2.0","id":1,
   "method":"mashup/console","params":{"line":"getpos; cvarlist sv_"}}'`
   runs a line now and returns the lines it printed.

@@ -394,6 +394,8 @@ pub enum WeaponEventKind {
         from: Vec3,
         to: Vec3,
         hit: Option<Entity>,
+        /// Surface normal where it hit.
+        normal: Option<Vec3>,
     },
     /// Damage dealt to something with health (summed per firing call).
     Hit {

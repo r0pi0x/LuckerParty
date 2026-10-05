@@ -558,8 +558,10 @@ fn autoexec(
 }
 
 /// Save binds and changed cvars when the game closes.
-fn save_on_exit(mut exits: MessageReader<AppExit>, mut commands: Commands) {
-    if exits.read().next().is_some() {
+fn save_on_exit(mut exits: MessageReader<AppExit>, args: Res<super::ClientArgs>, mut commands: Commands) {
+    // Automated runs (screenshots, view captures) leave the config alone.
+    let automated = args.0.screenshot.is_some() || args.0.views.is_some();
+    if exits.read().next().is_some() && !automated {
         commands.queue(|w: &mut World| {
             if w.resource::<Console>().dirty {
                 crate::console::execute(w, &["host_writeconfig".to_string()], 0);
@@ -753,6 +755,7 @@ fn overlay_cvars(app: &mut App) {
             Ok(())
         },
     );
+    app.world_mut().resource_mut::<Console>().archive("con_timestamps");
 }
 
 fn draw_overlays(
