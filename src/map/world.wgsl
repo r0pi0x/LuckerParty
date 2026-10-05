@@ -25,6 +25,10 @@ struct WorldParams {
     blend: f32,
     blend_masked: f32,
     blend_normal: f32,
+    // Detail texture: 0 none, 1 mod2x, 2 additive.
+    detail: f32,
+    detail_factor: f32,
+    detail_scale: vec2<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> params: WorldParams;
@@ -40,6 +44,7 @@ struct WorldParams {
 @group(#{MATERIAL_BIND_GROUP}) @binding(10) var base2_texture: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(11) var normal2_texture: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(12) var blend_mask: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(13) var detail_texture: texture_2d<f32>;
 
 // Basis directions of the three directional lightmap pages, in order
 // (specs/cs_source/shaders.md). Tangent space: x along texture u, y along
@@ -68,6 +73,16 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         }
         let second = textureSample(base2_texture, base_sampler, in.uv) * params.base_color;
         albedo = vec4<f32>(mix(albedo.rgb, second.rgb, b), albedo.a);
+    }
+    // $detail: mod2x multiplies by twice the raw texel (mid-grey = no
+    // change); additive adds the decoded texel.
+    if params.detail > 0.5 {
+        let d = textureSample(detail_texture, base_sampler, in.uv * params.detail_scale);
+        if params.detail < 1.5 {
+            albedo = vec4<f32>(albedo.rgb * mix(vec3<f32>(1.0), 2.0 * d.rgb, params.detail_factor), albedo.a);
+        } else {
+            albedo = vec4<f32>(albedo.rgb + params.detail_factor * d.rgb, albedo.a);
+        }
     }
     if params.alpha_cutoff > 0.0 && albedo.a < params.alpha_cutoff {
         discard;

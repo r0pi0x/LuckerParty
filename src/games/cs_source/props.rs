@@ -189,16 +189,18 @@ fn place_props(
     let bounds = super::bsp::playable_bounds(bsp);
     for prop in placements {
         let key = (prop.model.clone(), prop.skin);
-        let model = *loaded.entry(key).or_insert_with(|| match load_model(materials, &prop.model) {
-            Ok(m) => {
-                data.models.push(convert_model(&m, prop.skin, materials));
-                Some(data.models.len() - 1)
-            }
-            Err(e) => {
-                failed.push(e);
-                None
-            }
-        });
+        let model = *loaded
+            .entry(key)
+            .or_insert_with(|| match load_model(materials, &prop.model) {
+                Ok(m) => {
+                    data.models.push(convert_model(&m, prop.skin, materials));
+                    Some(data.models.len() - 1)
+                }
+                Err(e) => {
+                    failed.push(e);
+                    None
+                }
+            });
         let Some(model) = model else { continue };
         let translation = to_engine(prop.origin);
         let rotation = rotation(prop.angles);

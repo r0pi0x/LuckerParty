@@ -56,6 +56,7 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
         mesh.texture = r.texture;
         mesh.normal_map = r.normal_map;
         mesh.blend = r.blend;
+        mesh.detail = r.detail;
         if mesh.blend.is_none() {
             mesh.blend_weights.clear();
         }

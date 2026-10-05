@@ -672,3 +672,22 @@ fn physics_props_load() {
     assert_eq!(prop.solid, mashup::map::PropSolid::Mesh);
     assert!(prop.lighting.is_some());
 }
+
+/// `$detail` materials (dust2's crates, sandcrete, tile) carry their
+/// detail texture: default mode 0 (mod2x), scale 4, factor 1.
+#[test]
+fn detail_textures() {
+    let Some(map) = dust2() else { return };
+    let with: Vec<_> = map.meshes.iter().filter(|m| m.detail.is_some()).collect();
+    assert!(with.len() >= 4, "{} meshes with detail", with.len());
+    let crate_mesh = with
+        .iter()
+        .find(|m| m.material.contains("ducrtlrgsd"))
+        .expect("crate side has a detail texture");
+    let d = crate_mesh.detail.unwrap();
+    assert_eq!((d.mode, d.scale, d.factor), (0, [4.0, 4.0], 1.0));
+    for m in &with {
+        let c = m.positions.iter().fold(Vec3::ZERO, |a, p| a + Vec3::from(*p)) / m.positions.len() as f32;
+        println!("{} centre (Source) {:.0} {:.0} {:.0}", m.material, c.x / 0.0254, -c.z / 0.0254, c.y / 0.0254);
+    }
+}

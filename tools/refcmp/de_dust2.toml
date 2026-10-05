@@ -62,3 +62,9 @@ angles = [55, 90]
 name = "floor_mid"
 position = [-416.0, 1110.0, 40.0]
 angles = [55, 90]
+
+# Crates with detail textures (de_dust/dumltrycrsd2), B site.
+[[view]]
+name = "crates_b"
+position = [-1100.0, 2234.0, 90.0]
+angles = [10, 180]

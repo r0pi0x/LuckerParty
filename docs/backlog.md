@@ -35,7 +35,9 @@ Counts are from de_dust2's entity lump and static prop lump.
   mesh).
 - **Sprites** (`env_sprite`, 18; lamp glows).
 - **Fire** (`env_fire`, 16) and other effects, if they show in normal play.
-- **Materials**: `$basetexturetransform`, env maps, detail textures.
+- **Materials**: env maps (2 dust2 materials, plus map-patched ones with
+  `env_cubemap`); detail blend modes other than 0 and 1; `$basetexturetransform`
+  (unused on dust2).
 - **Lightmap styles** (switchable lights) and bumped lightmaps.
 - **Fog and tonemap** (`env_fog_controller`, `env_tonemap_controller`).
 - **Sound**: `ambient_generic` and soundscapes, once there's an audio slot.

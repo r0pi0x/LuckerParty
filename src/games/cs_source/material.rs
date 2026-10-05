@@ -44,6 +44,8 @@ pub struct Resolved {
     /// WorldVertexTransition: `$basetexture2`, `$bumpmap2`,
     /// `$blendmodulatetexture`.
     pub blend: Option<crate::map::MapBlend>,
+    /// `$detail` with its scale, blend factor and mode (0 and 1 supported).
+    pub detail: Option<crate::map::MapDetail>,
 }
 
 pub struct MaterialLoader<'a> {
@@ -96,6 +98,7 @@ impl<'a> MaterialLoader<'a> {
                     decal_scale: None,
                     normal_map: None,
                     blend: None,
+                    detail: None,
                 }
             }
         }
@@ -110,6 +113,7 @@ impl<'a> MaterialLoader<'a> {
             decal_scale: None,
             normal_map: None,
             blend: None,
+            detail: None,
         };
         let vmt_path = format!("materials/{}.vmt", normalize(name));
         let Some(text) = self.read_text(&vmt_path) else {
@@ -152,6 +156,32 @@ impl<'a> MaterialLoader<'a> {
             }),
             _ => None,
         };
+        // The parser defaults a missing $detailblendmode to 1; the game's
+        // default is 0 (mod2x), so read the mode from the text.
+        let detail_mode = detail_blend_mode(&text);
+        let detail_source = match &material {
+            vmt_parser::material::Material::LightMappedGeneric(m) => m
+                .detail
+                .as_deref()
+                .map(|d| (d.to_string(), m.detail_scale.0, m.detail_blend_factor)),
+            vmt_parser::material::Material::WorldVertexTransition(m) => m
+                .detail
+                .as_deref()
+                .map(|d| (d.to_string(), m.detail_scale.0, m.detail_blend_factor)),
+            _ => None,
+        };
+        let detail = detail_source
+            .filter(|_| detail_mode <= 1)
+            .and_then(|(name, scale, factor)| {
+                // Mod2x uses the texel as stored; additive decodes sRGB.
+                let texture = self.texture(&name, detail_mode == 1)?;
+                Some(crate::map::MapDetail {
+                    texture,
+                    scale,
+                    factor,
+                    mode: detail_mode as u8,
+                })
+            });
         Resolved {
             texture,
             alpha,
@@ -159,6 +189,7 @@ impl<'a> MaterialLoader<'a> {
             decal_scale,
             normal_map,
             blend,
+            detail,
         }
     }
 
@@ -245,4 +276,23 @@ fn mip_levels(bytes: &[u8], header: &vtf::header::VTFHeader) -> Option<Vec<Vec<u
         out.push(img.decode(0).ok()?.to_rgba8().into_raw());
     }
     Some(out)
+}
+
+/// `$detailblendmode` from a material's text (0 when absent).
+fn detail_blend_mode(text: &str) -> u32 {
+    text.lines()
+        .find_map(|line| {
+            let line = line.trim().to_ascii_lowercase();
+            let rest = line
+                .strip_prefix("\"$detailblendmode\"")
+                .or_else(|| line.strip_prefix("$detailblendmode"))?;
+            rest.trim()
+                .trim_matches('"')
+                .split_whitespace()
+                .next()?
+                .trim_matches('"')
+                .parse()
+                .ok()
+        })
+        .unwrap_or(0)
 }

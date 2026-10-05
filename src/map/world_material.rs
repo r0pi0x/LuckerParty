@@ -23,6 +23,10 @@ pub struct WorldParams {
     pub blend_masked: f32,
     /// 1 when the second layer has its own normal map.
     pub blend_normal: f32,
+    /// Detail texture: 0 none, 1 mod2x, 2 additive.
+    pub detail: f32,
+    pub detail_factor: f32,
+    pub detail_scale: Vec2,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
@@ -52,6 +56,8 @@ pub struct WorldMaterial {
     pub normal2: Option<Handle<Image>>,
     #[texture(12)]
     pub blend_mask: Option<Handle<Image>>,
+    #[texture(13)]
+    pub detail: Option<Handle<Image>>,
     pub alpha_mode: AlphaMode,
     pub double_sided: bool,
 }

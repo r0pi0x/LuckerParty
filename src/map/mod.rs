@@ -93,6 +93,20 @@ pub struct MapMesh {
     /// Per-vertex blend weight: 0 = first texture, 1 = second. Empty when
     /// there's no blend.
     pub blend_weights: Vec<f32>,
+    /// A detail texture tiled over the base texture.
+    pub detail: Option<MapDetail>,
+}
+
+/// Source `$detail`: a texture tiled `scale` times per base texture repeat
+/// and combined with the base color (specs/cs_source/shaders.md).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MapDetail {
+    /// Index into `MapData::textures` (linear for mode 0, sRGB for 1).
+    pub texture: usize,
+    pub scale: [f32; 2],
+    pub factor: f32,
+    /// 0: multiply by 2 x detail ("mod2x"); 1: add.
+    pub mode: u8,
 }
 
 /// The second layer of a two-texture surface. Indices into
@@ -545,6 +559,9 @@ fn spawn_map(
                         blend: if blended { 1.0 } else { 0.0 },
                         blend_masked: if blend.mask.is_some() { 1.0 } else { 0.0 },
                         blend_normal: if bumped && blend.normal_map.is_some() { 1.0 } else { 0.0 },
+                        detail: m.detail.map_or(0.0, |d| d.mode as f32 + 1.0),
+                        detail_factor: m.detail.map_or(0.0, |d| d.factor),
+                        detail_scale: m.detail.map_or(Vec2::ONE, |d| Vec2::from_array(d.scale)),
                         bumped: if bumped { 1.0 } else { 0.0 },
                         normal_g_sign: g_sign,
                         normal_x_sign: std::env::var("MASHUP_NORMAL_X_SIGN")
@@ -570,6 +587,7 @@ fn spawn_map(
                         .filter(|_| blended && bumped)
                         .map(|i| textures[i].clone()),
                     blend_mask: blend.mask.filter(|_| blended).map(|i| textures[i].clone()),
+                    detail: m.detail.map(|d| textures[d.texture].clone()),
                     alpha_mode: match m.alpha {
                         MapAlpha::Opaque | MapAlpha::Mask(_) => AlphaMode::Opaque,
                         MapAlpha::Blend => AlphaMode::Blend,
