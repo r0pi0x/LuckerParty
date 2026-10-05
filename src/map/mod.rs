@@ -171,6 +171,8 @@ pub struct MapData {
     pub collision_indices: Vec<[u32; 3]>,
     /// Solid convex volumes, each as its corner points.
     pub collision_hulls: Vec<Vec<[f32; 3]>>,
+    /// The same volumes as planes, for exact swept-box movement collision.
+    pub collision_brushes: Vec<MapBrush>,
     /// Feet positions.
     pub spawns: Vec<(Vec3, Option<Team>)>,
     /// Things the importer couldn't load (missing materials etc.).
@@ -181,6 +183,42 @@ pub struct MapData {
     pub sky_camera: Option<MapSkyCamera>,
     pub ropes: Vec<MapRope>,
 }
+
+/// A solid convex volume as planes: a point p is inside when n.p <= d for
+/// every plane (n, d). Engine space, meters; `min`/`max` bound it. Games
+/// whose movement sweeps boxes against brushes (Source) use these instead
+/// of the physics engine's shape casts, which lose precision on large
+/// volumes.
+#[derive(Clone, Debug)]
+pub struct MapBrush {
+    pub planes: Vec<(Vec3, f32)>,
+    pub min: Vec3,
+    pub max: Vec3,
+}
+
+impl MapBrush {
+    /// An axis-aligned box.
+    pub fn from_box(min: Vec3, max: Vec3) -> Self {
+        let planes = vec![
+            (Vec3::X, max.x),
+            (Vec3::NEG_X, -min.x),
+            (Vec3::Y, max.y),
+            (Vec3::NEG_Y, -min.y),
+            (Vec3::Z, max.z),
+            (Vec3::NEG_Z, -min.z),
+        ];
+        Self { planes, min, max }
+    }
+}
+
+/// The loaded map's brushes (`MapData::collision_brushes`).
+#[derive(Resource, Clone, Debug, Default)]
+pub struct MapBrushes(pub Vec<MapBrush>);
+
+/// Marks the physics collider built from the same brushes, so movement that
+/// sweeps `MapBrushes` itself can leave it out of physics queries.
+#[derive(Component, Debug)]
+pub struct MapBrushCollider;
 
 /// A rope or cable: a line of points drawn as a strip that always faces the
 /// camera (the rope shader widens it per view). Source's Cable look:
@@ -403,9 +441,11 @@ fn spawn_map(
             .filter_map(|h| Collider::convex_hull(h.iter().map(|p| Vec3::from(*p)).collect()))
             .map(|c| (Vec3::ZERO, Quat::IDENTITY, c))
             .collect();
+        commands.insert_resource(MapBrushes(data.collision_brushes.clone()));
         commands.entity(root).with_child((
             Name::new("Map collision (solids)"),
             MapPart,
+            MapBrushCollider,
             RigidBody::Static,
             Collider::compound(hulls),
             Transform::default(),

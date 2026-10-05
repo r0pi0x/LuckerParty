@@ -6,6 +6,7 @@ pub mod decals;
 pub mod lightmap;
 pub mod material;
 pub mod mount;
+pub mod movement;
 pub mod overlays;
 pub mod props;
 pub mod ropes;

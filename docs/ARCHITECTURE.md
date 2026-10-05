@@ -39,9 +39,10 @@ A module may use only the modules below it. Enforced by
 | `src/greybox.rs` | Map slot built in code; collision always, visuals only when rendering |
 | `src/mount/` | `Mount` (ordered layers, first match wins), `FileSource`, `LooseDir`, path normalization, `mashup.local.toml` loading |
 | `src/map/world_material.rs`, `world.wgsl` | World surfaces: texture x baked light with radiosity normal mapping (Source LightmappedGeneric at LDR) |
-| `src/map/mod.rs` | `MapData` (meters, Y up, meshes per material, textures, lightmap atlas, collision, prop models and placements, spawns) and `MapPlugin` that spawns it |
+| `src/map/mod.rs` | `MapData` (meters, Y up, meshes per material, textures, lightmap atlas, collision, prop models and placements, spawns, ropes) and `MapPlugin` that spawns it; `MapBrushes` (brush planes for exact swept-box movement) |
+| `src/map/rope_material.rs`, `rope.wgsl` | Ropes as camera-facing strips (Source Cable shader, fake anti-aliasing back strip) |
 | `src/games/mod.rs` | `load_map("game:name")` dispatcher |
-| `src/games/cs_source/` | VPK reader, the CS:S search path, BSP to `MapData` (via `vbsp`), VMT/VTF materials (map pak first, then the mount), lightmap atlas from the lighting lump, brush collision hulls, static props via `vmdl`, ambient cubes and world lights for prop light probes, infodecals clipped onto faces, overlays (lump 45) clipped onto their listed faces, 2D sky and 3D skybox |
+| `src/games/cs_source/` | VPK reader, the CS:S search path, BSP to `MapData` (via `vbsp`), VMT/VTF materials (map pak first, then the mount), lightmap atlas from the lighting lump, brush collision hulls, static props via `vmdl`, ambient cubes and world lights for prop light probes, infodecals clipped onto faces, overlays (lump 45) clipped onto their listed faces, 2D sky and 3D skybox, ropes (simulated to rest), Source player movement (`cs_source:movement`: swept box, exact against brush planes, physics shape casts for props and displacements) |
 | `src/games/combat_arms/` | `.rez` reader and the archive cipher payload decryption (from the spec), all archives as one mount |
 | `src/bin/refcmp.rs` | Dev tool: compare views against real CS:S (RCON-driven capture, metrics, side-by-sides) |
 | `src/bin/dump.rs` | Dev tool: summarize, list and extract a game install's files |

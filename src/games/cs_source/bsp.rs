@@ -241,6 +241,7 @@ pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> (MapData, LightmapLayo
     }
 
     data.collision_hulls = brush_hulls(bsp);
+    data.collision_brushes = collision_brushes(bsp);
 
     let (lightmap, placements, white) = atlas.build();
     for (material, mesh) in by_material.iter_mut() {
@@ -384,7 +385,23 @@ fn world_brushes(bsp: &Bsp) -> std::collections::BTreeSet<usize> {
 /// Every player-solid world brush as a convex hull in engine space: the
 /// corners where three of its planes meet and no other plane cuts them off.
 pub fn brush_hulls(bsp: &Bsp) -> Vec<Vec<[f32; 3]>> {
-    brush_hulls_indexed(bsp).into_iter().map(|(_, h)| h).collect()
+    brush_hulls_indexed(bsp).into_iter().map(|(_, h, _)| h).collect()
+}
+
+/// The same brushes as planes (engine space), bevel planes included, for
+/// exact swept-box collision.
+pub fn collision_brushes(bsp: &Bsp) -> Vec<crate::map::MapBrush> {
+    brush_hulls_indexed(bsp)
+        .into_iter()
+        .map(|(_, points, planes)| {
+            let (mut min, mut max) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+            for p in &points {
+                min = min.min(Vec3::from(*p));
+                max = max.max(Vec3::from(*p));
+            }
+            crate::map::MapBrush { planes, min, max }
+        })
+        .collect()
 }
 
 /// Hulls that block light: player-solid brushes minus sky brushes (rays
@@ -392,7 +409,7 @@ pub fn brush_hulls(bsp: &Bsp) -> Vec<Vec<[f32; 3]>> {
 pub fn shadow_hulls(bsp: &Bsp) -> Vec<Vec<[f32; 3]>> {
     brush_hulls_indexed(bsp)
         .into_iter()
-        .filter(|(i, _)| {
+        .filter(|(i, _, _)| {
             let b = &bsp.brushes[*i];
             !bsp.brush_sides[b.brush_side as usize..(b.brush_side + b.num_brush_sides) as usize]
                 .iter()
@@ -404,12 +421,13 @@ pub fn shadow_hulls(bsp: &Bsp) -> Vec<Vec<[f32; 3]>> {
                 })
                 && b.flags.intersects(BrushFlags::SOLID)
         })
-        .map(|(_, h)| h)
+        .map(|(_, h, _)| h)
         .collect()
 }
 
-/// `brush_hulls` with each hull's brush index, for diagnostics.
-pub fn brush_hulls_indexed(bsp: &Bsp) -> Vec<(usize, Vec<[f32; 3]>)> {
+/// `brush_hulls` with each hull's brush index (for diagnostics) and its
+/// planes in engine space (outward normal, distance in meters).
+pub fn brush_hulls_indexed(bsp: &Bsp) -> Vec<(usize, Vec<[f32; 3]>, Vec<(Vec3, f32)>)> {
     const EPS: f32 = 0.01;
     // Plane index (either side) -> centres of displacement base faces on it.
     let mut disp_bases: std::collections::HashMap<u16, Vec<Vec3>> = Default::default();
@@ -483,12 +501,24 @@ pub fn brush_hulls_indexed(bsp: &Bsp) -> Vec<(usize, Vec<[f32; 3]>)> {
             }
         }
         if points.len() >= 4 {
+            // Source plane n.p = d becomes n'.p' = d * meters-per-unit,
+            // with n' the same rotation of n as positions get.
+            let engine_planes = planes
+                .iter()
+                .map(|(n, d)| {
+                    (
+                        to_engine_dir(vbsp::Vector { x: n.x, y: n.y, z: n.z }),
+                        d * METERS_PER_UNIT,
+                    )
+                })
+                .collect();
             out.push((
                 index,
                 points
                     .iter()
                     .map(|p| to_engine(vbsp::Vector { x: p.x, y: p.y, z: p.z }).to_array())
                     .collect(),
+                engine_planes,
             ));
         }
     }

@@ -19,6 +19,8 @@ Small, current, honest. Remove entries when fixed.
 | map | 3D skybox content is found by the world's world_mins/world_maxs (computed by the map compiler without the skybox), with a 64-unit margin, not by BSP areas (the sky camera sits in area 0 with solid leaves) | Correct on dust2 |
 | map | Sky: the down face's orientation is assumed (never visible in the fitted views) | Rarely visible on dust2 |
 | map | Ropes (from specs/cs_source/ropes.md) are drawn at their settled shape: no wind sway. Rope gravity 800 is measured, not specced; dust2's 10-node cable still hangs ~11 px low in the sky_n view. Node light uses our prop probe averaged over six directions (the engine's point-light query is not public) | The 5-node cables match CS:S to 1-2 px |
+| movement | Source movement (specs/cs_source/movement.md) lacks water, ladders, base velocity, view punch and fall damage (landing speed is recorded); CS:S cvars other than sv_accelerate/sv_friction and the jump impulse, hulls, stamina/landing slowdown and bunny-hop cap are shared-code values, unverified in CS:S; max speed is fixed at the knife's 250 until a weapon slot exists | Matches the spec's test cases on flat ground, steps and jumps |
+| movement | Source movement sweeps props and displacements with avian shape casts (backed off 1/32 unit), which are less precise than Source's traces on large shapes; brushes are exact | Small shapes; dust2 spawns and walking are fine |
 | map | Maps load synchronously before the app starts | dust2 converts in well under a second |
 | deps | `vbsp` pulls `binrw` 0.14, which rustc flags as future-incompatible | Upstream; watch on Rust upgrades |
 | build | Windows build not yet verified | Needs the Windows PC set up (see plans) |

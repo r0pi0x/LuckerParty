@@ -494,3 +494,52 @@ fn overlays_are_placed() {
         .unwrap_or(0);
     assert!(empty <= 3, "{empty} overlays produced nothing");
 }
+
+/// Source movement (specs/cs_source/movement.md) on the real map: every
+/// spawn settles onto the floor, and walking reaches knife speed without
+/// falling through or getting stuck.
+#[test]
+fn source_movement_walks_dust2() {
+    use mashup::games::cs_source::movement::{self, SourceMovementPlugin};
+    let Some(map) = dust2() else { return };
+    let spawns = map.spawns.clone();
+    let mut sim = Sim::new((MapPlugin::new(map), SourceMovementPlugin));
+    // The transform is the standing box's centre, 36 units above the feet.
+    let lift = Vec3::Y * (36.0 * 0.0254 + 0.5);
+    let players: Vec<_> = spawns
+        .iter()
+        .map(|(feet, _)| sim.spawn_character(*feet + lift, movement::ID))
+        .collect();
+    sim.seconds(1.5);
+    for ((feet, team), p) in spawns.iter().zip(&players) {
+        let standing = sim.position(*p).y - 36.0 * 0.0254;
+        assert!(sim.state(*p).on_ground, "{team:?} spawn {feet}: not grounded");
+        assert!(
+            (-0.3..1.5).contains(&(feet.y - standing)),
+            "{team:?} spawn {feet}: feet at {standing}"
+        );
+    }
+
+    let p = players[0];
+    let start = sim.position(p);
+    let mut moved = 0.0f32;
+    let mut top_speed = 0.0f32;
+    for yaw in [0.0f32, 90.0, 180.0, 270.0] {
+        sim.intent(p).yaw = yaw.to_radians();
+        sim.intent(p).move_axis = Vec2::Y;
+        let before = sim.position(p);
+        for _ in 0..64 {
+            sim.ticks(1);
+            top_speed = top_speed.max(sim.velocity(p).xz().length());
+        }
+        let after = sim.position(p);
+        moved += (after - before).xz().length();
+        assert!(after.y > start.y - 3.0, "fell through the map at {after}");
+    }
+    assert!(moved > 4.0, "barely moved: {moved} m");
+    let knife = 250.0 * 0.0254;
+    assert!(
+        (top_speed - knife).abs() < 0.01,
+        "top speed {top_speed} m/s, expected {knife}"
+    );
+}

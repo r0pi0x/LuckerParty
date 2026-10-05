@@ -58,6 +58,7 @@ fn main() {
         }),
         PhysicsPlugins::default(),
         SimPlugins,
+        mashup::games::cs_source::movement::SourceMovementPlugin,
         mashup::map::world_material::WorldMaterialPlugin,
         mashup::map::rope_material::RopeMaterialPlugin,
     ))

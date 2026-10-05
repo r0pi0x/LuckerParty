@@ -18,8 +18,9 @@ pub struct Sim {
 }
 
 impl Sim {
-    /// A headless app with the simulation plugins plus `map`.
-    pub fn new(map: impl Plugin) -> Self {
+    /// A headless app with the simulation plugins plus `plugins` (a map,
+    /// and any game plugins whose implementations the test uses).
+    pub fn new<M>(plugins: impl bevy::app::Plugins<M>) -> Self {
         let mut app = App::new();
         app.add_plugins((
             MinimalPlugins,
@@ -27,10 +28,14 @@ impl Sim {
             // avian watches mesh assets even when no collider uses them.
             AssetPlugin::default(),
             bevy::mesh::MeshPlugin,
-            PhysicsPlugins::default(),
+            // Interpolation eases rendering between ticks; headless, it
+            // would make `Transform` show the previous tick.
+            PhysicsPlugins::default()
+                .build()
+                .disable::<PhysicsInterpolationPlugin>(),
             SimPlugins,
-            map,
         ))
+        .add_plugins(plugins)
         .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
             1.0 / DEFAULT_TICK_HZ,
         )));
