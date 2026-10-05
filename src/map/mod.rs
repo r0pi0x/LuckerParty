@@ -799,7 +799,7 @@ fn spawn_map(
         if let Some(bounds) = data.playable {
             commands.insert_resource(PlayableArea(bounds));
         }
-        commands.insert_resource(sound::SoundBank(data.sounds.clone()));
+
         if let Some(cam) = &data.sky_camera
             && view == MapDebugView::Normal
         {
@@ -1268,6 +1268,8 @@ fn spawn_map(
         }
     }
 
+    commands.insert_resource(sound::SoundBank(data.sounds.clone()));
+    commands.insert_resource(sound::SurfaceGrid::new(&data));
     if !brushes.is_empty() {
         commands.insert_resource(MapBrushes(brushes));
         if let Some(g) = data.gravity {

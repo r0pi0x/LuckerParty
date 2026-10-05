@@ -23,3 +23,19 @@ fn pcm_and_adpcm() {
     let peak = d.samples.iter().map(|s| s.unsigned_abs()).max().unwrap();
     assert!(peak > 500 && peak < 32768, "peak {peak}");
 }
+
+/// What playback hands the audio backend: a 16-bit stereo WAV with each
+/// channel's gain applied, which decodes back to the scaled samples.
+#[test]
+fn stereo_for_playback() {
+    use mashup::map::{MapSoundClip, sound::stereo_wav};
+    let clip = MapSoundClip {
+        rate: 22050,
+        channels: 1,
+        samples: vec![1000i16, -2000, 3000].into(),
+        loop_start: None,
+    };
+    let back = wav::decode(&stereo_wav(&clip, 0.5, 1.0)).unwrap();
+    assert_eq!((back.rate, back.channels), (22050, 2));
+    assert_eq!(&*back.samples, &[500, 1000, -1000, -2000, 1500, 3000]);
+}

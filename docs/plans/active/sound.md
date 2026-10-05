@@ -26,10 +26,12 @@ Started 2026-10-05, from specs/cs_source/sounds.md.
 
 ## Slices
 
-1. [ ] Pipeline: decoder, scripts, playback, distance and panning.
-2. [ ] Footsteps (ground, ladder, wading, shallow water; bands, timers,
+1. [x] Pipeline: decoder, scripts, playback, distance and panning.
+2. [x] Footsteps (ground, ladder, wading, shallow water; bands, timers,
    left/right, duck volume), jump, landing tiers, wall slam, water
-   entry/exit and swim strokes. CS:S's walk/duck silence to measure.
+   entry/exit and swim strokes. CS:S's walk/duck silence assumed (walk
+   key, duck key or ducked: silent) until measured. Not yet: the
+   wading counter quirk shared by all players.
 3. [ ] Physics impacts and scrapes (avian contact speeds).
 4. [ ] Map ambience: ambient_generic, soundscapes (selection, crossfade,
    random sounds).

@@ -1073,3 +1073,76 @@ fn sounds_load() {
         map.meshes.len()
     );
 }
+
+/// Footsteps (specs/cs_source/sounds.md 3): running across CT spawn steps
+/// every 300 ms (20 ticks at 64 tick), right foot first then alternating,
+/// at the surface's running volume; a jump plays a full-volume step;
+/// walking (+speed) is silent in CS:S.
+#[test]
+fn footsteps() {
+    use mashup::{
+        games::cs_source::movement::{self, SourceMovementPlugin},
+        map::PlaySound,
+    };
+    #[derive(Resource, Default)]
+    struct Heard(Vec<(u64, PlaySound)>);
+    fn listen(mut m: MessageReader<PlaySound>, mut heard: ResMut<Heard>, tick: Res<mashup::core::SimTick>) {
+        for s in m.read() {
+            heard.0.push((tick.0, s.clone()));
+        }
+    }
+    let Some(map) = dust2() else { return };
+    // The T spawn runway (open and flat westward), feet at Source z 140.
+    let spawn = mashup::games::cs_source::movement::to_engine(Vec3::new(-1024.0, -784.0, 140.0));
+    let mut sim = Sim::new((MapPlugin::new(map.clone()), SourceMovementPlugin));
+    sim.app
+        .init_resource::<Heard>()
+        .add_systems(FixedUpdate, listen.after(mashup::core::SimSet::Movement));
+    let p = sim.spawn_character(spawn + Vec3::Y * (36.0 * 0.0254 + 0.2), movement::ID);
+    sim.seconds(1.0);
+    sim.app.world_mut().resource_mut::<Heard>().0.clear();
+    // Face Source yaw 180 (west); intent yaw 0 is Source yaw 90.
+    sim.intent(p).yaw = 90f32.to_radians();
+    sim.intent(p).move_axis = Vec2::Y;
+    sim.seconds(2.0);
+    let steps: Vec<(u64, PlaySound)> = sim.app.world_mut().resource_mut::<Heard>().0.drain(..).collect();
+    assert!(steps.len() >= 5, "{} steps in 2 s", steps.len());
+    // Once up to speed, every 20 ticks.
+    let gaps: Vec<u64> = steps.windows(2).map(|w| w[1].0 - w[0].0).collect();
+    assert!(gaps[2..].iter().all(|g| *g == 20), "gaps {gaps:?}");
+    assert!(
+        steps[0].1.entry.to_lowercase().contains("right"),
+        "first step {}",
+        steps[0].1.entry
+    );
+    for w in steps.windows(2) {
+        assert_ne!(
+            w[0].1.entry.contains("Left"),
+            w[1].1.entry.contains("Left"),
+            "alternating"
+        );
+    }
+    let v = steps.last().unwrap().1.volume.unwrap();
+    assert!(v == 0.5 || v == 0.55, "running step volume {v}");
+
+    // Jump: a full-volume step.
+    sim.intent(p).jump = true;
+    sim.ticks(1);
+    sim.intent(p).jump = false;
+    let heard: Vec<PlaySound> = sim
+        .app
+        .world_mut()
+        .resource_mut::<Heard>()
+        .0
+        .drain(..)
+        .map(|(_, s)| s)
+        .collect();
+    assert!(heard.iter().any(|s| s.volume == Some(1.0)), "jump step: {heard:?}");
+
+    // Walking: silent.
+    sim.seconds(1.0);
+    sim.app.world_mut().resource_mut::<Heard>().0.clear();
+    sim.intent(p).walk = true;
+    sim.seconds(2.0);
+    assert!(sim.app.world().resource::<Heard>().0.is_empty(), "walking is silent");
+}

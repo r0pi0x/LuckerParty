@@ -16,7 +16,10 @@ use bevy::prelude::*;
 
 use crate::{
     core::{Intent, MovementState, SimSet, Velocity},
-    map::{MapBrushCollider, MapBrushes, MapWater, PhysicsProp, PushAway},
+    map::{
+        MapBrushCollider, MapBrushes, MapWater, PhysicsProp, PlaySound, PushAway,
+        sound::{SoundBank, SurfaceGrid},
+    },
     slots::RegisterSlots,
 };
 
@@ -85,6 +88,10 @@ pub struct SourceMovementConfig {
     /// `duck_slows_everywhere`; measured; the shared code leaves climbing
     /// speed alone).
     pub duck_slows_ladder: bool,
+    /// CS:S: no footsteps while walking (+speed) or ducked. Players know it
+    /// and the shared code's speed bands contradict it; unmeasured (sound
+    /// spec open question 3).
+    pub silent_walk_duck: bool,
     /// CS:S: the ducked input scale applies while duck is held, or when the
     /// tick started ducked or mid-duck: from the tick duck is pressed until
     /// the tick after it's released, in the air and water too (measured
@@ -204,6 +211,7 @@ impl SourceMovementConfig {
             ladder_dampen: 1.0,
             ladder_angle: -0.707,
             client_maxspeed: 250.0,
+            silent_walk_duck: false,
             duck_slows_ladder: false,
             duck_slows_everywhere: false,
         }
@@ -245,6 +253,7 @@ impl Default for SourceMovementConfig {
             bunnyhop_cap: 286.0,
             ladder_dampen: 0.2,
             client_maxspeed: 260.0,
+            silent_walk_duck: true,
             duck_slows_ladder: true,
             duck_slows_everywhere: true,
             ..Self::shared_code()
@@ -290,6 +299,8 @@ const WATER_JUMP_EYE_EXTRA: f32 = 8.0;
 const WATER_JUMP_DROP: f32 = 1024.0;
 const WATER_JUMP_MIN_VZ: f32 = -180.0;
 const WATER_JUMP_TIME: f32 = 2000.0;
+/// Source's body channel (footsteps, swim): a new one replaces the last.
+const CHAN_BODY: u8 = 4;
 
 /// How far sweeps stop short of what they hit, along the move. Our stand-in
 /// for the BSP trace's distance epsilon, so the box never rests touching.
@@ -368,6 +379,12 @@ pub struct SourceMovement {
     /// Water jump: time left (ms) and the horizontal velocity it holds.
     pub water_jump_time: f32,
     water_jump_vel: Vec3,
+    /// Footsteps (sound spec 3): time to the next step (ms), which foot
+    /// steps next, the surface last stood on, swim-stroke timer (ms).
+    pub step_timer: f32,
+    step_left: bool,
+    pub surface: Option<String>,
+    swim_timer: f32,
 }
 
 impl Default for SourceMovement {
@@ -395,6 +412,10 @@ impl Default for SourceMovement {
             in_slime: false,
             water_jump_time: 0.0,
             water_jump_vel: Vec3::ZERO,
+            step_timer: 0.0,
+            step_left: false,
+            surface: None,
+            swim_timer: 0.0,
         }
     }
 }
@@ -446,6 +467,8 @@ struct Tracer<'a, 'w, 's> {
     filter: SpatialQueryFilter,
     brushes: Option<&'a MapBrushes>,
     water: Option<&'a MapWater>,
+    surfaces: Option<&'a SurfaceGrid>,
+    sounds: Option<&'a crate::map::MapSounds>,
     /// Standing and ducked box heights.
     heights: (f32, f32),
 }
@@ -677,6 +700,8 @@ struct Mover<'a, 'b, 'w, 's> {
     water_cache: [Option<(Vec3, Option<bool>)>; 3],
     /// Move input added by props pushing the player back (forward, side).
     push_input: Vec2,
+    /// Sounds made this tick: entry, where (Source units), volume.
+    sounds: Vec<(String, Vec3, Option<f32>)>,
 }
 
 impl Mover<'_, '_, '_, '_> {
@@ -724,6 +749,18 @@ impl Mover<'_, '_, '_, '_> {
 
     /// Collide and slide for the rest of the tick.
     fn slide(&mut self) {
+        let before = self.v.truncate().length();
+        self.slide_move();
+        // Wall slam: a big loss of horizontal speed in one move.
+        let loss = before - self.v.truncate().length();
+        if loss > 1160.0 {
+            self.impact_step(1.0);
+        } else if loss > 580.0 {
+            self.impact_step(0.85);
+        }
+    }
+
+    fn slide_move(&mut self) {
         let primal = self.v;
         let mut original = self.v;
         let mut planes: Vec<Vec3> = Vec::with_capacity(MAX_CLIP_PLANES);
@@ -917,11 +954,129 @@ impl Mover<'_, '_, '_, '_> {
             if let Some(n) = ground {
                 self.me.ground_normal = n;
                 self.v.z = 0.0;
+                self.record_surface();
             } else if self.v.z > 0.0 {
                 self.me.surface_friction = UPWARD_AIR_FRICTION;
             }
         }
         self.water_check();
+    }
+
+    /// The surface under the feet (the ground just found).
+    fn record_surface(&mut self) {
+        if let Some(grid) = self.trace.surfaces
+            && let Some(s) = grid.below(to_engine(self.feet + Vec3::Z), 6.0 * METERS_PER_UNIT)
+        {
+            self.me.surface = Some(s.to_string());
+        }
+    }
+
+    /// Play a footstep on `surface`: its left or right step, alternating
+    /// (the first after spawn is a right step), at `volume`.
+    fn play_step(&mut self, surface: &str, volume: f32) {
+        let Some(s) = self.trace.sounds.and_then(|b| b.surface(surface)) else {
+            return;
+        };
+        let entry = if self.me.step_left { &s.step_left } else { &s.step_right };
+        let Some(entry) = entry.clone() else { return };
+        self.me.step_left = !self.me.step_left;
+        self.sounds.push((entry, self.feet, Some(volume)));
+    }
+
+    /// Footsteps (sound spec 3, "When a footstep is checked"), from the
+    /// state at the start of the tick.
+    fn footsteps(&mut self, intent: &Intent) {
+        if self.me.step_timer > 0.0 {
+            self.me.step_timer = (self.me.step_timer - 1000.0 * self.dt).max(0.0);
+            if self.me.step_timer > 0.0 {
+                return;
+            }
+        }
+        if self.cfg.silent_walk_duck && (intent.walk || intent.crouch || self.me.ducked) {
+            return;
+        }
+        let ladder = self.me.ladder.is_some();
+        let speed = self.v.length();
+        let (walk, run) = if self.me.ducked || ladder {
+            (60.0, 80.0)
+        } else {
+            (90.0, 220.0)
+        };
+        if speed < walk || !(ladder || (self.me.on_ground && self.v.truncate().length() > 1e-4)) {
+            return;
+        }
+        let walking = speed < run;
+        let height = if self.me.ducked {
+            self.trace.heights.1
+        } else {
+            self.trace.heights.0
+        };
+        let knee = self.trace.point_water(self.feet + Vec3::Z * (0.2 * height)).is_some();
+        let (surface, mut volume, mut period) = if ladder {
+            ("ladder".to_string(), 0.5, 350.0)
+        } else if knee {
+            ("wade".to_string(), 0.65, 600.0)
+        } else if self.me.water_level == 1 {
+            (
+                "water".to_string(),
+                if walking { 0.2 } else { 0.5 },
+                if walking { 400.0 } else { 300.0 },
+            )
+        } else {
+            let Some(surface) = self.me.surface.clone() else { return };
+            let material = self
+                .trace
+                .sounds
+                .and_then(|b| b.surface(&surface))
+                .map_or('C', |s| s.game_material);
+            let volume = match (material, walking) {
+                ('D', true) => 0.25,
+                ('D', false) => 0.55,
+                ('V', true) => 0.4,
+                ('V', false) => 0.7,
+                (_, true) => 0.2,
+                (_, false) => 0.5,
+            };
+            (surface, volume, if walking { 400.0 } else { 300.0 })
+        };
+        if self.me.ducked || ladder {
+            period += 100.0;
+        }
+        if self.me.ducked {
+            volume *= 0.65;
+        }
+        self.me.step_timer = period;
+        self.play_step(&surface, volume);
+    }
+
+    /// A landing or wall-slam step on the current surface.
+    fn impact_step(&mut self, volume: f32) {
+        if volume <= 0.0 {
+            return;
+        }
+        self.me.step_timer = 400.0;
+        if let Some(s) = self.me.surface.clone() {
+            self.play_step(&s, volume);
+        }
+    }
+
+    /// Landing (sound spec 3): fall speed tiers.
+    fn landing_sound(&mut self, fall: f32) {
+        if fall < 350.0 {
+            return;
+        }
+        let volume = if self.me.water_level > 0 {
+            0.5
+        } else if fall > 580.0 {
+            1.0
+        } else if fall > 290.0 {
+            0.85
+        } else if fall < 200.0 {
+            0.0
+        } else {
+            0.5
+        };
+        self.impact_step(volume);
     }
 
     /// Water level from three points at the box's centre line: 1 unit
@@ -1258,6 +1413,10 @@ impl Mover<'_, '_, '_, '_> {
         self.me.stamina = self.cfg.jump_stamina;
         self.half_gravity();
         self.me.jump_held = true;
+        // A full-volume step on the surface jumped from.
+        if let Some(s) = self.me.surface.clone() {
+            self.play_step(&s, 1.0);
+        }
     }
 
     /// Stuck recovery: about once a second (every tick while recovering),
@@ -1306,6 +1465,7 @@ impl Mover<'_, '_, '_, '_> {
         }
         self.me.duck_timer = (self.me.duck_timer - 1000.0 * self.dt).max(0.0);
         self.me.stamina = (self.me.stamina - 1000.0 * self.dt).max(0.0);
+        self.me.swim_timer = (self.me.swim_timer - 1000.0 * self.dt).max(0.0);
 
         // Intent yaw 0 looks down engine -Z, which is Source yaw 90.
         let yaw = std::f32::consts::FRAC_PI_2 + intent.yaw;
@@ -1326,6 +1486,8 @@ impl Mover<'_, '_, '_, '_> {
         if !self.me.on_ground {
             self.me.fall_speed = -self.v.z;
         }
+        let water_before = self.me.water_level;
+        self.footsteps(intent);
         let was_ducking = self.me.ducked || self.me.ducking;
         let mut scale = self.duck(intent.crouch);
         // CS:S (measured): input is slowed while duck is held, or when the
@@ -1366,12 +1528,18 @@ impl Mover<'_, '_, '_, '_> {
             self.v.y = self.me.water_jump_vel.y;
             self.slide();
             self.water_check();
+            self.water_sound(water_before);
             self.me.last_feet = Some(self.feet);
             return;
         }
         if self.me.water_level >= 2 {
             if self.me.water_level == 2 {
                 self.water_jump_check(intent);
+            }
+            if intent.jump && self.me.swim_timer <= 0.0 {
+                // A swim stroke at most once a second while holding jump.
+                self.me.swim_timer = 1000.0;
+                self.sounds.push(("Player.Swim".into(), self.feet, None));
             }
             if intent.jump {
                 // Jump does nothing while water-jumping: a water jump that
@@ -1392,6 +1560,7 @@ impl Mover<'_, '_, '_, '_> {
             if self.me.on_ground {
                 self.v.z = 0.0;
             }
+            self.water_sound(water_before);
             self.me.last_feet = Some(self.feet);
             return;
         }
@@ -1425,11 +1594,20 @@ impl Mover<'_, '_, '_, '_> {
         if self.me.on_ground {
             self.v.z = 0.0;
             if self.me.fall_speed > 0.0 {
+                self.landing_sound(self.me.fall_speed);
                 self.me.last_landing_speed = self.me.fall_speed;
                 self.me.fall_speed = 0.0;
             }
         }
+        self.water_sound(water_before);
         self.me.last_feet = Some(self.feet);
+    }
+
+    /// Entering or leaving water this tick splashes.
+    fn water_sound(&mut self, before: u8) {
+        if (before == 0) != (self.me.water_level == 0) {
+            self.sounds.push(("Player.Swim".into(), self.feet, None));
+        }
     }
 }
 
@@ -1447,6 +1625,9 @@ fn step(
     water: Option<Res<MapWater>>,
     brush_colliders: Query<Entity, With<MapBrushCollider>>,
     props: Query<(Entity, &Transform, &PhysicsProp), Without<SourceMovement>>,
+    surfaces: Option<Res<SurfaceGrid>>,
+    bank: Option<Res<SoundBank>>,
+    mut play: MessageWriter<PlaySound>,
     cfg: Res<SourceMovementConfig>,
     time: Res<Time>,
 ) {
@@ -1475,6 +1656,8 @@ fn step(
             filter: SpatialQueryFilter::from_excluded_entities(excluded),
             brushes: brushes.as_deref(),
             water: water.as_deref(),
+            surfaces: surfaces.as_deref(),
+            sounds: bank.as_ref().map(|b| &*b.0),
             heights: (cfg.stand_height, cfg.duck_height),
         };
         let mut mover = Mover {
@@ -1486,9 +1669,19 @@ fn step(
             dt,
             water_cache: [None; 3],
             push_input,
+            sounds: Vec::new(),
         };
         mover.tick(intent);
         let (feet, v) = (mover.feet, mover.v);
+        for (entry, at, volume) in mover.sounds.drain(..) {
+            play.write(PlaySound {
+                entry,
+                at: Some(to_engine(at)),
+                volume,
+                source: Some(entity),
+                channel: Some(CHAN_BODY),
+            });
+        }
         transform.translation = to_engine(feet + Vec3::Z * ORIGIN_ABOVE_FEET);
         vel.0 = to_engine(v);
         *state = MovementState {

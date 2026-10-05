@@ -261,3 +261,76 @@ pub fn stereo_wav(clip: &MapSoundClip, left: f32, right: f32) -> Vec<u8> {
     }
     out
 }
+
+/// World triangles tagged with their surface, on a horizontal grid, to
+/// find the surface under a point (footsteps).
+#[derive(Resource, Default)]
+pub struct SurfaceGrid {
+    names: Vec<String>,
+    /// Triangle corners and surface index.
+    tris: Vec<([Vec3; 3], u16)>,
+    grid: HashMap<(i32, i32), Vec<u32>>,
+}
+
+impl SurfaceGrid {
+    const CELL: f32 = 2.0;
+
+    pub fn new(data: &super::MapData) -> Self {
+        let mut me = Self::default();
+        let mut index: HashMap<String, u16> = HashMap::new();
+        for m in data
+            .meshes
+            .iter()
+            .filter(|m| !m.skybox && !m.material.starts_with("decal:"))
+        {
+            let Some(surface) = &m.surface else { continue };
+            let id = *index.entry(surface.clone()).or_insert_with(|| {
+                me.names.push(surface.clone());
+                (me.names.len() - 1) as u16
+            });
+            for t in m.indices.as_chunks::<3>().0 {
+                let tri = t.map(|i| Vec3::from(m.positions[i as usize]));
+                let i = me.tris.len() as u32;
+                let lo = tri[0].min(tri[1]).min(tri[2]);
+                let hi = tri[0].max(tri[1]).max(tri[2]);
+                for gx in (lo.x / Self::CELL).floor() as i32..=(hi.x / Self::CELL).floor() as i32 {
+                    for gz in (lo.z / Self::CELL).floor() as i32..=(hi.z / Self::CELL).floor() as i32 {
+                        me.grid.entry((gx, gz)).or_default().push(i);
+                    }
+                }
+                me.tris.push((tri, id));
+            }
+        }
+        me
+    }
+
+    /// The surface of the highest upward-facing triangle under `p` (engine
+    /// space), at most `reach` meters below it.
+    pub fn below(&self, p: Vec3, reach: f32) -> Option<&str> {
+        let key = ((p.x / Self::CELL).floor() as i32, (p.z / Self::CELL).floor() as i32);
+        let mut best: Option<(f32, u16)> = None;
+        for &i in self.grid.get(&key)? {
+            let ([a, b, c], id) = self.tris[i as usize];
+            let n = (b - a).cross(c - a);
+            if n.y <= 1e-6 {
+                continue;
+            }
+            // Barycentric in the horizontal plane.
+            let (a2, b2, c2, q) = (a.xz(), b.xz(), c.xz(), p.xz());
+            let area = (b2 - a2).perp_dot(c2 - a2);
+            if area.abs() < 1e-9 {
+                continue;
+            }
+            let w1 = (q - a2).perp_dot(c2 - a2) / area;
+            let w2 = (b2 - a2).perp_dot(q - a2) / area;
+            if w1 < 0.0 || w2 < 0.0 || w1 + w2 > 1.0 {
+                continue;
+            }
+            let y = a.y + (b.y - a.y) * w1 + (c.y - a.y) * w2;
+            if y <= p.y + 0.01 && p.y - y <= reach && best.is_none_or(|(by, _)| y > by) {
+                best = Some((y, id));
+            }
+        }
+        best.map(|(_, id)| self.names[id as usize].as_str())
+    }
+}
