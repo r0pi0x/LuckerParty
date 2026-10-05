@@ -7,6 +7,9 @@ when work starts; delete them when done.
 
 ## Tools
 
+- **HDR parity**: CS:S defaults to mat_hdr_level 2 on dust2 (HDR lightmaps,
+  tonemapping, bloom); the reference install runs LDR. Compare and match
+  both if players use HDR.
 - **More refcmp views** across dust2 (mid, long, B, spawns) and other maps.
 
 ## dust2 fidelity

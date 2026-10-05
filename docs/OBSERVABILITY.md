@@ -106,6 +106,13 @@ cargo run --features dev --bin refcmp -- capture-ours --only a_sign
   `point_viewcontrol` for each view and takes `jpeg` screenshots. Keys and
   `setpos` don't work for this (the lock screen owns the keyboard; RCON has
   no player).
+- `refcmp fit` also captures mashup's `--debug-view albedo` and
+  `--debug-view lighting` renders and fits, per pixel, how the real game
+  combines texture and light. That is where `cs_source::bsp::source_look`
+  (exposure 1.256, no tonemapping, bilinear mip snapping) comes from.
+- The reference CS:S install runs at mat_hdr_level 0, mat_trilinear 0,
+  mat_forceaniso 1, no AA (queried over RCON). HDR (level 2, the game's
+  default) is not matched yet.
 - mashup renders views off-screen at 1280x720 (`--views`), matching CS:S's
   framing (90 degrees horizontal at 4:3 = 74 vertical).
 

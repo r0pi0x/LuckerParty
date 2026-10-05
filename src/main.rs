@@ -1,6 +1,11 @@
 use avian3d::prelude::*;
 use bevy::prelude::*;
-use mashup::{SimPlugins, client, games, greybox, map::MapPlugin, movement, slots::Loadout};
+use mashup::{
+    SimPlugins, client, games, greybox,
+    map::{MapDebugView, MapPlugin},
+    movement,
+    slots::Loadout,
+};
 
 fn main() {
     let args = client::Args::parse();
@@ -19,8 +24,18 @@ fn main() {
                 for w in &data.warnings {
                     eprintln!("  warning: {w}");
                 }
+                let view = match (args.debug_view.as_deref(), args.lightmap_only) {
+                    (Some("lighting"), _) => MapDebugView::Lighting { scale: 0.25 },
+                    (Some("albedo"), _) => MapDebugView::Albedo,
+                    (Some(other), _) => {
+                        eprintln!("error: --debug-view {other}: expected lighting or albedo");
+                        std::process::exit(2);
+                    }
+                    (None, true) => MapDebugView::Lighting { scale: 1.0 },
+                    (None, false) => MapDebugView::Normal,
+                };
                 app.add_plugins(MapPlugin {
-                    lightmap_only: args.lightmap_only,
+                    view,
                     ..MapPlugin::new(data)
                 });
             }

@@ -137,6 +137,33 @@ pub struct MapData {
     pub spawns: Vec<(Vec3, Option<Team>)>,
     /// Things the importer couldn't load (missing materials etc.).
     pub warnings: Vec<String>,
+    /// How the source game presents the map, so it can be reproduced.
+    pub look: MapLook,
+}
+
+/// Presentation choices that differ between games, measured against the
+/// original (see `refcmp`).
+#[derive(Clone, Debug)]
+pub struct MapLook {
+    /// Multiplier on all baked light (lightmaps and prop probes).
+    pub light_scale: f32,
+    /// Blend between mip levels (trilinear) or snap to the nearest one.
+    pub trilinear: bool,
+    /// Anisotropic filtering level; 1 = off.
+    pub anisotropy: u16,
+    /// Apply a filmic tonemapper (off: plain clamped output, like LDR games).
+    pub tonemapping: bool,
+}
+
+impl Default for MapLook {
+    fn default() -> Self {
+        Self {
+            light_scale: 1.0,
+            trilinear: true,
+            anisotropy: 8,
+            tonemapping: true,
+        }
+    }
 }
 
 impl MapData {
@@ -159,21 +186,36 @@ impl MapData {
 /// present (same pattern as the greybox, so maps load in headless tests).
 pub struct MapPlugin {
     pub data: Arc<MapData>,
-    /// Debug view: white surfaces, so only baked lighting shows.
-    pub lightmap_only: bool,
+    pub view: MapDebugView,
+}
+
+/// Debug renders, used to compare against reference screenshots.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum MapDebugView {
+    #[default]
+    Normal,
+    /// White surfaces: only baked lighting (lightmaps, prop probes),
+    /// multiplied by `scale` (e.g. 0.25 so overbright light fits in 0..1).
+    Lighting { scale: f32 },
+    /// Textures only, unlit.
+    Albedo,
 }
 
 impl MapPlugin {
     pub fn new(data: MapData) -> Self {
         Self {
             data: Arc::new(data),
-            lightmap_only: false,
+            view: MapDebugView::Normal,
         }
     }
 }
 
 #[derive(Resource)]
-struct PendingMap(Arc<MapData>, bool);
+struct PendingMap(Arc<MapData>, MapDebugView);
+
+/// The loaded map's presentation settings, for cameras to follow.
+#[derive(Resource, Clone, Debug)]
+pub struct ActiveMapLook(pub MapLook);
 
 /// Marks every entity belonging to the loaded map.
 #[derive(Component)]
@@ -181,7 +223,8 @@ pub struct MapPart;
 
 impl Plugin for MapPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(PendingMap(self.data.clone(), self.lightmap_only))
+        app.insert_resource(PendingMap(self.data.clone(), self.view))
+            .insert_resource(ActiveMapLook(self.data.look.clone()))
             .insert_resource(GlobalAmbientLight {
                 brightness: 600.0,
                 // Baked lighting already includes the map's ambient light.
@@ -208,7 +251,7 @@ fn spawn_map(
     mut images: Option<ResMut<Assets<Image>>>,
 ) {
     let data = &pending.0;
-    let lightmap_only = pending.1;
+    let view = pending.1;
     let root = commands
         .spawn((
             Name::new(format!("Map {}", data.name)),
@@ -253,7 +296,11 @@ fn spawn_map(
     let mut lit_model_materials: Vec<Vec<Handle<StandardMaterial>>> = Vec::new();
 
     if let (Some(meshes), Some(materials), Some(images)) = (meshes.as_mut(), materials.as_mut(), images.as_mut()) {
-        let textures: Vec<Handle<Image>> = data.textures.iter().map(|t| images.add(to_image(t))).collect();
+        let textures: Vec<Handle<Image>> = data
+            .textures
+            .iter()
+            .map(|t| images.add(to_image(t, &data.look)))
+            .collect();
         let lightmap = data.lightmap.as_ref().map(|l| images.add(lightmap_image(l)));
         for m in &data.meshes {
             let lit = lightmap.as_ref().filter(|_| m.lightmap_uvs.len() == m.positions.len());
@@ -261,7 +308,7 @@ fn spawn_map(
                 Name::new(m.material.clone()),
                 MapPart,
                 Mesh3d(meshes.add(build_mesh(m, lit.is_some()))),
-                MeshMaterial3d(materials.add(build_material(m, &textures, lightmap_only))),
+                MeshMaterial3d(materials.add(build_material(m, &textures, view, data.look.light_scale))),
                 Transform::default(),
                 ChildOf(root),
             ));
@@ -283,7 +330,7 @@ fn spawn_map(
                     .map(|m| {
                         (
                             meshes.add(build_mesh(m, false)),
-                            materials.add(build_material(m, &textures, lightmap_only)),
+                            materials.add(build_material(m, &textures, view, data.look.light_scale)),
                         )
                     })
                     .collect()
@@ -299,7 +346,7 @@ fn spawn_map(
                     .map(|m| {
                         materials.add(StandardMaterial {
                             unlit: true,
-                            ..build_material(m, &textures, lightmap_only)
+                            ..build_material(m, &textures, view, data.look.light_scale)
                         })
                     })
                     .collect()
@@ -332,7 +379,14 @@ fn spawn_map(
             _ => {}
         }
         let id = e.id();
-        match (&prop.lighting, meshes.as_mut(), lit_model_materials.get(prop.model)) {
+        let probe_scale = data.look.light_scale
+            * if let MapDebugView::Lighting { scale } = view {
+                scale
+            } else {
+                1.0
+            };
+        let probe = prop.lighting.as_ref().filter(|_| view != MapDebugView::Albedo);
+        match (probe, meshes.as_mut(), lit_model_materials.get(prop.model)) {
             // Baked: own mesh copy with per-vertex light, unlit material
             // (texture x light, like the lightmapped world).
             (Some(probe), Some(meshes), Some(mats)) => {
@@ -341,7 +395,7 @@ fn spawn_map(
                         .normals
                         .iter()
                         .map(|n| {
-                            let l = probe.eval(prop.rotation * Vec3::from(*n));
+                            let l = probe.eval(prop.rotation * Vec3::from(*n)) * probe_scale;
                             [l.x, l.y, l.z, 1.0]
                         })
                         .collect();
@@ -385,7 +439,7 @@ fn spawn_map(
 
 /// A repeating, mipmapped GPU image. Mipmaps are box-filtered here; source
 /// files' own mip levels aren't used yet.
-fn to_image(t: &MapTexture) -> Image {
+fn to_image(t: &MapTexture, look: &MapLook) -> Image {
     let mut data = t.rgba8.clone();
     let (mut w, mut h) = (t.width as usize, t.height as usize);
     let mut level = t.rgba8.clone();
@@ -428,8 +482,12 @@ fn to_image(t: &MapTexture) -> Image {
         address_mode_v: ImageAddressMode::Repeat,
         mag_filter: ImageFilterMode::Linear,
         min_filter: ImageFilterMode::Linear,
-        mipmap_filter: ImageFilterMode::Linear,
-        anisotropy_clamp: 8,
+        mipmap_filter: if look.trilinear {
+            ImageFilterMode::Linear
+        } else {
+            ImageFilterMode::Nearest
+        },
+        anisotropy_clamp: look.anisotropy.max(1),
         ..default()
     });
     image
@@ -470,15 +528,22 @@ fn build_mesh(m: &MapMesh, with_lightmap: bool) -> Mesh {
     mesh
 }
 
-fn build_material(m: &MapMesh, textures: &[Handle<Image>], lightmap_only: bool) -> StandardMaterial {
+fn build_material(m: &MapMesh, textures: &[Handle<Image>], view: MapDebugView, light_scale: f32) -> StandardMaterial {
     let [r, g, b] = m.color;
+    let lighting_only = matches!(view, MapDebugView::Lighting { .. });
+    let scale = if let MapDebugView::Lighting { scale } = view {
+        scale
+    } else {
+        1.0
+    };
     StandardMaterial {
-        base_color: if m.texture.is_some() || lightmap_only {
+        base_color: if m.texture.is_some() || lighting_only {
             Color::WHITE
         } else {
             Color::srgb_u8(r, g, b)
         },
-        base_color_texture: m.texture.filter(|_| !lightmap_only).map(|i| textures[i].clone()),
+        base_color_texture: m.texture.filter(|_| !lighting_only).map(|i| textures[i].clone()),
+        unlit: view == MapDebugView::Albedo,
         perceptual_roughness: 0.95,
         reflectance: 0.2,
         alpha_mode: match m.alpha {
@@ -492,7 +557,7 @@ fn build_material(m: &MapMesh, textures: &[Handle<Image>], lightmap_only: bool) 
         } else {
             Some(bevy::render::render_resource::Face::Back)
         },
-        lightmap_exposure: LIGHTMAP_EXPOSURE,
+        lightmap_exposure: LIGHTMAP_EXPOSURE * scale * light_scale,
         ..default()
     }
 }

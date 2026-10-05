@@ -23,11 +23,13 @@ use mashup::{
 use serde::Deserialize;
 
 const USAGE: &str = "\
-usage: refcmp [all|capture-ref|capture-ours|report] [--views <file>] [--only <name>] [--keep-running]
+usage: refcmp [all|capture-ref|capture-ours|report|fit] [--views <file>] [--only <name>] [--keep-running]
   all            capture both, then report (default)
   capture-ref    capture views in CS:S (Steam must be logged in on this machine)
   capture-ours   capture views in mashup
   report         compare existing captures
+  fit            capture mashup's albedo and lighting debug views and fit how
+                 CS:S combines texture and light, per pixel, against the reference
   --views <file> views file (default: tools/refcmp/de_dust2.toml)
   --only <name>  only views whose name contains <name>
   --keep-running leave CS:S running after capturing (faster next time)";
@@ -67,7 +69,7 @@ fn main() -> ExitCode {
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
-            "all" | "capture-ref" | "capture-ours" | "report" => args.command = a,
+            "all" | "capture-ref" | "capture-ours" | "report" | "fit" => args.command = a,
             "--views" => args.views = it.next().map(PathBuf::from).unwrap_or_default(),
             "--only" => args.only = it.next(),
             "--keep-running" => args.keep_running = true,
@@ -104,7 +106,16 @@ fn run(args: &Args) -> Result<(), String> {
         capture_ref(&file, &ref_dir, args.keep_running)?;
     }
     if all || args.command == "capture-ours" {
-        capture_ours(&file, &ours_dir)?;
+        capture_ours(&file, &ours_dir, &[])?;
+    }
+    if args.command == "fit" {
+        let (albedo, lighting) = (out.join("ours_albedo"), out.join("ours_lighting"));
+        for d in [&albedo, &lighting] {
+            std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
+        }
+        capture_ours(&file, &albedo, &["--debug-view", "albedo"])?;
+        capture_ours(&file, &lighting, &["--debug-view", "lighting"])?;
+        fit(&file, &ref_dir, &albedo, &lighting)?;
     }
     if all || args.command == "report" {
         report(&file, &ref_dir, &ours_dir, &report_dir)?;
@@ -297,7 +308,7 @@ fn wait_for<T>(limit: Duration, what: &str, mut f: impl FnMut() -> Option<T>) ->
 
 // ------------------------------------------------------------- mashup side
 
-fn capture_ours(file: &ViewsFile, out: &Path) -> Result<(), String> {
+fn capture_ours(file: &ViewsFile, out: &Path, extra: &[&str]) -> Result<(), String> {
     // Source eye position and [pitch, yaw] to engine space and our angles:
     // our yaw 0 looks down -Z (Source +Y), so yaw = source yaw - 90; our
     // positive pitch looks up.
@@ -333,6 +344,7 @@ fn capture_ours(file: &ViewsFile, out: &Path) -> Result<(), String> {
         .arg(&views_path)
         .arg("--capture-dir")
         .arg(out)
+        .args(extra)
         .status()
         .map_err(|e| format!("{}: {e} (build it first: cargo build --features dev)", exe.display()))?;
     if !status.success() {
@@ -433,5 +445,107 @@ fn report(file: &ViewsFile, ref_dir: &Path, ours_dir: &Path, out: &Path) -> Resu
         "\nside-by-side images (reference | ours | difference x4) and metrics.json in {}",
         out.display()
     );
+    Ok(())
+}
+
+// --------------------------------------------------------------------- fit
+
+fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn linear_to_srgb(c: f32) -> f32 {
+    let c = c.clamp(0.0, 1.0);
+    if c <= 0.0031308 {
+        c * 12.92
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    }
+}
+
+/// Per-pixel samples: (reference sRGB, albedo sRGB, linear light) per channel.
+type Sample = ([f32; 3], [f32; 3], [f32; 3]);
+
+fn fit(file: &ViewsFile, ref_dir: &Path, albedo_dir: &Path, light_dir: &Path) -> Result<(), String> {
+    const LIGHT_SCALE: f32 = 0.25; // matches --debug-view lighting
+    let mut samples: Vec<Sample> = Vec::new();
+    for v in &file.view {
+        let load = |p: PathBuf| {
+            image::open(&p)
+                .map(|i| i.to_rgb8())
+                .map_err(|e| format!("{}: {e}", p.display()))
+        };
+        let r = load(ref_dir.join(format!("{}.jpg", v.name)))?;
+        let a = load(albedo_dir.join(format!("{}.png", v.name)))?;
+        let l = load(light_dir.join(format!("{}.png", v.name)))?;
+        for ((rp, ap), lp) in r.pixels().zip(a.pixels()).zip(l.pixels()) {
+            let magenta = |p: &Rgb<u8>| p[0] > 250 && p[1] < 5 && p[2] > 250;
+            if magenta(ap) || magenta(lp) || rp.0.iter().any(|c| !(6..=249).contains(c)) {
+                continue;
+            }
+            let f = |p: &Rgb<u8>| p.0.map(|c| c as f32 / 255.0);
+            let (rg, ag) = (f(rp), f(ap));
+            let light = f(lp).map(|c| srgb_to_linear(c) / LIGHT_SCALE);
+            if ag.iter().any(|c| *c < 0.03) || light.iter().any(|c| *c < 0.02 || *c > 3.9) {
+                continue;
+            }
+            samples.push((rg, ag, light));
+        }
+    }
+    if samples.len() < 1000 {
+        return Err(format!("only {} usable pixels", samples.len()));
+    }
+    let err = |model: &dyn Fn(f32, f32) -> f32| -> f32 {
+        let mut e = 0.0;
+        for (r, a, l) in &samples {
+            for c in 0..3 {
+                e += (model(a[c], l[c]).clamp(0.0, 1.0) - r[c]).abs();
+            }
+        }
+        e / (samples.len() * 3) as f32
+    };
+    let median = |mut v: Vec<f32>| {
+        v.sort_by(|a, b| a.total_cmp(b));
+        v[v.len() / 2]
+    };
+
+    // Linear (our current model, without tonemapping), best exposure k.
+    let k_lin = median(
+        samples
+            .iter()
+            .flat_map(|(r, a, l)| (0..3).map(move |c| srgb_to_linear(r[c]) / (srgb_to_linear(a[c]) * l[c])))
+            .collect(),
+    );
+    let lin = |a: f32, l: f32| linear_to_srgb(k_lin * srgb_to_linear(a) * l);
+    // Source LDR as remembered: gamma-space, 2x overbright, light gamma 1/2.2.
+    let source_ldr = |a: f32, l: f32| a * 2.0 * (l * 0.5).powf(1.0 / 2.2);
+    // General gamma-space: log(r/a) = log k + p log l, least squares.
+    let (mut sx, mut sy, mut sxx, mut sxy, mut n) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
+    for (r, a, l) in &samples {
+        for c in 0..3 {
+            let (x, y) = ((l[c] as f64).ln(), ((r[c] / a[c]) as f64).ln());
+            sx += x;
+            sy += y;
+            sxx += x * x;
+            sxy += x * y;
+            n += 1.0;
+        }
+    }
+    let p = ((n * sxy - sx * sy) / (n * sxx - sx * sx)) as f32;
+    let k = (((sy - p as f64 * sx) / n) as f32).exp();
+    let general = |a: f32, l: f32| a * k * l.powf(p);
+
+    println!(
+        "fit over {} pixels from {} views (mean abs error, sRGB 0..1):",
+        samples.len(),
+        file.view.len()
+    );
+    println!("  linear, k={k_lin:.3}                        {:.4}", err(&lin));
+    println!("  Source LDR: a*2*(l/2)^(1/2.2)            {:.4}", err(&source_ldr));
+    println!("  gamma-space fit: a*{k:.3}*l^{p:.3}           {:.4}", err(&general));
     Ok(())
 }

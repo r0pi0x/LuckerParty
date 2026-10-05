@@ -147,6 +147,7 @@ pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> (MapData, LightmapLayo
     let mut face_slots: Vec<Option<usize>> = Vec::new();
     let mut data = MapData {
         name: format!("cs_source:{name}"),
+        look: source_look(),
         ..default()
     };
 
@@ -247,6 +248,20 @@ pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> (MapData, LightmapLayo
     }
     data.lightmap = Some(lightmap);
     (data, layout)
+}
+
+/// How CS:S presents maps at its LDR settings (mat_hdr_level 0,
+/// mat_trilinear 0, mat_forceaniso 1), measured with `refcmp fit` on
+/// de_dust2: the real game's pixels match texture x baked light in linear
+/// space at an exposure of 1.256 (mean error 0.07 over 3M pixels), with no
+/// tonemapping.
+pub fn source_look() -> crate::map::MapLook {
+    crate::map::MapLook {
+        light_scale: 1.256,
+        trilinear: false,
+        anisotropy: 1,
+        tonemapping: false,
+    }
 }
 
 /// Contents that stop players: solid world, glass, grates, player clips.

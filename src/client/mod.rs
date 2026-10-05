@@ -32,6 +32,9 @@ pub struct Args {
     pub map: Option<String>,
     /// Debug view: white surfaces, only baked lighting.
     pub lightmap_only: bool,
+    /// Debug render for comparisons: `lighting` (x0.25) or `albedo`, with no
+    /// tonemapping and a magenta background.
+    pub debug_view: Option<String>,
     /// Capture these views (JSON, see `capture::View`), one PNG each.
     pub views: Option<PathBuf>,
     pub capture_dir: Option<PathBuf>,
@@ -46,6 +49,7 @@ usage: mashup [options]
   --look <yaw,pitch>        initial look angles in degrees (yaw 0 = -Z)
   --map <game:name>         load a game's map, e.g. cs_source:de_dust2 (default: greybox)
   --lightmap-only           debug view: white surfaces, only baked lighting
+  --debug-view <kind>       lighting (x0.25) | albedo, untonemapped, magenta background
   --views <file.json>       capture each view (name, position, yaw, pitch; engine space)
                             off-screen at 1280x720, then exit (use with --movement mashup:noclip)
   --capture-dir <dir>       where --views writes <name>.png (default: current directory)";
@@ -88,6 +92,7 @@ impl Args {
                 "--movement" => out.movement = Some(value),
                 "--map" => out.map = Some(value),
                 "--views" => out.views = Some(value.into()),
+                "--debug-view" => out.debug_view = Some(value),
                 "--capture-dir" => out.capture_dir = Some(value.into()),
                 "--spawn" => out.spawn = Some(Vec3::from_array(floats::<3>(&flag, &value)?)),
                 "--look" => out.look = Some(Vec2::from_array(floats::<2>(&flag, &value)?)),
@@ -169,6 +174,38 @@ fn spawn_local_player(
                 ..default()
             }),
         ));
+    // Follow the map's presentation (e.g. no tonemapping for Source LDR).
+    commands.queue(|world: &mut World| {
+        let Some(look) = world.get_resource::<crate::map::ActiveMapLook>().cloned() else {
+            return;
+        };
+        if look.0.tonemapping {
+            return;
+        }
+        let mut q = world.query_filtered::<Entity, With<FirstPersonCamera>>();
+        let cams: Vec<Entity> = q.iter(world).collect();
+        for cam in cams {
+            world
+                .entity_mut(cam)
+                .insert(bevy::core_pipeline::tonemapping::Tonemapping::None);
+        }
+    });
+    if args.debug_view.is_some() {
+        // Raw values for analysis: no tonemapping, an unmistakable background.
+        commands.queue(move |world: &mut World| {
+            let mut q = world.query_filtered::<Entity, With<FirstPersonCamera>>();
+            let cams: Vec<Entity> = q.iter(world).collect();
+            for cam in cams {
+                world.entity_mut(cam).insert((
+                    bevy::core_pipeline::tonemapping::Tonemapping::None,
+                    Camera {
+                        clear_color: ClearColorConfig::Custom(Color::srgb(1.0, 0.0, 1.0)),
+                        ..default()
+                    },
+                ));
+            }
+        });
+    }
 }
 
 /// Place the camera at the movement implementation's eye position and aim it
