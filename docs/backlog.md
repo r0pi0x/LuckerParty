@@ -11,8 +11,8 @@ when work starts; delete them when done.
   tonemapping, bloom); the reference install runs LDR. Compare and match
   both if players use HDR.
 - **More refcmp views** across dust2 (mid, long, B, spawns) and other maps.
-- **Debug overlays, CS:S-style**, toggled by console cvars (and a key or
-  flag until the console exists):
+- **Debug overlays, CS:S-style**, toggled by console cvars (see the
+  in-game console above; a key or flag until it exists):
   - `cl_showpos 1`: map name, position, angles and velocity in the top
     corner, as CS:S draws it.
   - `cl_showfps 1` / `net_graph`-like FPS counter (frame time, min/max).
@@ -22,15 +22,6 @@ when work starts; delete them when done.
     `snd_visualize` as a reference for the idea.
   - Other Source debug text worth copying as we go (`developer 1`
     notify lines, `cl_showpos 2`).
-
-## Movement
-
-- **Walk + crouch is extremely slow.** Holding walk (+speed) while ducked
-  barely moves the player. specs/cs_source/movement.md ("Walking", walk +
-  duck) says CS:S does this too: wish speed 44.2, one tick of acceleration
-  smaller than friction's stop drop, so speed never builds. Check in the
-  real game first; if CS:S moves at a normal crouch-walk pace, the
-  measurement or the model is wrong and the spec needs a revision.
 
 ## Gameplay
 
@@ -55,7 +46,9 @@ when work starts; delete them when done.
     a filter box; timestamps on demand.
   - Live values: `watch <cvar|expr>` overlays a value on the HUD (speed,
     position, velocity, water level, ladder state); `toggle`, `incrementvar`
-    for binds; `wait` for scripted sequences.
+    for binds; `wait` for scripted sequences. Build together with the
+    CS:S-style debug overlays below (`cl_showpos`, `cl_showfps`, sound
+    markers), which are cvars of this console.
   - Remote: the same commands over the dev remote protocol, so scripts
     and tests can drive it.
 - **Sound effects**: an audio slot (Bevy audio or a mixer crate) playing the
