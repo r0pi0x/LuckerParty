@@ -381,3 +381,24 @@ fn falling_into_deep_water_keeps_its_speed() {
     pl.tick();
     close(pl.vel().z / v1, 0.9375, 0.002, "only proportional water friction");
 }
+
+/// Holding jump while a water jump starts doesn't cancel its lift (jump
+/// does nothing during a water jump): the player climbs out onto the ledge
+/// instead of bobbing at the wall, locked toward it.
+#[test]
+fn holding_jump_keeps_the_water_jump() {
+    let mut pl = Player::at(SHALLOW, shared());
+    pl.look(180.0, 0.0);
+    pl.tick();
+    pl.look(0.0, 0.0);
+    pl.sim.intent(pl.p).jump = true;
+    pl.keys(1.0, 0.0);
+    pl.tick();
+    assert!(pl.state().water_jump_time > 0.0, "water jump started");
+    close(pl.vel().z, 240.0, 0.01, "lift kept despite holding jump");
+    for _ in 0..128 {
+        pl.tick();
+    }
+    let feet = pl.feet();
+    assert!(feet.z >= 59.0, "climbed out: {feet}");
+}

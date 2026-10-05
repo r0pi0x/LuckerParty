@@ -898,3 +898,34 @@ fn ambient_samples_lie_in_their_leaf() {
         "{inside}/{total} leaf centres map back to their leaf"
     );
 }
+
+/// Props' collision models (`.phy`) line up with their visible models:
+/// the pieces' bounds sit inside the mesh bounds (within a few units) and
+/// cover most of them.
+#[test]
+fn prop_collision_models_line_up() {
+    let Some(map) = dust2() else { return };
+    let mut with = 0;
+    let mut bad = Vec::new();
+    for (i, m) in map.models.iter().enumerate() {
+        let Some(c) = &m.collision else { continue };
+        with += 1;
+        let pts = c.pieces.iter().flat_map(|p| &p.points);
+        let (lo, hi) = pts.fold((Vec3::MAX, Vec3::MIN), |(a, b), p| (a.min(*p), b.max(*p)));
+        let (mlo, mhi) = m.bounds;
+        // A few collision models are authored slightly larger than the
+        // .mdl hull (dust2's dustteeth: up to ~5 units).
+        let slack = 6.0 * 0.0254;
+        let inside = lo.cmpge(mlo - slack).all() && hi.cmple(mhi + slack).all();
+        let covers = (hi - lo).max_element() > 0.5 * (mhi - mlo).max_element();
+        if !(inside && covers) {
+            bad.push(format!(
+                "model {i} ({}): phy {lo}..{hi}, mesh {mlo}..{mhi}",
+                m.meshes.first().map_or("", |m| m.material.as_str())
+            ));
+        }
+    }
+    println!("{with} of {} models have a .phy", map.models.len());
+    assert!(with > 20, "{with} models with collision");
+    assert!(bad.is_empty(), "{} misaligned:\n{}", bad.len(), bad.join("\n"));
+}

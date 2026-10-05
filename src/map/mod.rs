@@ -196,6 +196,30 @@ pub struct MapModel {
     pub meshes: Vec<MapMesh>,
     /// Collision box in model space (min, max), for box-solid props.
     pub bounds: (Vec3, Vec3),
+    /// The model's own collision model (Source `.phy`), when it has one.
+    pub collision: Option<MapCollision>,
+}
+
+/// A model's collision: convex pieces in model space, and the physics
+/// parameters that came with them.
+#[derive(Clone, Debug, Default)]
+pub struct MapCollision {
+    pub pieces: Vec<MapConvex>,
+    /// kg.
+    pub mass: f32,
+    pub damping: f32,
+    pub rotdamping: f32,
+    /// Multiplier on the inertia tensor.
+    pub inertia: f32,
+    /// Surface property name (friction, elasticity, sounds).
+    pub surfaceprop: String,
+}
+
+/// A convex piece: its corners and outward planes (n . p <= d inside).
+#[derive(Clone, Debug, Default)]
+pub struct MapConvex {
+    pub points: Vec<Vec3>,
+    pub planes: Vec<(Vec3, f32)>,
 }
 
 /// How players collide with a prop.
@@ -943,31 +967,42 @@ fn spawn_map(
     let mut brushes = data.collision_brushes.clone();
     // Comparison hook: MASHUP_NO_PROP_BRUSHES=1 sweeps props as meshes.
     let no_prop_brushes = std::env::var("MASHUP_NO_PROP_BRUSHES").is_ok_and(|v| v == "1");
+    // Models without a collision model: their hull, when (nearly) convex.
     let model_hulls: Vec<Option<Vec<(Vec3, f32)>>> = data
         .models
         .iter()
-        .map(|m| convex_planes(m, CONVEX_SURFACE_SHARE))
+        .map(|m| m.collision.is_none().then(|| convex_planes(m, CONVEX_SURFACE_SHARE)).flatten())
         .collect();
     info!(
-        "props: {} of {} models collide as exact convex brushes",
+        "props: {} of {} models collide by their collision model, {} more as convex hulls",
+        data.models.iter().filter(|m| m.collision.is_some()).count(),
+        data.models.len(),
         model_hulls.iter().filter(|h| h.is_some()).count(),
-        model_hulls.len()
     );
 
     for (i, prop) in data.props.iter().enumerate() {
-        let prop_brush = match prop.solid {
-            PropSolid::Mesh => model_hulls[prop.model].as_ref(),
-            _ => None,
-        }
-        .cloned()
-        .or_else(|| {
-            let (lo, hi) = data.models[prop.model].bounds;
-            (prop.solid == PropSolid::Box && (hi - lo).min_element() > 0.0).then(|| MapBrush::from_box(lo, hi).planes)
-        })
-        .filter(|_| !prop.skybox && !no_prop_brushes)
-        .map(|planes| place_brush(&planes, prop.translation, prop.rotation));
-        if let Some(b) = &prop_brush {
-            brushes.push(b.clone());
+        // Convex pieces as planes: the model's collision model (each piece
+        // exactly), else its hull when (nearly) convex, else the bounds box.
+        let model = &data.models[prop.model];
+        let pieces: Vec<Vec<(Vec3, f32)>> = match (prop.solid, &model.collision) {
+            (PropSolid::Mesh, Some(c)) => c.pieces.iter().map(|p| p.planes.clone()).collect(),
+            (PropSolid::Mesh, None) => model_hulls[prop.model].iter().cloned().collect(),
+            (PropSolid::Box, _) => {
+                let (lo, hi) = model.bounds;
+                ((hi - lo).min_element() > 0.0)
+                    .then(|| MapBrush::from_box(lo, hi).planes)
+                    .into_iter()
+                    .collect()
+            }
+            (PropSolid::None, _) => Vec::new(),
+        };
+        let prop_brush = (!prop.skybox && !no_prop_brushes && !pieces.is_empty()).then_some(());
+        if prop_brush.is_some() {
+            brushes.extend(
+                pieces
+                    .iter()
+                    .map(|planes| place_brush(planes, prop.translation, prop.rotation)),
+            );
         }
         let mut e = commands.spawn((
             Name::new(format!("Prop {i}")),
@@ -1428,8 +1463,20 @@ fn place_brush(planes: &[(Vec3, f32)], translation: Vec3, rotation: Quat) -> Map
     }
 }
 
-/// All of a model's triangles as one collider, in model space.
+/// A model's collider in model space: its collision model's convex pieces,
+/// else all its triangles.
 fn model_collider(model: &MapModel) -> Option<Collider> {
+    if let Some(c) = &model.collision {
+        let parts: Vec<(Vec3, Quat, Collider)> = c
+            .pieces
+            .iter()
+            .filter_map(|p| Collider::convex_hull(p.points.clone()))
+            .map(|hull| (Vec3::ZERO, Quat::IDENTITY, hull))
+            .collect();
+        if !parts.is_empty() {
+            return Some(Collider::compound(parts));
+        }
+    }
     let mut positions = Vec::new();
     let mut indices = Vec::new();
     for m in &model.meshes {

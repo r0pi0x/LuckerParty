@@ -9,6 +9,7 @@ pub mod material;
 pub mod mount;
 pub mod movement;
 pub mod overlays;
+pub mod phy;
 pub mod props;
 pub mod ropes;
 pub mod sky;

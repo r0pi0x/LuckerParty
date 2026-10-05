@@ -489,7 +489,10 @@ impl Tracer<'_, '_, '_> {
                 }
                 continue;
             }
-            if enter < leave && enter > -1.0 && enter < out.fraction {
+            // A ladder wins a tie with a coincident face (maps wrap ladders
+            // in player clip), so the ladder probe still finds it.
+            let tie = b.ladder && !out.ladder && (enter.max(0.0) - out.fraction).abs() < 1e-6;
+            if enter < leave && enter > -1.0 && (enter < out.fraction || tie) {
                 out.fraction = enter.max(0.0);
                 out.normal = clip;
                 out.ladder = b.ladder;
@@ -1312,12 +1315,16 @@ impl Mover<'_, '_, '_, '_> {
                 self.water_jump_check(intent);
             }
             if intent.jump {
-                self.v.z = if self.me.in_slime {
-                    SWIM_JUMP_SLIME
-                } else {
-                    SWIM_JUMP_WATER
-                };
-                self.me.on_ground = false;
+                // Jump does nothing while water-jumping: a water jump that
+                // started this tick keeps its lift.
+                if self.me.water_jump_time <= 0.0 {
+                    self.v.z = if self.me.in_slime {
+                        SWIM_JUMP_SLIME
+                    } else {
+                        SWIM_JUMP_WATER
+                    };
+                    self.me.on_ground = false;
+                }
             } else {
                 self.me.jump_held = false;
             }

@@ -12,7 +12,7 @@ use super::{
     bsp::{METERS_PER_UNIT, to_engine},
     material::MaterialLoader,
 };
-use crate::map::{LightProbe, MapData, MapMesh, MapModel, MapProp, PropSolid};
+use crate::map::{LightProbe, MapCollision, MapConvex, MapData, MapMesh, MapModel, MapProp, PropSolid};
 
 /// Source rotation (pitch about Y, yaw about Z, roll about X; degrees) in
 /// engine axes.
@@ -92,7 +92,55 @@ fn convert_model(model: &vmdl::Model, skin: i32, materials: &mut MaterialLoader)
     MapModel {
         meshes,
         bounds: (a.min(b), a.max(b)),
+        collision: None,
     }
+}
+
+/// The model's `.phy` as convex pieces in engine model space, if it has one.
+fn load_collision(materials: &mut MaterialLoader, path: &str) -> Option<MapCollision> {
+    let bytes = materials.read(&format!("{}.phy", path.trim_end_matches(".mdl")))?;
+    let phy = super::phy::parse(&bytes)
+        .inspect_err(|e| warn!("{path}.phy: {e}"))
+        .ok()?;
+    let pieces = phy
+        .pieces
+        .iter()
+        .map(|tris| {
+            let mut points: Vec<Vec3> = Vec::new();
+            let mut planes: Vec<(Vec3, f32)> = Vec::new();
+            for tri in tris {
+                let [a, b, c] = tri.map(|v| to_engine(v_src(v)));
+                for p in [a, b, c] {
+                    if !points.iter().any(|q| q.distance_squared(p) < 1e-10) {
+                        points.push(p);
+                    }
+                }
+                let n = (b - a).cross(c - a).normalize_or_zero();
+                if n == Vec3::ZERO {
+                    continue;
+                }
+                let d = n.dot(a);
+                // Coplanar triangles share one plane.
+                if !planes.iter().any(|(m, e)| m.dot(n) > 0.9999 && (e - d).abs() < 1e-4) {
+                    planes.push((n, d));
+                }
+            }
+            MapConvex { points, planes }
+        })
+        .filter(|p| p.points.len() >= 4)
+        .collect();
+    Some(MapCollision {
+        pieces,
+        mass: phy.mass,
+        damping: phy.damping,
+        rotdamping: phy.rotdamping,
+        inertia: phy.inertia,
+        surfaceprop: phy.surfaceprop,
+    })
+}
+
+fn v_src(v: Vec3) -> vbsp::Vector {
+    vbsp::Vector { x: v.x, y: v.y, z: v.z }
 }
 
 /// Add the BSP's static props to `data`, loading each (model, skin) once.
@@ -104,6 +152,8 @@ struct PropPlacement {
     angles: vbsp::Angles,
     solid: PropSolid,
     lighting_origin: Option<vbsp::Vector>,
+    /// Entity classname (None for static props).
+    class: Option<String>,
 }
 
 pub fn add_static_props(
@@ -135,6 +185,7 @@ pub fn add_static_props(
                 .flags
                 .contains(vbsp::StaticPropLumpFlags::USE_LIGHTING_ORIGIN)
                 .then_some(prop.lighting_origin),
+            class: None,
         });
     }
     placements.extend(entity_props(bsp));
@@ -172,6 +223,7 @@ fn entity_props(bsp: &Bsp) -> Vec<PropPlacement> {
                 angles: vbsp::Angles { pitch, yaw, roll },
                 solid,
                 lighting_origin: None,
+                class: Some(class.to_string()),
             })
         })
         .collect()
@@ -194,7 +246,9 @@ fn place_props(
             .entry(key)
             .or_insert_with(|| match load_model(materials, &prop.model) {
                 Ok(m) => {
-                    data.models.push(convert_model(&m, prop.skin, materials));
+                    let mut model = convert_model(&m, prop.skin, materials);
+                    model.collision = load_collision(materials, &prop.model);
+                    data.models.push(model);
                     Some(data.models.len() - 1)
                 }
                 Err(e) => {
@@ -203,6 +257,17 @@ fn place_props(
                 }
             });
         let Some(model) = model else { continue };
+        // Physics props need a collision model (spec section 2.3): without
+        // one, prop_physics stays visible but not solid, and the
+        // multiplayer variant is removed at spawn.
+        let mut solid = prop.solid;
+        if data.models[model].collision.is_none() {
+            match prop.class.as_deref() {
+                Some("prop_physics_multiplayer") => continue,
+                Some(c) if c.starts_with("prop_physics") => solid = PropSolid::None,
+                _ => {}
+            }
+        }
         let translation = to_engine(prop.origin);
         let rotation = rotation(prop.angles);
         // Like the game for maps without baked prop lighting: one lighting
@@ -223,7 +288,7 @@ fn place_props(
             rotation,
             skybox,
             lighting: Some(lighting),
-            solid: prop.solid,
+            solid,
         });
     }
     failed.sort();
