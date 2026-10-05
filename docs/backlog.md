@@ -5,6 +5,13 @@ already in the code live in [tech-debt.md](tech-debt.md); the MVP plan is in
 [plans/active/](plans/active/mvp-combat-arms-slice.md). Move items into a plan
 when work starts; delete them when done.
 
+## Tools
+
+- **Reference comparison against real CS:S** (in progress): script the real
+  game (console `setpos`/`setang`/`jpeg`) and our engine to capture the same
+  views, then produce side-by-side and difference images with brightness
+  stats. Runs on the Linux box with the Steam client.
+
 ## dust2 fidelity
 
 Counts are from de_dust2's entity lump and static prop lump.
@@ -13,6 +20,9 @@ Counts are from de_dust2's entity lump and static prop lump.
   doesn't; its props use the per-prop light probe, as in the game).
 - **Remaining decals**: 6 of dust2's 135 sit on props or brush entities
   rather than world faces; decals on displacements (none on dust2).
+- **Verify inferred Source rules** with the comparison tool, using a local
+  copy of a map with test entities added where dust2 has no example: floor
+  and ceiling decal orientation, decal reach, overall brightness/tonemapping.
 - **Dust motes** (`func_dustmotes`, 2): the drifting particles in T house
   and inside long doors. Brush volumes that spawn slow-moving sprites;
   parameters (count, size, speed, color) come from the entity keys.
