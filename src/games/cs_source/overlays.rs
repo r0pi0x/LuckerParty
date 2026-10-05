@@ -69,8 +69,10 @@ pub fn add_overlays(
         bsp_bytes.get(ofs..ofs + len).unwrap_or(&[])
     };
     let Some(atlas) = data.lightmap.clone() else { return };
-    let mut meshes: BTreeMap<String, MapMesh> = BTreeMap::new();
+    // Per (texture, in the 3D skybox).
+    let mut meshes: BTreeMap<(String, bool), MapMesh> = BTreeMap::new();
     let mut empty = 0;
+    let bounds = super::bsp::playable_bounds(bsp);
 
     for o in lump.as_chunks::<OVERLAY_SIZE>().0 {
         let texinfo = i16::from_le_bytes([o[4], o[5]]);
@@ -87,6 +89,7 @@ pub fn add_overlays(
         );
         let corners: Vec<Vec3> = (0..4).map(|k| v3(o, 280 + k * 12)).collect();
         let origin = v3(o, 328);
+        let skybox = bounds.as_ref().is_some_and(|b| !b.contains_point(origin));
         let normal = v3(o, 340).normalize_or_zero();
         let basis_u = Vec3::new(corners[0].z, corners[1].z, corners[2].z).normalize_or_zero();
         let basis_v = normal.cross(basis_u).normalize_or_zero();
@@ -153,8 +156,9 @@ pub fn add_overlays(
                         continue;
                     }
                     placed = true;
-                    let mesh = meshes.entry(tex_name.clone()).or_insert_with(|| MapMesh {
+                    let mesh = meshes.entry((tex_name.clone(), skybox)).or_insert_with(|| MapMesh {
                         material: format!("decal:overlay:{tex_name}"),
+                        skybox,
                         color: [255, 255, 255],
                         texture: r.texture,
                         alpha: if r.alpha == MapAlpha::Opaque {

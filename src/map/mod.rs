@@ -518,7 +518,11 @@ impl Plugin for MapPlugin {
             .add_systems(Update, (attach_sky, glow_visibility, dust::update_dust))
             .add_systems(
                 PostUpdate,
-                follow_sky_camera.before(bevy::transform::TransformSystems::Propagate),
+                // After propagation, so it sees this frame's (interpolated)
+                // eye rather than the last physics tick's; before frusta.
+                follow_sky_camera
+                    .after(bevy::transform::TransformSystems::Propagate)
+                    .before(bevy::camera::visibility::VisibilitySystems::UpdateFrusta),
             );
     }
 }
@@ -1512,7 +1516,7 @@ fn follow_sky_camera(
         ),
         (With<Camera3d>, Without<SkyboxCamera>),
     >,
-    mut sky: Query<(Entity, &mut Transform, &mut Projection), With<SkyboxCamera>>,
+    mut sky: Query<(Entity, &mut Transform, &mut GlobalTransform, &mut Projection), With<SkyboxCamera>>,
 ) {
     let Some(info) = info else { return };
     let Some((main_tf, projection, target, tonemapping, main_entity, main_camera)) =
@@ -1530,9 +1534,11 @@ fn follow_sky_camera(
         });
     }
     match sky.single_mut() {
-        Ok((entity, mut tf, mut proj)) => {
+        Ok((entity, mut tf, mut global, mut proj)) => {
             tf.translation = translation;
             tf.rotation = rotation;
+            // Propagation has run: set the global transform too (no parent).
+            *global = GlobalTransform::from(*tf);
             if let (Projection::Perspective(p), Projection::Perspective(main_p)) = (&mut *proj, projection) {
                 p.fov = main_p.fov;
                 p.aspect_ratio = main_p.aspect_ratio;

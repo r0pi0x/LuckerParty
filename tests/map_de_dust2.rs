@@ -495,6 +495,35 @@ fn overlays_are_placed() {
     assert!(empty <= 3, "{empty} overlays produced nothing");
 }
 
+/// Overlays and decals in the 3D skybox go with it (drawn by the sky
+/// camera, scaled up), not at their raw position outside the playable map.
+#[test]
+fn skybox_overlays_stay_in_the_skybox() {
+    let Some(map) = dust2() else { return };
+    let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+    for m in map.meshes.iter().filter(|m| !m.skybox && !m.material.starts_with("decal:")) {
+        for p in &m.positions {
+            lo = lo.min(Vec3::from(*p));
+            hi = hi.max(Vec3::from(*p));
+        }
+    }
+    let decals: Vec<_> = map.meshes.iter().filter(|m| m.material.starts_with("decal:")).collect();
+    for m in decals.iter().filter(|m| !m.skybox) {
+        for p in &m.positions {
+            let p = Vec3::from(*p);
+            assert!(
+                p.cmpge(lo - 1.0).all() && p.cmple(hi + 1.0).all(),
+                "{} at {p} is outside the playable world",
+                m.material
+            );
+        }
+    }
+    assert!(
+        decals.iter().any(|m| m.skybox),
+        "dust2's 3D skybox has overlays; none were assigned to it"
+    );
+}
+
 /// Source movement (specs/cs_source/movement.md) on the real map: every
 /// spawn settles onto the floor, and walking reaches knife speed without
 /// falling through or getting stuck.

@@ -71,7 +71,9 @@ pub fn add_decals(bsp: &Bsp, layout: &LightmapLayout, materials: &mut MaterialLo
     let Some(atlas) = data.lightmap.clone() else { return };
     let Some(world) = bsp.models().next() else { return };
     let faces: Vec<_> = world.faces().collect();
-    let mut meshes: BTreeMap<String, MapMesh> = BTreeMap::new();
+    // Per (texture, in the 3D skybox).
+    let mut meshes: BTreeMap<(String, bool), MapMesh> = BTreeMap::new();
+    let bounds = super::bsp::playable_bounds(bsp);
     let mut unplaced = 0;
 
     for ent in bsp.entities.iter().filter(|e| e.prop("classname") == Some("infodecal")) {
@@ -83,6 +85,7 @@ pub fn add_decals(bsp: &Bsp, layout: &LightmapLayout, materials: &mut MaterialLo
             continue;
         };
         let origin = Vec3::new(x, y, z);
+        let skybox = bounds.as_ref().is_some_and(|b| !b.contains_point(origin));
         let name = name.to_lowercase();
 
         let r = materials.resolve(&name);
@@ -132,8 +135,9 @@ pub fn add_decals(bsp: &Bsp, layout: &LightmapLayout, materials: &mut MaterialLo
             }
             placed = true;
             let slot = layout.face_slots.get(fi).copied().flatten().unwrap_or(layout.white);
-            let mesh = meshes.entry(name.clone()).or_insert_with(|| MapMesh {
+            let mesh = meshes.entry((name.to_string(), skybox)).or_insert_with(|| MapMesh {
                 material: format!("decal:{name}"),
+                skybox,
                 color: [255, 255, 255],
                 texture: Some(tex),
                 alpha: r.alpha,

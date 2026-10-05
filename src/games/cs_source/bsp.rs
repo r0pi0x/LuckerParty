@@ -318,7 +318,11 @@ impl Bounds {
     const MARGIN: f32 = 64.0;
 
     pub fn contains(&self, p: vbsp::Vector) -> bool {
-        let p = Vec3::new(p.x, p.y, p.z);
+        self.contains_point(Vec3::new(p.x, p.y, p.z))
+    }
+
+    /// `contains` for a point in Source units held as a `Vec3`.
+    pub fn contains_point(&self, p: Vec3) -> bool {
         p.cmpge(self.lo - Self::MARGIN).all() && p.cmple(self.hi + Self::MARGIN).all()
     }
 }
