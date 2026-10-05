@@ -688,6 +688,22 @@ fn detail_textures() {
     assert_eq!((d.mode, d.scale, d.factor), (0, [4.0, 4.0], 1.0));
     for m in &with {
         let c = m.positions.iter().fold(Vec3::ZERO, |a, p| a + Vec3::from(*p)) / m.positions.len() as f32;
-        println!("{} centre (Source) {:.0} {:.0} {:.0}", m.material, c.x / 0.0254, -c.z / 0.0254, c.y / 0.0254);
+        println!(
+            "{} centre (Source) {:.0} {:.0} {:.0}",
+            m.material,
+            c.x / 0.0254,
+            -c.z / 0.0254,
+            c.y / 0.0254
+        );
     }
+}
+
+/// dust2's env_fog_controller: on, 500 to 4000 units, color 197 196 165.
+#[test]
+fn world_fog() {
+    let Some(map) = dust2() else { return };
+    let fog = map.fog.expect("dust2 has world fog");
+    assert!((fog.start - 500.0 * 0.0254).abs() < 1e-4 && (fog.end - 4000.0 * 0.0254).abs() < 1e-4);
+    assert_eq!(fog.color, [197.0 / 255.0, 196.0 / 255.0, 165.0 / 255.0]);
+    assert_eq!(fog.max_density, 1.0);
 }

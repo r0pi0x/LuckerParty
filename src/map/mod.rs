@@ -212,6 +212,8 @@ pub struct MapData {
     pub look: MapLook,
     pub sky: Option<MapSky>,
     pub sky_camera: Option<MapSkyCamera>,
+    /// The world's fog (not the 3D skybox's, which `sky_camera` has).
+    pub fog: Option<MapFog>,
     pub ropes: Vec<MapRope>,
 }
 
@@ -282,13 +284,16 @@ pub struct MapSkyCamera {
     pub fog: Option<MapFog>,
 }
 
-/// Linear distance fog, distances in meters as seen in the world.
+/// Distance fog, distances in meters as seen in the world. Source's range
+/// fog: f = clamp(min(max_density, (depth - start) / (end - start))), and
+/// the color moves toward the fog color by f^2 (specs/cs_source/shaders.md).
 #[derive(Clone, Debug)]
 pub struct MapFog {
     /// sRGB color.
     pub color: [f32; 3],
     pub start: f32,
     pub end: f32,
+    pub max_density: f32,
 }
 
 /// A sky cubemap: per engine face (+X, -X, +Y, -Y, +Z, -Z), an index into
@@ -408,7 +413,7 @@ impl Plugin for MapPlugin {
                 ..default()
             })
             .add_systems(Startup, spawn_map)
-            .add_systems(Update, attach_sky)
+            .add_systems(Update, (attach_sky, attach_world_fog))
             .add_systems(
                 PostUpdate,
                 follow_sky_camera.before(bevy::transform::TransformSystems::Propagate),
@@ -522,6 +527,11 @@ fn spawn_map(
         {
             commands.insert_resource(MapSkybox(images.add(sky_image(sky, &data.textures))));
         }
+        if let Some(fog) = &data.fog
+            && view == MapDebugView::Normal
+        {
+            commands.insert_resource(WorldFog(fog.clone()));
+        }
         if let Some(cam) = &data.sky_camera
             && view == MapDebugView::Normal
         {
@@ -562,6 +572,8 @@ fn spawn_map(
                         detail: m.detail.map_or(0.0, |d| d.mode as f32 + 1.0),
                         detail_factor: m.detail.map_or(0.0, |d| d.factor),
                         detail_scale: m.detail.map_or(Vec2::ONE, |d| Vec2::from_array(d.scale)),
+                        fog_color: fog_color(data.fog.as_ref().filter(|_| view == MapDebugView::Normal && !m.skybox)),
+                        fog_range: fog_range(data.fog.as_ref()),
                         bumped: if bumped { 1.0 } else { 0.0 },
                         normal_g_sign: g_sign,
                         normal_x_sign: std::env::var("MASHUP_NORMAL_X_SIGN")
@@ -992,6 +1004,45 @@ fn build_material(m: &MapMesh, textures: &[Handle<Image>], view: MapDebugView, l
         },
         lightmap_exposure: LIGHTMAP_EXPOSURE * scale * light_scale,
         ..default()
+    }
+}
+
+/// Fog color for shaders: linear RGB, w = 1 when fog is on.
+fn fog_color(fog: Option<&MapFog>) -> Vec4 {
+    fog.map_or(Vec4::ZERO, |f| {
+        let c = Color::srgb(f.color[0], f.color[1], f.color[2]).to_linear();
+        Vec4::new(c.red, c.green, c.blue, 1.0)
+    })
+}
+
+/// Fog start, end (meters) and max density for shaders.
+fn fog_range(fog: Option<&MapFog>) -> Vec4 {
+    fog.map_or(Vec4::new(0.0, 1.0, 0.0, 0.0), |f| {
+        Vec4::new(f.start, f.end.max(f.start + 0.01), f.max_density, 0.0)
+    })
+}
+
+/// The world's fog, for cameras (Bevy's own fog covers standard-material
+/// meshes such as props; its linear curve approximates Source's f^2).
+#[derive(Resource, Clone)]
+struct WorldFog(MapFog);
+
+fn attach_world_fog(
+    mut commands: Commands,
+    fog: Option<Res<WorldFog>>,
+    cameras: Query<Entity, (With<Camera3d>, Without<SkyboxCamera>, Without<bevy::pbr::DistanceFog>)>,
+) {
+    let Some(fog) = fog else { return };
+    for e in &cameras {
+        let [r, g, b] = fog.0.color;
+        commands.entity(e).insert(bevy::pbr::DistanceFog {
+            color: Color::srgb(r, g, b),
+            falloff: bevy::pbr::FogFalloff::Linear {
+                start: fog.0.start,
+                end: fog.0.end,
+            },
+            ..default()
+        });
     }
 }
 

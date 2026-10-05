@@ -5,7 +5,10 @@
 // squared, normalised alignment of the tangent-space normal with three
 // fixed basis directions.
 
-#import bevy_pbr::forward_io::VertexOutput
+#import bevy_pbr::{
+    forward_io::VertexOutput,
+    view_transformations::position_world_to_view,
+}
 
 struct WorldParams {
     base_color: vec4<f32>,
@@ -29,6 +32,18 @@ struct WorldParams {
     detail: f32,
     detail_factor: f32,
     detail_scale: vec2<f32>,
+    fog_color: vec4<f32>,
+    fog_range: vec4<f32>,
+}
+
+// Source range fog: toward the fog color by f^2, f from view depth.
+fn apply_fog(color: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
+    if params.fog_color.w < 0.5 {
+        return color;
+    }
+    let depth = -position_world_to_view(world).z;
+    let f = clamp(min(params.fog_range.z, (depth - params.fog_range.x) / (params.fog_range.y - params.fog_range.x)), 0.0, 1.0);
+    return mix(color, params.fog_color.rgb, f * f);
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> params: WorldParams;
@@ -116,5 +131,5 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     if params.debug_view == 2.0 {
         return albedo;
     }
-    return vec4<f32>(albedo.rgb * light * params.light_scale, albedo.a);
+    return vec4<f32>(apply_fog(albedo.rgb * light * params.light_scale, in.world_position.xyz), albedo.a);
 }

@@ -27,6 +27,10 @@ pub struct WorldParams {
     pub detail: f32,
     pub detail_factor: f32,
     pub detail_scale: Vec2,
+    /// Range fog: linear color (w = 1 when on), and start, end (meters),
+    /// max density.
+    pub fog_color: Vec4,
+    pub fog_range: Vec4,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]

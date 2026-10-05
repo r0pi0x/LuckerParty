@@ -300,6 +300,7 @@ pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> (MapData, LightmapLayo
     }
     data.lightmap = Some(lightmap);
     data.sky_camera = sky_camera(bsp);
+    data.fog = world_fog(bsp);
     (data, layout)
 }
 
@@ -347,23 +348,37 @@ fn sky_camera(bsp: &Bsp) -> Option<crate::map::MapSkyCamera> {
         .and_then(|s| s.parse().ok())
         .filter(|s: &f32| *s > 0.0)
         .unwrap_or(16.0);
-    let fog = (e.prop("fogenable") == Some("1"))
-        .then(|| {
-            let c: Vec<f32> = e
-                .prop("fogcolor")?
-                .split_whitespace()
-                .filter_map(|v| v.parse().ok())
-                .collect();
-            let start: f32 = e.prop("fogstart")?.parse().ok()?;
-            let end: f32 = e.prop("fogend")?.parse().ok()?;
-            Some(crate::map::MapFog {
-                color: [c.first()? / 255.0, c.get(1)? / 255.0, c.get(2)? / 255.0],
-                start: start * METERS_PER_UNIT,
-                end: end * METERS_PER_UNIT,
-            })
-        })
-        .flatten();
+    let fog = parse_fog(&e);
     Some(crate::map::MapSkyCamera { origin, scale, fog })
+}
+
+/// Fog keys shared by `sky_camera` and `env_fog_controller`.
+fn parse_fog(e: &vbsp::RawEntity) -> Option<crate::map::MapFog> {
+    if e.prop("fogenable") != Some("1") {
+        return None;
+    }
+    let c: Vec<f32> = e
+        .prop("fogcolor")?
+        .split_whitespace()
+        .filter_map(|v| v.parse().ok())
+        .collect();
+    let start: f32 = e.prop("fogstart")?.parse().ok()?;
+    let end: f32 = e.prop("fogend")?.parse().ok()?;
+    Some(crate::map::MapFog {
+        color: [c.first()? / 255.0, c.get(1)? / 255.0, c.get(2)? / 255.0],
+        start: start * METERS_PER_UNIT,
+        end: end * METERS_PER_UNIT,
+        max_density: e.prop("fogmaxdensity").and_then(|v| v.parse().ok()).unwrap_or(1.0),
+    })
+}
+
+/// The world's fog (`env_fog_controller`), if enabled.
+pub fn world_fog(bsp: &Bsp) -> Option<crate::map::MapFog> {
+    let e = bsp
+        .entities
+        .iter()
+        .find(|e| e.prop("classname") == Some("env_fog_controller"))?;
+    parse_fog(&e)
 }
 
 /// How CS:S presents maps at its LDR settings (mat_hdr_level 0,
