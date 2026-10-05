@@ -151,6 +151,14 @@ pub(super) fn update_dust(
             }
             indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
         }
+        if positions.is_empty() {
+            // Bevy's mesh allocator rejects updates to an empty mesh (it logs
+            // a use-after-free every frame): keep one invisible triangle.
+            positions.extend([[0.0; 3]; 3]);
+            uvs.extend([[0.0; 2]; 3]);
+            colors.extend([[0.0; 4]; 3]);
+            indices.extend([0, 1, 2]);
+        }
         if let Some(mut mesh) = meshes.get_mut(&e.mesh) {
             let n = positions.len();
             mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![(-forward).to_array(); n]);
