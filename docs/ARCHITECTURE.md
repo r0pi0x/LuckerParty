@@ -32,14 +32,14 @@ A module may use only the modules below it. Enforced by
 
 | Module | What it owns |
 |---|---|
-| `src/core.rs` | `Intent`, `Velocity`, `MovementState`, `Health`, `Team`, `SpawnPoint`, `LocalPlayer`, `SimTick`, the `SimSet` tick ordering |
+| `src/core.rs` | `Intent`, `Velocity`, `MovementState`, `Health`, `Team`, `SpawnPoint`, `LocalPlayer`, `SimTick`, the `SimSet` tick ordering; the collision world maps share with movement: `MapBrush`/`MapBrushes` (brush planes for exact swept-box movement, ladder flag), `MapBrushCollider`, `MapWater` volumes |
 | `src/slots.rs` | `MovementRegistry`, `Loadout`, `set_movement` (swap an entity's movement) |
 | `src/character.rs` | `character_bundle`, `spawn_character`, capsule size |
 | `src/movement/` | `placeholder` (stand-in walking) and `noclip` Movement implementations |
-| `src/greybox.rs` | Map slot built in code; collision always, visuals only when rendering |
+| `src/greybox.rs` | Map slot built in code (ramps, crates, a ladder, a water tank); collision always, visuals only when rendering |
 | `src/mount/` | `Mount` (ordered layers, first match wins), `FileSource`, `LooseDir`, path normalization, `mashup.local.toml` loading |
 | `src/map/world_material.rs`, `world.wgsl` | World surfaces: texture x baked light with radiosity normal mapping (Source LightmappedGeneric at LDR) |
-| `src/map/mod.rs` | `MapData` (meters, Y up, meshes per material, textures, lightmap atlas, collision, prop models and placements, spawns, ropes) and `MapPlugin` that spawns it; `MapBrushes` (brush planes for exact swept-box movement) |
+| `src/map/mod.rs` | `MapData` (meters, Y up, meshes per material, textures, lightmap atlas, collision, prop models and placements, spawns, ropes) and `MapPlugin` that spawns it (re-exports the `core` collision types) |
 | `src/map/rope_material.rs`, `rope.wgsl` | Ropes as camera-facing strips (Source Cable shader, fake anti-aliasing back strip) |
 | `src/games/mod.rs` | `load_map("game:name")` dispatcher |
 | `src/games/cs_source/` | VPK reader, the CS:S search path, BSP to `MapData` (via `vbsp`), VMT/VTF materials (map pak first, then the mount), lightmap atlas from the lighting lump, brush collision hulls, static props and prop entities (`prop_physics*`, `prop_dynamic*`) via `vmdl`, ambient cubes and world lights for prop light probes, infodecals clipped onto faces, overlays (lump 45) clipped onto their listed faces, 2D sky and 3D skybox, ropes (simulated to rest), Source player movement (`cs_source:movement`: swept box, exact against brush planes, physics shape casts for props and displacements) |

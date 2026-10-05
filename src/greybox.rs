@@ -1,11 +1,18 @@
 //! A Map slot implementation built in code: flat ground, walls, crates, a
-//! walkable ramp and a too-steep one. Used to test movement and weapons until
-//! real maps load.
+//! walkable ramp and a too-steep one, a tall ladder on the north wall, and a
+//! water tank (ladder up the outside, deep enough to swim, low enough to
+//! water-jump out). Used to test movement and weapons.
+//!
+//! Ladders and water only do something with Source movement
+//! (`--movement cs_source:movement`, or V in game).
 
 use avian3d::prelude::*;
 use bevy::prelude::*;
 
-use crate::core::SpawnPoint;
+use crate::{
+    core::SpawnPoint,
+    core::{MapBrush, MapBrushCollider, MapBrushes, MapWater, MapWaterVolume},
+};
 
 pub struct GreyboxMapPlugin;
 
@@ -24,6 +31,16 @@ struct Block {
     size: Vec3,
     transform: Transform,
     color: Color,
+    kind: Kind,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
+    Solid,
+    /// Climbable (an axis-aligned box).
+    Ladder,
+    /// A water volume: no collider, drawn translucent.
+    Water,
 }
 
 /// Collision always; meshes and materials only when rendering is present, so
@@ -33,24 +50,59 @@ fn spawn(
     mut meshes: Option<ResMut<Assets<Mesh>>>,
     mut materials: Option<ResMut<Assets<StandardMaterial>>>,
 ) {
+    let (mut ladders, mut water) = (Vec::new(), Vec::new());
     for b in blocks() {
-        let mut e = commands.spawn((
-            Name::new(b.name),
-            b.transform,
-            RigidBody::Static,
-            Collider::cuboid(b.size.x, b.size.y, b.size.z),
-        ));
+        let (lo, hi) = (
+            b.transform.translation - b.size / 2.0,
+            b.transform.translation + b.size / 2.0,
+        );
+        let mut e = commands.spawn((Name::new(b.name), b.transform));
+        match b.kind {
+            Kind::Solid => {
+                e.insert((RigidBody::Static, Collider::cuboid(b.size.x, b.size.y, b.size.z)));
+            }
+            Kind::Ladder => {
+                // Source movement sweeps the brush itself (and skips this
+                // collider); other movement collides with the collider.
+                e.insert((
+                    RigidBody::Static,
+                    Collider::cuboid(b.size.x, b.size.y, b.size.z),
+                    MapBrushCollider,
+                ));
+                ladders.push(MapBrush {
+                    ladder: true,
+                    ..MapBrush::from_box(lo, hi)
+                });
+            }
+            Kind::Water => water.push(MapWaterVolume {
+                brush: MapBrush::from_box(lo, hi),
+                slime: false,
+            }),
+        }
         if let (Some(meshes), Some(materials)) = (meshes.as_mut(), materials.as_mut()) {
             e.insert((
                 Mesh3d(meshes.add(Cuboid::from_size(b.size))),
                 MeshMaterial3d(materials.add(StandardMaterial {
                     base_color: b.color,
                     perceptual_roughness: 0.9,
+                    alpha_mode: if b.kind == Kind::Water {
+                        AlphaMode::Blend
+                    } else {
+                        AlphaMode::Opaque
+                    },
+                    double_sided: b.kind == Kind::Water,
+                    cull_mode: if b.kind == Kind::Water {
+                        None
+                    } else {
+                        Some(bevy::render::render_resource::Face::Back)
+                    },
                     ..default()
                 })),
             ));
         }
     }
+    commands.insert_resource(MapBrushes(ladders));
+    commands.insert_resource(MapWater(water));
 
     commands.spawn((
         Name::new("Sun"),
@@ -84,13 +136,17 @@ pub fn platform_height() -> f32 {
 
 fn blocks() -> Vec<Block> {
     let mut out = Vec::new();
-    let mut block = |name: &str, size: Vec3, transform: Transform, color: Color| {
+    let mut add = |name: &str, size: Vec3, transform: Transform, color: Color, kind: Kind| {
         out.push(Block {
             name: name.to_string(),
             size,
             transform,
             color,
+            kind,
         });
+    };
+    let mut block = |name: &str, size: Vec3, transform: Transform, color: Color| {
+        add(name, size, transform, color, Kind::Solid);
     };
 
     let floor = Color::srgb(0.42, 0.42, 0.40);
@@ -164,5 +220,68 @@ fn blocks() -> Vec<Block> {
         steep,
     );
 
+    // A ladder up the north wall to its top (6 m).
+    let ladder = Color::srgb(0.20, 0.18, 0.15);
+    add(
+        "Ladder (north wall)",
+        Vec3::new(0.8, 6.0, 0.1),
+        Transform::from_xyz(LADDER_X, 3.0, NORTH_WALL_Z + 0.05),
+        ladder,
+        Kind::Ladder,
+    );
+
+    // Water tank: 2.8 m of water (over head height) inside 3 m walls. A
+    // ladder up the east side; swim to a wall at the surface and move
+    // toward it to water-jump out.
+    let (lo, hi) = (TANK_MIN, TANK_MAX);
+    let centre = (lo + hi) / 2.0;
+    let size = hi - lo;
+    let (t, h) = (0.4, 3.0);
+    for (name, s, p) in [
+        (
+            "Tank wall W",
+            Vec3::new(t, h, size.y + 2.0 * t),
+            Vec3::new(lo.x - t / 2.0, h / 2.0, centre.y),
+        ),
+        (
+            "Tank wall E",
+            Vec3::new(t, h, size.y + 2.0 * t),
+            Vec3::new(hi.x + t / 2.0, h / 2.0, centre.y),
+        ),
+        (
+            "Tank wall N",
+            Vec3::new(size.x, h, t),
+            Vec3::new(centre.x, h / 2.0, lo.y - t / 2.0),
+        ),
+        (
+            "Tank wall S",
+            Vec3::new(size.x, h, t),
+            Vec3::new(centre.x, h / 2.0, hi.y + t / 2.0),
+        ),
+    ] {
+        add(name, s, Transform::from_translation(p), wall, Kind::Solid);
+    }
+    add(
+        "Water",
+        Vec3::new(size.x, TANK_WATER_DEPTH, size.y),
+        Transform::from_xyz(centre.x, TANK_WATER_DEPTH / 2.0, centre.y),
+        Color::srgba(0.15, 0.35, 0.55, 0.45),
+        Kind::Water,
+    );
+    add(
+        "Ladder (tank)",
+        Vec3::new(0.1, h, 0.8),
+        Transform::from_xyz(hi.x + t + 0.05, h / 2.0, centre.y),
+        ladder,
+        Kind::Ladder,
+    );
+
     out
 }
+
+/// The north-wall ladder's x, and the water tank's inside (x, z) and water
+/// depth, meters.
+pub const LADDER_X: f32 = -15.0;
+pub const TANK_MIN: Vec2 = Vec2::new(-34.0, 24.0);
+pub const TANK_MAX: Vec2 = Vec2::new(-26.0, 34.0);
+pub const TANK_WATER_DEPTH: f32 = 2.8;

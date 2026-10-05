@@ -14,6 +14,8 @@ use bevy::{
 };
 
 use crate::core::{SpawnPoint, Team};
+// Collision-world types live in `core` (the greybox map uses them too).
+pub use crate::core::{MapBrush, MapBrushCollider, MapBrushes, MapWater, MapWaterVolume};
 
 mod dust;
 pub mod prop_material;
@@ -316,65 +318,6 @@ impl MapSkyVis {
         self.leaves.get((-node - 1) as usize).copied().unwrap_or(LeafSky::None)
     }
 }
-
-/// A solid convex volume as planes: a point p is inside when n.p <= d for
-/// every plane (n, d). Engine space, meters; `min`/`max` bound it. Games
-/// whose movement sweeps boxes against brushes (Source) use these instead
-/// of the physics engine's shape casts, which lose precision on large
-/// volumes.
-#[derive(Clone, Debug)]
-pub struct MapBrush {
-    pub planes: Vec<(Vec3, f32)>,
-    pub min: Vec3,
-    pub max: Vec3,
-    /// Climbable (Source: ladder contents).
-    pub ladder: bool,
-}
-
-impl MapBrush {
-    /// An axis-aligned box.
-    pub fn from_box(min: Vec3, max: Vec3) -> Self {
-        let planes = vec![
-            (Vec3::X, max.x),
-            (Vec3::NEG_X, -min.x),
-            (Vec3::Y, max.y),
-            (Vec3::NEG_Y, -min.y),
-            (Vec3::Z, max.z),
-            (Vec3::NEG_Z, -min.z),
-        ];
-        Self {
-            planes,
-            min,
-            max,
-            ladder: false,
-        }
-    }
-
-    /// Whether a point (engine space) is inside.
-    pub fn contains(&self, p: Vec3) -> bool {
-        p.cmpge(self.min).all() && p.cmple(self.max).all() && self.planes.iter().all(|(n, d)| n.dot(p) <= *d)
-    }
-}
-
-/// A water (or slime) volume, for swimming.
-#[derive(Clone, Debug)]
-pub struct MapWaterVolume {
-    pub brush: MapBrush,
-    pub slime: bool,
-}
-
-/// The loaded map's water volumes (`MapData::water`).
-#[derive(Resource, Clone, Debug, Default)]
-pub struct MapWater(pub Vec<MapWaterVolume>);
-
-/// The loaded map's brushes (`MapData::collision_brushes`).
-#[derive(Resource, Clone, Debug, Default)]
-pub struct MapBrushes(pub Vec<MapBrush>);
-
-/// Marks the physics collider built from the same brushes, so movement that
-/// sweeps `MapBrushes` itself can leave it out of physics queries.
-#[derive(Component, Debug)]
-pub struct MapBrushCollider;
 
 /// A dust mote volume (`func_dustmotes`): slow specks spawned inside a box,
 /// fading in and out over their life and with distance
