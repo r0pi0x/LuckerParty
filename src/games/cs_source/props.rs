@@ -28,13 +28,42 @@ pub fn rotation(angles: vbsp::Angles) -> Quat {
     c * r * c.inverse()
 }
 
-fn load_model(materials: &mut MaterialLoader, path: &str) -> Result<vmdl::Model, String> {
+/// A model and its `prop_data` key values (None: the model has none).
+fn load_model(
+    materials: &mut MaterialLoader,
+    path: &str,
+) -> Result<(vmdl::Model, Option<HashMap<String, String>>), String> {
     let read = |p: String| materials.read(&p).ok_or_else(|| format!("{p}: not found"));
     let mdl = vmdl::mdl::Mdl::read(&read(path.to_string())?).map_err(|e| format!("{path}: {e}"))?;
+    let prop_data = mdl.key_values.as_deref().and_then(prop_data);
     let stem = path.trim_end_matches(".mdl");
     let vtx = vmdl::vtx::Vtx::read(&read(format!("{stem}.dx90.vtx"))?).map_err(|e| format!("{stem}.dx90.vtx: {e}"))?;
     let vvd = vmdl::vvd::Vvd::read(&read(format!("{stem}.vvd"))?).map_err(|e| format!("{stem}.vvd: {e}"))?;
-    Ok(vmdl::Model::from_parts(mdl, vtx, vvd))
+    Ok((vmdl::Model::from_parts(mdl, vtx, vvd), prop_data))
+}
+
+/// The `prop_data` block of a model's key values (spec 2.2), lower-case
+/// keys.
+fn prop_data(text: &str) -> Option<HashMap<String, String>> {
+    let t = super::surfaceprops::tokens(text);
+    let start = t
+        .windows(2)
+        .position(|w| w[0].eq_ignore_ascii_case("prop_data") && w[1] == "{")?;
+    let mut out = HashMap::new();
+    let mut i = start + 2;
+    while i + 1 < t.len() && t[i] != "}" {
+        if t[i + 1] == "{" {
+            // A nested block: skip it.
+            while i < t.len() && t[i] != "}" {
+                i += 1;
+            }
+            i += 1;
+            continue;
+        }
+        out.insert(t[i].to_lowercase(), t[i + 1].clone());
+        i += 2;
+    }
+    Some(out)
 }
 
 fn v(p: vmdl::Vector) -> vbsp::Vector {
@@ -145,7 +174,12 @@ fn load_collision(materials: &mut MaterialLoader, path: &str) -> Option<MapColli
 /// A physics prop's body (spec 3.1, 4.2): mass from its `.phy` (times
 /// `massscale`), friction and elasticity from its surface property, and how
 /// players interact with it. None for props that don't move.
-fn body(prop: &PropPlacement, model: &MapModel, surfaces: &super::surfaceprops::SurfaceProps) -> Option<MapPhysics> {
+fn body(
+    prop: &PropPlacement,
+    model: &MapModel,
+    prop_data: Option<&HashMap<String, String>>,
+    surfaces: &super::surfaceprops::SurfaceProps,
+) -> Option<MapPhysics> {
     const MOTION_DISABLED: u32 = 0x8;
     const FORCE_SERVER_SIDE: u32 = 0x2000;
     let class = prop.class.as_deref()?;
@@ -164,7 +198,12 @@ fn body(prop: &PropPlacement, model: &MapModel, surfaces: &super::surfaceprops::
         } else {
             PushAway::Solid
         };
-        let mode = match prop.physicsmode {
+        // The model's prop_data physicsmode wins over the map's.
+        let physicsmode = prop_data
+            .and_then(|d| d.get("physicsmode"))
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(prop.physicsmode);
+        let mode = match physicsmode {
             1 => PushAway::Solid,
             2 => PushAway::NonSolid,
             3 => PushAway::Ignore,
@@ -297,6 +336,7 @@ fn place_props(
     placements: Vec<PropPlacement>,
 ) {
     let mut loaded: HashMap<(String, i32), Option<usize>> = HashMap::new();
+    let mut prop_datas: HashMap<usize, HashMap<String, String>> = HashMap::new();
     let mut failed: Vec<String> = Vec::new();
     let bounds = super::bsp::playable_bounds(bsp);
     let surfaces = super::surfaceprops::SurfaceProps::load(materials);
@@ -305,7 +345,7 @@ fn place_props(
         let model = *loaded
             .entry(key)
             .or_insert_with(|| match load_model(materials, &prop.model) {
-                Ok(m) => {
+                Ok((m, pd)) => {
                     let mut model = convert_model(&m, prop.skin, materials);
                     model.collision = load_collision(materials, &prop.model);
                     // What traces against the prop report: its collision
@@ -318,6 +358,9 @@ fn place_props(
                         .or(Some(m.surface_prop()).filter(|s| !s.is_empty()))
                         .map(str::to_lowercase);
                     data.models.push(model);
+                    if let Some(pd) = pd {
+                        prop_datas.insert(data.models.len() - 1, pd);
+                    }
                     Some(data.models.len() - 1)
                 }
                 Err(e) => {
@@ -326,6 +369,11 @@ fn place_props(
                 }
             });
         let Some(model) = model else { continue };
+        // A plain prop_physics whose model has no prop_data is deleted at
+        // spawn (override and multiplayer variants are exempt).
+        if prop.class.as_deref() == Some("prop_physics") && !prop_datas.contains_key(&model) {
+            continue;
+        }
         // Physics props need a collision model (spec section 2.3): without
         // one, prop_physics stays visible but not solid, and the
         // multiplayer variant is removed at spawn.
@@ -337,7 +385,7 @@ fn place_props(
                 _ => {}
             }
         }
-        let physics = body(&prop, &data.models[model], &surfaces);
+        let physics = body(&prop, &data.models[model], prop_datas.get(&model), &surfaces);
         let translation = to_engine(prop.origin);
         let rotation = rotation(prop.angles);
         // Like the game for maps without baked prop lighting: one lighting
@@ -395,4 +443,19 @@ pub fn probe(bsp: &Bsp, lighting: &MapLighting, occluders: &Occluders, origin: V
         })
         .collect();
     LightProbe { cube: cube.0, lights }
+}
+
+#[cfg(test)]
+mod prop_data_tests {
+    use super::prop_data;
+
+    #[test]
+    fn reads_the_prop_data_block() {
+        let text = "\"prop_data\" { \"base\" \"Wooden.Medium\" \"physicsmode\" \"1\" \"breakable_model\" { \"x\" \"y\" } \"health\" \"20\" } \"physgun_interactions\" { \"onfirstimpact\" \"break\" }";
+        let d = prop_data(text).unwrap();
+        assert_eq!(d.get("base").map(String::as_str), Some("Wooden.Medium"));
+        assert_eq!(d.get("physicsmode").map(String::as_str), Some("1"));
+        assert_eq!(d.get("health").map(String::as_str), Some("20"));
+        assert!(prop_data("\"physgun_interactions\" { }").is_none());
+    }
 }

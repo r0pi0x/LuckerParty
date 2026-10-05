@@ -43,7 +43,6 @@ docs/plans/active/sound.md.
 
 ## 4. Physics props, remaining
 
-- The model's `prop_data` physicsmode override (wins over the map's).
 - The player physics shadow for `prop_physics` (dust2 has none).
 - Impact damage, breakable props.
 
@@ -53,10 +52,16 @@ docs/plans/active/sound.md.
   the nearest cubemap at run time (BSP cubemap lump); the model shader's
   envmap (gamma-converted tint, no fresnel). World reflections are in
   (refcmp `tunnel_floor_*`).
-- **Tunnel lamp glows**: iterate on the brightness of the billboard
-  glows (env_sprite) in dust2's tunnels against CS:S (refcmp
-  `glow_lamp`, `glow_lamp_down`; RenderDoc a lamp draw for the sprite
-  shader's colour, alpha and scale).
+- **Tunnel lamp glows**: the grey veil (mode-5 halos) is gone and sprites
+  add in gamma space as in the game, but the lamps' mode-9 glows are now
+  weaker than CS:S's (refcmp `glow_lamp`: +22 vs +56 levels 60 px below
+  the lamp, with visibility already 1). A spec pass on the SDK's sprite
+  code is resolving it (sprites_dust.md open questions).
+- **Dark areas are 15-20% darker than CS:S** (dust2 tunnels; refcmp `fit`:
+  CS:S = k·albedo·light with k 1.15-1.40 in tunnels, 1.00 outdoors). Not
+  light styles (none on dust2), colour correction (no entities),
+  mat_monitorgamma (2.2) or the sRGB/2.2 lightmap round trip (modelled).
+  Next: RenderDoc a tunnel wall draw and compare lightmap texels.
 - **Water surfaces**: swimming works (`MapWater`), but water faces draw as
   plain textured surfaces, without the Water shader's refraction,
   reflection or fog. Water currents (base velocity) aren't applied.
