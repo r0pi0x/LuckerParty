@@ -14,6 +14,30 @@ when work starts; delete them when done.
 
 ## Gameplay
 
+- **In-game console** (toggle with `~`, Source-style), feature rich:
+  - Commands and cvars from every system that registers them (movement
+    cvars like `sv_enablebunnyhopping`, `sv_airaccelerate`, `sv_gravity`;
+    `map`, `noclip`, `god`, `give`, `kill`, `setpos`/`getpos`, `exec`,
+    `bind`, `alias`, `echo`, `clear`, `quit`), each with help text, type,
+    default, min/max and "changed from default" marking.
+  - Tab completion of names and values (enum values, map names from the
+    install, file paths for `exec`), cycling with repeated Tab, and
+    inline suggestions as you type, ranked fuzzy matches.
+  - History (up/down, Ctrl+R reverse search), persisted across sessions;
+    `;`-separated commands; quoted arguments; `+`/`-` actions for binds.
+  - `find <text>` over names and help; `differences` lists cvars changed
+    from defaults; `reset <cvar>`/`resetall`; `cvarlist <prefix>`.
+  - Config files: autoexec.cfg at startup, `host_writeconfig` to save
+    binds and changed cvars; `exec` reads CS:S-style .cfg (surf/bhop/kz
+    configs work as-is, unknown cvars reported, not fatal).
+  - Output: colored by severity, log lines (warnings/errors from `log`)
+    mirrored in, scrollback with page up/down, selectable and copyable,
+    a filter box; timestamps on demand.
+  - Live values: `watch <cvar|expr>` overlays a value on the HUD (speed,
+    position, velocity, water level, ladder state); `toggle`, `incrementvar`
+    for binds; `wait` for scripted sequences.
+  - Remote: the same commands over the dev remote protocol, so scripts
+    and tests can drive it.
 - **Sound effects**: an audio slot (Bevy audio or a mixer crate) playing the
   game's own sounds from the user's install: footsteps by surface material
   (Source surfaceprops), jump/land, ladder and water (splash, swim), weapon
