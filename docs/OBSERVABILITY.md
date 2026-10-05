@@ -162,6 +162,11 @@ cargo run --features dev --bin movecmp -- --only bhop --keep-running
   first tick that differs by more than 0.1 unit (or in ground/duck
   state), with both states. Per-tick CSVs go to
   `~/.local/share/mashup/dump/movecmp/`.
+- The probe can also be driven directly over RCON (127.0.0.1:27030,
+  `mashup_run <in> <out>`, `mashup_weapon <weapon>`); its log has the
+  player's box top, eye height and the buttons the movement ran with.
+  Rest ~200 ticks between runs (jump stamina carries over), and remember
+  CS:S bots auto-duck when they jump.
 - It has found: CS:S's fixed 0.015 s tick, the alternating diagonals of
   displacement triangles (walking and landing on dust2 terrain now match
   to 0.002 units), the 0.34 ducked speed and the 8.5-unit air-duck lift.

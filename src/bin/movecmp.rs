@@ -170,6 +170,37 @@ fn scenarios() -> Vec<Scenario> {
             inputs,
         })
         .collect();
+    // The T spawn runway (open and flat westward): run, jump, land, then
+    // keep running or let go. Shows CS:S's jump stamina (landing slowdown).
+    let t_spawn = Vec3::new(-1024.0, -784.0, 140.0);
+    let w = 180.0;
+    let rest = || vec![Input::idle(w); 200];
+    let mut hold = rest();
+    hold.extend(vec![Input::idle(w).forward(); 45]);
+    hold.push(Input::idle(w).forward().jump());
+    hold.extend(vec![Input::idle(w).forward(); 100]);
+    let mut release = rest();
+    release.extend(vec![Input::idle(w).forward(); 45]);
+    release.push(Input::idle(w).forward().jump());
+    release.extend(vec![Input::idle(w).forward(); 46]);
+    release.extend(vec![Input::idle(w); 50]);
+    let mut hops = rest();
+    for _ in 0..4 {
+        hops.push(Input::idle(w).jump());
+        hops.extend(vec![Input::idle(w); 49]);
+    }
+    for (name, inputs) in [
+        ("tspawn_run_jump_hold", hold),
+        ("tspawn_run_jump_release", release),
+        ("tspawn_repeat_jumps", hops),
+    ] {
+        all.push(Scenario {
+            name,
+            start: t_spawn,
+            yaw: w,
+            inputs,
+        });
+    }
     // A standing jump where the running jumps take off.
     let mut here = settle();
     here.push(Input::idle(yaw).jump());

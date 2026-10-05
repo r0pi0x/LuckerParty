@@ -492,6 +492,19 @@ Weapon move speed (MaxPlayerSpeed, units/s):
 - Duck and unduck timings are as in the shared code: the ducked box is in use 27 ticks after the press at 66.67 tick (0.405 s > 0.4 s), the standing box 14 ticks after release (0.21 s > 0.2 s), with the same eye curve between 64 and 47.
 - Ducked walking: the input scale is **0.34** (wish speed 85 at max speed 250), not 1/3.
 
+**Jump stamina (measured; CS:S-only, not in the shared code):**
+- Each jump sets a stamina value to 1315.79 ms. It counts down by 1000·dt every tick (15 per tick at 66.67 tick) and stops at 0, so it lasts about 88 ticks (1.3 s).
+- Jump speed: if stamina is above 0 when a jump starts, the jump's vertical speed is multiplied by 1 − 0.00019 × stamina. Then stamina is set again. Measured: a jump 50 ticks after the previous one (stamina 565.79) gives r = 0.8925.
+- Ground speed: on each tick on the ground, after friction and before acceleration, horizontal velocity is multiplied by 1 − 0.000199 × stamina. Fit over 30+ ticks of landing traces to ~0.1 units/s. In the air it does nothing.
+- Effects: landing from a running jump with forward held dips to about 148 units/s and recovers to 250 in about 40 ticks. Releasing forward on landing stops the player in about 18 ticks, against about 45 with friction alone.
+
+**Bunny-hop cap (measured):**
+- With sv_enablebunnyhopping 0 (the default), a jump scales the velocity down to a 3D speed of 286 when it is faster. The 3D speed includes the −6 vz of the jump tick's first gravity half. The cap doesn't change with the held weapon (knife and AWP both give 286; 286 = 1.1 × 260, the fastest weapon's speed).
+- With sv_enablebunnyhopping 1 there is no cap.
+- sv_autobunnyhopping 1 (present in the current CS:S) lets a held jump button jump again on landing.
+
+**Bots:** CS:S bots (even with bot_zombie or bot_stop) are ducked by the game from their jump tick until about 44 ticks later, with no duck button. Humans aren't: a human standing jump measures as an unducked jump. Probe comparisons of jump heights must allow for this; horizontal measurements are unaffected.
+
 Knife script: MaxPlayerSpeed 250, Damage 50, WeaponArmorRatio 1.7, Range 4096 (the bullet-weapon field; the knife's swing reach is in code), Penetration 1.
 
 ## Open questions
@@ -502,8 +515,8 @@ Knife script: MaxPlayerSpeed 250, Damage 50, WeaponArmorRatio 1.7, Range 4096 (t
 4. **Answered:** the CS:S jump impulse is 301.993 (see CS:S values).
 5. **Answered (see CS:S values):** hulls 62/45, eyes 64/47, air duck shift 8.5. Was: **CS:S hulls and eye heights:** CS:S is believed to use a 32×32×62 ducked box (not 36) and ducked eye ≈46, standing eye 64. The air-duck lift and the in-air unduck clearance both equal (standing height − ducked height), so they change with it (36 with the shared boxes). Measure with `cl_showpos`/getpos while standing vs ducked, and by finding the smallest vent you can enter.
 6. **CS:S duck behavior:** duck speed (CS:S slows while ducking/ducked: is it ×1/3 of input or a fixed fraction of max speed?), duck spam limit (sv_timebetweenducks or similar), whether the transition is still 0.4 s / 0.2 s, and any air-duck differences.
-7. **Landing slowdown / stamina:** CS:S reduces horizontal speed after landing and after jumps (a "stamina" or velocity modifier). This is not in shared code. Measure speed in the ticks after landing from walking jumps, bhop chains, and a fall.
-8. **Bunny-hop limit:** with sv_enablebunnyhopping 0, CS:S caps speed on jump (believed: if speed > 1.1 × max speed, scale down to 1.1 × max speed). Measure by jumping at > 275 units/s with a knife.
+7. **Answered (see CS:S values: jump stamina).** Was: **Landing slowdown / stamina:** CS:S reduces horizontal speed after landing and after jumps (a "stamina" or velocity modifier). This is not in shared code. Measure speed in the ticks after landing from walking jumps, bhop chains, and a fall.
+8. **Answered (see CS:S values: bunny-hop cap, 286).** Was: **Bunny-hop limit:** with sv_enablebunnyhopping 0, CS:S caps speed on jump (believed: if speed > 1.1 × max speed, scale down to 1.1 × max speed). Measure by jumping at > 275 units/s with a knife.
 9. **Walk key (+speed):** CS:S walking speed. Believed to be a fraction of max speed (≈0.52). Measure.
 10. **Backpedal:** whether sv_backspeed 0.6 is applied in CS:S. Measure backward top speed.
 11. **Fall damage formula as applied by CS:S:** the shared header gives the slope 100/(1024 − 580). CS:S applies the actual damage (and may scale it, e.g. ×1.25 is sometimes cited). Measure HP lost from known drop heights.

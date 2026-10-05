@@ -38,6 +38,11 @@ pub struct Args {
     /// Capture these views (JSON, see `capture::View`), one PNG each.
     pub views: Option<PathBuf>,
     pub capture_dir: Option<PathBuf>,
+    /// Console variables to set (`name=value`), in order, after any
+    /// `exec` files.
+    pub cvars: Vec<(String, String)>,
+    /// Source-style config files (`name value` per line) to apply.
+    pub exec: Vec<PathBuf>,
 }
 
 const USAGE: &str = "\
@@ -48,6 +53,12 @@ usage: mashup [options]
   --spawn <x,y,z>           spawn position in meters
   --look <yaw,pitch>        initial look angles in degrees (yaw 0 = -Z)
   --map <game:name>         load a game's map, e.g. cs_source:de_dust2 (default: greybox)
+  --cvar <name=value>       set a movement console variable, e.g. sv_airaccelerate=150
+                            (repeatable; cs_source: sv_accelerate, sv_airaccelerate,
+                            sv_friction, sv_stopspeed, sv_gravity, sv_maxspeed,
+                            sv_stepsize, sv_maxvelocity, sv_bounce,
+                            sv_enablebunnyhopping, sv_autobunnyhopping, cl_forwardspeed)
+  --exec <file.cfg>         apply a Source-style config file (\"name value\" lines)
   --lightmap-only           debug view: white surfaces, only baked lighting
   --debug-view <kind>       lighting (x0.25) | albedo, untonemapped, magenta background
   --views <file.json>       capture each view (name, position, yaw, pitch; engine space)
@@ -96,6 +107,13 @@ impl Args {
                 "--capture-dir" => out.capture_dir = Some(value.into()),
                 "--spawn" => out.spawn = Some(Vec3::from_array(floats::<3>(&flag, &value)?)),
                 "--look" => out.look = Some(Vec2::from_array(floats::<2>(&flag, &value)?)),
+                "--cvar" => {
+                    let (name, v) = value
+                        .split_once('=')
+                        .ok_or_else(|| format!("--cvar: expected name=value, got {value}"))?;
+                    out.cvars.push((name.to_string(), v.to_string()));
+                }
+                "--exec" => out.exec.push(value.into()),
                 _ => return Err(format!("unknown option {flag}")),
             }
         }

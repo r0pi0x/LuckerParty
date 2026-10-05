@@ -69,9 +69,35 @@ fn main() {
         }
         _ => Time::<Fixed>::from_hz(mashup::DEFAULT_TICK_HZ),
     })
+    .insert_resource(movement_config(&args))
     .insert_resource(Loadout {
         movement: movement::placeholder::ID,
     })
     .add_plugins(client::ClientPlugin { args })
     .run();
+}
+
+/// Source movement settings: CS:S's, then `--exec` files, then `--cvar`s.
+fn movement_config(args: &client::Args) -> mashup::games::cs_source::movement::SourceMovementConfig {
+    let mut config = mashup::games::cs_source::movement::SourceMovementConfig::default();
+    for file in &args.exec {
+        match std::fs::read_to_string(file) {
+            Ok(text) => {
+                for problem in config.exec(&text) {
+                    eprintln!("warning: {}: {problem}", file.display());
+                }
+            }
+            Err(e) => {
+                eprintln!("error: --exec {}: {e}", file.display());
+                std::process::exit(2);
+            }
+        }
+    }
+    for (name, value) in &args.cvars {
+        if let Err(e) = config.set_cvar(name, value) {
+            eprintln!("error: --cvar {name}={value}: {e}");
+            std::process::exit(2);
+        }
+    }
+    config
 }

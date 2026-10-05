@@ -54,9 +54,82 @@ pub struct SourceMovementConfig {
     /// How much of the height difference the feet move when ducking or
     /// unducking in the air (1 = head stays put).
     pub air_duck_shift: f32,
+    /// CS:S jump stamina, ms: set by each jump, counting down in real time.
+    /// While it lasts, jump speed and ground speed are scaled down by
+    /// 1 - coefficient x stamina. 0 turns it off (the shared code has none).
+    pub jump_stamina: f32,
+    pub stamina_jump_scale: f32,
+    pub stamina_ground_scale: f32,
+    /// sv_enablebunnyhopping: when false, a jump caps the player's speed
+    /// (3D) at `bunnyhop_cap`.
+    pub enable_bunnyhopping: bool,
+    pub bunnyhop_cap: f32,
+    /// sv_autobunnyhopping: holding jump jumps again on landing.
+    pub auto_bunnyhopping: bool,
 }
 
+/// Console variables players and server configs know, mapped onto the
+/// config: (name, what it sets).
+pub const CVARS: &[(&str, &str)] = &[
+    ("sv_accelerate", "ground acceleration"),
+    ("sv_airaccelerate", "air acceleration (surf servers raise it, e.g. 150)"),
+    ("sv_friction", "ground friction"),
+    ("sv_stopspeed", "speed below which friction stops at a constant rate"),
+    ("sv_gravity", "gravity, units/s^2"),
+    ("sv_maxspeed", "upper limit on move speed"),
+    ("sv_stepsize", "highest step climbed without jumping"),
+    ("sv_maxvelocity", "per-axis velocity limit"),
+    ("sv_bounce", "wall bounce (0 in CS:S)"),
+    ("sv_enablebunnyhopping", "1 removes the jump speed cap"),
+    ("sv_autobunnyhopping", "1: holding jump keeps jumping"),
+    ("cl_forwardspeed", "what a held move key sends"),
+];
+
 impl SourceMovementConfig {
+    /// Set a console variable by name, as a server config would.
+    pub fn set_cvar(&mut self, name: &str, value: &str) -> Result<(), String> {
+        let num = || {
+            value
+                .trim()
+                .trim_matches('"')
+                .parse::<f32>()
+                .map_err(|_| format!("{name}: not a number: {value}"))
+        };
+        match name.to_ascii_lowercase().as_str() {
+            "sv_accelerate" => self.accelerate = num()?,
+            "sv_airaccelerate" => self.airaccelerate = num()?,
+            "sv_friction" => self.friction = num()?,
+            "sv_stopspeed" => self.stopspeed = num()?,
+            "sv_gravity" => self.gravity = num()?,
+            "sv_maxspeed" => self.maxspeed = num()?,
+            "sv_stepsize" => self.stepsize = num()?,
+            "sv_maxvelocity" => self.maxvelocity = num()?,
+            "sv_bounce" => self.bounce = num()?,
+            "sv_enablebunnyhopping" => self.enable_bunnyhopping = num()? != 0.0,
+            "sv_autobunnyhopping" => self.auto_bunnyhopping = num()? != 0.0,
+            "cl_forwardspeed" | "cl_sidespeed" => self.key_speed = num()?,
+            other => return Err(format!("unknown console variable {other}")),
+        }
+        Ok(())
+    }
+
+    /// Apply a Source-style config (one `name value` per line, `//`
+    /// comments); unknown variables are reported, not fatal.
+    pub fn exec(&mut self, text: &str) -> Vec<String> {
+        let mut problems = Vec::new();
+        for line in text.lines() {
+            let line = line.split("//").next().unwrap_or("").trim();
+            let mut parts = line.splitn(2, char::is_whitespace);
+            let (Some(name), Some(value)) = (parts.next(), parts.next()) else {
+                continue;
+            };
+            if let Err(e) = self.set_cvar(name, value) {
+                problems.push(e);
+            }
+        }
+        problems
+    }
+
     /// Feet movement for a duck or unduck in the air.
     fn air_duck_lift(&self) -> f32 {
         (self.stand_height - self.duck_height) * self.air_duck_shift
@@ -85,6 +158,12 @@ impl SourceMovementConfig {
             eye_stand: 64.0,
             eye_duck: 28.0,
             air_duck_shift: 1.0,
+            jump_stamina: 0.0,
+            stamina_jump_scale: 0.0,
+            stamina_ground_scale: 0.0,
+            enable_bunnyhopping: true,
+            bunnyhop_cap: 0.0,
+            auto_bunnyhopping: false,
         }
     }
 }
@@ -109,6 +188,19 @@ impl Default for SourceMovementConfig {
             eye_stand: 64.0,
             eye_duck: 47.0,
             air_duck_shift: 0.5,
+            // Measured with the probe (run/jump/land traces): stamina
+            // 1315.79 ms per jump, 15 ms off per tick; jump speed x (1 -
+            // 0.00019 T); ground speed x (1 - 0.000199 T) each tick between
+            // friction and acceleration. The landing slowdown and the quick
+            // stop after a jump.
+            jump_stamina: 1315.789_4,
+            stamina_jump_scale: 0.000_19,
+            stamina_ground_scale: 0.000_199,
+            // Measured: with sv_enablebunnyhopping 0, a jump scales the
+            // velocity (3D, including this tick's gravity) down to 286 when
+            // faster, whatever the weapon (1.1 x 260, the fastest weapon).
+            enable_bunnyhopping: false,
+            bunnyhop_cap: 286.0,
             ..Self::shared_code()
         }
     }
@@ -202,6 +294,8 @@ pub struct SourceMovement {
     last_nudge: f32,
     /// Feet at the end of the last tick, to notice teleports.
     last_feet: Option<Vec3>,
+    /// Jump stamina left, ms (CS:S).
+    pub stamina: f32,
 }
 
 impl Default for SourceMovement {
@@ -223,6 +317,7 @@ impl Default for SourceMovement {
             time: 0.0,
             last_nudge: f32::NEG_INFINITY,
             last_feet: None,
+            stamina: 0.0,
         }
     }
 }
@@ -662,6 +757,11 @@ impl Mover<'_, '_, '_, '_> {
 
     fn walk(&mut self, f: f32, s: f32, forward: Vec3, right: Vec3, max_speed: f32) {
         let (dir, speed) = self.wish(f, s, forward, right, max_speed);
+        if self.me.stamina > 0.0 {
+            let r = 1.0 - self.cfg.stamina_ground_scale * self.me.stamina;
+            self.v.x *= r;
+            self.v.y *= r;
+        }
         self.v.z = 0.0;
         self.accelerate(dir, speed, self.cfg.accelerate);
         self.v.z = 0.0;
@@ -834,12 +934,23 @@ impl Mover<'_, '_, '_, '_> {
     }
 
     fn jump(&mut self) {
+        // Without sv_enablebunnyhopping, jumping caps the speed.
+        if !self.cfg.enable_bunnyhopping && self.cfg.bunnyhop_cap > 0.0 {
+            let speed = self.v.length();
+            if speed > self.cfg.bunnyhop_cap {
+                self.v *= self.cfg.bunnyhop_cap / speed;
+            }
+        }
         self.me.on_ground = false;
         if self.me.ducked || self.me.ducking {
             self.v.z = self.cfg.jump_impulse;
         } else {
             self.v.z += self.cfg.jump_impulse;
         }
+        if self.me.stamina > 0.0 {
+            self.v.z *= 1.0 - self.cfg.stamina_jump_scale * self.me.stamina;
+        }
+        self.me.stamina = self.cfg.jump_stamina;
         self.half_gravity();
         self.me.jump_held = true;
     }
@@ -886,6 +997,7 @@ impl Mover<'_, '_, '_, '_> {
             s *= max_speed / len;
         }
         self.me.duck_timer = (self.me.duck_timer - 1000.0 * self.dt).max(0.0);
+        self.me.stamina = (self.me.stamina - 1000.0 * self.dt).max(0.0);
 
         // Intent yaw 0 looks down engine -Z, which is Source yaw 90.
         let yaw = std::f32::consts::FRAC_PI_2 + intent.yaw;
@@ -913,7 +1025,8 @@ impl Mover<'_, '_, '_, '_> {
         self.clamp_velocity();
 
         if intent.jump {
-            if self.me.on_ground && !self.me.jump_held && !(self.me.ducked && self.me.ducking) {
+            let fresh = !self.me.jump_held || self.cfg.auto_bunnyhopping;
+            if self.me.on_ground && fresh && !(self.me.ducked && self.me.ducking) {
                 self.jump();
             } else {
                 self.me.jump_held = true;

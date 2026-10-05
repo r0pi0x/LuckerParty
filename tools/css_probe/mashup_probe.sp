@@ -9,7 +9,8 @@
 // Input file: one optional "start x y z pitch yaw vx vy vz" line, then one
 // line per tick: "buttons forwardmove sidemove pitch yaw".
 // Output file: one line per tick, "tick x y z vx vy vz onground ducked
-// hull_top eye" (the collision box's top and the eye height above the origin);
+// hull_top eye buttons" (the collision box's top, the eye height above the
+// origin, and the buttons the movement actually ran with);
 // tick 0 is the state after the bot was placed at the start (one idle
 // tick), tick n the state after input line n.
 
@@ -41,10 +42,13 @@ int g_bot;
 File g_out;
 // -1: place the bot on its next command; then the index of the next input.
 int g_cursor = -1;
+// Weapon the bot holds for runs (its max speed matters).
+char g_weapon[64] = "weapon_knife";
 
 public void OnPluginStart()
 {
     RegServerCmd("mashup_run", Command_Run, "mashup_run <input> <output>");
+    RegServerCmd("mashup_weapon", Command_Weapon, "mashup_weapon <weapon_name>: what the bot holds for runs");
 }
 
 int FindBot()
@@ -55,6 +59,17 @@ int FindBot()
         }
     }
     return 0;
+}
+
+public Action Command_Weapon(int args)
+{
+    GetCmdArg(1, g_weapon, sizeof(g_weapon));
+    int bot = FindBot();
+    if (bot != 0 && GetPlayerWeaponSlot(bot, 0) == -1 && !StrEqual(g_weapon, "weapon_knife")) {
+        GivePlayerItem(bot, g_weapon);
+    }
+    PrintToServer("mashup: bot weapon %s", g_weapon);
+    return Plugin_Handled;
 }
 
 public Action Command_Run(int args)
@@ -112,8 +127,8 @@ public Action Command_Run(int args)
         PrintToServer("mashup: cannot write %s", outPath);
         return Plugin_Handled;
     }
-    // Knife out: max speed 250, the value mashup assumes.
-    FakeClientCommand(g_bot, "use weapon_knife");
+    // Knife by default: max speed 250, the value mashup assumes.
+    FakeClientCommand(g_bot, "use %s", g_weapon);
     g_cursor = -1;
     PrintToServer("mashup: running %d ticks on client %d", g_count, g_bot);
     return Plugin_Handled;
@@ -172,6 +187,6 @@ public void OnPlayerRunCmdPost(int client, int buttons, int impulse, const float
     GetEntPropVector(client, Prop_Data, "m_vecViewOffset", view);
     int flags = GetEntityFlags(client);
     g_cursor++;
-    g_out.WriteLine("%d %.4f %.4f %.4f %.4f %.4f %.4f %d %d %.4f %.4f", g_cursor, o[0], o[1], o[2], v[0], v[1], v[2],
-        (flags & FL_ONGROUND) ? 1 : 0, (flags & FL_DUCKING) ? 1 : 0, maxs[2], view[2]);
+    g_out.WriteLine("%d %.4f %.4f %.4f %.4f %.4f %.4f %d %d %.4f %.4f %d", g_cursor, o[0], o[1], o[2], v[0], v[1], v[2],
+        (flags & FL_ONGROUND) ? 1 : 0, (flags & FL_DUCKING) ? 1 : 0, maxs[2], view[2], buttons);
 }

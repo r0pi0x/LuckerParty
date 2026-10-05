@@ -156,6 +156,13 @@ impl Player {
 #[test]
 fn bunny_hopping_gains_speed() {
     let mut pl = Player::at(Vec3::new(-6000.0, -9000.0, 0.5));
+    // As bhop and surf servers run it: no jump speed cap.
+    pl.sim
+        .app
+        .world_mut()
+        .resource_mut::<SourceMovementConfig>()
+        .set_cvar("sv_enablebunnyhopping", "1")
+        .unwrap();
     pl.sim.ticks(4);
     // Run up to knife speed.
     pl.look_yaw(0.0);
