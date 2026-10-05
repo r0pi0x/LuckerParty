@@ -7,7 +7,8 @@ prototype: kept in its own private repository, separate from the shipping Godot
 build, allowed to be messy, and expected to change as each imported game
 teaches us something.
 
-Status: design notes only. No code yet.
+Status: Bevy project set up (see CLAUDE.md for build commands). Working on the
+foundation milestone below.
 
 ## Goal
 
@@ -56,6 +57,18 @@ Minecraft block is a meter; some games are Z-up).
 
 The engine only ever sees neutral data.
 
+Mounts target the official, current release of each game, never a specific old
+or modified build: users can't legitimately obtain old builds, and asking them
+to undermines the "load from your own install" model. To survive game updates:
+
+- Parse at the format level, not the build level. Formats change far less
+  often than content.
+- Import once into a local cache of neutral data on the user's machine (never
+  shipped). Matches load from the cache, so an update can't break content that
+  is already imported; re-import when the install changes.
+- A "mount doctor" per game checks expected files and reports what is mounted,
+  what changed and what failed. The multiplayer pre-match check uses it too.
+
 ### Slots
 
 A match is a loadout that picks one implementation per slot. Each game
@@ -73,6 +86,15 @@ contributes implementations as a plugin.
 | Audio | Footsteps, gunshots, announcer, hit sounds | CA announcer |
 
 Slots can get more granular as needed (the HUD row already is).
+
+### Intent
+
+Nothing reads the keyboard directly. Local input, bot brains and (later) the
+network all write the same `Intent` component: move direction, look, jump,
+crouch, sprint, fire, reload. The Movement slot turns intent into motion and
+publishes movement state; weapons read intent plus that state. A bot is just
+another intent source, so it uses exactly the same movement and weapons as a
+player, and this matches the multiplayer model (clients submit intent).
 
 ### Interfaces
 
@@ -185,16 +207,46 @@ uses mounted; the server checks this before a match.
 - **Combat Arms.** LithTech Jupiter: `.rez` archives and LithTech model/world
   formats. Thin community tooling; expect format reverse engineering from
   installed files. Now operated by Valofe.
+  - The archives are encrypted, and the key lives in a packed
+    executable. The mount takes keys as input from the gitignored
+    `mashup.local.toml`, as a list keyed by an install fingerprint, so a key
+    rotation is a config change. The mount doctor reports which key matched.
+    Keys are never committed. How a public build would obtain keys is an open
+    question that needs legal advice (anti-circumvention law), not a technical
+    decision.
+  - The leaked client/server source is used only through specs (see
+    [specs/README.md](specs/README.md)). It stays outside this repository.
+
+## Specs
+
+Behavior taken from decompiled or leaked code reaches this repository only as
+specs in `specs/`: constants with units, formulas as math, per-tick order of
+operations, edge cases, deliberate quirks, and test cases with expected
+numbers. Specs are written in sessions that read the source; implementation
+happens in separate sessions that see only the specs. The test cases become
+automated tests. See [specs/README.md](specs/README.md).
 
 ## First steps
 
-1. Create a Bevy project in this repository.
-2. Load `de_dust2` from a local CS:S install: BSP geometry, VPK textures,
-   lightmaps.
-3. Source-style first-person movement as a Movement slot implementation.
-4. One CS:S weapon from its script data, built from trigger/cost/delivery/
-   effect parts, plus a CS crosshair as a HUD piece.
-5. Load a Combat Arms map from installed files and run the same slots on it.
+MVP: a Combat Arms slice. Run, sprint, shoot and fight bots on one map, built
+through the slots so another game's controller is a loadout change. Gameplay
+never waits on asset formats.
+
+1. ~~Create a Bevy project in this repository.~~
+2. Foundation: core components, `Intent`, loadout resource with one plugin per
+   slot, a greybox map built in code, collision queries, debug tools (inspector,
+   free-fly camera), placeholder movement.
+3. Combat Arms movement from its spec, as a kinematic character controller.
+4. One Combat Arms weapon from its spec as trigger/cost/delivery/effect parts,
+   plus hitscan, hit zones, health, crosshair and ammo HUD.
+5. Bots (intent from a brain on a waypoint graph, navmesh later) and a simple
+   deathmatch ruleset with respawns.
+6. Real maps, in parallel with 2-5: `de_dust2` from a local CS:S install (BSP
+   geometry, VPK textures, lightmaps), then a Combat Arms map once `.rez` and
+   the world format are specced.
+7. Prove the swap: Source movement (specced from Source SDK 2013) as a second
+   Movement implementation, switchable live against Combat Arms movement on
+   the same map. MW2 follows the same path.
 
 ## Open questions
 
