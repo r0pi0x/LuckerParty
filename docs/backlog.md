@@ -1,29 +1,15 @@
 # Backlog
 
-Things to build, roughly in priority order within each section. Shortcuts
-already in the code live in [tech-debt.md](tech-debt.md); the MVP plan is in
-[plans/active/](plans/active/mvp-combat-arms-slice.md). Move items into a plan
-when work starts; delete them when done.
+Things to build, **in priority order** (top first; reprioritized
+2026-10-05). Shortcuts already in the code live in
+[tech-debt.md](tech-debt.md); the MVP plan is in
+[plans/active/](plans/active/mvp-combat-arms-slice.md). Move items into a
+plan when work starts; delete them when done.
 
-## Tools
+## 1. In-game console and debug overlays
 
-- **HDR parity**: CS:S defaults to mat_hdr_level 2 on dust2 (HDR lightmaps,
-  tonemapping, bloom); the reference install runs LDR. Compare and match
-  both if players use HDR.
-- **More refcmp views** across dust2 (mid, long, B, spawns) and other maps.
-- **Debug overlays, CS:S-style**, toggled by console cvars (see the
-  in-game console above; a key or flag until it exists):
-  - `cl_showpos 1`: map name, position, angles and velocity in the top
-    corner, as CS:S draws it.
-  - `cl_showfps 1` / `net_graph`-like FPS counter (frame time, min/max).
-  - Sound emitter markers: where each sound was emitted, with the entry
-    name (and wave) drawn at that spot for a few seconds after it plays,
-    fading out; filters by channel/name. Source has `snd_show`/
-    `snd_visualize` as a reference for the idea.
-  - Other Source debug text worth copying as we go (`developer 1`
-    notify lines, `cl_showpos 2`).
-
-## Gameplay
+Unlocks fast iteration on everything else (movement cvars, toggles,
+diagnostics without restarting).
 
 - **In-game console** (toggle with `~`, Source-style), feature rich:
   - Commands and cvars from every system that registers them (movement
@@ -46,58 +32,88 @@ when work starts; delete them when done.
     a filter box; timestamps on demand.
   - Live values: `watch <cvar|expr>` overlays a value on the HUD (speed,
     position, velocity, water level, ladder state); `toggle`, `incrementvar`
-    for binds; `wait` for scripted sequences. Build together with the
-    CS:S-style debug overlays below (`cl_showpos`, `cl_showfps`, sound
-    markers), which are cvars of this console.
+    for binds; `wait` for scripted sequences.
   - Remote: the same commands over the dev remote protocol, so scripts
     and tests can drive it.
-- **Sound effects**: an audio slot (Bevy audio or a mixer crate) playing the
-  game's own sounds from the user's install: footsteps by surface material
-  (Source surfaceprops), jump/land, ladder and water (splash, swim), weapon
-  fire/reload/dry, impacts by material, player hurt/death; positional with
-  distance falloff. Spec the CS:S sound rules (footstep cadence, volumes,
-  `sv_footsteps`, walk/duck silence) from the SDK first.
-- **Weapons**: the weapon slot from the MVP plan (trigger, cost, delivery,
-  effect; hitscan, health, crosshair, ammo HUD), with CS:S weapons from
-  their (locally decrypted) scripts and a spec for firing, spread/recoil,
-  damage by hitgroup and range, penetration, reloads and weapon speeds;
-  the knife first. View models and world models from the install.
+- **Debug overlays, CS:S-style**, as console cvars:
+  - `cl_showpos 1`: map name, position, angles and velocity in the top
+    corner, as CS:S draws it.
+  - `cl_showfps 1` / `net_graph`-like FPS counter (frame time, min/max).
+  - Sound emitter markers: where each sound was emitted, with the entry
+    name (and wave) drawn at that spot for a few seconds after it plays,
+    fading out; filters by channel/name. Source has `snd_show`/
+    `snd_visualize` as a reference for the idea.
+  - Other Source debug text worth copying as we go (`developer 1`
+    notify lines, `cl_showpos 2`).
 
-## dust2 fidelity
+## 2. Weapons
+
+The MVP's biggest gap. specs/cs_source/weapons.md has the generic rules
+from the SDK and all 29 CS:S weapons' script values; CS:S's own rules
+need measuring first (its M1–M17, extending tools/css_probe).
+
+- **Weapon slot** from the MVP plan (trigger, cost, delivery, effect;
+  hitscan, health, crosshair, ammo HUD).
+- **Knife** first (the movement speed the movement already assumes), then
+  one rifle (AK-47): fire timing, spread/inaccuracy, recoil/punch, damage
+  by hitgroup and range, penetration, reload and deploy times, from
+  measurements.
+- View models and world models from the install; weapon sounds through
+  the sound pipeline.
+- Physics props: bullet and explosion impulses (spec physics_props 5).
+- **Bots** (MVP): intent from a brain on a waypoint graph; deathmatch with
+  respawns.
+
+## 3. Sound, remaining
+
+docs/plans/active/sound.md.
+
+- Physics impacts and scrapes (avian contact speeds; surfaceprops'
+  impact/scrape entries).
+- Map ambience: `ambient_generic`, soundscapes (selection by nearest
+  visible env_soundscape, 3 s crossfade, random sounds).
+- Measure on the probe server: the distance curves (replace the H1/H2
+  guesses), CS:S footstep silence rules, the jump sound, wave choice.
+
+## 4. Physics props, remaining
+
+- The model's `prop_data` physicsmode override (wins over the map's).
+- The player physics shadow for `prop_physics` (dust2 has none).
+- Impact damage, breakable props.
+
+## 5. Visual fidelity
+
+- **Reflective floors / env maps**: the lower tunnels' floor (and other
+  `$envmap` materials, incl. map-patched ones pointing at `env_cubemap`):
+  read the BSP's cubemap lump and baked cubemaps, pick the nearest per
+  surface, apply `$envmaptint`, `$envmapmask` / base or normal-map alpha
+  masks and fresnel as the shader spec describes; compare in refcmp.
+- **Tunnel lamp glows**: iterate on the brightness of the billboard
+  glows (env_sprite) in dust2's tunnels against CS:S (refcmp
+  `glow_lamp`, `glow_lamp_down`; RenderDoc a lamp draw for the sprite
+  shader's colour, alpha and scale).
+- **Water surfaces**: swimming works (`MapWater`), but water faces draw as
+  plain textured surfaces, without the Water shader's refraction,
+  reflection or fog. Water currents (base velocity) aren't applied.
+- **HDR parity**: CS:S defaults to mat_hdr_level 2 on dust2 (HDR lightmaps,
+  tonemapping, bloom); the reference install runs LDR. Compare and match
+  both if players use HDR. Tonemap (`env_tonemap_controller`).
+- **More refcmp views** across dust2 (mid, long, B, spawns) and other maps.
+- Fog on ropes; detail blend modes other than 0 and 1;
+  `$basetexturetransform` (unused on dust2).
+
+## 6. Long tail
 
 Counts are from de_dust2's entity lump and static prop lump.
 
-- **Baked per-vertex prop lighting (`.vhv`)** for maps that ship it (dust2
-  doesn't; its props use the per-prop light probe, as in the game).
 - **Remaining decals**: 6 of dust2's 135 sit on props or brush entities
   rather than world faces; decals on displacements (none on dust2).
 - **Verify inferred Source rules** with the comparison tool, using a local
   copy of a map with test entities added where dust2 has no example: floor
   and ceiling decal orientation, decal reach, overall brightness/tonemapping.
-- **Physics props, remaining**: bullet and explosion impulses (with
-  weapons), the player physics shadow for `prop_physics` (dust2 has none),
-  the model's `prop_data` physicsmode override, impact sounds.
 - **Brush entities**: doors and visible `func_brush` if a map needs them
   (dust2's one `func_brush` is render mode 10, never drawn).
-- **Prop collision from `.phy`** for physics-solid props (now the visible
-  mesh).
 - **Fire** (`env_fire`, 16) and other effects, if they show in normal play.
-- **Tunnel lamp glows**: iterate on the brightness of the billboard
-  glows (env_sprite) in dust2's tunnels against CS:S (refcmp
-  `glow_lamp`, `glow_lamp_down`; RenderDoc a lamp draw for the sprite
-  shader's colour, alpha and scale).
-- **Reflective floors**: the lower tunnels' floor (and other `$envmap`
-  materials, incl. map-patched ones pointing at `env_cubemap`) should
-  reflect: read the BSP's cubemap lump and baked cubemaps, pick the
-  nearest per surface, apply `$envmaptint`, `$envmapmask` / base or
-  normal-map alpha masks and fresnel as the shader spec describes;
-  compare in refcmp.
-- **Materials**: env maps (2 dust2 materials, plus map-patched ones with
-  `env_cubemap`); detail blend modes other than 0 and 1; `$basetexturetransform`
-  (unused on dust2).
 - **Lightmap styles** (switchable lights).
-- **Tonemap** (`env_tonemap_controller`; HDR only). Fog on ropes.
-- **Water surfaces**: swimming works (`MapWater`), but water faces draw as
-  plain textured surfaces, without the Water shader's refraction,
-  reflection or fog. Water currents (base velocity) aren't applied.
-- **Sound** (map): `ambient_generic` and soundscapes, once there's an audio slot.
+- **Baked per-vertex prop lighting (`.vhv`)** for maps that ship it (dust2
+  doesn't; its props use the per-prop light probe, as in the game).
