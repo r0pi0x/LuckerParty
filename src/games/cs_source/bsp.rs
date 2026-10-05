@@ -255,6 +255,11 @@ fn world_brushes(bsp: &Bsp) -> std::collections::BTreeSet<usize> {
 /// Every player-solid world brush as a convex hull in engine space: the
 /// corners where three of its planes meet and no other plane cuts them off.
 pub fn brush_hulls(bsp: &Bsp) -> Vec<Vec<[f32; 3]>> {
+    brush_hulls_indexed(bsp).into_iter().map(|(_, h)| h).collect()
+}
+
+/// `brush_hulls` with each hull's brush index, for diagnostics.
+pub fn brush_hulls_indexed(bsp: &Bsp) -> Vec<(usize, Vec<[f32; 3]>)> {
     const EPS: f32 = 0.01;
     // Plane index (either side) -> centres of displacement base faces on it.
     let mut disp_bases: std::collections::HashMap<u16, Vec<Vec3>> = Default::default();
@@ -280,6 +285,17 @@ pub fn brush_hulls(bsp: &Bsp) -> Vec<Vec<[f32; 3]>> {
         }
         let first = brush.brush_side as usize;
         let sides = &bsp.brush_sides[first..first + brush.num_brush_sides as usize];
+        // Trigger volumes (buy zones, soundscapes) can carry solid contents
+        // and appear in the world tree, but players never collide with them.
+        let trigger = sides.iter().any(|side| {
+            side.texture_info >= 0
+                && bsp.texture_info(side.texture_info as usize).is_some_and(|t| {
+                    t.flags.intersects(TextureFlags::TRIGGER) || t.name().eq_ignore_ascii_case("tools/toolstrigger")
+                })
+        });
+        if trigger {
+            continue;
+        }
         let planes: Vec<(Vec3, f32)> = sides
             .iter()
             .filter_map(|side| bsp.plane(side.plane as usize))
@@ -317,12 +333,13 @@ pub fn brush_hulls(bsp: &Bsp) -> Vec<Vec<[f32; 3]>> {
             }
         }
         if points.len() >= 4 {
-            out.push(
+            out.push((
+                index,
                 points
                     .iter()
                     .map(|p| to_engine(vbsp::Vector { x: p.x, y: p.y, z: p.z }).to_array())
                     .collect(),
-            );
+            ));
         }
     }
     out
