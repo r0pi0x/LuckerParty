@@ -305,6 +305,7 @@ pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> (MapData, LightmapLayo
     data.lightmap = Some(lightmap);
     data.sky_camera = sky_camera(bsp);
     data.fog = world_fog(bsp);
+    data.shadows = Some(shadow_control(bsp));
     (data, layout)
 }
 
@@ -414,6 +415,61 @@ fn parse_fog(e: &vbsp::RawEntity) -> Option<crate::map::MapFog> {
         end: end * METERS_PER_UNIT,
         max_density: e.prop("fogmaxdensity").and_then(|v| v.parse().ok()).unwrap_or(1.0),
     })
+}
+
+/// The map's dynamic shadow settings (`shadow_control`), or the engine's
+/// defaults without one (specs/cs_source/shadows_sky.md B).
+fn shadow_control(bsp: &Bsp) -> crate::map::MapShadows {
+    let e = bsp
+        .entities
+        .iter()
+        .find(|e| e.prop("classname") == Some("shadow_control"));
+    let nums = |key: &'static str| -> Option<Vec<f32>> {
+        let v: Vec<f32> = e
+            .as_ref()?
+            .prop(key)?
+            .split_whitespace()
+            .filter_map(|v| v.parse().ok())
+            .collect();
+        (v.len() >= 3).then_some(v)
+    };
+    let forward = |p: f32, y: f32| {
+        let (p, y) = (p.to_radians(), y.to_radians());
+        vbsp::Vector {
+            x: p.cos() * y.cos(),
+            y: p.cos() * y.sin(),
+            z: -p.sin(),
+        }
+    };
+    let direction = match &e {
+        None => vbsp::Vector {
+            x: 0.1,
+            y: 0.1,
+            z: -1.0,
+        },
+        Some(_) => match nums("angles") {
+            Some(a) if a.iter().any(|v| *v != 0.0) => forward(a[0], a[1]),
+            Some(_) => forward(80.0, 30.0),
+            None => vbsp::Vector {
+                x: 0.2,
+                y: 0.2,
+                z: -2.0,
+            },
+        },
+    };
+    // Without a shadow_control the colour comes from the level's ambient
+    // light (open in the spec); the entity default stands in.
+    let color = nums("color").map_or([64, 64, 64], |c| [0, 1, 2].map(|i| c[i].clamp(0.0, 255.0) as u8));
+    let distance = e
+        .as_ref()
+        .and_then(|e| e.prop("distance"))
+        .and_then(|v| v.trim().parse::<f32>().ok())
+        .unwrap_or(50.0);
+    crate::map::MapShadows {
+        direction: to_engine_dir(direction),
+        color,
+        distance: distance * METERS_PER_UNIT,
+    }
 }
 
 /// The world's fog (`env_fog_controller`), if enabled.

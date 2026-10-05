@@ -20,6 +20,7 @@ pub use crate::core::{MapBrush, MapBrushCollider, MapBrushes, MapWater, MapWater
 mod dust;
 pub mod prop_material;
 pub mod rope_material;
+pub mod shadows;
 pub mod sprite_material;
 pub mod world_material;
 
@@ -267,6 +268,21 @@ pub struct MapProp {
     pub skybox: bool,
     /// Baked lighting; lit by the scene's lights when absent.
     pub lighting: Option<LightProbe>,
+    /// Casts a dynamic shadow onto the world (Source: entity props, not
+    /// static props, whose shadows are baked into lightmaps).
+    pub casts_shadow: bool,
+}
+
+/// Dynamic prop shadows (Source `shadow_control`, specs/cs_source/shadows_sky.md):
+/// one direction, colour and cast distance for the whole map.
+#[derive(Clone, Debug)]
+pub struct MapShadows {
+    /// Unit vector from caster toward receiver, engine space.
+    pub direction: Vec3,
+    /// sRGB bytes.
+    pub color: [u8; 3],
+    /// How far past the caster a shadow reaches, meters.
+    pub distance: f32,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -303,6 +319,8 @@ pub struct MapData {
     pub sky_vis: Option<MapSkyVis>,
     /// Water and slime volumes.
     pub water: Vec<MapWaterVolume>,
+    /// Dynamic prop shadows, when the game draws them.
+    pub shadows: Option<MapShadows>,
 }
 
 /// What the BSP leaf around a point can see of the sky.
@@ -590,6 +608,7 @@ fn spawn_map(
     mut rope_materials: Option<ResMut<Assets<RopeMaterial>>>,
     mut sprite_materials: Option<ResMut<Assets<SpriteMaterial>>>,
     mut prop_materials: Option<ResMut<Assets<PropMaterial>>>,
+    mut shadow_materials: Option<ResMut<Assets<shadows::ShadowMaterial>>>,
 ) {
     let data = &pending.0;
     let view = pending.1;
@@ -960,6 +979,34 @@ fn spawn_map(
                 }
             }
         }
+        if let (Some(settings), Some(shadow_materials)) = (&data.shadows, shadow_materials.as_mut())
+            && view == MapDebugView::Normal
+        {
+            let built = shadows::build(&data, settings);
+            info!("prop shadows: {} casters reach the world", built.meshes.len());
+            let atlas = images.add(built.atlas.image());
+            let material = shadow_materials.add(shadows::ShadowMaterial {
+                params: shadows::ShadowParams {
+                    color: shadows::shadow_color(settings.color),
+                    texel: Vec2::new(1.0 / built.atlas.width as f32, 1.0 / built.atlas.height as f32),
+                    fog_color: fog_color(data.fog.as_ref()),
+                    fog_range: fog_range(data.fog.as_ref()),
+                },
+                atlas,
+            });
+            for (prop, mesh) in built.meshes {
+                commands.spawn((
+                    Name::new(format!("Shadow of prop {prop}")),
+                    MapPart,
+                    PropShadow { prop },
+                    Mesh3d(meshes.add(mesh)),
+                    MeshMaterial3d(material.clone()),
+                    bevy::light::NotShadowCaster,
+                    Transform::default(),
+                    ChildOf(root),
+                ));
+            }
+        }
     }
 
     // Exact brushes for movement that sweeps them (Source): the world's,
@@ -1284,6 +1331,12 @@ fn build_material(m: &MapMesh, textures: &[Handle<Image>], view: MapDebugView, l
         lightmap_exposure: LIGHTMAP_EXPOSURE * scale * light_scale,
         ..default()
     }
+}
+
+/// A prop's dynamic shadow on the world (index into `MapData::props`).
+#[derive(Component, Debug)]
+pub struct PropShadow {
+    pub prop: usize,
 }
 
 /// A prop's physics collider (sprite glows see through static props, as

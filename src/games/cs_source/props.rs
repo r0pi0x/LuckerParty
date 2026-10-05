@@ -289,6 +289,7 @@ fn place_props(
             skybox,
             lighting: Some(lighting),
             solid,
+            casts_shadow: prop.class.is_some(),
         });
     }
     failed.sort();

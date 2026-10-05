@@ -46,6 +46,6 @@ with tests):
 
 - [x] 1 sky by leaf visibility
 - [x] 2 `.phy` collision (props collide by their convex pieces; spec crate cases pass)
-- [ ] 3 prop shadows
+- [x] 3 prop shadows (entity props cast; built at load; refcmp crates_b matches; recomputed per frame once props move)
 - [x] 4 ladders and water (spec cases in tests/source_movement_ladder_water.rs; de_nuke climb test waits on step 2: its ladder models' rungs block until props collide by `.phy`)
 - [ ] 5 physics simulation

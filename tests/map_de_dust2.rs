@@ -929,3 +929,28 @@ fn prop_collision_models_line_up() {
     assert!(with > 20, "{with} models with collision");
     assert!(bad.is_empty(), "{} misaligned:\n{}", bad.len(), bad.join("\n"));
 }
+
+/// dust2's shadow_control: angles (60, 43, 0), colour (159, 168, 181),
+/// distance 75; its physics props cast shadows onto the world.
+#[test]
+fn prop_shadows() {
+    let Some(map) = dust2() else { return };
+    let s = map.shadows.as_ref().expect("shadow settings");
+    let source = Vec3::new(s.direction.x, -s.direction.z, s.direction.y);
+    assert!(
+        (source - Vec3::new(0.36568, 0.34100, -0.86603)).length() < 1e-4,
+        "{source}"
+    );
+    assert_eq!(s.color, [159, 168, 181]);
+    assert!((s.distance - 75.0 * 0.0254).abs() < 1e-5);
+    let built = mashup::map::shadows::build(&map, s);
+    let casters = map.props.iter().filter(|p| p.casts_shadow && !p.skybox).count();
+    assert!(casters >= 70, "{casters} casters");
+    // Most casters stand on the world, so their shadows land on it.
+    assert!(
+        built.meshes.len() * 10 >= casters * 8,
+        "{} of {casters} shadows reach the world",
+        built.meshes.len()
+    );
+    assert!(built.atlas.coverage.iter().any(|c| *c > 0.99), "silhouettes drawn");
+}
