@@ -1,5 +1,6 @@
 //! Counter-Strike: Source (Steam app 240).
 
+pub mod bsp;
 pub mod mount;
 pub mod vpk;
 

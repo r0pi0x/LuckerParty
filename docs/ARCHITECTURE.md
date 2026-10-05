@@ -10,7 +10,7 @@ file says where things are and which way dependencies may point.
               |
    harness    |    games/<name>   (one module per game)
       \       |       /    \
-       movement   greybox     mount   (mount: read-only VFS, local config)
+       movement   greybox  map  mount  (map: neutral MapData + spawner; mount: VFS, local config)
             \     /
            character             (components every character has)
                |
@@ -38,7 +38,9 @@ A module may use only the modules below it. Enforced by
 | `src/movement/` | `placeholder` (stand-in walking) and `noclip` Movement implementations |
 | `src/greybox.rs` | Map slot built in code; collision always, visuals only when rendering |
 | `src/mount/` | `Mount` (ordered layers, first match wins), `FileSource`, `LooseDir`, path normalization, `mashup.local.toml` loading |
-| `src/games/cs_source/` | VPK reader, the CS:S search path |
+| `src/map.rs` | `MapData` (meters, Y up, meshes per material, collision, spawns) and `MapPlugin` that spawns it |
+| `src/games/mod.rs` | `load_map("game:name")` dispatcher |
+| `src/games/cs_source/` | VPK reader, the CS:S search path, BSP to `MapData` (via `vbsp`) |
 | `src/games/combat_arms/` | `.rez` reader and the archive cipher payload decryption (from the spec), all archives as one mount |
 | `src/bin/dump.rs` | Dev tool: summarize, list and extract a game install's files |
 | `src/harness.rs` | `Sim`: headless app stepped by exact fixed ticks, for tests |

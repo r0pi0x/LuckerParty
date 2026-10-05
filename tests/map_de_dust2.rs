@@ -1,0 +1,80 @@
+//! de_dust2 from a real CS:S install, headless. Skipped without one.
+
+use bevy::prelude::*;
+use mashup::{
+    core::Team,
+    games::{self, cs_source},
+    harness::Sim,
+    map::{MapData, MapPlugin},
+    mount::config::LocalConfig,
+    movement::placeholder,
+};
+
+fn dust2() -> Option<MapData> {
+    let installed = LocalConfig::load()
+        .ok()?
+        .game_path(cs_source::GAME)
+        .is_some_and(|p| p.join("cstrike").is_dir());
+    if !installed {
+        eprintln!("skipping: no CS:S install configured");
+        return None;
+    }
+    Some(games::load_map("cs_source:de_dust2").expect("load de_dust2"))
+}
+
+#[test]
+fn converts_to_a_plausible_map() {
+    let Some(map) = dust2() else { return };
+    let tris = map.triangle_count();
+    assert!(tris > 10_000, "only {tris} triangles");
+    let (lo, hi) = map.bounds();
+    let size = hi - lo;
+    // The playable area is ~100 m across; the bounds also include the 3D
+    // skybox model far to one side (~340 x 63 x 137 m in total).
+    assert!(
+        size.x > 60.0 && size.x < 400.0 && size.z > 60.0 && size.z < 400.0,
+        "size {size}"
+    );
+    assert!(size.y > 5.0 && size.y < 100.0, "height {}", size.y);
+    let t = map.spawns.iter().filter(|(_, team)| *team == Some(Team(1))).count();
+    let ct = map.spawns.iter().filter(|(_, team)| *team == Some(Team(2))).count();
+    assert!(t >= 10 && ct >= 10, "{t} T spawns, {ct} CT spawns");
+    assert!(
+        map.meshes.iter().any(|m| m.material.starts_with("de_dust/")),
+        "no de_dust materials"
+    );
+}
+
+#[test]
+fn player_lands_at_spawn_and_can_walk() {
+    let Some(map) = dust2() else { return };
+    let (feet, _) = map.spawns[0];
+    let mut sim = Sim::new(MapPlugin { data: map.into() });
+    let p = sim.spawn_character(feet + Vec3::Y * 1.0, placeholder::ID);
+    sim.seconds(1.0);
+    assert!(sim.state(p).on_ground, "not grounded at spawn: {}", sim.position(p));
+    let start = sim.position(p);
+    // Spawn markers float up to ~1 m above dust2's sloped ground; the player
+    // drops onto the floor (capsule center 0.9 m above it).
+    let below = feet.y + 0.9 - start.y;
+    assert!(
+        (0.0..1.5).contains(&below),
+        "standing at {}, spawn feet at {}",
+        start.y,
+        feet.y
+    );
+
+    // Walk in each direction for a second: we must stay on or above the
+    // ground (never fall through the world) and move somewhere.
+    let mut moved = 0.0f32;
+    for yaw in [0.0f32, 90.0, 180.0, 270.0] {
+        sim.intent(p).yaw = yaw.to_radians();
+        sim.intent(p).move_axis = Vec2::Y;
+        let before = sim.position(p);
+        sim.seconds(1.0);
+        let after = sim.position(p);
+        moved += (after - before).xz().length();
+        assert!(after.y > start.y - 3.0, "fell through the map at {after}");
+    }
+    assert!(moved > 2.0, "barely moved ({moved} m) - stuck in geometry?");
+}

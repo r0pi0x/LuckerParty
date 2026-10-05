@@ -26,6 +26,9 @@ cargo run --features dev -- --screenshot shot.png --frames 90 \
     --spawn 0,1,12 --look 30,-10 --movement mashup:noclip
 ```
 
+Add `--map cs_source:de_dust2` to load a real map (noclip plus
+`--spawn x,75,z --look 0,-89` gives a top-down view).
+
 Runs 90 frames, saves the primary window, exits. Read the PNG to check
 rendering. Write screenshots to a scratch directory, never into the repo.
 Needs a display: on the Linux dev box set `WAYLAND_DISPLAY=wayland-1` and

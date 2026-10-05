@@ -7,6 +7,7 @@ pub mod core;
 pub mod games;
 pub mod greybox;
 pub mod harness;
+pub mod map;
 pub mod mount;
 pub mod movement;
 pub mod slots;

@@ -18,11 +18,28 @@ const ALLOWED: &[(&str, &[&str])] = &[
     ("character", &["core", "slots"]),
     ("movement", &["core", "slots", "character"]),
     ("greybox", &["core"]),
+    ("map", &["core"]),
     // `lib` = crate-root items such as `SimPlugins`.
-    ("harness", &["lib", "core", "slots", "character", "movement", "greybox"]),
-    ("client", &["lib", "core", "slots", "character", "movement", "greybox"]),
+    (
+        "harness",
+        &["lib", "core", "slots", "character", "movement", "greybox", "map"],
+    ),
+    (
+        "client",
+        &[
+            "lib",
+            "core",
+            "slots",
+            "character",
+            "movement",
+            "greybox",
+            "map",
+            "mount",
+            "games",
+        ],
+    ),
     // Game plugins: may use the shared layers, never another game.
-    ("games", &["core", "slots", "character", "movement", "mount"]),
+    ("games", &["core", "slots", "character", "movement", "mount", "map"]),
     // Binaries use the library through `mashup::`, not `crate::`.
     ("bin", &[]),
 ];

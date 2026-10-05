@@ -28,6 +28,8 @@ pub struct Args {
     pub spawn: Option<Vec3>,
     /// Initial look direction: yaw and pitch in degrees.
     pub look: Option<Vec2>,
+    /// Map ID such as `cs_source:de_dust2`; the greybox map when absent.
+    pub map: Option<String>,
 }
 
 const USAGE: &str = "\
@@ -36,7 +38,8 @@ usage: mashup [options]
   --frames <n>              frames to run before the screenshot or exit (default 60)
   --movement <id>           movement implementation for the local player
   --spawn <x,y,z>           spawn position in meters
-  --look <yaw,pitch>        initial look angles in degrees (yaw 0 = -Z)";
+  --look <yaw,pitch>        initial look angles in degrees (yaw 0 = -Z)
+  --map <game:name>         load a game's map, e.g. cs_source:de_dust2 (default: greybox)";
 
 impl Args {
     pub fn parse() -> Self {
@@ -70,6 +73,7 @@ impl Args {
                 "--screenshot" => out.screenshot = Some(value.into()),
                 "--frames" => out.frames = Some(value.parse().map_err(|_| format!("--frames: not a number: {value}"))?),
                 "--movement" => out.movement = Some(value),
+                "--map" => out.map = Some(value),
                 "--spawn" => out.spawn = Some(Vec3::from_array(floats::<3>(&flag, &value)?)),
                 "--look" => out.look = Some(Vec2::from_array(floats::<2>(&flag, &value)?)),
                 _ => return Err(format!("unknown option {flag}")),
