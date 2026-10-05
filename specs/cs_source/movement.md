@@ -486,6 +486,12 @@ Weapon move speed (MaxPlayerSpeed, units/s):
 | famas | 220 | m249 | 220 |
 | hegrenade, flashbang, c4 | 250 | smokegrenade | 245 |
 
+**Hulls, eyes and ducking (measured with the movement probe, reading the player's collision box and view offset every tick):**
+- Standing box (−16,−16,0)–(16,16,**62**), eye **64**. Ducked box top **45**, eye **47**.
+- Ducking in the air moves the feet up by **half** the height difference (8.5 units); unducking in the air moves them down by 8.5. The shared code moves them by the whole difference.
+- Duck and unduck timings are as in the shared code: the ducked box is in use 27 ticks after the press at 66.67 tick (0.405 s > 0.4 s), the standing box 14 ticks after release (0.21 s > 0.2 s), with the same eye curve between 64 and 47.
+- Ducked walking: the input scale is **0.34** (wish speed 85 at max speed 250), not 1/3.
+
 Knife script: MaxPlayerSpeed 250, Damage 50, WeaponArmorRatio 1.7, Range 4096 (the bullet-weapon field; the knife's swing reach is in code), Penetration 1.
 
 ## Open questions
@@ -494,7 +500,7 @@ Knife script: MaxPlayerSpeed 250, Damage 50, WeaponArmorRatio 1.7, Range 4096 (t
 2. **Answered:** sv_accelerate 5 and sv_stopspeed 75 come from CS:S's stock cfg/skill1.cfg, which the engine runs on every map load. They are CS:S's effective defaults; the registered defaults 10 and 100 are the shared code's.
 3. **Answered:** sv_stopspeed is 75 (see CS:S values).
 4. **Answered:** the CS:S jump impulse is 301.993 (see CS:S values).
-5. **CS:S hulls and eye heights:** CS:S is believed to use a 32×32×62 ducked box (not 36) and ducked eye ≈46, standing eye 64. The air-duck lift and the in-air unduck clearance both equal (standing height − ducked height), so they change with it (36 with the shared boxes). Measure with `cl_showpos`/getpos while standing vs ducked, and by finding the smallest vent you can enter.
+5. **Answered (see CS:S values):** hulls 62/45, eyes 64/47, air duck shift 8.5. Was: **CS:S hulls and eye heights:** CS:S is believed to use a 32×32×62 ducked box (not 36) and ducked eye ≈46, standing eye 64. The air-duck lift and the in-air unduck clearance both equal (standing height − ducked height), so they change with it (36 with the shared boxes). Measure with `cl_showpos`/getpos while standing vs ducked, and by finding the smallest vent you can enter.
 6. **CS:S duck behavior:** duck speed (CS:S slows while ducking/ducked: is it ×1/3 of input or a fixed fraction of max speed?), duck spam limit (sv_timebetweenducks or similar), whether the transition is still 0.4 s / 0.2 s, and any air-duck differences.
 7. **Landing slowdown / stamina:** CS:S reduces horizontal speed after landing and after jumps (a "stamina" or velocity modifier). This is not in shared code. Measure speed in the ticks after landing from walking jumps, bhop chains, and a fall.
 8. **Bunny-hop limit:** with sv_enablebunnyhopping 0, CS:S caps speed on jump (believed: if speed > 1.1 × max speed, scale down to 1.1 × max speed). Measure by jumping at > 275 units/s with a knife.

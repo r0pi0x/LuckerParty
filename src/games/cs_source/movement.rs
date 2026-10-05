@@ -46,6 +46,21 @@ pub struct SourceMovementConfig {
     pub key_speed: f32,
     /// Move input scale while ducked on the ground.
     pub duck_speed: f32,
+    /// Collision box heights and eye heights above the feet, units.
+    pub stand_height: f32,
+    pub duck_height: f32,
+    pub eye_stand: f32,
+    pub eye_duck: f32,
+    /// How much of the height difference the feet move when ducking or
+    /// unducking in the air (1 = head stays put).
+    pub air_duck_shift: f32,
+}
+
+impl SourceMovementConfig {
+    /// Feet movement for a duck or unduck in the air.
+    fn air_duck_lift(&self) -> f32 {
+        (self.stand_height - self.duck_height) * self.air_duck_shift
+    }
 }
 
 impl SourceMovementConfig {
@@ -65,6 +80,11 @@ impl SourceMovementConfig {
             player_maxspeed: 250.0,
             key_speed: 450.0,
             duck_speed: 1.0 / 3.0,
+            stand_height: 72.0,
+            duck_height: 36.0,
+            eye_stand: 64.0,
+            eye_duck: 28.0,
+            air_duck_shift: 1.0,
         }
     }
 }
@@ -81,18 +101,24 @@ impl Default for SourceMovementConfig {
             // Measured with movecmp: ducked acceleration implies a wish speed
             // of 85 at max speed 250.
             duck_speed: 0.34,
+            // Measured with the probe (the player's box and view offset):
+            // CS:S stands 62 tall (eye 64) and ducks to 45 (eye 47); in the
+            // air the feet move half the difference, 8.5 units.
+            stand_height: 62.0,
+            duck_height: 45.0,
+            eye_stand: 64.0,
+            eye_duck: 47.0,
+            air_duck_shift: 0.5,
             ..Self::shared_code()
         }
     }
 }
 
 const HALF_WIDTH: f32 = 16.0;
-const STAND_HEIGHT: f32 = 72.0;
-const DUCK_HEIGHT: f32 = 36.0;
-const EYE_STAND: f32 = 64.0;
-const EYE_DUCK: f32 = 28.0;
 /// The transform sits at the standing box's centre.
-const ORIGIN_ABOVE_FEET: f32 = STAND_HEIGHT / 2.0;
+/// The transform sits this far above the feet (a fixed convention, the
+/// shared code's standing-box centre), whatever the hull sizes.
+const ORIGIN_ABOVE_FEET: f32 = 36.0;
 
 const AIR_WISH_CAP: f32 = 30.0;
 const WALKABLE_NORMAL_Z: f32 = 0.7;
@@ -188,7 +214,7 @@ impl Default for SourceMovement {
             ducked: false,
             ducking: false,
             duck_timer: 0.0,
-            eye: EYE_STAND,
+            eye: 64.0,
             fall_speed: 0.0,
             surface_friction: 1.0,
             last_landing_speed: 0.0,
@@ -220,10 +246,6 @@ pub fn to_engine(v: Vec3) -> Vec3 {
     Vec3::new(v.x, v.z, -v.y) * METERS_PER_UNIT
 }
 
-fn hull_height(ducked: bool) -> f32 {
-    if ducked { DUCK_HEIGHT } else { STAND_HEIGHT }
-}
-
 /// Result of sweeping a box, as the spec's traces report it.
 #[derive(Clone, Copy, Debug)]
 struct Trace {
@@ -247,6 +269,8 @@ struct Tracer<'a, 'w, 's> {
     query: &'a SpatialQuery<'w, 's>,
     filter: SpatialQueryFilter,
     brushes: Option<&'a MapBrushes>,
+    /// Standing and ducked box heights.
+    heights: (f32, f32),
 }
 
 /// Brush sweep result, engine space.
@@ -394,15 +418,16 @@ impl Tracer<'_, '_, '_> {
         best
     }
 
-    fn hull(ducked: bool) -> (Vec3, Vec3) {
+    fn hull(&self, ducked: bool) -> (Vec3, Vec3) {
+        let height = if ducked { self.heights.1 } else { self.heights.0 };
         (
             Vec3::new(-HALF_WIDTH, -HALF_WIDTH, 0.0),
-            Vec3::new(HALF_WIDTH, HALF_WIDTH, hull_height(ducked)),
+            Vec3::new(HALF_WIDTH, HALF_WIDTH, height),
         )
     }
 
     fn sweep(&self, ducked: bool, from: Vec3, to: Vec3) -> Trace {
-        let (lo, hi) = Self::hull(ducked);
+        let (lo, hi) = self.hull(ducked);
         self.sweep_box(lo, hi, from, to)
     }
 
@@ -427,7 +452,7 @@ impl Tracer<'_, '_, '_> {
     }
 
     fn solid(&self, ducked: bool, feet: Vec3) -> bool {
-        let (lo, hi) = Self::hull(ducked);
+        let (lo, hi) = self.hull(ducked);
         self.solid_box(lo, hi, feet)
     }
 }
@@ -663,7 +688,7 @@ impl Mover<'_, '_, '_, '_> {
         if self.v.z > LEAVE_GROUND_VZ {
             self.me.on_ground = false;
         } else {
-            let (lo, hi) = Tracer::hull(self.me.ducked);
+            let (lo, hi) = self.trace.hull(self.me.ducked);
             let down = self.feet - Vec3::Z * GROUND_PROBE;
             let full = self.trace.sweep_box(lo, hi, self.feet, down);
             let mut ground = (full.hit() && full.normal.z >= WALKABLE_NORMAL_Z).then_some(full.normal);
@@ -690,8 +715,8 @@ impl Mover<'_, '_, '_, '_> {
         }
     }
 
-    fn eye_blend(fraction: f32) -> f32 {
-        EYE_DUCK * fraction + EYE_STAND * (1.0 - fraction)
+    fn eye_blend(&self, fraction: f32) -> f32 {
+        self.cfg.eye_duck * fraction + self.cfg.eye_stand * (1.0 - fraction)
     }
 
     fn smooth(x: f32) -> f32 {
@@ -705,9 +730,9 @@ impl Mover<'_, '_, '_, '_> {
         }
         self.me.ducked = true;
         self.me.ducking = false;
-        self.me.eye = EYE_DUCK;
+        self.me.eye = self.cfg.eye_duck;
         if !self.me.on_ground {
-            self.feet.z += STAND_HEIGHT - DUCK_HEIGHT;
+            self.feet.z += self.cfg.air_duck_lift();
         }
         let before = self.feet;
         let mut free = !self.trace.solid(true, self.feet);
@@ -731,18 +756,18 @@ impl Mover<'_, '_, '_, '_> {
         if self.me.on_ground {
             return !self.trace.solid(false, self.feet);
         }
-        let down = self.feet - Vec3::Z * (STAND_HEIGHT - DUCK_HEIGHT);
+        let down = self.feet - Vec3::Z * self.cfg.air_duck_lift();
         let tr = self.trace.sweep(false, self.feet, down);
         !tr.start_solid && !tr.hit()
     }
 
     fn finish_unduck(&mut self) {
         if !self.me.on_ground {
-            self.feet.z -= STAND_HEIGHT - DUCK_HEIGHT;
+            self.feet.z -= self.cfg.air_duck_lift();
         }
         self.me.ducked = false;
         self.me.ducking = false;
-        self.me.eye = EYE_STAND;
+        self.me.eye = self.cfg.eye_stand;
         self.categorize();
     }
 
@@ -769,7 +794,7 @@ impl Mover<'_, '_, '_, '_> {
                 if elapsed > TIME_TO_DUCK || !self.me.on_ground {
                     self.finish_duck();
                 } else {
-                    self.me.eye = Self::eye_blend(Self::smooth(elapsed / TIME_TO_DUCK));
+                    self.me.eye = self.eye_blend(Self::smooth(elapsed / TIME_TO_DUCK));
                 }
             }
         } else if self.me.ducked || self.me.ducking {
@@ -787,18 +812,18 @@ impl Mover<'_, '_, '_, '_> {
                 if elapsed > TIME_TO_UNDUCK || !self.me.on_ground {
                     self.finish_unduck();
                 } else {
-                    self.me.eye = Self::eye_blend(Self::smooth(1.0 - elapsed / TIME_TO_UNDUCK));
+                    self.me.eye = self.eye_blend(Self::smooth(1.0 - elapsed / TIME_TO_UNDUCK));
                     self.me.ducking = true;
                 }
             } else if self.me.duck_timer != DUCK_TIMER_START {
                 // No room to stand: forced fully ducked until there is.
                 self.me.ducked = true;
                 self.me.ducking = false;
-                self.me.eye = EYE_DUCK;
+                self.me.eye = self.cfg.eye_duck;
                 self.me.duck_timer = DUCK_TIMER_START;
             }
-        } else if (self.me.eye - EYE_STAND).abs() > 0.1 {
-            self.me.eye = EYE_STAND;
+        } else if (self.me.eye - self.cfg.eye_stand).abs() > 0.1 {
+            self.me.eye = self.cfg.eye_stand;
         }
         self.me.duck_held = held;
         scale
@@ -941,6 +966,7 @@ fn step(
             query: &query,
             filter: SpatialQueryFilter::from_excluded_entities(excluded),
             brushes: brushes.as_deref(),
+            heights: (cfg.stand_height, cfg.duck_height),
         };
         let mut mover = Mover {
             cfg: &cfg,

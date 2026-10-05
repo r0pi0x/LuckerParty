@@ -8,7 +8,8 @@
 //
 // Input file: one optional "start x y z pitch yaw vx vy vz" line, then one
 // line per tick: "buttons forwardmove sidemove pitch yaw".
-// Output file: one line per tick, "tick x y z vx vy vz onground ducked";
+// Output file: one line per tick, "tick x y z vx vy vz onground ducked
+// hull_top eye" (the collision box's top and the eye height above the origin);
 // tick 0 is the state after the bot was placed at the start (one idle
 // tick), tick n the state after input line n.
 
@@ -165,8 +166,12 @@ public void OnPlayerRunCmdPost(int client, int buttons, int impulse, const float
     float v[3];
     GetClientAbsOrigin(client, o);
     GetEntPropVector(client, Prop_Data, "m_vecAbsVelocity", v);
+    float maxs[3];
+    float view[3];
+    GetEntPropVector(client, Prop_Send, "m_vecMaxs", maxs);
+    GetEntPropVector(client, Prop_Data, "m_vecViewOffset", view);
     int flags = GetEntityFlags(client);
     g_cursor++;
-    g_out.WriteLine("%d %.4f %.4f %.4f %.4f %.4f %.4f %d %d", g_cursor, o[0], o[1], o[2], v[0], v[1], v[2],
-        (flags & FL_ONGROUND) ? 1 : 0, (flags & FL_DUCKING) ? 1 : 0);
+    g_out.WriteLine("%d %.4f %.4f %.4f %.4f %.4f %.4f %d %d %.4f %.4f", g_cursor, o[0], o[1], o[2], v[0], v[1], v[2],
+        (flags & FL_ONGROUND) ? 1 : 0, (flags & FL_DUCKING) ? 1 : 0, maxs[2], view[2]);
 }
