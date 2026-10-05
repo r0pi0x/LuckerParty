@@ -363,3 +363,25 @@ fn water_volumes() {
         );
     }
 }
+
+/// Where the 3D skybox is (engine meters).
+#[test]
+#[ignore]
+fn skybox_location() {
+    let map = mashup::games::load_map("cs_source:de_dust2").unwrap();
+    println!(
+        "sky camera {:?} scale {:?}",
+        map.sky_camera.as_ref().map(|c| c.origin),
+        map.sky_camera.as_ref().map(|c| c.scale)
+    );
+    println!("playable {:?}", map.playable);
+    let sky: Vec<_> = map
+        .meshes
+        .iter()
+        .filter(|m| m.skybox)
+        .flat_map(|m| m.positions.iter())
+        .collect();
+    let lo = sky.iter().fold(Vec3::MAX, |a, p| a.min(Vec3::from(**p)));
+    let hi = sky.iter().fold(Vec3::MIN, |a, p| a.max(Vec3::from(**p)));
+    println!("skybox meshes {lo:?}..{hi:?}");
+}

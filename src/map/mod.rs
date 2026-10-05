@@ -352,6 +352,9 @@ pub struct MapData {
     pub shadows: Option<MapShadows>,
     /// Gravity for physics bodies, m/s^2 (downward), when the game sets it.
     pub gravity: Option<f32>,
+    /// The playable area (engine space, min and max), when the map has a 3D
+    /// skybox outside it.
+    pub playable: Option<(Vec3, Vec3)>,
 }
 
 /// What the BSP leaf around a point can see of the sky.
@@ -579,6 +582,41 @@ struct SkyCameraInfo(MapSkyCamera);
 #[derive(Resource)]
 struct SkyVis(MapSkyVis);
 
+/// The map's playable area (see `MapData::playable`).
+#[derive(Resource)]
+struct PlayableArea((Vec3, Vec3));
+
+/// The 3D skybox also exists where it was built, outside the playable area
+/// (as in Source, where you can noclip to it). Drawn there only while the
+/// camera is outside the playable area too: without the game's visibility
+/// data, that keeps it from floating in view from inside the map.
+#[allow(clippy::type_complexity)]
+fn show_skybox_in_place(
+    area: Option<Res<PlayableArea>>,
+    cameras: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<SkyboxCamera>)>,
+    mut parts: Query<&mut bevy::camera::visibility::RenderLayers, Without<Camera>>,
+    mut outside_before: Local<Option<bool>>,
+) {
+    let Some(area) = area else { return };
+    let Some((eye, _)) = cameras.iter().find(|(_, c)| c.is_active) else {
+        return;
+    };
+    let p = eye.translation();
+    let (lo, hi) = area.0;
+    let outside = p.cmplt(lo).any() || p.cmpgt(hi).any();
+    if *outside_before == Some(outside) {
+        return;
+    }
+    *outside_before = Some(outside);
+    let sky = bevy::camera::visibility::RenderLayers::layer(SKYBOX_LAYER);
+    let both = bevy::camera::visibility::RenderLayers::from_layers(&[0, SKYBOX_LAYER]);
+    for mut layers in &mut parts {
+        if layers.intersects(&sky) {
+            *layers = if outside { both.clone() } else { sky.clone() };
+        }
+    }
+}
+
 /// Set when the map has a real 3D skybox (not just the 2D-sky camera).
 #[derive(Resource)]
 struct ActiveMapHas3dSky;
@@ -609,7 +647,10 @@ impl Plugin for MapPlugin {
                 ..default()
             })
             .add_systems(Startup, spawn_map)
-            .add_systems(Update, (attach_sky, glow_visibility, dust::update_dust))
+            .add_systems(
+                Update,
+                (attach_sky, glow_visibility, dust::update_dust, show_skybox_in_place),
+            )
             .add_systems(
                 PostUpdate,
                 update_prop_shadows
@@ -747,6 +788,9 @@ fn spawn_map(
             && view == MapDebugView::Normal
         {
             commands.insert_resource(MapSkybox(images.add(sky_image(sky, &data.textures))));
+        }
+        if let Some(bounds) = data.playable {
+            commands.insert_resource(PlayableArea(bounds));
         }
         if let Some(cam) = &data.sky_camera
             && view == MapDebugView::Normal

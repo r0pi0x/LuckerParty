@@ -306,6 +306,7 @@ pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> (MapData, LightmapLayo
     data.sky_camera = sky_camera(bsp);
     data.fog = world_fog(bsp);
     data.shadows = Some(shadow_control(bsp));
+    data.playable = playable_bounds(bsp).map(|b| b.engine());
     // Physics bodies fall at sv_gravity (800 units/s^2), read at load.
     data.gravity = Some(800.0 * METERS_PER_UNIT);
     (data, layout)
@@ -321,6 +322,21 @@ pub struct Bounds {
 
 impl Bounds {
     const MARGIN: f32 = 64.0;
+
+    /// Engine-space box (meters), margin included.
+    pub fn engine(&self) -> (Vec3, Vec3) {
+        let a = to_engine(vbsp::Vector {
+            x: self.lo.x - Self::MARGIN,
+            y: self.lo.y - Self::MARGIN,
+            z: self.lo.z - Self::MARGIN,
+        });
+        let b = to_engine(vbsp::Vector {
+            x: self.hi.x + Self::MARGIN,
+            y: self.hi.y + Self::MARGIN,
+            z: self.hi.z + Self::MARGIN,
+        });
+        (a.min(b), a.max(b))
+    }
 
     pub fn contains(&self, p: vbsp::Vector) -> bool {
         self.contains_point(Vec3::new(p.x, p.y, p.z))
