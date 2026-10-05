@@ -421,10 +421,10 @@ Read over RCON from the reference install (Linux, version 11003710) on 2026-10-0
 
 | Console variable | CS:S value | Note |
 |---|---|---|
-| sv_accelerate | **5** | registered default 10 |
+| sv_accelerate | **5** | set by CS:S's stock cfg/skill1.cfg; registered default 10 |
 | sv_friction | 4 | |
 | sv_airaccelerate | 10 | |
-| sv_stopspeed | **75** | registered default 100 (the shared code's value) |
+| sv_stopspeed | **75** | set by cfg/skill1.cfg; registered default 100 (the shared code's value) |
 | sv_gravity | 800 | |
 | sv_maxspeed | 320 | |
 | sv_stepsize | 18 | |
@@ -459,7 +459,7 @@ Knife script: MaxPlayerSpeed 250, Damage 50, WeaponArmorRatio 1.7, Range 4096 (t
 ## Open questions
 
 1. **Scoped speeds:** weapon speeds are now read from the scripts. Still to check: scoped speeds (AWP/scout/autos are slower zoomed; that is in CS:S code, not in scripts).
-2. **sv_accelerate 5 and sv_stopspeed 75 vs registered defaults 10 and 100:** confirm they come from CS:S itself, not a local config.
+2. **Answered:** sv_accelerate 5 and sv_stopspeed 75 come from CS:S's stock cfg/skill1.cfg, which the engine runs on every map load. They are CS:S's effective defaults; the registered defaults 10 and 100 are the shared code's.
 3. **Answered:** sv_stopspeed is 75 (see CS:S values).
 4. **Answered:** the CS:S jump impulse is 301.993 (see CS:S values).
 5. **CS:S hulls and eye heights:** CS:S is believed to use a 32×32×62 ducked box (not 36) and ducked eye ≈46, standing eye 64. The air-duck lift and the in-air unduck clearance both equal (standing height − ducked height), so they change with it (36 with the shared boxes). Measure with `cl_showpos`/getpos while standing vs ducked, and by finding the smallest vent you can enter.
