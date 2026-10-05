@@ -39,6 +39,8 @@ pub struct Resolved {
     pub double_sided: bool,
     /// `$decalscale` (map units per texel) when the material is a decal.
     pub decal_scale: Option<f32>,
+    /// `$bumpmap`: tangent-space normal map (linear texture).
+    pub normal_map: Option<usize>,
 }
 
 pub struct MaterialLoader<'a> {
@@ -89,6 +91,7 @@ impl<'a> MaterialLoader<'a> {
                     alpha: MapAlpha::Opaque,
                     double_sided: false,
                     decal_scale: None,
+                    normal_map: None,
                 }
             }
         }
@@ -101,6 +104,7 @@ impl<'a> MaterialLoader<'a> {
             alpha: MapAlpha::Opaque,
             double_sided: false,
             decal_scale: None,
+            normal_map: None,
         };
         let vmt_path = format!("materials/{}.vmt", normalize(name));
         let Some(text) = self.read_text(&vmt_path) else {
@@ -124,7 +128,8 @@ impl<'a> MaterialLoader<'a> {
         } else {
             MapAlpha::Opaque
         };
-        let texture = material.base_texture().and_then(|t| self.texture(t));
+        let texture = material.base_texture().and_then(|t| self.texture(t, true));
+        let normal_map = material.bump_map().and_then(|t| self.texture(t, false));
         let decal_scale = match &material {
             vmt_parser::material::Material::LightMappedGeneric(m) if m.decal => Some(m.decal_scale),
             _ => None,
@@ -134,15 +139,17 @@ impl<'a> MaterialLoader<'a> {
             alpha,
             double_sided: material.no_cull(),
             decal_scale,
+            normal_map,
         }
     }
 
-    fn texture(&mut self, name: &str) -> Option<usize> {
+    fn texture(&mut self, name: &str, srgb: bool) -> Option<usize> {
         let path = format!("materials/{}.vtf", normalize(name).trim_end_matches(".vtf"));
-        if let Some(cached) = self.by_path.get(&path) {
+        let key = if srgb { path.clone() } else { format!("{path}#linear") };
+        if let Some(cached) = self.by_path.get(&key) {
             return *cached;
         }
-        let loaded = self.decode(&path);
+        let loaded = self.decode(&path).map(|t| MapTexture { srgb, ..t });
         let index = match loaded {
             Ok(t) => {
                 self.textures.push(t);
@@ -153,7 +160,7 @@ impl<'a> MaterialLoader<'a> {
                 None
             }
         };
-        self.by_path.insert(path, index);
+        self.by_path.insert(key, index);
         index
     }
 
@@ -161,11 +168,62 @@ impl<'a> MaterialLoader<'a> {
         let bytes = self.read(path).ok_or("not found")?;
         let vtf = vtf::from_bytes(&bytes).map_err(|e| e.to_string())?;
         let image = vtf.highres_image.decode(0).map_err(|e| e.to_string())?.to_rgba8();
+        let mips = mip_levels(&bytes, &vtf.header).unwrap_or_default();
         Ok(MapTexture {
             name: path.to_string(),
+            srgb: true,
+            mips,
             width: image.width(),
             height: image.height(),
             rgba8: image.into_raw(),
         })
     }
+}
+
+/// The VTF's own smaller mip levels (1..n), decoded to RGBA8. VTF stores
+/// levels smallest first, before the full-size image; this mirrors how the
+/// `vtf` crate locates the full-size data, then walks back.
+fn mip_levels(bytes: &[u8], header: &vtf::header::VTFHeader) -> Option<Vec<Vec<u8>>> {
+    use vtf::{image::VTFImage, resources::ResourceType};
+
+    if header.mipmap_count <= 1 || header.frames > 1 || header.depth > 1 {
+        return None;
+    }
+    let format = header.highres_image_format;
+    let lowres_offset = match header
+        .resources
+        .get_by_type(ResourceType::VTF_LEGACY_RSRC_LOW_RES_IMAGE)
+    {
+        Some(r) => r.data,
+        None => header.header_size,
+    };
+    let data_start = match header.resources.get_by_type(ResourceType::VTF_LEGACY_RSRC_IMAGE) {
+        Some(r) => r.data,
+        None => {
+            lowres_offset
+                + header
+                    .lowres_image_format
+                    .frame_size(header.lowres_image_width as u32, header.lowres_image_height as u32)
+                    .ok()?
+        }
+    } as usize;
+    let size = |m: u32| -> Option<(u32, u32, usize)> {
+        let (w, h) = ((header.width as u32 >> m).max(1), (header.height as u32 >> m).max(1));
+        Some((w, h, format.frame_size(w, h).ok()? as usize))
+    };
+    let count = header.mipmap_count as u32;
+    let mut out = Vec::new();
+    for m in 1..count {
+        // Offset of level m: all smaller levels come first.
+        let mut offset = data_start;
+        for smaller in (m + 1)..count {
+            offset += size(smaller)?.2;
+        }
+        let (w, h, _) = size(m)?;
+        let mut single = header.clone();
+        single.mipmap_count = 1;
+        let img = VTFImage::new(single, format, w as u16, h as u16, bytes, offset);
+        out.push(img.decode(0).ok()?.to_rgba8().into_raw());
+    }
+    Some(out)
 }

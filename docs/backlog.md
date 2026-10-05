@@ -33,8 +33,8 @@ Counts are from de_dust2's entity lump and static prop lump.
   mesh).
 - **Ropes** (`move_rope`, 25) and **sprites** (`env_sprite`, 18; lamp glows).
 - **Fire** (`env_fire`, 16) and other effects, if they show in normal play.
-- **Materials**: bump maps, WorldVertexTransition blending on displacements,
-  `$basetexturetransform`, the VTF's own mip levels.
+- **Materials**: WorldVertexTransition blending on displacements,
+  `$basetexturetransform`, env maps, detail textures.
 - **Lightmap styles** (switchable lights) and bumped lightmaps.
 - **Fog and tonemap** (`env_fog_controller`, `env_tonemap_controller`).
 - **Sound**: `ambient_generic` and soundscapes, once there's an audio slot.

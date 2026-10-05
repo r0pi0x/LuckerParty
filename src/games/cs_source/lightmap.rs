@@ -38,12 +38,26 @@ pub struct FaceSamples {
 
 /// The face's first (style 0, unbumped) lightmap, if it has one.
 pub fn face_samples(lump: &[u8], face: &vbsp::Face) -> Option<FaceSamples> {
+    block(lump, face, 0)
+}
+
+/// For bump-mapped faces (texinfo flag SURF_BUMPLIGHT): the three
+/// directional lightmaps that follow the unbumped one, one per basis
+/// direction of Valve's radiosity normal mapping.
+pub fn face_bumped_samples(lump: &[u8], face: &vbsp::Face, bumped: bool) -> Option<[FaceSamples; 3]> {
+    if !bumped {
+        return None;
+    }
+    Some([block(lump, face, 1)?, block(lump, face, 2)?, block(lump, face, 3)?])
+}
+
+fn block(lump: &[u8], face: &vbsp::Face, index: u32) -> Option<FaceSamples> {
     if face.light_offset < 0 || face.styles[0] == 255 {
         return None;
     }
     let width = (face.light_map_texture_size[0] + 1) as u32;
     let height = (face.light_map_texture_size[1] + 1) as u32;
-    let start = face.light_offset as usize;
+    let start = face.light_offset as usize + (index * width * height * 4) as usize;
     let bytes = lump.get(start..start + (width * height * 4) as usize)?;
     let rgb = bytes
         .as_chunks::<4>()
@@ -72,6 +86,8 @@ pub fn luxel_coords(texinfo: &vbsp::TextureInfo, face: &vbsp::Face, p: vbsp::Vec
 #[derive(Default)]
 pub struct AtlasBuilder {
     blocks: Vec<FaceSamples>,
+    /// Directional lightmaps per block, when bump-mapped.
+    bumped: Vec<Option<[FaceSamples; 3]>>,
 }
 
 /// Where a block landed: top-left of its samples, in luxels.
@@ -84,7 +100,12 @@ pub struct Placement {
 impl AtlasBuilder {
     /// Add a block; returns its slot.
     pub fn add(&mut self, samples: FaceSamples) -> usize {
+        self.add_bumped(samples, None)
+    }
+
+    pub fn add_bumped(&mut self, samples: FaceSamples, bumped: Option<[FaceSamples; 3]>) -> usize {
         self.blocks.push(samples);
+        self.bumped.push(bumped);
         self.blocks.len() - 1
     }
 
@@ -124,16 +145,29 @@ impl AtlasBuilder {
         }
         let height = (y + shelf).max(1);
 
-        let mut rgb = vec![[0.0f32; 3]; (ATLAS_WIDTH * height) as usize];
-        for (b, p) in self.blocks.iter().zip(&placements) {
-            // Copy samples, extending edge samples into the padding.
+        let any_bumped = self.bumped.iter().any(Option::is_some);
+        let blank = || vec![[0.0f32; 3]; (ATLAS_WIDTH * height) as usize];
+        let mut rgb = blank();
+        let mut bumped = any_bumped.then(|| [blank(), blank(), blank()]);
+        // Copy samples, extending edge samples into the padding.
+        let copy = |dest: &mut Vec<[f32; 3]>, b: &FaceSamples, p: &Placement| {
             for py in 0..b.height + 2 * PAD {
                 for px in 0..b.width + 2 * PAD {
                     let sx = (px as i32 - PAD as i32).clamp(0, b.width as i32 - 1) as u32;
                     let sy = (py as i32 - PAD as i32).clamp(0, b.height as i32 - 1) as u32;
                     let ax = p.origin.x - PAD + px;
                     let ay = p.origin.y - PAD + py;
-                    rgb[(ay * ATLAS_WIDTH + ax) as usize] = b.rgb[(sy * b.width + sx) as usize];
+                    dest[(ay * ATLAS_WIDTH + ax) as usize] = b.rgb[(sy * b.width + sx) as usize];
+                }
+            }
+        };
+        for (i, (b, p)) in self.blocks.iter().zip(&placements).enumerate() {
+            copy(&mut rgb, b, p);
+            if let Some(layers) = bumped.as_mut() {
+                for (k, layer) in layers.iter_mut().enumerate() {
+                    // Unbumped faces show their flat lighting in every layer.
+                    let src = self.bumped[i].as_ref().map(|d| &d[k]).unwrap_or(b);
+                    copy(layer, src, p);
                 }
             }
         }
@@ -142,6 +176,7 @@ impl AtlasBuilder {
                 width: ATLAS_WIDTH,
                 height,
                 rgb,
+                bumped,
             },
             placements,
             white,

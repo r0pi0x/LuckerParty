@@ -15,11 +15,28 @@ use bevy::{
 
 use crate::core::{SpawnPoint, Team};
 
+pub mod world_material;
+
+use world_material::{WorldMaterial, WorldParams};
+
+/// Signs for normal maps' red and green channels in the world material.
+/// Chosen with refcmp against CS:S on de_dust2: x -1, g -1 gave the lowest
+/// pixel difference of the four combinations (0.531 vs 0.538 without bump
+/// mapping) and grooves lit on top as in the game. The margin between
+/// combinations is small; revisit with more views.
+const NORMAL_G_SIGN: f32 = -1.0;
+const NORMAL_X_SIGN: f32 = -1.0;
+
 /// An RGBA8 texture in sRGB, top row first.
 #[derive(Clone, Debug)]
 pub struct MapTexture {
     /// Source path, e.g. `materials/de_dust/sitebwall01.vtf`.
     pub name: String,
+    /// Color data (sRGB) or data such as normal maps (linear).
+    pub srgb: bool,
+    /// Smaller mip levels shipped with the texture (RGBA8, halving each
+    /// time). Empty: generate them.
+    pub mips: Vec<Vec<u8>>,
     pub width: u32,
     pub height: u32,
     pub rgba8: Vec<u8>,
@@ -54,6 +71,8 @@ pub struct MapMesh {
     pub texture: Option<usize>,
     pub alpha: MapAlpha,
     pub double_sided: bool,
+    /// Tangent-space normal map (index into `MapData::textures`, linear).
+    pub normal_map: Option<usize>,
     /// Per-vertex coordinates into `MapData::lightmap` (0..1); empty when
     /// the map has no baked lighting.
     pub lightmap_uvs: Vec<[f32; 2]>,
@@ -67,6 +86,10 @@ pub struct MapLightmap {
     pub height: u32,
     /// Row-major, top row first.
     pub rgb: Vec<[f32; 3]>,
+    /// Directional lightmaps for normal-mapped surfaces (same layout), one
+    /// per basis direction of radiosity normal mapping. Surfaces without
+    /// them repeat `rgb`.
+    pub bumped: Option<[Vec<[f32; 3]>; 3]>,
 }
 
 /// A reusable model (e.g. a window frame), in its own space: meters, Y up.
@@ -302,9 +325,19 @@ fn spawn_map(
     mut meshes: Option<ResMut<Assets<Mesh>>>,
     mut materials: Option<ResMut<Assets<StandardMaterial>>>,
     mut images: Option<ResMut<Assets<Image>>>,
+    mut world_materials: Option<ResMut<Assets<WorldMaterial>>>,
 ) {
     let data = &pending.0;
     let view = pending.1;
+    info!(
+        "spawning map: world material {}, lightmap {}",
+        if world_materials.is_some() {
+            "available"
+        } else {
+            "missing"
+        },
+        data.lightmap.is_some()
+    );
     let root = commands
         .spawn((
             Name::new(format!("Map {}", data.name)),
@@ -354,7 +387,16 @@ fn spawn_map(
             .iter()
             .map(|t| images.add(to_image(t, &data.look)))
             .collect();
-        let lightmap = data.lightmap.as_ref().map(|l| images.add(lightmap_image(l)));
+        let lightmap = data
+            .lightmap
+            .as_ref()
+            .map(|l| images.add(lightmap_image(&l.rgb, l.width, l.height)));
+        let bumped_lightmaps: Option<[Handle<Image>; 3]> = data.lightmap.as_ref().and_then(|l| {
+            let b = l.bumped.as_ref()?;
+            Some(std::array::from_fn(|i| {
+                images.add(lightmap_image(&b[i], l.width, l.height))
+            }))
+        });
         if let Some(sky) = &data.sky
             && view == MapDebugView::Normal
         {
@@ -367,6 +409,62 @@ fn spawn_map(
         }
         for m in &data.meshes {
             let lit = lightmap.as_ref().filter(|_| m.lightmap_uvs.len() == m.positions.len());
+            // Lightmapped world surfaces: Source-style texture x baked light.
+            if let (Some(lm), Some(world_materials), false) =
+                (lit, world_materials.as_mut(), m.material.starts_with("decal:"))
+            {
+                let [r, g, b] = m.color;
+                // Calibration hook: MASHUP_NORMAL_G_SIGN overrides the sign;
+                // 0 turns radiosity normal mapping off.
+                let g_sign = std::env::var("MASHUP_NORMAL_G_SIGN")
+                    .ok()
+                    .and_then(|v| v.parse::<f32>().ok())
+                    .unwrap_or(NORMAL_G_SIGN);
+                let bumped = m.normal_map.is_some() && bumped_lightmaps.is_some() && g_sign != 0.0;
+                let material = WorldMaterial {
+                    params: WorldParams {
+                        base_color: if m.texture.is_some() {
+                            Vec4::ONE
+                        } else {
+                            Vec4::new(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0)
+                        },
+                        light_scale: data.look.light_scale,
+                        bumped: if bumped { 1.0 } else { 0.0 },
+                        normal_g_sign: g_sign,
+                        normal_x_sign: std::env::var("MASHUP_NORMAL_X_SIGN")
+                            .ok()
+                            .and_then(|v| v.parse::<f32>().ok())
+                            .unwrap_or(NORMAL_X_SIGN),
+                        alpha_cutoff: if let MapAlpha::Mask(c) = m.alpha { c } else { 0.0 },
+                        debug_view: match view {
+                            MapDebugView::Normal => 0.0,
+                            MapDebugView::Lighting { .. } => 1.0,
+                            MapDebugView::Albedo => 2.0,
+                        },
+                    },
+                    base: m.texture.map(|i| textures[i].clone()),
+                    normal: m.normal_map.filter(|_| bumped).map(|i| textures[i].clone()),
+                    lightmap: Some(lm.clone()),
+                    lightmap_b0: bumped_lightmaps.as_ref().map(|b| b[0].clone()),
+                    lightmap_b1: bumped_lightmaps.as_ref().map(|b| b[1].clone()),
+                    lightmap_b2: bumped_lightmaps.as_ref().map(|b| b[2].clone()),
+                    alpha_mode: match m.alpha {
+                        MapAlpha::Opaque | MapAlpha::Mask(_) => AlphaMode::Opaque,
+                        MapAlpha::Blend => AlphaMode::Blend,
+                    },
+                    double_sided: m.double_sided,
+                };
+                commands.spawn((
+                    Name::new(m.material.clone()),
+                    MapPart,
+                    layer_of(m.skybox),
+                    Mesh3d(meshes.add(build_mesh(m, true))),
+                    MeshMaterial3d(world_materials.add(material)),
+                    Transform::default(),
+                    ChildOf(root),
+                ));
+                continue;
+            }
             let mut part = commands.spawn((
                 Name::new(m.material.clone()),
                 MapPart,
@@ -519,6 +617,16 @@ fn to_image(t: &MapTexture, look: &MapLook) -> Image {
     let (mut w, mut h) = (t.width as usize, t.height as usize);
     let mut level = t.rgba8.clone();
     let mut levels = 1;
+    // Prefer the texture's own mip levels (the original tools' filtering).
+    let complete = (t.width.max(t.height) as f32).log2() as usize;
+    if !t.mips.is_empty() && t.mips.len() == complete {
+        for m in &t.mips {
+            data.extend_from_slice(m);
+        }
+        levels += t.mips.len() as u32;
+        w = 1;
+        h = 1;
+    }
     while w > 1 || h > 1 {
         let (nw, nh) = ((w / 2).max(1), (h / 2).max(1));
         let mut next = vec![0u8; nw * nh * 4];
@@ -547,7 +655,11 @@ fn to_image(t: &MapTexture, look: &MapLook) -> Image {
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,
-        TextureFormat::Rgba8UnormSrgb,
+        if t.srgb {
+            TextureFormat::Rgba8UnormSrgb
+        } else {
+            TextureFormat::Rgba8Unorm
+        },
         RenderAssetUsages::RENDER_WORLD,
     );
     image.data = Some(data);
@@ -568,18 +680,18 @@ fn to_image(t: &MapTexture, look: &MapLook) -> Image {
     image
 }
 
-/// The lighting atlas as a filterable half-float texture, clamped.
-fn lightmap_image(l: &MapLightmap) -> Image {
-    let mut data = Vec::with_capacity(l.rgb.len() * 8);
-    for [r, g, b] in &l.rgb {
+/// A lighting atlas layer as a filterable half-float texture, clamped.
+fn lightmap_image(rgb: &[[f32; 3]], width: u32, height: u32) -> Image {
+    let mut data = Vec::with_capacity(rgb.len() * 8);
+    for [r, g, b] in rgb {
         for c in [*r, *g, *b, 1.0] {
             data.extend_from_slice(&half::f16::from_f32(c).to_le_bytes());
         }
     }
     let mut image = Image::new(
         Extent3d {
-            width: l.width,
-            height: l.height,
+            width,
+            height,
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,

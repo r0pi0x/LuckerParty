@@ -38,7 +38,8 @@ A module may use only the modules below it. Enforced by
 | `src/movement/` | `placeholder` (stand-in walking) and `noclip` Movement implementations |
 | `src/greybox.rs` | Map slot built in code; collision always, visuals only when rendering |
 | `src/mount/` | `Mount` (ordered layers, first match wins), `FileSource`, `LooseDir`, path normalization, `mashup.local.toml` loading |
-| `src/map.rs` | `MapData` (meters, Y up, meshes per material, textures, lightmap atlas, collision, prop models and placements, spawns) and `MapPlugin` that spawns it |
+| `src/map/world_material.rs`, `world.wgsl` | World surfaces: texture x baked light with radiosity normal mapping (Source LightmappedGeneric at LDR) |
+| `src/map/mod.rs` | `MapData` (meters, Y up, meshes per material, textures, lightmap atlas, collision, prop models and placements, spawns) and `MapPlugin` that spawns it |
 | `src/games/mod.rs` | `load_map("game:name")` dispatcher |
 | `src/games/cs_source/` | VPK reader, the CS:S search path, BSP to `MapData` (via `vbsp`), VMT/VTF materials (map pak first, then the mount), lightmap atlas from the lighting lump, brush collision hulls, static props via `vmdl`, ambient cubes and world lights for prop light probes, infodecals clipped onto faces |
 | `src/games/combat_arms/` | `.rez` reader and the archive cipher payload decryption (from the spec), all archives as one mount |

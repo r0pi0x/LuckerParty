@@ -419,10 +419,46 @@ fn stats(img: &RgbImage) -> Stats {
     s
 }
 
+/// Correlation of the two images' fine detail (Laplacian of luma): near 1
+/// when texture relief lines up, near 0 when unrelated, negative when
+/// inverted (e.g. normal maps lit from the wrong side).
+fn detail_correlation(a: &RgbImage, b: &RgbImage) -> f32 {
+    // Half resolution first: tolerant of sub-pixel differences between
+    // renderers, still sensitive to texture relief.
+    let half =
+        |img: &RgbImage| imageops::resize(img, img.width() / 2, img.height() / 2, imageops::FilterType::Triangle);
+    let (a, b) = (&half(a), &half(b));
+    let lap = |img: &RgbImage| {
+        let (w, h) = img.dimensions();
+        let l = |x: u32, y: u32| {
+            let p = img.get_pixel(x, y);
+            0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32
+        };
+        let mut out = Vec::with_capacity((w * h) as usize);
+        for y in 1..h - 1 {
+            for x in 1..w - 1 {
+                out.push(4.0 * l(x, y) - l(x - 1, y) - l(x + 1, y) - l(x, y - 1) - l(x, y + 1));
+            }
+        }
+        out
+    };
+    let (la, lb) = (lap(a), lap(b));
+    let n = la.len() as f32;
+    let (ma, mb) = (la.iter().sum::<f32>() / n, lb.iter().sum::<f32>() / n);
+    let (mut sab, mut saa, mut sbb) = (0.0f64, 0.0f64, 0.0f64);
+    for (x, y) in la.iter().zip(&lb) {
+        let (dx, dy) = ((x - ma) as f64, (y - mb) as f64);
+        sab += dx * dy;
+        saa += dx * dx;
+        sbb += dy * dy;
+    }
+    (sab / (saa.sqrt() * sbb.sqrt()).max(1e-9)) as f32
+}
+
 fn report(file: &ViewsFile, ref_dir: &Path, ours_dir: &Path, out: &Path) -> Result<(), String> {
     println!(
-        "\n{:<14} {:>12} {:>12} {:>14} {:>9}   (ref -> ours)",
-        "view", "luma", "saturation", "sharpness", "abs diff"
+        "\n{:<14} {:>12} {:>12} {:>14} {:>9} {:>7}   (ref -> ours)",
+        "view", "luma", "saturation", "sharpness", "abs diff", "detail"
     );
     let mut rows = Vec::new();
     for v in &file.view {
@@ -449,9 +485,10 @@ fn report(file: &ViewsFile, ref_dir: &Path, ours_dir: &Path, out: &Path) -> Resu
             *d = Rgb(px.map(|v| v.saturating_mul(4)));
         }
         let abs_diff = total / (r.width() * r.height()) as f32;
+        let detail = detail_correlation(&r, &o);
         println!(
-            "{:<14} {:>5.3}->{:<5.3} {:>5.3}->{:<5.3} {:>6.1}->{:<6.1} {:>9.3}",
-            v.name, rs.luma, os.luma, rs.saturation, os.saturation, rs.sharpness, os.sharpness, abs_diff
+            "{:<14} {:>5.3}->{:<5.3} {:>5.3}->{:<5.3} {:>6.1}->{:<6.1} {:>9.3} {:>7.3}",
+            v.name, rs.luma, os.luma, rs.saturation, os.saturation, rs.sharpness, os.sharpness, abs_diff, detail
         );
         // Side by side: reference | ours | difference x4, at half size.
         let (hw, hh) = (r.width() / 2, r.height() / 2);
@@ -462,7 +499,7 @@ fn report(file: &ViewsFile, ref_dir: &Path, ours_dir: &Path, out: &Path) -> Resu
         }
         let path = out.join(format!("{}.png", v.name));
         sheet.save(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        rows.push(serde_json::json!({"view": v.name, "ref": rs, "ours": os, "abs_diff": abs_diff}));
+        rows.push(serde_json::json!({"view": v.name, "ref": rs, "ours": os, "abs_diff": abs_diff, "detail_correlation": detail}));
     }
     let metrics = out.join("metrics.json");
     std::fs::write(&metrics, serde_json::to_string_pretty(&rows).unwrap()).map_err(|e| e.to_string())?;

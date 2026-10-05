@@ -54,6 +54,7 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
     for mesh in &mut data.meshes {
         let r = materials.resolve(&mesh.material);
         mesh.texture = r.texture;
+        mesh.normal_map = r.normal_map;
         mesh.alpha = r.alpha;
         mesh.double_sided = r.double_sided;
     }
@@ -201,7 +202,8 @@ pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> (MapData, LightmapLayo
             continue;
         }
 
-        let slot = lightmap::face_samples(lighting, &face).map(|s| atlas.add(s));
+        let bumped = lightmap::face_bumped_samples(lighting, &face, flags.contains(TextureFlags::BUMPLIGHT));
+        let slot = lightmap::face_samples(lighting, &face).map(|s| atlas.add_bumped(s, bumped));
         *face_slots.last_mut().unwrap() = slot;
         let material = tex.name().to_lowercase();
         // Meshes are per material and per part (world or 3D skybox).
