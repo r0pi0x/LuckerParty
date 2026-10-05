@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use bevy::prelude::*;
-use vbsp::{Bsp, TextureFlags};
+use vbsp::{BrushFlags, Bsp, TextureFlags};
 
 use super::{
     lightmap::{self, AtlasBuilder},
@@ -141,6 +141,7 @@ pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> MapData {
             continue;
         }
         let face_normal = to_engine_dir(face.normal());
+        let displaced_face = face.displacement().is_some();
         // Re-wind triangles to face the plane normal.
         let tris: Vec<[(vbsp::Vector, Vec2); 3]> = face_triangles(&face)
             .into_iter()
@@ -154,7 +155,9 @@ pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> MapData {
             })
             .collect();
 
-        if !flags.intersects(NOT_SOLID) {
+        // Brush solids come from the brush lump below; only displacement
+        // surfaces (which have no brush volume) collide as triangles.
+        if displaced_face && !flags.intersects(NOT_SOLID) {
             for t in &tris {
                 let base = data.collision_positions.len() as u32;
                 data.collision_positions
@@ -193,6 +196,8 @@ pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> MapData {
         }
     }
 
+    data.collision_hulls = brush_hulls(bsp);
+
     let (lightmap, placements, white) = atlas.build();
     for (material, mesh) in by_material.iter_mut() {
         mesh.lightmap_uvs = pending_lm[material]
@@ -217,6 +222,110 @@ pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> MapData {
         }
     }
     data
+}
+
+/// Contents that stop players: solid world, glass, grates, player clips.
+const PLAYER_SOLID: BrushFlags = BrushFlags::SOLID
+    .union(BrushFlags::WINDOW)
+    .union(BrushFlags::GRATE)
+    .union(BrushFlags::PLAYERCLIP);
+
+/// Indices of brushes that belong to the world (model 0), found through its
+/// BSP tree. Brush entities (buy zones, bomb sites, doors) have their own
+/// trees and are excluded here.
+fn world_brushes(bsp: &Bsp) -> std::collections::BTreeSet<usize> {
+    let mut out = std::collections::BTreeSet::new();
+    let Some(world) = bsp.models.first() else { return out };
+    let mut stack = vec![world.head_node];
+    while let Some(child) = stack.pop() {
+        if child >= 0 {
+            if let Some(node) = bsp.nodes.get(child as usize) {
+                stack.extend(node.children);
+            }
+        } else if let Some(leaf) = bsp.leaf((-child - 1) as usize) {
+            let first = leaf.first_leaf_brush as usize;
+            for lb in bsp.leaf_brushes.iter().skip(first).take(leaf.leaf_brush_count as usize) {
+                out.insert(lb.brush as usize);
+            }
+        }
+    }
+    out
+}
+
+/// Every player-solid world brush as a convex hull in engine space: the
+/// corners where three of its planes meet and no other plane cuts them off.
+pub fn brush_hulls(bsp: &Bsp) -> Vec<Vec<[f32; 3]>> {
+    const EPS: f32 = 0.01;
+    // Plane index (either side) -> centres of displacement base faces on it.
+    let mut disp_bases: std::collections::HashMap<u16, Vec<Vec3>> = Default::default();
+    let Some(world) = bsp.models().next() else {
+        return Vec::new();
+    };
+    for face in world.faces() {
+        if face.displacement().is_none() {
+            continue;
+        }
+        let corners: Vec<Vec3> = face
+            .vertices()
+            .map(|v| Vec3::new(v.position.x, v.position.y, v.position.z))
+            .collect();
+        let centre = corners.iter().sum::<Vec3>() / corners.len().max(1) as f32;
+        disp_bases.entry(face.plane_num & !1).or_default().push(centre);
+    }
+    let mut out = Vec::new();
+    for index in world_brushes(bsp) {
+        let brush = &bsp.brushes[index];
+        if !brush.flags.intersects(PLAYER_SOLID) {
+            continue;
+        }
+        let first = brush.brush_side as usize;
+        let sides = &bsp.brush_sides[first..first + brush.num_brush_sides as usize];
+        let planes: Vec<(Vec3, f32)> = sides
+            .iter()
+            .filter_map(|side| bsp.plane(side.plane as usize))
+            .map(|p| (Vec3::new(p.normal.x, p.normal.y, p.normal.z), p.dist))
+            .collect();
+        // A brush carrying a displacement collides as the displacement
+        // surface (added as triangles), not as its original volume. Compiled
+        // maps don't record which brush that was (the brush side field is
+        // always 0), so match a side's plane and the displacement's centre.
+        let carries_displacement = sides.iter().any(|side| {
+            disp_bases
+                .get(&(side.plane & !1))
+                .is_some_and(|centres| centres.iter().any(|c| planes.iter().all(|(n, d)| n.dot(*c) <= d + 1.0)))
+        });
+        if carries_displacement {
+            continue;
+        }
+        let mut points: Vec<Vec3> = Vec::new();
+        for i in 0..planes.len() {
+            for j in i + 1..planes.len() {
+                for k in j + 1..planes.len() {
+                    let (n1, d1) = planes[i];
+                    let (n2, d2) = planes[j];
+                    let (n3, d3) = planes[k];
+                    let denom = n1.dot(n2.cross(n3));
+                    if denom.abs() < 1e-6 {
+                        continue;
+                    }
+                    let p = (n2.cross(n3) * d1 + n3.cross(n1) * d2 + n1.cross(n2) * d3) / denom;
+                    let inside = planes.iter().all(|(n, d)| n.dot(p) <= d + EPS);
+                    if inside && !points.iter().any(|q| q.distance_squared(p) < EPS) {
+                        points.push(p);
+                    }
+                }
+            }
+        }
+        if points.len() >= 4 {
+            out.push(
+                points
+                    .iter()
+                    .map(|p| to_engine(vbsp::Vector { x: p.x, y: p.y, z: p.z }).to_array())
+                    .collect(),
+            );
+        }
+    }
+    out
 }
 
 fn parse_vector(s: &str) -> Option<vbsp::Vector> {

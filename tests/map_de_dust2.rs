@@ -65,6 +65,45 @@ fn most_surfaces_get_textures() {
 }
 
 #[test]
+fn collision_comes_from_world_brushes() {
+    let Some(map) = dust2() else { return };
+    // ~2,100 player-solid world brushes, minus those carrying displacements.
+    assert!(
+        (1900..2100).contains(&map.collision_hulls.len()),
+        "{} hulls",
+        map.collision_hulls.len()
+    );
+    assert!(
+        !map.collision_indices.is_empty(),
+        "displacement surfaces should collide"
+    );
+}
+
+/// Every spawn must be usable: a player placed there drops onto the floor
+/// just below the marker (a solid covering a spawn would hold it up or trap
+/// it; a hole would let it fall).
+#[test]
+fn every_spawn_lands_on_the_floor() {
+    let Some(map) = dust2() else { return };
+    let spawns = map.spawns.clone();
+    let mut sim = Sim::new(MapPlugin::new(map));
+    let players: Vec<_> = spawns
+        .iter()
+        .map(|(feet, _)| sim.spawn_character(*feet + Vec3::Y * 1.0, placeholder::ID))
+        .collect();
+    sim.seconds(1.5);
+    for ((feet, team), p) in spawns.iter().zip(players) {
+        let below = feet.y + 0.9 - sim.position(p).y;
+        assert!(sim.state(p).on_ground, "{team:?} spawn {feet}: not grounded");
+        // Markers sit up to ~1 m above the floor, or slightly into a slope.
+        assert!(
+            (-0.3..1.5).contains(&below),
+            "{team:?} spawn {feet}: standing {below} m below the marker"
+        );
+    }
+}
+
+#[test]
 fn player_lands_at_spawn_and_can_walk() {
     let Some(map) = dust2() else { return };
     let (feet, _) = map.spawns[0];
@@ -163,7 +202,8 @@ fn lightmaps_agree_at_shared_edges() {
     }
 
     // (is displacement, quantized position, quantized plane) -> (face, value)
-    let mut shared: HashMap<(bool, [i32; 3], [i32; 4]), Vec<(usize, f32)>> = HashMap::new();
+    type Key = (bool, [i32; 3], [i32; 4]);
+    let mut shared: HashMap<Key, Vec<(usize, f32)>> = HashMap::new();
     for (fi, face) in map.models().next().unwrap().faces().enumerate() {
         let Some(samples) = lightmap::face_samples(lump, &face) else {
             continue;

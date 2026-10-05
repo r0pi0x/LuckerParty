@@ -10,7 +10,7 @@ Small, current, honest. Remove entries when fixed.
 | tests | `no_game_assets_tracked` blocks all .wav/.ogg/.mp3, including our own future sounds | Revisit when we have original audio |
 | client | Local input overwrites the local player's `Intent` every frame, so remote tools can't drive it | Scripted intent playback is planned (docs/OBSERVABILITY.md) |
 | map | CS:S 3D skybox geometry is drawn at 1:1 off to one side instead of scaled around the camera | Visual only; fix with the sky stage |
-| map | CS:S collision comes from world faces, not brushes: player-clip brushes are ignored, brush entities (doors) not loaded | Enough to walk dust2; brushes when props and doors land |
+| map | Brushes carrying displacements are found by matching plane and centre (compiled maps don't record it); brush entities (func_brush, doors) aren't loaded | Matches dust2; check on other maps |
 | map | Materials use only `$basetexture`: no bump maps, no WorldVertexTransition blending (displacements show their first texture), no `$basetexturetransform` | Looks right at a glance; refine with lighting |
 | map | Lightmaps use style 0 only (no switchable lights), the unbumped sample only, and LDR data; brightness depends on Bevy's default camera exposure and tonemapping | Looks right on dust2; revisit if colors look off against the real game |
 | map | Mipmaps are box-filtered at load instead of using the VTF's own levels; textures decode on every load (no cache yet) | dust2 still loads in well under a second |

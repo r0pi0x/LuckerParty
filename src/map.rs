@@ -73,9 +73,11 @@ pub struct MapData {
     pub meshes: Vec<MapMesh>,
     pub textures: Vec<MapTexture>,
     pub lightmap: Option<MapLightmap>,
-    /// Collision triangles (may include surfaces that aren't drawn).
+    /// Collision triangles (surfaces with no solid volume, e.g. terrain).
     pub collision_positions: Vec<[f32; 3]>,
     pub collision_indices: Vec<[u32; 3]>,
+    /// Solid convex volumes, each as its corner points.
+    pub collision_hulls: Vec<Vec<[f32; 3]>>,
     /// Feet positions.
     pub spawns: Vec<(Vec3, Option<Team>)>,
     /// Things the importer couldn't load (missing materials etc.).
@@ -161,16 +163,33 @@ fn spawn_map(
         ))
         .id();
 
-    commands.entity(root).with_child((
-        Name::new("Map collision"),
-        MapPart,
-        RigidBody::Static,
-        Collider::trimesh(
-            data.collision_positions.iter().map(|p| Vec3::from(*p)).collect(),
-            data.collision_indices.clone(),
-        ),
-        Transform::default(),
-    ));
+    if !data.collision_indices.is_empty() {
+        commands.entity(root).with_child((
+            Name::new("Map collision (surfaces)"),
+            MapPart,
+            RigidBody::Static,
+            Collider::trimesh(
+                data.collision_positions.iter().map(|p| Vec3::from(*p)).collect(),
+                data.collision_indices.clone(),
+            ),
+            Transform::default(),
+        ));
+    }
+    if !data.collision_hulls.is_empty() {
+        let hulls: Vec<_> = data
+            .collision_hulls
+            .iter()
+            .filter_map(|h| Collider::convex_hull(h.iter().map(|p| Vec3::from(*p)).collect()))
+            .map(|c| (Vec3::ZERO, Quat::IDENTITY, c))
+            .collect();
+        commands.entity(root).with_child((
+            Name::new("Map collision (solids)"),
+            MapPart,
+            RigidBody::Static,
+            Collider::compound(hulls),
+            Transform::default(),
+        ));
+    }
 
     if let (Some(meshes), Some(materials), Some(images)) = (meshes.as_mut(), materials.as_mut(), images.as_mut()) {
         let textures: Vec<Handle<Image>> = data.textures.iter().map(|t| images.add(to_image(t))).collect();
