@@ -132,3 +132,10 @@ angles = [35, 90]
 name = "tunnel_level_e"
 position = [-896.0, 1440.0, -48.0]
 angles = [0, 0]
+
+# A tunnel ceiling lamp's additive halo sprite (mode 5, renderamt 25,
+# scale 3) seen head-on.
+[[view]]
+name = "glow_halo"
+position = [-1406.0, 1040.0, 140.0]
+angles = [-10, 90]

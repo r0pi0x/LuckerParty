@@ -294,7 +294,8 @@ fn capture_ours_env(file: &ViewsFile, out: &Path, extra: &[&str], env: &[(&str, 
 
     let exe = std::env::current_exe()
         .map_err(|e| e.to_string())?
-        .with_file_name("mashup");
+        .with_file_name(if cfg!(windows) { "mashup.exe" } else { "mashup" });
+    warn_if_stale(&exe);
     println!("capturing {} views in mashup...", views.len());
     let status = steam_env(&mut Command::new(&exe))
         .args([
@@ -310,7 +311,9 @@ fn capture_ours_env(file: &ViewsFile, out: &Path, extra: &[&str], env: &[(&str, 
         .args(extra)
         .envs(env.iter().map(|(k, v)| (*k, v.as_str())))
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        // The game's warnings and errors are worth seeing.
+        .stderr(std::process::Stdio::inherit())
+        .env("RUST_LOG", std::env::var("RUST_LOG").unwrap_or_else(|_| "warn".into()))
         .status()
         .map_err(|e| format!("{}: {e} (build it first: cargo build --features dev)", exe.display()))?;
     if !status.success() {
@@ -755,4 +758,33 @@ fn skyconv(file: &ViewsFile, ref_dir: &Path, out: &Path) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+/// Warn when the game binary is older than the sources: refcmp runs the
+/// built game, and `cargo run --bin refcmp` doesn't rebuild it.
+fn warn_if_stale(exe: &std::path::Path) {
+    fn newest(dir: &std::path::Path) -> Option<std::time::SystemTime> {
+        let mut best = None;
+        for entry in std::fs::read_dir(dir).ok()?.flatten() {
+            let path = entry.path();
+            let t = if path.is_dir() {
+                newest(&path)
+            } else {
+                entry.metadata().ok()?.modified().ok()
+            };
+            best = best.max(t);
+        }
+        best
+    }
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let built = std::fs::metadata(exe).and_then(|m| m.modified()).ok();
+    if let (Some(built), Some(changed)) = (built, newest(&src))
+        && changed > built
+    {
+        eprintln!(
+            "warning: {} is older than the sources; captures show the old build \
+             (run `cargo build --features dev` first)",
+            exe.display()
+        );
+    }
 }
