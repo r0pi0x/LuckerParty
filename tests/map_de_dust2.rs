@@ -131,3 +131,85 @@ fn baked_lighting_covers_the_map() {
         q(0.95)
     );
 }
+
+/// Lighting must agree where neighbouring faces meet: sample each lit face's
+/// own lightmap at vertices it shares with another face on the same plane
+/// (flat faces) or anywhere (displacements). Misread or misoriented
+/// lightmaps show up as large mismatches.
+#[test]
+fn lightmaps_agree_at_shared_edges() {
+    use std::collections::HashMap;
+
+    use mashup::games::cs_source::{bsp, lightmap};
+    use vbsp::Bsp;
+
+    if dust2().is_none() {
+        return;
+    }
+    let install = LocalConfig::load().unwrap().game_path(cs_source::GAME).unwrap();
+    let mount = cs_source::mount::open(&install).unwrap();
+    let bytes = mount.read("maps/de_dust2.bsp").unwrap();
+    let lump = lightmap::lighting_lump(&bytes);
+    let map = Bsp::read(&bytes).unwrap();
+
+    fn bilinear(s: &lightmap::FaceSamples, c: Vec2) -> f32 {
+        let x = c.x.clamp(0.0, s.width as f32 - 1.0);
+        let y = c.y.clamp(0.0, s.height as f32 - 1.0);
+        let (x0, y0) = (x.floor() as u32, y.floor() as u32);
+        let (x1, y1) = ((x0 + 1).min(s.width - 1), (y0 + 1).min(s.height - 1));
+        let (fx, fy) = (x - x0 as f32, y - y0 as f32);
+        let v = |x: u32, y: u32| s.rgb[(y * s.width + x) as usize].iter().sum::<f32>();
+        (v(x0, y0) * (1.0 - fx) + v(x1, y0) * fx) * (1.0 - fy) + (v(x0, y1) * (1.0 - fx) + v(x1, y1) * fx) * fy
+    }
+
+    // (is displacement, quantized position, quantized plane) -> (face, value)
+    let mut shared: HashMap<(bool, [i32; 3], [i32; 4]), Vec<(usize, f32)>> = HashMap::new();
+    for (fi, face) in map.models().next().unwrap().faces().enumerate() {
+        let Some(samples) = lightmap::face_samples(lump, &face) else {
+            continue;
+        };
+        let disp = face.displacement().is_some();
+        let n = face.normal();
+        let plane = if disp {
+            [0; 4]
+        } else {
+            let d = map.plane(face.plane_num as usize).unwrap().dist;
+            [
+                (n.x * 100.0) as i32,
+                (n.y * 100.0) as i32,
+                (n.z * 100.0) as i32,
+                d.round() as i32,
+            ]
+        };
+        for t in bsp::face_triangles(&face) {
+            for (p, luxel) in t {
+                let key = (
+                    disp,
+                    [(p.x * 4.0) as i32, (p.y * 4.0) as i32, (p.z * 4.0) as i32],
+                    plane,
+                );
+                shared.entry(key).or_default().push((fi, bilinear(&samples, luxel)));
+            }
+        }
+    }
+    for disp in [false, true] {
+        let (mut err, mut count) = (0.0f32, 0);
+        for ((d, _, _), group) in &shared {
+            let faces: std::collections::BTreeSet<_> = group.iter().map(|g| g.0).collect();
+            if *d != disp || faces.len() < 2 {
+                continue;
+            }
+            let lo = group.iter().map(|g| g.1).fold(f32::MAX, f32::min);
+            let hi = group.iter().map(|g| g.1).fold(f32::MIN, f32::max);
+            err += (hi - lo) / hi.max(0.05);
+            count += 1;
+        }
+        let mean = err / count.max(1) as f32;
+        eprintln!("displacement {disp}: mean seam mismatch {mean:.3} over {count} shared points");
+        assert!(count > 100, "too few shared points ({count}) to judge");
+        assert!(
+            mean < 0.1,
+            "lightmaps disagree at shared edges (displacement {disp}): {mean:.3}"
+        );
+    }
+}

@@ -62,12 +62,22 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
     Ok(data)
 }
 
-/// Triangles of a face in Source space, each vertex paired with the point
-/// on the undisplaced face it came from (lightmap coordinates are projected
-/// from that point). Flat faces: both are the same.
-fn face_triangles(face: &vbsp::Handle<'_, vbsp::Face>) -> Vec<[(vbsp::Vector, vbsp::Vector); 3]> {
+/// Triangles of a face in Source space, each vertex with its lightmap
+/// coordinate in luxels (see `lightmap::luxel_coords`).
+///
+/// Flat faces project through the face's lightmap vectors. Displacements
+/// don't: their samples follow the displacement grid, with the first
+/// lightmap axis along the grid's second axis. This was established by
+/// measurement on de_dust2: that mapping makes lighting agree where
+/// neighbouring displacements meet (mean mismatch 1%, versus 48% for
+/// projection; tests/map_de_dust2.rs checks it).
+pub fn face_triangles(face: &vbsp::Handle<'_, vbsp::Face>) -> Vec<[(vbsp::Vector, Vec2); 3]> {
+    let tex = face.texture();
     let Some(disp) = face.displacement() else {
-        return face.triangulate().map(|t| t.map(|v| (v, v))).collect();
+        return face
+            .triangulate()
+            .map(|t| t.map(|v| (v, lightmap::luxel_coords(&tex, face, v))))
+            .collect();
     };
     // Base grid: bilinear over the face's corners, starting at the corner
     // nearest the displacement's start position.
@@ -90,10 +100,14 @@ fn face_triangles(face: &vbsp::Handle<'_, vbsp::Face>) -> Vec<[(vbsp::Vector, vb
     if offsets.len() != n * n {
         return Vec::new();
     }
+    let size = Vec2::new(
+        face.light_map_texture_size[0] as f32,
+        face.light_map_texture_size[1] as f32,
+    );
     let grid = |x: usize, y: usize| {
         let (fx, fy) = (x as f32 / steps as f32, y as f32 / steps as f32);
         let base = lerp(lerp(corners[0], corners[1], fx), lerp(corners[3], corners[2], fx), fy);
-        (base + offsets[x * n + y], base)
+        (base + offsets[x * n + y], Vec2::new(fy, fx) * size)
     };
     let mut out = Vec::with_capacity(steps * steps * 2);
     for x in 0..steps {
@@ -128,7 +142,7 @@ pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> MapData {
         }
         let face_normal = to_engine_dir(face.normal());
         // Re-wind triangles to face the plane normal.
-        let tris: Vec<[(vbsp::Vector, vbsp::Vector); 3]> = face_triangles(&face)
+        let tris: Vec<[(vbsp::Vector, Vec2); 3]> = face_triangles(&face)
             .into_iter()
             .map(|t| {
                 let [a, b, c] = t.map(|(v, _)| to_engine(v));
@@ -169,12 +183,12 @@ pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> MapData {
             } else {
                 face_normal
             };
-            for (v, base) in t {
+            for (v, luxel) in t {
                 mesh.indices.push(mesh.positions.len() as u32);
                 mesh.positions.push(to_engine(*v).to_array());
                 mesh.normals.push(n.to_array());
                 mesh.uvs.push(tex.uv(*v));
-                lm.push((slot, lightmap::luxel_coords(&tex, &face, *base)));
+                lm.push((slot, *luxel));
             }
         }
     }
