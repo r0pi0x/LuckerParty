@@ -20,6 +20,8 @@ fn solid(brushes: &mut Vec<MapBrush>, lo: Vec3, hi: Vec3) {
 
 const STEP_Y: f32 = 0.0;
 const LEDGE_Y: f32 = 1500.0;
+const STEP16_Y: f32 = 3000.0;
+const CEILING_Y: f32 = 4500.0;
 
 fn test_map(mut commands: Commands) {
     let mut brushes = Vec::new();
@@ -38,6 +40,18 @@ fn test_map(mut commands: Commands) {
         &mut brushes,
         Vec3::new(256.0, LEDGE_Y - 128.0, 0.0),
         Vec3::new(512.0, LEDGE_Y + 128.0, 19.0),
+    );
+    // 16-unit step, for walking down.
+    solid(
+        &mut brushes,
+        Vec3::new(256.0, STEP16_Y - 128.0, 0.0),
+        Vec3::new(512.0, STEP16_Y + 128.0, 16.0),
+    );
+    // A low ceiling 86 units up: room to stand (72), not to jump upright.
+    solid(
+        &mut brushes,
+        Vec3::new(-256.0, CEILING_Y - 256.0, 86.0),
+        Vec3::new(256.0, CEILING_Y + 256.0, 120.0),
     );
     commands.insert_resource(MapBrushes(brushes));
 }
@@ -379,7 +393,10 @@ fn blocked_by_a_19_unit_ledge() {
 
 #[test]
 fn walks_down_a_step_without_falling() {
-    let mut pl = Player::at(Vec3::new(300.0, STEP_Y, 18.5));
+    // A 16-unit step: well within the stick-to-ground reach. (An exactly
+    // 18-unit drop sits on the edge of the reach, where float rounding
+    // decides; to be measured against CS:S with movecmp.)
+    let mut pl = Player::at(Vec3::new(300.0, STEP16_Y, 16.5));
     pl.sim.ticks(4);
     assert!(pl.state().on_ground);
     pl.sim.intent(pl.p).move_axis = Vec2::Y;
@@ -428,4 +445,83 @@ fn strafing_through_a_jump() {
         }
     }
     close(pl.speed(), 302.41, 0.5, "landing speed after a strafed jump");
+}
+
+/// The ducked speed scale is decided before this tick's duck processing:
+/// the tick the duck completes still moves at full input (spec).
+#[test]
+fn duck_slowdown_starts_the_tick_after_the_duck_completes() {
+    let mut ducking = Player::on_floor();
+    let mut plain = Player::on_floor();
+    ducking.sim.intent(ducking.p).crouch = true;
+    for pl in [&mut ducking, &mut plain] {
+        pl.sim.intent(pl.p).move_axis = Vec2::Y;
+    }
+    // The press is the spec's tick 0, so the duck completes on our 27th tick.
+    for tick in 1..=28 {
+        ducking.tick();
+        plain.tick();
+        let (a, b) = (ducking.speed(), plain.speed());
+        if tick <= 27 {
+            close(
+                a,
+                b,
+                1e-3,
+                &format!("tick {tick}: unscaled until the duck has completed"),
+            );
+        } else {
+            assert!(a < b - 1.0, "tick {tick}: ducked input should be scaled ({a} vs {b})");
+        }
+    }
+    assert!(ducking.state().ducked);
+}
+
+/// Releasing duck in the air needs room above the ducked head too: under a
+/// low ceiling the player stays ducked (spec, "Can-stand test").
+#[test]
+fn stays_ducked_in_the_air_under_a_ceiling() {
+    let mut pl = Player::at(Vec3::new(0.0, CEILING_Y, 0.5));
+    pl.sim.ticks(4);
+    pl.sim.intent(pl.p).crouch = true;
+    pl.sim.ticks(30);
+    assert!(pl.state().ducked);
+    // Ducked jump: the head stops at the ceiling.
+    pl.sim.intent(pl.p).jump = true;
+    pl.tick();
+    pl.sim.intent(pl.p).jump = false;
+    pl.sim.ticks(3);
+    pl.sim.intent(pl.p).crouch = false;
+    let mut ducked_in_air = 0;
+    for _ in 0..30 {
+        pl.tick();
+        if pl.state().on_ground {
+            break;
+        }
+        assert!(
+            pl.state().ducked,
+            "stood up in the air under the ceiling at {}",
+            pl.feet()
+        );
+        ducked_in_air += 1;
+    }
+    assert!(ducked_in_air > 3, "barely left the ground ({ducked_in_air} ticks)");
+}
+
+/// Moved by game code onto the floor: ground detection runs at the start
+/// of the next tick, so that tick already has ground friction.
+#[test]
+fn teleport_onto_the_floor_is_grounded_at_once() {
+    let mut pl = Player::at(Vec3::new(0.0, -3000.0, 500.0));
+    pl.sim.ticks(2);
+    assert!(!pl.state().on_ground);
+    let floor = to_engine(Vec3::new(0.0, -3000.0, 0.03125 + 36.0));
+    pl.sim.app.world_mut().get_mut::<Transform>(pl.p).unwrap().translation = floor;
+    pl.set_vel(Vec3::new(250.0, 0.0, 0.0));
+    pl.tick();
+    close(
+        pl.speed(),
+        234.375,
+        0.01,
+        "friction on the first tick after the teleport",
+    );
 }

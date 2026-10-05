@@ -44,6 +44,8 @@ pub struct SourceMovementConfig {
     pub player_maxspeed: f32,
     /// What a full move key sends (cl_forwardspeed etc.), rescaled to the max speed.
     pub key_speed: f32,
+    /// Move input scale while ducked on the ground.
+    pub duck_speed: f32,
 }
 
 impl SourceMovementConfig {
@@ -62,6 +64,7 @@ impl SourceMovementConfig {
             jump_impulse: 268.328_16,
             player_maxspeed: 250.0,
             key_speed: 450.0,
+            duck_speed: 1.0 / 3.0,
         }
     }
 }
@@ -75,6 +78,9 @@ impl Default for SourceMovementConfig {
             stopspeed: 75.0,
             jump_impulse: (2.0f32 * 800.0 * 57.0).sqrt(),
             key_speed: 400.0,
+            // Measured with movecmp: ducked acceleration implies a wish speed
+            // of 85 at max speed 250.
+            duck_speed: 0.34,
             ..Self::shared_code()
         }
     }
@@ -101,12 +107,42 @@ const SNAP_MIN: f32 = 1.0 / 64.0;
 const DUCK_TIMER_START: f32 = 1000.0;
 const TIME_TO_DUCK: f32 = 0.4;
 const TIME_TO_UNDUCK: f32 = 0.2;
-const DUCK_SPEED_FRAC: f32 = 1.0 / 3.0;
 const UPWARD_AIR_FRICTION: f32 = 0.25;
 
 /// How far sweeps stop short of what they hit, along the move. Our stand-in
 /// for the BSP trace's distance epsilon, so the box never rests touching.
 const TRACE_BACKOFF: f32 = 0.031_25;
+/// Smallest gap between two stuck nudges, seconds.
+const STUCK_NUDGE_GAP: f32 = 0.05;
+
+/// Offsets tried, in order, to free a stuck player (spec, "Stuck recovery").
+fn nudge_table() -> Vec<Vec3> {
+    let small = [-0.125f32, 0.0, 0.125];
+    let mut t = Vec::with_capacity(54);
+    t.extend(small.map(|z| Vec3::new(0.0, 0.0, z)));
+    t.extend(small.map(|y| Vec3::new(0.0, y, 0.0)));
+    t.extend(small.map(|x| Vec3::new(x, 0.0, 0.0)));
+    for x in [-0.125f32, 0.125] {
+        for y in [-0.125f32, 0.125] {
+            for z in [-0.125f32, 0.125] {
+                t.push(Vec3::new(x, y, z));
+            }
+        }
+    }
+    t.extend([0.0f32, 1.0, 6.0].map(|z| Vec3::new(0.0, 0.0, z)));
+    t.extend([-2.0f32, 0.0, 2.0].map(|y| Vec3::new(0.0, y, 0.0)));
+    t.extend([-2.0f32, 0.0, 2.0].map(|x| Vec3::new(x, 0.0, 0.0)));
+    for z in [0.0f32, 1.0, 6.0] {
+        for x in [-2.0f32, 0.0, 2.0] {
+            for y in [-2.0f32, 0.0, 2.0] {
+                t.push(Vec3::new(x, y, z));
+            }
+        }
+    }
+    t.push(Vec3::ZERO);
+    t
+}
+
 /// Float noise allowance (meters) when deciding whether a sweep runs
 /// parallel to a brush plane: about a thousandth of a unit.
 const PARALLEL_SLOP: f32 = 2.5e-5;
@@ -132,6 +168,14 @@ pub struct SourceMovement {
     pub surface_friction: f32,
     /// Speed of the last landing (for fall damage and sounds), units/s.
     pub last_landing_speed: f32,
+    /// Stuck recovery: ticks run, the next nudge to try (0 = not stuck),
+    /// and when the last nudge was tried (seconds of movement time).
+    ticks: u64,
+    nudge: usize,
+    time: f32,
+    last_nudge: f32,
+    /// Feet at the end of the last tick, to notice teleports.
+    last_feet: Option<Vec3>,
 }
 
 impl Default for SourceMovement {
@@ -148,6 +192,11 @@ impl Default for SourceMovement {
             fall_speed: 0.0,
             surface_friction: 1.0,
             last_landing_speed: 0.0,
+            ticks: 0,
+            nudge: 0,
+            time: 0.0,
+            last_nudge: f32::NEG_INFINITY,
+            last_feet: None,
         }
     }
 }
@@ -465,7 +514,9 @@ impl Mover<'_, '_, '_, '_> {
                 return;
             }
             if tr.fraction > 0.0 {
-                if tr.fraction < 1.0 && self.trace.solid(self.me.ducked, tr.end) {
+                // A full sweep is re-tested at its end (it can end inside
+                // terrain); partial ones aren't.
+                if tr.fraction >= 1.0 && self.trace.solid(self.me.ducked, tr.end) {
                     self.v = Vec3::ZERO;
                     break;
                 }
@@ -649,28 +700,40 @@ impl Mover<'_, '_, '_, '_> {
     }
 
     fn finish_duck(&mut self) {
+        if self.me.ducked {
+            return;
+        }
         self.me.ducked = true;
         self.me.ducking = false;
         self.me.eye = EYE_DUCK;
         if !self.me.on_ground {
             self.feet.z += STAND_HEIGHT - DUCK_HEIGHT;
         }
+        let before = self.feet;
+        let mut free = !self.trace.solid(true, self.feet);
         for _ in 0..36 {
-            if !self.trace.solid(true, self.feet) {
+            if free {
                 break;
             }
             self.feet.z += 1.0;
+            free = !self.trace.solid(true, self.feet);
+        }
+        if !free {
+            self.feet = before;
         }
         self.categorize();
     }
 
-    fn can_unduck(&self) -> bool {
-        let at = if self.me.on_ground {
-            self.feet
-        } else {
-            self.feet - Vec3::Z * (STAND_HEIGHT - DUCK_HEIGHT)
-        };
-        !self.trace.solid(false, at)
+    /// Whether the standing box fits: on the ground, where it stands; in the
+    /// air, swept from here down by the hull difference (room is needed
+    /// above the ducked head and below the feet).
+    fn can_stand(&self) -> bool {
+        if self.me.on_ground {
+            return !self.trace.solid(false, self.feet);
+        }
+        let down = self.feet - Vec3::Z * (STAND_HEIGHT - DUCK_HEIGHT);
+        let tr = self.trace.sweep(false, self.feet, down);
+        !tr.start_solid && !tr.hit()
     }
 
     fn finish_unduck(&mut self) {
@@ -683,12 +746,20 @@ impl Mover<'_, '_, '_, '_> {
         self.categorize();
     }
 
-    /// Ducking transitions; returns the move-input scale.
+    /// Ducking transitions; returns the move-input scale, decided from the
+    /// state before this tick's changes.
     fn duck(&mut self, held: bool) -> f32 {
+        let scale = if self.me.ducked && self.me.on_ground {
+            self.cfg.duck_speed
+        } else {
+            1.0
+        };
         let pressed = held && !self.me.duck_held;
         let released = !held && self.me.duck_held;
         let elapsed = (DUCK_TIMER_START - self.me.duck_timer) / 1000.0;
         if held {
+            // A press while still flagged ducked (mid-unduck) doesn't
+            // restart anything: the eye stays where it is while held.
             if pressed && !self.me.ducked {
                 self.me.duck_timer = DUCK_TIMER_START;
                 self.me.ducking = true;
@@ -700,10 +771,6 @@ impl Mover<'_, '_, '_, '_> {
                 } else {
                     self.me.eye = Self::eye_blend(Self::smooth(elapsed / TIME_TO_DUCK));
                 }
-            } else if self.me.ducked {
-                // Held through a partial unduck: back to fully ducked.
-                self.me.ducking = false;
-                self.me.eye = EYE_DUCK;
             }
         } else if self.me.ducked || self.me.ducking {
             if released {
@@ -715,14 +782,18 @@ impl Mover<'_, '_, '_, '_> {
                 };
                 self.me.ducking = true;
             }
-            if self.can_unduck() {
+            if self.can_stand() {
                 let elapsed = (DUCK_TIMER_START - self.me.duck_timer) / 1000.0;
                 if elapsed > TIME_TO_UNDUCK || !self.me.on_ground {
                     self.finish_unduck();
                 } else {
                     self.me.eye = Self::eye_blend(Self::smooth(1.0 - elapsed / TIME_TO_UNDUCK));
+                    self.me.ducking = true;
                 }
-            } else {
+            } else if self.me.duck_timer != DUCK_TIMER_START {
+                // No room to stand: forced fully ducked until there is.
+                self.me.ducked = true;
+                self.me.ducking = false;
                 self.me.eye = EYE_DUCK;
                 self.me.duck_timer = DUCK_TIMER_START;
             }
@@ -730,11 +801,7 @@ impl Mover<'_, '_, '_, '_> {
             self.me.eye = EYE_STAND;
         }
         self.me.duck_held = held;
-        if self.me.ducked && self.me.on_ground {
-            DUCK_SPEED_FRAC
-        } else {
-            1.0
-        }
+        scale
     }
 
     fn jump(&mut self) {
@@ -748,19 +815,33 @@ impl Mover<'_, '_, '_, '_> {
         self.me.jump_held = true;
     }
 
-    /// Recover from being inside something: nudge up to the step height.
-    fn unstick(&mut self) -> bool {
-        if !self.trace.solid(self.me.ducked, self.feet) {
+    /// Stuck recovery: about once a second (every tick while recovering),
+    /// test the box; if it's stuck, try one nudge from the table, at most
+    /// every 0.05 s. Returns false when movement is skipped this tick.
+    fn check_stuck(&mut self) -> bool {
+        self.me.ticks += 1;
+        self.me.time += self.dt;
+        let interval = ((1.0 / self.dt) as u64).max(1);
+        if self.me.nudge == 0 && !self.me.ticks.is_multiple_of(interval) {
             return true;
         }
-        for k in 1..=self.cfg.stepsize as i32 {
-            let at = self.feet + Vec3::Z * k as f32;
-            if !self.trace.solid(self.me.ducked, at) {
-                self.feet = at;
-                return true;
-            }
+        if !self.trace.solid(self.me.ducked, self.feet) {
+            self.me.nudge = 0;
+            return true;
         }
-        false
+        if self.me.time - self.me.last_nudge < STUCK_NUDGE_GAP {
+            return false;
+        }
+        self.me.last_nudge = self.me.time;
+        let table = nudge_table();
+        let at = self.feet + table[self.me.nudge % table.len()];
+        self.me.nudge = (self.me.nudge + 1) % table.len();
+        if self.trace.solid(self.me.ducked, at) {
+            return false;
+        }
+        self.feet = at;
+        self.me.nudge = 0;
+        true
     }
 
     fn tick(&mut self, intent: &Intent) {
@@ -782,10 +863,14 @@ impl Mover<'_, '_, '_, '_> {
         let forward = Vec3::new(yaw.cos(), yaw.sin(), 0.0);
         let right = Vec3::new(yaw.sin(), -yaw.cos(), 0.0);
 
-        if !self.unstick() {
+        if !self.check_stuck() {
             return;
         }
-        if self.v.z > UNGROUND_VZ {
+        // Moved by game code (teleport, spawn): full ground detection now.
+        // Otherwise only rising fast removes the ground.
+        if self.me.last_feet.is_none_or(|f| f.distance_squared(self.feet) > 1e-4) {
+            self.categorize();
+        } else if self.v.z > UNGROUND_VZ {
             self.me.on_ground = false;
         }
         if !self.me.on_ground {
@@ -828,6 +913,7 @@ impl Mover<'_, '_, '_, '_> {
                 self.me.fall_speed = 0.0;
             }
         }
+        self.me.last_feet = Some(self.feet);
     }
 }
 

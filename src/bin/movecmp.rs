@@ -132,6 +132,19 @@ fn scenarios() -> Vec<Scenario> {
     }
     out.push(("strafe_jump", strafe));
 
+    // Diagnostics for running jumps: forward held but jumping from rest,
+    // and running then releasing forward on the jump tick.
+    let mut fwd_jump = settle();
+    fwd_jump.push(Input::idle(yaw).forward().jump());
+    fwd_jump.extend(vec![Input::idle(yaw).forward(); 40]);
+    out.push(("forward_jump_from_rest", fwd_jump));
+
+    let mut release_jump = settle();
+    release_jump.extend(vec![Input::idle(yaw).forward(); 40]);
+    release_jump.push(Input::idle(yaw).jump());
+    release_jump.extend(vec![Input::idle(yaw); 40]);
+    out.push(("run_release_jump", release_jump));
+
     // Scroll-wheel bhop: jump pressed every other tick (a fresh press each
     // time), strafing and turning, switching sides every 22 ticks.
     let mut bhop = settle();
@@ -148,14 +161,26 @@ fn scenarios() -> Vec<Scenario> {
     }
     out.push(("bhop_scroll", bhop));
 
-    out.into_iter()
+    let mut all: Vec<Scenario> = out
+        .into_iter()
         .map(|(name, inputs)| Scenario {
             name,
             start: CT_SPAWN,
             yaw,
             inputs,
         })
-        .collect()
+        .collect();
+    // A standing jump where the running jumps take off.
+    let mut here = settle();
+    here.push(Input::idle(yaw).jump());
+    here.extend(vec![Input::idle(yaw); 40]);
+    all.push(Scenario {
+        name: "jump_at_2346",
+        start: Vec3::new(443.6, 2345.9, -110.0),
+        yaw,
+        inputs: here,
+    });
+    all
 }
 
 /// One tick of the trace: feet position and velocity in Source units.

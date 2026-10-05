@@ -159,7 +159,7 @@ Run at the end of every walking tick, and at the start of the tick for non-walki
   - During a jump, ground detection on the jump tick and the following ticks sees vz > 140, so surface friction is 1. Once the move velocity has dropped into (0, 140] (from tick 11 of a standing shared-impulse jump, jump tick = 1, through the apex on tick 21), detection sets 0.25. Air acceleration therefore runs at 0.25 on ticks 12–22 and at 1 otherwise. After the apex vz ≤ 0, so it is 1 again.
 - On finding ground: the ground's material sets surface friction and the material (see Surface materials), the water-jump timer is cleared, and vz is set to 0.
 
-At the very start of a walking tick, the full ground test is not run. The ground is only removed if vz > 250. The test at the end of the previous tick carries over.
+At the very start of a walking tick, the full ground test is not run. The ground is only removed if vz > 250, and the test at the end of the previous tick carries over. The exception is when game code has moved the player since the last tick (teleport, spawn): then the full test runs at the start of the tick.
 
 ### Slide move (collide and slide)
 
@@ -168,7 +168,9 @@ Moves the box along v for the remaining time `t_left` (starts at dt), resolving 
 - Repeat up to 4 times while |v| > 0:
   1. Sweep from origin to origin + v·t_left.
   2. If entirely in solid, set v = 0 and stop.
-  3. If the sweep moved any distance (fraction > 0): run a stationary test at the end point. If that is in solid, set v = 0 and stop, without moving. Otherwise move to the end point, remember v as the "pre-clip velocity", and reset the plane list.
+  3. If the sweep moved any distance (fraction > 0):
+     - Only when it covered the full distance (fraction = 1), first run a stationary box test at the end point. If that end point is in solid, set v = 0 and stop, without moving. This guards against a swept box ending inside terrain. Partial sweeps (0 < fraction < 1) are not re-tested.
+     - Then move to the end point, remember v as the "pre-clip velocity", and reset the plane list.
   4. If fraction = 1, stop.
   5. t_left −= t_left × fraction.
   6. If 5 planes are already stored, set v = 0 and stop. Otherwise store this plane's normal.
@@ -220,11 +222,14 @@ State: "ducked" (small box in use), "ducking" (in transition), a duck timer (ms)
 - **Press duck** (pressed this tick, not already ducked): duck timer = 1000, transition starts.
 - **During the duck transition** with the button held: elapsed = (1000 − timer)/1000 s. If elapsed > 0.4 s, or the player is in the air, finish ducking now. Otherwise eye height = lerp(eye_stand, eye_duck, S(elapsed/0.4)), with S(x) = 3x² − 2x³.
   - Eye height for fraction f: z = (eye_duck − (duck box min z − stand box min z))·f + eye_stand·(1 − f). With the shared boxes, that is 28f + 64(1 − f).
-- **Finish ducking**: switch to the ducked box and set eye height to eye_duck. On ground, the origin does not move (box min z is the same). In the air, the origin moves up by the height difference (72 − 36 = 36 units), so the feet tuck up and the head stays in place. Then, if the box is stuck, try moving up 1 unit at a time, up to 36 times. Then re-detect ground.
+- **Finish ducking**: does nothing if the player is already flagged ducked. Otherwise switch to the ducked box and set eye height to eye_duck. On ground, the origin does not move (box min z is the same). In the air, the origin moves up by the height difference (72 − 36 = 36 units), so the feet tuck up and the head stays in place. Then, if the box is stuck at the new origin, move up 1 unit at a time, up to 36 times, stopping at the first free position. If none of the 36 is free, the origin goes back to where it was before these nudges (the box stays ducked, at the lifted or unchanged origin from the previous step). Then re-detect ground.
 - **Release duck** while ducked: duck timer = 1000. If released mid-transition (not yet ducked), the timer is set so the unduck starts from the matching point. Fraction already ducked = elapsed/400 ms. New timer = 1000 − 200 + fraction × 200.
-- **Unduck transition**: only if the standing box fits. On ground, test the standing box at the same origin. In the air, test it at origin − 36 in z (the feet drop back down). If it does not fit, stay fully ducked (eye = eye_duck, timer reset to 1000) and retry each tick, so you stand up as soon as you leave a vent. If it fits: elapsed = (1000 − timer)/1000. If elapsed > 0.2 s, or the player is in the air, finish unducking now. Otherwise eye = S(1 − elapsed/0.2) blended as above.
+- **Can-stand test**: the standing box is **swept**, not just placed at the end position. On ground, the sweep goes from the origin to the same origin, which is a stationary test of the standing box. In the air, it sweeps from the current origin down 36 units (the hull difference). The standing box at the start of that sweep reaches 36 units above the ducked head, so the player needs free space both above the head (start not in solid) and below the feet (the whole sweep clear, fraction = 1).
+- **Unduck transition** (button not held): if the can-stand test passes, elapsed = (1000 − timer)/1000. If elapsed > 0.2 s, or the player is in the air, finish unducking now. Otherwise eye = S(1 − elapsed/0.2) blended as above, and the in-transition state is set.
+- **Blocked unduck**: if the can-stand test fails and the timer is not already 1000, the player is forced fully ducked. The ducked box and flag are set, the in-transition state is cleared, the eye = eye_duck and the timer = 1000. The player retries every tick and stands up as soon as there is room (e.g. on leaving a vent). This also applies when duck is released partway through a duck transition while the standing box no longer fits: the player snaps to a full duck instead of rising.
 - **Finish unducking**: the standing box is used, eye = eye_stand, and in the air the origin moves down 36. Re-detect ground.
-- **Speed**: fully ducked (small box) on ground multiplies the move inputs by 1/3. In the shared code there is no slowdown during the transition, and none in the air.
+- **Re-pressing duck during an unduck transition**: the player is still flagged ducked, so the press does not restart the duck timer. The finish-ducking step does nothing because the player is already ducked. So the in-transition state stays set, the box stays small, and the eye stays frozen at its partial height for as long as duck is held. A jump is refused the whole time (flagged ducked and in transition). Releasing again sets the timer to 1000, so the unduck restarts from the beginning: the eye jumps to eye_duck, then rises over 0.2 s.
+- **Speed**: the 1/3 input scale is decided at the start of duck processing, from the state before this tick's duck changes: flagged ducked and having ground at that moment. So on the tick the duck completes, the input is not yet scaled. On the tick an unduck completes (from flagged ducked on ground), it still is. It is applied at most once per tick. In the shared code there is no slowdown during the transition, and none in the air.
 - **Duck-jump**: in the air, ducking is instant and lifts the feet 36 units. Holding duck at the jump apex therefore lets the player clear obstacles 36 units higher than the plain jump height. To land, the player unducks in the air, which needs 36 units of space below the feet. Otherwise the player stays ducked until on the ground.
 - **Jump while ducked** sets vz = impulse instead of adding (see Jumping). A jump is refused while the player is still flagged ducked but in an unduck transition.
 - The shared code also has a single-player-only duck-jump path (jump sets a 510 ms timer that auto-ducks the box). It only runs when the server has one player slot, so it is not part of CS:S multiplayer. An implementation can omit it.
@@ -295,7 +300,21 @@ Punch is added to the view angles used for movement (step 1 of Wish direction).
 
 ### Stuck recovery (brief)
 
-Once per stuck interval (1 s in multiplayer, staggered per player), test the box at the current origin. If it is stuck, try a table of small nudges, and if none works, reuse the last good position. Movement is skipped on a tick where the player is still stuck. Low priority for the prototype.
+- **When it runs:** on ticks where (command number + player index) is a multiple of the interval in ticks: int(1.0 s / dt), so 64 at 64 tick (0.2 s in single player). While a nudge sequence is in progress (the nudge index is not 0), it runs every tick.
+- **Test:** the box at the current origin. If it is free, reset the nudge index to 0 and continue normally.
+- **If stuck (server):** at most one nudge is tried per attempt, and attempts are at least 0.05 s apart. Take the next entry of a fixed 54-entry nudge table (the index advances and wraps). Test origin + nudge. If it is free, move there, reset the index, and the tick continues. Otherwise the whole movement for this tick is skipped (no friction, no gravity, no move). This also happens on ticks inside the 0.05 s gap.
+- **The client prediction side, when stuck against the world:** tries all 54 entries in order at once before falling back to the above.
+- **Nudge table, in order:**
+  1. z ∈ {−0.125, 0, +0.125}
+  2. y ∈ {−0.125, 0, +0.125}
+  3. x ∈ {−0.125, 0, +0.125}
+  4. the 8 corners (±0.125, ±0.125, ±0.125), x outermost, then y, then z, each from − to +
+  5. z ∈ {0, 1, 6}
+  6. y ∈ {−2, 0, 2}
+  7. x ∈ {−2, 0, 2}
+  8. for z in {0, 1, 6}: x ∈ {−2, 0, 2} × y ∈ {−2, 0, 2} (x outer)
+  9. one final (0, 0, 0) entry, which brings the count to 54
+- There is no "last good position" fallback. A player stuck where no nudge helps stays frozen, retrying every tick. Low priority for the prototype.
 
 ## Per-tick order
 
@@ -306,8 +325,8 @@ One user command, walking move type, not in water:
 3. Decay the punch angle. View angles = command angles + punch.
 4. Count down the duck, duck-jump, jump and swim-sound timers by 1000·dt ms.
 5. Compute the forward/right/up vectors from the view angles.
-6. (Every 1 s) Stuck check. If stuck, end the tick.
-7. Ground: if vz > 250, remove ground. Other move types run full ground detection here.
+6. Stuck check: on the 1 s interval tick, or every tick while a nudge sequence is in progress. If still stuck after this tick's nudge (or nudging was rate-limited), end the tick.
+7. Ground: full ground detection runs here if the move type is not walking, or game code moved the player since the last tick (teleport, spawn, trigger push that sets position). Otherwise only: if vz > 250, remove ground.
 8. Remember the water level. If airborne, fall speed = −vz.
 9. Update the duck-jump eye offset (single-player only), then Ducking (incl. the 1/3 input crop when ducked on ground).
 10. Ladder check. It may switch to or from ladder mode and set v.
@@ -409,6 +428,15 @@ All at 64 tick (dt = 1/64), flat floor at z = 0 unless stated, sv_gravity 800, s
 | same | hold | tick 26 | ducked box and eye 28 (406.25 ms > 400) |
 | ducked on ground | release duck, room to stand | tick 0 / 13 | eye 28 / standing box and eye 64 (203.1 ms > 200) |
 | ducked on ground | hold forward | 1 tick from rest, accel 5 | wishspeed 83.33; speed 6.5104 |
+| standing on ground, not ducked | press duck and hold 26 ticks, moving forward | tick 26 (duck completes) | input on tick 26 not yet scaled; first scaled (×1/3) tick is 27 |
+| ducked on ground, room to stand | release duck | tick 13 (unduck completes) | input on tick 13 still scaled ×1/3; tick 14 unscaled |
+| ducked on ground, releasing duck, unduck in progress (eye partway, e.g. tick 5: 28 + 36·(1 − S(1 − 5/12.8))) | press duck again and hold | each tick | eye stays at the tick-5 value, box stays ducked, jump presses do nothing |
+| same, then release | – | release tick | eye snaps to 28, then the normal 13-tick unduck |
+| standing, duck transition at tick 10, obstruction now 50 units above floor | release duck | that tick | forced full duck: ducked box, eye 28 |
+| ducked in air, 40 units of free space below the feet but solid 10 units above the head | release duck | each tick | stays ducked (the standing box at the start of the sweep is in solid) |
+| ducked in air, solid 20 units below the feet, room above | release duck | each tick | stays ducked (sweep down 36 blocked) |
+| server, player box overlapping a wall by 0.1 units on its +x side | any | from the next stuck-check tick | one nudge per attempt, attempts ≥ 0.05 s apart (every 4th tick at 64 tick); z ±0.125/0, y ±0.125/0 and x −0.125 are tried in order; the 7th attempt (x −0.125) frees it; movement is skipped on every tick until then |
+| player teleported by game code onto a floor | – | next tick | full ground detection runs at tick start (grounded before friction) |
 | airborne, standing | press duck | same tick | ducked box, origin z + 36, eye 28 |
 | ducked, airborne, 20 units above floor | release duck | each tick | stays ducked (needs 36 units below) until ground |
 | walking at 250 into an 18-unit step | hold forward | contact tick | climbs: z rises by 18, horizontal progress continues |
