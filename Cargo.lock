@@ -4239,6 +4239,7 @@ dependencies = [
  "bevy-inspector-egui",
  "crc32fast",
  "dirs",
+ "half",
  "serde",
  "toml",
  "twofish",

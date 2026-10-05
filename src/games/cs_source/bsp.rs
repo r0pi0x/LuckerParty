@@ -7,7 +7,10 @@ use std::collections::BTreeMap;
 use bevy::prelude::*;
 use vbsp::{Bsp, TextureFlags};
 
-use super::material::MaterialLoader;
+use super::{
+    lightmap::{self, AtlasBuilder},
+    material::MaterialLoader,
+};
 use crate::{
     core::Team,
     map::{MapData, MapMesh},
@@ -45,7 +48,7 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
     let path = format!("maps/{name}.bsp");
     let bytes = mount.read(&path).map_err(|e| format!("{path}: {e}"))?;
     let bsp = Bsp::read(&bytes).map_err(|e| format!("{path}: {e}"))?;
-    let mut data = convert(&bsp, name);
+    let mut data = convert(&bsp, lightmap::lighting_lump(&bytes), name);
 
     let mut materials = MaterialLoader::new(&bsp, mount);
     for mesh in &mut data.meshes {
@@ -59,9 +62,57 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
     Ok(data)
 }
 
-/// Geometry, collision and spawns, without materials.
-pub fn convert(bsp: &Bsp, name: &str) -> MapData {
+/// Triangles of a face in Source space, each vertex paired with the point
+/// on the undisplaced face it came from (lightmap coordinates are projected
+/// from that point). Flat faces: both are the same.
+fn face_triangles(face: &vbsp::Handle<'_, vbsp::Face>) -> Vec<[(vbsp::Vector, vbsp::Vector); 3]> {
+    let Some(disp) = face.displacement() else {
+        return face.triangulate().map(|t| t.map(|v| (v, v))).collect();
+    };
+    // Base grid: bilinear over the face's corners, starting at the corner
+    // nearest the displacement's start position.
+    let mut corners: Vec<vbsp::Vector> = face.vertices().map(|v| v.position).collect();
+    if corners.len() != 4 {
+        return Vec::new();
+    }
+    let start = (0..4)
+        .min_by(|&a, &b| {
+            (corners[a] - disp.start_position)
+                .length_squared()
+                .total_cmp(&(corners[b] - disp.start_position).length_squared())
+        })
+        .unwrap();
+    corners.rotate_left(start);
+    let steps = 2usize.pow(disp.power as u32);
+    let n = steps + 1;
+    let lerp = |a: vbsp::Vector, b: vbsp::Vector, t: f32| a + (b - a) * t;
+    let offsets: Vec<vbsp::Vector> = disp.displacement_vertices().map(|v| v.displacement()).collect();
+    if offsets.len() != n * n {
+        return Vec::new();
+    }
+    let grid = |x: usize, y: usize| {
+        let (fx, fy) = (x as f32 / steps as f32, y as f32 / steps as f32);
+        let base = lerp(lerp(corners[0], corners[1], fx), lerp(corners[3], corners[2], fx), fy);
+        (base + offsets[x * n + y], base)
+    };
+    let mut out = Vec::with_capacity(steps * steps * 2);
+    for x in 0..steps {
+        for y in 0..steps {
+            out.push([grid(x, y), grid(x + 1, y), grid(x, y + 1)]);
+            out.push([grid(x + 1, y), grid(x + 1, y + 1), grid(x, y + 1)]);
+        }
+    }
+    out
+}
+
+/// Geometry, collision, lightmaps and spawns, without materials.
+/// `lighting` is the BSP's lighting lump (see `lightmap::lighting_lump`).
+pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> MapData {
     let mut by_material: BTreeMap<String, MapMesh> = BTreeMap::new();
+    // Per mesh: each vertex's lightmap block slot and luxel coordinate,
+    // resolved to atlas UVs once all blocks are packed.
+    let mut pending_lm: BTreeMap<String, Vec<(Option<usize>, Vec2)>> = BTreeMap::new();
+    let mut atlas = AtlasBuilder::default();
     let mut data = MapData {
         name: format!("cs_source:{name}"),
         ..default()
@@ -76,19 +127,15 @@ pub fn convert(bsp: &Bsp, name: &str) -> MapData {
             continue;
         }
         let face_normal = to_engine_dir(face.normal());
-        // Triangles in Source space, re-wound to face the plane normal.
-        let tris: Vec<[vbsp::Vector; 3]> = face
-            .vertex_positions()
-            .collect::<Vec<_>>()
-            .as_chunks::<3>()
-            .0
-            .iter()
+        // Re-wind triangles to face the plane normal.
+        let tris: Vec<[(vbsp::Vector, vbsp::Vector); 3]> = face_triangles(&face)
+            .into_iter()
             .map(|t| {
-                let [a, b, c] = [to_engine(t[0]), to_engine(t[1]), to_engine(t[2])];
+                let [a, b, c] = t.map(|(v, _)| to_engine(v));
                 if (b - a).cross(c - a).dot(face_normal) < 0.0 {
                     [t[0], t[2], t[1]]
                 } else {
-                    [t[0], t[1], t[2]]
+                    t
                 }
             })
             .collect();
@@ -97,7 +144,7 @@ pub fn convert(bsp: &Bsp, name: &str) -> MapData {
             for t in &tris {
                 let base = data.collision_positions.len() as u32;
                 data.collision_positions
-                    .extend(t.iter().map(|v| to_engine(*v).to_array()));
+                    .extend(t.iter().map(|(v, _)| to_engine(*v).to_array()));
                 data.collision_indices.push([base, base + 1, base + 2]);
             }
         }
@@ -105,29 +152,44 @@ pub fn convert(bsp: &Bsp, name: &str) -> MapData {
             continue;
         }
 
+        let slot = lightmap::face_samples(lighting, &face).map(|s| atlas.add(s));
         let material = tex.name().to_lowercase();
         let mesh = by_material.entry(material.clone()).or_insert_with(|| MapMesh {
-            material,
+            material: material.clone(),
             color: tex.debug_color(),
             ..default()
         });
+        let lm = pending_lm.entry(material).or_default();
         let displaced = face.displacement().is_some();
         for t in &tris {
-            let p: [Vec3; 3] = t.map(to_engine);
+            let p: [Vec3; 3] = t.map(|(v, _)| to_engine(v));
             // Brush faces are flat; displacements get per-triangle normals.
             let n = if displaced {
                 (p[1] - p[0]).cross(p[2] - p[0]).normalize_or_zero()
             } else {
                 face_normal
             };
-            for v in t {
+            for (v, base) in t {
                 mesh.indices.push(mesh.positions.len() as u32);
                 mesh.positions.push(to_engine(*v).to_array());
                 mesh.normals.push(n.to_array());
                 mesh.uvs.push(tex.uv(*v));
+                lm.push((slot, lightmap::luxel_coords(&tex, &face, *base)));
             }
         }
     }
+
+    let (lightmap, placements, white) = atlas.build();
+    for (material, mesh) in by_material.iter_mut() {
+        mesh.lightmap_uvs = pending_lm[material]
+            .iter()
+            .map(|&(slot, luxel)| match slot {
+                Some(s) => lightmap::atlas_uv(&lightmap, placements[s], luxel),
+                None => lightmap::atlas_uv(&lightmap, placements[white], Vec2::splat(0.5)),
+            })
+            .collect();
+    }
+    data.lightmap = Some(lightmap);
     data.meshes = by_material.into_values().filter(|m| !m.indices.is_empty()).collect();
 
     for ent in bsp.entities.iter() {

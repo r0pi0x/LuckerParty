@@ -52,6 +52,19 @@ pub struct MapMesh {
     pub texture: Option<usize>,
     pub alpha: MapAlpha,
     pub double_sided: bool,
+    /// Per-vertex coordinates into `MapData::lightmap` (0..1); empty when
+    /// the map has no baked lighting.
+    pub lightmap_uvs: Vec<[f32; 2]>,
+}
+
+/// Baked lighting atlas: linear RGB, where 1.0 shows a texture at its own
+/// brightness (above 1.0 is overbright).
+#[derive(Clone, Debug, Default)]
+pub struct MapLightmap {
+    pub width: u32,
+    pub height: u32,
+    /// Row-major, top row first.
+    pub rgb: Vec<[f32; 3]>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -59,6 +72,7 @@ pub struct MapData {
     pub name: String,
     pub meshes: Vec<MapMesh>,
     pub textures: Vec<MapTexture>,
+    pub lightmap: Option<MapLightmap>,
     /// Collision triangles (may include surfaces that aren't drawn).
     pub collision_positions: Vec<[f32; 3]>,
     pub collision_indices: Vec<[u32; 3]>,
@@ -88,10 +102,21 @@ impl MapData {
 /// present (same pattern as the greybox, so maps load in headless tests).
 pub struct MapPlugin {
     pub data: Arc<MapData>,
+    /// Debug view: white surfaces, so only baked lighting shows.
+    pub lightmap_only: bool,
+}
+
+impl MapPlugin {
+    pub fn new(data: MapData) -> Self {
+        Self {
+            data: Arc::new(data),
+            lightmap_only: false,
+        }
+    }
 }
 
 #[derive(Resource)]
-struct PendingMap(Arc<MapData>);
+struct PendingMap(Arc<MapData>, bool);
 
 /// Marks every entity belonging to the loaded map.
 #[derive(Component)]
@@ -99,14 +124,21 @@ pub struct MapPart;
 
 impl Plugin for MapPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(PendingMap(self.data.clone()))
+        app.insert_resource(PendingMap(self.data.clone(), self.lightmap_only))
             .insert_resource(GlobalAmbientLight {
                 brightness: 600.0,
+                // Baked lighting already includes the map's ambient light.
+                affects_lightmapped_meshes: false,
                 ..default()
             })
             .add_systems(Startup, spawn_map);
     }
 }
+
+/// Bevy adds `lightmap * lightmap_exposure` as light, then applies the
+/// camera's exposure. This cancels the default camera exposure (EV100 9.7)
+/// so a lightmap value of 1.0 shows a texture at its own brightness.
+const LIGHTMAP_EXPOSURE: f32 = 1.2 * 831.746_4; // 1.2 * 2^9.7
 
 /// Height of the capsule center above the feet, so spawns start standing.
 const SPAWN_LIFT: f32 = 1.0;
@@ -119,6 +151,7 @@ fn spawn_map(
     mut images: Option<ResMut<Assets<Image>>>,
 ) {
     let data = &pending.0;
+    let lightmap_only = pending.1;
     let root = commands
         .spawn((
             Name::new(format!("Map {}", data.name)),
@@ -141,24 +174,29 @@ fn spawn_map(
 
     if let (Some(meshes), Some(materials), Some(images)) = (meshes.as_mut(), materials.as_mut(), images.as_mut()) {
         let textures: Vec<Handle<Image>> = data.textures.iter().map(|t| images.add(to_image(t))).collect();
+        let lightmap = data.lightmap.as_ref().map(|l| images.add(lightmap_image(l)));
         for m in &data.meshes {
             let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
             mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, m.positions.clone());
             mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, m.normals.clone());
             mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, m.uvs.clone());
+            let lit = lightmap.as_ref().filter(|_| m.lightmap_uvs.len() == m.positions.len());
+            if lit.is_some() {
+                mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, m.lightmap_uvs.clone());
+            }
             mesh.insert_indices(Indices::U32(m.indices.clone()));
             let [r, g, b] = m.color;
-            commands.entity(root).with_child((
+            let mut part = commands.spawn((
                 Name::new(m.material.clone()),
                 MapPart,
                 Mesh3d(meshes.add(mesh)),
                 MeshMaterial3d(materials.add(StandardMaterial {
-                    base_color: if m.texture.is_some() {
+                    base_color: if m.texture.is_some() || lightmap_only {
                         Color::WHITE
                     } else {
                         Color::srgb_u8(r, g, b)
                     },
-                    base_color_texture: m.texture.map(|i| textures[i].clone()),
+                    base_color_texture: m.texture.filter(|_| !lightmap_only).map(|i| textures[i].clone()),
                     perceptual_roughness: 0.95,
                     reflectance: 0.2,
                     alpha_mode: match m.alpha {
@@ -172,10 +210,19 @@ fn spawn_map(
                     } else {
                         Some(bevy::render::render_resource::Face::Back)
                     },
+                    lightmap_exposure: LIGHTMAP_EXPOSURE,
                     ..default()
                 })),
                 Transform::default(),
+                ChildOf(root),
             ));
+            if let Some(image) = lit {
+                part.insert(bevy::pbr::Lightmap {
+                    image: image.clone(),
+                    uv_rect: Rect::new(0.0, 0.0, 1.0, 1.0),
+                    bicubic_sampling: false,
+                });
+            }
         }
     }
 
@@ -185,6 +232,8 @@ fn spawn_map(
         DirectionalLight {
             illuminance: 9000.0,
             shadow_maps_enabled: true,
+            // The sun is baked into the lightmap; it still lights characters.
+            affects_lightmapped_mesh_diffuse: false,
             ..default()
         },
         Transform::default().looking_at(Vec3::new(-0.4, -1.0, -0.3), Vec3::Y),
@@ -249,5 +298,28 @@ fn to_image(t: &MapTexture) -> Image {
         anisotropy_clamp: 8,
         ..default()
     });
+    image
+}
+
+/// The lighting atlas as a filterable half-float texture, clamped.
+fn lightmap_image(l: &MapLightmap) -> Image {
+    let mut data = Vec::with_capacity(l.rgb.len() * 8);
+    for [r, g, b] in &l.rgb {
+        for c in [*r, *g, *b, 1.0] {
+            data.extend_from_slice(&half::f16::from_f32(c).to_le_bytes());
+        }
+    }
+    let mut image = Image::new(
+        Extent3d {
+            width: l.width,
+            height: l.height,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba16Float,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    image.sampler = ImageSampler::linear();
     image
 }

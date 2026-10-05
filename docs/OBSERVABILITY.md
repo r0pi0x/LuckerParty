@@ -27,7 +27,9 @@ cargo run --features dev -- --screenshot shot.png --frames 90 \
 ```
 
 Add `--map cs_source:de_dust2` to load a real map (noclip plus
-`--spawn x,75,z --look 0,-89` gives a top-down view).
+`--spawn x,75,z --look 0,-89` gives a top-down view). `--lightmap-only`
+renders surfaces white so only baked lighting shows: misoriented lightmaps
+appear as shadows that break at face edges.
 
 Runs 90 frames, saves the primary window, exits. Read the PNG to check
 rendering. Write screenshots to a scratch directory, never into the repo.

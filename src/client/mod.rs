@@ -30,6 +30,8 @@ pub struct Args {
     pub look: Option<Vec2>,
     /// Map ID such as `cs_source:de_dust2`; the greybox map when absent.
     pub map: Option<String>,
+    /// Debug view: white surfaces, only baked lighting.
+    pub lightmap_only: bool,
 }
 
 const USAGE: &str = "\
@@ -39,7 +41,8 @@ usage: mashup [options]
   --movement <id>           movement implementation for the local player
   --spawn <x,y,z>           spawn position in meters
   --look <yaw,pitch>        initial look angles in degrees (yaw 0 = -Z)
-  --map <game:name>         load a game's map, e.g. cs_source:de_dust2 (default: greybox)";
+  --map <game:name>         load a game's map, e.g. cs_source:de_dust2 (default: greybox)
+  --lightmap-only           debug view: white surfaces, only baked lighting";
 
 impl Args {
     pub fn parse() -> Self {
@@ -67,6 +70,10 @@ impl Args {
             if flag == "--help" || flag == "-h" {
                 println!("{USAGE}");
                 std::process::exit(0);
+            }
+            if flag == "--lightmap-only" {
+                out.lightmap_only = true;
+                continue;
             }
             let value = it.next().ok_or_else(|| format!("{flag}: missing value"))?;
             match flag.as_str() {

@@ -19,7 +19,10 @@ fn main() {
                 for w in &data.warnings {
                     eprintln!("  warning: {w}");
                 }
-                app.add_plugins(MapPlugin { data: data.into() });
+                app.add_plugins(MapPlugin {
+                    lightmap_only: args.lightmap_only,
+                    ..MapPlugin::new(data)
+                });
             }
             Err(e) => {
                 eprintln!("error: --map {id}: {e}");

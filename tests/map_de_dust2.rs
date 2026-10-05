@@ -68,7 +68,7 @@ fn most_surfaces_get_textures() {
 fn player_lands_at_spawn_and_can_walk() {
     let Some(map) = dust2() else { return };
     let (feet, _) = map.spawns[0];
-    let mut sim = Sim::new(MapPlugin { data: map.into() });
+    let mut sim = Sim::new(MapPlugin::new(map));
     let p = sim.spawn_character(feet + Vec3::Y * 1.0, placeholder::ID);
     sim.seconds(1.0);
     assert!(sim.state(p).on_ground, "not grounded at spawn: {}", sim.position(p));
@@ -96,4 +96,38 @@ fn player_lands_at_spawn_and_can_walk() {
         assert!(after.y > start.y - 3.0, "fell through the map at {after}");
     }
     assert!(moved > 2.0, "barely moved ({moved} m) - stuck in geometry?");
+}
+
+#[test]
+fn baked_lighting_covers_the_map() {
+    let Some(map) = dust2() else { return };
+    let l = map.lightmap.as_ref().expect("dust2 has baked lighting");
+    assert_eq!(l.rgb.len(), (l.width * l.height) as usize);
+    for m in &map.meshes {
+        assert_eq!(m.lightmap_uvs.len(), m.positions.len(), "{}: lightmap UVs", m.material);
+        assert!(
+            m.lightmap_uvs
+                .iter()
+                .all(|uv| (0.0..=1.0).contains(&uv[0]) && (0.0..=1.0).contains(&uv[1])),
+            "{}: lightmap UV outside the atlas",
+            m.material
+        );
+    }
+    // Brightness should look like a lit outdoor map: mostly mid values,
+    // some overbright sunlight, some shadow.
+    let mut lum: Vec<f32> = l
+        .rgb
+        .iter()
+        .map(|c| (c[0] + c[1] + c[2]) / 3.0)
+        .filter(|v| *v > 0.0)
+        .collect();
+    lum.sort_by(|a, b| a.total_cmp(b));
+    let q = |p: f32| lum[((lum.len() - 1) as f32 * p) as usize];
+    assert!(
+        q(0.1) < 0.3 && q(0.5) > 0.2 && q(0.95) > 0.8,
+        "luminance p10 {} p50 {} p95 {}",
+        q(0.1),
+        q(0.5),
+        q(0.95)
+    );
 }
