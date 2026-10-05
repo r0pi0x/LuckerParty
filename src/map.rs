@@ -139,6 +139,15 @@ pub struct MapData {
     pub warnings: Vec<String>,
     /// How the source game presents the map, so it can be reproduced.
     pub look: MapLook,
+    pub sky: Option<MapSky>,
+}
+
+/// A sky cubemap: per engine face (+X, -X, +Y, -Y, +Z, -Z), an index into
+/// `MapData::textures` and an orientation (0-3 clockwise quarter turns, 4-7
+/// the same after mirroring horizontally).
+#[derive(Clone, Debug)]
+pub struct MapSky {
+    pub faces: [(usize, u8); 6],
 }
 
 /// Presentation choices that differ between games, measured against the
@@ -213,6 +222,10 @@ impl MapPlugin {
 #[derive(Resource)]
 struct PendingMap(Arc<MapData>, MapDebugView);
 
+/// The map's sky cubemap, for cameras to show.
+#[derive(Resource, Clone)]
+pub struct MapSkybox(pub Handle<Image>);
+
 /// The loaded map's presentation settings, for cameras to follow.
 #[derive(Resource, Clone, Debug)]
 pub struct ActiveMapLook(pub MapLook);
@@ -231,7 +244,8 @@ impl Plugin for MapPlugin {
                 affects_lightmapped_meshes: false,
                 ..default()
             })
-            .add_systems(Startup, spawn_map);
+            .add_systems(Startup, spawn_map)
+            .add_systems(Update, attach_sky);
     }
 }
 
@@ -302,6 +316,11 @@ fn spawn_map(
             .map(|t| images.add(to_image(t, &data.look)))
             .collect();
         let lightmap = data.lightmap.as_ref().map(|l| images.add(lightmap_image(l)));
+        if let Some(sky) = &data.sky
+            && view == MapDebugView::Normal
+        {
+            commands.insert_resource(MapSkybox(images.add(sky_image(sky, &data.textures))));
+        }
         for m in &data.meshes {
             let lit = lightmap.as_ref().filter(|_| m.lightmap_uvs.len() == m.positions.len());
             let mut part = commands.spawn((
@@ -578,4 +597,70 @@ fn model_collider(model: &MapModel) -> Option<Collider> {
         );
     }
     (!indices.is_empty()).then(|| Collider::trimesh(positions, indices))
+}
+
+/// Give every 3D camera the map's sky.
+fn attach_sky(
+    mut commands: Commands,
+    sky: Option<Res<MapSkybox>>,
+    cameras: Query<Entity, (With<Camera3d>, Without<bevy::light::Skybox>)>,
+) {
+    let Some(sky) = sky else { return };
+    for cam in &cameras {
+        commands.entity(cam).insert(bevy::light::Skybox {
+            image: Some(sky.0.clone()),
+            // Show the texture at its own brightness (cancel camera exposure).
+            brightness: LIGHTMAP_EXPOSURE,
+            ..default()
+        });
+    }
+}
+
+/// Six faces into one cube texture. Faces narrower than tall or shorter
+/// than wide (Source sides are often half height) are stretched to square.
+fn sky_image(sky: &MapSky, textures: &[MapTexture]) -> Image {
+    let size = sky
+        .faces
+        .iter()
+        .map(|(t, _)| textures[*t].width.max(textures[*t].height))
+        .max()
+        .unwrap_or(1);
+    let mut data = Vec::with_capacity((size * size * 4 * 6) as usize);
+    for (tex, turns) in sky.faces {
+        let t = &textures[tex];
+        for y in 0..size {
+            for x in 0..size {
+                // Rotate clockwise by `turns` quarter turns: sample the source
+                // pixel that lands at (x, y).
+                let (mut u, mut v) = (x, y);
+                for _ in 0..turns % 4 {
+                    (u, v) = (v, size - 1 - u);
+                }
+                if turns >= 4 {
+                    u = size - 1 - u;
+                }
+                let sx = (u as u64 * t.width as u64 / size as u64) as u32;
+                let sy = (v as u64 * t.height as u64 / size as u64) as u32;
+                let i = ((sy * t.width + sx) * 4) as usize;
+                data.extend_from_slice(&t.rgba8[i..i + 4]);
+            }
+        }
+    }
+    let mut image = Image::new(
+        Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 6,
+        },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    image.texture_view_descriptor = Some(bevy::render::render_resource::TextureViewDescriptor {
+        dimension: Some(bevy::render::render_resource::TextureViewDimension::Cube),
+        ..default()
+    });
+    image.sampler = ImageSampler::linear();
+    image
 }

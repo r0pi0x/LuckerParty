@@ -426,3 +426,18 @@ fn decals_project_onto_surfaces() {
         .unwrap_or(0);
     assert!(unplaced <= 10, "{unplaced} decals unplaced");
 }
+
+#[test]
+fn sky_has_six_faces() {
+    let Some(map) = dust2() else { return };
+    let sky = map.sky.as_ref().expect("dust2 names a sky (sky_dust)");
+    let mut used: Vec<usize> = sky.faces.iter().map(|(t, _)| *t).collect();
+    used.sort();
+    used.dedup();
+    assert_eq!(used.len(), 6, "each cube face needs its own texture");
+    for (t, orient) in &sky.faces {
+        let tex = &map.textures[*t];
+        assert!(tex.name.contains("skybox/sky_dust"), "{}", tex.name);
+        assert!(*orient < 8);
+    }
+}

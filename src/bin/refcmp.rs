@@ -23,13 +23,15 @@ use mashup::{
 use serde::Deserialize;
 
 const USAGE: &str = "\
-usage: refcmp [all|capture-ref|capture-ours|report|fit] [--views <file>] [--only <name>] [--keep-running]
+usage: refcmp [all|capture-ref|capture-ours|report|fit|skyfit] [--views <file>] [--only <name>] [--keep-running]
   all            capture both, then report (default)
   capture-ref    capture views in CS:S (Steam must be logged in on this machine)
   capture-ours   capture views in mashup
   report         compare existing captures
   fit            capture mashup's albedo and lighting debug views and fit how
                  CS:S combines texture and light, per pixel, against the reference
+  skyfit         render all 48 sky face candidates and pick, per cube face, the
+                 texture and orientation matching the reference sky (views named sky*)
   --views <file> views file (default: tools/refcmp/de_dust2.toml)
   --only <name>  only views whose name contains <name>
   --keep-running leave CS:S running after capturing (faster next time)";
@@ -69,7 +71,7 @@ fn main() -> ExitCode {
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
-            "all" | "capture-ref" | "capture-ours" | "report" | "fit" => args.command = a,
+            "all" | "capture-ref" | "capture-ours" | "report" | "fit" | "skyfit" => args.command = a,
             "--views" => args.views = it.next().map(PathBuf::from).unwrap_or_default(),
             "--only" => args.only = it.next(),
             "--keep-running" => args.keep_running = true,
@@ -107,6 +109,10 @@ fn run(args: &Args) -> Result<(), String> {
     }
     if all || args.command == "capture-ours" {
         capture_ours(&file, &ours_dir, &[])?;
+    }
+    if args.command == "skyfit" {
+        file.view.retain(|v| v.name.starts_with("sky"));
+        skyfit(&file, &ref_dir, &out)?;
     }
     if args.command == "fit" {
         let (albedo, lighting) = (out.join("ours_albedo"), out.join("ours_lighting"));
@@ -241,8 +247,18 @@ fn capture_ref(file: &ViewsFile, out: &Path, keep_running: bool) -> Result<(), S
             wait_for(Duration::from_secs(240), "CS:S RCON", || Rcon::connect().ok())?
         }
     };
-    // Wait until the map is loaded and our player is in the game.
+    // Wait until the map is loaded and our player is in the game. A reused
+    // game may be sitting at the menu (e.g. after an idle kick): load the map.
     let map_line = format!("map     : {}", file.map);
+    let status = rcon.exec("status").unwrap_or_default();
+    if !status.contains(&map_line) {
+        println!("loading {} in the running game...", file.map);
+        let _ = rcon.exec(&format!("map {}", file.map));
+        sleep(Duration::from_secs(5));
+        rcon = wait_for(Duration::from_secs(120), "CS:S RCON after map change", || {
+            Rcon::connect().ok()
+        })?;
+    }
     wait_for(Duration::from_secs(240), "the map to load", || {
         let status = rcon.exec("status").ok()?;
         (status.contains(&map_line) && status.contains(" active ")).then_some(())
@@ -252,6 +268,8 @@ fn capture_ref(file: &ViewsFile, out: &Path, keep_running: bool) -> Result<(), S
     let cam = &file.camera;
     for cmd in [
         "sv_cheats 1",
+        // Our spectator never moves; don't kick it for idling.
+        "mp_autokick 0",
         "hidepanel info",
         "hidepanel team",
         "hidepanel specgui",
@@ -309,6 +327,10 @@ fn wait_for<T>(limit: Duration, what: &str, mut f: impl FnMut() -> Option<T>) ->
 // ------------------------------------------------------------- mashup side
 
 fn capture_ours(file: &ViewsFile, out: &Path, extra: &[&str]) -> Result<(), String> {
+    capture_ours_env(file, out, extra, &[])
+}
+
+fn capture_ours_env(file: &ViewsFile, out: &Path, extra: &[&str], env: &[(&str, String)]) -> Result<(), String> {
     // Source eye position and [pitch, yaw] to engine space and our angles:
     // our yaw 0 looks down -Z (Source +Y), so yaw = source yaw - 90; our
     // positive pitch looks up.
@@ -345,6 +367,9 @@ fn capture_ours(file: &ViewsFile, out: &Path, extra: &[&str]) -> Result<(), Stri
         .arg("--capture-dir")
         .arg(out)
         .args(extra)
+        .envs(env.iter().map(|(k, v)| (*k, v.as_str())))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .status()
         .map_err(|e| format!("{}: {e} (build it first: cargo build --features dev)", exe.display()))?;
     if !status.success() {
@@ -547,5 +572,100 @@ fn fit(file: &ViewsFile, ref_dir: &Path, albedo_dir: &Path, light_dir: &Path) ->
     println!("  linear, k={k_lin:.3}                        {:.4}", err(&lin));
     println!("  Source LDR: a*2*(l/2)^(1/2.2)            {:.4}", err(&source_ldr));
     println!("  gamma-space fit: a*{k:.3}*l^{p:.3}           {:.4}", err(&general));
+    Ok(())
+}
+
+// ------------------------------------------------------------------ skyfit
+
+fn skyfit(file: &ViewsFile, ref_dir: &Path, out: &Path) -> Result<(), String> {
+    use bevy::math::{EulerRot, Quat, Vec3};
+    use mashup::games::cs_source::sky::SUFFIXES;
+
+    const CANDIDATES: usize = 48;
+    let mask_dir = out.join("ours_albedo");
+    std::fs::create_dir_all(&mask_dir).map_err(|e| e.to_string())?;
+    capture_ours(file, &mask_dir, &["--debug-view", "albedo"])?;
+    let dirs: Vec<PathBuf> = (0..CANDIDATES)
+        .map(|n| out.join("skyfit").join(n.to_string()))
+        .collect();
+    for (n, d) in dirs.iter().enumerate() {
+        std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
+        capture_ours_env(file, d, &[], &[("MASHUP_SKY_CANDIDATE", n.to_string())])?;
+        print!("\rrendered candidate {}/{CANDIDATES}", n + 1);
+        let _ = std::io::stdout().flush();
+    }
+    println!();
+
+    // error[face][candidate], over sky pixels whose view direction is
+    // dominated by that face's axis.
+    let mut err = vec![vec![0.0f64; CANDIDATES]; 6];
+    let mut count = [0usize; 6];
+    let tan = (74f32.to_radians() / 2.0).tan();
+    for v in &file.view {
+        let load = |p: PathBuf| {
+            image::open(&p)
+                .map(|i| i.to_rgb8())
+                .map_err(|e| format!("{}: {e}", p.display()))
+        };
+        let r = load(ref_dir.join(format!("{}.jpg", v.name)))?;
+        let mask = load(mask_dir.join(format!("{}.png", v.name)))?;
+        let cands: Vec<RgbImage> = dirs
+            .iter()
+            .map(|d| load(d.join(format!("{}.png", v.name))))
+            .collect::<Result<_, _>>()?;
+        let (w, h) = r.dimensions();
+        let q = Quat::from_euler(
+            EulerRot::YXZ,
+            (v.angles[1] - 90.0).to_radians(),
+            (-v.angles[0]).to_radians(),
+            0.0,
+        );
+        for y in (0..h).step_by(2) {
+            for x in (0..w).step_by(2) {
+                let m = mask.get_pixel(x, y);
+                if !(m[0] > 250 && m[1] < 5 && m[2] > 250) {
+                    continue;
+                }
+                let nx = (x as f32 + 0.5) / w as f32 * 2.0 - 1.0;
+                let ny = 1.0 - (y as f32 + 0.5) / h as f32 * 2.0;
+                let d = q * Vec3::new(nx * tan * w as f32 / h as f32, ny * tan, -1.0);
+                let a = d.abs();
+                let face = if a.x >= a.y && a.x >= a.z {
+                    if d.x > 0.0 { 0 } else { 1 }
+                } else if a.y >= a.z {
+                    if d.y > 0.0 { 2 } else { 3 }
+                } else if d.z > 0.0 {
+                    4
+                } else {
+                    5
+                };
+                count[face] += 1;
+                let rp = r.get_pixel(x, y);
+                for (n, c) in cands.iter().enumerate() {
+                    let cp = c.get_pixel(x, y);
+                    err[face][n] += (0..3).map(|i| (rp[i] as f64 - cp[i] as f64).abs()).sum::<f64>() / (3.0 * 255.0);
+                }
+            }
+        }
+    }
+    let names = ["+X", "-X", "+Y", "-Y", "+Z", "-Z"];
+    println!("best candidate per engine face (mean abs error over sky pixels):");
+    for face in 0..6 {
+        if count[face] == 0 {
+            println!("  {}: no sky pixels in these views", names[face]);
+            continue;
+        }
+        let mut ranked: Vec<(usize, f64)> = err[face].iter().map(|e| e / count[face] as f64).enumerate().collect();
+        ranked.sort_by(|a, b| a.1.total_cmp(&b.1));
+        let show = |(n, e): (usize, f64)| format!("{}/{} {:.4}", SUFFIXES[n / 8], n % 8, e);
+        println!(
+            "  {} ({:>7} px): {}   next: {}, {}",
+            names[face],
+            count[face],
+            show(ranked[0]),
+            show(ranked[1]),
+            show(ranked[2])
+        );
+    }
     Ok(())
 }

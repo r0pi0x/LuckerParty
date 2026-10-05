@@ -25,3 +25,29 @@ angles = [0, 180]
 name = "a_sign_s"
 position = [-295.3, 1078.7, 86.6]
 angles = [0, 270]
+
+# Sky orientation checks (Source pitch < 0 looks up).
+[[view]]
+name = "sky_e"
+position = [-295.3, 1078.7, 86.6]
+angles = [-30, 0]
+
+[[view]]
+name = "sky_n"
+position = [-295.3, 1078.7, 86.6]
+angles = [-30, 90]
+
+[[view]]
+name = "sky_w"
+position = [-295.3, 1078.7, 86.6]
+angles = [-30, 180]
+
+[[view]]
+name = "sky_s"
+position = [-295.3, 1078.7, 86.6]
+angles = [-30, 270]
+
+[[view]]
+name = "sky_up"
+position = [-295.3, 1078.7, 86.6]
+angles = [-85, 0]
