@@ -5,9 +5,35 @@
 use std::sync::Arc;
 
 use avian3d::prelude::*;
-use bevy::{asset::RenderAssetUsages, mesh::Indices, prelude::*, render::render_resource::PrimitiveTopology};
+use bevy::{
+    asset::RenderAssetUsages,
+    image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor},
+    mesh::Indices,
+    prelude::*,
+    render::render_resource::{Extent3d, PrimitiveTopology, TextureDimension, TextureFormat},
+};
 
 use crate::core::{SpawnPoint, Team};
+
+/// An RGBA8 texture in sRGB, top row first.
+#[derive(Clone, Debug)]
+pub struct MapTexture {
+    /// Source path, e.g. `materials/de_dust/sitebwall01.vtf`.
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    pub rgba8: Vec<u8>,
+}
+
+/// How a surface's alpha is used.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum MapAlpha {
+    #[default]
+    Opaque,
+    /// Cut out below this alpha.
+    Mask(f32),
+    Blend,
+}
 
 /// Triangles sharing one material.
 #[derive(Clone, Debug, Default)]
@@ -20,19 +46,26 @@ pub struct MapMesh {
     pub uvs: Vec<[f32; 2]>,
     /// Counter-clockwise triangles when seen from the front.
     pub indices: Vec<u32>,
-    /// Flat debug color until real materials load.
+    /// Flat color, used when there's no texture.
     pub color: [u8; 3],
+    /// Index into `MapData::textures`.
+    pub texture: Option<usize>,
+    pub alpha: MapAlpha,
+    pub double_sided: bool,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct MapData {
     pub name: String,
     pub meshes: Vec<MapMesh>,
+    pub textures: Vec<MapTexture>,
     /// Collision triangles (may include surfaces that aren't drawn).
     pub collision_positions: Vec<[f32; 3]>,
     pub collision_indices: Vec<[u32; 3]>,
     /// Feet positions.
     pub spawns: Vec<(Vec3, Option<Team>)>,
+    /// Things the importer couldn't load (missing materials etc.).
+    pub warnings: Vec<String>,
 }
 
 impl MapData {
@@ -83,6 +116,7 @@ fn spawn_map(
     pending: Res<PendingMap>,
     mut meshes: Option<ResMut<Assets<Mesh>>>,
     mut materials: Option<ResMut<Assets<StandardMaterial>>>,
+    mut images: Option<ResMut<Assets<Image>>>,
 ) {
     let data = &pending.0;
     let root = commands
@@ -105,7 +139,8 @@ fn spawn_map(
         Transform::default(),
     ));
 
-    if let (Some(meshes), Some(materials)) = (meshes.as_mut(), materials.as_mut()) {
+    if let (Some(meshes), Some(materials), Some(images)) = (meshes.as_mut(), materials.as_mut(), images.as_mut()) {
+        let textures: Vec<Handle<Image>> = data.textures.iter().map(|t| images.add(to_image(t))).collect();
         for m in &data.meshes {
             let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
             mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, m.positions.clone());
@@ -118,8 +153,25 @@ fn spawn_map(
                 MapPart,
                 Mesh3d(meshes.add(mesh)),
                 MeshMaterial3d(materials.add(StandardMaterial {
-                    base_color: Color::srgb_u8(r, g, b),
+                    base_color: if m.texture.is_some() {
+                        Color::WHITE
+                    } else {
+                        Color::srgb_u8(r, g, b)
+                    },
+                    base_color_texture: m.texture.map(|i| textures[i].clone()),
                     perceptual_roughness: 0.95,
+                    reflectance: 0.2,
+                    alpha_mode: match m.alpha {
+                        MapAlpha::Opaque => AlphaMode::Opaque,
+                        MapAlpha::Mask(cutoff) => AlphaMode::Mask(cutoff),
+                        MapAlpha::Blend => AlphaMode::Blend,
+                    },
+                    double_sided: m.double_sided,
+                    cull_mode: if m.double_sided {
+                        None
+                    } else {
+                        Some(bevy::render::render_resource::Face::Back)
+                    },
                     ..default()
                 })),
                 Transform::default(),
@@ -146,4 +198,56 @@ fn spawn_map(
             Transform::from_translation(*feet + Vec3::Y * SPAWN_LIFT),
         ));
     }
+}
+
+/// A repeating, mipmapped GPU image. Mipmaps are box-filtered here; source
+/// files' own mip levels aren't used yet.
+fn to_image(t: &MapTexture) -> Image {
+    let mut data = t.rgba8.clone();
+    let (mut w, mut h) = (t.width as usize, t.height as usize);
+    let mut level = t.rgba8.clone();
+    let mut levels = 1;
+    while w > 1 || h > 1 {
+        let (nw, nh) = ((w / 2).max(1), (h / 2).max(1));
+        let mut next = vec![0u8; nw * nh * 4];
+        for y in 0..nh {
+            for x in 0..nw {
+                for c in 0..4 {
+                    let mut sum = 0u32;
+                    for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                        let sx = (x * 2 + dx).min(w - 1);
+                        let sy = (y * 2 + dy).min(h - 1);
+                        sum += level[(sy * w + sx) * 4 + c] as u32;
+                    }
+                    next[(y * nw + x) * 4 + c] = (sum / 4) as u8;
+                }
+            }
+        }
+        data.extend_from_slice(&next);
+        level = next;
+        (w, h) = (nw, nh);
+        levels += 1;
+    }
+    let mut image = Image::new_uninit(
+        Extent3d {
+            width: t.width,
+            height: t.height,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    image.data = Some(data);
+    image.texture_descriptor.mip_level_count = levels;
+    image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+        address_mode_u: ImageAddressMode::Repeat,
+        address_mode_v: ImageAddressMode::Repeat,
+        mag_filter: ImageFilterMode::Linear,
+        min_filter: ImageFilterMode::Linear,
+        mipmap_filter: ImageFilterMode::Linear,
+        anisotropy_clamp: 8,
+        ..default()
+    });
+    image
 }

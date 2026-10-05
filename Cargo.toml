@@ -16,6 +16,8 @@ serde = { version = "1.0.229", features = ["derive"] }
 toml = "1.1.6"
 twofish = "0.8"
 vbsp = "0.9"
+vmt-parser = "0.2"
+vtf = "0.4"
 
 [features]
 # Faster iteration: link Bevy as a dynamic library. Use with

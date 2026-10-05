@@ -9,11 +9,16 @@ fn main() {
         Some(id) => match games::load_map(id) {
             Ok(data) => {
                 eprintln!(
-                    "loaded {}: {} triangles, {} spawns",
+                    "loaded {}: {} triangles, {} textures, {} spawns, {} warnings",
                     data.name,
                     data.triangle_count(),
-                    data.spawns.len()
+                    data.textures.len(),
+                    data.spawns.len(),
+                    data.warnings.len()
                 );
+                for w in &data.warnings {
+                    eprintln!("  warning: {w}");
+                }
                 app.add_plugins(MapPlugin { data: data.into() });
             }
             Err(e) => {

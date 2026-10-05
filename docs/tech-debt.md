@@ -11,6 +11,8 @@ Small, current, honest. Remove entries when fixed.
 | client | Local input overwrites the local player's `Intent` every frame, so remote tools can't drive it | Scripted intent playback is planned (docs/OBSERVABILITY.md) |
 | map | CS:S 3D skybox geometry is drawn at 1:1 off to one side instead of scaled around the camera | Visual only; fix with the sky stage |
 | map | CS:S collision comes from world faces, not brushes: player-clip brushes are ignored, brush entities (doors) not loaded | Enough to walk dust2; brushes when props and doors land |
+| map | Materials use only `$basetexture`: no bump maps, no WorldVertexTransition blending (displacements show their first texture), no `$basetexturetransform` | Looks right at a glance; refine with lighting |
+| map | Mipmaps are box-filtered at load instead of using the VTF's own levels; textures decode on every load (no cache yet) | dust2 still loads in well under a second |
 | map | Maps load synchronously before the app starts | dust2 converts in well under a second |
 | deps | `vbsp` pulls `binrw` 0.14, which rustc flags as future-incompatible | Upstream; watch on Rust upgrades |
 | build | Windows build not yet verified | Needs the Windows PC set up (see plans) |

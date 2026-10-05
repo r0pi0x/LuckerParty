@@ -4243,6 +4243,8 @@ dependencies = [
  "toml",
  "twofish",
  "vbsp",
+ "vmt-parser",
+ "vtf",
 ]
 
 [[package]]
@@ -5128,13 +5130,38 @@ dependencies = [
 
 [[package]]
 name = "parse-display"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "287d8d3ebdce117b8539f59411e4ed9ec226e0a4153c7f55495c6070d68e6f72"
+dependencies = [
+ "parse-display-derive 0.10.0",
+ "regex",
+ "regex-syntax",
+]
+
+[[package]]
+name = "parse-display"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e78deb158fb1d73b29efb4b7e9b9860b78059c670de06bd28df8d0b458ded0eb"
 dependencies = [
- "parse-display-derive",
+ "parse-display-derive 0.11.0",
  "regex",
  "regex-syntax",
+]
+
+[[package]]
+name = "parse-display-derive"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7fc048687be30d79502dea2f623d052f3a074012c6eac41726b7ab17213616b1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "regex",
+ "regex-syntax",
+ "structmeta",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -5842,6 +5869,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_repr"
+version = "0.1.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d3b1629de253c70a0508c3899572da79ca359fdab27c7920ff00406df418906"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.6",
+]
+
+[[package]]
 name = "serde_spanned"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6222,6 +6260,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06794f8f6c5c898b3275aebefa6b8a1cb24cd2c6c79397ab15774837a0bc5755"
 dependencies = [
  "winapi-util",
+]
+
+[[package]]
+name = "texpresso"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8550677e2259d675a7841cb1403db35f330cc9e58674c8c5caa12dd12c51dc71"
+dependencies = [
+ "libm",
 ]
 
 [[package]]
@@ -6661,7 +6708,7 @@ checksum = "33dd6251fb103f965f549c96a7cb040095a13e1fc1506ea0ef8a2047457f88d6"
 dependencies = [
  "logos",
  "miette",
- "parse-display",
+ "parse-display 0.11.0",
  "serde_core",
  "thiserror 2.0.21",
 ]
@@ -6705,12 +6752,39 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
+name = "vmt-parser"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e7c9a38cb4f59c39205e5c7aabc39ebcb213b706afa90ee798989f988eed5441"
+dependencies = [
+ "miette",
+ "serde",
+ "serde_repr",
+ "thiserror 2.0.21",
+ "vdf-reader",
+]
+
+[[package]]
 name = "voracious_radix_sort"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "446e7ffcb6c27a71d05af7e51ef2ee5b71c48424b122a832f2439651e1914899"
 dependencies = [
  "rayon",
+]
+
+[[package]]
+name = "vtf"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c07741e2001c36adc57149136958d55081185e129220541aaff98b8073ce9636"
+dependencies = [
+ "byteorder 1.5.0",
+ "image",
+ "num_enum",
+ "parse-display 0.10.0",
+ "texpresso",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

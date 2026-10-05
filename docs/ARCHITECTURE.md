@@ -40,7 +40,7 @@ A module may use only the modules below it. Enforced by
 | `src/mount/` | `Mount` (ordered layers, first match wins), `FileSource`, `LooseDir`, path normalization, `mashup.local.toml` loading |
 | `src/map.rs` | `MapData` (meters, Y up, meshes per material, collision, spawns) and `MapPlugin` that spawns it |
 | `src/games/mod.rs` | `load_map("game:name")` dispatcher |
-| `src/games/cs_source/` | VPK reader, the CS:S search path, BSP to `MapData` (via `vbsp`) |
+| `src/games/cs_source/` | VPK reader, the CS:S search path, BSP to `MapData` (via `vbsp`), VMT/VTF materials (map pak first, then the mount) |
 | `src/games/combat_arms/` | `.rez` reader and the archive cipher payload decryption (from the spec), all archives as one mount |
 | `src/bin/dump.rs` | Dev tool: summarize, list and extract a game install's files |
 | `src/harness.rs` | `Sim`: headless app stepped by exact fixed ticks, for tests |

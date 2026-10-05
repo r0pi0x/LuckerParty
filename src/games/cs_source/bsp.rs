@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use bevy::prelude::*;
 use vbsp::{Bsp, TextureFlags};
 
+use super::material::MaterialLoader;
 use crate::{
     core::Team,
     map::{MapData, MapMesh},
@@ -44,9 +45,21 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
     let path = format!("maps/{name}.bsp");
     let bytes = mount.read(&path).map_err(|e| format!("{path}: {e}"))?;
     let bsp = Bsp::read(&bytes).map_err(|e| format!("{path}: {e}"))?;
-    Ok(convert(&bsp, name))
+    let mut data = convert(&bsp, name);
+
+    let mut materials = MaterialLoader::new(&bsp, mount);
+    for mesh in &mut data.meshes {
+        let r = materials.resolve(&mesh.material);
+        mesh.texture = r.texture;
+        mesh.alpha = r.alpha;
+        mesh.double_sided = r.double_sided;
+    }
+    data.warnings.extend(materials.missing);
+    data.textures = materials.textures;
+    Ok(data)
 }
 
+/// Geometry, collision and spawns, without materials.
 pub fn convert(bsp: &Bsp, name: &str) -> MapData {
     let mut by_material: BTreeMap<String, MapMesh> = BTreeMap::new();
     let mut data = MapData {

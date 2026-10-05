@@ -46,6 +46,25 @@ fn converts_to_a_plausible_map() {
 }
 
 #[test]
+fn most_surfaces_get_textures() {
+    let Some(map) = dust2() else { return };
+    let textured: usize = map
+        .meshes
+        .iter()
+        .filter(|m| m.texture.is_some())
+        .map(|m| m.indices.len() / 3)
+        .sum();
+    let share = textured as f32 / map.triangle_count() as f32;
+    for w in &map.warnings {
+        eprintln!("warning: {w}");
+    }
+    assert!(share > 0.95, "only {:.1}% of triangles textured", share * 100.0);
+    for t in &map.textures {
+        assert_eq!(t.rgba8.len(), (t.width * t.height * 4) as usize, "{}", t.name);
+    }
+}
+
+#[test]
 fn player_lands_at_spawn_and_can_walk() {
     let Some(map) = dust2() else { return };
     let (feet, _) = map.spawns[0];
