@@ -87,6 +87,23 @@ pub struct MapMesh {
     /// Per-vertex coordinates into `MapData::lightmap` (0..1); empty when
     /// the map has no baked lighting.
     pub lightmap_uvs: Vec<[f32; 2]>,
+    /// A second texture blended in per vertex (Source's WorldVertexTransition
+    /// on displacements).
+    pub blend: Option<MapBlend>,
+    /// Per-vertex blend weight: 0 = first texture, 1 = second. Empty when
+    /// there's no blend.
+    pub blend_weights: Vec<f32>,
+}
+
+/// The second layer of a two-texture surface. Indices into
+/// `MapData::textures`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct MapBlend {
+    pub texture: Option<usize>,
+    pub normal_map: Option<usize>,
+    /// Shapes the blend: green moves the transition point, red sets its
+    /// softness (linear texture).
+    pub mask: Option<usize>,
 }
 
 /// Baked lighting atlas: linear RGB, where 1.0 shows a texture at its own
@@ -514,6 +531,9 @@ fn spawn_map(
                     .and_then(|v| v.parse::<f32>().ok())
                     .unwrap_or(NORMAL_G_SIGN);
                 let bumped = m.normal_map.is_some() && bumped_lightmaps.is_some() && g_sign != 0.0;
+                // Two-texture blend: the weights ride in the vertex color's alpha.
+                let blend = m.blend.unwrap_or_default();
+                let blended = blend.texture.is_some() && m.blend_weights.len() == m.positions.len();
                 let material = WorldMaterial {
                     params: WorldParams {
                         base_color: if m.texture.is_some() {
@@ -523,6 +543,9 @@ fn spawn_map(
                         },
                         light_scale: data.look.light_scale,
                         lightmap_scale: if source_ldr { SOURCE_LIGHTMAP_SCALE } else { 1.0 },
+                        blend: if blended { 1.0 } else { 0.0 },
+                        blend_masked: if blend.mask.is_some() { 1.0 } else { 0.0 },
+                        blend_normal: if bumped && blend.normal_map.is_some() { 1.0 } else { 0.0 },
                         bumped: if bumped { 1.0 } else { 0.0 },
                         normal_g_sign: g_sign,
                         normal_x_sign: std::env::var("MASHUP_NORMAL_X_SIGN")
@@ -542,6 +565,12 @@ fn spawn_map(
                     lightmap_b0: bumped_lightmaps.as_ref().map(|b| b[0].clone()),
                     lightmap_b1: bumped_lightmaps.as_ref().map(|b| b[1].clone()),
                     lightmap_b2: bumped_lightmaps.as_ref().map(|b| b[2].clone()),
+                    base2: blend.texture.filter(|_| blended).map(|i| textures[i].clone()),
+                    normal2: blend
+                        .normal_map
+                        .filter(|_| blended && bumped)
+                        .map(|i| textures[i].clone()),
+                    blend_mask: blend.mask.filter(|_| blended).map(|i| textures[i].clone()),
                     alpha_mode: match m.alpha {
                         MapAlpha::Opaque | MapAlpha::Mask(_) => AlphaMode::Opaque,
                         MapAlpha::Blend => AlphaMode::Blend,
@@ -552,7 +581,14 @@ fn spawn_map(
                     Name::new(m.material.clone()),
                     MapPart,
                     layer_of(m.skybox),
-                    Mesh3d(meshes.add(build_mesh(m, true))),
+                    Mesh3d(meshes.add({
+                        let mut mesh = build_mesh(m, true);
+                        if blended {
+                            let colors: Vec<[f32; 4]> = m.blend_weights.iter().map(|w| [1.0, 1.0, 1.0, *w]).collect();
+                            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+                        }
+                        mesh
+                    })),
                     MeshMaterial3d(world_materials.add(material)),
                     Transform::default(),
                     ChildOf(root),

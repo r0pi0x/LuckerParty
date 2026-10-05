@@ -21,6 +21,10 @@ struct WorldParams {
     normal_x_sign: f32,
     // Multiplier on sampled lightmap values.
     lightmap_scale: f32,
+    // Second texture blended in by the vertex alpha (WorldVertexTransition).
+    blend: f32,
+    blend_masked: f32,
+    blend_normal: f32,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> params: WorldParams;
@@ -33,6 +37,9 @@ struct WorldParams {
 @group(#{MATERIAL_BIND_GROUP}) @binding(7) var lightmap_b0: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(8) var lightmap_b1: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(9) var lightmap_b2: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(10) var base2_texture: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(11) var normal2_texture: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(12) var blend_mask: texture_2d<f32>;
 
 // Basis directions of the three directional lightmap pages, in order
 // (specs/cs_source/shaders.md). Tangent space: x along texture u, y along
@@ -44,12 +51,34 @@ const BASIS_2 = vec3<f32>(-0.40824829, -0.70710678, 0.57735027);
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     var albedo = textureSample(base_texture, base_sampler, in.uv) * params.base_color;
+    // WorldVertexTransition: blend toward the second texture by the vertex
+    // alpha, optionally shaped by the mask (green: transition point, red:
+    // softness). Colors blend in linear space; alpha stays the first's.
+    var b = 0.0;
+#ifdef VERTEX_COLORS
+    b = in.color.a;
+#endif
+    if params.blend > 0.5 {
+        if params.blend_masked > 0.5 {
+            let m = textureSample(blend_mask, normal_sampler, in.uv);
+            let lo = saturate(m.g - m.r);
+            let hi = saturate(m.g + m.r);
+            let t = select(step(lo, b), saturate((b - lo) / (hi - lo)), hi > lo);
+            b = t * t * (3.0 - 2.0 * t);
+        }
+        let second = textureSample(base2_texture, base_sampler, in.uv) * params.base_color;
+        albedo = vec4<f32>(mix(albedo.rgb, second.rgb, b), albedo.a);
+    }
     if params.alpha_cutoff > 0.0 && albedo.a < params.alpha_cutoff {
         discard;
     }
     var light = textureSample(lightmap, lightmap_sampler, in.uv_b).rgb;
     if params.bumped > 0.5 {
         var n = textureSample(normal_texture, normal_sampler, in.uv).xyz * 2.0 - 1.0;
+        if params.blend > 0.5 && params.blend_normal > 0.5 {
+            let n2 = textureSample(normal2_texture, normal_sampler, in.uv).xyz * 2.0 - 1.0;
+            n = mix(n, n2, b);
+        }
         n.x = n.x * params.normal_x_sign;
         n.y = n.y * params.normal_g_sign;
         var w = vec3<f32>(

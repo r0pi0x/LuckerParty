@@ -41,6 +41,9 @@ pub struct Resolved {
     pub decal_scale: Option<f32>,
     /// `$bumpmap`: tangent-space normal map (linear texture).
     pub normal_map: Option<usize>,
+    /// WorldVertexTransition: `$basetexture2`, `$bumpmap2`,
+    /// `$blendmodulatetexture`.
+    pub blend: Option<crate::map::MapBlend>,
 }
 
 pub struct MaterialLoader<'a> {
@@ -92,6 +95,7 @@ impl<'a> MaterialLoader<'a> {
                     double_sided: false,
                     decal_scale: None,
                     normal_map: None,
+                    blend: None,
                 }
             }
         }
@@ -105,6 +109,7 @@ impl<'a> MaterialLoader<'a> {
             double_sided: false,
             decal_scale: None,
             normal_map: None,
+            blend: None,
         };
         let vmt_path = format!("materials/{}.vmt", normalize(name));
         let Some(text) = self.read_text(&vmt_path) else {
@@ -139,12 +144,21 @@ impl<'a> MaterialLoader<'a> {
             vmt_parser::material::Material::LightMappedGeneric(m) if m.decal => Some(m.decal_scale),
             _ => None,
         };
+        let blend = match &material {
+            vmt_parser::material::Material::WorldVertexTransition(m) => Some(crate::map::MapBlend {
+                texture: self.texture(&m.base_texture2, true),
+                normal_map: m.bump_map2.as_deref().and_then(|t| self.texture(t, false)),
+                mask: m.blend_modulate_texture.as_deref().and_then(|t| self.texture(t, false)),
+            }),
+            _ => None,
+        };
         Resolved {
             texture,
             alpha,
             double_sided: material.no_cull(),
             decal_scale,
             normal_map,
+            blend,
         }
     }
 

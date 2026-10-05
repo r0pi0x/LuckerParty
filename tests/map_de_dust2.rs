@@ -545,3 +545,24 @@ fn source_movement_walks_dust2() {
         "top speed {top_speed} m/s, expected about {knife}"
     );
 }
+
+/// Displacements with two-texture (WorldVertexTransition) materials carry
+/// the second texture and per-vertex blend weights from the map.
+#[test]
+fn displacement_texture_blending() {
+    let Some(map) = dust2() else { return };
+    let blended: Vec<_> = map.meshes.iter().filter(|m| m.blend.is_some()).collect();
+    assert!(!blended.is_empty(), "no two-texture surfaces");
+    for m in &blended {
+        let b = m.blend.unwrap();
+        assert!(b.texture.is_some(), "{}: second texture missing", m.material);
+        assert_eq!(m.blend_weights.len(), m.positions.len(), "{}", m.material);
+        assert!(m.blend_weights.iter().all(|w| (0.0..=1.0).contains(w)));
+    }
+    let mixed = blended
+        .iter()
+        .flat_map(|m| m.blend_weights.iter())
+        .filter(|w| **w > 0.05 && **w < 0.95)
+        .count();
+    assert!(mixed > 100, "only {mixed} partly blended vertices");
+}

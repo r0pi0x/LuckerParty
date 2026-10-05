@@ -17,6 +17,12 @@ pub struct WorldParams {
     pub normal_x_sign: f32,
     /// Multiplier on sampled lightmap values (decodes Source's LDR encoding).
     pub lightmap_scale: f32,
+    /// 1 when a second texture is blended in by the vertex alpha.
+    pub blend: f32,
+    /// 1 when `blend_mask` shapes that blend.
+    pub blend_masked: f32,
+    /// 1 when the second layer has its own normal map.
+    pub blend_normal: f32,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
@@ -39,6 +45,13 @@ pub struct WorldMaterial {
     pub lightmap_b1: Option<Handle<Image>>,
     #[texture(9)]
     pub lightmap_b2: Option<Handle<Image>>,
+    /// Second layer (WorldVertexTransition), sampled like `base`.
+    #[texture(10)]
+    pub base2: Option<Handle<Image>>,
+    #[texture(11)]
+    pub normal2: Option<Handle<Image>>,
+    #[texture(12)]
+    pub blend_mask: Option<Handle<Image>>,
     pub alpha_mode: AlphaMode,
     pub double_sided: bool,
 }

@@ -55,6 +55,10 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
         let r = materials.resolve(&mesh.material);
         mesh.texture = r.texture;
         mesh.normal_map = r.normal_map;
+        mesh.blend = r.blend;
+        if mesh.blend.is_none() {
+            mesh.blend_weights.clear();
+        }
         mesh.alpha = r.alpha;
         mesh.double_sided = r.double_sided;
     }
@@ -83,11 +87,21 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
 /// neighbouring displacements meet (mean mismatch 1%, versus 48% for
 /// projection; tests/map_de_dust2.rs checks it).
 pub fn face_triangles(face: &vbsp::Handle<'_, vbsp::Face>) -> Vec<[(vbsp::Vector, Vec2); 3]> {
+    face_triangles_blend(face)
+        .into_iter()
+        .map(|t| t.map(|(v, l, _)| (v, l)))
+        .collect()
+}
+
+/// `face_triangles` with each vertex's blend weight for two-texture
+/// (WorldVertexTransition) materials: the displacement vertex alpha / 255;
+/// 0 on brush faces.
+pub fn face_triangles_blend(face: &vbsp::Handle<'_, vbsp::Face>) -> Vec<[(vbsp::Vector, Vec2, f32); 3]> {
     let tex = face.texture();
     let Some(disp) = face.displacement() else {
         return face
             .triangulate()
-            .map(|t| t.map(|v| (v, lightmap::luxel_coords(&tex, face, v))))
+            .map(|t| t.map(|v| (v, lightmap::luxel_coords(&tex, face, v), 0.0)))
             .collect();
     };
     // Base grid: bilinear over the face's corners, starting at the corner
@@ -108,6 +122,10 @@ pub fn face_triangles(face: &vbsp::Handle<'_, vbsp::Face>) -> Vec<[(vbsp::Vector
     let n = steps + 1;
     let lerp = |a: vbsp::Vector, b: vbsp::Vector, t: f32| a + (b - a) * t;
     let offsets: Vec<vbsp::Vector> = disp.displacement_vertices().map(|v| v.displacement()).collect();
+    let alphas: Vec<f32> = disp
+        .displacement_vertices()
+        .map(|v| (v.alpha / 255.0).clamp(0.0, 1.0))
+        .collect();
     if offsets.len() != n * n {
         return Vec::new();
     }
@@ -118,7 +136,7 @@ pub fn face_triangles(face: &vbsp::Handle<'_, vbsp::Face>) -> Vec<[(vbsp::Vector
     let grid = |x: usize, y: usize| {
         let (fx, fy) = (x as f32 / steps as f32, y as f32 / steps as f32);
         let base = lerp(lerp(corners[0], corners[1], fx), lerp(corners[3], corners[2], fx), fy);
-        (base + offsets[x * n + y], Vec2::new(fy, fx) * size)
+        (base + offsets[x * n + y], Vec2::new(fy, fx) * size, alphas[x * n + y])
     };
     let mut out = Vec::with_capacity(steps * steps * 2);
     // Each grid square splits along alternating diagonals (checkerboard).
@@ -186,10 +204,10 @@ pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> (MapData, LightmapLayo
         let face_normal = to_engine_dir(face.normal());
         let displaced_face = face.displacement().is_some();
         // Re-wind triangles to face the plane normal.
-        let tris: Vec<[(vbsp::Vector, Vec2); 3]> = face_triangles(&face)
+        let tris: Vec<[(vbsp::Vector, Vec2, f32); 3]> = face_triangles_blend(&face)
             .into_iter()
             .map(|t| {
-                let [a, b, c] = t.map(|(v, _)| to_engine(v));
+                let [a, b, c] = t.map(|(v, _, _)| to_engine(v));
                 if (b - a).cross(c - a).dot(face_normal) < 0.0 {
                     [t[0], t[2], t[1]]
                 } else {
@@ -204,7 +222,7 @@ pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> (MapData, LightmapLayo
             for t in &tris {
                 let base = data.collision_positions.len() as u32;
                 data.collision_positions
-                    .extend(t.iter().map(|(v, _)| to_engine(*v).to_array()));
+                    .extend(t.iter().map(|(v, _, _)| to_engine(*v).to_array()));
                 data.collision_indices.push([base, base + 1, base + 2]);
             }
         }
@@ -231,18 +249,19 @@ pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> (MapData, LightmapLayo
         let lm = pending_lm.entry(key).or_default();
         let displaced = face.displacement().is_some();
         for t in &tris {
-            let p: [Vec3; 3] = t.map(|(v, _)| to_engine(v));
+            let p: [Vec3; 3] = t.map(|(v, _, _)| to_engine(v));
             // Brush faces are flat; displacements get per-triangle normals.
             let n = if displaced {
                 (p[1] - p[0]).cross(p[2] - p[0]).normalize_or_zero()
             } else {
                 face_normal
             };
-            for (v, luxel) in t {
+            for (v, luxel, blend) in t {
                 mesh.indices.push(mesh.positions.len() as u32);
                 mesh.positions.push(to_engine(*v).to_array());
                 mesh.normals.push(n.to_array());
                 mesh.uvs.push(tex.uv(*v));
+                mesh.blend_weights.push(*blend);
                 lm.push((slot, *luxel));
             }
         }
