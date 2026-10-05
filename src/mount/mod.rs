@@ -30,7 +30,10 @@ pub trait FileSource: Send + Sync {
 /// Normalize a path the way Source and LithTech resolve them:
 /// case-insensitive, either slash.
 pub fn normalize(path: &str) -> String {
-    path.replace('\\', "/").trim_start_matches('/').to_lowercase()
+    // Doubled separators occur in game data (e.g. a model's texture
+    // directory `models\props_junk\\`); file systems ignore them, so do we.
+    let path = path.replace('\\', "/").to_lowercase();
+    path.split('/').filter(|p| !p.is_empty()).collect::<Vec<_>>().join("/")
 }
 
 /// Layers searched in order; the first layer that has a file wins, like a

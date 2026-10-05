@@ -136,8 +136,12 @@ impl<'a> MaterialLoader<'a> {
         };
         let alpha = if material.translucent() {
             MapAlpha::Blend
-        } else if let Some(cutoff) = material.alpha_test() {
-            MapAlpha::Mask(if cutoff > 0.0 { cutoff } else { 0.5 })
+        } else if material.alpha_test().is_some() {
+            // The parser defaults an absent $alphatestreference to 1.0, which
+            // would keep only fully opaque texels; unset means 0.5 here
+            // (specs/cs_source/shaders.md, open question 4).
+            let reference = material_key::<f32>(&text, "$alphatestreference").filter(|r| *r > 0.0);
+            MapAlpha::Mask(reference.unwrap_or(0.5))
         } else {
             MapAlpha::Opaque
         };
@@ -285,19 +289,23 @@ fn mip_levels(bytes: &[u8], header: &vtf::header::VTFHeader) -> Option<Vec<Vec<u
 
 /// `$detailblendmode` from a material's text (0 when absent).
 fn detail_blend_mode(text: &str) -> u32 {
-    text.lines()
-        .find_map(|line| {
-            let line = line.trim().to_ascii_lowercase();
-            let rest = line
-                .strip_prefix("\"$detailblendmode\"")
-                .or_else(|| line.strip_prefix("$detailblendmode"))?;
-            rest.trim()
-                .trim_matches('"')
-                .split_whitespace()
-                .next()?
-                .trim_matches('"')
-                .parse()
-                .ok()
-        })
-        .unwrap_or(0)
+    material_key(text, "$detailblendmode").unwrap_or(0)
+}
+
+/// A material key's value read from its text, when the parser's defaults
+/// can't tell "absent" from a given value.
+fn material_key<T: std::str::FromStr>(text: &str, key: &str) -> Option<T> {
+    text.lines().find_map(|line| {
+        let line = line.trim().to_ascii_lowercase();
+        let rest = line
+            .strip_prefix(&format!("\"{key}\""))
+            .or_else(|| line.strip_prefix(key))?;
+        rest.trim()
+            .trim_matches('"')
+            .split_whitespace()
+            .next()?
+            .trim_matches('"')
+            .parse()
+            .ok()
+    })
 }

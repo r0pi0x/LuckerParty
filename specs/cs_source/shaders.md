@@ -512,6 +512,7 @@ The defaults for mat_specular, mat_bumpmap and mat_reducefillrate live in the en
   - CS:S runs r_lightmap_bicubic 1 (set by the game's video settings; the registered default is 0). The shader takes 4 taps per lightmap page, i.e. the bicubic B-spline filter.
   - Lightmap atlas texels reach 255 (the 99th percentile of non-black texels is 255), so the engine's encoding doesn't stop at 239 as derived above. The clamp rule is still to be measured.
   - Fog constants: 1/(end − start) and start/(end − start) are passed for range fog, along with the linear fog colour.
+  - Alpha test (de_dust2 plastic crate, VertexLitGeneric with $alphatest 1 and no $alphatestreference): a traced pixel sampling alpha 0.34 does not reach the frame, one sampling 0.85 does. This is consistent with a reference of 0.5 (open question 4), not with the 1.0 a parser default would give.
   - The ×1.22 brightness gap (below) is not a shader constant or colour-space difference. It was the bump page encoding (section 2, "Bump page encoding at upload").
 
 - **Measured in CS:S (refcmp, de_dust2, 2026-10-05, Linux build, mat_hdr_level 0):**

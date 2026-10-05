@@ -501,7 +501,11 @@ fn overlays_are_placed() {
 fn skybox_overlays_stay_in_the_skybox() {
     let Some(map) = dust2() else { return };
     let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
-    for m in map.meshes.iter().filter(|m| !m.skybox && !m.material.starts_with("decal:")) {
+    for m in map
+        .meshes
+        .iter()
+        .filter(|m| !m.skybox && !m.material.starts_with("decal:"))
+    {
         for p in &m.positions {
             lo = lo.min(Vec3::from(*p));
             hi = hi.max(Vec3::from(*p));
@@ -700,6 +704,44 @@ fn physics_props_load() {
         .expect("grain basket not placed");
     assert_eq!(prop.solid, mashup::map::PropSolid::Mesh);
     assert!(prop.lighting.is_some());
+}
+
+/// Physics junk props get their textures: the milk carton's model names its
+/// texture directory with a doubled separator (`models\props_junk\\`),
+/// and the plastic crate is alpha-tested.
+#[test]
+fn junk_props_are_textured() {
+    let Some(map) = dust2() else { return };
+    let warnings: Vec<_> = map
+        .warnings
+        .iter()
+        .filter(|w| w.contains("garbage") || w.contains("plasticcrate"))
+        .collect();
+    assert!(warnings.is_empty(), "{warnings:#?}");
+    for name in ["garbage001a_01", "plasticcrate01a"] {
+        let mesh = map
+            .models
+            .iter()
+            .flat_map(|m| &m.meshes)
+            .find(|m| m.material.contains(name))
+            .unwrap_or_else(|| panic!("{name} not loaded"));
+        assert!(mesh.texture.is_some(), "{name} has no texture");
+    }
+    let crate_mesh = map
+        .models
+        .iter()
+        .flat_map(|m| &m.meshes)
+        .find(|m| m.material.contains("plasticcrate01a"))
+        .unwrap();
+    assert!(
+        matches!(crate_mesh.alpha, mashup::map::MapAlpha::Mask(c) if c == 0.5),
+        "{:?}",
+        crate_mesh.alpha
+    );
+    // Its mesh survives distance only through the VTF's own mips, which
+    // Valve built to keep alpha-test coverage.
+    let tex = &map.textures[crate_mesh.texture.unwrap()];
+    assert_eq!(tex.mips.len(), 9, "{}: VTF mips not used", tex.name);
 }
 
 /// `$detail` materials (dust2's crates, sandcrete, tile) carry their

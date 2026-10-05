@@ -263,3 +263,33 @@ fn lightmap_face_raw() {
         return;
     }
 }
+
+/// Alpha coverage (share >= 0.5) of a texture's decoded mip levels.
+#[test]
+#[ignore]
+fn texture_alpha_coverage() {
+    let map = mashup::games::load_map("cs_source:de_dust2").unwrap();
+    let name = std::env::var("TEX").unwrap_or("plasticcrate01a".into());
+    for t in map.textures.iter().filter(|t| t.name.contains(&name)) {
+        let cov = |d: &[u8]| d.chunks(4).filter(|p| p[3] >= 128).count() as f32 / (d.len() / 4) as f32;
+        println!("{} {}x{} base {:.3}", t.name, t.width, t.height, cov(&t.rgba8));
+        if let Ok(out) = std::env::var("TEX_OUT") {
+            let alpha: Vec<u8> = t.rgba8.chunks(4).map(|p| p[3]).collect();
+            image::GrayImage::from_raw(t.width, t.height, alpha)
+                .unwrap()
+                .save(&out)
+                .unwrap();
+            for (i, m) in t.mips.iter().enumerate().take(3) {
+                let alpha: Vec<u8> = m.chunks(4).map(|p| p[3]).collect();
+                let (w, h) = ((t.width >> (i + 1)).max(1), (t.height >> (i + 1)).max(1));
+                image::GrayImage::from_raw(w, h, alpha)
+                    .unwrap()
+                    .save(format!("{out}.mip{}.png", i + 1))
+                    .unwrap();
+            }
+        }
+        for (i, m) in t.mips.iter().enumerate() {
+            println!("  mip {} {:.3}", i + 1, cov(m));
+        }
+    }
+}

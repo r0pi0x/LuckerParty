@@ -92,3 +92,20 @@ angles = [-10, 90]
 name = "fog_long_a"
 position = [1300.0, 400.0, 70.0]
 angles = [5, 90]
+
+# From CT spawn towards B: crates and boxes at fog distance next to walls.
+[[view]]
+name = "fog_ct_spawn"
+position = [-421.0, 2050.0, 60.0]
+angles = [5, 180]
+
+[[view]]
+name = "fog_ct_spawn_mid"
+position = [-421.0, 2050.0, 60.0]
+angles = [5, -90]
+
+# An alpha-tested plastic crate (prop_physics) on long A.
+[[view]]
+name = "plastic_crate"
+position = [1320.0, 1260.0, 50.0]
+angles = [25, 90]
