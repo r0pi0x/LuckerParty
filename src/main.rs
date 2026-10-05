@@ -62,6 +62,13 @@ fn main() {
         mashup::map::world_material::WorldMaterialPlugin,
         mashup::map::rope_material::RopeMaterialPlugin,
     ))
+    // A game's maps run at that game's server tick.
+    .insert_resource(match args.map.as_deref() {
+        Some(id) if id.starts_with("cs_source:") => {
+            Time::<Fixed>::from_seconds(mashup::games::cs_source::TICK_INTERVAL)
+        }
+        _ => Time::<Fixed>::from_hz(mashup::DEFAULT_TICK_HZ),
+    })
     .insert_resource(Loadout {
         movement: movement::placeholder::ID,
     })

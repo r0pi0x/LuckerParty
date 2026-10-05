@@ -5,6 +5,12 @@
 # Folder containing cstrike/ and hl2/. Steam app 240.
 path = "~/games/counter-strike-source"
 
+# Optional: CS:S dedicated server (Steam app 232330, SteamCMD anonymous)
+# with Metamod:Source, SourceMod and the tools/css_probe plugin, for the
+# movecmp tool. Keep it separate from the game install.
+# [games.cs_source_server]
+# path = "~/games/css-ds"
+
 [games.combat_arms]
 # Folder containing Game/*.rez. Steam app 1263550 (Combat Arms: the Classic).
 path = "~/games/combat-arms-classic"

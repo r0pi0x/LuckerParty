@@ -6,9 +6,10 @@
 //! saturation and sharpness and writes side-by-side images. Output goes to a
 //! per-user folder, never the repository (it contains game imagery).
 
+#[path = "shared/rcon.rs"]
+mod rcon;
+use rcon::Rcon;
 use std::{
-    io::{Read, Write},
-    net::TcpStream,
     path::{Path, PathBuf},
     process::{Command, ExitCode},
     thread::sleep,
@@ -131,68 +132,6 @@ fn run(args: &Args) -> Result<(), String> {
 
 // ---------------------------------------------------------------- CS:S side
 
-/// Source RCON (Valve's documented TCP protocol).
-struct Rcon {
-    stream: TcpStream,
-    next_id: i32,
-}
-
-impl Rcon {
-    fn connect() -> std::io::Result<Self> {
-        let stream = TcpStream::connect_timeout(&RCON_ADDR.parse().unwrap(), Duration::from_secs(2))?;
-        stream.set_read_timeout(Some(Duration::from_secs(10)))?;
-        let mut r = Self { stream, next_id: 1 };
-        r.send(3, RCON_PASSWORD)?;
-        loop {
-            let (id, kind, _) = r.recv()?;
-            if kind == 2 {
-                if id == -1 {
-                    return Err(std::io::Error::other("RCON authentication failed"));
-                }
-                return Ok(r);
-            }
-        }
-    }
-
-    fn send(&mut self, kind: i32, body: &str) -> std::io::Result<i32> {
-        let id = self.next_id;
-        self.next_id += 1;
-        let mut packet = Vec::new();
-        packet.extend((10 + body.len() as i32).to_le_bytes());
-        packet.extend(id.to_le_bytes());
-        packet.extend(kind.to_le_bytes());
-        packet.extend(body.as_bytes());
-        packet.extend([0, 0]);
-        self.stream.write_all(&packet)?;
-        Ok(id)
-    }
-
-    fn recv(&mut self) -> std::io::Result<(i32, i32, String)> {
-        let mut len = [0u8; 4];
-        self.stream.read_exact(&mut len)?;
-        let mut data = vec![0u8; i32::from_le_bytes(len).max(10) as usize];
-        self.stream.read_exact(&mut data)?;
-        let id = i32::from_le_bytes(data[0..4].try_into().unwrap());
-        let kind = i32::from_le_bytes(data[4..8].try_into().unwrap());
-        Ok((id, kind, String::from_utf8_lossy(&data[8..data.len() - 2]).into_owned()))
-    }
-
-    /// Run a command and return its output (an empty marker packet after it
-    /// tells us the response is complete).
-    fn exec(&mut self, cmd: &str) -> std::io::Result<String> {
-        self.send(2, cmd)?;
-        let marker = self.send(0, "")?;
-        let mut out = String::new();
-        loop {
-            let (id, _, body) = self.recv()?;
-            if id == marker {
-                return Ok(out);
-            }
-            out.push_str(&body);
-        }
-    }
-}
-
 fn steam_env(cmd: &mut Command) -> &mut Command {
     // The game runs on the desktop session even when this tool runs from a
     // terminal or agent shell.
@@ -214,7 +153,7 @@ fn capture_ref(file: &ViewsFile, out: &Path, keep_running: bool) -> Result<(), S
         .ok_or("no [games.cs_source] path in mashup.local.toml")?;
     let screenshots = install.join("cstrike/screenshots");
 
-    let mut rcon = match Rcon::connect() {
+    let mut rcon = match Rcon::connect(RCON_ADDR, RCON_PASSWORD) {
         Ok(r) => {
             println!("CS:S already running; reusing it");
             r
@@ -244,7 +183,9 @@ fn capture_ref(file: &ViewsFile, out: &Path, keep_running: bool) -> Result<(), S
                 .args(["+map", &file.map])
                 .spawn()
                 .map_err(|e| format!("starting steam: {e} (is the Steam client installed and logged in?)"))?;
-            wait_for(Duration::from_secs(240), "CS:S RCON", || Rcon::connect().ok())?
+            wait_for(Duration::from_secs(240), "CS:S RCON", || {
+                Rcon::connect(RCON_ADDR, RCON_PASSWORD).ok()
+            })?
         }
     };
     // Wait until the map is loaded and our player is in the game. A reused
@@ -256,7 +197,7 @@ fn capture_ref(file: &ViewsFile, out: &Path, keep_running: bool) -> Result<(), S
         let _ = rcon.exec(&format!("map {}", file.map));
         sleep(Duration::from_secs(5));
         rcon = wait_for(Duration::from_secs(120), "CS:S RCON after map change", || {
-            Rcon::connect().ok()
+            Rcon::connect(RCON_ADDR, RCON_PASSWORD).ok()
         })?;
     }
     wait_for(Duration::from_secs(240), "the map to load", || {

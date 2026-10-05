@@ -48,6 +48,13 @@ impl Sim {
         sim
     }
 
+    /// Run fixed ticks of `secs` from now on (e.g. a game's own tick).
+    pub fn set_tick_interval(&mut self, secs: f64) {
+        let step = Duration::from_secs_f64(secs);
+        self.app.insert_resource(Time::<Fixed>::from_duration(step));
+        self.app.insert_resource(TimeUpdateStrategy::ManualDuration(step));
+    }
+
     pub fn tick_hz(&self) -> f64 {
         self.app
             .world()

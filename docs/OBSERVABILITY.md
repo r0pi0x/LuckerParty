@@ -146,6 +146,26 @@ The reference CS:S (see refcmp) can also be measured directly over RCON:
 - Weapon scripts are ICE-encrypted (`.ctx`); decrypt copies in a scratch
   folder only, never in the repo.
 
+## Tick-exact CS:S comparisons (movecmp)
+
+```
+cargo run --features dev --bin movecmp            # all scenarios
+cargo run --features dev --bin movecmp -- --only bhop --keep-running
+```
+
+- Each scenario (in `src/bin/movecmp.rs`) is a start position and per-tick
+  inputs. A CS:S dedicated server with the `tools/css_probe` SourceMod
+  plugin plays them on a bot and logs every tick; mashup plays the same
+  inputs from the game's tick-0 state on the same map at the same 0.015 s
+  tick. Setup: tools/css_probe/README.md.
+- Report: per scenario, the largest position/velocity difference and the
+  first tick that differs by more than 0.1 unit (or in ground/duck
+  state), with both states. Per-tick CSVs go to
+  `~/.local/share/mashup/dump/movecmp/`.
+- It has found: CS:S's fixed 0.015 s tick, the alternating diagonals of
+  displacement triangles (walking and landing on dust2 terrain now match
+  to 0.002 units), the 0.34 ducked speed and the 8.5-unit air-duck lift.
+
 ## Planned
 
 - Per-tick JSONL traces of chosen entities, for comparing movement against
