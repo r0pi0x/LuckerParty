@@ -11,7 +11,7 @@ plan when work starts; delete them when done.
 The console and overlays are in (src/console.rs, src/client/console.rs).
 Left for later:
 
-- `god`, `give`, `impulse` once there are health and weapons; `net_graph`
+- `god`, `impulse`, `buy`; `net_graph`
   beyond cl_showfps 2; `cl_showpos 2`; `developer 1` notify lines on the
   HUD.
 - Select-and-copy in the output (clipboard); `con_dump` writes it to a
@@ -20,21 +20,15 @@ Left for later:
 
 ## 2. Weapons
 
-The MVP's biggest gap. specs/cs_source/weapons.md has the generic rules
-from the SDK and all 29 CS:S weapons' script values; CS:S's own rules
-need measuring first (its M1–M17, extending tools/css_probe).
+In progress: [plans/active/weapons.md](plans/active/weapons.md). The
+framework, knife, AK-47, HUD, deathmatch and a first bot are in.
 
-- **Weapon slot** from the MVP plan (trigger, cost, delivery, effect;
-  hitscan, health, crosshair, ammo HUD).
-- **Knife** first (the movement speed the movement already assumes), then
-  one rifle (AK-47): fire timing, spread/inaccuracy, recoil/punch, damage
-  by hitgroup and range, penetration, reload and deploy times, from
-  measurements.
-- View models and world models from the install; weapon sounds through
-  the sound pipeline.
-- Physics props: bullet and explosion impulses (spec physics_props 5).
-- **Bots** (MVP): intent from a brain on a waypoint graph; deathmatch with
-  respawns.
+- Merge the CS:S measurements (M1–M17): inaccuracy, recoil, hitgroups,
+  falloff, armour, penetration, knife.
+- **Bot navigation** on CS:S's `.nav` meshes.
+- Hitboxes from player models; character, view and world models.
+- Impact decals, tracers, muzzle flash; explosion impulses.
+- Spawn points keep their yaw (characters currently spawn facing -Z).
 
 ## 3. Sound, remaining
 

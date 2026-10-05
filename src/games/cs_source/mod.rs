@@ -19,6 +19,7 @@ pub mod sprites;
 pub mod surfaceprops;
 pub mod vpk;
 pub mod wav;
+pub mod weapons;
 
 pub const GAME: &str = "cs_source";
 

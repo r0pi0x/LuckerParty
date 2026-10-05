@@ -171,7 +171,11 @@ const ALWAYS: &[&str] = &["Player.Swim", "Player.FallDamage"];
 pub fn load(materials: &mut MaterialLoader, map: &str, surfaces: &SurfaceProps) -> MapSounds {
     let scripts = SoundScripts::load(materials, map);
     let mut out = MapSounds::default();
-    let mut wanted: HashSet<String> = ALWAYS.iter().map(|s| s.to_lowercase()).collect();
+    let mut wanted: HashSet<String> = ALWAYS
+        .iter()
+        .chain(super::weapons::SOUNDS)
+        .map(|s| s.to_lowercase())
+        .collect();
     for name in surfaces.names() {
         let surface = MapSurface {
             step_left: surfaces.text(name, "stepleft"),

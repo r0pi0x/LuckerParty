@@ -6,12 +6,16 @@ file says where things are and which way dependencies may point.
 ## Layers
 
 ```
-            client            (window, input, camera, debug, agent tools)
+            client            (window, input, camera, HUD, debug, agent tools)
               |
    harness    |    games/<name>   (one module per game)
       \       |       /    \
-       movement   greybox  map  mount  (map: neutral MapData + spawner; mount: VFS, local config)
-            \     /
+       bot   rules   movement   greybox   mount   (mount: VFS, local config)
+        |      |        |          |
+        |    weapon     |          |      (weapon: parts, inventory, weapon frame)
+        |      |        |          |
+        |     map       |          |      (map: neutral MapData + spawner, sound)
+         \     |       /          /
            character             (components every character has)
                |
              slots               (registries, loadout, swapping)
@@ -20,6 +24,9 @@ file says where things are and which way dependencies may point.
                |
              core                (shared vocabulary)
 ```
+
+Exact edges: bot uses core, console, slots, character; rules uses core,
+console, weapon; weapon uses core, console, map; map uses only core.
 
 A module may use only the modules below it. Enforced by
 `tests/architecture.rs` (`ALLOWED`); update both together.
@@ -36,7 +43,10 @@ A module may use only the modules below it. Enforced by
 |---|---|
 | `src/console.rs` | The console's core: cvar/command registry (`ConsoleAppExt::console_cvar`/`console_command`, `resource_cvar`), Source-style parsing (`;`, quotes, `//`), aliases, binds, `wait`, exec/config files, built-ins (help, find, cvarlist, differences, reset, toggle, incrementvar, watch, host_writeconfig, ...) |
 | `src/client/console.rs` | The in-game console UI (`~`): completion, fuzzy suggestions, history with Ctrl+R, scrollback/filter/timestamps, binds with `+`/`-` actions, log mirroring, overlays (cl_showpos, cl_showfps, snd_show, watch), client commands (noclip, getpos/setpos/setang, kill, map, quit), the `mashup/console` remote method |
-| `src/core.rs` | `Intent`, `Velocity`, `MovementState`, `Health`, `Team`, `SpawnPoint`, `LocalPlayer`, `SimTick`, the `SimSet` tick ordering; the collision world maps share with movement: `MapBrush`/`MapBrushes` (brush planes for exact swept-box movement, ladder flag), `MapBrushCollider`, `MapWater` volumes |
+| `src/core.rs` | `Intent`, `Velocity`, `MovementState`, `Health`, `Damage`/`Died` messages (damage applied after weapons), `Hitgroup`, `MaxSpeed` (equipment speed cap), `Team`, `SpawnPoint`, `LocalPlayer`, `SimTick`, the `SimSet` tick ordering; the collision world maps share with movement: `MapBrush`/`MapBrushes` (brush planes for exact swept-box movement, ladder flag), `MapBrushCollider`, `MapWater` volumes |
+| `src/weapon/` | Weapons as parts (README, "Weapons and items"): `Trigger`, `Magazine` (cost), `Hitscan`/`Melee` (delivery), `DamageEffect`, `WeaponSounds`; `Inventory`, `WeaponState` timers, `WeaponRegistry`/`StartingWeapons`, `give`; selection and deploy before movement, the Source-style weapon frame in `SimSet::Weapons` (spec weapons.md 3–4), `WeaponEvent`s; console `give`, `slot1`–`slot5`, `lastinv` |
+| `src/rules.rs` | Deathmatch: the dead (`Dead`) stop acting and respawn at spawn points with fresh weapons after `mp_respawn_delay`; `Score` (kills, deaths) |
+| `src/bot.rs` | Bots: `Bot` brain writing `Intent` (nearest visible enemy, limited turn rate, reaction time, strafing; no navigation yet); `bot_add`, `bot_kick`, `bot_stop`, `bot_dont_shoot`, `bot_reaction`, `bot_turn_rate` |
 | `src/slots.rs` | `MovementRegistry`, `Loadout`, `set_movement` (swap an entity's movement) |
 | `src/character.rs` | `character_bundle`, `spawn_character`, capsule size |
 | `src/movement/` | `placeholder` (stand-in walking) and `noclip` Movement implementations |
@@ -48,12 +58,12 @@ A module may use only the modules below it. Enforced by
 | `src/map/shadows.rs`, `shadow.wgsl` | Dynamic prop shadows (Source render-to-texture shadows): silhouettes rasterized into a coverage atlas, clipped onto world surfaces, multiplied over them |
 | `src/map/rope_material.rs`, `rope.wgsl` | Ropes as camera-facing strips (Source Cable shader, fake anti-aliasing back strip) |
 | `src/games/mod.rs` | `load_map("game:name")` dispatcher |
-| `src/games/cs_source/` | VPK reader, the CS:S search path, BSP to `MapData` (via `vbsp`), VMT/VTF materials (map pak first, then the mount), lightmap atlas from the lighting lump, brush collision hulls, static props and prop entities (`prop_physics*`, `prop_dynamic*`) via `vmdl`, ambient cubes and world lights for prop light probes, infodecals clipped onto faces, overlays (lump 45) clipped onto their listed faces, 2D sky and 3D skybox, ropes (simulated to rest), Source player movement (`cs_source:movement`: swept box, exact against brush planes, physics shape casts for props and displacements; ladders, water, walking), `.phy` collision models, surface properties, physics props (avian bodies) and the multiplayer push-away between players and props, WAV decoding (PCM, MS-ADPCM) and sound scripts, footstep/jump/landing/water sounds in movement |
+| `src/games/cs_source/` | VPK reader, the CS:S search path, BSP to `MapData` (via `vbsp`), VMT/VTF materials (map pak first, then the mount), lightmap atlas from the lighting lump, brush collision hulls, static props and prop entities (`prop_physics*`, `prop_dynamic*`) via `vmdl`, ambient cubes and world lights for prop light probes, infodecals clipped onto faces, overlays (lump 45) clipped onto their listed faces, 2D sky and 3D skybox, ropes (simulated to rest), Source player movement (`cs_source:movement`: swept box, exact against brush planes, physics shape casts for props and displacements; ladders, water, walking), `.phy` collision models, surface properties, physics props (avian bodies) and the multiplayer push-away between players and props, WAV decoding (PCM, MS-ADPCM) and sound scripts, footstep/jump/landing/water sounds in movement, the knife and AK-47 (`weapons.rs`, script values; unmeasured rules marked) |
 | `src/games/combat_arms/` | `.rez` reader and the archive cipher payload decryption (from the spec), all archives as one mount |
 | `src/bin/refcmp.rs` | Dev tool: compare views against real CS:S (RCON-driven capture, metrics, side-by-sides) |
 | `src/bin/dump.rs` | Dev tool: summarize, list and extract a game install's files |
 | `src/harness.rs` | `Sim`: headless app stepped by exact fixed ticks, for tests |
-| `src/client/` | Local input, first-person camera, debug UI, `--screenshot`, remote protocol |
+| `src/client/` | Local input, first-person camera, debug UI, `--screenshot`, remote protocol; `hud.rs`: crosshair (gap from spread), health, ammo, hit marker, killfeed, capsule bodies for other characters |
 | `src/lib.rs` | `SimPlugins` (everything the simulation needs) |
 | `src/main.rs` | The game binary: `SimPlugins` + map + `ClientPlugin` |
 
@@ -61,9 +71,10 @@ A module may use only the modules below it. Enforced by
 
 ```
 Update:       keyboard/mouse ──> Intent (local player)
-              bot brain ──────> Intent (later)
-FixedUpdate:  SimSet::Movement  Intent ──> Transform, Velocity, MovementState
-              SimSet::Weapons   Intent + MovementState ──> effects (later)
+FixedUpdate:  respawn, bot brains ──> Intent; weapon selection/deploy ──> MaxSpeed
+              SimSet::Movement  Intent (+ MaxSpeed) ──> Transform, Velocity, MovementState
+              SimSet::Weapons   Intent + MovementState ──> traces, Damage, WeaponEvent, PlaySound
+              then              Damage ──> Health, Died ──> Score, Dead
 Update:       camera <── Intent (look) + MovementState (eye offset)
 ```
 

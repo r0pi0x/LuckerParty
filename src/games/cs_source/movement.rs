@@ -15,7 +15,7 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 
 use crate::{
-    core::{Intent, MovementState, SimSet, Velocity},
+    core::{Intent, MaxSpeed, MovementState, SimSet, Velocity},
     map::{
         MapBrushCollider, MapBrushes, MapWater, PhysicsProp, PlaySound, PropSurface, PushAway,
         sound::{SoundBank, SurfaceGrid},
@@ -44,7 +44,7 @@ pub struct SourceMovementConfig {
     pub bounce: f32,
     /// Jump speed, units/s.
     pub jump_impulse: f32,
-    /// The held weapon's speed (knife: 250) until a weapon slot sets it.
+    /// Max speed without a weapon's `MaxSpeed` (the knife's 250).
     pub player_maxspeed: f32,
     /// What a full move key sends (cl_forwardspeed etc.), rescaled to the max speed.
     pub key_speed: f32,
@@ -779,6 +779,8 @@ struct Mover<'a, 'b, 'w, 's> {
     push_input: Vec2,
     /// Sounds made this tick: entry, where (Source units), volume.
     sounds: Vec<(String, Vec3, Option<f32>)>,
+    /// Max speed from the held weapon, units/s.
+    player_maxspeed: f32,
 }
 
 impl Mover<'_, '_, '_, '_> {
@@ -1541,7 +1543,7 @@ impl Mover<'_, '_, '_, '_> {
         // Walking (+speed) lowers the max speed itself (CS:S, measured): the
         // keys rescale to it, and swimming's wish speed is capped by it.
         let walk = if intent.walk { self.cfg.walk_speed } else { 1.0 };
-        let max_speed = self.cfg.player_maxspeed.min(self.cfg.maxspeed) * walk;
+        let max_speed = self.player_maxspeed.min(self.cfg.maxspeed) * walk;
         let (mut f, mut s) = (
             intent.move_axis.y * self.cfg.key_speed + self.push_input.x,
             intent.move_axis.x * self.cfg.key_speed + self.push_input.y,
@@ -1707,6 +1709,7 @@ fn step(
         &mut Transform,
         &mut Velocity,
         &mut MovementState,
+        Option<&MaxSpeed>,
     )>,
     query: SpatialQuery,
     brushes: Option<Res<MapBrushes>>,
@@ -1721,7 +1724,7 @@ fn step(
     time: Res<Time>,
 ) {
     let dt = time.delta_secs();
-    for (entity, intent, mut me, mut transform, mut vel, mut state) in &mut q {
+    for (entity, intent, mut me, mut transform, mut vel, mut state, weapon_speed) in &mut q {
         // With brushes swept exactly, physics queries skip the same brushes.
         // Players pass through multiplayer physics props (their own
         // collision group); props that collide stay in.
@@ -1761,6 +1764,8 @@ fn step(
             water_cache: [None; 3],
             push_input,
             sounds: Vec::new(),
+            // The held weapon's speed (spec: MaxPlayerSpeed), else the default.
+            player_maxspeed: weapon_speed.map_or(cfg.player_maxspeed, |s| s.0 / METERS_PER_UNIT),
         };
         mover.tick(intent);
         let (feet, v) = (mover.feet, mover.v);

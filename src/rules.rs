@@ -1,0 +1,153 @@
+//! Match rules. For now one ruleset, deathmatch: the dead stop acting,
+//! then respawn at a spawn point with full health and fresh starting
+//! weapons; kills and deaths are counted.
+
+use avian3d::prelude::*;
+use bevy::prelude::*;
+
+use crate::{
+    console::resource_cvar,
+    core::{Died, Health, Intent, SimSet, SpawnPoint, Velocity},
+    weapon::{Inventory, StartingWeapons, give},
+};
+
+pub struct DeathmatchPlugin;
+
+impl Plugin for DeathmatchPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<Deathmatch>().add_message::<Died>().add_systems(
+            FixedUpdate,
+            (
+                (respawn, hold_the_dead).chain().before(SimSet::Movement),
+                count_deaths.after(SimSet::Weapons),
+            ),
+        );
+        resource_cvar::<Deathmatch, f32>(app, "mp_respawn_delay", "Seconds before the dead respawn.", |d| {
+            &mut d.respawn_delay
+        });
+    }
+}
+
+#[derive(Resource, Clone, Debug)]
+pub struct Deathmatch {
+    pub respawn_delay: f32,
+    /// Spawn points picked so far (round robin, so players spread out).
+    next_spawn: usize,
+}
+
+impl Default for Deathmatch {
+    fn default() -> Self {
+        Self {
+            respawn_delay: 2.0,
+            next_spawn: 0,
+        }
+    }
+}
+
+/// Kills and deaths.
+#[derive(Component, Default, Clone, Copy, Debug, Reflect)]
+#[reflect(Component)]
+pub struct Score {
+    pub kills: u32,
+    pub deaths: u32,
+}
+
+/// Dead since this time (fixed-tick seconds).
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Dead {
+    pub since: f64,
+}
+
+fn count_deaths(mut died: MessageReader<Died>, mut scores: Query<&mut Score>, mut commands: Commands, time: Res<Time>) {
+    let now = time.elapsed_secs_f64();
+    for d in died.read() {
+        if let Ok(mut s) = scores.get_mut(d.entity) {
+            s.deaths += 1;
+        } else if let Ok(mut e) = commands.get_entity(d.entity) {
+            e.insert(Score { kills: 0, deaths: 1 });
+        }
+        if let Some(a) = d.attacker.filter(|a| *a != d.entity) {
+            if let Ok(mut s) = scores.get_mut(a) {
+                s.kills += 1;
+            } else if let Ok(mut e) = commands.get_entity(a) {
+                e.insert(Score { kills: 1, deaths: 0 });
+            }
+        }
+        if let Ok(mut e) = commands.get_entity(d.entity) {
+            e.insert(Dead { since: now });
+        }
+    }
+}
+
+/// The dead neither move nor shoot (their intent is cleared each tick).
+fn hold_the_dead(mut dead: Query<&mut Intent, With<Dead>>) {
+    for mut intent in &mut dead {
+        let (yaw, pitch) = (intent.yaw, intent.pitch);
+        *intent = Intent {
+            yaw,
+            pitch,
+            ..default()
+        };
+    }
+}
+
+fn respawn(world: &mut World) {
+    let now = world.resource::<Time>().elapsed_secs_f64();
+    let delay = world.resource::<Deathmatch>().respawn_delay as f64;
+    let ready: Vec<Entity> = world
+        .query::<(Entity, &Dead)>()
+        .iter(world)
+        .filter(|(_, d)| now - d.since >= delay)
+        .map(|(e, _)| e)
+        .collect();
+    if ready.is_empty() {
+        return;
+    }
+    let spawns: Vec<Transform> = world
+        .query_filtered::<&Transform, With<SpawnPoint>>()
+        .iter(world)
+        .copied()
+        .collect();
+    let starting = world.resource::<StartingWeapons>().0.clone();
+    for e in ready {
+        let at = if spawns.is_empty() {
+            None
+        } else {
+            let mut dm = world.resource_mut::<Deathmatch>();
+            let i = dm.next_spawn % spawns.len();
+            dm.next_spawn += 1;
+            Some(spawns[i])
+        };
+        // Fresh weapons: drop the old ones.
+        let old = world.get::<Inventory>(e).map(|i| i.weapons.clone()).unwrap_or_default();
+        for w in old {
+            world.despawn(w);
+        }
+        let Ok(mut ent) = world.get_entity_mut(e) else { continue };
+        ent.remove::<Dead>();
+        ent.insert(Inventory::default());
+        if let Some(mut h) = ent.get_mut::<Health>() {
+            h.current = h.max;
+        }
+        if let Some(mut v) = ent.get_mut::<Velocity>() {
+            v.0 = Vec3::ZERO;
+        }
+        if let Some(at) = at {
+            // Spawn points are already lifted to a character's centre.
+            if let Some(mut t) = ent.get_mut::<Transform>() {
+                t.translation = at.translation;
+            }
+            if let Some(mut p) = ent.get_mut::<Position>() {
+                p.0 = at.translation;
+            }
+            if let Some(mut i) = ent.get_mut::<Intent>() {
+                let (yaw, _, _) = at.rotation.to_euler(EulerRot::YXZ);
+                i.yaw = yaw;
+                i.pitch = 0.0;
+            }
+        }
+        for id in &starting {
+            give(world, e, id);
+        }
+    }
+}

@@ -24,7 +24,14 @@ pub struct Intent {
     /// each movement reads the one it has.
     pub walk: bool,
     pub fire: bool,
+    /// Secondary attack (Source attack2: stab, zoom, burst toggle).
+    pub secondary: bool,
     pub reload: bool,
+    /// A weapon slot key held this tick (0 = first slot); the weapon slot
+    /// switches when it changes.
+    pub select: Option<u8>,
+    /// Switch to the previously held weapon (Source `lastinv`).
+    pub last_weapon: bool,
 }
 
 impl Intent {
@@ -74,6 +81,46 @@ impl Default for Health {
 #[reflect(Component)]
 pub struct Team(pub u8);
 
+/// Where on a body a hit landed (Source hitgroups).
+#[derive(Reflect, Default, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Hitgroup {
+    #[default]
+    Generic,
+    Head,
+    Chest,
+    Stomach,
+    LeftArm,
+    RightArm,
+    LeftLeg,
+    RightLeg,
+}
+
+/// Damage to apply: normalized like `Health` (1.0 = a standard player's
+/// full health).
+#[derive(Message, Clone, Debug)]
+pub struct Damage {
+    pub target: Entity,
+    pub attacker: Option<Entity>,
+    pub amount: f32,
+    pub point: Vec3,
+    /// Direction the damage travelled (unit).
+    pub dir: Vec3,
+    pub hitgroup: Hitgroup,
+}
+
+/// Something's health reached zero.
+#[derive(Message, Clone, Debug)]
+pub struct Died {
+    pub entity: Entity,
+    pub attacker: Option<Entity>,
+}
+
+/// A speed cap the character's equipment imposes (e.g. the held weapon),
+/// meters per second. Movement implementations that model it read it.
+#[derive(Component, Reflect, Clone, Copy, Debug)]
+#[reflect(Component)]
+pub struct MaxSpeed(pub f32);
+
 /// A place a character can spawn, provided by the Map slot.
 #[derive(Component, Reflect, Default, Clone, Copy, Debug)]
 #[reflect(Component)]
@@ -92,6 +139,24 @@ pub struct LocalPlayer;
 #[reflect(Resource)]
 pub struct SimTick(pub u64);
 
+/// Subtract damage from health; announce deaths once.
+fn apply_damage(mut damage: MessageReader<Damage>, mut health: Query<&mut Health>, mut died: MessageWriter<Died>) {
+    for d in damage.read() {
+        let Ok(mut h) = health.get_mut(d.target) else { continue };
+        if h.current <= 0.0 {
+            continue;
+        }
+        h.current -= d.amount;
+        if h.current <= 0.0 {
+            h.current = 0.0;
+            died.write(Died {
+                entity: d.target,
+                attacker: d.attacker,
+            });
+        }
+    }
+}
+
 /// Ordering of the fixed-tick simulation. Game plugins put their systems in
 /// these sets so that, e.g., weapons always see this tick's movement state.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
@@ -109,6 +174,10 @@ impl Plugin for CorePlugin {
             .register_type::<MovementState>()
             .register_type::<Health>()
             .register_type::<Team>()
+            .register_type::<MaxSpeed>()
+            .add_message::<Damage>()
+            .add_message::<Died>()
+            .add_systems(FixedUpdate, apply_damage.after(SimSet::Weapons))
             .register_type::<SpawnPoint>()
             .register_type::<LocalPlayer>()
             .register_type::<SimTick>()

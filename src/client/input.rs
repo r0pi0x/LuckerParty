@@ -128,7 +128,17 @@ fn write_local_intent(
     intent.sprint = keys.pressed(KeyCode::ShiftLeft);
     intent.walk = keys.pressed(KeyCode::ShiftLeft);
     intent.fire = mouse.pressed(MouseButton::Left);
+    intent.secondary = mouse.pressed(MouseButton::Right);
     intent.reload = keys.pressed(KeyCode::KeyR);
+    intent.last_weapon = keys.pressed(KeyCode::KeyQ);
+    const SLOTS: [KeyCode; 5] = [
+        KeyCode::Digit1,
+        KeyCode::Digit2,
+        KeyCode::Digit3,
+        KeyCode::Digit4,
+        KeyCode::Digit5,
+    ];
+    intent.select = SLOTS.iter().position(|k| keys.pressed(*k)).map(|i| i as u8);
     // Bound actions (`bind f +duck`) add to the keys.
     if let Some(h) = held {
         let add = |a: bool, b: bool| a as i8 as f32 - b as i8 as f32;
@@ -140,6 +150,8 @@ fn write_local_intent(
         intent.walk |= h.speed;
         intent.sprint |= h.speed;
         intent.fire |= h.attack;
+        intent.secondary |= h.attack2;
+        intent.reload |= h.reload;
     }
 }
 

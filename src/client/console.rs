@@ -934,6 +934,8 @@ pub struct HeldActions {
     pub moveleft: bool,
     pub moveright: bool,
     pub attack: bool,
+    pub attack2: bool,
+    pub reload: bool,
 }
 
 const ACTIONS: &[&str] = &[
@@ -945,6 +947,8 @@ const ACTIONS: &[&str] = &[
     "moveleft",
     "moveright",
     "attack",
+    "attack2",
+    "reload",
 ];
 
 /// Source key names.
@@ -1135,6 +1139,8 @@ fn client_commands(app: &mut App) {
                         "back" => h.back = on,
                         "moveleft" => h.moveleft = on,
                         "moveright" => h.moveright = on,
+                        "attack2" => h.attack2 = on,
+                        "reload" => h.reload = on,
                         _ => h.attack = on,
                     }
                     Ok(None)

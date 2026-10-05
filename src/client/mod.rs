@@ -5,6 +5,7 @@
 pub mod capture;
 pub mod console;
 pub mod debug;
+pub mod hud;
 pub mod input;
 
 use std::path::PathBuf;
@@ -160,6 +161,7 @@ impl Plugin for ClientPlugin {
                 debug::DebugPlugin,
                 capture::CapturePlugin,
                 console::ConsoleUiPlugin,
+                hud::HudPlugin,
             ))
             .add_systems(PostStartup, spawn_local_player)
             .add_systems(Update, follow_eye);

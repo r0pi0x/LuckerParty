@@ -39,7 +39,7 @@ Started 2026-10-05, from specs/cs_source/sounds.md.
 3. [ ] Physics impacts and scrapes (avian contact speeds).
 4. [ ] Map ambience: ambient_generic, soundscapes (selection, crossfade,
    random sounds).
-5. [ ] Weapon sounds, with weapons.
+5. [x] Weapon sounds: fire, empty click, deploy, knife swings, reload parts at their animation times (sounds aren't yet tied to view-model events).
 
 Measurements to take (probe server): the distance curves, CS:S footstep
 rules (walking and crouching silent?), the jump sound, wave choice.

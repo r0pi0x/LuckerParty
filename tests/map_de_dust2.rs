@@ -1062,6 +1062,11 @@ fn sounds_load() {
     let swim = s.entry("Player.Swim").expect("swim");
     assert_eq!(swim.waves.len(), 4);
     assert!(matches!(swim.level, mashup::map::SoundLevel::Attenuation(a) if a == 1.0));
+    // Weapon entries are precached with the map.
+    for name in mashup::games::cs_source::weapons::SOUNDS {
+        let e = s.entry(name).unwrap_or_else(|| panic!("no {name}"));
+        assert!(!e.waves.is_empty(), "{name} has no waves");
+    }
     assert!(s.clips.len() > 40, "{} clips", s.clips.len());
     for c in &s.clips {
         assert!(c.rate >= 8000 && !c.samples.is_empty());

@@ -1,6 +1,7 @@
 //! Mashup prototype. Module layering is documented in docs/ARCHITECTURE.md
 //! and enforced by tests/architecture.rs.
 
+pub mod bot;
 pub mod character;
 pub mod client;
 pub mod console;
@@ -11,7 +12,9 @@ pub mod harness;
 pub mod map;
 pub mod mount;
 pub mod movement;
+pub mod rules;
 pub mod slots;
+pub mod weapon;
 
 use bevy::prelude::*;
 
@@ -25,6 +28,7 @@ pub struct SimPlugins;
 impl Plugin for SimPlugins {
     fn build(&self, app: &mut App) {
         app.insert_resource(Time::<Fixed>::from_hz(DEFAULT_TICK_HZ))
-            .add_plugins((core::CorePlugin, console::ConsolePlugin, movement::MovementPlugins));
+            .add_plugins((core::CorePlugin, console::ConsolePlugin, movement::MovementPlugins))
+            .add_plugins((weapon::WeaponPlugin, rules::DeathmatchPlugin, bot::BotPlugin));
     }
 }
