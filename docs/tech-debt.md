@@ -4,6 +4,7 @@ Small, current, honest. Remove entries when fixed.
 
 | Area | Debt | Why it's OK for now |
 |---|---|---|
+| map | Soundscape loops play from their loop point only (no intro), and positioned loops get distance falloff but no panning | dust2's positioned loops are distant music |
 | client | Shot effects are placeholders: tracer streaks (speed and frequency guessed) and dark discs for bullet marks, on static surfaces only | Until decals by surface and the games' sprites load |
 | weapon | Hitgroups come from height bands on the body's bounds (head above 83 %, etc.), not hitboxes; arms only at the body's edge | Characters are capsules until models load |
 | weapon | CS:S rules marked `UNMEASURED` in games/cs_source/weapons.rs (fixed spread cone, no recoil, community hitgroup and knife numbers, "set" refire); spread uses our own RNG, not Source's seeded generator; no penetration, armour, water or lag compensation | Measurements (spec M1–M17) are being taken |

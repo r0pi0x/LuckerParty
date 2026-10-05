@@ -1297,3 +1297,41 @@ fn bot_walks_the_nav_mesh_to_an_enemy() {
     // It walked there: T spawn is ~36 m from Middle, out of sight.
     assert!(start.distance(end) > 15.0, "walked only {:.1} m", start.distance(end));
 }
+
+/// Soundscapes (specs/cs_source/sounds.md 6): dust2's two scripts, flattened,
+/// and the eight trigger boxes that select them.
+#[test]
+fn soundscapes_load() {
+    let Some(map) = dust2() else { return };
+    let s = &map.sounds;
+    let find = |n: &str| s.soundscapes.iter().find(|x| x.name.eq_ignore_ascii_case(n)).expect(n);
+    let out = find("dust2.outdoors");
+    assert_eq!(out.loops.len(), 5, "wind and four music loops");
+    assert_eq!(out.randoms.len(), 4);
+    let positioned: Vec<_> = out.loops.iter().filter_map(|l| l.position).collect();
+    assert_eq!(positioned, [2, 1, 3, 4]);
+    assert!((out.loops[1].level - 80.0).abs() < 1e-3);
+    // "time" "15,40``" in the indoors script reads as 15..40.
+    let ind = find("dust2.indoors");
+    assert_eq!((ind.loops.len(), ind.randoms.len()), (2, 2));
+    assert!((ind.randoms[0].time.start - 15.0).abs() < 1e-3 && (ind.randoms[0].time.range - 25.0).abs() < 1e-3);
+    assert!(out.randoms.iter().all(|r| !r.clips.is_empty()));
+    assert_eq!(s.soundscape_zones.len(), 8);
+    // The outdoors positions (info_targets pos0..pos6) resolve.
+    let z = s
+        .soundscape_zones
+        .iter()
+        .find(|z| s.soundscapes[z.scape].name == "dust2.outdoors")
+        .unwrap();
+    assert_eq!(z.positions.iter().filter(|p| p.is_some()).count(), 7);
+    // Every spawn stands in some soundscape zone.
+    for (feet, _) in &map.spawns {
+        let p = *feet + Vec3::Y * 1.6;
+        assert!(
+            s.soundscape_zones
+                .iter()
+                .any(|z| p.cmpge(z.min).all() && p.cmple(z.max).all()),
+            "spawn {feet} is in no soundscape zone"
+        );
+    }
+}

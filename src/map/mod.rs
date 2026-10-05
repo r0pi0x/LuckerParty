@@ -23,6 +23,7 @@ pub mod prop_material;
 pub mod rope_material;
 pub mod shadows;
 pub mod sound;
+pub mod soundscape;
 pub use sound::{MapSoundClip, MapSoundEntry, MapSounds, MapSurface, PlaySound, SoundLevel};
 pub mod sprite_material;
 pub mod world_material;

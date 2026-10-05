@@ -36,8 +36,8 @@ docs/plans/active/sound.md.
 
 - Scrapes (looping friction sounds): needs a stand-in for Source's
   friction energy (spec open question 8); break sounds with breakables.
-- Map ambience: `ambient_generic`, soundscapes (selection by nearest
-  visible env_soundscape, 3 s crossfade, random sounds).
+- `ambient_generic` (with entity inputs once maps need them), soundscape
+  DSP presets (room reverb), env_soundscape visibility checks.
 - Measure on the probe server: the distance curves (replace the H1/H2
   guesses), CS:S footstep silence rules, the jump sound, wave choice.
 

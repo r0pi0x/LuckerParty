@@ -91,7 +91,7 @@ impl SoundScripts {
 }
 
 /// "a" or "a,b": start a, range b - a (C-style number prefixes).
-fn interval(text: &str) -> Interval {
+pub(super) fn interval(text: &str) -> Interval {
     let num = |s: &str| -> f32 {
         let s = s.trim();
         let end = s
@@ -109,7 +109,7 @@ fn interval(text: &str) -> Interval {
     }
 }
 
-fn named_level(text: &str) -> Option<f32> {
+pub(super) fn named_level(text: &str) -> Option<f32> {
     let rest = text.to_ascii_uppercase();
     let rest = rest.strip_prefix("SNDLVL_")?;
     Some(match rest {
@@ -129,7 +129,7 @@ fn named_level(text: &str) -> Option<f32> {
     })
 }
 
-fn attenuation(text: &str) -> f32 {
+pub(super) fn attenuation(text: &str) -> f32 {
     match text.trim().to_ascii_uppercase().as_str() {
         "ATTN_NONE" => 0.0,
         "ATTN_NORM" => 0.8,
@@ -158,7 +158,7 @@ fn channel(text: &str) -> u8 {
 }
 
 /// A wave path as a file: prefix characters stripped, under `sound/`.
-fn wave_file(wave: &str) -> String {
+pub(super) fn wave_file(wave: &str) -> String {
     let path = wave.trim_start_matches(['*', '#', ')', '^', '<', '>', '@', '}', '!', '?']);
     format!("sound/{}", path.replace('\\', "/"))
 }

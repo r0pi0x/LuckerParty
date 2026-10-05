@@ -40,8 +40,12 @@ Started 2026-10-05, from specs/cs_source/sounds.md.
    physics impacts (avian's pre-solve approach speed, soft/hard choice,
    per-frame queue and merging), `games/cs_source/impacts.rs`. Scrapes are
    left: they need the engine's friction energy (spec open question 8).
-4. [ ] Map ambience: ambient_generic, soundscapes (selection, crossfade,
-   random sounds).
+4. [x] Soundscapes: scripts flattened (nesting, volumes, position
+   overrides), trigger_soundscape zones (most recent wins) and
+   env_soundscape points (range only), 3 s loop crossfades with reuse,
+   random one-shots (fixed, positioned or random positions). Not yet:
+   ambient_generic (dust2's two start silent, waiting on env_fire), DSP,
+   env_soundscape visibility, live panning of positioned loops.
 5. [x] Weapon sounds: fire, empty click, deploy, knife swings, reload parts at their animation times (sounds aren't yet tied to view-model events).
 
 Measurements to take (probe server): the distance curves, CS:S footstep

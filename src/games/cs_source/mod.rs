@@ -17,6 +17,7 @@ pub mod pushaway;
 pub mod ropes;
 pub mod sky;
 pub mod sound;
+pub mod soundscape;
 pub mod sprites;
 pub mod surfaceprops;
 pub mod vpk;

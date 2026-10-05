@@ -43,7 +43,7 @@ impl Interval {
     pub const fn fixed(v: f32) -> Self {
         Self { start: v, range: 0.0 }
     }
-    fn draw(&self, unit: f32) -> f32 {
+    pub fn draw(&self, unit: f32) -> f32 {
         self.start + self.range * unit
     }
 }
@@ -86,6 +86,72 @@ pub struct MapSounds {
     pub clips: Vec<MapSoundClip>,
     /// Lower-case surface names.
     pub surfaces: HashMap<String, MapSurface>,
+    /// Ambience: named soundscapes and where each one applies.
+    pub soundscapes: Vec<Soundscape>,
+    pub soundscape_zones: Vec<SoundscapeZone>,
+    pub soundscape_emitters: Vec<SoundscapeEmitter>,
+}
+
+/// A map's background ambience (Source soundscapes): loops that fade in
+/// while it applies, and one-shots at random intervals.
+#[derive(Clone, Debug, Default)]
+pub struct Soundscape {
+    pub name: String,
+    pub loops: Vec<ScapeLoop>,
+    pub randoms: Vec<ScapeRandom>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ScapeLoop {
+    /// Index into `clips`.
+    pub clip: usize,
+    pub volume: Interval,
+    /// Percent.
+    pub pitch: Interval,
+    /// Sound level in dB (0: no falloff).
+    pub level: f32,
+    /// Index into the applying zone's or emitter's positions; None plays
+    /// everywhere, unspatialized.
+    pub position: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScapePosition {
+    Ambient,
+    Index(usize),
+    /// Near the listener in a random direction.
+    Random,
+}
+
+#[derive(Clone, Debug)]
+pub struct ScapeRandom {
+    pub clips: Vec<usize>,
+    /// Seconds between plays.
+    pub time: Interval,
+    pub volume: Interval,
+    pub pitch: Interval,
+    pub level: Interval,
+    pub position: ScapePosition,
+}
+
+/// A box that selects a soundscape for a listener inside it (Source
+/// trigger_soundscape); the most recently entered one wins.
+#[derive(Clone, Debug)]
+pub struct SoundscapeZone {
+    pub min: Vec3,
+    pub max: Vec3,
+    pub scape: usize,
+    pub positions: Vec<Option<Vec3>>,
+}
+
+/// A point that selects a soundscape within its radius (env_soundscape).
+#[derive(Clone, Debug)]
+pub struct SoundscapeEmitter {
+    pub at: Vec3,
+    /// Meters; None: unlimited.
+    pub radius: Option<f32>,
+    pub scape: usize,
+    pub positions: Vec<Option<Vec3>>,
 }
 
 impl MapSounds {
@@ -137,7 +203,7 @@ struct Playing {
     channel: Option<u8>,
 }
 
-const METERS_PER_UNIT: f32 = 0.0254;
+pub(super) const METERS_PER_UNIT: f32 = 0.0254;
 /// Distances closer than this don't get louder (units).
 const MIN_DISTANCE: f32 = 36.0;
 
@@ -164,7 +230,8 @@ pub struct SoundPlugin;
 impl Plugin for SoundPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<PlaySound>()
-            .add_systems(PostUpdate, play_sounds.run_if(resource_exists::<Assets<AudioSource>>));
+            .add_systems(PostUpdate, play_sounds.run_if(resource_exists::<Assets<AudioSource>>))
+            .add_plugins(super::soundscape::SoundscapePlugin);
     }
 }
 
