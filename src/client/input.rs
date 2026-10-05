@@ -44,8 +44,15 @@ fn grab_cursor(
     mut cursor: Single<&mut CursorOptions>,
     mouse: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
+    mut focus: MessageReader<bevy::window::WindowFocused>,
 ) {
-    if keys.just_pressed(KeyCode::Escape) {
+    // Losing focus (alt-tab) ends the grab: Windows drops the cursor clip
+    // then, and a grab we still believed in would keep turning the view
+    // while the real cursor wanders off and clicks other windows. Clicking
+    // back in grabs again.
+    if focus.read().any(|f| !f.focused) {
+        release_cursor(&mut cursor);
+    } else if keys.just_pressed(KeyCode::Escape) {
         release_cursor(&mut cursor);
     } else if mouse.just_pressed(MouseButton::Left) && !cursor_grabbed(&cursor) {
         cursor.visible = false;
@@ -120,4 +127,33 @@ fn write_local_intent(
     intent.sprint = keys.pressed(KeyCode::ShiftLeft);
     intent.fire = mouse.pressed(MouseButton::Left);
     intent.reload = keys.pressed(KeyCode::KeyR);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn losing_focus_releases_the_cursor() {
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .add_message::<bevy::window::WindowFocused>()
+            .add_systems(Update, grab_cursor);
+        let window = app
+            .world_mut()
+            .spawn(CursorOptions {
+                visible: false,
+                grab_mode: CursorGrabMode::Locked,
+                ..default()
+            })
+            .id();
+        app.update();
+        assert!(cursor_grabbed(app.world().get::<CursorOptions>(window).unwrap()));
+        app.world_mut()
+            .write_message(bevy::window::WindowFocused { window, focused: false });
+        app.update();
+        let cursor = app.world().get::<CursorOptions>(window).unwrap();
+        assert!(!cursor_grabbed(cursor) && cursor.visible);
+    }
 }
