@@ -17,6 +17,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 toml = "1.1.6"
 twofish = "0.8"
 vbsp = "0.9"
+vmdl = "0.2"
 vmt-parser = "0.2"
 vtf = "0.4"
 

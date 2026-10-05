@@ -253,3 +253,78 @@ fn lightmaps_agree_at_shared_edges() {
         );
     }
 }
+
+/// Which window props let a ray through (along the model's facing axis,
+/// from 1.5 m out on either side to its centre), with prop collision on or
+/// off.
+fn open_windows(map: &MapData, props_solid: bool) -> Vec<usize> {
+    use avian3d::prelude::*;
+
+    let mut map = map.clone();
+    if !props_solid {
+        map.props
+            .iter_mut()
+            .for_each(|p| p.solid = mashup::map::PropSolid::None);
+    }
+    let windows: Vec<(usize, Vec3, Quat)> = map
+        .props
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| map.models[p.model].meshes.iter().any(|m| m.material.contains("window")))
+        .map(|(i, p)| (i, p.translation, p.rotation))
+        .collect();
+    let mut sim = Sim::new(MapPlugin::new(map));
+    let world = sim.app.world_mut();
+    let mut state: bevy::ecs::system::SystemState<SpatialQuery> = bevy::ecs::system::SystemState::new(world);
+    let query = state.get(world).unwrap();
+    windows
+        .into_iter()
+        .filter(|(_, at, rot)| {
+            let axis = *rot * Vec3::X;
+            let centre = *at + Vec3::Y * 0.3;
+            [axis, -axis].iter().any(|dir| {
+                query
+                    .cast_ray(
+                        centre + *dir * 1.5,
+                        Dir3::new(-*dir).unwrap(),
+                        1.6,
+                        true,
+                        &SpatialQueryFilter::default(),
+                    )
+                    .is_none()
+            })
+        })
+        .map(|(i, _, _)| i)
+        .collect()
+}
+
+#[test]
+fn props_load_and_windows_block() {
+    let Some(map) = dust2() else { return };
+    assert!(map.props.len() > 300, "{} props", map.props.len());
+    assert!(
+        map.models.iter().all(|m| !m.meshes.is_empty()),
+        "a prop model has no meshes"
+    );
+
+    // Real openings: windows a ray passes through when props don't collide.
+    // Only props the map marks solid should close them (dust2 has a
+    // non-solid sill that stays open in the real game too).
+    let openings: Vec<usize> = open_windows(&map, false)
+        .into_iter()
+        .filter(|i| map.props[*i].solid != mashup::map::PropSolid::None)
+        .collect();
+    eprintln!("{} window props sit in real openings", openings.len());
+    assert!(!openings.is_empty(), "expected some windows in wall openings");
+    let still_open: Vec<_> = open_windows(&map, true)
+        .into_iter()
+        .filter(|i| openings.contains(i))
+        .collect();
+    assert!(
+        still_open.is_empty(),
+        "{} of {} window openings stay open with props solid: {:?}",
+        still_open.len(),
+        openings.len(),
+        still_open.iter().map(|i| map.props[*i].translation).collect::<Vec<_>>()
+    );
+}

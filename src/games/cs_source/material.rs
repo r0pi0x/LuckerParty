@@ -59,7 +59,7 @@ impl<'a> MaterialLoader<'a> {
         }
     }
 
-    fn read(&self, path: &str) -> Option<Vec<u8>> {
+    pub fn read(&self, path: &str) -> Option<Vec<u8>> {
         let path = normalize(path);
         if let Ok(Some(data)) = self.bsp.pack.get(&path) {
             return Some(data);
@@ -69,6 +69,26 @@ impl<'a> MaterialLoader<'a> {
 
     fn read_text(&self, path: &str) -> Option<String> {
         self.read(path).map(|b| String::from_utf8_lossy(&b).into_owned())
+    }
+
+    /// Resolve the first of `candidates` that exists (models list several
+    /// material folders to search).
+    pub fn resolve_any(&mut self, candidates: &[String]) -> Resolved {
+        let found = candidates
+            .iter()
+            .find(|c| self.read(&format!("materials/{}.vmt", normalize(c))).is_some());
+        match found {
+            Some(name) => self.resolve(&name.clone()),
+            None => {
+                self.missing
+                    .push(format!("material not found in any of {candidates:?}"));
+                Resolved {
+                    texture: None,
+                    alpha: MapAlpha::Opaque,
+                    double_sided: false,
+                }
+            }
+        }
     }
 
     /// Resolve material `name` (as named in the BSP, without `materials/`).

@@ -3909,6 +3909,15 @@ dependencies = [
 
 [[package]]
 name = "itertools"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
+dependencies = [
+ "either",
+]
+
+[[package]]
+name = "itertools"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285"
@@ -4244,6 +4253,7 @@ dependencies = [
  "toml",
  "twofish",
  "vbsp",
+ "vmdl",
  "vmt-parser",
  "vtf",
 ]
@@ -6751,6 +6761,24 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "vmdl"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da2f6b8c22da8937403a5da864e7ea390f30cd40b7a077079e40279aa6a4f553"
+dependencies = [
+ "arrayvec",
+ "bitflags 2.13.2",
+ "bytemuck",
+ "cgmath",
+ "half",
+ "itertools 0.13.0",
+ "num_enum",
+ "static_assertions",
+ "thiserror 1.0.69",
+ "tracing",
+]
 
 [[package]]
 name = "vmt-parser"

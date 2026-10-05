@@ -67,12 +67,42 @@ pub struct MapLightmap {
     pub rgb: Vec<[f32; 3]>,
 }
 
+/// A reusable model (e.g. a window frame), in its own space: meters, Y up.
+#[derive(Clone, Debug, Default)]
+pub struct MapModel {
+    pub meshes: Vec<MapMesh>,
+    /// Collision box in model space (min, max), for box-solid props.
+    pub bounds: (Vec3, Vec3),
+}
+
+/// How players collide with a prop.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PropSolid {
+    None,
+    /// The model's bounds as a box, rotated with the prop.
+    Box,
+    /// The model's triangles.
+    Mesh,
+}
+
+/// A placed model.
+#[derive(Clone, Debug)]
+pub struct MapProp {
+    /// Index into `MapData::models`.
+    pub model: usize,
+    pub translation: Vec3,
+    pub rotation: Quat,
+    pub solid: PropSolid,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct MapData {
     pub name: String,
     pub meshes: Vec<MapMesh>,
     pub textures: Vec<MapTexture>,
     pub lightmap: Option<MapLightmap>,
+    pub models: Vec<MapModel>,
+    pub props: Vec<MapProp>,
     /// Collision triangles (surfaces with no solid volume, e.g. terrain).
     pub collision_positions: Vec<[f32; 3]>,
     pub collision_indices: Vec<[u32; 3]>,
@@ -191,47 +221,21 @@ fn spawn_map(
         ));
     }
 
+    // Prop models: one collider per model (shared by its placements), and
+    // render handles when rendering exists.
+    let model_colliders: Vec<Option<Collider>> = data.models.iter().map(model_collider).collect();
+    let mut model_parts: Vec<Vec<(Handle<Mesh>, Handle<StandardMaterial>)>> = Vec::new();
+
     if let (Some(meshes), Some(materials), Some(images)) = (meshes.as_mut(), materials.as_mut(), images.as_mut()) {
         let textures: Vec<Handle<Image>> = data.textures.iter().map(|t| images.add(to_image(t))).collect();
         let lightmap = data.lightmap.as_ref().map(|l| images.add(lightmap_image(l)));
         for m in &data.meshes {
-            let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
-            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, m.positions.clone());
-            mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, m.normals.clone());
-            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, m.uvs.clone());
             let lit = lightmap.as_ref().filter(|_| m.lightmap_uvs.len() == m.positions.len());
-            if lit.is_some() {
-                mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, m.lightmap_uvs.clone());
-            }
-            mesh.insert_indices(Indices::U32(m.indices.clone()));
-            let [r, g, b] = m.color;
             let mut part = commands.spawn((
                 Name::new(m.material.clone()),
                 MapPart,
-                Mesh3d(meshes.add(mesh)),
-                MeshMaterial3d(materials.add(StandardMaterial {
-                    base_color: if m.texture.is_some() || lightmap_only {
-                        Color::WHITE
-                    } else {
-                        Color::srgb_u8(r, g, b)
-                    },
-                    base_color_texture: m.texture.filter(|_| !lightmap_only).map(|i| textures[i].clone()),
-                    perceptual_roughness: 0.95,
-                    reflectance: 0.2,
-                    alpha_mode: match m.alpha {
-                        MapAlpha::Opaque => AlphaMode::Opaque,
-                        MapAlpha::Mask(cutoff) => AlphaMode::Mask(cutoff),
-                        MapAlpha::Blend => AlphaMode::Blend,
-                    },
-                    double_sided: m.double_sided,
-                    cull_mode: if m.double_sided {
-                        None
-                    } else {
-                        Some(bevy::render::render_resource::Face::Back)
-                    },
-                    lightmap_exposure: LIGHTMAP_EXPOSURE,
-                    ..default()
-                })),
+                Mesh3d(meshes.add(build_mesh(m, lit.is_some()))),
+                MeshMaterial3d(materials.add(build_material(m, &textures, lightmap_only))),
                 Transform::default(),
                 ChildOf(root),
             ));
@@ -241,6 +245,54 @@ fn spawn_map(
                     uv_rect: Rect::new(0.0, 0.0, 1.0, 1.0),
                     bicubic_sampling: false,
                 });
+            }
+        }
+        model_parts = data
+            .models
+            .iter()
+            .map(|model| {
+                model
+                    .meshes
+                    .iter()
+                    .map(|m| {
+                        (
+                            meshes.add(build_mesh(m, false)),
+                            materials.add(build_material(m, &textures, lightmap_only)),
+                        )
+                    })
+                    .collect()
+            })
+            .collect();
+    }
+
+    for (i, prop) in data.props.iter().enumerate() {
+        let mut e = commands.spawn((
+            Name::new(format!("Prop {i}")),
+            MapPart,
+            Transform::from_translation(prop.translation).with_rotation(prop.rotation),
+            Visibility::default(),
+            ChildOf(root),
+        ));
+        match (prop.solid, &model_colliders[prop.model]) {
+            (PropSolid::Mesh, Some(collider)) => {
+                e.insert((RigidBody::Static, collider.clone()));
+            }
+            (PropSolid::Box, _) => {
+                let (lo, hi) = data.models[prop.model].bounds;
+                let size = hi - lo;
+                if size.min_element() > 0.0 {
+                    e.insert(RigidBody::Static).with_child((
+                        Collider::cuboid(size.x, size.y, size.z),
+                        Transform::from_translation((lo + hi) / 2.0),
+                    ));
+                }
+            }
+            _ => {}
+        }
+        if let Some(parts) = model_parts.get(prop.model) {
+            let id = e.id();
+            for (mesh, material) in parts {
+                commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone()), ChildOf(id)));
             }
         }
     }
@@ -341,4 +393,61 @@ fn lightmap_image(l: &MapLightmap) -> Image {
     );
     image.sampler = ImageSampler::linear();
     image
+}
+
+fn build_mesh(m: &MapMesh, with_lightmap: bool) -> Mesh {
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, m.positions.clone());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, m.normals.clone());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, m.uvs.clone());
+    if with_lightmap {
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, m.lightmap_uvs.clone());
+    }
+    mesh.insert_indices(Indices::U32(m.indices.clone()));
+    mesh
+}
+
+fn build_material(m: &MapMesh, textures: &[Handle<Image>], lightmap_only: bool) -> StandardMaterial {
+    let [r, g, b] = m.color;
+    StandardMaterial {
+        base_color: if m.texture.is_some() || lightmap_only {
+            Color::WHITE
+        } else {
+            Color::srgb_u8(r, g, b)
+        },
+        base_color_texture: m.texture.filter(|_| !lightmap_only).map(|i| textures[i].clone()),
+        perceptual_roughness: 0.95,
+        reflectance: 0.2,
+        alpha_mode: match m.alpha {
+            MapAlpha::Opaque => AlphaMode::Opaque,
+            MapAlpha::Mask(cutoff) => AlphaMode::Mask(cutoff),
+            MapAlpha::Blend => AlphaMode::Blend,
+        },
+        double_sided: m.double_sided,
+        cull_mode: if m.double_sided {
+            None
+        } else {
+            Some(bevy::render::render_resource::Face::Back)
+        },
+        lightmap_exposure: LIGHTMAP_EXPOSURE,
+        ..default()
+    }
+}
+
+/// All of a model's triangles as one collider, in model space.
+fn model_collider(model: &MapModel) -> Option<Collider> {
+    let mut positions = Vec::new();
+    let mut indices = Vec::new();
+    for m in &model.meshes {
+        let base = positions.len() as u32;
+        positions.extend(m.positions.iter().map(|p| Vec3::from(*p)));
+        indices.extend(
+            m.indices
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .map(|t| [base + t[0], base + t[1], base + t[2]]),
+        );
+    }
+    (!indices.is_empty()).then(|| Collider::trimesh(positions, indices))
 }

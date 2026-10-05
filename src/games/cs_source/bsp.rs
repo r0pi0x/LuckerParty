@@ -57,6 +57,7 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
         mesh.alpha = r.alpha;
         mesh.double_sided = r.double_sided;
     }
+    super::props::add_static_props(&bsp, &mut materials, &mut data);
     data.warnings.extend(materials.missing);
     data.textures = materials.textures;
     Ok(data)

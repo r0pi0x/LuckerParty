@@ -4,6 +4,7 @@ pub mod bsp;
 pub mod lightmap;
 pub mod material;
 pub mod mount;
+pub mod props;
 pub mod vpk;
 
 pub const GAME: &str = "cs_source";
