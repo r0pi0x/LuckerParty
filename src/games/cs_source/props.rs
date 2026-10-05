@@ -95,6 +95,16 @@ fn convert_model(model: &vmdl::Model, skin: i32, materials: &mut MaterialLoader)
 }
 
 /// Add the BSP's static props to `data`, loading each (model, skin) once.
+/// One prop to place: what the static prop lump and prop entities share.
+struct PropPlacement {
+    model: String,
+    skin: i32,
+    origin: vbsp::Vector,
+    angles: vbsp::Angles,
+    solid: PropSolid,
+    lighting_origin: Option<vbsp::Vector>,
+}
+
 pub fn add_static_props(
     bsp: &Bsp,
     materials: &mut MaterialLoader,
@@ -102,15 +112,84 @@ pub fn add_static_props(
     occluders: &Occluders,
     data: &mut MapData,
 ) {
-    let mut loaded: HashMap<(String, i32), Option<usize>> = HashMap::new();
-    let mut failed: Vec<String> = Vec::new();
+    let mut placements = Vec::new();
     for prop in bsp.static_props() {
         if prop.flags.contains(vbsp::StaticPropLumpFlags::NO_DRAW) {
             continue;
         }
-        let path = prop.model().to_lowercase();
-        let key = (path.clone(), prop.skin);
-        let model = *loaded.entry(key).or_insert_with(|| match load_model(materials, &path) {
+        placements.push(PropPlacement {
+            model: prop.model().to_lowercase(),
+            skin: prop.skin,
+            origin: prop.origin,
+            angles: prop.angles,
+            // Box solids collide as the model's bounds, like the game;
+            // physics solids should use the .phy model, which isn't parsed
+            // yet, so they fall back to the visible mesh.
+            solid: match prop.solid {
+                vbsp::SolidType::None => PropSolid::None,
+                vbsp::SolidType::Bbox | vbsp::SolidType::Obb | vbsp::SolidType::ObbYaw => PropSolid::Box,
+                _ => PropSolid::Mesh,
+            },
+            lighting_origin: prop
+                .flags
+                .contains(vbsp::StaticPropLumpFlags::USE_LIGHTING_ORIGIN)
+                .then_some(prop.lighting_origin),
+        });
+    }
+    placements.extend(entity_props(bsp));
+    place_props(bsp, materials, lighting, occluders, data, placements);
+}
+
+/// Props placed as entities: physics props (barrels, baskets; static here
+/// until there's physics) and dynamic props. Both collide by their physics
+/// model (the visible mesh until `.phy` is parsed).
+fn entity_props(bsp: &Bsp) -> Vec<PropPlacement> {
+    let parse = |v: &str| -> Option<[f32; 3]> {
+        let mut it = v.split_whitespace().filter_map(|p| p.parse::<f32>().ok());
+        Some([it.next()?, it.next()?, it.next()?])
+    };
+    bsp.entities
+        .iter()
+        .filter_map(|e| {
+            let class = e.prop("classname")?;
+            let physics = class.starts_with("prop_physics");
+            if !physics && !class.starts_with("prop_dynamic") {
+                return None;
+            }
+            let [x, y, z] = parse(e.prop("origin")?)?;
+            let [pitch, yaw, roll] = e.prop("angles").and_then(parse).unwrap_or([0.0; 3]);
+            // prop_dynamic: solid 0 = not solid, otherwise the physics model.
+            let solid = if physics || e.prop("solid").is_none_or(|s| s.trim() != "0") {
+                PropSolid::Mesh
+            } else {
+                PropSolid::None
+            };
+            Some(PropPlacement {
+                model: e.prop("model")?.to_lowercase(),
+                skin: e.prop("skin").and_then(|s| s.trim().parse().ok()).unwrap_or(0),
+                origin: vbsp::Vector { x, y, z },
+                angles: vbsp::Angles { pitch, yaw, roll },
+                solid,
+                lighting_origin: None,
+            })
+        })
+        .collect()
+}
+
+fn place_props(
+    bsp: &Bsp,
+    materials: &mut MaterialLoader,
+    lighting: &MapLighting,
+    occluders: &Occluders,
+    data: &mut MapData,
+    placements: Vec<PropPlacement>,
+) {
+    let mut loaded: HashMap<(String, i32), Option<usize>> = HashMap::new();
+    let mut failed: Vec<String> = Vec::new();
+    let bounds = super::bsp::playable_bounds(bsp);
+    for prop in placements {
+        let key = (prop.model.clone(), prop.skin);
+        let model = *loaded.entry(key).or_insert_with(|| match load_model(materials, &prop.model) {
             Ok(m) => {
                 data.models.push(convert_model(&m, prop.skin, materials));
                 Some(data.models.len() - 1)
@@ -126,28 +205,22 @@ pub fn add_static_props(
         // Like the game for maps without baked prop lighting: one lighting
         // point per prop (its bounds' centre, or the mapper's lighting
         // origin), so a prop is lit or shadowed as a whole.
-        let origin = if prop.flags.contains(vbsp::StaticPropLumpFlags::USE_LIGHTING_ORIGIN) {
-            to_engine(prop.lighting_origin)
-        } else {
-            let (lo, hi) = data.models[model].bounds;
-            translation + rotation * ((lo + hi) / 2.0)
+        let origin = match prop.lighting_origin {
+            Some(o) => to_engine(o),
+            None => {
+                let (lo, hi) = data.models[model].bounds;
+                translation + rotation * ((lo + hi) / 2.0)
+            }
         };
         let lighting = probe(bsp, lighting, occluders, origin);
-        let skybox = super::bsp::playable_bounds(bsp).is_some_and(|b| !b.contains(prop.origin));
+        let skybox = bounds.as_ref().is_some_and(|b| !b.contains(prop.origin));
         data.props.push(MapProp {
             model,
             translation,
             rotation,
             skybox,
             lighting: Some(lighting),
-            // Box solids collide as the model's bounds, like the game;
-            // physics solids should use the .phy model, which isn't parsed
-            // yet, so they fall back to the visible mesh.
-            solid: match prop.solid {
-                vbsp::SolidType::None => PropSolid::None,
-                vbsp::SolidType::Bbox | vbsp::SolidType::Obb | vbsp::SolidType::ObbYaw => PropSolid::Box,
-                _ => PropSolid::Mesh,
-            },
+            solid: prop.solid,
         });
     }
     failed.sort();
@@ -155,9 +228,6 @@ pub fn add_static_props(
     data.warnings.extend(failed);
 }
 
-/// The light probe at `origin`: ambient cube plus each light visible from
-/// there. If the point is buried in solid (no ambient samples), try nearby
-/// points: props such as window frames sit inside walls.
 pub fn probe(bsp: &Bsp, lighting: &MapLighting, occluders: &Occluders, origin: Vec3) -> LightProbe {
     let offsets = [Vec3::ZERO, Vec3::Y, Vec3::X, -Vec3::X, Vec3::Z, -Vec3::Z, -Vec3::Y]
         .into_iter()

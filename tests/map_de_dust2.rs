@@ -654,3 +654,21 @@ fn props_cannot_be_climbed_by_walking() {
     assert!(tested >= 20, "only {tested} runs");
     assert!(worst.0 < 19.0, "climbed {:.1} units up a prop at {}", worst.0, worst.1);
 }
+
+/// Prop entities load alongside the static props: dust2's 75
+/// prop_physics_multiplayer (baskets, barrels), solid, lit by probes.
+#[test]
+fn physics_props_load() {
+    let Some(map) = dust2() else { return };
+    // 321 static props (one is no-draw) plus 75 physics props.
+    assert!(map.props.len() >= 320 + 75, "{} props", map.props.len());
+    // A grain basket from the entity lump: origin 361.969 2700.69 99.7093.
+    let basket = Vec3::new(361.969, 99.7093, -2700.69) * 0.0254;
+    let prop = map
+        .props
+        .iter()
+        .find(|p| p.translation.distance(basket) < 0.01)
+        .expect("grain basket not placed");
+    assert_eq!(prop.solid, mashup::map::PropSolid::Mesh);
+    assert!(prop.lighting.is_some());
+}

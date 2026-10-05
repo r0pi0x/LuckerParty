@@ -27,9 +27,10 @@ Counts are from de_dust2's entity lump and static prop lump.
 - **Dust motes** (`func_dustmotes`, 2): the drifting particles in T house
   and inside long doors. Brush volumes that spawn slow-moving sprites;
   parameters (count, size, speed, color) come from the entity keys.
-- **Physics props** (`prop_physics_multiplayer`, 75): barrels and similar,
-  loaded as props first, physically simulated later.
-- **Brush entities**: `func_brush` (1); doors if any map needs them.
+- **Physics simulation** for `prop_physics_multiplayer` (75 on dust2,
+  placed as static props now): pushable, shootable.
+- **Brush entities**: doors and visible `func_brush` if a map needs them
+  (dust2's one `func_brush` is render mode 10, never drawn).
 - **Prop collision from `.phy`** for physics-solid props (now the visible
   mesh).
 - **Sprites** (`env_sprite`, 18; lamp glows).
