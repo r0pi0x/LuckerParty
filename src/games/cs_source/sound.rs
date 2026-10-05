@@ -1,0 +1,304 @@
+//! CS:S sound scripts (specs/cs_source/sounds.md section 1): the
+//! game_sounds manifest's files and the map's own `maps/<map>_level_sounds.txt`
+//! define named entries (waves, volume, pitch, sound level or
+//! attenuation, channel). A map loads the entries it uses, decoding their
+//! waves once (like Source's precache).
+
+use std::collections::{HashMap, HashSet};
+
+use super::{
+    material::MaterialLoader,
+    surfaceprops::{SurfaceProps, tokens},
+};
+use crate::map::{MapSoundEntry, MapSounds, MapSurface, SoundLevel, sound::Interval};
+
+/// An entry as written: its keys, and its waves in order.
+#[derive(Clone, Debug, Default)]
+struct RawEntry {
+    keys: HashMap<String, String>,
+    waves: Vec<String>,
+}
+
+/// All script entries, later files overriding earlier ones.
+#[derive(Default)]
+pub struct SoundScripts {
+    entries: HashMap<String, RawEntry>,
+}
+
+impl SoundScripts {
+    pub fn load(materials: &mut MaterialLoader, map: &str) -> Self {
+        let mut me = Self::default();
+        if let Some(manifest) = materials.read("scripts/game_sounds_manifest.txt") {
+            let t = tokens(&String::from_utf8_lossy(&manifest));
+            let files: Vec<String> = t
+                .windows(2)
+                .filter(|w| w[0].eq_ignore_ascii_case("precache_file") || w[0].eq_ignore_ascii_case("preload_file"))
+                .map(|w| w[1].clone())
+                .collect();
+            for f in files {
+                if let Some(b) = materials.read(&f) {
+                    me.add(&String::from_utf8_lossy(&b));
+                }
+            }
+        }
+        if let Some(b) = materials.read(&format!("maps/{}_level_sounds.txt", map.to_lowercase())) {
+            me.add(&String::from_utf8_lossy(&b));
+        }
+        me
+    }
+
+    pub fn add(&mut self, text: &str) {
+        let t = tokens(text);
+        let mut i = 0;
+        while i + 1 < t.len() {
+            if t[i + 1] != "{" {
+                i += 1;
+                continue;
+            }
+            let name = t[i].to_lowercase();
+            i += 2;
+            let mut entry = RawEntry::default();
+            while i < t.len() && t[i] != "}" {
+                let key = t[i].to_lowercase();
+                if t.get(i + 1).map(String::as_str) == Some("{") {
+                    // rndwave { "wave" ... }
+                    i += 2;
+                    while i < t.len() && t[i] != "}" {
+                        if t[i].eq_ignore_ascii_case("wave") && i + 1 < t.len() {
+                            entry.waves.push(t[i + 1].clone());
+                        }
+                        i += 2;
+                    }
+                    i += 1;
+                    continue;
+                }
+                let Some(value) = t.get(i + 1).cloned() else { break };
+                if key == "wave" {
+                    entry.waves.push(value);
+                } else {
+                    entry.keys.insert(key, value);
+                }
+                i += 2;
+            }
+            i += 1;
+            self.entries.insert(name, entry);
+        }
+    }
+
+    pub fn contains(&self, name: &str) -> bool {
+        self.entries.contains_key(&name.to_lowercase())
+    }
+}
+
+/// "a" or "a,b": start a, range b - a (C-style number prefixes).
+fn interval(text: &str) -> Interval {
+    let num = |s: &str| -> f32 {
+        let s = s.trim();
+        let end = s
+            .char_indices()
+            .find(|(i, c)| !(c.is_ascii_digit() || *c == '.' || (*i == 0 && (*c == '-' || *c == '+'))))
+            .map_or(s.len(), |(i, _)| i);
+        s[..end].parse().unwrap_or(0.0)
+    };
+    match text.split_once(',') {
+        Some((a, b)) => Interval {
+            start: num(a),
+            range: num(b) - num(a),
+        },
+        None => Interval::fixed(num(text)),
+    }
+}
+
+fn named_level(text: &str) -> Option<f32> {
+    let rest = text.to_ascii_uppercase();
+    let rest = rest.strip_prefix("SNDLVL_")?;
+    Some(match rest {
+        "NONE" => 0.0,
+        "IDLE" => 60.0,
+        "TALKING" => 80.0,
+        "STATIC" => 66.0,
+        "NORM" => 75.0,
+        "GUNFIRE" => 140.0,
+        other => {
+            let digits: String = other.chars().take_while(char::is_ascii_digit).collect();
+            match digits.parse::<f32>() {
+                Ok(v) if (1.0..=180.0).contains(&v) => v,
+                _ => 75.0,
+            }
+        }
+    })
+}
+
+fn attenuation(text: &str) -> f32 {
+    match text.trim().to_ascii_uppercase().as_str() {
+        "ATTN_NONE" => 0.0,
+        "ATTN_NORM" => 0.8,
+        "ATTN_IDLE" => 2.0,
+        "ATTN_STATIC" => 1.25,
+        "ATTN_RICOCHET" => 1.5,
+        "ATTN_GUNFIRE" => 0.27,
+        other => interval(other).start,
+    }
+}
+
+fn channel(text: &str) -> u8 {
+    let t = text.trim().to_ascii_uppercase();
+    match t.as_str() {
+        "CHAN_AUTO" => 0,
+        "CHAN_WEAPON" => 1,
+        "CHAN_VOICE" => 2,
+        "CHAN_ITEM" => 3,
+        "CHAN_BODY" => 4,
+        "CHAN_STREAM" => 5,
+        "CHAN_STATIC" => 6,
+        "CHAN_VOICE2" => 7,
+        _ if t.starts_with("CHAN_") => 0,
+        _ => t.parse().unwrap_or(0),
+    }
+}
+
+/// A wave path as a file: prefix characters stripped, under `sound/`.
+fn wave_file(wave: &str) -> String {
+    let path = wave.trim_start_matches(['*', '#', ')', '^', '<', '>', '@', '}', '!', '?']);
+    format!("sound/{}", path.replace('\\', "/"))
+}
+
+/// Entries the movement and world use, beyond the surfaces' steps.
+const ALWAYS: &[&str] = &["Player.Swim", "Player.FallDamage"];
+
+/// The map's sounds: the entries it uses and their decoded waves, plus the
+/// surfaces' step sounds and game materials.
+pub fn load(materials: &mut MaterialLoader, map: &str, surfaces: &SurfaceProps) -> MapSounds {
+    let scripts = SoundScripts::load(materials, map);
+    let mut out = MapSounds::default();
+    let mut wanted: HashSet<String> = ALWAYS.iter().map(|s| s.to_lowercase()).collect();
+    for name in surfaces.names() {
+        let surface = MapSurface {
+            step_left: surfaces.text(name, "stepleft"),
+            step_right: surfaces.text(name, "stepright"),
+            game_material: surfaces
+                .text(name, "gamematerial")
+                .and_then(|g| g.chars().next())
+                .unwrap_or('C')
+                .to_ascii_uppercase(),
+        };
+        wanted.extend(
+            surface
+                .step_left
+                .iter()
+                .chain(&surface.step_right)
+                .map(|s| s.to_lowercase()),
+        );
+        out.surfaces.insert(name.clone(), surface);
+    }
+    let mut decoded: HashMap<String, Option<usize>> = HashMap::new();
+    let mut failed = 0;
+    for name in wanted {
+        let Some(raw) = scripts.entries.get(&name) else {
+            continue;
+        };
+        let mut waves = Vec::new();
+        for w in &raw.waves {
+            let file = wave_file(w);
+            let index = *decoded.entry(file.clone()).or_insert_with(|| {
+                let clip = materials.read(&file).and_then(|b| super::wav::decode(&b).ok());
+                clip.map(|c| {
+                    out.clips.push(c);
+                    out.clips.len() - 1
+                })
+            });
+            match index {
+                Some(i) => waves.push(i),
+                None => failed += 1,
+            }
+        }
+        let keys = &raw.keys;
+        let level = match (
+            keys.get("soundlevel"),
+            keys.get("compatibilityattenuation"),
+            keys.get("attenuation"),
+        ) {
+            (Some(l), ..) => SoundLevel::Db(named_level(l).unwrap_or_else(|| interval(l).start)),
+            (None, Some(a), _) | (None, None, Some(a)) => SoundLevel::Attenuation(attenuation(a)),
+            _ => SoundLevel::Db(75.0),
+        };
+        let volume = keys.get("volume").map_or(Interval::fixed(1.0), |v| {
+            if v.eq_ignore_ascii_case("VOL_NORM") {
+                Interval::fixed(1.0)
+            } else {
+                interval(v)
+            }
+        });
+        let pitch = keys
+            .get("pitch")
+            .map_or(Interval::fixed(100.0), |p| match p.to_ascii_uppercase().as_str() {
+                "PITCH_NORM" => Interval::fixed(100.0),
+                "PITCH_LOW" => Interval::fixed(95.0),
+                "PITCH_HIGH" => Interval::fixed(120.0),
+                _ => interval(p),
+            });
+        out.entries.insert(
+            name,
+            MapSoundEntry {
+                waves,
+                volume,
+                pitch,
+                level,
+                channel: keys.get("channel").map_or(0, |c| channel(c)),
+            },
+        );
+    }
+    if failed > 0 {
+        bevy::log::warn!("sounds: {failed} waves couldn't be read or decoded");
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn intervals_and_names() {
+        assert_eq!(
+            interval("95, 105"),
+            Interval {
+                start: 95.0,
+                range: 10.0
+            }
+        );
+        assert_eq!(
+            interval("15,40`"),
+            Interval {
+                start: 15.0,
+                range: 25.0
+            }
+        );
+        assert_eq!(
+            interval("105,95"),
+            Interval {
+                start: 105.0,
+                range: -10.0
+            }
+        );
+        assert_eq!(named_level("SNDLVL_140db"), Some(140.0));
+        assert_eq!(named_level("SNDLVL_97dB"), Some(97.0));
+        assert_eq!(named_level("SNDLVL_NORM"), Some(75.0));
+        assert_eq!(attenuation("ATTN_NORM"), 0.8);
+        assert_eq!(channel("chan_voice"), 2);
+        assert_eq!(wave_file(")weapons/ak47/ak47-1.wav"), "sound/weapons/ak47/ak47-1.wav");
+    }
+
+    #[test]
+    fn entries_with_rndwave() {
+        let mut s = SoundScripts::default();
+        s.add(
+            r#""Player.Swim" { "channel" "CHAN_BODY" "volume" "VOL_NORM"
+               "CompatibilityAttenuation" "1.0" "pitch" "PITCH_NORM"
+               "rndwave" { "wave" "player/footsteps/slosh1.wav" "wave" "player/footsteps/slosh2.wav" } }"#,
+        );
+        let e = &s.entries["player.swim"];
+        assert_eq!(e.waves.len(), 2);
+        assert_eq!(e.keys["channel"], "CHAN_BODY");
+    }
+}

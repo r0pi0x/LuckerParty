@@ -21,7 +21,7 @@ pub struct SurfaceProps {
 }
 
 /// Tokens: quoted strings, bare words and braces; `//` comments skipped.
-fn tokens(text: &str) -> Vec<String> {
+pub(crate) fn tokens(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
@@ -112,6 +112,24 @@ impl SurfaceProps {
         }
         let base = entry.get("base")?;
         (depth < 16).then(|| self.key(base, key, depth + 1)).flatten()
+    }
+
+    /// A text key, following `base` and then `default`.
+    pub fn text(&self, name: &str, key: &str) -> Option<String> {
+        fn find(me: &SurfaceProps, name: &str, key: &str, depth: u32) -> Option<String> {
+            let entry = me.entries.get(&name.to_lowercase())?;
+            if let Some(v) = entry.get(key) {
+                return Some(v.clone());
+            }
+            let base = entry.get("base")?;
+            (depth < 16).then(|| find(me, base, key, depth + 1)).flatten()
+        }
+        find(self, name, key, 0).or_else(|| find(self, "default", key, 0))
+    }
+
+    /// Every surface name (lower-case).
+    pub fn names(&self) -> impl Iterator<Item = &String> {
+        self.entries.keys()
     }
 
     /// An entry's friction and elasticity (unknown names: `default`).

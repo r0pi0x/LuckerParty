@@ -1000,19 +1000,22 @@ fn physics_props_settle_and_get_pushed() {
 
     // Run at a solid-mode prop from 100 units away, from whichever side
     // is open: the player passes through it and shoves it.
-    let (index, target, _, _) = props
+    let mut solids: Vec<_> = props
         .iter()
-        .find(|(_, _, p, _)| p.push == PushAway::Solid)
+        .filter(|(_, _, p, _)| p.push == PushAway::Solid)
         .copied()
-        .unwrap();
-    let name = format!("Prop {index}");
+        .collect();
+    solids.sort_by_key(|(i, ..)| *i);
     let mut shoved = None;
-    for (dir, yaw) in [
+    let sides = [
         (Vec3::X, 0.0f32),
         (Vec3::NEG_X, 180.0),
         (Vec3::Y, 90.0),
         (Vec3::NEG_Y, 270.0),
-    ] {
+    ];
+    let tries = solids.iter().take(6).flat_map(|(i, t, ..)| sides.map(|d| (*i, *t, d)));
+    for (index, target, (dir, yaw)) in tries {
+        let name = format!("Prop {index}");
         let mut sim = Sim::new((MapPlugin::new(map.clone()), SourceMovementPlugin));
         sim.seconds(4.0);
         let start_feet = to_source(target) - dir * 100.0;
@@ -1039,5 +1042,34 @@ fn physics_props_settle_and_get_pushed() {
     assert!(
         moved > 10.0,
         "the prop was shoved {moved} units (player ran {travelled})"
+    );
+}
+
+/// Sounds (specs/cs_source/sounds.md): the map loads the step sounds of
+/// every surface and the swim sound, decoded; world meshes know their
+/// surface.
+#[test]
+fn sounds_load() {
+    let Some(map) = dust2() else { return };
+    let s = &map.sounds;
+    let concrete = s.surface("concrete").expect("concrete surface");
+    assert_eq!(concrete.game_material, 'C');
+    let step = s
+        .entry(concrete.step_left.as_deref().unwrap())
+        .expect("concrete step entry");
+    assert!(!step.waves.is_empty(), "concrete steps have waves");
+    assert_eq!(s.surface("dirt").map(|d| d.game_material), Some('D'));
+    let swim = s.entry("Player.Swim").expect("swim");
+    assert_eq!(swim.waves.len(), 4);
+    assert!(matches!(swim.level, mashup::map::SoundLevel::Attenuation(a) if a == 1.0));
+    assert!(s.clips.len() > 40, "{} clips", s.clips.len());
+    for c in &s.clips {
+        assert!(c.rate >= 8000 && !c.samples.is_empty());
+    }
+    let with_surface = map.meshes.iter().filter(|m| m.surface.is_some()).count();
+    assert!(
+        with_surface * 2 > map.meshes.len(),
+        "{with_surface} of {} meshes have a surface",
+        map.meshes.len()
     );
 }

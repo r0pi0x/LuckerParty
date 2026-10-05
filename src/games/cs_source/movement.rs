@@ -404,6 +404,7 @@ pub struct SourceMovementPlugin;
 impl Plugin for SourceMovementPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SourceMovementConfig>()
+            .add_message::<crate::map::PlaySound>()
             .register_movement::<SourceMovement>(ID)
             .add_systems(FixedUpdate, step.in_set(SimSet::Movement))
             .add_plugins(super::pushaway::PushAwayPlugin);

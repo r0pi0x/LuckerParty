@@ -48,6 +48,8 @@ pub struct Resolved {
     pub detail: Option<crate::map::MapDetail>,
     /// UnlitGeneric: drawn at the texture's own brightness, unlit.
     pub unlit: bool,
+    /// `$surfaceprop`: footstep and impact sounds, physics.
+    pub surfaceprop: Option<String>,
 }
 
 pub struct MaterialLoader<'a> {
@@ -102,6 +104,7 @@ impl<'a> MaterialLoader<'a> {
                     blend: None,
                     detail: None,
                     unlit: false,
+                    surfaceprop: None,
                 }
             }
         }
@@ -118,6 +121,7 @@ impl<'a> MaterialLoader<'a> {
             blend: None,
             detail: None,
             unlit: false,
+            surfaceprop: None,
         };
         let vmt_path = format!("materials/{}.vmt", normalize(name));
         let Some(text) = self.read_text(&vmt_path) else {
@@ -199,6 +203,7 @@ impl<'a> MaterialLoader<'a> {
             blend,
             detail,
             unlit: matches!(material, vmt_parser::material::Material::UnlitGeneric(_)),
+            surfaceprop: material.surface_prop().map(str::to_lowercase),
         }
     }
 

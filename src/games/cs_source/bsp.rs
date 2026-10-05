@@ -62,6 +62,7 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
         }
         mesh.alpha = r.alpha;
         mesh.double_sided = r.double_sided;
+        mesh.surface = r.surfaceprop;
     }
     data.sky_vis = Some(sky_vis(&bsp, &bytes));
     let lighting = super::ambient::MapLighting::read(&bytes);
@@ -73,6 +74,8 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
     super::ropes::add_ropes(&bsp, &mut materials, &lighting, &occluders, &mut data);
     super::sprites::add_sprites(&bsp, &mut materials, &mut data);
     super::dust::add_dust(&bsp, &mut materials, &mut data);
+    let surfaces = super::surfaceprops::SurfaceProps::load(&mut materials);
+    data.sounds = std::sync::Arc::new(super::sound::load(&mut materials, name, &surfaces));
     super::decals::add_decals(&bsp, &layout, &mut materials, &mut data);
     super::overlays::add_overlays(&bsp, &bytes, &layout, &mut materials, &mut data);
     super::sky::add_sky(&bsp, &mut materials, &mut data);

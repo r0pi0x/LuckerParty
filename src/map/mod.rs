@@ -21,6 +21,8 @@ mod dust;
 pub mod prop_material;
 pub mod rope_material;
 pub mod shadows;
+pub mod sound;
+pub use sound::{MapSoundClip, MapSoundEntry, MapSounds, MapSurface, PlaySound, SoundLevel};
 pub mod sprite_material;
 pub mod world_material;
 
@@ -152,6 +154,8 @@ pub struct MapMesh {
     /// Drawn at the texture's own brightness, ignoring lighting (Source's
     /// UnlitGeneric).
     pub unlit: bool,
+    /// Surface property name (footsteps, impacts), lower-case.
+    pub surface: Option<String>,
 }
 
 /// Source `$detail`: a texture tiled `scale` times per base texture repeat
@@ -355,6 +359,8 @@ pub struct MapData {
     /// The playable area (engine space, min and max), when the map has a 3D
     /// skybox outside it.
     pub playable: Option<(Vec3, Vec3)>,
+    /// Sound entries, clips and surfaces the map uses.
+    pub sounds: Arc<MapSounds>,
 }
 
 /// What the BSP leaf around a point can see of the sky.
@@ -638,7 +644,8 @@ pub struct MapPart;
 
 impl Plugin for MapPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(PendingMap(self.data.clone(), self.view))
+        app.add_plugins(sound::SoundPlugin)
+            .insert_resource(PendingMap(self.data.clone(), self.view))
             .insert_resource(ActiveMapLook(self.data.look.clone()))
             .insert_resource(GlobalAmbientLight {
                 brightness: 600.0,
@@ -792,6 +799,7 @@ fn spawn_map(
         if let Some(bounds) = data.playable {
             commands.insert_resource(PlayableArea(bounds));
         }
+        commands.insert_resource(sound::SoundBank(data.sounds.clone()));
         if let Some(cam) = &data.sky_camera
             && view == MapDebugView::Normal
         {

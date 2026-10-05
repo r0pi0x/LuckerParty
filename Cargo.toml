@@ -8,7 +8,7 @@ default-run = "mashup"
 
 [dependencies]
 avian3d = "0.7"
-bevy = "0.19.1"
+bevy = { version = "0.19.1", features = ["wav"] }
 bevy-inspector-egui = "0.37"
 crc32fast = "1.5.2"
 dirs = "7.0.0"

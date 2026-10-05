@@ -14,9 +14,11 @@ pub mod props;
 pub mod pushaway;
 pub mod ropes;
 pub mod sky;
+pub mod sound;
 pub mod sprites;
 pub mod surfaceprops;
 pub mod vpk;
+pub mod wav;
 
 pub const GAME: &str = "cs_source";
 

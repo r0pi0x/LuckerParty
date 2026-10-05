@@ -522,6 +522,13 @@ impl Material for ShadowMaterial {
     fn alpha_mode(&self) -> AlphaMode {
         AlphaMode::Multiply
     }
+
+    /// Sort after every other see-through surface: Source draws shadows
+    /// over the world with its decals and overlays already on it. (For
+    /// custom materials this only moves the sort key, not the depth.)
+    fn depth_bias(&self) -> f32 {
+        1.0e6
+    }
 }
 
 pub struct ShadowMaterialPlugin;

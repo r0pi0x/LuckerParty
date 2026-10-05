@@ -186,6 +186,7 @@ fn spawn_local_player(
         ))
         .with_child((
             FirstPersonCamera,
+            crate::map::sound::SoundListener,
             Camera3d::default(),
             Projection::Perspective(PerspectiveProjection {
                 fov: 74f32.to_radians(),
