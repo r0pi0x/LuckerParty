@@ -441,3 +441,29 @@ fn sky_has_six_faces() {
         assert!(*orient < 8);
     }
 }
+
+#[test]
+fn three_d_skybox_is_separated() {
+    let Some(map) = dust2() else { return };
+    let cam = map.sky_camera.as_ref().expect("dust2 has a sky_camera");
+    assert_eq!(cam.scale, 4.0);
+    assert!(cam.fog.is_some(), "dust2's skybox has fog");
+    let sky_props = map.props.iter().filter(|p| p.skybox).count();
+    let sky_meshes = map.meshes.iter().filter(|m| m.skybox).count();
+    assert!(
+        sky_props > 20 && sky_meshes > 5,
+        "{sky_props} skybox props, {sky_meshes} skybox meshes"
+    );
+    // The palm crowns live in the skybox; trunks in the world.
+    assert!(map.props.iter().any(|p| {
+        p.skybox
+            && map.models[p.model]
+                .meshes
+                .iter()
+                .any(|m| m.material.contains("palm_tree_branches"))
+    }));
+    // Every spawn is in the playable world, nowhere near the skybox.
+    for (feet, _) in &map.spawns {
+        assert!(feet.distance(cam.origin) > 50.0);
+    }
+}

@@ -26,8 +26,6 @@ Counts are from de_dust2's entity lump and static prop lump.
 - **Dust motes** (`func_dustmotes`, 2): the drifting particles in T house
   and inside long doors. Brush volumes that spawn slow-moving sprites;
   parameters (count, size, speed, color) come from the entity keys.
-- **3D skybox** (`sky_camera`): draw the skybox area scaled around the
-  camera (distant palms, cliffs) instead of at 1:1 off to the side; its fog.
 - **Physics props** (`prop_physics_multiplayer`, 75): barrels and similar,
   loaded as props first, physically simulated later.
 - **Brush entities**: `func_brush` (1); doors if any map needs them.

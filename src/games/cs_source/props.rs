@@ -133,10 +133,12 @@ pub fn add_static_props(
             translation + rotation * ((lo + hi) / 2.0)
         };
         let lighting = probe(bsp, lighting, occluders, origin);
+        let skybox = super::bsp::playable_bounds(bsp).is_some_and(|b| !b.contains(prop.origin));
         data.props.push(MapProp {
             model,
             translation,
             rotation,
+            skybox,
             lighting: Some(lighting),
             // Box solids collide as the model's bounds, like the game;
             // physics solids should use the .phy model, which isn't parsed

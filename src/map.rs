@@ -40,6 +40,8 @@ pub enum MapAlpha {
 pub struct MapMesh {
     /// The source game's material name, e.g. `de_dust/sitebwall01`.
     pub material: String,
+    /// Part of the 3D skybox (drawn by the sky camera, see `MapSkyCamera`).
+    pub skybox: bool,
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
     /// Texture coordinates in texture repeats (1.0 = one texture width).
@@ -116,6 +118,8 @@ pub struct MapProp {
     pub translation: Vec3,
     pub rotation: Quat,
     pub solid: PropSolid,
+    /// Part of the 3D skybox.
+    pub skybox: bool,
     /// Baked lighting; lit by the scene's lights when absent.
     pub lighting: Option<LightProbe>,
 }
@@ -140,6 +144,27 @@ pub struct MapData {
     /// How the source game presents the map, so it can be reproduced.
     pub look: MapLook,
     pub sky: Option<MapSky>,
+    pub sky_camera: Option<MapSkyCamera>,
+}
+
+/// A 3D skybox: a miniature scene (meshes and props marked `skybox`) drawn
+/// behind the world from `origin + eye / scale`, so it appears `scale` times
+/// larger and moves with the player.
+#[derive(Clone, Debug)]
+pub struct MapSkyCamera {
+    /// Engine space, meters.
+    pub origin: Vec3,
+    pub scale: f32,
+    pub fog: Option<MapFog>,
+}
+
+/// Linear distance fog, distances in meters as seen in the world.
+#[derive(Clone, Debug)]
+pub struct MapFog {
+    /// sRGB color.
+    pub color: [f32; 3],
+    pub start: f32,
+    pub end: f32,
 }
 
 /// A sky cubemap: per engine face (+X, -X, +Y, -Y, +Z, -Z), an index into
@@ -222,6 +247,16 @@ impl MapPlugin {
 #[derive(Resource)]
 struct PendingMap(Arc<MapData>, MapDebugView);
 
+/// Render layer for 3D skybox content.
+pub const SKYBOX_LAYER: usize = 1;
+
+/// Draws the 3D skybox; follows the main camera.
+#[derive(Component)]
+pub struct SkyboxCamera;
+
+#[derive(Resource, Clone)]
+struct SkyCameraInfo(MapSkyCamera);
+
 /// The map's sky cubemap, for cameras to show.
 #[derive(Resource, Clone)]
 pub struct MapSkybox(pub Handle<Image>);
@@ -245,7 +280,11 @@ impl Plugin for MapPlugin {
                 ..default()
             })
             .add_systems(Startup, spawn_map)
-            .add_systems(Update, attach_sky);
+            .add_systems(Update, attach_sky)
+            .add_systems(
+                PostUpdate,
+                follow_sky_camera.before(bevy::transform::TransformSystems::Propagate),
+            );
     }
 }
 
@@ -321,11 +360,17 @@ fn spawn_map(
         {
             commands.insert_resource(MapSkybox(images.add(sky_image(sky, &data.textures))));
         }
+        if let Some(cam) = &data.sky_camera
+            && view == MapDebugView::Normal
+        {
+            commands.insert_resource(SkyCameraInfo(cam.clone()));
+        }
         for m in &data.meshes {
             let lit = lightmap.as_ref().filter(|_| m.lightmap_uvs.len() == m.positions.len());
             let mut part = commands.spawn((
                 Name::new(m.material.clone()),
                 MapPart,
+                layer_of(m.skybox),
                 Mesh3d(meshes.add(build_mesh(m, lit.is_some()))),
                 MeshMaterial3d(materials.add(build_material(m, &textures, view, data.look.light_scale))),
                 Transform::default(),
@@ -410,6 +455,7 @@ fn spawn_map(
             // (texture x light, like the lightmapped world).
             (Some(probe), Some(meshes), Some(mats)) => {
                 for (m, material) in data.models[prop.model].meshes.iter().zip(mats) {
+                    let layer = layer_of(prop.skybox);
                     let colors: Vec<[f32; 4]> = m
                         .normals
                         .iter()
@@ -420,13 +466,23 @@ fn spawn_map(
                         .collect();
                     let mut mesh = build_mesh(m, false);
                     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
-                    commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(material.clone()), ChildOf(id)));
+                    commands.spawn((
+                        Mesh3d(meshes.add(mesh)),
+                        MeshMaterial3d(material.clone()),
+                        layer,
+                        ChildOf(id),
+                    ));
                 }
             }
             _ => {
                 if let Some(parts) = model_parts.get(prop.model) {
                     for (mesh, material) in parts {
-                        commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone()), ChildOf(id)));
+                        commands.spawn((
+                            Mesh3d(mesh.clone()),
+                            MeshMaterial3d(material.clone()),
+                            layer_of(prop.skybox),
+                            ChildOf(id),
+                        ));
                     }
                 }
             }
@@ -600,13 +656,19 @@ fn model_collider(model: &MapModel) -> Option<Collider> {
 }
 
 /// Give every 3D camera the map's sky.
+#[allow(clippy::type_complexity)]
 fn attach_sky(
     mut commands: Commands,
     sky: Option<Res<MapSkybox>>,
-    cameras: Query<Entity, (With<Camera3d>, Without<bevy::light::Skybox>)>,
+    sky_camera: Option<Res<SkyCameraInfo>>,
+    cameras: Query<(Entity, Has<SkyboxCamera>), (With<Camera3d>, Without<bevy::light::Skybox>)>,
 ) {
     let Some(sky) = sky else { return };
-    for cam in &cameras {
+    for (cam, is_sky_camera) in &cameras {
+        // With a 3D skybox, the 2D sky is drawn behind it by the sky camera.
+        if sky_camera.is_some() && !is_sky_camera {
+            continue;
+        }
         commands.entity(cam).insert(bevy::light::Skybox {
             image: Some(sky.0.clone()),
             // Show the texture at its own brightness (cancel camera exposure).
@@ -663,4 +725,91 @@ fn sky_image(sky: &MapSky, textures: &[MapTexture]) -> Image {
     });
     image.sampler = ImageSampler::linear();
     image
+}
+
+fn layer_of(skybox: bool) -> bevy::camera::visibility::RenderLayers {
+    bevy::camera::visibility::RenderLayers::layer(if skybox { SKYBOX_LAYER } else { 0 })
+}
+
+/// Keep a sky camera behind each frame's main camera: at
+/// `origin + eye / scale`, same rotation, projection and render target. The
+/// main camera then draws the world over it without clearing.
+#[allow(clippy::type_complexity)]
+fn follow_sky_camera(
+    mut commands: Commands,
+    info: Option<Res<SkyCameraInfo>>,
+    main: Query<
+        (
+            &GlobalTransform,
+            &Projection,
+            Option<&bevy::camera::RenderTarget>,
+            Option<&bevy::core_pipeline::tonemapping::Tonemapping>,
+            Entity,
+            &Camera,
+        ),
+        (With<Camera3d>, Without<SkyboxCamera>),
+    >,
+    mut sky: Query<(Entity, &mut Transform, &mut Projection), With<SkyboxCamera>>,
+) {
+    let Some(info) = info else { return };
+    let Some((main_tf, projection, target, tonemapping, main_entity, main_camera)) =
+        main.iter().find(|(.., c)| c.is_active)
+    else {
+        return;
+    };
+    let eye = main_tf.translation();
+    let translation = info.0.origin + eye / info.0.scale;
+    let rotation = main_tf.rotation();
+    if !matches!(main_camera.clear_color, ClearColorConfig::None) {
+        commands.entity(main_entity).insert(Camera {
+            clear_color: ClearColorConfig::None,
+            ..main_camera.clone()
+        });
+    }
+    match sky.single_mut() {
+        Ok((entity, mut tf, mut proj)) => {
+            tf.translation = translation;
+            tf.rotation = rotation;
+            if let (Projection::Perspective(p), Projection::Perspective(main_p)) = (&mut *proj, projection) {
+                p.fov = main_p.fov;
+                p.aspect_ratio = main_p.aspect_ratio;
+            }
+            let mut e = commands.entity(entity);
+            if let Some(t) = target {
+                e.insert(t.clone());
+            }
+            if let Some(t) = tonemapping {
+                e.insert(*t);
+            }
+        }
+        Err(_) => {
+            let mut e = commands.spawn((
+                Name::new("Sky camera"),
+                SkyboxCamera,
+                MapPart,
+                Camera3d::default(),
+                Camera {
+                    order: main_camera.order - 1,
+                    ..default()
+                },
+                Projection::Perspective(PerspectiveProjection {
+                    near: 0.01,
+                    ..default()
+                }),
+                Transform::from_translation(translation).with_rotation(rotation),
+                bevy::camera::visibility::RenderLayers::layer(SKYBOX_LAYER),
+            ));
+            if let Some(fog) = &info.0.fog {
+                let [r, g, b] = fog.color;
+                e.insert(bevy::pbr::DistanceFog {
+                    color: Color::srgb(r, g, b),
+                    falloff: bevy::pbr::FogFalloff::Linear {
+                        start: fog.start / info.0.scale,
+                        end: fog.end / info.0.scale,
+                    },
+                    ..default()
+                });
+            }
+        }
+    }
 }

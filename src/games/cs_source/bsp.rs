@@ -152,10 +152,21 @@ pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> (MapData, LightmapLayo
         ..default()
     };
 
+    let bounds = playable_bounds(bsp);
     // The world is model 0; brush entities (doors, breakables) come later.
     let world = bsp.models().next().expect("BSP has no world model");
     for face in world.faces() {
         face_slots.push(None);
+        let centre = {
+            let pts: Vec<vbsp::Vector> = face.vertices().map(|v| v.position).collect();
+            let n = pts.len().max(1) as f32;
+            vbsp::Vector {
+                x: pts.iter().map(|p| p.x).sum::<f32>() / n,
+                y: pts.iter().map(|p| p.y).sum::<f32>() / n,
+                z: pts.iter().map(|p| p.z).sum::<f32>() / n,
+            }
+        };
+        let skybox = bounds.as_ref().is_some_and(|b| !b.contains(centre));
         let tex = face.texture();
         let flags = tex.flags;
         if flags.intersects(NOT_DRAWN) && flags.intersects(NOT_SOLID) {
@@ -193,12 +204,19 @@ pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> (MapData, LightmapLayo
         let slot = lightmap::face_samples(lighting, &face).map(|s| atlas.add(s));
         *face_slots.last_mut().unwrap() = slot;
         let material = tex.name().to_lowercase();
-        let mesh = by_material.entry(material.clone()).or_insert_with(|| MapMesh {
+        // Meshes are per material and per part (world or 3D skybox).
+        let key = if skybox {
+            format!("{material}\u{1}skybox")
+        } else {
+            material.clone()
+        };
+        let mesh = by_material.entry(key.clone()).or_insert_with(|| MapMesh {
             material: material.clone(),
+            skybox,
             color: tex.debug_color(),
             ..default()
         });
-        let lm = pending_lm.entry(material).or_default();
+        let lm = pending_lm.entry(key).or_default();
         let displaced = face.displacement().is_some();
         for t in &tris {
             let p: [Vec3; 3] = t.map(|(v, _)| to_engine(v));
@@ -248,7 +266,71 @@ pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> (MapData, LightmapLayo
         }
     }
     data.lightmap = Some(lightmap);
+    data.sky_camera = sky_camera(bsp);
     (data, layout)
+}
+
+/// The playable world's bounds (Source units), from the world's
+/// `world_mins`/`world_maxs`. The map compiler computes these without the
+/// 3D skybox, so content outside them (with a margin) is skybox content.
+pub struct Bounds {
+    lo: Vec3,
+    hi: Vec3,
+}
+
+impl Bounds {
+    const MARGIN: f32 = 64.0;
+
+    pub fn contains(&self, p: vbsp::Vector) -> bool {
+        let p = Vec3::new(p.x, p.y, p.z);
+        p.cmpge(self.lo - Self::MARGIN).all() && p.cmple(self.hi + Self::MARGIN).all()
+    }
+}
+
+pub fn playable_bounds(bsp: &Bsp) -> Option<Bounds> {
+    let world = bsp
+        .entities
+        .iter()
+        .find(|e| e.prop("classname") == Some("worldspawn"))?;
+    let v = |key: &'static str| world.prop(key).and_then(parse_vector).map(|v| Vec3::new(v.x, v.y, v.z));
+    // Only meaningful when there is a 3D skybox.
+    bsp.entities
+        .iter()
+        .find(|e| e.prop("classname") == Some("sky_camera"))?;
+    Some(Bounds {
+        lo: v("world_mins")?,
+        hi: v("world_maxs")?,
+    })
+}
+
+fn sky_camera(bsp: &Bsp) -> Option<crate::map::MapSkyCamera> {
+    let e = bsp
+        .entities
+        .iter()
+        .find(|e| e.prop("classname") == Some("sky_camera"))?;
+    let origin = to_engine(e.prop("origin").and_then(parse_vector)?);
+    let scale: f32 = e
+        .prop("scale")
+        .and_then(|s| s.parse().ok())
+        .filter(|s: &f32| *s > 0.0)
+        .unwrap_or(16.0);
+    let fog = (e.prop("fogenable") == Some("1"))
+        .then(|| {
+            let c: Vec<f32> = e
+                .prop("fogcolor")?
+                .split_whitespace()
+                .filter_map(|v| v.parse().ok())
+                .collect();
+            let start: f32 = e.prop("fogstart")?.parse().ok()?;
+            let end: f32 = e.prop("fogend")?.parse().ok()?;
+            Some(crate::map::MapFog {
+                color: [c.first()? / 255.0, c.get(1)? / 255.0, c.get(2)? / 255.0],
+                start: start * METERS_PER_UNIT,
+                end: end * METERS_PER_UNIT,
+            })
+        })
+        .flatten();
+    Some(crate::map::MapSkyCamera { origin, scale, fog })
 }
 
 /// How CS:S presents maps at its LDR settings (mat_hdr_level 0,
