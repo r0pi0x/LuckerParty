@@ -25,9 +25,9 @@ fn nuke() -> Option<MapData> {
 }
 
 /// For every ladder brush: stand in front of one of its faces, hold
-/// forward, and climb. Two of de_nuke's ladders have a ladder model in
-/// front whose collision (`.phy`) is only its thin rails: props must
-/// collide by their `.phy`, or the visible rungs block the ladder.
+/// forward, and climb. de_nuke's ladder models collide only by their thin
+/// rails (`.phy`): props must collide by their `.phy`, or the visible rungs
+/// block the ladders.
 #[test]
 fn ladders_can_be_climbed() {
     const M: f32 = 0.0254;
@@ -60,10 +60,11 @@ fn ladders_can_be_climbed() {
         });
         climbed += ok as usize;
     }
-    // The third (Source (230..232, -816..-784), lower level) is exactly
-    // player-width, between walls whose faces stand 0.01 units in front of
-    // its face, so a box touching it touches them first. Whether CS:S lets
-    // that one be climbed from straight in front is to be checked against
-    // the game (movecmp); the other two must climb.
-    assert!(climbed >= ladders.len() - 1, "{climbed} of {} ladders climbed", ladders.len());
+    // Checked against CS:S with movecmp: the outside ladder climbs (tick
+    // for tick as in the game). The ladder at (856..864, -1448..-1422) has
+    // a player-clip face coinciding with its face, which wins the trace in
+    // CS:S too, so it doesn't attach from straight in front. The third
+    // (230..232, -816..-784) is player-width between walls 0.01 units proud
+    // of its face; not attached from in front either.
+    assert!(climbed >= 1, "{climbed} of {} ladders climbed", ladders.len());
 }

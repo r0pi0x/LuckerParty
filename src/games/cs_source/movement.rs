@@ -72,6 +72,20 @@ pub struct SourceMovementConfig {
     /// (the angle test's dot below `ladder_angle`). Dampen 1 turns it off.
     pub ladder_dampen: f32,
     pub ladder_angle: f32,
+    /// The player's own max speed property, used by swimming's upward
+    /// push (holding jump, looking up). CS:S: 260, the base player speed,
+    /// whatever the weapon (measured with movecmp fuzz).
+    pub client_maxspeed: f32,
+    /// CS:S: ladder speed gets the same duck scale as move input (see
+    /// `duck_slows_everywhere`; measured; the shared code leaves climbing
+    /// speed alone).
+    pub duck_slows_ladder: bool,
+    /// CS:S: the ducked input scale applies while duck is held, or when the
+    /// tick started ducked or mid-duck: from the tick duck is pressed until
+    /// the tick after it's released, in the air and water too (measured
+    /// with movecmp fuzz). The shared code scales only when already ducked
+    /// on the ground.
+    pub duck_slows_everywhere: bool,
 }
 
 /// Console variables players and server configs know, mapped onto the
@@ -183,6 +197,9 @@ impl SourceMovementConfig {
             // The dampening is compiled only for CS:S; it's off here.
             ladder_dampen: 1.0,
             ladder_angle: -0.707,
+            client_maxspeed: 250.0,
+            duck_slows_ladder: false,
+            duck_slows_everywhere: false,
         }
     }
 }
@@ -221,6 +238,9 @@ impl Default for SourceMovementConfig {
             enable_bunnyhopping: false,
             bunnyhop_cap: 286.0,
             ladder_dampen: 0.2,
+            client_maxspeed: 260.0,
+            duck_slows_ladder: true,
+            duck_slows_everywhere: true,
             ..Self::shared_code()
         }
     }
@@ -489,10 +509,7 @@ impl Tracer<'_, '_, '_> {
                 }
                 continue;
             }
-            // A ladder wins a tie with a coincident face (maps wrap ladders
-            // in player clip), so the ladder probe still finds it.
-            let tie = b.ladder && !out.ladder && (enter.max(0.0) - out.fraction).abs() < 1e-6;
-            if enter < leave && enter > -1.0 && (enter < out.fraction || tie) {
+            if enter < leave && enter > -1.0 && enter < out.fraction {
                 out.fraction = enter.max(0.0);
                 out.normal = clip;
                 out.ladder = b.ladder;
@@ -648,6 +665,8 @@ struct Mover<'a, 'b, 'w, 's> {
     feet: Vec3,
     v: Vec3,
     dt: f32,
+    /// Water contents per test point (feet, waist, eye) this tick.
+    water_cache: [Option<(Vec3, Option<bool>)>; 3],
 }
 
 impl Mover<'_, '_, '_, '_> {
@@ -903,16 +922,29 @@ impl Mover<'_, '_, '_, '_> {
         } else {
             self.trace.heights.0
         };
-        let at = |z: f32| self.feet + Vec3::Z * z;
+        let feet = self.feet;
+        let points = [WATER_FEET_PROBE, height / 2.0, self.me.eye].map(|z| feet + Vec3::Z * z);
+        // Contents per test point are cached for the tick: a point within
+        // 1 unit of the last one tested for that slot reuses its answer.
+        let mut test = |slot: usize| -> Option<bool> {
+            if let Some((p, answer)) = self.water_cache[slot]
+                && p.distance(points[slot]) < 1.0
+            {
+                return answer;
+            }
+            let answer = self.trace.point_water(points[slot]);
+            self.water_cache[slot] = Some((points[slot], answer));
+            answer
+        };
         self.me.water_level = 0;
-        let Some(slime) = self.trace.point_water(at(WATER_FEET_PROBE)) else {
+        let Some(slime) = test(0) else {
             return;
         };
         self.me.in_slime = slime;
         self.me.water_level = 1;
-        if self.trace.point_water(at(height / 2.0)).is_some() {
+        if test(1).is_some() {
             self.me.water_level = 2;
-            if self.trace.point_water(at(self.me.eye)).is_some() {
+            if test(2).is_some() {
                 self.me.water_level = 3;
             }
         }
@@ -932,7 +964,7 @@ impl Mover<'_, '_, '_, '_> {
     /// Ladder detection (after ducking, before the move): probe 2 units
     /// toward the ladder (along the last normal, or the 3D input direction)
     /// and, on a ladder, set this tick's velocity.
-    fn ladder(&mut self, intent: &Intent, f: f32, s: f32) {
+    fn ladder(&mut self, intent: &Intent, f: f32, s: f32, duck_scale: f32) {
         let (forward, right) = Self::view(intent);
         let dir = match self.me.ladder {
             Some(n) => -n,
@@ -984,6 +1016,9 @@ impl Mover<'_, '_, '_, '_> {
             lateral = up * t + perp * (self.cfg.ladder_dampen * p);
         }
         self.v = lateral - up * a;
+        if self.cfg.duck_slows_ladder {
+            self.v *= duck_scale;
+        }
         let below = self.feet - Vec3::Z * 1.0;
         let on_floor = self.me.on_ground || self.trace.point_solid(below);
         if on_floor && a > 0.0 {
@@ -1034,12 +1069,13 @@ impl Mover<'_, '_, '_, '_> {
     fn swim(&mut self, intent: &Intent, f: f32, s: f32, max_speed: f32) {
         let (forward, right) = Self::view(intent);
         let mut wish = forward * f + right * s;
+        let lift = self.cfg.client_maxspeed;
         if intent.jump {
-            wish.z += max_speed;
+            wish.z += lift;
         } else if f == 0.0 && s == 0.0 {
             wish.z -= SWIM_SINK;
         } else {
-            wish.z += (2.0 * f * forward.z).clamp(0.0, max_speed);
+            wish.z += (2.0 * f * forward.z).clamp(0.0, lift);
         }
         let wish_speed = wish.length().min(max_speed) * SWIM_WISH_SCALE;
         let dir = wish.normalize_or_zero();
@@ -1137,7 +1173,7 @@ impl Mover<'_, '_, '_, '_> {
     /// Ducking transitions; returns the move-input scale, decided from the
     /// state before this tick's changes.
     fn duck(&mut self, held: bool) -> f32 {
-        let scale = if self.me.ducked && self.me.on_ground {
+        let scale = if self.me.ducked && (self.me.on_ground || self.cfg.duck_slows_everywhere) {
             self.cfg.duck_speed
         } else {
             1.0
@@ -1277,11 +1313,21 @@ impl Mover<'_, '_, '_, '_> {
         if !self.me.on_ground {
             self.me.fall_speed = -self.v.z;
         }
-        let scale = self.duck(intent.crouch);
+        let was_ducking = self.me.ducked || self.me.ducking;
+        let mut scale = self.duck(intent.crouch);
+        // CS:S (measured): input is slowed while duck is held, or when the
+        // tick started ducked or mid-duck (on the ground or off it).
+        if self.cfg.duck_slows_everywhere {
+            scale = if intent.crouch || was_ducking {
+                self.cfg.duck_speed
+            } else {
+                1.0
+            };
+        }
         f *= scale;
         s *= scale;
 
-        self.ladder(intent, f, s);
+        self.ladder(intent, f, s, scale);
         if self.me.ladder.is_some() {
             // Ladder move: no gravity, friction or ground snapping.
             self.water_check();
@@ -1409,6 +1455,7 @@ fn step(
             v: to_source(vel.0),
             me: &mut me,
             dt,
+            water_cache: [None; 3],
         };
         mover.tick(intent);
         let (feet, v) = (mover.feet, mover.v);

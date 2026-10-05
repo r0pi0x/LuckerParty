@@ -43,4 +43,6 @@ bot_quota_mode normal
 
 Notes:
 - CS:S ignores `-tickrate`: the server always runs 0.015 s ticks.
-- The plugin switches the bot to its knife (max speed 250) before a run.
+- The plugin switches the bot to its knife (max speed 250) before a run,
+  and on placement resets its move type, remembered ladder and jump
+  stamina. Its log adds the water level and ladder state per tick.

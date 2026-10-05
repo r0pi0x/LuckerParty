@@ -34,8 +34,14 @@ fn crate_pieces_and_points() {
     );
     let all = p.pieces.iter().flatten().flatten();
     let (lo, hi) = all.fold((Vec3::MAX, Vec3::MIN), |(a, b), v| (a.min(*v), b.max(*v)));
-    assert!((lo - Vec3::new(-8.832, -12.875, -7.463)).abs().max_element() < 2e-3, "{lo}");
-    assert!((hi - Vec3::new(8.795, 12.819, 7.392)).abs().max_element() < 2e-3, "{hi}");
+    assert!(
+        (lo - Vec3::new(-8.832, -12.875, -7.463)).abs().max_element() < 2e-3,
+        "{lo}"
+    );
+    assert!(
+        (hi - Vec3::new(8.795, 12.819, 7.392)).abs().max_element() < 2e-3,
+        "{hi}"
+    );
 }
 
 #[test]
@@ -63,7 +69,9 @@ fn crate_text_section() {
 
 #[test]
 fn legacy_solid_without_vphy_tag() {
-    let Some(bytes) = read("models/props_combine/pod_extractor.phy") else { return };
+    let Some(bytes) = read("models/props_combine/pod_extractor.phy") else {
+        return;
+    };
     let p = phy::parse(&bytes).expect("legacy layout parses");
     assert!(!p.pieces.is_empty());
 }

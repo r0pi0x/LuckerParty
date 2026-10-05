@@ -152,6 +152,7 @@ The reference CS:S (see refcmp) can also be measured directly over RCON:
 ```
 cargo run --features dev --bin movecmp            # all scenarios
 cargo run --features dev --bin movecmp -- --only bhop --keep-running
+cargo run --features dev --bin movecmp -- fuzz --runs 16 --ticks 150   # ladders and water
 ```
 
 - Each scenario (in `src/bin/movecmp.rs`) is a start position and per-tick
@@ -166,11 +167,26 @@ cargo run --features dev --bin movecmp -- --only bhop --keep-running
 - The probe can also be driven directly over RCON (127.0.0.1:27030,
   `mashup_run <in> <out>`, `mashup_weapon <weapon>`); its log has the
   player's box top, eye height and the buttons the movement ran with.
-  Rest ~200 ticks between runs (jump stamina carries over), and remember
-  CS:S bots auto-duck when they jump.
+  The plugin resets the bot's move type, remembered ladder and jump
+  stamina when it places it, and logs its water level and ladder state.
+  CS:S bots duck-jump on their own (inside the game, not through their
+  buttons): movecmp holds duck on our side while the bot is ducked in the
+  air, so jumps differ only by the bot's instant 8.5-unit duck on the jump
+  tick.
+- `movecmp fuzz`: seeded random inputs (keys, jump, duck, turning and
+  pitch, in bursts) from ladder spots on de_nuke and water spots on
+  de_aztec (found and checked in our sim), plus a straight climb per
+  ladder. Each scenario names its map; the probe server changes level as
+  needed. Runs fail past `--tolerance` units or when water level or ladder
+  state disagree; the exit code says whether all passed. Same `--seed`,
+  same inputs.
 - It has found: CS:S's fixed 0.015 s tick, the alternating diagonals of
   displacement triangles (walking and landing on dust2 terrain now match
   to 0.002 units), the 0.34 ducked speed and the 8.5-unit air-duck lift.
+  Fuzzing water and ladders found: the 260 swim lift, CS:S's duck scale
+  rule (duck held, or ducked/mid-duck at the tick's start; on ladders
+  too), the per-tick contents cache at the water surface, and that a
+  coincident player-clip face wins over a ladder brush.
 
 ## Planned
 

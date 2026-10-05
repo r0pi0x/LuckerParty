@@ -344,3 +344,22 @@ fn props_near() {
         }
     }
 }
+
+/// Water volumes (Source units) of a map (MAP).
+#[test]
+#[ignore]
+fn water_volumes() {
+    let name = std::env::var("MAP").unwrap_or("de_nuke".into());
+    let map = mashup::games::load_map(&format!("cs_source:{name}")).unwrap();
+    for w in &map.water {
+        let a = Vec3::new(w.brush.min.x, -w.brush.min.z, w.brush.min.y) / 0.0254;
+        let b = Vec3::new(w.brush.max.x, -w.brush.max.z, w.brush.max.y) / 0.0254;
+        println!(
+            "water {:.1}..{:.1} slime {} planes {}",
+            a.min(b),
+            a.max(b),
+            w.slime,
+            w.brush.planes.len()
+        );
+    }
+}

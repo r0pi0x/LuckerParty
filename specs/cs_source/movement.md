@@ -664,6 +664,17 @@ Weapon move speed (MaxPlayerSpeed, units/s):
 
 Knife script: MaxPlayerSpeed 250, Damage 50, WeaponArmorRatio 1.7, Range 4096 (the bullet-weapon field; the knife's swing reach is in code), Penetration 1.
 
+### Measured with movecmp fuzz (2026-10-05, ladders on de_nuke, water on de_nuke)
+
+- **Swimming lift**: holding jump in water (and the look-up exaggeration's clamp) uses 260, the base player speed, not the weapon speed. The wish speed is still capped at the weapon's 250. Checked tick-exact (e.g. (12.2885, 0.0936, 101.3716) after a jump-held tick).
+- **Duck input scale** (0.34): applies while duck is held, or when the tick started ducked or mid-duck: from the tick duck is pressed until the tick after it's released, on the ground, in the air and in water. Measured as a wish speed of exactly 85 on the press tick while still unducked.
+- **Ladders**: ladder velocity gets the same duck scale (e.g. 46.2 vs 135.8 sideways).
+- **Contents cache**: confirmed at the water surface: the eye point tested dry at the start of a tick keeps answering dry after sinking 0.6 units that tick (level 2 for one more tick).
+- **Coincident faces**: where a player-clip face coincides with a ladder brush's face, the trace reports the clip, so the ladder isn't found from that side (de_nuke, ladder at (856..864, -1448..-1422)).
+- **Remembered ladder** (to check further): after using a ladder, CS:S grabbed the same ladder later with no input while falling past it; on a fresh map it doesn't. Not modelled.
+- **Bots** duck on their own when they jump (inside the game, not through their buttons). Humans don't.
+- Still open from the fuzz: a one-tick-earlier landing on a ledge edge under water, and a few ladder runs (de_nuke) where on-ladder velocity or attachment differs after many ticks.
+
 ## Open questions
 
 1. **Scoped speeds:** weapon speeds are now read from the scripts. Still to check: scoped speeds (AWP/scout/autos are slower zoomed; that is in CS:S code, not in scripts).

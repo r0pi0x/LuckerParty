@@ -971,7 +971,12 @@ fn spawn_map(
     let model_hulls: Vec<Option<Vec<(Vec3, f32)>>> = data
         .models
         .iter()
-        .map(|m| m.collision.is_none().then(|| convex_planes(m, CONVEX_SURFACE_SHARE)).flatten())
+        .map(|m| {
+            m.collision
+                .is_none()
+                .then(|| convex_planes(m, CONVEX_SURFACE_SHARE))
+                .flatten()
+        })
         .collect();
     info!(
         "props: {} of {} models collide by their collision model, {} more as convex hulls",

@@ -9,8 +9,9 @@
 // Input file: one optional "start x y z pitch yaw vx vy vz" line, then one
 // line per tick: "buttons forwardmove sidemove pitch yaw".
 // Output file: one line per tick, "tick x y z vx vy vz onground ducked
-// hull_top eye buttons" (the collision box's top, the eye height above the
-// origin, and the buttons the movement actually ran with);
+// hull_top eye buttons water ladder" (the collision box's top, the eye
+// height above the origin, the buttons the movement actually ran with, the
+// water level 0-3 and 1 when on a ladder);
 // tick 0 is the state after the bot was placed at the start (one idle
 // tick), tick n the state after input line n.
 
@@ -142,6 +143,17 @@ public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3
     }
     if (g_cursor < 0) {
         if (g_hasStart) {
+            // Off any ladder from a previous run, and forget it: CS:S keeps
+            // the last ladder's normal and probes along it without input.
+            SetEntityMoveType(client, MOVETYPE_WALK);
+            if (HasEntProp(client, Prop_Data, "m_vecLadderNormal")) {
+                float zero[3];
+                SetEntPropVector(client, Prop_Data, "m_vecLadderNormal", zero);
+            }
+            // No jump stamina left over from the previous run.
+            if (HasEntProp(client, Prop_Send, "m_flStamina")) {
+                SetEntPropFloat(client, Prop_Send, "m_flStamina", 0.0);
+            }
             TeleportEntity(client, g_startPos, g_startAng, g_startVel);
             angles[0] = g_startAng[0];
             angles[1] = g_startAng[1];
@@ -186,7 +198,9 @@ public void OnPlayerRunCmdPost(int client, int buttons, int impulse, const float
     GetEntPropVector(client, Prop_Send, "m_vecMaxs", maxs);
     GetEntPropVector(client, Prop_Data, "m_vecViewOffset", view);
     int flags = GetEntityFlags(client);
+    int water = GetEntProp(client, Prop_Data, "m_nWaterLevel");
+    int ladder = (GetEntityMoveType(client) == MOVETYPE_LADDER) ? 1 : 0;
     g_cursor++;
-    g_out.WriteLine("%d %.4f %.4f %.4f %.4f %.4f %.4f %d %d %.4f %.4f %d", g_cursor, o[0], o[1], o[2], v[0], v[1], v[2],
-        (flags & FL_ONGROUND) ? 1 : 0, (flags & FL_DUCKING) ? 1 : 0, maxs[2], view[2], buttons);
+    g_out.WriteLine("%d %.4f %.4f %.4f %.4f %.4f %.4f %d %d %.4f %.4f %d %d %d", g_cursor, o[0], o[1], o[2], v[0], v[1],
+        v[2], (flags & FL_ONGROUND) ? 1 : 0, (flags & FL_DUCKING) ? 1 : 0, maxs[2], view[2], buttons, water, ladder);
 }
