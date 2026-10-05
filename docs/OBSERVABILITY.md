@@ -109,7 +109,16 @@ cargo run --features dev --bin refcmp -- capture-ours --only a_sign
 - `refcmp fit` also captures mashup's `--debug-view albedo` and
   `--debug-view lighting` renders and fits, per pixel, how the real game
   combines texture and light. That is where `cs_source::bsp::source_look`
-  (exposure 1.256, no tonemapping, bilinear mip snapping) comes from.
+  (exposure 1.22, no tonemapping, bilinear mip snapping) comes from.
+- `refcmp` builds nothing: run `cargo build --features dev` after code
+  changes, or it captures the old binary.
+- The report's `detail` column (correlation of high-pass detail) is noisy
+  on bump-mapped walls: it preferred a green-flipped normal map that crops
+  show is wrong. Check close-up crops (`magick ... -crop`) side by side
+  before trusting it.
+- Measuring thin features (cables): sample columns of the reference and
+  ours for dark pixels (`magick <img> -crop 1x260+X+0 txt:-`) and compare
+  their rows; that's how rope gravity was found.
 - The reference CS:S install runs at mat_hdr_level 0, mat_trilinear 0,
   mat_forceaniso 1, no AA (queried over RCON). HDR (level 2, the game's
   default) is not matched yet.

@@ -19,6 +19,8 @@ struct WorldParams {
     debug_view: f32,
     // Sign applied to the normal map's red channel.
     normal_x_sign: f32,
+    // Multiplier on sampled lightmap values.
+    lightmap_scale: f32,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> params: WorldParams;
@@ -32,9 +34,12 @@ struct WorldParams {
 @group(#{MATERIAL_BIND_GROUP}) @binding(8) var lightmap_b1: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(9) var lightmap_b2: texture_2d<f32>;
 
-const BASIS_0 = vec3<f32>(-0.40824829, 0.70710678, 0.57735027);
-const BASIS_1 = vec3<f32>(-0.40824829, -0.70710678, 0.57735027);
-const BASIS_2 = vec3<f32>(0.81649658, 0.0, 0.57735027);
+// Basis directions of the three directional lightmap pages, in order
+// (specs/cs_source/shaders.md). Tangent space: x along texture u, y along
+// v (image-down), z out of the surface.
+const BASIS_0 = vec3<f32>(0.81649658, 0.0, 0.57735027);
+const BASIS_1 = vec3<f32>(-0.40824829, 0.70710678, 0.57735027);
+const BASIS_2 = vec3<f32>(-0.40824829, -0.70710678, 0.57735027);
 
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
@@ -47,7 +52,6 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         var n = textureSample(normal_texture, normal_sampler, in.uv).xyz * 2.0 - 1.0;
         n.x = n.x * params.normal_x_sign;
         n.y = n.y * params.normal_g_sign;
-        n = normalize(n);
         var w = vec3<f32>(
             saturate(dot(n, BASIS_0)),
             saturate(dot(n, BASIS_1)),
@@ -59,6 +63,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
             + w.y * textureSample(lightmap_b1, lightmap_sampler, in.uv_b).rgb
             + w.z * textureSample(lightmap_b2, lightmap_sampler, in.uv_b).rgb;
     }
+    light = light * params.lightmap_scale;
     if params.debug_view == 1.0 {
         albedo = vec4<f32>(1.0, 1.0, 1.0, albedo.a);
         light = light * 0.25;

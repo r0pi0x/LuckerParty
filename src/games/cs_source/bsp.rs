@@ -338,16 +338,18 @@ fn sky_camera(bsp: &Bsp) -> Option<crate::map::MapSkyCamera> {
 }
 
 /// How CS:S presents maps at its LDR settings (mat_hdr_level 0,
-/// mat_trilinear 0, mat_forceaniso 1), measured with `refcmp fit` on
-/// de_dust2: the real game's pixels match texture x baked light in linear
-/// space at an exposure of 1.256 (mean error 0.07 over 3M pixels), with no
-/// tonemapping.
+/// mat_trilinear 0, mat_forceaniso 1). Lightmaps use the engine's LDR
+/// encoding (specs/cs_source/shaders.md), no tonemapping. The spec expects
+/// no further scale in LDR, but `refcmp fit` on de_dust2 measures the real
+/// game 1.22x brighter than texture x decoded light (mean error 0.071 over
+/// 5.4M pixels); unexplained, see the spec's open questions.
 pub fn source_look() -> crate::map::MapLook {
     crate::map::MapLook {
-        light_scale: 1.256,
+        light_scale: 1.22,
         trilinear: false,
         anisotropy: 1,
         tonemapping: false,
+        source_ldr_lightmaps: true,
     }
 }
 

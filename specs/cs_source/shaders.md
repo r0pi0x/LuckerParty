@@ -485,6 +485,11 @@ The defaults for mat_specular, mat_bumpmap and mat_reducefillrate live in the en
 
 ## Open questions
 
+- **Measured in CS:S (refcmp, de_dust2, 2026-10-05, Linux build, mat_hdr_level 0):**
+  - The game is 1.22× brighter, in linear light, than albedo × lighting with the LDR lightmap encoding and the 2^2.2 scale above (mean absolute error 0.071 over 5.4M pixels in 9 views).
+  - The scale constant or the tone-map scale may differ from the derived values, or the Linux renderer's sRGB handling may differ.
+  - Bump pages with the basis order and the unflipped normal decode above match the game visually on dust2's A-site walls; a green flip visibly does not.
+
 1. **The exact lightmap scale constant.** The engine/shader-API value of the lightmap scale is not in the SDK. 2^2.2 = 4.5948 is derived from the published encoding (0.5 · L^(1/2.2)) and confirmed by the in-shader vertex path (2v)^2.2.
    - To check: in CS:S with mat_hdr_level 0, make a test map with a white base texture (255) and a luxel of exactly linear 1.0 (texel 128). The surface should read 255 (or 254 because of the sRGB curve); a scale of 4 would read about 243.
    - Also confirm that the engine encodes LDR lightmaps with the curve above (the compiler says so) and does not use the hardware sRGB curve.

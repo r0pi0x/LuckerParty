@@ -15,6 +15,8 @@ pub struct WorldParams {
     pub alpha_cutoff: f32,
     pub debug_view: f32,
     pub normal_x_sign: f32,
+    /// Multiplier on sampled lightmap values (decodes Source's LDR encoding).
+    pub lightmap_scale: f32,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]

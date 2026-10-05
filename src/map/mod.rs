@@ -22,12 +22,21 @@ use rope_material::{RopeMaterial, RopeParams};
 use world_material::{WorldMaterial, WorldParams};
 
 /// Signs for normal maps' red and green channels in the world material.
-/// Chosen with refcmp against CS:S on de_dust2: x -1, g -1 gave the lowest
-/// pixel difference of the four combinations (0.531 vs 0.538 without bump
-/// mapping) and grooves lit on top as in the game. The margin between
-/// combinations is small; revisit with more views.
-const NORMAL_G_SIGN: f32 = -1.0;
-const NORMAL_X_SIGN: f32 = -1.0;
+/// Source's normal maps are DirectX-style (x along texture u, y along v,
+/// image-down) and used unflipped (specs/cs_source/shaders.md). Overridable
+/// with MASHUP_NORMAL_X_SIGN / MASHUP_NORMAL_G_SIGN for experiments.
+const NORMAL_G_SIGN: f32 = 1.0;
+const NORMAL_X_SIGN: f32 = 1.0;
+
+/// Source LDR lightmaps (specs/cs_source/shaders.md): each linear value L is
+/// rounded to 1/1024, clamped to 4095/1024, stored as the 8-bit sRGB texel
+/// 0.5 L^(1/2.2), and multiplied back by 2^2.2 after the sampler's decode.
+const SOURCE_LIGHTMAP_SCALE: f32 = 4.594_793;
+
+pub fn source_ldr_texel(l: f32) -> u8 {
+    let i = (l * 1024.0).round().clamp(0.0, 4095.0);
+    (255.0 * 0.5 * (i / 1024.0).powf(1.0 / 2.2)).round() as u8
+}
 
 /// An RGBA8 texture in sRGB, top row first.
 #[derive(Clone, Debug)]
@@ -233,6 +242,9 @@ pub struct MapLook {
     pub anisotropy: u16,
     /// Apply a filmic tonemapper (off: plain clamped output, like LDR games).
     pub tonemapping: bool,
+    /// Store lightmaps the way Source's LDR path does (8-bit, gamma, 2x
+    /// overbright), with its banding, clamp and gamma-space filtering.
+    pub source_ldr_lightmaps: bool,
 }
 
 impl Default for MapLook {
@@ -242,6 +254,7 @@ impl Default for MapLook {
             trilinear: true,
             anisotropy: 8,
             tonemapping: true,
+            source_ldr_lightmaps: false,
         }
     }
 }
@@ -415,10 +428,23 @@ fn spawn_map(
             .lightmap
             .as_ref()
             .map(|l| images.add(lightmap_image(&l.rgb, l.width, l.height)));
+        // The world material's copies, in the game's own encoding if asked.
+        let source_ldr = data.look.source_ldr_lightmaps;
+        let world_layer = |rgb: &[[f32; 3]], w: u32, h: u32| {
+            if source_ldr {
+                source_lightmap_image(rgb, w, h)
+            } else {
+                lightmap_image(rgb, w, h)
+            }
+        };
+        let world_lightmap = data
+            .lightmap
+            .as_ref()
+            .map(|l| images.add(world_layer(&l.rgb, l.width, l.height)));
         let bumped_lightmaps: Option<[Handle<Image>; 3]> = data.lightmap.as_ref().and_then(|l| {
             let b = l.bumped.as_ref()?;
             Some(std::array::from_fn(|i| {
-                images.add(lightmap_image(&b[i], l.width, l.height))
+                images.add(world_layer(&b[i], l.width, l.height))
             }))
         });
         if let Some(sky) = &data.sky
@@ -434,9 +460,12 @@ fn spawn_map(
         for m in &data.meshes {
             let lit = lightmap.as_ref().filter(|_| m.lightmap_uvs.len() == m.positions.len());
             // Lightmapped world surfaces: Source-style texture x baked light.
-            if let (Some(lm), Some(world_materials), false) =
-                (lit, world_materials.as_mut(), m.material.starts_with("decal:"))
-            {
+            if let (Some(_), Some(lm), Some(world_materials), false) = (
+                lit,
+                world_lightmap.as_ref(),
+                world_materials.as_mut(),
+                m.material.starts_with("decal:"),
+            ) {
                 let [r, g, b] = m.color;
                 // Calibration hook: MASHUP_NORMAL_G_SIGN overrides the sign;
                 // 0 turns radiosity normal mapping off.
@@ -453,6 +482,7 @@ fn spawn_map(
                             Vec4::new(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0)
                         },
                         light_scale: data.look.light_scale,
+                        lightmap_scale: if source_ldr { SOURCE_LIGHTMAP_SCALE } else { 1.0 },
                         bumped: if bumped { 1.0 } else { 0.0 },
                         normal_g_sign: g_sign,
                         normal_x_sign: std::env::var("MASHUP_NORMAL_X_SIGN")
@@ -739,6 +769,28 @@ fn to_image(t: &MapTexture, look: &MapLook) -> Image {
 }
 
 /// A lighting atlas layer as a filterable half-float texture, clamped.
+/// A lighting atlas layer in Source's LDR encoding (see
+/// `SOURCE_LIGHTMAP_SCALE`): 8-bit sRGB, decoded by the sampler.
+fn source_lightmap_image(rgb: &[[f32; 3]], width: u32, height: u32) -> Image {
+    let mut data = Vec::with_capacity(rgb.len() * 4);
+    for [r, g, b] in rgb {
+        data.extend([source_ldr_texel(*r), source_ldr_texel(*g), source_ldr_texel(*b), 255]);
+    }
+    let mut image = Image::new(
+        Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    image.sampler = ImageSampler::linear();
+    image
+}
+
 fn lightmap_image(rgb: &[[f32; 3]], width: u32, height: u32) -> Image {
     let mut data = Vec::with_capacity(rgb.len() * 8);
     for [r, g, b] in rgb {
