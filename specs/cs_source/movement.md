@@ -155,7 +155,8 @@ Run at the end of every walking tick, and at the start of the tick for non-walki
 - Clear surface friction to 1 and update the water level.
 - If vz > 140 (relative to the ground entity's own vz when standing on something), or if on a ladder and moving up, the player has no ground.
 - Otherwise sweep the current box from the origin to 2 units below. If it hits something whose plane normal z ≥ 0.7, that is the ground. If not, or the plane is too steep, sweep each of the four quadrant sub-boxes (the box split at its centre in X and Y, full height). The first quadrant that finds a plane with normal z ≥ 0.7 counts as ground. This lets a player stand on the peak of a ridge or on a thin edge. The origin is not moved by this test, so a player can rest up to 2 units above a floor until the next ground move snaps them down (see Staying on the ground).
-- If no ground is found and vz > 0 (not noclip), surface friction is set to 0.25 for the rest of the tick.
+- Surface friction 0.25: this applies **only** when the downward sweep actually ran (vz ≤ 140, not on a ladder moving up), found no walkable ground, and vz > 0 (not noclip). In the "moving up rapidly" case (vz > 140) and the "ladder moving up" case, ground is removed without a sweep, and surface friction stays at the 1 set at the start of this step. The value lasts until the next ground detection, which runs at the end of the next tick. So it applies to that next tick's air acceleration.
+  - During a jump, ground detection on the jump tick and the following ticks sees vz > 140, so surface friction is 1. Once the move velocity has dropped into (0, 140] (from tick 11 of a standing shared-impulse jump, jump tick = 1, through the apex on tick 21), detection sets 0.25. Air acceleration therefore runs at 0.25 on ticks 12–22 and at 1 otherwise. After the apex vz ≤ 0, so it is 1 again.
 - On finding ground: the ground's material sets surface friction and the material (see Surface materials), the water-jump timer is cleared, and vz is set to 0.
 
 At the very start of a walking tick, the full ground test is not run. The ground is only removed if vz > 250. The test at the end of the previous tick carries over.
@@ -281,7 +282,7 @@ Punch is added to the view angles used for movement (step 1 of Wish direction).
 ### Surface materials
 
 - When ground is found, surface friction = clamp(material friction × 1.25, ≤ 1). Normal materials (friction 0.8) give 1.0. Ice-like materials give less. It scales both friction and acceleration (ground and air) for the tick.
-- Each tick ground detection first resets surface friction to 1, so it only stays below 1 while you are on that material. It is also 0.25 for a tick when the player leaves the ground upward without a jump.
+- Each ground detection first resets surface friction to 1, so it only stays below 1 while you are on that material. It is 0.25 whenever detection runs its sweep while airborne and rising slowly (0 < vz ≤ 140; see Ground detection). This includes the slow upper part of every jump, and it cuts air acceleration to a quarter there.
 - Material max-speed factor scales M. Material jump factor scales the jump impulse.
 
 ### Base velocity (conveyors, moving ground)
@@ -385,11 +386,14 @@ All at 64 tick (dt = 1/64), flat floor at z = 0 unless stated, sv_gravity 800, s
 | ducked on ground | press jump | jump tick | vz during move = 262.078 (impulse replaces vz); apex z = 44.98 at end of tick 21 |
 | on ground, jump held since before landing | keep holding | any | no jump until released and pressed again |
 | airborne | press jump | – | no effect; and pressing earlier does not queue a jump |
+| (all air rows below unless stated: airborne with surface friction 1, i.e. falling, or rising with vz > 140) | | | |
 | airborne at rest horizontally, airaccelerate 10 | hold forward | 1 tick | horizontal speed 30 (add capped at 30, not 39.0625) |
 | same | hold forward | 2+ ticks | stays 30 |
 | airborne, v = (250,0), view yaw 0 | hold right only (wishdir ⟂ v) | 1 tick | speed = √(250² + 900) = 251.794; velocity turns 6.843° |
 | same, turning view each tick to keep wishdir ⟂ v | hold right | 10 ticks | 267.395 |
 | same | – | 64 ticks | 346.554 |
+| airborne, rising with 0 < vz ≤ 140 at the last detection (surface friction 0.25), v = (250,0) | hold right only (wishdir ⟂ v) | 1 tick | amount 39.0625 × 0.25 = 9.766 (< 30); speed = √(250² + 9.766²) = 250.191 |
+| standing jump from 250 horizontal, perfect perpendicular strafe every tick | hold right, turn each tick | ticks 1–42 (to landing) | friction 1 on ticks 1–11 and 23–42 (31 ticks, +900 to |v|² each); 0.25 on ticks 12–22 (11 ticks, +95.37 each); landing speed ≈ √(62500 + 31·900 + 11·95.37) = 302.41 (±0.1). The jump tick itself counts as an air tick, because the ground is removed before friction. |
 | airborne, v = (250,0) | wishdir 85° from v | 1 tick | 250.85 (projection 21.79, adds 8.21) |
 | airborne, v = (250,0) | wishdir 80° from v | 1 tick | 250.0 (projection 43.4 ≥ 30, nothing added) |
 | airborne, v = (250,0) | wishdir 95° from v | 1 tick | 249.65 (adds the full 39.0625 against v, loses speed) |

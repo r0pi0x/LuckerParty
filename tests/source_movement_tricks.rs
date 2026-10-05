@@ -276,9 +276,9 @@ fn longjump_strafes_add_distance() {
     let strafed = longjump(true);
     // No strafing: 250 for the jump's air time.
     assert!((200.0..240.0).contains(&plain), "plain jump {plain}");
-    // Strafing helps, but less than a naive estimate: while rising, Source
-    // sets surface friction to 0.25 (spec, "Ground detection"), which
-    // scales air acceleration, so gains come mostly on the way down.
+    // Strafing helps, though less than a naive estimate: near the top of
+    // the jump (rising at up to 140) Source sets surface friction to 0.25
+    // (spec, "Ground detection"), which scales air acceleration.
     assert!(strafed > plain + 5.0, "strafed {strafed} vs plain {plain}");
 }
 
@@ -336,4 +336,48 @@ fn angled_corner_does_not_trap() {
         (pl.feet() - wedged).truncate().length() > 50.0,
         "stuck in the corner at {wedged}"
     );
+}
+
+/// Bunny hopping the way a player does it: hold one strafe key and turn
+/// the mouse that way at a steady rate (no perfect per-tick aiming),
+/// switching sides each hop, jumping on landing. Speed must not drop.
+fn human_bhop(turn_deg_per_sec: f32) -> (f32, f32) {
+    let mut pl = Player::at(Vec3::new(-6000.0, -9000.0, 0.5));
+    pl.sim.ticks(4);
+    pl.look_yaw(0.0);
+    pl.sim.intent(pl.p).move_axis = Vec2::Y;
+    pl.sim.seconds(1.0);
+    let start = pl.vel().truncate().length();
+    let mut yaw = 0.0f32;
+    let mut side = -1.0f32; // A first: turn left
+    let dt = 1.0 / 64.0;
+    let mut hops = 0;
+    let mut was_grounded = true;
+    for _ in 0..(6 * 64) {
+        let grounded = pl.state().on_ground;
+        if grounded && !was_grounded {
+            side = -side;
+        }
+        was_grounded = grounded;
+        if grounded {
+            hops += 1;
+        }
+        // Turning left raises yaw; strafe left is move_axis.x = -1.
+        yaw += -side * turn_deg_per_sec * dt;
+        pl.look_yaw(yaw);
+        let intent = &mut *pl.sim.intent(pl.p);
+        intent.jump = grounded;
+        intent.move_axis = if grounded { Vec2::ZERO } else { Vec2::new(side, 0.0) };
+        pl.sim.ticks(1);
+    }
+    let _ = hops;
+    (start, pl.vel().truncate().length())
+}
+
+#[test]
+fn human_style_strafing_keeps_or_gains_speed() {
+    for rate in [90.0f32, 150.0, 220.0] {
+        let (start, end) = human_bhop(rate);
+        assert!(end > start + 20.0, "turning {rate} deg/s: {start} -> {end}");
+    }
 }

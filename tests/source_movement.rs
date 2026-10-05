@@ -406,3 +406,26 @@ fn css_jump_reaches_its_measured_height() {
     }
     close(apex, 54.654, 0.01, "CS:S jump apex at 64 tick");
 }
+
+/// Perfect perpendicular strafing through a whole standing jump from 250:
+/// the slow top of the jump (rising at up to 140) strafes at a quarter of
+/// the rate, the rest at full rate. Spec: lands at about 302.41.
+#[test]
+fn strafing_through_a_jump() {
+    let mut pl = Player::on_floor();
+    pl.set_vel(Vec3::new(250.0, 0.0, 0.0));
+    pl.sim.intent(pl.p).jump = true;
+    pl.sim.intent(pl.p).move_axis = Vec2::X; // hold right
+    let mut ticks = 0;
+    loop {
+        let v = pl.vel();
+        pl.look_yaw(v.y.atan2(v.x).to_degrees());
+        pl.tick();
+        pl.sim.intent(pl.p).jump = false;
+        ticks += 1;
+        if pl.state().on_ground || ticks > 80 {
+            break;
+        }
+    }
+    close(pl.speed(), 302.41, 0.5, "landing speed after a strafed jump");
+}

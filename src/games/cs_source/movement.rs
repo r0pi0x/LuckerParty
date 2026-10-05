@@ -633,10 +633,9 @@ impl Mover<'_, '_, '_, '_> {
             if let Some(n) = ground {
                 self.me.ground_normal = n;
                 self.v.z = 0.0;
+            } else if self.v.z > 0.0 {
+                self.me.surface_friction = UPWARD_AIR_FRICTION;
             }
-        }
-        if !self.me.on_ground && self.v.z > 0.0 {
-            self.me.surface_friction = UPWARD_AIR_FRICTION;
         }
     }
 
