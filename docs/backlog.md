@@ -69,6 +69,16 @@ Counts are from de_dust2's entity lump and static prop lump.
 - **Prop collision from `.phy`** for physics-solid props (now the visible
   mesh).
 - **Fire** (`env_fire`, 16) and other effects, if they show in normal play.
+- **Tunnel lamp glows**: iterate on the brightness of the billboard
+  glows (env_sprite) in dust2's tunnels against CS:S (refcmp
+  `glow_lamp`, `glow_lamp_down`; RenderDoc a lamp draw for the sprite
+  shader's colour, alpha and scale).
+- **Reflective floors**: the lower tunnels' floor (and other `$envmap`
+  materials, incl. map-patched ones pointing at `env_cubemap`) should
+  reflect: read the BSP's cubemap lump and baked cubemaps, pick the
+  nearest per surface, apply `$envmaptint`, `$envmapmask` / base or
+  normal-map alpha masks and fresnel as the shader spec describes;
+  compare in refcmp.
 - **Materials**: env maps (2 dust2 materials, plus map-patched ones with
   `env_cubemap`); detail blend modes other than 0 and 1; `$basetexturetransform`
   (unused on dust2).
