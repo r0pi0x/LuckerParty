@@ -7,10 +7,7 @@ when work starts; delete them when done.
 
 ## Tools
 
-- **Reference comparison against real CS:S** (in progress): script the real
-  game (console `setpos`/`setang`/`jpeg`) and our engine to capture the same
-  views, then produce side-by-side and difference images with brightness
-  stats. Runs on the Linux box with the Steam client.
+- **More refcmp views** across dust2 (mid, long, B, spawns) and other maps.
 
 ## dust2 fidelity
 

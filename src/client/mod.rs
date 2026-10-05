@@ -32,6 +32,9 @@ pub struct Args {
     pub map: Option<String>,
     /// Debug view: white surfaces, only baked lighting.
     pub lightmap_only: bool,
+    /// Capture these views (JSON, see `capture::View`), one PNG each.
+    pub views: Option<PathBuf>,
+    pub capture_dir: Option<PathBuf>,
 }
 
 const USAGE: &str = "\
@@ -42,7 +45,10 @@ usage: mashup [options]
   --spawn <x,y,z>           spawn position in meters
   --look <yaw,pitch>        initial look angles in degrees (yaw 0 = -Z)
   --map <game:name>         load a game's map, e.g. cs_source:de_dust2 (default: greybox)
-  --lightmap-only           debug view: white surfaces, only baked lighting";
+  --lightmap-only           debug view: white surfaces, only baked lighting
+  --views <file.json>       capture each view (name, position, yaw, pitch; engine space)
+                            off-screen at 1280x720, then exit (use with --movement mashup:noclip)
+  --capture-dir <dir>       where --views writes <name>.png (default: current directory)";
 
 impl Args {
     pub fn parse() -> Self {
@@ -81,6 +87,8 @@ impl Args {
                 "--frames" => out.frames = Some(value.parse().map_err(|_| format!("--frames: not a number: {value}"))?),
                 "--movement" => out.movement = Some(value),
                 "--map" => out.map = Some(value),
+                "--views" => out.views = Some(value.into()),
+                "--capture-dir" => out.capture_dir = Some(value.into()),
                 "--spawn" => out.spawn = Some(Vec3::from_array(floats::<3>(&flag, &value)?)),
                 "--look" => out.look = Some(Vec2::from_array(floats::<2>(&flag, &value)?)),
                 _ => return Err(format!("unknown option {flag}")),

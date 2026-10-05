@@ -84,6 +84,31 @@ Encrypted Combat Arms archives list but skip extraction until their scheme's
 key is in `mashup.local.toml`. Extraction goes to `~/.local/share/mashup/dump/<game>/` (or `--out`) and
 refuses any folder inside the repository.
 
+## 6. Comparing with the real game (refcmp)
+
+`refcmp` captures the same camera views in real CS:S and in mashup and
+reports, per view, brightness (luma), saturation, sharpness (mean absolute
+Laplacian) and mean absolute difference, plus side-by-side images
+(reference | ours | difference x4).
+
+```
+cargo build --features dev && cargo run --features dev --bin refcmp
+cargo run --features dev --bin refcmp -- report            # re-compare existing captures
+cargo run --features dev --bin refcmp -- capture-ours --only a_sign
+```
+
+- Views: `tools/refcmp/<map>.toml` (Source eye positions and angles; add
+  more as needed). Output: `~/.local/share/mashup/dump/refcmp/<map>/`
+  (game imagery; never in the repo).
+- CS:S runs through the Steam client (logged in once on this machine) and
+  is driven over RCON on 127.0.0.1:27015, so it works with the desktop
+  locked: the tool waits for the map to load, repositions the map's
+  `point_viewcontrol` for each view and takes `jpeg` screenshots. Keys and
+  `setpos` don't work for this (the lock screen owns the keyboard; RCON has
+  no player).
+- mashup renders views off-screen at 1280x720 (`--views`), matching CS:S's
+  framing (90 degrees horizontal at 4:3 = 74 vertical).
+
 ## Planned
 
 - Per-tick JSONL traces of chosen entities, for comparing movement against

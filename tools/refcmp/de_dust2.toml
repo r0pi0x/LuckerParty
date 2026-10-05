@@ -1,0 +1,27 @@
+# Camera views compared between real CS:S and mashup (cargo run --bin refcmp).
+# Positions are eye positions in Source units; angles are [pitch, yaw] in
+# Source degrees (yaw 0 = +X, positive pitch looks down).
+
+map = "de_dust2"
+# A point_viewcontrol in the map that refcmp repositions for each view.
+camera = "cam1"
+
+[[view]]
+name = "a_sign_e"
+position = [-295.3, 1078.7, 86.6]
+angles = [0, 0]
+
+[[view]]
+name = "a_sign_n"
+position = [-295.3, 1078.7, 86.6]
+angles = [0, 90]
+
+[[view]]
+name = "a_sign_w"
+position = [-295.3, 1078.7, 86.6]
+angles = [0, 180]
+
+[[view]]
+name = "a_sign_s"
+position = [-295.3, 1078.7, 86.6]
+angles = [0, 270]

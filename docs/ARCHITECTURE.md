@@ -42,6 +42,7 @@ A module may use only the modules below it. Enforced by
 | `src/games/mod.rs` | `load_map("game:name")` dispatcher |
 | `src/games/cs_source/` | VPK reader, the CS:S search path, BSP to `MapData` (via `vbsp`), VMT/VTF materials (map pak first, then the mount), lightmap atlas from the lighting lump, brush collision hulls, static props via `vmdl`, ambient cubes and world lights for prop light probes, infodecals clipped onto faces |
 | `src/games/combat_arms/` | `.rez` reader and the archive cipher payload decryption (from the spec), all archives as one mount |
+| `src/bin/refcmp.rs` | Dev tool: compare views against real CS:S (RCON-driven capture, metrics, side-by-sides) |
 | `src/bin/dump.rs` | Dev tool: summarize, list and extract a game install's files |
 | `src/harness.rs` | `Sim`: headless app stepped by exact fixed ticks, for tests |
 | `src/client/` | Local input, first-person camera, debug UI, `--screenshot`, remote protocol |

@@ -3829,6 +3829,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -4249,7 +4251,9 @@ dependencies = [
  "crc32fast",
  "dirs",
  "half",
+ "image",
  "serde",
+ "serde_json",
  "toml",
  "twofish",
  "vbsp",
