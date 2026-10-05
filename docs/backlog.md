@@ -18,6 +18,8 @@ Counts are from de_dust2's entity lump and static prop lump.
 
 - **Baked per-vertex prop lighting (`.vhv`)** for maps that ship it (dust2
   doesn't; its props use the per-prop light probe, as in the game).
+- **Overlay render order** (the 2-bit order field) and overlays on
+  displacements.
 - **Remaining decals**: 6 of dust2's 135 sit on props or brush entities
   rather than world faces; decals on displacements (none on dust2).
 - **Verify inferred Source rules** with the comparison tool, using a local

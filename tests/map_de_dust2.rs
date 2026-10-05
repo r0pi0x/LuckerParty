@@ -400,7 +400,11 @@ fn decals_project_onto_surfaces() {
     }
 
     let Some(map) = dust2() else { return };
-    let decal_meshes: Vec<_> = map.meshes.iter().filter(|m| m.material.starts_with("decal:")).collect();
+    let decal_meshes: Vec<_> = map
+        .meshes
+        .iter()
+        .filter(|m| m.material.starts_with("decal:") && !m.material.starts_with("decal:overlay:"))
+        .collect();
     assert!(decal_meshes.len() >= 18, "{} decal materials", decal_meshes.len());
     for m in &decal_meshes {
         assert!(m.texture.is_some(), "{}: no texture", m.material);
@@ -466,4 +470,27 @@ fn three_d_skybox_is_separated() {
     for (feet, _) in &map.spawns {
         assert!(feet.distance(cam.origin) > 50.0);
     }
+}
+
+#[test]
+fn overlays_are_placed() {
+    let Some(map) = dust2() else { return };
+    let overlays: Vec<_> = map
+        .meshes
+        .iter()
+        .filter(|m| m.material.starts_with("decal:overlay:"))
+        .collect();
+    // dust2: 55 overlays over 24 textures (posters, graffiti, wires, road).
+    assert!(overlays.len() >= 20, "{} overlay materials", overlays.len());
+    assert!(overlays.iter().any(|m| m.material.contains("bills")), "posters missing");
+    for m in &overlays {
+        assert_eq!(m.lightmap_uvs.len(), m.positions.len(), "{}", m.material);
+        assert!(!m.indices.is_empty());
+    }
+    let empty: usize = map
+        .warnings
+        .iter()
+        .find_map(|w| w.strip_suffix(" overlays produced no geometry")?.parse().ok())
+        .unwrap_or(0);
+    assert!(empty <= 3, "{empty} overlays produced nothing");
 }

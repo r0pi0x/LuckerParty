@@ -65,6 +65,7 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
     );
     super::props::add_static_props(&bsp, &mut materials, &lighting, &occluders, &mut data);
     super::decals::add_decals(&bsp, &layout, &mut materials, &mut data);
+    super::overlays::add_overlays(&bsp, &bytes, &layout, &mut materials, &mut data);
     super::sky::add_sky(&bsp, &mut materials, &mut data);
     data.warnings.extend(materials.missing);
     data.textures = materials.textures;
