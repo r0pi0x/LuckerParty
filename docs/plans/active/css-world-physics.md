@@ -36,10 +36,16 @@ with tests):
    - Check: scenario tests (a prop falls and settles, a player push moves
      it, it sleeps).
 
+## Also done along the way
+
+- `movecmp fuzz` (ladders on de_nuke, water) against a real CS:S server:
+  water now matches tick-exact; CS:S's duck rule, 260 swim lift and
+  walking (+speed) measured and matched. Walking added.
+
 ## Progress
 
 - [x] 1 sky by leaf visibility
-- [ ] 2 `.phy` collision
+- [x] 2 `.phy` collision (props collide by their convex pieces; spec crate cases pass)
 - [ ] 3 prop shadows
 - [x] 4 ladders and water (spec cases in tests/source_movement_ladder_water.rs; de_nuke climb test waits on step 2: its ladder models' rungs block until props collide by `.phy`)
 - [ ] 5 physics simulation
