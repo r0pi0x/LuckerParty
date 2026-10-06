@@ -1,0 +1,142 @@
+# Views of de_nuke for spotting visual bugs (docs/plans/active/other-maps.md),
+# generated from its entities: intermission cameras, the first T and CT
+# spawns, and bomb/rescue zone centres looking four ways.
+# Source eye positions; angles are [pitch, yaw] in Source degrees.
+
+map = "de_nuke"
+camera = "point_viewcontrol"
+
+[[view]]
+name = "cam0"
+position = [1920, -464, -234]
+angles = [5, 192.5]
+
+[[view]]
+name = "cam1"
+position = [1082, -1140, -234]
+angles = [5, 317.5]
+
+[[view]]
+name = "cam2"
+position = [1218, -2326, -366]
+angles = [-10, 122.5]
+
+[[view]]
+name = "cam3"
+position = [116, -2252, -242]
+angles = [2, 31]
+
+[[view]]
+name = "cam4"
+position = [-934, -1152, -180]
+angles = [5, 17.5]
+
+[[view]]
+name = "cam5"
+position = [-1788, -1146, -180]
+angles = [8, 164.5]
+
+[[view]]
+name = "cam6"
+position = [-2966, -908, -306]
+angles = [3, 352]
+
+[[view]]
+name = "cam7"
+position = [2018, -1656, -382]
+angles = [0, 214.5]
+
+[[view]]
+name = "cam8"
+position = [760, 926, -459]
+angles = [-3, 258.5]
+
+[[view]]
+name = "cam9"
+position = [-274, -1096, -344]
+angles = [3, 24]
+
+[[view]]
+name = "cam10"
+position = [916, -1406, -386]
+angles = [-3, 119.5]
+
+[[view]]
+name = "cam11"
+position = [412, -100, -578]
+angles = [4, 304]
+
+[[view]]
+name = "cam12"
+position = [1504, -2378, -594]
+angles = [2, 78.5]
+
+[[view]]
+name = "cam13"
+position = [2043, -1674, -378]
+angles = [-17, 219.4]
+
+[[view]]
+name = "cam14"
+position = [203, -1499, 39]
+angles = [3.3, 149.2]
+
+[[view]]
+name = "cam15"
+position = [436, -121, -501]
+angles = [2, 299.1]
+
+[[view]]
+name = "cam16"
+position = [-901, -2165, -55]
+angles = [-0.8, 51.8]
+
+[[view]]
+name = "t_spawn"
+position = [-2736, -1224, -336]
+angles = [0, 0]
+
+[[view]]
+name = "ct_spawn"
+position = [3120, -456, -280]
+angles = [0, 180]
+
+[[view]]
+name = "zone0_0"
+position = [696, -768, -351]
+angles = [10, 0]
+
+[[view]]
+name = "zone0_90"
+position = [696, -768, -351]
+angles = [10, 90]
+
+[[view]]
+name = "zone0_180"
+position = [696, -768, -351]
+angles = [10, 180]
+
+[[view]]
+name = "zone0_270"
+position = [696, -768, -351]
+angles = [10, 270]
+
+[[view]]
+name = "zone1_0"
+position = [632, -944, -704]
+angles = [10, 0]
+
+[[view]]
+name = "zone1_90"
+position = [632, -944, -704]
+angles = [10, 90]
+
+[[view]]
+name = "zone1_180"
+position = [632, -944, -704]
+angles = [10, 180]
+
+[[view]]
+name = "zone1_270"
+position = [632, -944, -704]
+angles = [10, 270]

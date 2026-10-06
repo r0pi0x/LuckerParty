@@ -23,7 +23,7 @@ pub struct WorldParams {
     pub blend_masked: f32,
     /// 1 when the second layer has its own normal map.
     pub blend_normal: f32,
-    /// Detail texture: 0 none, 1 mod2x, 2 additive.
+    /// Detail texture: 0 none, 1 mod2x, 2 additive, 3 alpha blend.
     pub detail: f32,
     pub detail_factor: f32,
     pub detail_scale: Vec2,
@@ -33,7 +33,8 @@ pub struct WorldParams {
     pub fog_range: Vec4,
     /// 1: bicubic lightmap sampling.
     pub bicubic: f32,
-    /// 1 when alpha blended. Otherwise the output alpha is 1: textures
+    /// 1 when alpha blended, 2 when additive (output alpha 0, which adds
+    /// under premultiplied blending). Otherwise the output alpha is 1: textures
     /// often keep other data in alpha (env map masks), and the camera's
     /// output is composited over the sky camera by alpha.
     pub translucent: f32,

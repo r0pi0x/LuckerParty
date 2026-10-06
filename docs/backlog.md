@@ -21,10 +21,11 @@ their partial work is in uncommitted agent worktrees under
 - **D. Movement: terrain and falls.** Fuzz walking over displacements to
   find the rare "stubbed toe" stop and fix it; fall damage (measure on the
   probe server); `trigger_hurt` volumes.
-- **E. Other maps.** Load de_aztec, de_nuke (then the rest of the stock
-  maps), screenshot their main areas, catalog visual bugs and console
-  errors (de_aztec logs missing textures/materials), and fix them; add
-  refcmp views where the reference game shows a difference.
+- **E. Other maps.** In progress:
+  [plans/active/other-maps.md](plans/active/other-maps.md) (catalog).
+  aztec's walls, props' ambient light on older maps, brush entities,
+  additive glows, HDR skies are fixed; left: reference views for aztec,
+  office and nuke, the other stock maps' views, unplaced decals.
 
 ## 2. Custom maps and minigames
 
@@ -133,8 +134,9 @@ Counts are from de_dust2's entity lump and static prop lump.
 - **Verify inferred Source rules** with the comparison tool, using a local
   copy of a map with test entities added where dust2 has no example: floor
   and ceiling decal orientation, decal reach, overall brightness/tonemapping.
-- **Brush entities**: doors and visible `func_brush` if a map needs them
-  (dust2's one `func_brush` is render mode 10, never drawn).
+- **Brush entities**: they draw and collide where they spawn; doors
+  don't open, breakables don't break, func_rotating doesn't turn, render
+  modes other than normal and 10 (translucent func_brush) aren't applied.
 - **Fire** (`env_fire`, 16) and other effects, if they show in normal play.
 - **Lightmap styles** (switchable lights).
 - **Baked per-vertex prop lighting (`.vhv`)** for maps that ship it (dust2
