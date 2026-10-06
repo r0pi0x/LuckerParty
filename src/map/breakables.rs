@@ -532,6 +532,61 @@ pub(super) fn fly_gibs(
     }
 }
 
+/// A round restart (`core::RoundRestarts` counted up): gibs and
+/// particles (glass shards) go, and windows drawn as panes are whole
+/// again: their meshes uncut and their collider the brush's volumes. The
+/// logic layer puts the nodes themselves back (shown, solid, placed).
+pub(super) fn round_restart(world: &mut World, mut seen: Local<Option<u32>>) {
+    let count = world.get_resource::<crate::core::RoundRestarts>().map_or(0, |r| r.0);
+    if seen.replace(count).is_none_or(|s| s == count) {
+        return;
+    }
+    let gibs: Vec<Entity> = world.query_filtered::<Entity, With<FlyingGib>>().iter(world).collect();
+    for g in gibs {
+        world.entity_mut(g).despawn();
+    }
+    if let Some(mut p) = world.get_resource_mut::<super::particles::Particles>() {
+        p.groups.clear();
+    }
+    let windows: Vec<(Entity, usize)> = world
+        .query_filtered::<(Entity, &super::MapBrushEntity), With<BrushPanes>>()
+        .iter(world)
+        .map(|(e, n)| (e, n.0))
+        .collect();
+    for (node, index) in windows {
+        make_whole(world, node, index);
+    }
+}
+
+/// A window node back to its whole brush.
+fn make_whole(world: &mut World, node: Entity, index: usize) {
+    let collider = world
+        .get_resource::<super::MapEntities>()
+        .and_then(|m| Some(super::entities::brush_collider(m.entities.get(index)?, m.scale)))
+        .flatten();
+    let children: Vec<Entity> = world
+        .get::<Children>(node)
+        .map(|c| c.iter().collect())
+        .unwrap_or_default();
+    let mut e = world.entity_mut(node);
+    e.remove::<(BrushPanes, ColliderDisabled)>();
+    if let Some(c) = collider {
+        e.insert(c);
+    }
+    for child in children {
+        let Some(source) = world.get::<PaneSource>(child).map(|s| s.0.clone()) else {
+            continue;
+        };
+        let old = world.get::<Mesh3d>(child).map(|m| m.0.clone());
+        world.entity_mut(child).insert(Mesh3d(source.clone())).remove::<PaneSource>();
+        if let (Some(old), Some(mut meshes)) = (old, world.get_resource_mut::<Assets<Mesh>>())
+            && old != source
+        {
+            meshes.remove(&old);
+        }
+    }
+}
+
 /// Remove gibs (map unload).
 pub(super) fn unload(world: &mut World) {
     world.remove_resource::<GibAssets>();

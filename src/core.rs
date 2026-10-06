@@ -274,6 +274,13 @@ pub struct LocalPlayer;
 #[reflect(Resource)]
 pub struct SimTick(pub u64);
 
+/// Round restarts so far (the rules count one up when a new round
+/// starts). Each count puts the map's entities back as they spawned:
+/// the logic layer re-creates its world, the map layer makes broken
+/// brushes whole and clears gibs (Counter-Strike's round restart).
+#[derive(Resource, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RoundRestarts(pub u32);
+
 /// Whether characters on the same team hurt each other (CS:S
 /// `mp_friendlyfire`, default 0). Team 0 (no team) is never friendly.
 #[derive(Resource, Default, Clone, Copy, Debug, PartialEq, Eq)]
@@ -319,6 +326,9 @@ pub fn apply_damage(
 /// these sets so that, e.g., weapons always see this tick's movement state.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SimSet {
+    /// Match rules (rounds, respawns), before everything that acts on
+    /// them this tick.
+    Rules,
     Movement,
     Weapons,
 }
@@ -346,7 +356,8 @@ impl Plugin for CorePlugin {
             .register_type::<SimTick>()
             .init_resource::<SimTick>()
             .add_systems(FixedFirst, |mut tick: ResMut<SimTick>| tick.0 += 1)
-            .configure_sets(FixedUpdate, (SimSet::Movement, SimSet::Weapons).chain());
+            .init_resource::<RoundRestarts>()
+            .configure_sets(FixedUpdate, (SimSet::Rules, SimSet::Movement, SimSet::Weapons).chain());
     }
 }
 

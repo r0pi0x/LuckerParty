@@ -38,6 +38,12 @@ Needs a display: on the Linux dev box set `WAYLAND_DISPLAY=wayland-1` and
 without `--screenshot` just runs N frames and exits (smoke test).
 `--help` lists all options.
 
+To photograph a live run step by step (e.g. before and after a round
+restart, where frame counts are too uncertain), run the game without
+`--screenshot` and send `screenshot <file.png>` over the remote console
+(section 3b) between other commands: `setpos ...; setang ...`, `+attack`,
+`-attack`, then `screenshot /scratch/after.png`.
+
 ## 3. Live ECS over HTTP (Bevy Remote Protocol)
 
 With `--features dev`, the game serves JSON-RPC on `localhost:15702`.

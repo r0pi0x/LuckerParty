@@ -11,7 +11,7 @@ use super::world::{Collision, Effect, EntId, LogicWorld, Player, SOLID_SKIN, SWE
 use crate::console::Console;
 use crate::core::{
     BaseVelocity, Damage, DamageKind, Damageable, EntityGravity, Health, Hitgroup, Intent, LocalPlayer, MapBrush,
-    MapBrushes, MapTerrain, MovementState, MovingSolid, SimSet, Team, Velocity,
+    MapBrushes, MapTerrain, MovementState, MovingSolid, RoundRestarts, SimSet, Team, Velocity,
 };
 use crate::map::breakables::{GibPiece, GlassShatter, SpawnGibs};
 use crate::map::entities::{engine_to_entity, entity_rotation, entity_to_engine, rotation_to_engine};
@@ -30,6 +30,8 @@ pub struct Logic {
     pub restore: Vec<(String, String)>,
     /// The `MapEntities` this world was built from.
     source: std::sync::Arc<Vec<crate::map::MapEntity>>,
+    /// `core::RoundRestarts` this world has seen.
+    restarts: u32,
 }
 
 /// Where the logic runs in the fixed tick.
@@ -54,7 +56,7 @@ impl Plugin for LogicPlugin {
             .configure_sets(
                 FixedUpdate,
                 (
-                    LogicSet::Pre.before(SimSet::Movement),
+                    LogicSet::Pre.after(SimSet::Rules).before(SimSet::Movement),
                     LogicSet::Post.after(SimSet::Movement).before(SimSet::Weapons),
                     LogicSet::Damage.after(SimSet::Weapons),
                 ),
@@ -65,10 +67,12 @@ impl Plugin for LogicPlugin {
     }
 }
 
-/// Build (or drop) the logic world when the map's entities change.
+/// Build (or drop) the logic world when the map's entities change, and
+/// re-create it at a round restart (`core::RoundRestarts`).
 fn load(world: &mut World) {
     let current = world.get_resource::<MapEntities>().cloned();
     let built = world.get_resource::<Logic>().map(|l| l.source.clone());
+    let restarts = world.get_resource::<RoundRestarts>().map_or(0, |r| r.0);
     match (current, built) {
         (None, Some(_)) => {
             restore_settings(world);
@@ -78,38 +82,78 @@ fn load(world: &mut World) {
             restore_settings(world);
             let dt = world.resource::<Time<Fixed>>().timestep().as_secs_f32();
             let mut logic = LogicWorld::new(dt);
-            let mut ids = Vec::with_capacity(m.entities.len());
-            for (i, e) in m.entities.iter().enumerate() {
-                let id = logic.spawn(&e.keyvalues, e.hulls.clone());
-                if let Some(ent) = logic.get_mut(id) {
-                    ent.map_index = Some(i);
-                }
-                ids.push(id);
-            }
-            logic.activate();
-            let nodes: Vec<(EntId, Entity)> = world
-                .query::<(Entity, &MapBrushEntity)>()
-                .iter(world)
-                .filter_map(|(e, n)| ids.get(n.0).map(|id| (*id, e)))
-                .collect();
-            // Breakables take damage from weapons.
-            for (id, node) in &nodes {
-                if matches!(
-                    logic.get(*id).map(|e| &e.class),
-                    Some(super::classes::Class::Breakable(_))
-                ) {
-                    world.entity_mut(*node).insert(Damageable);
-                }
-            }
+            let ids = logic.load_map(&m.entities);
+            let nodes = attach_nodes(world, &logic, &ids);
             world.insert_resource(Logic {
                 world: logic,
                 scale: m.scale,
                 nodes,
                 restore: Vec::new(),
                 source: m.entities.clone(),
+                restarts,
             });
         }
-        _ => {}
+        _ => {
+            let Some(mut logic) = world.remove_resource::<Logic>() else { return };
+            if logic.restarts != restarts {
+                logic.restarts = restarts;
+                let source = logic.source.clone();
+                let ids = logic.world.round_restart(&source);
+                logic.nodes = attach_nodes(world, &logic.world, &ids);
+                // HUD messages from the last round go too.
+                if let Some(mut hud) = world.get_resource_mut::<HudMessages>() {
+                    *hud = HudMessages::default();
+                }
+            }
+            world.insert_resource(logic);
+        }
+    }
+}
+
+/// Pair every mover node with its logic entity (`ids` in map order).
+/// Nodes whose entity is gone are hidden; the others are shown and solid
+/// (the next sync places them), and breakables take damage from weapons.
+fn attach_nodes(world: &mut World, logic: &LogicWorld, ids: &[EntId]) -> Vec<(EntId, Entity)> {
+    let all: Vec<(Entity, usize)> = world
+        .query::<(Entity, &MapBrushEntity)>()
+        .iter(world)
+        .map(|(e, n)| (e, n.0))
+        .collect();
+    let mut nodes = Vec::new();
+    for (node, index) in all {
+        let Some(id) = ids.get(index).copied().filter(|id| logic.get(*id).is_some()) else {
+            hide_node(world, node);
+            continue;
+        };
+        let breakable = matches!(
+            logic.get(id).map(|e| &e.class),
+            Some(super::classes::Class::Breakable(_))
+        );
+        let mut e = world.entity_mut(node);
+        e.remove::<(ColliderDisabled, MovingSolid)>();
+        if e.get::<Visibility>().is_some_and(|v| *v == Visibility::Hidden) {
+            e.insert(Visibility::Inherited);
+        }
+        if breakable {
+            e.insert(Damageable);
+        } else {
+            e.remove::<Damageable>();
+        }
+        nodes.push((id, node));
+    }
+    nodes
+}
+
+/// A node whose logic entity is gone (killed, broken): not drawn, hit or
+/// stood on, until a round restart brings the entity back.
+fn hide_node(world: &mut World, node: Entity) {
+    if let Ok(mut e) = world.get_entity_mut(node) {
+        // Only when missing: re-inserting ColliderDisabled replaces it,
+        // and avian puts a replaced one's collider back in its query tree.
+        if !e.contains::<ColliderDisabled>() {
+            e.insert(ColliderDisabled);
+        }
+        e.insert((Visibility::Hidden, MovingSolid::default())).remove::<Damageable>();
     }
 }
 
@@ -288,12 +332,12 @@ fn write_back(world: &mut World, scale: f32, before: &[Player], after: &[Player]
 }
 
 /// Mover nodes follow their logic entity; nodes of removed entities
-/// (killed, broken) go.
+/// (killed, broken) are hidden (a round restart shows them again).
 fn sync_movers(world: &mut World, logic: &mut Logic) {
     logic.nodes.retain(|(id, node)| {
         let alive = logic.world.get(*id).is_some();
-        if !alive && let Ok(e) = world.get_entity_mut(*node) {
-            e.despawn();
+        if !alive {
+            hide_node(world, *node);
         }
         alive
     });

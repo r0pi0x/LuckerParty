@@ -1607,10 +1607,23 @@ fn bodies_animate_with_movement() {
         Some(Some(mashup::games::cs_source::weapons::AK47.to_string()))
     );
     let keys: Vec<&str> = map.held.iter().map(|h| h.key.as_str()).collect();
-    let all = mashup::games::cs_source::weapons::WORLD_MODELS.len();
+    let all = mashup::games::cs_source::weapons::WORLD_MODELS.len()
+        + mashup::games::cs_source::weapons::SILENCED_WORLD_MODELS.len();
     assert_eq!(keys.len(), all, "held models {keys:?}");
     // The drawn AK-47 picks the AK upper body at full weight.
     assert_eq!(layer(&sim, 0), Some(("Idle_Upper_AK".into(), 1.0)));
+    // A reload plays the AK's reload gesture over it, then ends.
+    let ak = sim.app.world().get::<mashup::weapon::Inventory>(c).unwrap().active.unwrap();
+    sim.app.world_mut().write_message(mashup::weapon::WeaponEvent {
+        owner: c,
+        weapon: ak,
+        kind: mashup::weapon::WeaponEventKind::ReloadStarted,
+    });
+    sim.ticks(2);
+    let reload = layer(&sim, 5).map(|(n, _)| n.to_lowercase());
+    assert_eq!(reload.as_deref(), Some("idle_reload_ak"));
+    sim.seconds(4.0);
+    assert_eq!(layer(&sim, 5), None, "the reload gesture ends");
 
     sim.intent(c).move_axis = Vec2::Y;
     sim.seconds(1.0);
@@ -2260,20 +2273,22 @@ fn running_over_terrain_keeps_speed() {
 /// muzzle left of the eye means built left-handed).
 #[test]
 fn gun_models_icons_and_handedness() {
-    use mashup::games::cs_source::weapons::{AWP, GUNS, VIEW_MODELS};
+    use mashup::games::cs_source::weapons::{GUNS, SILENCED_WORLD_MODELS, VIEW_MODELS, silenced_key};
     let Some(map) = dust2() else { return };
     let hud = map.hud.as_ref().expect("a HUD");
+    for (id, _) in SILENCED_WORLD_MODELS {
+        assert!(map.held.iter().any(|h| h.key == silenced_key(id)), "{id} silenced world model");
+    }
     for g in GUNS {
         let short = g.id.rsplit("weapon_").next().unwrap();
         assert!(hud.icons.contains_key(&format!("d_{short}")), "no d_{short} icon");
         assert!(map.held.iter().any(|h| h.key == g.id), "{} world model", g.id);
-        let Some(v) = map.view_models.iter().find(|v| v.key == g.id) else {
-            // v_snip_awp.mdl is MDL version 48; the animation reader takes 44.
-            assert_eq!(g.id, AWP, "{} view model: {:?}", g.id, map.warnings);
-            let w: Vec<_> = map.warnings.iter().filter(|w| w.contains("v_snip_awp")).collect();
-            assert!(w.iter().any(|w| w.contains("version 48")), "{:?}", map.warnings);
-            continue;
-        };
+        // Every gun has its view model (the AWP's is MDL version 48).
+        let v = map
+            .view_models
+            .iter()
+            .find(|v| v.key == g.id)
+            .unwrap_or_else(|| panic!("{} view model: {:?}", g.id, map.warnings));
         let set = v.animations.as_ref().expect("sequences");
         let mut pose = set.defaults.clone();
         let params = set.default_params();

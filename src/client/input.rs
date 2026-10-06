@@ -18,6 +18,10 @@ pub struct MouseSettings {
     pub sensitivity: f32,
     pub m_yaw: f32,
     pub m_pitch: f32,
+    /// Zoomed in, the turn is also scaled by this times the zoomed FOV over
+    /// the normal one (`zoom_sensitivity_ratio`; CS:S's default 1.2 and the
+    /// rule as the community documents it, not measured here).
+    pub zoom_ratio: f32,
 }
 
 impl Default for MouseSettings {
@@ -27,6 +31,7 @@ impl Default for MouseSettings {
             sensitivity: 3.0,
             m_yaw: 0.022,
             m_pitch: 0.022,
+            zoom_ratio: 1.2,
         }
     }
 }
@@ -40,6 +45,12 @@ impl MouseSettings {
             -counts.y * self.sensitivity * self.m_pitch,
         ) * std::f32::consts::PI
             / 180.0
+    }
+
+    /// The turn multiplier at a zoomed field of view (degrees; the normal
+    /// one is 90).
+    pub fn zoom_scale(&self, zoomed_fov: Option<f32>) -> f32 {
+        zoomed_fov.map_or(1.0, |fov| self.zoom_ratio * fov / 90.0)
     }
 }
 
@@ -77,8 +88,14 @@ fn mouse_cvars(app: &mut App) {
         "Mouse pitch factor (degrees per count at sensitivity 1; negative inverts).",
         |m| &mut m.m_pitch,
     );
+    resource_cvar::<MouseSettings, f32>(
+        app,
+        "zoom_sensitivity_ratio",
+        "Extra mouse scale while zoomed (times the zoomed FOV / 90).",
+        |m| &mut m.zoom_ratio,
+    );
     let mut console = app.world_mut().resource_mut::<Console>();
-    for name in ["sensitivity", "m_yaw", "m_pitch"] {
+    for name in ["sensitivity", "m_yaw", "m_pitch", "zoom_sensitivity_ratio"] {
         console.archive(name);
     }
 }
@@ -193,6 +210,7 @@ fn write_local_intent(
     time: Res<Time>,
     menu: Option<Res<super::buy_menu::BuyMenu>>,
     team_menu: Option<Res<super::team_menu::TeamMenu>>,
+    zoomed: Query<&crate::weapon::Zoomed, With<LocalPlayer>>,
 ) {
     let freelook = keys.pressed(KeyCode::AltLeft) || held.as_ref().is_some_and(|h| h.freelook);
     if !freelook {
@@ -235,7 +253,8 @@ fn write_local_intent(
     }
     intent.move_axis = Vec2::new(axis(KeyCode::KeyD, KeyCode::KeyA), axis(KeyCode::KeyW, KeyCode::KeyS));
 
-    let turn = mouse_settings.look_delta(motion.delta);
+    let zoom = mouse_settings.zoom_scale(zoomed.iter().next().map(|z| z.fov));
+    let turn = mouse_settings.look_delta(motion.delta) * zoom;
     if freelook {
         free.turn(turn, intent.pitch);
     } else {
@@ -296,6 +315,14 @@ fn apply_held(intent: &mut Intent, wheel: &mut WheelJump, h: &super::console::He
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zoomed_turns_scale_by_the_ratio_and_fov() {
+        let m = MouseSettings::default();
+        assert_eq!(m.zoom_scale(None), 1.0);
+        // AWP first zoom (40 degrees): 1.2 * 40 / 90.
+        assert!((m.zoom_scale(Some(40.0)) - 1.2 * 40.0 / 90.0).abs() < 1e-6);
+    }
 
     #[test]
     fn free_look_turns_within_the_pitch_limit() {

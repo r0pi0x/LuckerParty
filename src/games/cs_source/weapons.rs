@@ -46,6 +46,18 @@ pub const WORLD_MODELS: &[(&str, &str)] = &[
     (DEAGLE, "models/weapons/w_pist_deagle.mdl"),
 ];
 
+/// World models with the silencer on (the scripts' `SilencerModel`), held
+/// under `silenced_key(id)` while the silencer is on.
+pub const SILENCED_WORLD_MODELS: &[(&str, &str)] = &[
+    (M4A1, "models/weapons/w_rif_m4a1_silencer.mdl"),
+    (USP, "models/weapons/w_pist_usp_silencer.mdl"),
+];
+
+/// The held-model key of a weapon with its silencer on.
+pub fn silenced_key(id: &str) -> String {
+    format!("{id}#silenced")
+}
+
 /// View models (the script's `viewmodel`), seen by the local player, and
 /// whether each is built right-handed (the script's `BuiltRightHanded`;
 /// spec view_models.md 2). CS:S ships one knife view model for both teams.

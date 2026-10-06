@@ -2,12 +2,13 @@
 //! de_nuke's vents (func_breakable, material Metal, health 1) break from
 //! one bullet or a knife hit and stop blocking shots; cs_office's windows
 //! (func_breakable_surf) lose the panes that are shot, and bullets pass
-//! through the holes. Skipped without an install.
+//! through the holes; a round restart makes both whole again. Skipped
+//! without an install.
 
 use avian3d::prelude::*;
 use bevy::{ecs::system::SystemState, prelude::*};
 use mashup::{
-    core::MovingSolid,
+    core::{MovingSolid, RoundRestarts},
     games::{
         self, cs_source,
         cs_source::{
@@ -181,11 +182,22 @@ fn nuke_vents_break_from_a_bullet_and_a_knife() {
             assert!(!sim.app.world().get::<MovingSolid>(n).unwrap().solid, "players pass");
         }
         sim.ticks(8);
-        assert!(node(&mut sim, vent).is_none(), "the vent's node goes after 0.1 s");
+        assert!(class(&sim, vent).is_none(), "the vent is removed after 0.1 s");
+        let n = node(&mut sim, vent).expect("its node stays for the next round");
+        assert_eq!(sim.app.world().get::<Visibility>(n), Some(&Visibility::Hidden));
         assert!(
             ray(&mut sim, eye, centre, p) > before + 4.0,
             "the ray goes through the opening"
         );
+        // A new round: the vent is back, whole, blocking shots again.
+        sim.app.world_mut().resource_mut::<RoundRestarts>().0 += 1;
+        sim.ticks(2);
+        assert!(!broken(&sim, vent), "whole again");
+        assert_eq!(sim.app.world().get::<Visibility>(n), Some(&Visibility::Inherited));
+        assert!(sim.app.world().get::<MovingSolid>(n).unwrap().solid);
+        assert!((ray(&mut sim, eye, centre, p) - before).abs() < 1.0, "blocks the ray again");
+        attack(&mut sim, p, false);
+        assert!(broken(&sim, vent), "and breaks again");
         shot = true;
         break;
     }
@@ -249,6 +261,16 @@ fn office_windows_lose_shot_panes() {
                 ray(&mut sim, eye, centre, p) > before + 4.0,
                 "a second bullet along the same line passes the hole"
             );
+            // A new round: the window is whole again.
+            sim.app.world_mut().resource_mut::<RoundRestarts>().0 += 1;
+            sim.ticks(2);
+            let Some(Class::Breakable(b)) = class(&sim, win) else {
+                panic!("window not re-created")
+            };
+            assert!(!b.window.as_ref().unwrap().window_broken);
+            assert!(sim.app.world().get::<BrushPanes>(n).is_none(), "drawn whole");
+            assert!(sim.app.world().get::<MovingSolid>(n).unwrap().solid);
+            assert!((ray(&mut sim, eye, centre, p) - before).abs() < 1.0, "blocks the ray again");
             done = true;
             break;
         }

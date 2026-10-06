@@ -1,6 +1,8 @@
 //! Agent-facing capture modes:
 //! - `--screenshot` / `--frames`: run a fixed number of frames, optionally
 //!   save a screenshot of the window, then exit.
+//! - `screenshot <file.png>` (console, also over the remote console):
+//!   save the window now, so a live run can be photographed step by step.
 //! - `--views <file.json> --capture-dir <dir>`: visit a list of camera views
 //!   and save one PNG per view, rendered off-screen at a fixed size so the
 //!   result doesn't depend on how the window manager sizes the window.
@@ -18,6 +20,7 @@ use bevy::{
 use serde::Deserialize;
 
 use super::{ClientArgs, FirstPersonCamera};
+use crate::console::ConsoleAppExt;
 use crate::core::{Intent, LocalPlayer, Velocity};
 
 const DEFAULT_FRAMES: u32 = 60;
@@ -54,6 +57,15 @@ pub struct CapturePlugin;
 impl Plugin for CapturePlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Update, (countdown, start_views, run_views.after(start_views)));
+        app.console_command(
+            "screenshot",
+            "screenshot <file.png>: save the window as it is now.",
+            |w, a| {
+                let path = PathBuf::from(a.first().ok_or("screenshot <file.png>")?);
+                w.spawn(Screenshot::primary_window()).observe(save_to_disk(path.clone()));
+                Ok(Some(format!("saving {}", path.display())))
+            },
+        );
     }
 }
 

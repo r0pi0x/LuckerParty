@@ -35,7 +35,7 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   src/logic/breakables.rs). Left: breakable follow-ups (section 7),
   `prop_door_rotating` (model doors: cs_assault, de_port), train facing/banking and
   player train control, `trigger_soundscape` through the general touch
-  code, round restarts re-creating entities, env_global. Target: two
+  code, env_global. (Round restarts re-create entities: rounds plan.) Target: two
   real minigame maps from the user's downloads.
 
 ## 2b. HUD and debug views
@@ -66,12 +66,14 @@ burst), HUD, deathmatch and a first bot are in.
 - The AWP's view model is in (MDL v48 reads like v44,
   specs/cs_source/mdl_v48.md); compare its fire and reload against the
   game. HL2 v48 models with zero-frame data (streamed) aren't handled.
-- Zoom sensitivity (`zoom_sensitivity_ratio`), CS:S's own scope overlay
-  texture, the silenced world models (`w_*_silencer.mdl`).
+- Zoom: measure `zoom_sensitivity_ratio` and compare the scope overlay
+  (the game's textures, laid out by eye) with CS:S.
 - Rounds, money and buying: slice 1 done (`mashup_rounds 1`,
   [plans/active/rounds.md](plans/active/rounds.md)); next: buy zones, a
   buy menu, ammo, round sounds, objectives.
-- Reload, grenade and death animations (world models are held by bodies).
+- Grenade and death animations on bodies (the reload gesture is in:
+  `<Move>_Reload_<weapon>` by activity, an assumption for the spec's
+  `reload_<suffix>`; shotgun start/loop/end reloads not yet).
 - Impact effects, remaining (specs/cs_source/impact_effects.md; the
   surface effects, blood, bullet splashes and pane glass shards are in):
   section 9's exact shard burst at the hit point (ours spreads shards
@@ -118,7 +120,8 @@ burst), HUD, deathmatch and a first bot are in.
 
 The console and overlays are in (src/console.rs, src/client/console.rs).
 
-- `net_graph` beyond cl_showfps 2; `cl_showpos 2`.
+- `net_graph` shows local numbers only (fps, frame time, tick rate,
+  entities); ping and traffic once there is networking. `cl_showpos 2`.
 - Select-and-copy with the mouse in the output; `con_copy [lines]` copies
   to the clipboard and `con_dump` writes a file meanwhile.
 

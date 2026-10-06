@@ -1378,3 +1378,6 @@ fn parented_brushes_follow_their_mover() {
     assert!((o - Vec3::new(0.0, 32.0, 50.0)).length() < 1e-3, "window at {o}");
     assert_eq!(angles_of(&w, glass).y, 90.0);
 }
+
+#[path = "restart_tests.rs"]
+mod restart;

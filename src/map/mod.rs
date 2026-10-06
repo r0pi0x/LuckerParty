@@ -1333,6 +1333,12 @@ impl Plugin for MapPlugin {
                     .before(crate::core::SimSet::Movement),
             )
             .add_systems(FixedUpdate, fall_out_of_map.after(crate::core::SimSet::Movement))
+            .add_systems(
+                FixedUpdate,
+                breakables::round_restart
+                    .after(crate::core::SimSet::Rules)
+                    .before(crate::core::SimSet::Movement),
+            )
             .add_systems(FixedPostUpdate, breakables::update_panes)
             .add_systems(Update, (breakables::spawn_gibs, breakables::fly_gibs).chain())
             .add_systems(
@@ -1481,14 +1487,7 @@ fn spawn_map(
             }
             let scale = data.entity_scale;
             let rotation = entities::entity_rotation(e.angles());
-            let hulls: Vec<_> = e
-                .hulls
-                .iter()
-                .filter_map(|h| {
-                    Collider::convex_hull(h.points.iter().map(|p| entities::entity_to_engine(*p, scale)).collect())
-                })
-                .map(|c| (Vec3::ZERO, Quat::IDENTITY, c))
-                .collect();
+            let collider = entities::brush_collider(e, scale);
             let mut node = commands.spawn((
                 Name::new(format!("Brush entity {i} ({})", e.classname())),
                 MapPart,
@@ -1498,8 +1497,8 @@ fn spawn_map(
                 Visibility::default(),
                 ChildOf(root),
             ));
-            if !hulls.is_empty() {
-                node.insert((MapBrushCollider, RigidBody::Kinematic, Collider::compound(hulls)));
+            if let Some(collider) = collider {
+                node.insert((MapBrushCollider, RigidBody::Kinematic, collider));
             }
             Some(node.id())
         })

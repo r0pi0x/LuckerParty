@@ -96,6 +96,19 @@ pub fn rotation_to_engine(q: Quat) -> Quat {
     Quat::from_xyzw(q.x, q.z, -q.y, q.w)
 }
 
+/// A brush entity's collider: its volumes as convex hulls, in the
+/// node's space (engine axes, unrotated). None without volumes.
+pub fn brush_collider(e: &MapEntity, scale: f32) -> Option<avian3d::prelude::Collider> {
+    use avian3d::prelude::Collider;
+    let hulls: Vec<_> = e
+        .hulls
+        .iter()
+        .filter_map(|h| Collider::convex_hull(h.points.iter().map(|p| entity_to_engine(*p, scale)).collect()))
+        .map(|c| (Vec3::ZERO, Quat::IDENTITY, c))
+        .collect();
+    (!hulls.is_empty()).then(|| Collider::compound(hulls))
+}
+
 /// The loaded map's entities (from `MapData::entities`), for the logic
 /// layer; replaced when a map loads, removed when it unloads.
 #[derive(Resource, Clone, Debug)]

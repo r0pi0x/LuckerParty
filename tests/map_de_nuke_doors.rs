@@ -2,7 +2,8 @@
 //! (specs/source/doors_buttons.md, "func_door_rotating"): brush doors in
 //! pairs linked by chainstodoor (spawnflags 1280, distance 90, speed 200,
 //! wait 4); using one opens both 90 degrees in 0.45 s (30 ticks), and they
-//! close after their wait. Skipped without an install.
+//! close after their wait; a round restart closes them. Skipped without
+//! an install.
 
 use bevy::prelude::*;
 use mashup::{
@@ -10,6 +11,7 @@ use mashup::{
         self, cs_source,
         cs_source::movement::{self, SourceMovementPlugin, to_engine},
     },
+    core::RoundRestarts,
     harness::Sim,
     logic::{Logic, movers::pusher},
     map::{MapData, MapEntity, MapPlugin},
@@ -118,4 +120,14 @@ fn doors_are_chained_rotating_pairs_that_open_on_use() {
     assert_eq!(turned(&sim), (90.0, 90.0), "still open during the wait");
     sim.ticks(32);
     assert_eq!(turned(&sim), (0.0, 0.0), "closed again");
+
+    // Open them again, then a round restart: closed at once.
+    sim.intent(p).use_key = true;
+    sim.ticks(1);
+    sim.intent(p).use_key = false;
+    sim.ticks(20);
+    assert!(turned(&sim).0 > 30.0, "opening");
+    sim.app.world_mut().resource_mut::<RoundRestarts>().0 += 1;
+    sim.ticks(1);
+    assert_eq!(turned(&sim), (0.0, 0.0), "a new round starts with them closed");
 }

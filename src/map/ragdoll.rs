@@ -12,7 +12,8 @@
 //!   owner gets `Ragdolled` and loses its drawn body to the ragdoll.
 //! - Ragdolls collide with the world and props only
 //!   (`core::RAGDOLL_LAYER`), sleep after 5 s of stillness, and go away
-//!   when their owner lives again (respawn or round restart) or is gone.
+//!   at a round restart and when their owner lives again (respawn) or is
+//!   gone.
 
 use std::collections::VecDeque;
 
@@ -470,14 +471,21 @@ pub fn spawn_ragdoll(
     ragdoll_entity
 }
 
-/// Ragdolls go when their owner is alive again or gone; their drawn body
-/// goes with them and the owner gets a fresh one.
+/// Ragdolls go at a round restart (spec 6.4) and when their owner is
+/// alive again or gone; their drawn body goes with them and the owner
+/// gets a fresh one.
 fn remove_ragdolls(
     ragdolls: Query<(Entity, &Ragdoll)>,
     owners: Query<Option<&Health>>,
+    restarts: Option<Res<crate::core::RoundRestarts>>,
     mut commands: Commands,
 ) {
+    let restart = restarts.is_some_and(|r| r.is_changed() && !r.is_added());
     for (e, r) in &ragdolls {
+        if restart {
+            despawn_ragdoll(&mut commands, e, r);
+            continue;
+        }
         let alive = match owners.get(r.owner) {
             Ok(h) => h.is_none_or(|h| h.current > 0.0),
             Err(_) => true,

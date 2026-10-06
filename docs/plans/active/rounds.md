@@ -36,7 +36,25 @@ restarts.
    (`primammo`/`secammo`), bot buying preferences (ours: `economy::autobuy`, the dearest primary for the team then armour), the game's own VGUI buy-menu look
    (ours: `client/buy_menu.rs`, B or `buymenu`, number keys, team-only
    guns marked; rounds start from the team pistol and knife).
-3. Round restarts re-creating map entities (logic layer). Done: the
+3. Round restarts re-creating map entities: done. `start_round` counts
+   `core::RoundRestarts` up; the logic bridge re-creates its world from
+   the map's entities (`LogicWorld::round_restart`: doors, buttons,
+   movers and trains at their start, triggers re-armed, timers,
+   counters and relays as spawned, the event queue dropped, logic_auto
+   firing again 0.2 s later) and shows the nodes of broken or killed
+   entities again (they are hidden, no longer despawned); the map layer
+   clears gibs and particles and makes broken windows whole; game_text
+   messages are cleared. Kept as they are: `world::ROUND_KEEP`, the
+   preserve list from the public multiplayer code the spec quotes
+   (func_brush, func_wall, func_buyzone, info_target, soundscapes,
+   ropes, sky_camera). Tests: logic unit tests (`restart_tests.rs`),
+   tests/map_logic.rs, de_nuke vents and doors, cs_office windows.
+   Open (probe server, entity_io.md open question 1): CS:S's own keep
+   list (does a func_brush disabled in round 1 stay disabled?); which
+   logic_auto outputs fire each round (ours: OnNewGame, OnMapSpawn,
+   OnMultiNewRound; OnMultiNewMap only at map load); whether decals,
+   prop_physics and env_global states reset; whether the restart runs
+   at the freeze's start (ours) or the round's end. Also done: the
    announcer (`map::RoundSounds`: `Event.TERWin`/`Event.CTWin`/
    `Event.RoundDraw`, a radio line when the round goes live; whether the
    game plays it at freeze end for both teams is to check) and team
@@ -50,3 +68,9 @@ restarts.
   replacing deathmatch: minigame maps and quick playtests keep instant
   respawns. Money lives in the weapon layer next to buying, which the
   rules layer drives through `BuyWindow`.
+- 2026-10-06: round restarts reach the logic and map layers through a
+  core counter (`RoundRestarts`) rather than a message, so a restart is
+  never missed between fixed ticks and layers that load later see the
+  current count; rules run in `SimSet::Rules`, before the logic.
+  Re-creating the whole logic world (instead of resetting each class)
+  matches CS:S, which re-creates map entities from the entity lump.

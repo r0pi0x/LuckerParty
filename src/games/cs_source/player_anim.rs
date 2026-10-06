@@ -116,6 +116,8 @@ pub struct PlayerAnim {
     moving: Queue,
     /// The fire layer: sequence and cycle.
     fire: Option<(usize, f32)>,
+    /// The reload layer: sequence and cycle.
+    reload: Option<(usize, f32)>,
 }
 
 impl Default for PlayerAnim {
@@ -133,6 +135,7 @@ impl Default for PlayerAnim {
             idle: Queue::default(),
             moving: Queue::default(),
             fire: None,
+            reload: None,
         }
     }
 }
@@ -161,6 +164,8 @@ pub struct Inputs {
     pub on_ground: bool,
     pub jumped: bool,
     pub fired: bool,
+    /// A reload started this update.
+    pub reloaded: bool,
 }
 
 /// What the state decided: pose parameters by name and the render yaw.
@@ -298,7 +303,7 @@ impl PlayerAnim {
         a.advance(dt, now);
         let cycle = a.cycle;
         // Upper-body layers 1-4, phase-locked to the legs.
-        a.layers.resize(5, None);
+        a.layers.resize(6, None);
         let seq = |name: String| set.sequence(&name);
         let idle_name = if activity == Activity::CrouchIdle {
             format!("Crouch_Idle_Upper_{suffix}")
@@ -361,6 +366,32 @@ impl PlayerAnim {
             cycle,
             weight: 1.0,
         });
+        // Reload layer (order 6). The spec's generic `reload_<suffix>`
+        // doesn't exist in CS:S's data; it has `<Move>_Reload_<suffix>`
+        // by the main activity instead (spec 12, Open questions).
+        if i.reloaded {
+            let name = match activity {
+                Activity::Run => "Run_Reload_",
+                Activity::Walk => "Walk_Reload_",
+                Activity::CrouchIdle => "Crouch_Idle_Reload_",
+                Activity::CrouchWalk => "Crouch_Walk_Reload_",
+                _ => "Idle_Reload_",
+            };
+            self.reload = set
+                .sequence(&format!("{name}{suffix}"))
+                .or_else(|| set.sequence(&format!("Reload_{suffix}")))
+                .map(|s| (s, 0.0));
+        } else if let Some((s, c)) = &mut self.reload {
+            *c += set.cycle_rate(*s, &a.params) * dt;
+            if *c > 1.0 {
+                self.reload = None;
+            }
+        }
+        layers[5] = self.reload.map(|(sequence, cycle)| Layer {
+            sequence,
+            cycle,
+            weight: 1.0,
+        });
         a.layers = layers;
         Outputs {
             move_x,
@@ -406,14 +437,23 @@ pub fn suffix(weapon: Option<&str>) -> &'static str {
 /// Characters hold their active weapon's world model.
 fn hold_weapons(
     characters: Query<(Entity, Option<&Inventory>, Option<&crate::map::Held>), With<Animator>>,
-    weapons: Query<&Weapon>,
+    weapons: Query<(&Weapon, Option<&crate::weapon::AltModes>)>,
     mut commands: Commands,
 ) {
     for (e, inventory, held) in &characters {
+        // With the silencer on, its own world model.
         let id = inventory
             .and_then(|i| i.active)
             .and_then(|w| weapons.get(w).ok())
-            .map(|w| w.id.to_string());
+            .map(|(w, modes)| {
+                let silenced = modes.is_some_and(|m| m.current == 1)
+                    && super::weapons::SILENCED_WORLD_MODELS.iter().any(|(id, _)| *id == w.id);
+                if silenced {
+                    super::weapons::silenced_key(w.id)
+                } else {
+                    w.id.to_string()
+                }
+            });
         if held.is_none_or(|h| h.0 != id) {
             commands.entity(e).insert(crate::map::Held(id));
         }
@@ -437,11 +477,16 @@ fn drive(
     mut events: MessageReader<WeaponEvent>,
     mut commands: Commands,
 ) {
-    let fired: Vec<Entity> = events
+    let events: Vec<(Entity, bool)> = events
         .read()
-        .filter(|e| matches!(e.kind, WeaponEventKind::Shot { .. } | WeaponEventKind::Swing { .. }))
-        .map(|e| e.owner)
+        .filter_map(|e| match e.kind {
+            WeaponEventKind::Shot { .. } | WeaponEventKind::Swing { .. } => Some((e.owner, false)),
+            WeaponEventKind::ReloadStarted => Some((e.owner, true)),
+            _ => None,
+        })
         .collect();
+    let fired: Vec<Entity> = events.iter().filter(|(_, r)| !r).map(|(e, _)| *e).collect();
+    let reloaded: Vec<Entity> = events.iter().filter(|(_, r)| *r).map(|(e, _)| *e).collect();
     let (dt, now) = (time.delta_secs(), time.elapsed_secs_f64());
     for (e, mut animator, state, intent, velocity, movement, health, inventory) in &mut characters {
         let Some(mut state) = state else {
@@ -464,6 +509,7 @@ fn drive(
             on_ground: movement.on_ground,
             jumped,
             fired: fired.contains(&e),
+            reloaded: reloaded.contains(&e),
         };
         let weapon = inventory.and_then(|i| i.active).and_then(|w| weapons.get(w).ok());
         let suffix = suffix(weapon.map(|w| w.id));
