@@ -161,7 +161,12 @@ fn sequences(mount: &Mount, path: &str) -> Result<(), String> {
     let read = |p: &str| mount.read(&p.to_lowercase().replace('\\', "/")).ok();
     let bones = cs_source::anim::bones(&read, path)?;
     let set = cs_source::anim::load(&read, path)?;
-    println!("{path}: {} bones, {} animations, {} sequences", bones.len(), set.animations.len(), set.sequences.len());
+    println!(
+        "{path}: {} bones, {} animations, {} sequences",
+        bones.len(),
+        set.animations.len(),
+        set.sequences.len()
+    );
     for (i, (name, parent, _, _)) in bones.iter().enumerate() {
         println!("  bone {i:>3} {name} (parent {parent:?})");
     }
@@ -170,7 +175,11 @@ fn sequences(mount: &Mount, path: &str) -> Result<(), String> {
     }
     for (i, s) in set.sequences.iter().enumerate() {
         let a = &set.animations[s.anims[0]];
-        let duration = if a.frames > 1 { (a.frames - 1) as f32 / a.fps } else { 0.0 };
+        let duration = if a.frames > 1 {
+            (a.frames - 1) as f32 / a.fps
+        } else {
+            0.0
+        };
         println!(
             "  seq {i:>3} {:24} {:28} w{:<3} {:>4} frames {:>5.1} fps {duration:>7.4} s{}",
             s.name,
@@ -187,7 +196,10 @@ fn sequences(mount: &Mount, path: &str) -> Result<(), String> {
     let (attachments, illum) = cs_source::anim::attachments(&read, path)?;
     for (name, bone, t) in attachments {
         let (x, y, z) = (t.rotation * Vec3::X, t.rotation * Vec3::Y, t.rotation * Vec3::Z);
-        println!("  attachment {name:?} bone {bone} at {} axes x {x} y {y} z {z}", t.translation);
+        println!(
+            "  attachment {name:?} bone {bone} at {} axes x {x} y {y} z {z}",
+            t.translation
+        );
     }
     println!("  illumination position {illum}");
     Ok(())

@@ -4272,6 +4272,7 @@ dependencies = [
 name = "mashup"
 version = "0.1.0"
 dependencies = [
+ "arboard",
  "avian3d",
  "bevy",
  "bevy-inspector-egui",

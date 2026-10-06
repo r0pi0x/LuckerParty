@@ -65,3 +65,27 @@ Started 2026-10-05, from specs/cs_source/weapons.md. MVP plan items 4–5.
    (M1). Fits and guesses are in docs/tech-debt.md.
 6. [ ] View models and world models; impact decals and effects; tracers.
 7. [ ] The other CS:S weapons from the script tables.
+   - [x] M4A1, AWP, USP, Glock, Deagle (2026-10-06). Guns are `Gun`
+     rows of script values in `games/cs_source/weapons.rs` (the spec's
+     tables; sound entries and model paths checked against the install
+     by `tests/map_de_dust2.rs::gun_models_icons_and_handedness`; reload,
+     draw and silencer sounds at the view models' event times from
+     `dump --sequences`), built by `gun`. New weapon parts: `AltModes`
+     (attack2 steps modes; `toggle_time`, silencers block both attacks),
+     `Zoom` (FOV per mode, zoomed speed, unzoom after a shot until the
+     next may fire; owner gets `Zoomed`, which the client camera, the
+     scope overlay and the view-model hiding follow), `Burst` (rounds
+     fired on their own after the pull), `WeaponSounds::fire_alt`,
+     draw and mode sounds, `WeaponEventKind::ModeChanged`. `Inaccuracy`
+     uses the `*Alt` keys in a non-zero mode. Starting weapons are per
+     team (`StartingWeapons::team`): Terrorists knife + Glock, everyone
+     else knife + USP, plus the AK-47 for all (deathmatch rifle, drawn).
+     Tests: `tests/cs_guns.rs` (damage with falloff, armour and
+     headshots; deploy, refire, reload ticks; first kicks; zoom levels,
+     speed, unzoom/re-zoom; silencer and burst timing), view-model cases
+     in `tests/view_models.rs`.
+   - [ ] Real-game checks (probe): silenced damage/range (M16), scoped
+     and silenced/burst recoil, the Glock's burst refire, the M4A1's
+     moving/airborne kicks, pistol punch caps, whether reloading
+     unzooms, 556MM/9MM penetration, 45ACP's distance limit.
+   - [ ] The rest (backlog section 3).

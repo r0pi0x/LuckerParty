@@ -30,37 +30,51 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
 
 - A test map with every supported entity (`mashup_logic_test`, generated
   `.vmf`, compiled with Valve's tools; plan section "Test map").
-- Entity I/O and triggers (spec first): outputs/inputs with delays,
-  `logic_*`, `math_counter`, `trigger_teleport`/`push`/`multiple`/
-  `once`; then moving brush entities (doors, buttons, platforms,
-  breakables) with movement on moving solids. Target: two real minigame
-  maps from the user's downloads.
+- Entity I/O, triggers and moving brushes are in (`src/logic`, slices 3
+  and 4 of the plan), and breakables (func_breakable, func_breakable_surf;
+  src/logic/breakables.rs). Left: breakable follow-ups (section 7),
+  `prop_door_rotating` (model doors: cs_assault, de_port), train facing/banking and
+  player train control, `trigger_soundscape` through the general touch
+  code, round restarts re-creating entities, env_global. Target: two
+  real minigame maps from the user's downloads.
 
 ## 2b. HUD and debug views
 
-- CS:S HUD: health/armour/ammo panels, death notices and the Tab
-  scoreboard are in (`client/game_hud.rs`, `client/scoreboard.rs`). Left:
-  the team menu (`jointeam 2|3` exists; you start as CT), ping on the
-  scoreboard, round timer and money panels once
-  rounds and money exist, the ammo-type icon (a `640hud1` sprite), the
-  damage direction indicators (`pain_*` sprites), weapon selection,
-  hint text, radar.
-- Debug overlays: `mashup_drawhitboxes` and `mashup_healthbars` exist;
-  add more as features need them (nav mesh, sound radii, bot state).
+- CS:S HUD: health/armour/ammo/money/round-timer panels, death notices
+  and the Tab scoreboard are in (`client/game_hud.rs`,
+  `client/scoreboard.rs`). Left: the team menu (`jointeam 2|3` exists;
+  you start as CT), ping and team scores on the scoreboard, weapon
+  selection, hint text. The radar is in (`client/radar.rs`: the map overview turning
+  with you, team dots, your place name); its range (2200 units) is a guess.
+- Debug overlays: `mashup_drawhitboxes`, `mashup_healthbars`,
+  `mashup_drawnav`, `mashup_drawbots` exist; add more as features need
+  them (sound radii, triggers).
 
 ## 3. Weapons, remaining
 
 In progress: [plans/active/weapons.md](plans/active/weapons.md). The
-framework, knife, AK-47, HUD, deathmatch and a first bot are in.
+framework, knife, AK-47, M4A1, AWP, USP, Glock, Deagle (zoom, silencers,
+burst), HUD, deathmatch and a first bot are in.
 
-- The other CS:S weapons from the script tables (M4A1, USP, Glock,
-  Deagle, AWP first: their recoil and inaccuracy are measured; zoom M15,
-  burst/silencer M16 are measured too).
-- Money and a buy menu (`buy` gives for free).
+- The other CS:S guns from the spec's script tables, as `Gun` rows in
+  `games/cs_source/weapons.rs`: rifles (aug, famas with its burst, galil,
+  sg552 and aug scopes), snipers (scout, sg550, g3sg1), SMGs, m249,
+  p228/fiveseven/elite; their recoil isn't measured (probe M3 first), nor
+  the 556MM/9MM/57MM/357SIG penetration. Shotguns (m3, xm1014) need
+  pellets plus the shell-by-shell reload (M9).
+- The AWP's view model is in (MDL v48 reads like v44,
+  specs/cs_source/mdl_v48.md); compare its fire and reload against the
+  game. HL2 v48 models with zero-frame data (streamed) aren't handled.
+- Zoom sensitivity (`zoom_sensitivity_ratio`), CS:S's own scope overlay
+  texture, the silenced world models (`w_*_silencer.mdl`).
+- Rounds, money and buying: slice 1 done (`mashup_rounds 1`,
+  [plans/active/rounds.md](plans/active/rounds.md)); next: buy zones, a
+  buy menu, ammo, round sounds, objectives.
 - Reload, grenade and death animations (world models are held by bodies).
 - Impact effects, remaining (specs/cs_source/impact_effects.md; the
-  surface effects, blood and bullet splashes are in): glass shards
-  (need breakable glass, `func_breakable_surf`), slime splashes
+  surface effects, blood, bullet splashes and pane glass shards are in):
+  section 9's exact shard burst at the hit point (ours spreads shards
+  over each shattered pane), slime splashes
   (`.pcf` systems), the knife's water splash, the 30 % ricochet sound,
   ragdoll pushes; check the spec's open questions in the game. The muzzle
   flash's light on nearby walls is part of the view-model work (1C
@@ -72,15 +86,25 @@ framework, knife, AK-47, HUD, deathmatch and a first bot are in.
   parts of the lid and rim don't draw (seen from above, faces missing).
   Suspect the model converter's winding fix-up (it winds triangles
   against the vertex normals) or back-face culling of a two-sided part.
-- Dropping weapons (`drop`, CS:S's G key): the world model falls as a
-  physics object, can be picked up by walking over it; dead players drop
-  theirs.
+- Dropping weapons, remaining (`drop`/G, pickup and death drops are in,
+  `weapon/drop.rs`): throw speed, the re-pick delay, pickup reach and
+  mass are guesses (measure on the probe server); bullets hit loose
+  weapons; the use key doesn't swap a weapon for the one you look at.
 - Ragdolls on death: the player model's ragdoll from its `.phy` (bones as
   rigid bodies with joint limits), seeded with the death pose and the
   killing hit's impulse.
 - Held weapons don't stay in other players' hands (they float around the
-  hands): check the bone merge onto `weapon_bone` and the hand bones, and
-  the IK hand locks the animation spec leaves out (open question "IK").
+  hands). Findings 2026-10-06: the world model's mesh follows the player's
+  animated `weapon_bone` (child of the spine), which is right; the arms
+  only follow their own animation. At idle the hands already sit on the
+  AK (checked with `+thirdperson +cam_idealyaw 140`). A two-bone IK onto
+  `weapon_bone_RHand`/`_LHand` was tried and dropped: `_LHand` is a child
+  of `_RHand` and pulled the left hand onto the grip, so those bones
+  aren't plain hand targets. Needs a spec of Source's IK chains, the
+  sequences' IK rules and locks (the animation spec's open question "IK"),
+  and a reproduction of the floating. With `mashup_freecam 2` the AK
+  sits in both hands standing, crouched and firing (2026-10-06); still to
+  check: pistols and the knife, running, jumping, and bots.
 
 ## 4. Bots
 
@@ -92,15 +116,16 @@ framework, knife, AK-47, HUD, deathmatch and a first bot are in.
 The console and overlays are in (src/console.rs, src/client/console.rs).
 
 - `net_graph` beyond cl_showfps 2; `cl_showpos 2`.
-- Select-and-copy in the output (clipboard); `con_dump` writes it to a
-  file meanwhile.
+- Select-and-copy with the mouse in the output; `con_copy [lines]` copies
+  to the clipboard and `con_dump` writes a file meanwhile.
 
 ## 6. Sound, remaining
 
 docs/plans/active/sound.md.
 
 - Scrapes (looping friction sounds): needs a stand-in for Source's
-  friction energy (spec open question 8); break sounds with breakables.
+  friction energy (spec open question 8); breakables' spec pitch/volume
+  rules (we play the entries as scripted) and gib bounce sounds.
 - `ambient_generic` (with entity inputs once maps need them), soundscape
   DSP presets (room reverb), env_soundscape visibility checks.
 - Measure on the probe server: the distance curves (replace the H1/H2
@@ -110,27 +135,30 @@ docs/plans/active/sound.md.
 
 - The player physics shadow for `prop_physics` (dust2 has none).
 - Impact damage, breakable props.
-- The "use" key (CS:S `+use`, E): trace from the eye to usable
-  entities; doors on de_nuke (and elsewhere) open and close with it
-  (`func_door`, `func_door_rotating`, `prop_door_rotating`: movement,
-  speed, wait/return, blocking, sounds). Shares the moving-brush work
-  with the minigame plan.
-- Breakable vents on de_nuke (`func_breakable` with health and material
-  gibs): take damage, break into gibs, open the vent.
-- Breakable glass as in cs_office (`func_breakable_surf`): windows that
-  take a hole per bullet, crack around it, shatter in pieces when hit
-  hard or damaged enough, and let bullets and players through once
-  broken; the glass-break decal, shard and grit effects (impact effects
-  spec covers the shards) and break sounds. Needs a spec (public SDK) and
+- `prop_door_rotating` (model doors) with the use key; brush doors
+  (`func_door`, `func_door_rotating`) and `+use` are done (src/logic).
+- Breakables, remaining (vents and windows break: src/logic/breakables.rs,
+  tests/map_breakables.rs): the cracked look of a broken window's panes
+  (`$crackmaterial`, jagged edge pieces; spec open question 8), the
+  falling pane pieces (`models/brokenglass_piece.mdl`; collapsing panes
+  just shatter now), the GlassBreak/BulletProof decals, break-on-pressure
+  (flag 4), physics impact damage to breakables, explosions on break, the
+  window's flip to the attacked side, propdata templates, the spec's open
+  questions on the probe server (bullet/knife damage types, broken brush
+  visibility, shots after a window breaks). Needs a spec (public SDK) and
   brush entities, which the world loader skips today.
 
 ## 8. Visual fidelity
 
-- **Water surfaces**: swimming works (`MapWater`), but water faces draw as
-  plain textured surfaces (or, without a base texture, their opaque fog
-  colour with cubemap reflections), without the Water shader's
-  refraction, reflection or fog: clear water looks murky. Water currents
-  (base velocity) aren't applied.
+- **Water surfaces** (specs/cs_source/water.md, `map::water`): refraction,
+  planar reflection, the cheap cubemap pass, under-water fog and bottom
+  materials are in. Left: `$underwateroverlay` (de_port's `water_warp01`
+  screen warp), the intersection view when the near plane crosses the
+  surface, `$blurrefract`/`$refracttint` and the `$basetexture` variant,
+  the water cvars (`r_waterforceexpensive`, `r_waterforcereflectentities`,
+  `mat_drawwater`, ...), under-water fog on decals, ropes and particles,
+  and a refcmp comparison of de_port/de_chateau water (no reference
+  captures yet). Water currents (base velocity) aren't applied.
 - **HDR parity**: CS:S defaults to mat_hdr_level 2 on dust2 (HDR lightmaps,
   tonemapping, bloom); the reference install runs LDR. Compare and match
   both if players use HDR. Tonemap (`env_tonemap_controller`).
@@ -158,9 +186,9 @@ Counts are from de_dust2's entity lump and static prop lump.
 - **Verify inferred Source rules** with the comparison tool, using a local
   copy of a map with test entities added where dust2 has no example: floor
   and ceiling decal orientation, decal reach, overall brightness/tonemapping.
-- **Brush entities**: they draw and collide where they spawn; doors
-  don't open, breakables don't break, func_rotating doesn't turn, render
-  modes other than normal and 10 (translucent func_brush) aren't applied.
+- **Brush entities**: movers (doors, buttons, func_rotating, trains,
+  func_brush) move through the logic layer, breakables break; render modes other than normal and 10 (translucent func_brush) aren't
+  applied.
 - **Fire** (`env_fire`, 16) and other effects, if they show in normal play.
 - **Lightmap styles**: switching lights and animated styles (lights lit at
   map start are baked in).

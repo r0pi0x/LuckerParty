@@ -1020,8 +1020,12 @@ pub struct HeldActions {
     pub attack: bool,
     pub attack2: bool,
     pub reload: bool,
+    /// The use key (`+use`): doors, buttons.
+    pub use_key: bool,
     /// The scoreboard (`+showscores`, Tab in CS:S).
     pub showscores: bool,
+    /// Free look (`+freelook`, Left Alt): the mouse turns the camera only.
+    pub freelook: bool,
 }
 
 const ACTIONS: &[&str] = &[
@@ -1035,7 +1039,9 @@ const ACTIONS: &[&str] = &[
     "attack",
     "attack2",
     "reload",
+    "use",
     "showscores",
+    "freelook",
 ];
 
 /// Source key names.
@@ -1301,7 +1307,9 @@ fn client_commands(app: &mut App) {
                         "moveright" => h.moveright = on,
                         "attack2" => h.attack2 = on,
                         "reload" => h.reload = on,
+                        "use" => h.use_key = on,
                         "showscores" => h.showscores = on,
+                        "freelook" => h.freelook = on,
                         _ => h.attack = on,
                     }
                     Ok(None)
@@ -1411,7 +1419,14 @@ fn client_commands(app: &mut App) {
                 .filter(|m| m.contains(&filter))
                 .map(|m| {
                     let from = map_source(&m);
-                    format!("{m}{}", if from == "game" { String::new() } else { format!("  ({from})") })
+                    format!(
+                        "{m}{}",
+                        if from == "game" {
+                            String::new()
+                        } else {
+                            format!("  ({from})")
+                        }
+                    )
                 })
                 .collect();
             Ok(Some(if lines.is_empty() {
@@ -1480,6 +1495,23 @@ fn client_commands(app: &mut App) {
             std::fs::write(&path, text.join("\n")).map_err(|e| e.to_string())?;
             Ok(Some(format!("wrote {}", path.display())))
         },
+    )
+    .console_command(
+        "con_copy",
+        "con_copy [lines]: copy the console output (or its last lines) to the clipboard.",
+        |w, a| {
+            let output = &w.resource::<Console>().output;
+            let n = match a.first() {
+                Some(n) => n.parse::<usize>().map_err(|_| format!("bad line count \"{n}\""))?,
+                None => output.len(),
+            };
+            let text: Vec<String> = output.iter().skip(output.len().saturating_sub(n)).map(|l| l.text.clone()).collect();
+            let count = text.len();
+            arboard::Clipboard::new()
+                .and_then(|mut c| c.set_text(text.join("\n")))
+                .map_err(|e| format!("clipboard: {e}"))?;
+            Ok(Some(format!("copied {count} lines")))
+        },
     );
 }
 
@@ -1541,10 +1573,16 @@ mod tests {
         press(&mut app, KeyCode::Backquote);
         assert!(app.world().resource::<ConsoleUi>().open && !grabbed(&app));
         press(&mut app, KeyCode::Backquote);
-        assert!(!app.world().resource::<ConsoleUi>().open && grabbed(&app), "tilde should recapture");
+        assert!(
+            !app.world().resource::<ConsoleUi>().open && grabbed(&app),
+            "tilde should recapture"
+        );
         press(&mut app, KeyCode::Backquote);
         press(&mut app, KeyCode::Escape);
-        assert!(!app.world().resource::<ConsoleUi>().open && !grabbed(&app), "escape leaves the mouse free");
+        assert!(
+            !app.world().resource::<ConsoleUi>().open && !grabbed(&app),
+            "escape leaves the mouse free"
+        );
     }
 
     use super::*;

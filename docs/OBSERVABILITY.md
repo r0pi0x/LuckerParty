@@ -69,6 +69,10 @@ Only `Reflect`-registered types are visible; register new core components in
   action from the start, e.g. to fire in a `--screenshot` run; held
   console actions work without mouse capture. Automated runs never write
   config.cfg, and only archived cvars are saved there.
+- `mashup_drawnav 1` outlines the nav areas near you (2: all), coloured by
+  place, with half-links toward their neighbours; `mashup_drawbots 1`
+  shows each bot's look direction, target (red), last known enemy
+  position (orange), route (cyan) and roaming goal (purple).
 - `mashup_drawhitboxes 1` outlines other characters' hitboxes, coloured
   by hitgroup, where shots test them (e.g. `+bot_stop 1 +bot_add 2
   +mashup_drawhitboxes 1` with `--screenshot` to check they follow the
@@ -85,7 +89,18 @@ Only `Reflect`-registered types are visible; register new core components in
 - `thirdperson` (back with `firstperson`; distance `cam_idealdist`, CS:S
   units) puts the camera behind the local player and draws its own
   animated body: `+thirdperson` in a `--screenshot` run shows the local
-  player's model and animation.
+  player's model and animation. `cam_idealyaw` orbits the camera
+  (degrees; `+cam_idealyaw 140` looks at the player's front, e.g. to see
+  how the hands hold the weapon). Holding Left Alt (`+freelook`) turns
+  only the camera; the aim stays put.
+- `mashup_freecam 1` detaches the camera and flies it (WASD, mouse,
+  space/ctrl up and down, shift faster) while your body stands still and
+  is drawn; `mashup_freecam 2` leaves the camera where it is and gives
+  the controls back, so you can walk, crouch and shoot in front of it
+  (watching your own animation and held weapon); 0 returns to the eye. In
+  a `--screenshot` run: `+thirdperson +cam_idealyaw 180 +wait 20
+  +mashup_freecam 2 +wait 3 +firstperson +wait 20 ++forward` films you
+  walking toward the camera.
 - View model (CS:S cvars): `viewmodel_fov` (54), `cl_righthand` (1;
   0 puts weapons in the left hand), `r_drawviewmodel 0` hides it,
   `cl_bobcycle`/`cl_bobup` (bob), `cl_wpn_sway_interp`/`cl_wpn_sway_scale`

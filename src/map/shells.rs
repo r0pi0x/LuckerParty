@@ -16,8 +16,8 @@ use super::{
     prop_material::PropMaterial,
     sound::{PlaySound, SoundBank},
     view_model::{
-        EffectSettings, ViewAnimator, ViewModelAnchor, ViewModelCamera, ViewModelEvent, ViewModelEventKind,
-        ViewModelOffset, VIEW_MODEL_LAYER,
+        EffectSettings, VIEW_MODEL_LAYER, ViewAnimator, ViewModelAnchor, ViewModelCamera, ViewModelEvent,
+        ViewModelEventKind, ViewModelOffset,
     },
 };
 
@@ -243,21 +243,27 @@ pub(super) fn eject(
         else {
             continue;
         };
-        let Some((parts, bounce)) = assets.models.get(&shell.to_lowercase()) else { continue };
+        let Some((parts, bounce)) = assets.models.get(&shell.to_lowercase()) else {
+            continue;
+        };
         let Some((_, eye, projection, children)) = anchors.iter().find(|(c, ..)| c.parent() == ev.owner) else {
             continue;
         };
         let Some((eye, world_fov, vm_fov)) = projection_of((eye, projection, children), &vm_cameras) else {
             continue;
         };
-        let Ok((view, offset, velocity)) = owners.get(ev.owner) else { continue };
-        let (Some(key), Some(animator)) = (view.key.as_deref(), view.animator.as_ref()) else { continue };
-        let Some(model) = models.as_ref().and_then(|m| m.get(key)) else { continue };
-        let mirror =
-            super::view_model::mirrored(model.right_handed, model.allow_flipping, settings.right_hand != 0);
+        let Ok((view, offset, velocity)) = owners.get(ev.owner) else {
+            continue;
+        };
+        let (Some(key), Some(animator)) = (view.key.as_deref(), view.animator.as_ref()) else {
+            continue;
+        };
+        let Some(model) = models.as_ref().and_then(|m| m.get(key)) else {
+            continue;
+        };
+        let mirror = super::view_model::mirrored(model.right_handed, model.allow_flipping, settings.right_hand != 0);
         let placed = super::view_model::placement(&offset.copied().unwrap_or_default(), mirror);
-        let Some(m) = super::view_model::attachment_transform(model, &animator.pose(now), attachment, &placed)
-        else {
+        let Some(m) = super::view_model::attachment_transform(model, &animator.pose(now), attachment, &placed) else {
             continue;
         };
         // The port's position and axes (skeleton: X forward, Y left, Z
@@ -275,7 +281,9 @@ pub(super) fn eject(
         if let Some(materials) = materials.as_mut() {
             let probe = light_field.as_ref().map(|f| (f.0.0)(origin));
             for (_, m) in parts {
-                let Some(mut material) = materials.get(m).cloned() else { continue };
+                let Some(mut material) = materials.get(m).cloned() else {
+                    continue;
+                };
                 if let Some(probe) = &probe {
                     material.params.set_probe(probe, assets.light_scale);
                 }

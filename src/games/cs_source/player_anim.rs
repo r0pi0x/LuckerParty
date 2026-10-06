@@ -231,9 +231,17 @@ impl PlayerAnim {
         if self.jumping.is_some() {
             Activity::Hop
         } else if i.ducked {
-            if moving { Activity::CrouchWalk } else { Activity::CrouchIdle }
+            if moving {
+                Activity::CrouchWalk
+            } else {
+                Activity::CrouchIdle
+            }
         } else if moving {
-            if speed > RUN_THRESHOLD { Activity::Run } else { Activity::Walk }
+            if speed > RUN_THRESHOLD {
+                Activity::Run
+            } else {
+                Activity::Walk
+            }
         } else {
             Activity::Idle
         }
@@ -402,7 +410,10 @@ fn hold_weapons(
     mut commands: Commands,
 ) {
     for (e, inventory, held) in &characters {
-        let id = inventory.and_then(|i| i.active).and_then(|w| weapons.get(w).ok()).map(|w| w.id.to_string());
+        let id = inventory
+            .and_then(|i| i.active)
+            .and_then(|w| weapons.get(w).ok())
+            .map(|w| w.id.to_string());
         if held.is_none_or(|h| h.0 != id) {
             commands.entity(e).insert(crate::map::Held(id));
         }
@@ -531,6 +542,10 @@ mod tests {
         assert_eq!(suffix(Some("cs_source:weapon_ak47")), "AK");
         assert_eq!(suffix(Some("cs_source:weapon_knife")), "KNIFE");
         assert_eq!(suffix(Some("cs_source:weapon_usp")), "PISTOL");
+        assert_eq!(suffix(Some("cs_source:weapon_glock")), "PISTOL");
+        assert_eq!(suffix(Some("cs_source:weapon_deagle")), "PISTOL");
+        assert_eq!(suffix(Some("cs_source:weapon_m4a1")), "M4");
+        assert_eq!(suffix(Some("cs_source:weapon_awp")), "AWP");
         assert_eq!(suffix(None), "Pistol");
     }
 }

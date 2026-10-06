@@ -85,7 +85,7 @@ impl SurfaceColors {
         for m in data
             .meshes
             .iter()
-            .filter(|m| !m.skybox && !m.material.starts_with("decal:"))
+            .filter(|m| !m.skybox && m.entity.is_none() && !m.material.starts_with("decal:"))
         {
             let base = avg(m.texture).unwrap_or_else(|| Vec3::from(m.color.map(|c| c as f32 / 255.0)));
             let second = m.blend.and_then(|b| avg(b.texture));

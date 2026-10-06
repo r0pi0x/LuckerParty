@@ -54,6 +54,9 @@ pub struct Resolved {
     pub surfaceprop: Option<String>,
     /// `$envmap` with a baked cubemap.
     pub envmap: Option<crate::map::MapEnvmap>,
+    /// `$color` x `$color2` (linear multiplier; the `srgb?` variants, which
+    /// the game uses as it renders in sRGB, win).
+    pub tint: Option<[f32; 3]>,
 }
 
 pub struct MaterialLoader<'a> {
@@ -88,7 +91,7 @@ impl<'a> MaterialLoader<'a> {
         self.mount.read(&path).ok()
     }
 
-    fn read_text(&self, path: &str) -> Option<String> {
+    pub(crate) fn read_text(&self, path: &str) -> Option<String> {
         self.read(path).map(|b| String::from_utf8_lossy(&b).into_owned())
     }
 
@@ -114,6 +117,7 @@ impl<'a> MaterialLoader<'a> {
                     unlit: false,
                     surfaceprop: None,
                     envmap: None,
+                    tint: None,
                 }
             }
         }
@@ -132,6 +136,7 @@ impl<'a> MaterialLoader<'a> {
             unlit: false,
             surfaceprop: None,
             envmap: None,
+            tint: None,
         };
         let vmt_path = format!("materials/{}.vmt", normalize(name));
         let Some(text) = self.read_text(&vmt_path) else {
@@ -247,6 +252,7 @@ impl<'a> MaterialLoader<'a> {
             unlit: matches!(material, vmt_parser::material::Material::UnlitGeneric(_)),
             surfaceprop: material.surface_prop().map(str::to_lowercase),
             envmap: self.envmap(&text, normal_map.is_some()),
+            tint: tint(&self.keys(&text, 0)),
         }
     }
 
@@ -515,6 +521,42 @@ impl<'a> MaterialLoader<'a> {
         index
     }
 
+    /// Every frame of an animated texture (one, for a still one), each with
+    /// its own mip levels.
+    pub fn texture_frames(&mut self, name: &str, srgb: bool) -> Vec<usize> {
+        let path = format!("materials/{}.vtf", normalize(name).trim_end_matches(".vtf"));
+        let decoded = (|| -> Result<Vec<MapTexture>, String> {
+            let bytes = self.read(&path).ok_or("not found")?;
+            let vtf = vtf::from_bytes(&bytes).map_err(|e| e.to_string())?;
+            (0..vtf.header.frames.max(1) as u32)
+                .map(|f| {
+                    let image = vtf.highres_image.decode(f).map_err(|e| e.to_string())?.to_rgba8();
+                    Ok(MapTexture {
+                        name: format!("{path}#{f}"),
+                        srgb,
+                        mips: frame_mip_levels(&bytes, &vtf.header, f).unwrap_or_default(),
+                        width: image.width(),
+                        height: image.height(),
+                        rgba8: image.into_raw(),
+                    })
+                })
+                .collect()
+        })();
+        match decoded {
+            Ok(frames) => frames
+                .into_iter()
+                .map(|t| {
+                    self.textures.push(t);
+                    self.textures.len() - 1
+                })
+                .collect(),
+            Err(e) => {
+                self.missing.push(format!("{path}: {e}"));
+                Vec::new()
+            }
+        }
+    }
+
     fn decode(&self, path: &str) -> Result<MapTexture, String> {
         let bytes = self.read(path).ok_or("not found")?;
         let vtf = vtf::from_bytes(&bytes).map_err(|e| e.to_string())?;
@@ -535,9 +577,19 @@ impl<'a> MaterialLoader<'a> {
 /// levels smallest first, before the full-size image; this mirrors how the
 /// `vtf` crate locates the full-size data, then walks back.
 fn mip_levels(bytes: &[u8], header: &vtf::header::VTFHeader) -> Option<Vec<Vec<u8>>> {
+    if header.frames > 1 {
+        return None;
+    }
+    frame_mip_levels(bytes, header, 0)
+}
+
+/// `mip_levels` of one frame of an animated texture (each level holds
+/// every frame in turn).
+fn frame_mip_levels(bytes: &[u8], header: &vtf::header::VTFHeader, frame: u32) -> Option<Vec<Vec<u8>>> {
     use vtf::{image::VTFImage, resources::ResourceType};
 
-    if header.mipmap_count <= 1 || header.frames > 1 || header.depth > 1 {
+    let frames = header.frames.max(1) as usize;
+    if header.mipmap_count <= 1 || header.depth > 1 || frame as usize >= frames {
         return None;
     }
     let format = header.highres_image_format;
@@ -568,9 +620,10 @@ fn mip_levels(bytes: &[u8], header: &vtf::header::VTFHeader) -> Option<Vec<Vec<u
         // Offset of level m: all smaller levels come first.
         let mut offset = data_start;
         for smaller in (m + 1)..count {
-            offset += size(smaller)?.2;
+            offset += size(smaller)?.2 * frames;
         }
-        let (w, h, _) = size(m)?;
+        let (w, h, level_size) = size(m)?;
+        offset += frame as usize * level_size;
         let mut single = header.clone();
         single.mipmap_count = 1;
         let img = VTFImage::new(single, format, w as u16, h as u16, bytes, offset);
@@ -627,6 +680,34 @@ fn stand_in_shader(text: &str) -> (std::borrow::Cow<'_, str>, Option<StandIn>) {
 /// `$detailblendmode` from a material's text (0 when absent).
 fn detail_blend_mode(text: &str) -> u32 {
     material_key(text, "$detailblendmode").unwrap_or(0)
+}
+
+/// `$color` x `$color2` from a material's keys, preferring their `srgb?`
+/// forms: `[r g b]` as given, `{r g b}` as 0..255 bytes (gamma, decoded).
+/// None when neither is set or both are white.
+fn tint(keys: &HashMap<String, String>) -> Option<[f32; 3]> {
+    let vector = |name: &str| -> Option<[f32; 3]> {
+        let v = keys.get(&format!("srgb?{name}")).or_else(|| keys.get(name))?.trim();
+        let bytes = v.starts_with('{');
+        let n: Vec<f32> = v
+            .trim_matches(|c| c == '[' || c == ']' || c == '{' || c == '}')
+            .split_whitespace()
+            .filter_map(|x| x.parse().ok())
+            .collect();
+        let n: [f32; 3] = match n.as_slice() {
+            [a, b, c] => [*a, *b, *c],
+            [a] => [*a, *a, *a],
+            _ => return None,
+        };
+        Some(if bytes { n.map(|x| (x / 255.0).powf(2.2)) } else { n })
+    };
+    let (a, b) = (vector("$color"), vector("$color2"));
+    let t = match (a, b) {
+        (None, None) => return None,
+        (Some(a), None) | (None, Some(a)) => a,
+        (Some(a), Some(b)) => [a[0] * b[0], a[1] * b[1], a[2] * b[2]],
+    };
+    (t != [1.0, 1.0, 1.0]).then_some(t)
 }
 
 /// A material key's value read from its text, when the parser's defaults
@@ -728,7 +809,11 @@ fn vector(v: &str) -> Option<[f32; 3]> {
 /// A VTF's sprite sheet (resource tag 0x10): per sequence, its frames'
 /// texture rectangles (first image of each frame). None without one.
 pub fn sheet(bytes: &[u8]) -> Option<Vec<Vec<[f32; 4]>>> {
-    let u32_at = |o: usize| bytes.get(o..o + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    let u32_at = |o: usize| {
+        bytes
+            .get(o..o + 4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    };
     let f32_at = |o: usize| u32_at(o).map(f32::from_bits);
     // Resources exist from version 7.3: count at 68, entries from 80.
     if u32_at(4)? != 7 || u32_at(8)? < 3 {
@@ -771,6 +856,23 @@ pub fn sheet(bytes: &[u8]) -> Option<Vec<Vec<[f32; 4]>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn colour_multipliers() {
+        let keys = |pairs: &[(&str, &str)]| -> HashMap<String, String> {
+            pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        };
+        // de_nuke's warehouse light cones: the srgb? form wins.
+        assert_eq!(
+            tint(&keys(&[("srgb?$color2", "[.4 .4 .4]"), ("$color2", "[.9 .9 .9]")])),
+            Some([0.4, 0.4, 0.4])
+        );
+        // Braces are gamma bytes; $color and $color2 multiply.
+        let t = tint(&keys(&[("$color", "{255 128 0}"), ("$color2", "[0.5 1 1]")])).unwrap();
+        assert!((t[0] - 0.5).abs() < 1e-6 && (t[1] - (128.0f32 / 255.0).powf(2.2)).abs() < 1e-6 && t[2] == 0.0);
+        assert_eq!(tint(&keys(&[("$color", "[1 1 1]")])), None);
+        assert_eq!(tint(&keys(&[])), None);
+    }
 
     #[test]
     fn unknown_shaders_parse_as_their_stand_in() {

@@ -40,7 +40,12 @@ struct DrawHitboxes(u8);
 fn draw_hitboxes(
     on: Res<DrawHitboxes>,
     characters: Query<
-        (&crate::core::Hitboxes, &GlobalTransform, &ColliderAabb, Option<&crate::core::Intent>),
+        (
+            &crate::core::Hitboxes,
+            &GlobalTransform,
+            &ColliderAabb,
+            Option<&crate::core::Intent>,
+        ),
         Without<LocalPlayer>,
     >,
     mut gizmos: Gizmos,
@@ -114,7 +119,8 @@ fn spawn_hud(mut commands: Commands) {
         },
         Node {
             position_type: PositionType::Absolute,
-            top: px(8.0),
+            // Below the radar and place name (top left, as in CS:S).
+            top: percent(30.0),
             left: px(8.0),
             ..default()
         },

@@ -1066,8 +1066,14 @@ fn sounds_load() {
     assert_eq!(swim.waves.len(), 4);
     assert!(matches!(swim.level, mashup::map::SoundLevel::Attenuation(a) if a == 1.0));
     // Weapon entries are precached with the map.
-    for name in mashup::games::cs_source::weapons::SOUNDS {
+    for name in mashup::games::cs_source::weapons::sounds() {
         let e = s.entry(name).unwrap_or_else(|| panic!("no {name}"));
+        assert!(!e.waves.is_empty(), "{name} has no waves");
+    }
+    // The announcer's round sounds.
+    let r = &map.round_sounds;
+    for name in [&r.attackers_win, &r.defenders_win, &r.draw].into_iter().flatten().chain(&r.start) {
+        let e = s.entry(name).unwrap_or_else(|| panic!("no round sound {name}"));
         assert!(!e.waves.is_empty(), "{name} has no waves");
     }
     assert!(s.clips.len() > 40, "{} clips", s.clips.len());
@@ -1588,7 +1594,11 @@ fn bodies_animate_with_movement() {
     };
     let layer = |sim: &Sim, k: usize| {
         let a = sim.app.world().get::<Animator>(c).unwrap();
-        a.layers.get(k).copied().flatten().map(|l| (set.sequences[l.sequence].name.clone(), l.weight))
+        a.layers
+            .get(k)
+            .copied()
+            .flatten()
+            .map(|l| (set.sequences[l.sequence].name.clone(), l.weight))
     };
     assert_eq!(main(&sim), "Idle_lower");
     // It holds its weapon's world model.
@@ -1597,7 +1607,8 @@ fn bodies_animate_with_movement() {
         Some(Some(mashup::games::cs_source::weapons::AK47.to_string()))
     );
     let keys: Vec<&str> = map.held.iter().map(|h| h.key.as_str()).collect();
-    assert_eq!(keys.len(), 2, "held models {keys:?}");
+    let all = mashup::games::cs_source::weapons::WORLD_MODELS.len();
+    assert_eq!(keys.len(), all, "held models {keys:?}");
     // The drawn AK-47 picks the AK upper body at full weight.
     assert_eq!(layer(&sim, 0), Some(("Idle_Upper_AK".into(), 1.0)));
 
@@ -1612,7 +1623,11 @@ fn bodies_animate_with_movement() {
     // Running straight ahead: move_x ~1 (stored ~1), move_y 0 (stored 0.5).
     let a = sim.app.world().get::<Animator>(c).unwrap();
     let (mx, my) = (set.param("move_x").unwrap(), set.param("move_y").unwrap());
-    assert!(a.params[mx] > 0.9 && (a.params[my] - 0.5).abs() < 0.02, "{:?}", a.params);
+    assert!(
+        a.params[mx] > 0.9 && (a.params[my] - 0.5).abs() < 0.02,
+        "{:?}",
+        a.params
+    );
 
     sim.intent(c).walk = true;
     sim.seconds(1.0);
@@ -1643,14 +1658,23 @@ fn bodies_animate_with_movement() {
     sim.intent(c).yaw = yaw + 60f32.to_radians();
     sim.seconds(0.2);
     let state = sim.app.world().get::<PlayerAnim>(c).unwrap();
-    assert!((state.feet_yaw - feet).abs() < 0.01, "feet turned {} -> {}", feet, state.feet_yaw);
+    assert!(
+        (state.feet_yaw - feet).abs() < 0.01,
+        "feet turned {} -> {}",
+        feet,
+        state.feet_yaw
+    );
     let a = sim.app.world().get::<Animator>(c).unwrap();
     let body_yaw = set.param("body_yaw").unwrap();
     assert!((a.params[body_yaw] - set.params[body_yaw].encode(60.0)).abs() < 0.01);
     // After 3 s standing still they face the eyes again.
     sim.seconds(3.5);
     let state = sim.app.world().get::<PlayerAnim>(c).unwrap();
-    assert!((state.feet_yaw - (feet + 60.0)).abs() < 0.5, "feet at {}", state.feet_yaw);
+    assert!(
+        (state.feet_yaw - (feet + 60.0)).abs() < 0.5,
+        "feet at {}",
+        state.feet_yaw
+    );
 }
 
 /// The walls below T spawn by top of mid stand on floor displacements that
@@ -1703,7 +1727,10 @@ fn falling_out_of_the_map() {
     let health = sim.app.world().get::<Health>(mortal).unwrap().current;
     assert_eq!(health, 0.0, "survived the fall");
     let at = sim.position(god);
-    assert!(at.y > lo.y && map.spawns.iter().any(|(feet, _)| feet.distance(at) < 3.0), "god mode at {at}");
+    assert!(
+        at.y > lo.y && map.spawns.iter().any(|(feet, _)| feet.distance(at) < 3.0),
+        "god mode at {at}"
+    );
 }
 
 /// Players are boxes to each other (as in Source): one can land and stand
@@ -1727,7 +1754,11 @@ fn standing_on_another_player() {
     let on_head = sim.position(above).y - floor;
     assert!(sim.state(above).on_ground, "not standing on the head");
     // Standing on a CS:S hull (62 units): origin 62 units higher.
-    assert!((on_head / 0.0254 - 62.0).abs() < 2.0, "standing {} units up", on_head / 0.0254);
+    assert!(
+        (on_head / 0.0254 - 62.0).abs() < 2.0,
+        "standing {} units up",
+        on_head / 0.0254
+    );
     // The one below walks and turns about; the rider stays up and free.
     for (k, yaw) in [0.0f32, 120.0, 240.0, 30.0].into_iter().enumerate() {
         sim.intent(below).yaw = yaw.to_radians();
@@ -1815,7 +1846,12 @@ fn riding_players_never_sticks() {
             }
         }
     }
-    assert!(stuck.is_empty(), "{} stuck moments: {:?}", stuck.len(), &stuck[..stuck.len().min(5)]);
+    assert!(
+        stuck.is_empty(),
+        "{} stuck moments: {:?}",
+        stuck.len(),
+        &stuck[..stuck.len().min(5)]
+    );
 }
 
 /// Fuzz: characters walk, run, crouch-walk and jump on random headings
@@ -2005,7 +2041,11 @@ fn view_models_load_with_their_sequences() {
     let names: Vec<&str> = ak.attachments.iter().map(|a| a.name.as_str()).collect();
     assert_eq!(names, ["1", "2"]);
     assert!(ak.attachments[0].local.translation.distance(Vec3::new(0.0, 3.5, 19.0)) < 1e-3);
-    assert!(ak.light_origin.distance(Vec3::new(10.60, 3.87, -6.35)) < 0.01, "{}", ak.light_origin);
+    assert!(
+        ak.light_origin.distance(Vec3::new(10.60, 3.87, -6.35)) < 0.01,
+        "{}",
+        ak.light_origin
+    );
     // L1: placed at the eye, the lighting point is 10.6 units ahead, 3.9
     // left and 6.35 below (camera axes: X right, Y up, -Z forward).
     let eye_space = ak.root.transform_point(ak.light_origin);
@@ -2016,12 +2056,16 @@ fn view_models_load_with_their_sequences() {
     let field = map.light_field.as_ref().expect("a light field");
     let at = map.spawns[0].0 + Vec3::Y * 1.6;
     let probe = (field.0)(at);
-    let total: f32 = probe.cube.iter().map(|c| c.length()).sum::<f32>()
-        + probe.lights.iter().map(|l| l.1.length()).sum::<f32>();
+    let total: f32 =
+        probe.cube.iter().map(|c| c.length()).sum::<f32>() + probe.lights.iter().map(|l| l.1.length()).sum::<f32>();
     assert!(total > 0.05, "no light at {at}: {probe:?}");
     let fire = set.sequence("ak47_fire1").unwrap();
     let events = &set.sequences[fire].events;
-    assert!(events.iter().any(|e| e.event == 5001 && e.options == "1" && e.cycle == 0.0));
+    assert!(
+        events
+            .iter()
+            .any(|e| e.event == 5001 && e.options == "1" && e.cycle == 0.0)
+    );
     assert!(
         events
             .iter()
@@ -2144,7 +2188,11 @@ fn impact_effect_materials_and_letters() {
     assert_eq!(effect_for('V'), Effect::MetalSparks);
     let p = &map.particles;
     for name in MATERIALS {
-        let m = p.materials.iter().find(|m| m.name == *name).unwrap_or_else(|| panic!("{name} missing"));
+        let m = p
+            .materials
+            .iter()
+            .find(|m| m.name == *name)
+            .unwrap_or_else(|| panic!("{name} missing"));
         assert!(m.texture.is_some(), "{name}: no texture");
     }
     // Sprite sheets: the blood smoke has 16 sequences, the goop at least 13.
@@ -2159,7 +2207,10 @@ fn impact_effect_materials_and_letters() {
     let mat = |n: &str| &p.materials[p.find(n).unwrap()];
     assert!(!mat("effects/fleck_wood1").vertex_alpha);
     assert!(mat("effects/fleck_cement1").vertex_alpha);
-    assert_eq!(mat("effects/spark").blend, mashup::map::particles::ParticleBlend::Additive);
+    assert_eq!(
+        mat("effects/spark").blend,
+        mashup::map::particles::ParticleBlend::Additive
+    );
 }
 
 /// Cases `walking_on_terrain_never_stubs` found (the "stubbed toe"): running
@@ -2201,4 +2252,96 @@ fn running_over_terrain_keeps_speed() {
         }
         assert!(last > 200.0, "case {k}: running at {last:.1}");
     }
+}
+
+/// Every gun's models and death-notice icon load from the install, and
+/// each view model's muzzle sits on the side of the eye its
+/// `VIEW_MODELS` handedness says (Source model space: +y is left, so a
+/// muzzle left of the eye means built left-handed).
+#[test]
+fn gun_models_icons_and_handedness() {
+    use mashup::games::cs_source::weapons::{AWP, GUNS, VIEW_MODELS};
+    let Some(map) = dust2() else { return };
+    let hud = map.hud.as_ref().expect("a HUD");
+    for g in GUNS {
+        let short = g.id.rsplit("weapon_").next().unwrap();
+        assert!(hud.icons.contains_key(&format!("d_{short}")), "no d_{short} icon");
+        assert!(map.held.iter().any(|h| h.key == g.id), "{} world model", g.id);
+        let Some(v) = map.view_models.iter().find(|v| v.key == g.id) else {
+            // v_snip_awp.mdl is MDL version 48; the animation reader takes 44.
+            assert_eq!(g.id, AWP, "{} view model: {:?}", g.id, map.warnings);
+            let w: Vec<_> = map.warnings.iter().filter(|w| w.contains("v_snip_awp")).collect();
+            assert!(w.iter().any(|w| w.contains("version 48")), "{:?}", map.warnings);
+            continue;
+        };
+        let set = v.animations.as_ref().expect("sequences");
+        let mut pose = set.defaults.clone();
+        let params = set.default_params();
+        set.accumulate(&mut pose, set.activity("ACT_VM_IDLE").unwrap(), 0.5, 1.0, &params);
+        let mut global: Vec<(Quat, Vec3)> = Vec::new();
+        for (b, (q, p)) in v.bones.iter().zip(&pose) {
+            global.push(match b.parent.map(|i| global[i]) {
+                Some((pq, pp)) => (pq * *q, pp + pq * *p),
+                None => (*q, *p),
+            });
+        }
+        let a = v.attachments.iter().find(|a| a.name == "1").expect("muzzle attachment");
+        let (q, p) = global[a.bone];
+        let muzzle = p + q * a.local.translation;
+        let right_handed = VIEW_MODELS.iter().find(|m| m.0 == g.id).unwrap().2;
+        eprintln!("{}: muzzle {muzzle}", g.id);
+        assert_eq!(muzzle.y < 0.0, right_handed, "{}: muzzle at {muzzle}", g.id);
+        // Draw and reload durations from the spec's view-model table.
+        let dur = |act: &str| set.duration(set.activity(act).expect(act));
+        assert!((dur("ACT_VM_DRAW") - g.draw).abs() < 1e-3, "{} draw", g.id);
+        assert!((dur("ACT_VM_RELOAD") - g.reload).abs() < 1e-3, "{} reload", g.id);
+    }
+}
+
+/// The radar picture lines up with the world: walkable places (nav area
+/// centres) fall on the overview's lit floor, not its dark background.
+#[test]
+fn overview_lines_up_with_the_world() {
+    let Some(map) = dust2() else { return };
+    let o = map.overview.clone().expect("dust2 has an overview");
+    let t = &map.textures[o.texture];
+    let green = |p: Vec2| -> f32 {
+        if p.x < 0.0 || p.y < 0.0 || p.x >= o.size.x || p.y >= o.size.y {
+            return 0.0;
+        }
+        t.rgba8[((p.y as u32 * t.width + p.x as u32) * 4 + 1) as usize] as f32
+    };
+    let nav = map.nav.as_ref().unwrap();
+    let on_floor = nav.areas.iter().map(|a| green(o.pixel(a.center))).sum::<f32>() / nav.areas.len() as f32;
+    let image = t.rgba8.chunks(4).map(|p| p[1] as f32).sum::<f32>() / (t.width * t.height) as f32;
+    assert!(on_floor > image * 1.4, "nav areas average {on_floor}, image {image}");
+}
+
+/// Buy zones (func_buyzone): each team's spawns lie in its own zone and
+/// not the other's; mid isn't a buy zone.
+#[test]
+fn buy_zones_cover_each_teams_spawns() {
+    use mashup::{
+        map::MapEntities,
+        weapon::economy::{Money, in_buy_zone},
+    };
+    let Some(map) = dust2() else { return };
+    let mut w = World::new();
+    w.insert_resource(MapEntities {
+        entities: std::sync::Arc::new(map.entities.clone()),
+        scale: map.entity_scale,
+    });
+    let zones = map.entities.iter().filter(|e| e.classname() == "func_buyzone").count();
+    assert!(zones >= 2, "{zones} buy zones");
+    let check = |w: &mut World, at: Vec3, team: u8| {
+        let e = w.spawn((Transform::from_translation(at), Team(team), Money(800))).id();
+        in_buy_zone(w, e)
+    };
+    for (at, team) in map.spawns.iter().filter_map(|(p, t)| Some((*p, (*t)?))) {
+        assert!(check(&mut w, at, team.0), "team {} spawn {at} in its zone", team.0);
+        assert!(!check(&mut w, at, 3 - team.0), "team {} spawn {at} not the other's", team.0);
+    }
+    // Mid doors, nowhere near a spawn (Source -480, 420, 0).
+    let mid = Vec3::new(-480.0, 0.0, -420.0) * map.entity_scale + Vec3::Y;
+    assert!(!check(&mut w, mid, 1) && !check(&mut w, mid, 2));
 }

@@ -15,16 +15,19 @@ use bevy::{
 
 use crate::core::{SpawnPoint, Team};
 // Collision-world types live in `core` (the greybox map uses them too).
-pub use hurt::{MapHurt, MapHurtVolume};
 pub use crate::core::{
     MapBrush, MapBrushCollider, MapBrushes, MapTerrain, MapTerrainCollider, MapWater, MapWaterVolume, PropSurface,
 };
 
 pub mod anim;
 pub mod decal;
-pub mod hud;
-mod hurt;
+pub mod entities;
+pub use entities::{MapBrushEntity, MapEntities, MapEntity, MapHull};
+pub mod breakables;
+pub use breakables::{BrushPanes, GlassShatter, SpawnGibs};
 mod dust;
+pub mod hud;
+pub mod loose;
 pub mod nav;
 pub mod particles;
 pub mod prop_material;
@@ -33,15 +36,16 @@ pub mod shadows;
 pub mod sound;
 pub mod soundscape;
 pub use sound::{MapSoundClip, MapSoundEntry, MapSounds, MapSurface, PlaySound, SoundLevel};
-pub mod sprite_material;
 pub mod shells;
+pub mod sprite_material;
 pub mod surface_color;
 pub mod view_model;
 pub mod vis;
+pub mod water;
 pub mod world_material;
 pub use view_model::{
-    DynamicLight, EffectSettings, MapAttachment, MapViewModel, ViewAnimator, ViewModelAnchor, ViewModelCamera, ViewModelEvent,
-    ViewModelEventKind, ViewModelOffset, ViewModelSettings, ViewModels,
+    DynamicLight, EffectSettings, MapAttachment, MapViewModel, ViewAnimator, ViewModelAnchor, ViewModelCamera,
+    ViewModelEvent, ViewModelEventKind, ViewModelOffset, ViewModelSettings, ViewModels,
 };
 
 use prop_material::{PropMaterial, PropParams};
@@ -205,6 +209,15 @@ pub struct MapMesh {
     pub surface: Option<String>,
     /// Reflection of a baked cubemap (Source `$envmap`).
     pub envmap: Option<MapEnvmap>,
+    /// Part of a mover brush entity (index into `MapData::entities`):
+    /// positions are relative to that entity's origin and unrotated
+    /// (engine axes), drawn under its `MapBrushEntity` node.
+    pub entity: Option<usize>,
+    /// Colour multiplier (linear) on the texture (Source `$color`/`$color2`).
+    pub tint: Option<[f32; 3]>,
+    /// A water surface: index into `MapData::water_materials` (drawn by
+    /// `water::WaterMaterial` instead).
+    pub water: Option<usize>,
 }
 
 /// A baked environment cubemap: six square RGBA8 sRGB faces in the
@@ -295,6 +308,9 @@ pub struct MapModel {
     pub collision: Option<MapCollision>,
     /// Surface property name (footsteps on the prop), lower-case.
     pub surfaceprop: Option<String>,
+    /// Where the model is lit from, in model space (Source
+    /// `$illumposition`), when the game gives one.
+    pub illum: Option<Vec3>,
 }
 
 /// A character body from the game: meshes in the character's local space
@@ -540,7 +556,9 @@ fn attach_held(
     mut body_query: Query<&mut CharacterBody>,
     mut commands: Commands,
 ) {
-    let (Some(held), Some(bodies)) = (held, bodies) else { return };
+    let (Some(held), Some(bodies)) = (held, bodies) else {
+        return;
+    };
     for (character, want, children) in &characters {
         let Some(c) = children.iter().find(|c| body_query.contains(*c)) else {
             continue;
@@ -553,7 +571,9 @@ fn attach_held(
             commands.entity(e).despawn();
         }
         let Some(key) = &want.0 else { continue };
-        let Some((bone, parts, muzzle)) = held.0.get(key) else { continue };
+        let Some((bone, parts, muzzle)) = held.0.get(key) else {
+            continue;
+        };
         let Some(joint) = bodies.0[body.model]
             .bones
             .iter()
@@ -636,7 +656,12 @@ fn attach_hitboxes(
 fn pose_hitboxes(
     time: Res<Time>,
     models: Option<Res<CharacterModels>>,
-    mut characters: Query<(&anim::Animator, &BodyModel, &crate::core::Intent, &mut crate::core::Hitboxes)>,
+    mut characters: Query<(
+        &anim::Animator,
+        &BodyModel,
+        &crate::core::Intent,
+        &mut crate::core::Hitboxes,
+    )>,
 ) {
     let Some(models) = models else { return };
     let now = time.elapsed_secs_f64();
@@ -743,6 +768,9 @@ pub struct MapProp {
     /// fades out with distance. Drawn fully up to the far one, then hidden
     /// (the fade between isn't drawn yet; docs/tech-debt.md).
     pub fade: Option<(f32, f32)>,
+    /// The mover entity it's attached to (index into `MapData::entities`):
+    /// it rides that entity's node (de_nuke's door handles) and isn't solid.
+    pub parent: Option<usize>,
 }
 
 /// A physics prop's body (specs/cs_source/physics_props.md 3, 4).
@@ -782,6 +810,16 @@ pub struct MapShadows {
     pub color: [u8; 3],
     /// How far past the caster a shadow reaches, meters.
     pub distance: f32,
+}
+
+/// Sound entries the announcer plays for rounds: a side's win, a draw,
+/// and one picked at random when a round goes live.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct RoundSounds {
+    pub attackers_win: Option<String>,
+    pub defenders_win: Option<String>,
+    pub draw: Option<String>,
+    pub start: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -829,10 +867,18 @@ pub struct MapData {
     pub visibility: Option<Arc<vis::MapVisibility>>,
     /// Water and slime volumes.
     pub water: Vec<MapWaterVolume>,
-    /// Volumes that hurt characters inside them (Source `trigger_hurt`).
-    pub hurt: Vec<MapHurtVolume>,
+    /// The map's entities (keyvalues, brush volumes) for the logic layer,
+    /// in the map's own order.
+    pub entities: Vec<MapEntity>,
+    /// Meters per entity-space unit (`entities` module docs); 0 when the
+    /// map has no entities.
+    pub entity_scale: f32,
+    /// How water surfaces look (`MapMesh::water` indexes these).
+    pub water_materials: Vec<water::MapWaterMaterial>,
     /// Dynamic prop shadows, when the game draws them.
     pub shadows: Option<MapShadows>,
+    /// The announcer's round sounds (sound entries), when the game has them.
+    pub round_sounds: RoundSounds,
     /// Gravity for physics bodies, m/s^2 (downward), when the game sets it.
     pub gravity: Option<f32>,
     /// The playable area (engine space, min and max), when the map has a 3D
@@ -850,6 +896,8 @@ pub struct MapData {
     pub decals: decal::MapDecals,
     /// The game's own HUD look, when it has one.
     pub hud: Option<Arc<hud::GameHud>>,
+    /// A top-down picture of the map (radar), when the game has one.
+    pub overview: Option<hud::MapOverview>,
     /// Materials for particle effects (impacts).
     pub particles: particles::MapParticles,
     /// What characters see of what they hold (weapons' view models).
@@ -861,6 +909,9 @@ pub struct MapData {
     /// Spent shell types and how they fly.
     pub shells: Vec<shells::MapShell>,
     pub shell_physics: Option<shells::MapShellPhysics>,
+    /// Gib lists for breaking brushes, and how gibs move.
+    pub gibs: Vec<breakables::MapGibSet>,
+    pub gib_physics: Option<breakables::MapGibPhysics>,
 }
 
 /// A muzzle flash: view-facing additive sprites strung out along the
@@ -1190,6 +1241,7 @@ fn fall_out_of_map(
                         point: at.translation,
                         dir: Vec3::NEG_Y,
                         hitgroup: crate::core::Hitgroup::Generic,
+                        kind: crate::core::DamageKind::Generic,
                     });
                 }
             }
@@ -1220,7 +1272,7 @@ struct PlayableArea((Vec3, Vec3));
 #[allow(clippy::type_complexity)]
 fn show_skybox_in_place(
     area: Option<Res<PlayableArea>>,
-    cameras: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<SkyboxCamera>, Without<ViewModelCamera>)>,
+    cameras: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<SkyboxCamera>, Without<ViewModelCamera>, Without<water::WaterReflectionCamera>)>,
     mut parts: Query<&mut bevy::camera::visibility::RenderLayers, Without<Camera>>,
     mut outside_before: Local<Option<bool>>,
 ) {
@@ -1275,6 +1327,8 @@ impl Plugin for MapPlugin {
             .init_resource::<vis::VisStats>()
             .add_message::<decal::PlaceDecal>()
             .add_message::<ViewModelEvent>()
+            .add_message::<SpawnGibs>()
+            .add_message::<GlassShatter>()
             .init_resource::<particles::Particles>()
             .insert_resource(GlobalAmbientLight {
                 brightness: 600.0,
@@ -1290,7 +1344,8 @@ impl Plugin for MapPlugin {
                     .before(crate::core::SimSet::Movement),
             )
             .add_systems(FixedUpdate, fall_out_of_map.after(crate::core::SimSet::Movement))
-            .add_systems(FixedUpdate, hurt::hurt_characters.after(crate::core::SimSet::Movement))
+            .add_systems(FixedPostUpdate, breakables::update_panes)
+            .add_systems(Update, (breakables::spawn_gibs, breakables::fly_gibs).chain())
             .add_systems(
                 Update,
                 (
@@ -1312,6 +1367,7 @@ impl Plugin for MapPlugin {
                         turn_bodies,
                         pose_bodies.after(DriveAnimation),
                         attach_held,
+                        loose::attach_loose,
                     )
                         .run_if(resource_exists::<CharacterBodies>),
                     view_model::draw_view_models
@@ -1372,6 +1428,7 @@ fn spawn_map(
     mut sprite_materials: Option<ResMut<Assets<SpriteMaterial>>>,
     mut prop_materials: Option<ResMut<Assets<PropMaterial>>>,
     mut shadow_materials: Option<ResMut<Assets<shadows::ShadowMaterial>>>,
+    mut water_materials: Option<ResMut<Assets<water::WaterMaterial>>>,
     mut bindposes: Option<ResMut<Assets<bevy::mesh::skinning::SkinnedMeshInverseBindposes>>>,
 ) {
     let data = &pending.0;
@@ -1430,6 +1487,49 @@ fn spawn_map(
         ));
     }
 
+    // Mover brush entities: a node each (placed by origin and angles), with
+    // a kinematic collider; their meshes are spawned under it below.
+    let entity_nodes: Vec<Option<Entity>> = data
+        .entities
+        .iter()
+        .enumerate()
+        .map(|(i, e)| {
+            if !e.mover {
+                return None;
+            }
+            let scale = data.entity_scale;
+            let rotation = entities::entity_rotation(e.angles());
+            let hulls: Vec<_> = e
+                .hulls
+                .iter()
+                .filter_map(|h| {
+                    Collider::convex_hull(h.points.iter().map(|p| entities::entity_to_engine(*p, scale)).collect())
+                })
+                .map(|c| (Vec3::ZERO, Quat::IDENTITY, c))
+                .collect();
+            let mut node = commands.spawn((
+                Name::new(format!("Brush entity {i} ({})", e.classname())),
+                MapPart,
+                MapBrushEntity(i),
+                Transform::from_translation(entities::entity_to_engine(e.origin(), scale))
+                    .with_rotation(entities::rotation_to_engine(rotation)),
+                Visibility::default(),
+                ChildOf(root),
+            ));
+            if !hulls.is_empty() {
+                node.insert((MapBrushCollider, RigidBody::Kinematic, Collider::compound(hulls)));
+            }
+            Some(node.id())
+        })
+        .collect();
+    let parent_of = |m: &MapMesh| m.entity.and_then(|i| entity_nodes.get(i).copied().flatten()).unwrap_or(root);
+    if !data.entities.is_empty() {
+        commands.insert_resource(MapEntities {
+            entities: Arc::new(data.entities.clone()),
+            scale: data.entity_scale,
+        });
+    }
+
     // Prop models: one collider per model (shared by its placements), and
     // render handles when rendering exists.
     let model_colliders: Vec<Option<Collider>> = data.models.iter().map(model_collider).collect();
@@ -1459,15 +1559,9 @@ fn spawn_map(
                 .characters
                 .iter()
                 .map(|c| {
-                    body_assets(
-                        &c.model,
-                        &c.bones,
-                        c.root,
-                        meshes,
-                        materials,
-                        bindposes,
-                        &|m| build_material(m, &textures, view, data.look.light_scale),
-                    )
+                    body_assets(&c.model, &c.bones, c.root, meshes, materials, bindposes, &|m| {
+                        build_material(m, &textures, view, data.look.light_scale)
+                    })
                 })
                 .collect();
             commands.insert_resource(CharacterBodies(bodies));
@@ -1475,7 +1569,7 @@ fn spawn_map(
                 .held
                 .iter()
                 .map(|h| {
-                    let parts = h
+                    let parts: Vec<(Handle<Mesh>, Handle<StandardMaterial>)> = h
                         .model
                         .meshes
                         .iter()
@@ -1488,7 +1582,19 @@ fn spawn_map(
                         .collect();
                     (h.key.clone(), (h.bone.clone(), parts, h.muzzle))
                 })
-                .collect();
+                .collect::<HashMap<_, _>>();
+            // Loose (dropped) forms, sized by the first character's scale.
+            if let Some(root) = data.characters.first().map(|c| c.root) {
+                let loose = data
+                    .held
+                    .iter()
+                    .filter_map(|h| {
+                        let parts = held.get(&h.key)?.1.clone();
+                        Some((h.key.clone(), loose::asset(h, root, parts)))
+                    })
+                    .collect();
+                commands.insert_resource(loose::LooseAssets(loose));
+            }
             commands.insert_resource(HeldAssets(held));
             if let Some(prop_materials) = prop_materials.as_mut() {
                 commands.insert_resource(view_model::build_assets(
@@ -1501,7 +1607,8 @@ fn spawn_map(
                     bindposes,
                 ));
             }
-            if let Some(flash) = view_model::build_flash_assets(data, &textures, meshes, sprite_materials.as_deref_mut())
+            if let Some(flash) =
+                view_model::build_flash_assets(data, &textures, meshes, sprite_materials.as_deref_mut())
             {
                 commands.insert_resource(flash);
             }
@@ -1509,6 +1616,11 @@ fn spawn_map(
                 && let Some(shells) = shells::build_assets(data, &textures, view, meshes, prop_materials)
             {
                 commands.insert_resource(shells);
+            }
+            if let Some(prop_materials) = prop_materials.as_mut()
+                && let Some(gibs) = breakables::build_assets(data, &textures, view, meshes, prop_materials)
+            {
+                commands.insert_resource(gibs);
             }
         }
         let lightmap = data
@@ -1545,10 +1657,13 @@ fn spawn_map(
                 images.add(world_layer(&b[i], l.width, l.height))
             }))
         });
+        let mut sky_handle = None;
         if let Some(sky) = &data.sky
             && view == MapDebugView::Normal
         {
-            commands.insert_resource(MapSkybox(images.add(sky_image(sky, &data.textures))));
+            let handle = images.add(sky_image(sky, &data.textures));
+            sky_handle = Some(handle.clone());
+            commands.insert_resource(MapSkybox(handle));
         }
         if let Some(bounds) = data.playable {
             commands.insert_resource(PlayableArea(bounds));
@@ -1574,8 +1689,23 @@ fn spawn_map(
                 }));
             }
         }
+        // Water surfaces have their own material (map::water).
+        let water_drawn = water_materials.is_some() && view == MapDebugView::Normal;
+        if water_drawn && let Some(water_materials) = water_materials.as_mut() {
+            water::spawn_surfaces(
+                &mut commands,
+                data,
+                root,
+                meshes,
+                images,
+                water_materials,
+                &cubemaps,
+                sky_handle.as_ref(),
+            );
+        }
         // World meshes in chunks with tight bounds, tagged with the
-        // clusters they touch (see `vis`).
+        // clusters they touch (see `vis`). Meshes of entities with their own
+        // node (movers, breakables) stay whole and untagged.
         let visibility = data.visibility.as_deref().filter(|_| !merged_world());
         let tag = |e: &mut EntityCommands, clusters: Vec<u32>| {
             if visibility.is_some() && !clusters.is_empty() {
@@ -1584,12 +1714,17 @@ fn spawn_map(
         };
         let chunk_size = vis::chunk_size();
         for m in &data.meshes {
+            if water_drawn && m.water.is_some() {
+                continue;
+            }
+            let own_node = parent_of(m) != root;
+            let mesh_vis = visibility.filter(|_| !own_node);
             // Chunks are placed at their centre (vertices relative to it,
             // small numbers), each a map part of its own.
-            let chunks: Vec<(MapMesh, Vec<u32>, Vec3)> = vis::split_mesh(m, visibility, chunk_size)
+            let chunks: Vec<(MapMesh, Vec<u32>, Vec3)> = vis::split_mesh(m, mesh_vis, chunk_size)
                 .into_iter()
                 .map(|(mut chunk, clusters)| {
-                    let centre = if visibility.is_some() { vis::recentre(&mut chunk) } else { Vec3::ZERO };
+                    let centre = if mesh_vis.is_some() { vis::recentre(&mut chunk) } else { Vec3::ZERO };
                     (chunk, clusters, centre)
                 })
                 .collect();
@@ -1659,6 +1794,7 @@ fn spawn_map(
                         envmap_saturation: m.envmap.map_or(1.0, |e| e.saturation),
                         envmap_fresnel: m.envmap.map_or(1.0, |e| e.fresnel),
                         envmap_tint: m.envmap.map_or(Vec4::ONE, |e| Vec3::from_array(e.tint).extend(1.0)),
+                        ..default()
                     },
                     base: m.texture.map(|i| textures[i].clone()),
                     // Bound for radiosity bump lighting, and for reflections
@@ -1691,7 +1827,7 @@ fn spawn_map(
                     let mut e = commands.spawn((
                         Name::new(chunk.material.clone()),
                         MapPart,
-                        layer_of(chunk.skybox),
+                        world_layer_of(chunk.skybox),
                         Mesh3d(meshes.add({
                             let mut mesh = build_mesh(&chunk, true);
                             if blended {
@@ -1703,7 +1839,7 @@ fn spawn_map(
                         })),
                         MeshMaterial3d(material.clone()),
                         Transform::from_translation(centre),
-                        ChildOf(root),
+                        ChildOf(parent_of(m)),
                     ));
                     tag(&mut e, clusters);
                 }
@@ -1714,11 +1850,11 @@ fn spawn_map(
                 let mut part = commands.spawn((
                     Name::new(chunk.material.clone()),
                     MapPart,
-                    layer_of(chunk.skybox),
+                    world_layer_of(chunk.skybox),
                     Mesh3d(meshes.add(build_mesh(&chunk, lit.is_some()))),
                     MeshMaterial3d(material.clone()),
                     Transform::from_translation(centre),
-                    ChildOf(root),
+                    ChildOf(parent_of(m)),
                 ));
                 if let Some(image) = lit {
                     part.insert(bevy::pbr::Lightmap {
@@ -1755,9 +1891,8 @@ fn spawn_map(
                         .meshes
                         .iter()
                         .map(|m| {
-                            [false, true].map(|skybox| {
-                                prop_materials.add(lit_prop_material(m, &textures, data, view, skybox))
-                            })
+                            [false, true]
+                                .map(|skybox| prop_materials.add(lit_prop_material(m, &textures, data, view, skybox)))
                         })
                         .collect()
                 })
@@ -1964,7 +2099,7 @@ fn spawn_map(
         };
         // Bodies that move are swept through physics queries, not as brushes.
         let dynamic = prop.physics.as_ref().filter(|_| !prop.skybox);
-        let prop_brush = (!prop.skybox && !no_prop_brushes && !pieces.is_empty() && dynamic.is_none()).then_some(());
+        let prop_brush = (prop.parent.is_none() && !prop.skybox && !no_prop_brushes && !pieces.is_empty() && dynamic.is_none()).then_some(());
         if prop_brush.is_some() {
             brushes.extend(
                 pieces
@@ -1972,17 +2107,27 @@ fn spawn_map(
                     .map(|planes| place_brush(planes, prop.translation, prop.rotation, model.surfaceprop.clone())),
             );
         }
+        let placed = Transform::from_translation(prop.translation).with_rotation(prop.rotation);
+        // Riding a mover: under its node, placed relative to it.
+        let rider = prop
+            .parent
+            .and_then(|p| Some((entity_nodes.get(p).copied().flatten()?, data.entities.get(p)?)))
+            .map(|(node, ent)| {
+                let at = Transform::from_translation(entities::entity_to_engine(ent.origin(), data.entity_scale))
+                    .with_rotation(entities::rotation_to_engine(entities::entity_rotation(ent.angles())));
+                (node, Transform::from_matrix(at.to_matrix().inverse() * placed.to_matrix()))
+            });
         let mut e = commands.spawn((
             Name::new(format!("Prop {i}")),
             PropIndex(i),
             MapPart,
-            Transform::from_translation(prop.translation).with_rotation(prop.rotation),
+            rider.map_or(placed, |r| r.1),
             Visibility::default(),
-            ChildOf(root),
+            ChildOf(rider.map_or(root, |r| r.0)),
         ));
         // Props that stay put are hidden where the camera can't see them,
         // and beyond their fade distance.
-        if !prop.skybox && dynamic.is_none() && !merged_world() {
+        if !prop.skybox && dynamic.is_none() && rider.is_none() && !merged_world() {
             let clusters = match data.visibility.as_deref() {
                 Some(v) => {
                     let (lo, hi) = model.bounds;
@@ -2006,7 +2151,8 @@ fn spawn_map(
                 e.insert(vis::FadeDistance(far));
             }
         }
-        match (prop.solid, &model_colliders[prop.model]) {
+        let solid = if rider.is_some() { PropSolid::None } else { prop.solid };
+        match (solid, &model_colliders[prop.model]) {
             (PropSolid::Mesh, Some(collider)) if dynamic.is_some() => {
                 let p = dynamic.unwrap();
                 e.insert((
@@ -2141,7 +2287,17 @@ fn spawn_map(
         ));
     }
     if let Some(h) = &data.hud {
-        commands.insert_resource(hud::ActiveHud(h.clone()));
+        let images = h
+            .sprites
+            .values()
+            .filter_map(|s| Some((s.texture, texture_handles.get(s.texture)?.clone())))
+            .collect();
+        commands.insert_resource(hud::ActiveHud(h.clone(), images));
+    }
+    if let Some(o) = &data.overview
+        && let Some(image) = texture_handles.get(o.texture)
+    {
+        commands.insert_resource(hud::ActiveOverview(o.clone(), image.clone()));
     }
     if !texture_handles.is_empty() && !data.decals.groups.is_empty() {
         commands.insert_resource(decal::DecalAssets::new(data.decals.clone(), texture_handles.clone()));
@@ -2172,8 +2328,8 @@ fn spawn_map(
             commands.insert_resource(Gravity(Vec3::NEG_Y * g));
         }
         commands.insert_resource(MapWater(data.water.clone()));
+        commands.insert_resource(data.round_sounds.clone());
     }
-    commands.insert_resource(MapHurt::new(data.hurt.clone()));
 
     commands.spawn((
         Name::new("Sun"),
@@ -2237,6 +2393,7 @@ pub fn unload_map(world: &mut World) {
     world.remove_resource::<decal::DecalAssets>();
     world.remove_resource::<decal::ImpactDecals>();
     world.remove_resource::<hud::ActiveHud>();
+    world.remove_resource::<hud::ActiveOverview>();
     world.remove_resource::<surface_color::SurfaceColors>();
     world.remove_resource::<particles::ParticleAssets>();
     world.remove_resource::<particles::ParticleMaterials>();
@@ -2245,6 +2402,7 @@ pub fn unload_map(world: &mut World) {
     }
     view_model::unload(world);
     shells::unload(world);
+    breakables::unload(world);
     let bodies: Vec<Entity> = world
         .query_filtered::<Entity, With<CharacterBody>>()
         .iter(world)
@@ -2268,7 +2426,10 @@ pub fn unload_map(world: &mut World) {
     world.remove_resource::<MapBrushes>();
     world.remove_resource::<KillHeight>();
     world.remove_resource::<MapWater>();
-    world.remove_resource::<MapHurt>();
+    world.remove_resource::<RoundSounds>();
+    world.remove_resource::<MapEntities>();
+    world.remove_resource::<water::MapWaterRender>();
+    world.remove_resource::<water::WaterView>();
     world.remove_resource::<MapTerrain>();
     world.insert_resource(Gravity::default());
     soundscape::reset(world);
@@ -2475,7 +2636,10 @@ fn body_assets(
     let mut global: Vec<Mat4> = Vec::with_capacity(bones.len());
     for b in bones {
         let local = Mat4::from_rotation_translation(b.rotation, b.position);
-        let parent = b.parent.and_then(|p| global.get(p).copied()).unwrap_or(root.to_matrix());
+        let parent = b
+            .parent
+            .and_then(|p| global.get(p).copied())
+            .unwrap_or(root.to_matrix());
         global.push(parent * local);
     }
     let inverse: Vec<Mat4> = global.iter().map(|m| m.inverse()).collect();
@@ -2507,11 +2671,15 @@ fn build_material(m: &MapMesh, textures: &[Handle<Image>], view: MapDebugView, l
     } else {
         1.0
     };
+    let tint = m.tint.map_or(LinearRgba::WHITE, |[r, g, b]| LinearRgba::rgb(r, g, b));
     StandardMaterial {
         base_color: if m.texture.is_some() || lighting_only {
-            Color::WHITE
+            tint.into()
         } else {
-            Color::srgb_u8(r, g, b)
+            {
+                let c = Color::srgb_u8(r, g, b).to_linear();
+                LinearRgba::rgb(c.red * tint.red, c.green * tint.green, c.blue * tint.blue).into()
+            }
         },
         base_color_texture: m.texture.filter(|_| !lighting_only).map(|i| textures[i].clone()),
         unlit: view == MapDebugView::Albedo,
@@ -2545,18 +2713,23 @@ fn lit_prop_material(
 ) -> PropMaterial {
     let [r, g, b] = m.color;
     let lighting_only = matches!(view, MapDebugView::Lighting { .. });
+    let tint = m.tint.map_or(Vec4::ONE, |[r, g, b]| Vec4::new(r, g, b, 1.0));
     PropMaterial {
         params: PropParams {
             base_color: if m.texture.is_some() || lighting_only {
-                Vec4::ONE
+                tint
             } else {
-                Color::srgb_u8(r, g, b).to_linear().to_vec4()
+                Color::srgb_u8(r, g, b).to_linear().to_vec4() * tint
             },
             alpha_cutoff: if let MapAlpha::Mask(c) = m.alpha { c } else { 0.0 },
             fog_color: fog_color(data.fog.as_ref().filter(|_| view == MapDebugView::Normal && !skybox)),
             fog_range: fog_range(data.fog.as_ref()),
             translucent: m.alpha.shader_mode(),
-            dynamic: if m.unlit || view != MapDebugView::Normal { 0.0 } else { 1.0 },
+            dynamic: if m.unlit || view != MapDebugView::Normal {
+                0.0
+            } else {
+                1.0
+            },
             ..default()
         },
         base: m.texture.filter(|_| !lighting_only).map(|i| textures[i].clone()),
@@ -2695,7 +2868,7 @@ pub(crate) struct GlowSprite {
 #[allow(clippy::type_complexity)]
 fn glow_visibility(
     query: SpatialQuery,
-    cameras: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<SkyboxCamera>, Without<ViewModelCamera>)>,
+    cameras: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<SkyboxCamera>, Without<ViewModelCamera>, Without<water::WaterReflectionCamera>)>,
     ignored: Query<Entity, With<crate::core::Intent>>,
     mut glows: Query<(
         &GlobalTransform,
@@ -2924,7 +3097,10 @@ fn attach_sky(
     mut commands: Commands,
     sky: Option<Res<MapSkybox>>,
     sky_camera: Option<Res<SkyCameraInfo>>,
-    cameras: Query<(Entity, Has<SkyboxCamera>), (With<Camera3d>, Without<bevy::light::Skybox>, Without<ViewModelCamera>)>,
+    cameras: Query<
+        (Entity, Has<SkyboxCamera>),
+        (With<Camera3d>, Without<bevy::light::Skybox>, Without<ViewModelCamera>),
+    >,
 ) {
     let Some(sky) = sky else { return };
     for (cam, is_sky_camera) in &cameras {
@@ -3010,6 +3186,12 @@ fn sky_image(sky: &MapSky, textures: &[MapTexture]) -> Image {
     image
 }
 
+/// World brushes are also drawn by water reflections (props and characters
+/// only when the reflection shows entities).
+fn world_layer_of(skybox: bool) -> bevy::camera::visibility::RenderLayers {
+    if skybox { layer_of(true) } else { water::world_layers() }
+}
+
 fn layer_of(skybox: bool) -> bevy::camera::visibility::RenderLayers {
     bevy::camera::visibility::RenderLayers::layer(if skybox { SKYBOX_LAYER } else { 0 })
 }
@@ -3023,6 +3205,7 @@ fn follow_sky_camera(
     info: Option<Res<SkyCameraInfo>>,
     vis: Option<Res<SkyVis>>,
     has_3d_sky: Option<Res<ActiveMapHas3dSky>>,
+    water_view: Option<Res<water::WaterView>>,
     main: Query<
         (
             &GlobalTransform,
@@ -3032,7 +3215,7 @@ fn follow_sky_camera(
             Entity,
             &Camera,
         ),
-        (With<Camera3d>, Without<SkyboxCamera>, Without<ViewModelCamera>),
+        (With<Camera3d>, Without<SkyboxCamera>, Without<ViewModelCamera>, Without<water::WaterReflectionCamera>),
     >,
     mut sky: Query<
         (
@@ -3059,16 +3242,19 @@ fn follow_sky_camera(
     // the view clears to black (specs/cs_source/shadows_sky.md). Leaves
     // that see no sky show the previous frame in the game; black here.
     let leaf = vis.as_ref().map_or(LeafSky::Sky3d, |v| v.0.at(eye));
-    let sky_on = matches!(leaf, LeafSky::Sky2d | LeafSky::Sky3d);
+    // Under water the view clears to the water's fog colour and draws no
+    // sky (specs/cs_source/water.md section 9).
+    let under = water_view.as_ref().and_then(|w| w.clear);
+    let sky_on = matches!(leaf, LeafSky::Sky2d | LeafSky::Sky3d) && under.is_none();
     let layer = if leaf == LeafSky::Sky3d && has_3d_sky.is_some() {
         SKYBOX_LAYER
     } else {
         EMPTY_LAYER
     };
-    let clear = if sky_on {
-        ClearColorConfig::None
-    } else {
-        ClearColorConfig::Custom(Color::BLACK)
+    let clear = match (sky_on, under) {
+        (true, _) => ClearColorConfig::None,
+        (false, Some([r, g, b])) => ClearColorConfig::Custom(Color::srgb(r, g, b)),
+        (false, None) => ClearColorConfig::Custom(Color::BLACK),
     };
     let same = match (main_camera.clear_color, clear) {
         (ClearColorConfig::None, ClearColorConfig::None) => true,

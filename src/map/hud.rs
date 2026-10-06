@@ -64,6 +64,15 @@ pub struct HudFont {
     pub tall: f32,
 }
 
+/// An icon cut from a texture.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HudSprite {
+    /// Index into `MapData::textures`.
+    pub texture: usize,
+    /// Pixels: x, y, width, height.
+    pub rect: [f32; 4],
+}
+
 /// A game's HUD look.
 #[derive(Clone, Debug, Default)]
 pub struct GameHud {
@@ -75,6 +84,8 @@ pub struct GameHud {
     pub icons: HashMap<String, (String, char)>,
     /// Named colours (RGBA 0..255).
     pub colors: HashMap<String, [u8; 4]>,
+    /// Icon name -> a rectangle of a texture (pixels).
+    pub sprites: HashMap<String, HudSprite>,
 }
 
 impl GameHud {
@@ -85,9 +96,38 @@ impl GameHud {
     }
 }
 
+/// A top-down picture of the map for radars and overviews: which texture,
+/// and where it lies in the world.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MapOverview {
+    /// Index into `MapData::textures`.
+    pub texture: usize,
+    /// Engine-space x and z (meters) of the image's top-left corner.
+    pub origin: Vec2,
+    /// Meters per image pixel.
+    pub meters_per_pixel: f32,
+    /// Source overviews' `rotate` flag: how the spectator overview turns
+    /// the picture; it doesn't change where world points fall on it (checked
+    /// against dust2's nav areas).
+    pub rotate: bool,
+    /// Image size in pixels.
+    pub size: Vec2,
+}
+
+impl MapOverview {
+    /// Where an engine-space point falls on the image, in pixels.
+    pub fn pixel(&self, p: Vec3) -> Vec2 {
+        (Vec2::new(p.x, p.z) - self.origin) / self.meters_per_pixel
+    }
+}
+
+/// The loaded map's overview image, for radars.
+#[derive(Resource, Clone, Debug)]
+pub struct ActiveOverview(pub MapOverview, pub Handle<Image>);
+
 /// The loaded map's game HUD (see `GameHud`).
 #[derive(Resource, Clone, Debug)]
-pub struct ActiveHud(pub Arc<GameHud>);
+pub struct ActiveHud(pub Arc<GameHud>, pub HashMap<usize, Handle<Image>>);
 
 #[cfg(test)]
 mod tests {

@@ -134,6 +134,7 @@ fn step(
             crouching,
             sprinting,
             eye_offset: Vec3::Y * if crouching { CROUCH_EYE } else { STAND_EYE },
+            ..default()
         };
     }
 }

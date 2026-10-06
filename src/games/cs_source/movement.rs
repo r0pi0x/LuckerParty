@@ -15,7 +15,10 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 
 use crate::{
-    core::{Damage, Health, Hitgroup, Intent, MapBrush, MaxSpeed, MovementState, SimSet, Velocity},
+    core::{
+        BaseVelocity, Damage, EntityGravity, Health, Hitgroup, Intent, MapBrush, MaxSpeed, MovementState, MovingSolid,
+        SimSet, Velocity,
+    },
     map::{
         MapBrushCollider, MapBrushes, MapTerrain, MapTerrainCollider, MapWater, PhysicsProp, PlaySound, PropSurface,
         PushAway,
@@ -409,6 +412,8 @@ pub struct SourceMovement {
     last_nudge: f32,
     /// Feet at the end of the last tick, to notice teleports.
     last_feet: Option<Vec3>,
+    /// The moving solid stood on (`MovingSolid`), if any.
+    pub ground_entity: Option<Entity>,
     /// Jump stamina left, ms (CS:S).
     pub stamina: f32,
     /// On a ladder: its surface normal (Source axes, out of the ladder).
@@ -446,6 +451,7 @@ impl Default for SourceMovement {
             time: 0.0,
             last_nudge: f32::NEG_INFINITY,
             last_feet: None,
+            ground_entity: None,
             stamina: 0.0,
             ladder: None,
             water_level: 0,
@@ -506,6 +512,8 @@ struct Trace {
     fraction: f32,
     /// Feet position at the end of the sweep.
     end: Vec3,
+    /// The moving solid hit, if any.
+    owner: Option<Entity>,
     normal: Vec3,
     start_solid: bool,
     /// What was hit, when it carries its own surface property (props).
@@ -553,6 +561,9 @@ struct Tracer<'a, 'w, 's> {
     others: &'a [MapBrush],
     /// Terrain triangles (displacements), swept exactly like brushes.
     terrain: Option<&'a MapTerrain>,
+    /// For each of `others`: the moving solid it belongs to (None for
+    /// characters).
+    owners: &'a [Option<Entity>],
 }
 
 /// Brush sweep result, engine space.
@@ -560,6 +571,8 @@ struct BrushHit {
     ladder: bool,
     /// The hit brush, when it has its own surface property.
     surface: Option<usize>,
+    /// The moving solid hit, if any.
+    owner: Option<Entity>,
     fraction: f32,
     normal: Vec3,
     start_solid: bool,
@@ -583,6 +596,7 @@ impl Tracer<'_, '_, '_> {
         let mut out = BrushHit {
             ladder: false,
             surface: None,
+            owner: None,
             fraction: 1.0,
             normal: Vec3::ZERO,
             start_solid: false,
@@ -637,6 +651,9 @@ impl Tracer<'_, '_, '_> {
                 out.normal = clip;
                 out.ladder = b.ladder;
                 out.surface = b.surface.is_some().then_some(i);
+                out.owner = i
+                    .checked_sub(brushes.len())
+                    .and_then(|j| self.owners.get(j).copied().flatten());
             }
         }
         out
@@ -677,6 +694,7 @@ impl Tracer<'_, '_, '_> {
         let len = delta.length();
         let miss = Trace {
             ladder: false,
+            owner: None,
             fraction: 1.0,
             end: to,
             normal: Vec3::ZERO,
@@ -690,6 +708,7 @@ impl Tracer<'_, '_, '_> {
         let half = Vec3::new(size.x, size.z, size.y) * METERS_PER_UNIT / 2.0;
         let brush = self.sweep_brushes(half, centre(from), centre(to));
         let mut best = Trace {
+            owner: brush.owner,
             ladder: brush.ladder,
             fraction: brush.fraction,
             end: from + delta * brush.fraction,
@@ -722,6 +741,7 @@ impl Tracer<'_, '_, '_> {
             let fraction = (travelled / len).clamp(0.0, 0.999_999);
             if fraction < best.fraction {
                 best = Trace {
+                    owner: None,
                     ladder: false,
                     fraction,
                     end: from + delta * fraction,
@@ -812,6 +832,15 @@ struct Mover<'a, 'b, 'w, 's> {
     player_maxspeed: f32,
     /// Fall damage taken this tick, health points.
     fall_damage: f32,
+    /// Base velocity (specs/source/triggers.md, trigger_push), units/s;
+    /// set by a push during the last tick; taken off the ground by logic.
+    base: Vec3,
+    base_touched: bool,
+    unground: bool,
+    /// Gravity multiplier (0 = normal).
+    gravity_scale: f32,
+    /// Moving solids' velocities (Source units/s), for riders.
+    mover_velocity: &'a dyn Fn(Entity) -> Vec3,
 }
 
 impl Mover<'_, '_, '_, '_> {
@@ -825,7 +854,36 @@ impl Mover<'_, '_, '_, '_> {
     }
 
     fn half_gravity(&mut self) {
-        self.v.z -= self.cfg.gravity * self.dt * 0.5;
+        let scale = if self.gravity_scale == 0.0 { 1.0 } else { self.gravity_scale };
+        self.v.z -= scale * self.cfg.gravity * self.dt * 0.5;
+    }
+
+    /// The first gravity half-step also applies the vertical base velocity
+    /// as an acceleration (triggers.md, trigger_push, step 2).
+    fn start_gravity(&mut self) {
+        self.half_gravity();
+        self.v.z += self.base.z * self.dt;
+        self.base.z = 0.0;
+    }
+
+    /// Ground changes: leaving a moving solid adds its velocity to the
+    /// base velocity, landing on one takes it off (doors_buttons.md,
+    /// "Riding").
+    fn set_ground(&mut self, on: bool, owner: Option<Entity>) {
+        let (was_on, was) = (self.me.on_ground, self.me.ground_entity);
+        if !was_on && on && let Some(e) = owner {
+            let mv = (self.mover_velocity)(e);
+            self.base.x -= mv.x;
+            self.base.y -= mv.y;
+            self.base.z = mv.z;
+        } else if was_on && !on && let Some(e) = was {
+            let mv = (self.mover_velocity)(e);
+            self.base.x += mv.x;
+            self.base.y += mv.y;
+            self.base.z = mv.z;
+        }
+        self.me.on_ground = on;
+        self.me.ground_entity = if on { owner } else { None };
     }
 
     fn friction(&mut self) {
@@ -1015,6 +1073,9 @@ impl Mover<'_, '_, '_, '_> {
         self.v.z = 0.0;
         self.accelerate(dir, speed, self.cfg.accelerate);
         self.v.z = 0.0;
+        // Base velocity moves the player but is not kept (trigger_push).
+        let base = Vec3::new(self.base.x, self.base.y, 0.0);
+        self.v += base;
         if self.v.length() < 1.0 {
             self.v = Vec3::ZERO;
             return;
@@ -1027,12 +1088,16 @@ impl Mover<'_, '_, '_, '_> {
             self.step_move();
         }
         self.stay_on_ground();
+        self.v -= base;
     }
 
     fn air(&mut self, f: f32, s: f32, forward: Vec3, right: Vec3, max_speed: f32) {
         let (dir, speed) = self.wish(f, s, forward, right, max_speed);
         self.air_accelerate(dir, speed, self.cfg.airaccelerate);
+        let base = Vec3::new(self.base.x, self.base.y, 0.0);
+        self.v += base;
         self.slide();
+        self.v -= base;
     }
 
     /// Ground detection: a 2-unit drop test with the full box, then with
@@ -1041,7 +1106,7 @@ impl Mover<'_, '_, '_, '_> {
         self.me.surface_friction = 1.0;
         // Moving up on a ladder always counts as airborne.
         if self.v.z > LEAVE_GROUND_VZ || (self.me.ladder.is_some() && self.v.z > 0.0) {
-            self.me.on_ground = false;
+            self.set_ground(false, None);
         } else {
             let (lo, hi) = self.trace.hull(self.me.ducked);
             let down = self.feet - Vec3::Z * GROUND_PROBE;
@@ -1060,7 +1125,7 @@ impl Mover<'_, '_, '_, '_> {
                     (tr.hit() && tr.normal.z >= WALKABLE_NORMAL_Z).then_some(tr)
                 });
             }
-            self.me.on_ground = ground.is_some();
+            self.set_ground(ground.is_some(), ground.and_then(|g| g.owner));
             if let Some(tr) = ground {
                 self.me.ground_normal = tr.normal;
                 self.v.z = 0.0;
@@ -1522,7 +1587,7 @@ impl Mover<'_, '_, '_, '_> {
                 self.v *= self.cfg.bunnyhop_cap / speed;
             }
         }
-        self.me.on_ground = false;
+        self.set_ground(false, None);
         if self.me.ducked || self.me.ducking {
             self.v.z = self.cfg.jump_impulse;
         } else {
@@ -1593,16 +1658,26 @@ impl Mover<'_, '_, '_, '_> {
         let forward = Vec3::new(yaw.cos(), yaw.sin(), 0.0);
         let right = Vec3::new(yaw.sin(), -yaw.cos(), 0.0);
 
+        // Leftover base velocity becomes real velocity when no push
+        // touched the player during the last tick (triggers.md, step 1).
+        if !self.base_touched {
+            self.v += self.base * (1.0 + self.dt / 2.0);
+            self.base = Vec3::ZERO;
+        }
+        self.base_touched = false;
         if !self.check_stuck() {
             return;
         }
         // On a ladder, or moved by game code (teleport, spawn): full ground
         // detection now. Otherwise only rising fast removes the ground.
+        // Taken off the ground by logic (push, teleport): stay off.
         let moved = self.me.last_feet.is_none_or(|f| f.distance_squared(self.feet) > 1e-4);
-        if self.me.ladder.is_some() || moved {
+        if self.unground {
+            self.set_ground(false, None);
+        } else if self.me.ladder.is_some() || moved {
             self.categorize();
         } else if self.v.z > UNGROUND_VZ {
-            self.me.on_ground = false;
+            self.set_ground(false, None);
         }
         if !self.me.on_ground {
             self.me.fall_speed = -self.v.z;
@@ -1637,7 +1712,7 @@ impl Mover<'_, '_, '_, '_> {
 
         self.water_check();
         if self.me.water_level < 2 {
-            self.half_gravity();
+            self.start_gravity();
             self.clamp_velocity();
         }
         if self.me.water_jump_time > 0.0 {
@@ -1736,6 +1811,10 @@ impl Mover<'_, '_, '_, '_> {
     }
 }
 
+fn hull_height(cfg: &SourceMovementConfig, ducked: bool) -> f32 {
+    if ducked { cfg.duck_height } else { cfg.stand_height }
+}
+
 fn step(
     mut q: Query<(
         Entity,
@@ -1745,12 +1824,18 @@ fn step(
         &mut Velocity,
         &mut MovementState,
         Option<&MaxSpeed>,
+        Option<&mut BaseVelocity>,
+        Option<&EntityGravity>,
     )>,
     query: SpatialQuery,
     brushes: Option<Res<MapBrushes>>,
     water: Option<Res<MapWater>>,
     brush_colliders: Query<Entity, With<MapBrushCollider>>,
-    (terrain, terrain_colliders): (Option<Res<MapTerrain>>, Query<Entity, With<MapTerrainCollider>>),
+    (terrain, terrain_colliders, movers): (
+        Option<Res<MapTerrain>>,
+        Query<Entity, With<MapTerrainCollider>>,
+        Query<(Entity, &MovingSolid)>,
+    ),
     props: Query<(Entity, &Transform, &PhysicsProp), Without<SourceMovement>>,
     surfaces: Option<Res<SurfaceGrid>>,
     prop_surfaces: Query<&PropSurface>,
@@ -1796,12 +1881,25 @@ fn step(
         .map(|(e, ..)| e)
         .chain(other_characters.iter().map(|(e, ..)| e))
         .collect();
-    for (entity, intent, mut me, mut transform, mut vel, mut state, weapon_speed) in &mut q {
-        let others: Vec<MapBrush> = boxes
+    // Moving solids (doors, platforms) are swept like brushes, and know
+    // their owner (what the player stands on).
+    let mover_brushes: Vec<(Entity, MapBrush)> = movers
+        .iter()
+        .filter(|(_, m)| m.solid)
+        .flat_map(|(e, m)| m.brushes.iter().map(move |b| (e, b.clone())))
+        .collect();
+    let mover_velocity = |e: Entity| movers.get(e).map_or(Vec3::ZERO, |(_, m)| to_source(m.velocity));
+    for (entity, intent, mut me, mut transform, mut vel, mut state, weapon_speed, mut base, gravity) in &mut q {
+        let mut others: Vec<MapBrush> = boxes
             .iter()
             .filter(|(e, _)| *e != entity)
             .map(|(_, b)| b.clone())
             .collect();
+        let mut owners: Vec<Option<Entity>> = vec![None; others.len()];
+        for (e, b) in &mover_brushes {
+            others.push(b.clone());
+            owners.push(Some(*e));
+        }
         // With brushes swept exactly, physics queries skip the same brushes.
         // Players pass through multiplayer physics props (their own
         // collision group); props that collide stay in.
@@ -1834,6 +1932,7 @@ fn step(
             heights: (cfg.stand_height, cfg.duck_height),
             others: &others,
             terrain: terrain.as_deref(),
+            owners: &owners,
         };
         let mut mover = Mover {
             cfg: &cfg,
@@ -1848,9 +1947,24 @@ fn step(
             // The held weapon's speed (spec: MaxPlayerSpeed), else the default.
             player_maxspeed: weapon_speed.map_or(cfg.player_maxspeed, |s| s.0 / METERS_PER_UNIT),
             fall_damage: 0.0,
+            base: base.as_ref().map_or(Vec3::ZERO, |b| to_source(b.velocity)),
+            base_touched: base.as_ref().is_some_and(|b| b.touched),
+            unground: base.as_ref().is_some_and(|b| b.unground),
+            gravity_scale: gravity.map_or(1.0, |g| g.0),
+            mover_velocity: &mover_velocity,
         };
         mover.tick(intent);
         let (feet, v) = (mover.feet, mover.v);
+        if let Some(b) = base.as_mut() {
+            let new = BaseVelocity {
+                velocity: to_engine(mover.base),
+                touched: mover.base_touched,
+                unground: false,
+            };
+            if b.velocity != new.velocity || b.touched != new.touched || b.unground {
+                **b = new;
+            }
+        }
         if mover.fall_damage > 0.0 {
             // Health is normalized: 1.0 = 100 points. No attacker, no
             // armour (measured: armour doesn't absorb it).
@@ -1861,6 +1975,7 @@ fn step(
                 point: to_engine(feet),
                 dir: Vec3::NEG_Y,
                 hitgroup: Hitgroup::Generic,
+                kind: crate::core::DamageKind::Fall,
             });
         }
         for (entry, at, volume) in mover.sounds.drain(..) {
@@ -1883,6 +1998,21 @@ fn step(
             crouching: me.ducked || (me.ducking && intent.crouch),
             sprinting: false,
             eye_offset: Vec3::Y * (me.eye - ORIGIN_ABOVE_FEET) * METERS_PER_UNIT,
+            hull_min: {
+                let (a, b) = (
+                    to_engine(Vec3::new(-HALF_WIDTH, -HALF_WIDTH, -ORIGIN_ABOVE_FEET)),
+                    to_engine(Vec3::new(HALF_WIDTH, HALF_WIDTH, hull_height(&cfg, me.ducked) - ORIGIN_ABOVE_FEET)),
+                );
+                a.min(b)
+            },
+            hull_max: {
+                let (a, b) = (
+                    to_engine(Vec3::new(-HALF_WIDTH, -HALF_WIDTH, -ORIGIN_ABOVE_FEET)),
+                    to_engine(Vec3::new(HALF_WIDTH, HALF_WIDTH, hull_height(&cfg, me.ducked) - ORIGIN_ABOVE_FEET)),
+                );
+                a.max(b)
+            },
+            ground: me.ground_entity,
         };
     }
 }

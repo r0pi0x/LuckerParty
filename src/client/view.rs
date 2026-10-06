@@ -31,6 +31,9 @@ pub struct CameraMode {
     pub third_person: bool,
     /// CS:S units (cam_idealdist).
     pub ideal_dist: f32,
+    /// Degrees the third-person camera orbits around the player
+    /// (cam_idealyaw; 180 looks at your front).
+    pub ideal_yaw: f32,
 }
 
 impl Default for CameraMode {
@@ -38,7 +41,37 @@ impl Default for CameraMode {
         Self {
             third_person: false,
             ideal_dist: 150.0,
+            ideal_yaw: 0.0,
         }
+    }
+}
+
+/// A camera detached from the local player (`mashup_freecam`), to watch
+/// your own body (or bots) from outside: 1 flies it (WASD, mouse, space
+/// and ctrl for up and down, shift for speed) while the player stands
+/// still; 2 leaves it where it is and gives the controls back to the
+/// player. 0 puts it back on the eye.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
+pub struct FreeCam {
+    pub mode: u8,
+    /// World position and look (yaw, pitch, radians) while detached; taken
+    /// from the camera when it detaches.
+    pub at: Option<(Vec3, f32, f32)>,
+}
+
+impl FreeCam {
+    /// Fly: `input` is (right, forward, up) in -1..1.
+    pub fn fly(&mut self, input: Vec3, turn: Vec2, speed: f32, dt: f32) {
+        let Some((p, yaw, pitch)) = &mut self.at else { return };
+        *yaw = (*yaw + turn.x).rem_euclid(std::f32::consts::TAU);
+        *pitch = (*pitch + turn.y).clamp(-89f32.to_radians(), 89f32.to_radians());
+        let look = Quat::from_euler(EulerRot::YXZ, *yaw, *pitch, 0.0);
+        *p += (look * Vec3::X * input.x + look * Vec3::NEG_Z * input.y + Vec3::Y * input.z) * speed * dt;
+    }
+
+    pub fn rotation(&self) -> Option<(Vec3, Quat)> {
+        self.at
+            .map(|(p, yaw, pitch)| (p, Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0)))
     }
 }
 
@@ -50,6 +83,7 @@ pub struct ViewPlugin;
 impl Plugin for ViewPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CameraMode>()
+            .init_resource::<FreeCam>()
             .init_resource::<HealthBars>()
             .init_resource::<ShowLocalBody>()
             .add_systems(Update, (show_local_body, draw_health_bars.after(super::follow_eye)));
@@ -93,6 +127,18 @@ fn view_console(app: &mut App) {
         "Third-person camera distance behind the eye, in CS:S units.",
         |m| &mut m.ideal_dist,
     );
+    resource_cvar::<FreeCam, u8>(
+        app,
+        "mashup_freecam",
+        "Detached camera: 1 fly it (player stands still), 2 keep it there and control the player, 0 back to the eye.",
+        |f| &mut f.mode,
+    );
+    resource_cvar::<CameraMode, f32>(
+        app,
+        "cam_idealyaw",
+        "Third-person camera orbit around the player, in degrees (180: from the front).",
+        |m| &mut m.ideal_yaw,
+    );
     resource_cvar::<HealthBars, u8>(
         app,
         "mashup_healthbars",
@@ -109,9 +155,19 @@ pub fn third_person_offset(look: Quat, ideal: f32, hit: Option<f32>) -> Vec3 {
     look * Vec3::Z * d
 }
 
+/// The camera's view direction: the look, turned by `cam_idealyaw` in
+/// third person.
+pub(super) fn camera_look(mode: &CameraMode, look: Quat) -> Quat {
+    if mode.third_person {
+        Quat::from_rotation_y(mode.ideal_yaw.to_radians()) * look
+    } else {
+        look
+    }
+}
+
 /// The camera's offset from the character's origin: the eye in first
-/// person; in third person, behind it, pulled in by a sweep against
-/// everything but characters.
+/// person; in third person, behind it (along `look`, from `camera_look`),
+/// pulled in by a sweep against everything but characters.
 pub(super) fn camera_offset(
     mode: &CameraMode,
     origin: Vec3,
@@ -149,11 +205,12 @@ pub(super) fn camera_offset(
 /// Draw the local player's body in third person while alive.
 fn show_local_body(
     mode: Res<CameraMode>,
+    free: Res<FreeCam>,
     local: Option<Single<Has<Dead>, With<LocalPlayer>>>,
     mut show: ResMut<ShowLocalBody>,
 ) {
     let dead = local.is_some_and(|d| *d);
-    show.set_if_neq(ShowLocalBody(mode.third_person && !dead));
+    show.set_if_neq(ShowLocalBody((mode.third_person || free.mode != 0) && !dead));
 }
 
 #[derive(Component)]
@@ -224,7 +281,9 @@ fn draw_health_bars(
             bars.insert(e, (root, fill));
             continue;
         };
-        let Ok((mut node, mut vis)) = nodes.get_mut(root) else { continue };
+        let Ok((mut node, mut vis)) = nodes.get_mut(root) else {
+            continue;
+        };
         let at = t.translation + Vec3::Y * BAR_ABOVE;
         let screen = view
             .as_ref()
@@ -248,6 +307,21 @@ fn draw_health_bars(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn free_camera_flies_along_its_view() {
+        let mut f = FreeCam {
+            mode: 1,
+            at: Some((Vec3::ZERO, 0.0, 0.0)),
+        };
+        // Yaw 0 faces -Z: forward for one second at 2 m/s.
+        f.fly(Vec3::new(0.0, 1.0, 0.0), Vec2::ZERO, 2.0, 1.0);
+        assert!(f.at.unwrap().0.distance(Vec3::new(0.0, 0.0, -2.0)) < 1e-5);
+        // Up is world up whatever the pitch.
+        f.fly(Vec3::Z, Vec2::new(0.0, 1.0), 1.0, 1.0);
+        assert!((f.at.unwrap().0.y - 1.0).abs() < 1e-5);
+        assert!((f.at.unwrap().2 - 1.0).abs() < 1e-6);
+    }
 
     fn app() -> App {
         let mut app = App::new();
@@ -273,6 +347,8 @@ mod tests {
         let mode = *app.world().resource::<CameraMode>();
         assert!(!mode.third_person);
         assert_eq!(mode.ideal_dist, 100.0);
+        run(&mut app, "cam_idealyaw 180");
+        assert_eq!(app.world().resource::<CameraMode>().ideal_yaw, 180.0);
     }
 
     #[test]

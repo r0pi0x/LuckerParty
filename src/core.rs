@@ -32,6 +32,9 @@ pub struct Intent {
     pub select: Option<u8>,
     /// Switch to the previously held weapon (Source `lastinv`).
     pub last_weapon: bool,
+    /// The use key (Source `+use`, E): doors, buttons. Held level; the
+    /// logic layer acts on presses.
+    pub use_key: bool,
 }
 
 impl Intent {
@@ -61,6 +64,53 @@ pub struct MovementState {
     pub sprinting: bool,
     /// Eye position relative to the character's origin, in meters.
     pub eye_offset: Vec3,
+    /// The collision box relative to the character's origin (engine
+    /// space, meters), when the movement has one (Source hulls); zero
+    /// when it doesn't (the logic layer then uses the collider's bounds).
+    pub hull_min: Vec3,
+    pub hull_max: Vec3,
+    /// The moving solid (`MovingSolid`) the character stands on, if any.
+    pub ground: Option<Entity>,
+}
+
+/// A velocity that moves a character without being part of its own
+/// velocity (Source base velocity: push triggers, leaving a moving
+/// platform), engine space, m/s. Movement implementations that model it
+/// read and consume it (specs/source/triggers.md, trigger_push).
+#[derive(Component, Reflect, Default, Clone, Copy, Debug)]
+#[reflect(Component)]
+pub struct BaseVelocity {
+    pub velocity: Vec3,
+    /// Set this tick by a push (Source: FL_BASEVELOCITY); the movement
+    /// clears it at the start of its next tick.
+    pub touched: bool,
+    /// Taken off the ground by game logic (push, teleport) this tick: the
+    /// movement must not snap it back down before it moves.
+    pub unground: bool,
+}
+
+/// Per-character gravity multiplier (Source entity gravity, set by
+/// trigger_gravity); 0 means normal.
+#[derive(Component, Reflect, Clone, Copy, Debug)]
+#[reflect(Component)]
+pub struct EntityGravity(pub f32);
+
+impl Default for EntityGravity {
+    fn default() -> Self {
+        Self(1.0)
+    }
+}
+
+/// A solid that moves (doors, platforms): its brushes where they are this
+/// tick (engine space) and its velocity (m/s), for movement that sweeps
+/// brushes exactly. Kept up to date by whoever moves it (the logic layer).
+#[derive(Component, Clone, Debug, Default)]
+pub struct MovingSolid {
+    pub brushes: Vec<MapBrush>,
+    pub velocity: Vec3,
+    /// Solid to characters right now (doors with "Passable", disabled
+    /// func_brush: false).
+    pub solid: bool,
 }
 
 #[derive(Component, Reflect, Clone, Copy, Debug)]
@@ -106,7 +156,32 @@ pub struct Damage {
     /// Direction the damage travelled (unit).
     pub dir: Vec3,
     pub hitgroup: Hitgroup,
+    /// How it was dealt (breakables scale damage by it).
+    pub kind: DamageKind,
 }
+
+/// How damage was dealt (Source damage types, as far as anything here
+/// tells them apart).
+#[derive(Reflect, Default, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DamageKind {
+    #[default]
+    Generic,
+    /// Hitscan shots.
+    Bullet,
+    /// Melee swings (the knife).
+    Melee,
+    Blast,
+    /// Crushed by a mover.
+    Crush,
+    Fall,
+}
+
+/// Takes `Damage` without having `Health`: something else (the logic
+/// layer's breakables) reads the messages aimed at it. Weapons hit it as
+/// a plain object (no hitgroups, no flesh sounds).
+#[derive(Component, Reflect, Default, Clone, Copy, Debug)]
+#[reflect(Component)]
+pub struct Damageable;
 
 /// An oriented box on a character's body that shots test (Source
 /// hitboxes), in the character's local space: feet at the origin, Y up,
@@ -206,9 +281,10 @@ fn apply_damage(
     for d in damage.read() {
         // Teammates don't hurt each other unless friendly fire is on (your
         // own damage, e.g. falling, always counts).
-        let teammate = d.attacker.filter(|a| *a != d.target).is_some_and(|a| {
-            matches!((teams.get(a), teams.get(d.target)), (Ok(x), Ok(y)) if x == y && x.0 != 0)
-        });
+        let teammate = d
+            .attacker
+            .filter(|a| *a != d.target)
+            .is_some_and(|a| matches!((teams.get(a), teams.get(d.target)), (Ok(x), Ok(y)) if x == y && x.0 != 0));
         if teammate && !friendly_fire {
             continue;
         }
@@ -245,7 +321,10 @@ impl Plugin for CorePlugin {
             .register_type::<Health>()
             .register_type::<Team>()
             .register_type::<MaxSpeed>()
+            .register_type::<BaseVelocity>()
+            .register_type::<EntityGravity>()
             .register_type::<Hitboxes>()
+            .register_type::<Damageable>()
             .add_message::<Damage>()
             .add_message::<Died>()
             .init_resource::<FriendlyFire>()
@@ -302,6 +381,88 @@ impl MapBrush {
     /// Whether a point (engine space) is inside.
     pub fn contains(&self, p: Vec3) -> bool {
         p.cmpge(self.min).all() && p.cmple(self.max).all() && self.planes.iter().all(|(n, d)| n.dot(p) <= *d)
+    }
+
+    /// Whether an axis-aligned box (centre, half size) overlaps the brush
+    /// by more than `skin` (any space, as long as the brush uses it too).
+    pub fn overlaps_box(&self, centre: Vec3, half: Vec3, skin: f32) -> bool {
+        self.max.cmpgt(centre - half).all()
+            && self.min.cmplt(centre + half).all()
+            && self
+                .planes
+                .iter()
+                .all(|(n, d)| n.dot(centre) - (d + n.abs().dot(half)) < -skin)
+    }
+
+    /// Sweep an axis-aligned box (half size `half`) with its centre from
+    /// `from` to `to`; hits stop `eps` short along the plane. Returns the
+    /// fraction travelled and the hit plane's normal when the box hits
+    /// (fraction 0 with a zero normal when it starts inside and stays in).
+    pub fn sweep_box(&self, half: Vec3, from: Vec3, to: Vec3, eps: f32) -> Option<(f32, Vec3)> {
+        let lo = from.min(to) - half - Vec3::splat(eps);
+        let hi = from.max(to) + half + Vec3::splat(eps);
+        if self.max.cmplt(lo).any() || self.min.cmpgt(hi).any() {
+            return None;
+        }
+        let (mut enter, mut leave) = (-1.0f32, 1.0f32);
+        let (mut starts_out, mut gets_out) = (false, false);
+        let mut clip = Vec3::ZERO;
+        for (n, d) in &self.planes {
+            let dist = d + n.abs().dot(half);
+            let d1 = n.dot(from) - dist;
+            let d2 = n.dot(to) - dist;
+            gets_out |= d2 > 0.0;
+            starts_out |= d1 > 0.0;
+            if d1 > 0.0 && (d2 >= eps || d2 >= d1) {
+                return None;
+            }
+            if d1 <= 0.0 && d2 <= 0.0 {
+                continue;
+            }
+            if d1 > d2 {
+                let f = ((d1 - eps) / (d1 - d2)).max(0.0);
+                if f > enter {
+                    enter = f;
+                    clip = *n;
+                }
+            } else {
+                leave = leave.min(((d1 + eps) / (d1 - d2)).min(1.0));
+            }
+        }
+        if !starts_out {
+            return (!gets_out).then_some((0.0, Vec3::ZERO));
+        }
+        (enter < leave && enter > -1.0).then_some((enter.max(0.0), clip))
+    }
+
+    /// The brush moved: rotated by `rotation` about the origin, then
+    /// moved by `offset` (planes and bounds; `points` are its corners
+    /// before the move, for the new bounds).
+    pub fn transformed(&self, points: &[Vec3], rotation: Quat, offset: Vec3) -> Self {
+        let planes = self
+            .planes
+            .iter()
+            .map(|(n, d)| {
+                let n = rotation * *n;
+                (n, d + n.dot(offset))
+            })
+            .collect();
+        let (mut min, mut max) = (Vec3::MAX, Vec3::MIN);
+        for p in points {
+            let q = rotation * *p + offset;
+            min = min.min(q);
+            max = max.max(q);
+        }
+        if points.is_empty() {
+            (min, max) = (self.min + offset, self.max + offset);
+        }
+        Self {
+            planes,
+            min,
+            max,
+            ladder: self.ladder,
+            surface: self.surface.clone(),
+        }
     }
 }
 

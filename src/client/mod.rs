@@ -2,15 +2,20 @@
 //! debug tools and agent-facing tools (screenshots, remote inspection).
 //! Simulation code must never depend on this module.
 
+pub mod buy_menu;
 pub mod capture;
 pub mod console;
 pub mod debug;
+pub mod debug_views;
 pub mod effects;
 pub mod game_hud;
-pub mod scoreboard;
+pub mod hud_sprites;
 pub mod hud;
 pub mod input;
 pub mod perf;
+pub mod radar;
+pub mod game_text;
+pub mod scoreboard;
 pub mod view;
 
 use std::path::PathBuf;
@@ -173,17 +178,22 @@ impl Plugin for ClientPlugin {
             .add_plugins((
                 input::LocalInputPlugin,
                 debug::DebugPlugin,
+                debug_views::DebugViewsPlugin,
                 capture::CapturePlugin,
                 perf::PerfPlugin,
                 console::ConsoleUiPlugin,
                 hud::HudPlugin,
                 game_hud::GameHudPlugin,
+                hud_sprites::HudSpritesPlugin,
                 scoreboard::ScoreboardPlugin,
+                game_text::GameTextPlugin,
+                radar::RadarPlugin,
                 effects::ShotEffectsPlugin,
                 view::ViewPlugin,
+                buy_menu::BuyMenuPlugin,
             ))
             .add_systems(PostStartup, spawn_local_player)
-            .add_systems(Update, follow_eye);
+            .add_systems(Update, (follow_eye, zoom_camera));
 
         // Bevy Remote Protocol: query and edit the live ECS over HTTP
         // (JSON-RPC on localhost:15702). See docs/OBSERVABILITY.md.
@@ -287,6 +297,26 @@ fn spawn_local_player(
     }
 }
 
+/// The first-person camera's field of view: Source's 90 (horizontal at
+/// 4:3), or the zoom the local player looks through (`weapon::Zoomed`).
+/// Kept vertically, so it is the same on every screen shape; the view
+/// model and sky cameras follow it.
+fn zoom_camera(
+    player: Option<Single<Option<&crate::weapon::Zoomed>, With<LocalPlayer>>>,
+    mut cameras: Query<&mut Projection, With<FirstPersonCamera>>,
+) {
+    let fov_43 = player.and_then(|z| z.map(|z| z.fov)).unwrap_or(90.0);
+    let fov = crate::map::view_model::vertical_fov(fov_43).to_radians();
+    for mut projection in &mut cameras {
+        if let Projection::Perspective(p) = projection.as_ref()
+            && (p.fov - fov).abs() > 1e-6
+            && let Projection::Perspective(p) = projection.as_mut()
+        {
+            p.fov = fov;
+        }
+    }
+}
+
 /// Place the camera at the movement implementation's eye position (or
 /// behind it in third person) and aim it along the look angles.
 #[allow(clippy::type_complexity)]
@@ -303,14 +333,36 @@ fn follow_eye(
     >,
     mut cameras: Query<&mut Transform, With<FirstPersonCamera>>,
     mode: Res<view::CameraMode>,
+    free: Res<input::FreeLook>,
+    mut freecam: ResMut<view::FreeCam>,
     spatial: avian3d::prelude::SpatialQuery,
     characters: Query<Entity, With<Intent>>,
 ) {
     for (at, intent, state, children, punch) in &players {
         // Recoil kicks the view (pitch up, yaw left).
         let p = punch.map_or(Vec2::ZERO, |p| p.0);
-        let look = Quat::from_euler(EulerRot::YXZ, intent.yaw + p.y, intent.pitch + p.x, 0.0);
+        let look = Quat::from_euler(
+            EulerRot::YXZ,
+            intent.yaw + p.y + free.yaw,
+            intent.pitch + p.x + free.pitch,
+            0.0,
+        );
+        let look = view::camera_look(&mode, look);
         let offset = view::camera_offset(&mode, at.translation, state.eye_offset, look, &spatial, &characters);
+        // Detached: starts where the camera is; placed in the world (the
+        // camera is the player's child, so undo the player's transform).
+        let (offset, look) = if freecam.mode == 0 {
+            freecam.bypass_change_detection().at = None;
+            (offset, look)
+        } else {
+            if freecam.at.is_none() {
+                let (yaw, pitch, _) = look.to_euler(EulerRot::YXZ);
+                freecam.at = Some((*at * offset, yaw, pitch));
+            }
+            let (p, q) = freecam.rotation().unwrap();
+            let inv = at.compute_affine().inverse();
+            (inv.transform_point3(p), at.rotation.inverse() * q)
+        };
         let mut cams = cameras.iter_many_mut(children);
         while let Some(mut cam) = cams.fetch_next() {
             cam.translation = offset;

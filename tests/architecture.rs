@@ -22,6 +22,9 @@ const ALLOWED: &[(&str, &[&str])] = &[
     ("map", &["core"]),
     ("weapon", &["core", "console", "map"]),
     ("rules", &["core", "console", "weapon"]),
+    // Map logic (entity I/O, triggers, movers): game-independent; games
+    // feed it through `map::MapData::entities`.
+    ("logic", &["core", "console", "map"]),
     ("bot", &["core", "console", "slots", "character", "map"]),
     // `lib` = crate-root items such as `SimPlugins`.
     (
@@ -38,6 +41,7 @@ const ALLOWED: &[(&str, &[&str])] = &[
             "weapon",
             "rules",
             "bot",
+            "logic",
         ],
     ),
     (
@@ -56,6 +60,7 @@ const ALLOWED: &[(&str, &[&str])] = &[
             "bot",
             "mount",
             "games",
+            "logic",
         ],
     ),
     // Game plugins: may use the shared layers, never another game.

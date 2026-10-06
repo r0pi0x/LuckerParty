@@ -67,9 +67,10 @@ pub(super) fn empty_mesh() -> Mesh {
     mesh
 }
 
+#[allow(clippy::type_complexity)]
 pub(super) fn update_dust(
     time: Res<Time>,
-    cameras: Query<&GlobalTransform, (With<Camera3d>, Without<SkyboxCamera>, Without<super::ViewModelCamera>)>,
+    cameras: Query<&GlobalTransform, (With<Camera3d>, Without<SkyboxCamera>, Without<super::ViewModelCamera>, Without<super::water::WaterReflectionCamera>)>,
     mut emitters: Query<&mut DustEmitter>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {

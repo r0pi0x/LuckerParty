@@ -186,6 +186,14 @@ impl PlaySound {
             channel: None,
         }
     }
+
+    /// Unspatialized (announcer, interface).
+    pub fn ui(entry: impl Into<String>) -> Self {
+        Self {
+            at: None,
+            ..Self::at(entry, Vec3::ZERO)
+        }
+    }
 }
 
 /// The loaded map's sounds.
@@ -357,7 +365,7 @@ impl SurfaceGrid {
         for m in data
             .meshes
             .iter()
-            .filter(|m| !m.skybox && !m.material.starts_with("decal:"))
+            .filter(|m| !m.skybox && m.entity.is_none() && !m.material.starts_with("decal:"))
         {
             let Some(surface) = &m.surface else { continue };
             let id = *index.entry(surface.clone()).or_insert_with(|| {

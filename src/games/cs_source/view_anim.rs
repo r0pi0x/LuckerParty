@@ -12,10 +12,10 @@ use crate::{
     console::{Console, resource_cvar},
     core::Health,
     map::{
-        DriveAnimation, EffectSettings, MapFlashLight, MapMuzzleFlash, ViewAnimator, ViewModelEvent, ViewModelEventKind,
-        ViewModelSettings, ViewModels, anim::AnimEvent,
+        DriveAnimation, EffectSettings, MapFlashLight, MapMuzzleFlash, ViewAnimator, ViewModelEvent,
+        ViewModelEventKind, ViewModelSettings, ViewModels, anim::AnimEvent,
     },
-    weapon::{Inventory, Weapon, WeaponEvent, WeaponEventKind},
+    weapon::{AltModes, Burst, Inventory, Magazine, Weapon, WeaponEvent, WeaponEventKind, Zoomed},
 };
 
 use super::view_motion::{self, ViewMotion};
@@ -133,6 +133,8 @@ pub fn muzzle_flash(materials: &mut super::material::MaterialLoader) -> MapMuzzl
 fn time_to_idle(weapon: &str) -> f32 {
     match weapon {
         super::weapons::AK47 => 1.9,
+        super::weapons::M4A1 => 1.5,
+        super::weapons::AWP => 2.0,
         _ => 0.0,
     }
 }
@@ -142,6 +144,12 @@ pub const IDLE: &str = "ACT_VM_IDLE";
 pub const PRIMARY: &str = "ACT_VM_PRIMARYATTACK";
 pub const SECONDARY: &str = "ACT_VM_SECONDARYATTACK";
 pub const RELOAD: &str = "ACT_VM_RELOAD";
+pub const DRYFIRE: &str = "ACT_VM_DRYFIRE";
+pub const ATTACH_SILENCER: &str = "ACT_VM_ATTACH_SILENCER";
+pub const DETACH_SILENCER: &str = "ACT_VM_DETACH_SILENCER";
+/// Silenced weapons' view models tag their silenced set with this suffix
+/// (spec weapons.md, view-model durations).
+const SILENCED: &str = "_SILENCED";
 pub const HIT_CENTER: &str = "ACT_VM_HITCENTER";
 pub const MISS_CENTER: &str = "ACT_VM_MISSCENTER";
 
@@ -201,9 +209,7 @@ fn cvars(app: &mut App) {
         "1: muzzle flashes light the world, props and view models.",
         |e| &mut e.muzzle_light,
     );
-    resource_cvar::<EffectSettings, u8>(app, "cl_ejectbrass", "1: weapons eject shells.", |e| {
-        &mut e.eject_brass
-    });
+    resource_cvar::<EffectSettings, u8>(app, "cl_ejectbrass", "1: weapons eject shells.", |e| &mut e.eject_brass);
     let mut console = app.world_mut().resource_mut::<Console>();
     for name in ["viewmodel_fov", "cl_righthand", "muzzleflash_light"] {
         console.archive(name);
@@ -214,6 +220,8 @@ fn cvars(app: &mut App) {
 #[derive(Component, Debug, Clone)]
 pub struct ViewModelPlay {
     last_attack: f64,
+    /// When the burst playing started (its later rounds don't restart it).
+    burst_started: f64,
     rng: u32,
 }
 
@@ -231,13 +239,35 @@ impl ViewModelPlay {
 
 /// Play the first available of `activities` from the start.
 fn play(view: &mut ViewAnimator, dice: &mut ViewModelPlay, activities: &[&str], now: f64) -> bool {
-    let Some(animator) = view.animator.as_mut() else { return false };
+    let Some(animator) = view.animator.as_mut() else {
+        return false;
+    };
     let roll = dice.roll();
     let Some(s) = activities.iter().find_map(|a| animator.set.pick_activity(a, roll)) else {
         return false;
     };
     animator.restart(s, now);
     true
+}
+
+/// `activities`, each preceded by its silenced variant when `silenced`.
+fn variants(activities: &[&str], silenced: bool) -> Vec<String> {
+    activities
+        .iter()
+        .flat_map(|a| {
+            silenced
+                .then(|| format!("{a}{SILENCED}"))
+                .into_iter()
+                .chain([a.to_string()])
+        })
+        .collect()
+}
+
+/// `play` with the silenced variants first when `silenced`.
+fn play_mode(view: &mut ViewAnimator, dice: &mut ViewModelPlay, activities: &[&str], silenced: bool, now: f64) -> bool {
+    let all = variants(activities, silenced);
+    let refs: Vec<&str> = all.iter().map(String::as_str).collect();
+    play(view, dice, &refs, now)
 }
 
 /// Play one of the sequences `names` (at random), else the first
@@ -249,7 +279,9 @@ fn play_named(
     activities: &[&str],
     now: f64,
 ) -> bool {
-    let Some(animator) = view.animator.as_mut() else { return false };
+    let Some(animator) = view.animator.as_mut() else {
+        return false;
+    };
     let found: Vec<usize> = names.iter().filter_map(|n| animator.set.sequence(n)).collect();
     if found.is_empty() {
         return play(view, dice, activities, now);
@@ -269,35 +301,43 @@ fn drive(
         Option<&Health>,
         Option<&mut ViewAnimator>,
         Option<&mut ViewModelPlay>,
+        Option<&Zoomed>,
     )>,
-    weapons: Query<&Weapon>,
+    weapons: Query<(&Weapon, Option<&AltModes>, Option<&Burst>, Option<&Magazine>)>,
     mut events: MessageReader<WeaponEvent>,
     mut effects: MessageWriter<ViewModelEvent>,
     mut commands: Commands,
 ) {
     let (dt, now) = (time.delta_secs(), time.elapsed_secs_f64());
     let events: Vec<&WeaponEvent> = events.read().collect();
-    for (e, inventory, health, view, dice) in &mut characters {
+    for (e, inventory, health, view, dice, zoomed) in &mut characters {
         let (Some(mut view), Some(mut dice)) = (view, dice) else {
             commands.entity(e).insert((
                 ViewAnimator::default(),
                 ViewModelPlay {
                     last_attack: f64::MIN,
+                    burst_started: f64::MIN,
                     rng: e.to_bits() as u32 ^ 0x9e37_79b9,
                 },
             ));
             continue;
         };
         let alive = health.is_none_or(|h| h.current > 0.0);
-        let weapon = inventory
-            .active
-            .filter(|_| alive)
-            .and_then(|w| weapons.get(w).ok())
-            .map(|w| w.id);
+        let parts = inventory.active.filter(|_| alive).and_then(|w| weapons.get(w).ok());
+        let weapon = parts.map(|(w, ..)| w.id);
+        // Silenced sequences in a silencer's mode (other modes' models have
+        // none, so this falls back to the plain ones).
+        let mode = parts.and_then(|(_, m, ..)| m).map_or(0, |m| m.current);
+        let silenced = mode > 0;
+        let burst = parts.and_then(|(_, _, b, _)| b).filter(|b| b.mode == mode);
+        let empty = parts.and_then(|(.., m)| m).is_some_and(|m| m.clip == 0);
+        // Snipers hide the view model behind the scope (spec view_models.md,
+        // "Zoomed weapons").
+        view.hidden = zoomed.is_some_and(|z| z.scope);
         // A new weapon in hand draws it (spec 3.3).
         let mut drawn = false;
         if view.show(weapon, models.as_deref()) {
-            drawn = play(&mut view, &mut dice, &[DRAW, IDLE], now);
+            drawn = play_mode(&mut view, &mut dice, &[DRAW, IDLE], silenced, now);
         }
         let Some(weapon) = weapon else { continue };
         // Where the sequence was, to fire the events passed this frame.
@@ -307,13 +347,32 @@ fn drive(
         for ev in events.iter().filter(|ev| ev.owner == e) {
             match &ev.kind {
                 WeaponEventKind::Deployed if !drawn => {
-                    drawn = play(&mut view, &mut dice, &[DRAW, IDLE], now);
+                    drawn = play_mode(&mut view, &mut dice, &[DRAW, IDLE], silenced, now);
                     restarted |= drawn;
                 }
                 WeaponEventKind::Shot { .. } if !fired => {
-                    fired = play(&mut view, &mut dice, &[PRIMARY], now);
+                    if let Some(b) = burst {
+                        // One sequence per burst (the Glock's burst fire).
+                        let length = b.interval as f64 * b.count.saturating_sub(1) as f64;
+                        if now - dice.burst_started > length + 0.01 {
+                            dice.burst_started = now;
+                            fired = play(&mut view, &mut dice, &[SECONDARY, PRIMARY], now);
+                        }
+                    } else {
+                        // The last round has its own sequence on pistols.
+                        let order: &[&str] = if empty { &[DRYFIRE, PRIMARY] } else { &[PRIMARY] };
+                        fired = play_mode(&mut view, &mut dice, order, silenced, now);
+                    }
                     restarted |= fired;
                     dice.last_attack = now;
+                }
+                WeaponEventKind::ModeChanged { mode } => {
+                    // Silencers have sequences for it; scopes and bursts don't.
+                    let act = if *mode > 0 { ATTACH_SILENCER } else { DETACH_SILENCER };
+                    if play(&mut view, &mut dice, &[act], now) {
+                        restarted = true;
+                        dice.last_attack = now;
+                    }
                 }
                 WeaponEventKind::Swing { hit, secondary, .. } => {
                     // Slashes have no miss sequence (spec 6.2): the hit
@@ -327,13 +386,15 @@ fn drive(
                     dice.last_attack = now;
                 }
                 WeaponEventKind::ReloadStarted => {
-                    restarted |= play(&mut view, &mut dice, &[RELOAD], now);
+                    restarted |= play_mode(&mut view, &mut dice, &[RELOAD], silenced, now);
                     dice.last_attack = now;
                 }
                 _ => {}
             }
         }
-        let Some(animator) = view.animator.as_mut() else { continue };
+        let Some(animator) = view.animator.as_mut() else {
+            continue;
+        };
         animator.advance(dt, now);
         // Events the cycle passed (spec view_models.md 6): a restart re-arms
         // them, so those at cycle 0 fire on its first frame.
@@ -348,7 +409,7 @@ fn drive(
         // Idle once the sequence has played out (spec 3.7); a non-looping
         // idle (the knife's) starts over.
         if animator.finished() && now - dice.last_attack >= time_to_idle(weapon) as f64 {
-            play(&mut view, &mut dice, &[IDLE], now);
+            play_mode(&mut view, &mut dice, &[IDLE], silenced, now);
         }
     }
 }

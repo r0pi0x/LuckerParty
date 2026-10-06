@@ -12,7 +12,8 @@ use crate::{
     core::{Damage, Died, Health, Hitgroup, LocalPlayer, Team},
     map::hud::{ActiveHud, GameHud},
     rules::Dead,
-    weapon::{Armor, Inventory, Magazine, Weapon},
+    rules::rounds::RoundState,
+    weapon::{Armor, Inventory, Magazine, Weapon, economy::Money},
 };
 
 pub struct GameHudPlugin;
@@ -26,7 +27,10 @@ impl Plugin for GameHudPlugin {
                 (
                     build.run_if(resource_exists_and_changed::<ActiveHud>),
                     teardown.run_if(resource_removed::<ActiveHud>),
-                    (remember_hits, death_notices, update).chain().run_if(resource_exists::<ActiveHud>),
+                    (remember_hits, death_notices, update)
+                        .chain()
+                        .run_if(resource_exists::<ActiveHud>),
+                    round_banner,
                 ),
             );
     }
@@ -55,6 +59,10 @@ enum PanelKind {
     Health,
     Armor,
     Ammo,
+    /// Money (rounds).
+    Account,
+    /// The round clock (rounds).
+    Timer,
 }
 
 impl PanelKind {
@@ -63,6 +71,8 @@ impl PanelKind {
             PanelKind::Health => "HudHealth",
             PanelKind::Armor => "HudArmor",
             PanelKind::Ammo => "HudAmmo",
+            PanelKind::Account => "HudAccount",
+            PanelKind::Timer => "HudRoundTimer",
         }
     }
 }
@@ -96,7 +106,12 @@ fn color(c: [u8; 4]) -> Color {
     Color::srgba_u8(c[0], c[1], c[2], c[3])
 }
 
-fn build(hud: Res<ActiveHud>, mut fonts: ResMut<Assets<Font>>, old: Query<Entity, With<GameHudPart>>, mut commands: Commands) {
+fn build(
+    hud: Res<ActiveHud>,
+    mut fonts: ResMut<Assets<Font>>,
+    old: Query<Entity, With<GameHudPart>>,
+    mut commands: Commands,
+) {
     for e in &old {
         commands.entity(e).despawn();
     }
@@ -121,8 +136,16 @@ fn build(hud: Res<ActiveHud>, mut fonts: ResMut<Assets<Font>>, old: Query<Entity
             GlobalZIndex(40),
         ));
     };
-    for kind in [PanelKind::Health, PanelKind::Armor, PanelKind::Ammo] {
-        let Some(panel) = hud.0.panels.get(kind.name()) else { continue };
+    for kind in [
+        PanelKind::Health,
+        PanelKind::Armor,
+        PanelKind::Ammo,
+        PanelKind::Account,
+        PanelKind::Timer,
+    ] {
+        let Some(panel) = hud.0.panels.get(kind.name()) else {
+            continue;
+        };
         commands.spawn((
             GameHudPart,
             Part::Panel(kind),
@@ -231,7 +254,19 @@ fn death_notices(
     }
 }
 
-type LocalState<'a> = (&'a Health, Option<&'a Armor>, Option<&'a Inventory>, Has<Dead>);
+type LocalState<'a> = (
+    &'a Health,
+    Option<&'a Armor>,
+    Option<&'a Inventory>,
+    Has<Dead>,
+    Option<&'a Money>,
+);
+
+/// The round clock as the game shows it: minutes and seconds, rounded up.
+fn clock_text(seconds: f32) -> String {
+    let s = seconds.ceil() as u32;
+    format!("{}:{:02}", s / 60, s % 60)
+}
 
 /// Lay the HUD out for the window and fill in the values.
 #[allow(clippy::type_complexity)]
@@ -242,8 +277,18 @@ fn update(
     player: Option<Single<LocalState, With<LocalPlayer>>>,
     weapons: Query<(&Weapon, Option<&Magazine>)>,
     notices: Res<DeathNotices>,
+    rounds: Option<Res<RoundState>>,
+    time: Res<Time<Fixed>>,
     mut built: Local<(u64, f32)>,
-    mut parts: Query<(Entity, &Part, &mut Node, Option<&mut Text>, Option<&mut TextFont>, Option<&mut TextColor>, &mut Visibility)>,
+    mut parts: Query<(
+        Entity,
+        &Part,
+        &mut Node,
+        Option<&mut Text>,
+        Option<&mut TextFont>,
+        Option<&mut TextColor>,
+        &mut Visibility,
+    )>,
     mut commands: Commands,
 ) {
     let (Some(fonts), Some(window)) = (fonts, windows.iter().next()) else {
@@ -255,18 +300,20 @@ fn update(
     let fg = hud.color("FgColor").unwrap_or(Color::srgb_u8(255, 176, 0));
     let warn = Color::srgb_u8(255, 0, 0);
     let font = |name: &str| fonts.0.get(name).cloned();
-    let (health, armor, active, dead) = match &player {
+    let (health, armor, active, dead, money) = match &player {
         Some(p) => {
-            let (h, a, inv, dead) = **p;
+            let (h, a, inv, dead, money) = **p;
             (
                 Some(h.current * 100.0),
                 a.filter(|a| a.amount > 0.0).map(|a| (a.amount * 100.0, a.helmet)),
                 inv.and_then(|i| i.active).and_then(|e| weapons.get(e).ok()),
                 dead,
+                money.map(|m| m.0),
             )
         }
-        None => (None, None, None, true),
+        None => (None, None, None, true, None),
     };
+    let clock = rounds.as_ref().and_then(|r| r.clock(time.elapsed_secs_f64()));
     let ammo = active.and_then(|(_, m)| m).map(|m| (m.clip, m.reserve));
     for (entity, part, mut node, text, text_font, text_color, mut vis) in &mut parts {
         let kind = match part {
@@ -278,14 +325,22 @@ fn update(
             Some(PanelKind::Health) => !dead,
             Some(PanelKind::Armor) => !dead && armor.is_some(),
             Some(PanelKind::Ammo) => !dead && ammo.is_some(),
+            Some(PanelKind::Account) => money.is_some(),
+            Some(PanelKind::Timer) => clock.is_some(),
             None => true,
         };
-        *vis = if shown { Visibility::Inherited } else { Visibility::Hidden };
+        *vis = if shown {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
         if !shown {
             continue;
         }
         if *part == Part::Notices {
-            let Some(panel) = hud.panels.get("HudDeathNotice") else { continue };
+            let Some(panel) = hud.panels.get("HudDeathNotice") else {
+                continue;
+            };
             node.right = px(w - (panel.x.resolve(w, scale) + panel.wide * scale));
             node.top = px(panel.y.resolve(h, scale));
             if *built != (notices.1, scale) {
@@ -295,7 +350,9 @@ fn update(
             continue;
         }
         let Some(kind) = kind else { continue };
-        let Some(panel) = hud.panels.get(kind.name()) else { continue };
+        let Some(panel) = hud.panels.get(kind.name()) else {
+            continue;
+        };
         let origin = Vec2::new(panel.x.resolve(w, scale), panel.y.resolve(h, scale));
         let place = |node: &mut Node, at: Vec2| {
             node.left = px(origin.x + at.x * scale);
@@ -319,12 +376,19 @@ fn update(
             Part::Icon(_) | Part::Digits(_) | Part::Digits2(_) => {
                 let (font_name, value, at) = match (part, kind) {
                     (Part::Icon(PanelKind::Health), _) => icon(hud, "health_icon"),
-                    (Part::Icon(PanelKind::Armor), _) => {
-                        icon(hud, if armor.is_some_and(|a| a.1) { "shield_kevlar" } else { "shield" })
-                    }
-                    (Part::Digits(PanelKind::Health), _) => {
-                        ("HudNumbers".into(), format!("{:.0}", health.unwrap_or(0.0).ceil()), panel.digit)
-                    }
+                    (Part::Icon(PanelKind::Armor), _) => icon(
+                        hud,
+                        if armor.is_some_and(|a| a.1) {
+                            "shield_kevlar"
+                        } else {
+                            "shield"
+                        },
+                    ),
+                    (Part::Digits(PanelKind::Health), _) => (
+                        "HudNumbers".into(),
+                        format!("{:.0}", health.unwrap_or(0.0).ceil()),
+                        panel.digit,
+                    ),
                     (Part::Digits(PanelKind::Armor), _) => (
                         "HudNumbers".into(),
                         format!("{:.0}", armor.map_or(0.0, |a| a.0).round()),
@@ -333,6 +397,18 @@ fn update(
                     (Part::Digits(PanelKind::Ammo), _) => (
                         "HudNumbers".into(),
                         ammo.map_or(String::new(), |a| a.0.to_string()),
+                        panel.digit,
+                    ),
+                    (Part::Icon(PanelKind::Account), _) => icon(hud, "dollar_sign"),
+                    (Part::Icon(PanelKind::Timer), _) => icon(hud, "timer_icon"),
+                    (Part::Digits(PanelKind::Account), _) => (
+                        "HudNumbers".into(),
+                        money.map_or(String::new(), |m| m.to_string()),
+                        panel.digit,
+                    ),
+                    (Part::Digits(PanelKind::Timer), _) => (
+                        "HudNumbers".into(),
+                        clock.map_or(String::new(), clock_text),
                         panel.digit,
                     ),
                     (Part::Digits2(_), _) => (
@@ -344,6 +420,11 @@ fn update(
                 };
                 let at = if matches!(part, Part::Icon(_)) { panel.icon } else { at };
                 place(&mut node, at);
+                // The account's digits end at their position (right-aligned).
+                if kind == PanelKind::Account && matches!(part, Part::Digits(_)) {
+                    node.right = px(w - (origin.x + at.x * scale));
+                    node.left = Val::Auto;
+                }
                 if let Some(mut t) = text
                     && t.0 != value
                 {
@@ -360,6 +441,76 @@ fn update(
             Part::Notices => {}
         }
     }
+}
+
+/// The round's result across the screen ("Terrorists Win!") until the
+/// next round starts.
+#[derive(Component)]
+struct RoundBanner;
+
+fn round_banner(
+    mut ended: MessageReader<crate::rules::rounds::RoundEnded>,
+    rounds: Option<Res<RoundState>>,
+    banner: Query<Entity, With<RoundBanner>>,
+    windows: Query<&Window>,
+    sounds: Option<Res<crate::map::RoundSounds>>,
+    mut play: MessageWriter<crate::map::PlaySound>,
+    mut was_live: Local<bool>,
+    mut commands: Commands,
+) {
+    use crate::rules::rounds::{ATTACKERS, DEFENDERS, Phase};
+    // "Let's go!" as a round goes live.
+    let live = rounds.as_ref().is_some_and(|r| matches!(r.phase, Phase::Live { .. }));
+    if live
+        && !*was_live
+        && let Some(s) = sounds.as_ref().filter(|s| !s.start.is_empty())
+    {
+        let n = rounds.as_ref().map_or(0, |r| r.number as usize);
+        play.write(crate::map::PlaySound::ui(s.start[n % s.start.len()].clone()));
+    }
+    *was_live = live;
+    let over = rounds.is_some_and(|r| matches!(r.phase, Phase::Over { .. }));
+    if !over {
+        for e in &banner {
+            commands.entity(e).despawn();
+        }
+    }
+    let Some(end) = ended.read().last() else { return };
+    if let Some(entry) = sounds.as_ref().and_then(|s| match end.winner {
+        Some(ATTACKERS) => s.attackers_win.clone(),
+        Some(DEFENDERS) => s.defenders_win.clone(),
+        _ => s.draw.clone(),
+    }) {
+        play.write(crate::map::PlaySound::ui(entry));
+    }
+    let text = match end.winner {
+        Some(ATTACKERS) => "Terrorists Win!",
+        Some(DEFENDERS) => "Counter-Terrorists Win!",
+        _ => "Round Draw!",
+    };
+    let scale = windows.iter().next().map_or(1.0, |w| w.height() / 480.0);
+    for e in &banner {
+        commands.entity(e).despawn();
+    }
+    commands.spawn((
+        RoundBanner,
+        Text::new(text),
+        TextFont {
+            font_size: FontSize::Px(18.0 * scale),
+            ..default()
+        },
+        TextColor(Color::WHITE),
+        TextShadow::default(),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Percent(28.0),
+            width: Val::Percent(100.0),
+            justify_content: JustifyContent::Center,
+            ..default()
+        },
+        TextLayout::justify(Justify::Center),
+        GlobalZIndex(45),
+    ));
 }
 
 /// An icon's font and glyph (and an unused offset).
@@ -381,12 +532,14 @@ fn rebuild_notices(
     commands: &mut Commands,
 ) {
     commands.entity(root).despawn_related::<Children>();
-    let team_color = |t: Option<Team>| match t.map(|t| t.0) {
-        Some(1) => hud.color("T_Red"),
-        Some(2) => hud.color("CT_Blue"),
-        _ => None,
-    }
-    .unwrap_or(Color::WHITE);
+    let team_color = |t: Option<Team>| {
+        match t.map(|t| t.0) {
+            Some(1) => hud.color("T_Red"),
+            Some(2) => hud.color("CT_Blue"),
+            _ => None,
+        }
+        .unwrap_or(Color::WHITE)
+    };
     let text_size = 9.0 * scale;
     for n in &notices.0 {
         let row = commands
@@ -446,6 +599,13 @@ fn rebuild_notices(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn round_clock_reads_like_the_game() {
+        assert_eq!(clock_text(300.0), "5:00");
+        assert_eq!(clock_text(59.2), "1:00");
+        assert_eq!(clock_text(5.0), "0:05");
+    }
     use crate::map::hud::{HudCoord, HudPanel};
 
     #[test]

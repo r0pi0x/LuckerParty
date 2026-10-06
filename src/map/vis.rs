@@ -204,18 +204,29 @@ pub fn split_mesh(mesh: &MapMesh, vis: Option<&MapVisibility>, size: f32) -> Vec
         let max = p[0].max(p[1]).max(p[2]);
         vis.clusters_in_box(min, max, clusters);
     }
+    // The mesh without its per-vertex data, copied into every chunk.
+    let mut template = mesh.clone();
+    template.indices.clear();
+    template.positions.clear();
+    template.normals.clear();
+    template.uvs.clear();
+    template.joints.clear();
+    template.joint_weights.clear();
+    template.lightmap_uvs.clear();
+    template.blend_weights.clear();
     cells
         .into_values()
         .map(|(tris, mut clusters)| {
             clusters.sort_unstable();
-            (sub_mesh(mesh, &tris), clusters)
+            (sub_mesh(mesh, &template, &tris), clusters)
         })
         .collect()
 }
 
 /// The triangles `indices` of `mesh` as a mesh of their own (vertices
-/// renumbered, every per-vertex attribute kept).
-fn sub_mesh(mesh: &MapMesh, indices: &[u32]) -> MapMesh {
+/// renumbered, every per-vertex attribute kept). `template` is the mesh
+/// with its per-vertex data emptied (everything else is copied from it).
+fn sub_mesh(mesh: &MapMesh, template: &MapMesh, indices: &[u32]) -> MapMesh {
     let mut remap: std::collections::HashMap<u32, u32> = Default::default();
     let mut used: Vec<usize> = Vec::new();
     let new_indices = indices
@@ -234,26 +245,15 @@ fn sub_mesh(mesh: &MapMesh, indices: &[u32]) -> MapMesh {
         used.iter().map(|&i| v[i].clone()).collect()
     }
     MapMesh {
-        material: mesh.material.clone(),
-        skybox: mesh.skybox,
         positions: pick(&mesh.positions, &used),
         normals: pick(&mesh.normals, &used),
         uvs: pick(&mesh.uvs, &used),
         joints: pick(&mesh.joints, &used),
         joint_weights: pick(&mesh.joint_weights, &used),
         indices: new_indices,
-        color: mesh.color,
-        texture: mesh.texture,
-        alpha: mesh.alpha,
-        double_sided: mesh.double_sided,
-        normal_map: mesh.normal_map,
         lightmap_uvs: pick(&mesh.lightmap_uvs, &used),
-        blend: mesh.blend,
         blend_weights: pick(&mesh.blend_weights, &used),
-        detail: mesh.detail,
-        unlit: mesh.unlit,
-        surface: mesh.surface.clone(),
-        envmap: mesh.envmap,
+        ..template.clone()
     }
 }
 
@@ -290,7 +290,7 @@ pub(crate) fn cull(
     vis: Option<Res<ActiveVisibility>>,
     novis: Res<NoVis>,
     cameras: Query<
-        (&GlobalTransform, &Camera),
+        (&GlobalTransform, &Camera, Has<super::water::WaterReflectionCamera>),
         (With<Camera3d>, Without<super::SkyboxCamera>, Without<super::ViewModelCamera>),
     >,
     mut queries: ParamSet<(
@@ -303,20 +303,30 @@ pub(crate) fn cull(
         )>,
     )>,
     mut stats: ResMut<VisStats>,
-    mut last: Local<Option<Option<u32>>>,
+    mut last: Local<Option<Option<Vec<u32>>>>,
 ) {
-    let eye = cameras.iter().find(|(_, c)| c.is_active).map(|(t, _)| t.translation());
-    let cluster = match (&vis, novis.0) {
-        (Some(v), 0) => eye.and_then(|e| v.0.cluster_at(e)),
+    let active: Vec<(Vec3, bool)> = cameras
+        .iter()
+        .filter(|(_, c, _)| c.is_active)
+        .map(|(t, _, reflection)| (t.translation(), reflection))
+        .collect();
+    // The main view's eye (fade distances), and the clusters of every view
+    // that draws the map: the main one and, while it draws, the water's
+    // mirrored reflection camera. Any view outside the map (or r_novis 1)
+    // draws everything: None.
+    let eye = active.iter().find(|(_, r)| !r).map(|(p, _)| *p);
+    let clusters: Option<Vec<u32>> = match (&vis, novis.0) {
+        (Some(v), 0) if !active.is_empty() => active.iter().map(|(p, _)| v.0.cluster_at(*p)).collect(),
         _ => None,
     };
-    let changed = *last != Some(cluster) || !queries.p0().is_empty();
-    *last = Some(cluster);
-    stats.cluster = cluster;
+    let changed = last.as_ref() != Some(&clusters) || !queries.p0().is_empty();
+    *last = Some(clusters.clone());
+    let main = eye.and_then(|e| vis.as_ref().and_then(|v| v.0.cluster_at(e))).filter(|_| clusters.is_some());
+    stats.cluster = main;
     stats.clusters = vis.as_ref().map_or(0, |v| v.0.cluster_count);
     if changed {
-        debug!("visibility: camera at {eye:?} in cluster {cluster:?}");
-        stats.visible_clusters = match (cluster, &vis) {
+        debug!("visibility: camera at {eye:?}, view clusters {clusters:?}");
+        stats.visible_clusters = match (main, &vis) {
             (Some(c), Some(v)) => v.0.visible[c as usize].iter().map(|w| w.count_ones() as usize).sum(),
             _ => stats.clusters,
         };
@@ -328,8 +338,8 @@ pub(crate) fn cull(
             shown += part.potentially_visible as usize;
             continue;
         }
-        let in_pvs = match (cluster, &vis) {
-            (Some(c), Some(v)) => v.0.sees_any(c, &part.clusters),
+        let in_pvs = match (&clusters, &vis) {
+            (Some(from), Some(v)) => from.iter().any(|c| v.0.sees_any(*c, &part.clusters)),
             _ => true,
         };
         let near = match (fade, eye) {

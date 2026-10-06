@@ -50,12 +50,15 @@ const STOCK: &[&str] = &[
 ];
 
 /// Warnings other than the decal/overlay placement counts (tracked in
-/// docs/plans/active/other-maps.md).
+/// docs/plans/active/other-maps.md) and the AWP view model (MDL v48, not
+/// read yet: docs/backlog.md section 3).
 fn load_warnings(map: &MapData) -> Vec<&String> {
     map.warnings
         .iter()
         .filter(|w| {
-            !w.ends_with("decals found no surface to project onto") && !w.ends_with("overlays produced no geometry")
+            !w.ends_with("decals found no surface to project onto")
+                && !w.ends_with("overlays produced no geometry")
+                && !w.starts_with("models/weapons/v_snip_awp.mdl")
         })
         .collect()
 }
@@ -89,7 +92,11 @@ fn aztec_walls_blend_two_textures() {
     assert_eq!(detail.scale, [4.0, 4.0]);
     // The canals (Water, no base texture) draw their fog colour and
     // reflect the baked cubemap.
-    let water: Vec<_> = map.meshes.iter().filter(|m| m.material.contains("aztecwater")).collect();
+    let water: Vec<_> = map
+        .meshes
+        .iter()
+        .filter(|m| m.material.contains("aztecwater"))
+        .collect();
     assert!(!water.is_empty());
     for m in water {
         assert!(m.texture.is_some() && m.envmap.is_some(), "{}", m.material);
@@ -122,29 +129,54 @@ fn old_maps_light_props_with_ambient_cubes() {
 
 /// Brush entities draw and collide where they stand: cs_office's first
 /// window (func_breakable_surf, model *1, Source x -628..-508 at y -344..-340,
-/// z -148..-52) and its sliding door (func_door *7, stored around its origin
-/// 584 -1872 -252).
+/// z -148..-52) is a breakable, so it has its own node: drawn there and
+/// solid through its volumes (origin 0 0 0); its sliding door (func_door
+/// *7, stored around its origin 584 -1872 -252) is a mover: drawn and solid
+/// through its own node, so its meshes and volumes are local to it.
 #[test]
 fn brush_entities_draw_and_collide() {
     use bevy::math::Vec3;
     let Some(map) = load("cs_office") else { return };
     let src = |x: f32, y: f32, z: f32| Vec3::new(x, z, -y) * 0.0254;
-    for (what, at) in [
-        ("window", src(-568.0, -342.0, -100.0)),
-        ("door", src(584.0, -1872.0, -252.0)),
-    ] {
-        let drawn = map
-            .meshes
-            .iter()
-            .flat_map(|m| m.positions.iter())
-            .any(|p| Vec3::from(*p).distance(at) < 100.0 * 0.0254);
-        assert!(drawn, "{what} not drawn");
-        let solid = map
-            .collision_brushes
-            .iter()
-            .any(|b| (b.min - Vec3::splat(0.05)).cmple(at).all() && (b.max + Vec3::splat(0.05)).cmpge(at).all());
-        assert!(solid, "{what} not solid");
-    }
+    let at = src(-568.0, -342.0, -100.0);
+    let (window, w) = map
+        .entities
+        .iter()
+        .enumerate()
+        .find(|(_, e)| e.get("model") == Some("*1"))
+        .expect("cs_office's first window");
+    assert_eq!(w.classname(), "func_breakable_surf");
+    assert!(w.mover, "the window has its own node");
+    let drawn = map
+        .meshes
+        .iter()
+        .filter(|m| m.entity == Some(window))
+        .flat_map(|m| m.positions.iter())
+        .any(|p| Vec3::from(*p).distance(at) < 100.0 * 0.0254);
+    assert!(drawn, "window not drawn");
+    let (lo, hi) = w
+        .hulls
+        .iter()
+        .flat_map(|h| &h.points)
+        .fold((Vec3::MAX, Vec3::MIN), |(lo, hi), q| (lo.min(*q), hi.max(*q)));
+    let p = Vec3::new(-568.0, -342.0, -100.0) - w.origin();
+    let solid = (lo - Vec3::splat(2.0)).cmple(p).all() && (hi + Vec3::splat(2.0)).cmpge(p).all();
+    assert!(solid, "window not solid");
+
+    let (index, door) = map
+        .entities
+        .iter()
+        .enumerate()
+        .find(|(_, e)| e.get("model") == Some("*7"))
+        .expect("cs_office's door");
+    assert_eq!(door.classname(), "func_door");
+    assert!(door.mover, "the door moves");
+    assert_eq!(door.origin(), Vec3::new(584.0, -1872.0, -252.0));
+    assert!(!door.hulls.is_empty(), "door has volumes");
+    // Local: around the origin, within the door's size.
+    let far = door.hulls.iter().flat_map(|h| &h.points).map(|p| p.length()).fold(0.0, f32::max);
+    assert!(far < 200.0, "door volume reaches {far} units from its origin");
+    assert!(map.meshes.iter().any(|m| m.entity == Some(index)), "door drawn on its node");
 }
 
 /// `$additive` materials (de_nuke's light glows) add to what's behind them
@@ -158,6 +190,45 @@ fn additive_materials_add() {
         map.models.iter().any(|m| m.meshes.iter().any(additive)),
         "no additive prop surfaces"
     );
+}
+
+/// Water surfaces get the Water shader's look (specs/cs_source/water.md
+/// section 10): de_aztec refracts with the cheap cubemap pass and the
+/// map's LOD distances; de_port reflects with three-layer normals and the
+/// `srgb?` fog colour; both have a bottom material and animated normals.
+#[test]
+fn water_materials() {
+    let Some(aztec) = load("de_aztec") else { return };
+    let units = |u: f32| u * cs_source::bsp::METERS_PER_UNIT;
+    let top = aztec
+        .meshes
+        .iter()
+        .filter_map(|m| m.water)
+        .map(|i| &aztec.water_materials[i])
+        .find(|w| w.name.contains("aztecwater"))
+        .expect("aztec water");
+    assert!(top.refract && !top.reflect && top.above_water && top.envmap.is_some());
+    assert!((top.refract_amount - 0.2).abs() < 1e-6);
+    assert!((top.cheap_start - units(500.0)).abs() < 1e-4 && (top.cheap_end - units(2000.0)).abs() < 1e-4);
+    assert_eq!(top.fog_color, [0.15, 0.1, 0.0]);
+    assert_eq!(top.normal_frames.len(), 29);
+    assert_eq!(top.frame_rate, 16.0);
+    let bottom = top.bottom.as_deref().expect("bottom material");
+    assert!(!bottom.above_water && bottom.envmap.is_none());
+
+    let Some(port) = load("de_port") else { return };
+    let water = port
+        .meshes
+        .iter()
+        .filter_map(|m| m.water)
+        .map(|i| &port.water_materials[i])
+        .find(|w| w.name.contains("water_wasteland002b"))
+        .expect("port water");
+    assert!(water.reflect && water.refract && !water.reflect_entities);
+    assert!(water.scroll1.x != 0.0);
+    assert!((water.refract_amount - 5.0).abs() < 1e-6);
+    let b = |v: f32| v / 255.0;
+    assert_eq!(water.fog_color, [b(21.0), b(48.0), b(52.0)]);
 }
 
 /// Infodecals land on displacement terrain too (cs_compound: 4 of its 6

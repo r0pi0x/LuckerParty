@@ -162,7 +162,9 @@ impl AnimSet {
 
     /// The first sequence for an activity (e.g. `ACT_RUN`).
     pub fn activity(&self, activity: &str) -> Option<usize> {
-        self.sequences.iter().position(|s| s.activity.eq_ignore_ascii_case(activity))
+        self.sequences
+            .iter()
+            .position(|s| s.activity.eq_ignore_ascii_case(activity))
     }
 
     /// Every sequence for an activity with its selection weight
@@ -441,11 +443,7 @@ fn blend(from: &mut [BonePose], to: &[BonePose], t: f32, weights: &[f32]) {
 
 /// Looping cycles wrap into [0, 1); others clamp to [0, 1].
 pub fn wrap_cycle(c: f32, looping: bool) -> f32 {
-    if looping {
-        c - c.floor()
-    } else {
-        c.clamp(0.0, 1.0)
-    }
+    if looping { c - c.floor() } else { c.clamp(0.0, 1.0) }
 }
 
 /// `q`, or `-q` when that is closer to `p`.
@@ -640,11 +638,17 @@ impl Animator {
         let set = self.set.clone();
         if let Some(s) = self.main {
             let looping = set.sequences[s].looping;
-            self.cycle = wrap_cycle(self.cycle + dt * set.cycle_rate(s, &self.params) * self.playback, looping);
+            self.cycle = wrap_cycle(
+                self.cycle + dt * set.cycle_rate(s, &self.params) * self.playback,
+                looping,
+            );
         }
         for f in &mut self.fading {
             let looping = set.sequences[f.sequence].looping;
-            f.cycle = wrap_cycle(f.cycle + dt * set.cycle_rate(f.sequence, &self.params) * f.playback, looping);
+            f.cycle = wrap_cycle(
+                f.cycle + dt * set.cycle_rate(f.sequence, &self.params) * f.playback,
+                looping,
+            );
         }
         self.fading.retain(|f| f.weight(now) > 0.0);
     }
@@ -660,7 +664,9 @@ impl Animator {
             set.accumulate(&mut pose, f.sequence, f.cycle, f.weight(now), &self.params);
         }
         for l in self.layers.iter().flatten() {
-            let Some(seq) = set.sequences.get(l.sequence) else { continue };
+            let Some(seq) = set.sequences.get(l.sequence) else {
+                continue;
+            };
             let cycle = if seq.looping {
                 wrap_cycle(l.cycle, true)
             } else {

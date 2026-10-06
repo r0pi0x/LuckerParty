@@ -2,6 +2,7 @@
 
 pub mod ambient;
 pub mod anim;
+pub mod breakables;
 pub mod bsp;
 pub mod decals;
 pub mod dust;
@@ -14,8 +15,8 @@ pub mod mount;
 pub mod movement;
 pub mod nav;
 pub mod overlays;
-pub mod player_anim;
 pub mod phy;
+pub mod player_anim;
 pub mod props;
 pub mod pushaway;
 pub mod ropes;
@@ -27,6 +28,7 @@ pub mod surfaceprops;
 pub mod view_anim;
 pub mod view_motion;
 pub mod vpk;
+pub mod water;
 pub mod wav;
 pub mod weapons;
 

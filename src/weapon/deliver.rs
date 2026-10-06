@@ -10,7 +10,7 @@ use super::{
     Armor, DamageEffect, Hitscan, PassMaterials, Penetration, SpreadShape, Swing, WeaponEvent, WeaponEventKind,
 };
 use crate::{
-    core::{Damage, Health, Hitboxes, Hitgroup, Intent},
+    core::{Damage, DamageKind, Damageable, Health, Hitboxes, Hitgroup, Intent},
     map::{
         PlaySound, PropSurface,
         sound::{SoundBank, SurfaceGrid},
@@ -28,6 +28,7 @@ pub(super) struct Target {
     transform: &'static Transform,
     aabb: Option<&'static ColliderAabb>,
     health: Option<&'static Health>,
+    damageable: Option<&'static Damageable>,
     intent: Option<&'static Intent>,
     hitboxes: Option<&'static Hitboxes>,
 }
@@ -116,7 +117,9 @@ impl Shot<'_, '_, '_> {
                 group: None,
             });
         for e in boxed.into_iter().filter(|e| !skip.contains(e)) {
-            let Some((o, d)) = self.local_ray(e, from, dir) else { continue };
+            let Some((o, d)) = self.local_ray(e, from, dir) else {
+                continue;
+            };
             let Some(boxes) = self.w.targets.get(e).ok().and_then(|t| t.hitboxes) else {
                 continue;
             };
@@ -167,7 +170,12 @@ impl Shot<'_, '_, '_> {
         let dir = Dir3::new(hit.dir).ok()?;
         if let Some(boxes) = self.w.targets.get(hit.entity).ok().and_then(|t| t.hitboxes) {
             let (o, d) = self.local_ray(hit.entity, self.eye, dir)?;
-            return boxes.0.iter().filter_map(|b| b.ray_span(o, d)).map(|(_, out)| out).reduce(f32::max);
+            return boxes
+                .0
+                .iter()
+                .filter_map(|b| b.ray_span(o, d))
+                .map(|(_, out)| out)
+                .reduce(f32::max);
         }
         let from = hit.point + *dir * STEP;
         self.w
@@ -286,11 +294,14 @@ impl Shot<'_, '_, '_> {
                 // Falloff again at every hit, by the distance from the eye.
                 carried *= falloff(effect.falloff, effect.falloff_step, hit.distance);
                 if let Ok(t) = self.w.targets.get(hit.entity)
-                    && t.health.is_some()
+                    && (t.health.is_some() || t.damageable.is_some())
                 {
-                    let group = hit
-                        .group
-                        .unwrap_or_else(|| t.aabb.map_or(Hitgroup::Generic, |b| hitgroup_at(b, hit.point)));
+                    // Plain objects (breakables) have no hitgroups.
+                    let group = match (hit.group, t.health) {
+                        (Some(g), _) => g,
+                        (None, Some(_)) => t.aabb.map_or(Hitgroup::Generic, |b| hitgroup_at(b, hit.point)),
+                        (None, None) => Hitgroup::Generic,
+                    };
                     let amount = carried * effect.hitgroups.get(group);
                     match total.iter_mut().find(|t| t.0 == hit.entity) {
                         Some(t) => {
@@ -338,7 +349,16 @@ impl Shot<'_, '_, '_> {
             }
         }
         for (target, amount, hitgroup, point, dir) in total {
-            self.apply(target, amount, effect.armor_ratio, effect.quantum, hitgroup, point, dir);
+            self.apply(
+                target,
+                amount,
+                effect.armor_ratio,
+                effect.quantum,
+                hitgroup,
+                point,
+                dir,
+                DamageKind::Bullet,
+            );
         }
     }
 
@@ -354,6 +374,7 @@ impl Shot<'_, '_, '_> {
         hitgroup: Hitgroup,
         point: Vec3,
         dir: Vec3,
+        kind: DamageKind,
     ) {
         let mut amount = quantize(raw, quantum);
         if let Some(ratio) = armor_ratio
@@ -373,6 +394,7 @@ impl Shot<'_, '_, '_> {
             point,
             dir,
             hitgroup,
+            kind,
         });
         self.w.events.write(WeaponEvent {
             owner: self.owner,
@@ -447,14 +469,15 @@ impl Shot<'_, '_, '_> {
             }
             return false;
         };
-        let (alive, yaw, aabb, origin) = match self.w.targets.get(hit.entity) {
+        let (alive, object, yaw, aabb, origin) = match self.w.targets.get(hit.entity) {
             Ok(t) => (
                 t.health.is_some(),
+                t.damageable.is_some(),
                 t.intent.map(|i| i.yaw_rotation()),
                 t.aabb.copied(),
                 Some(t.transform.translation),
             ),
-            Err(_) => (false, None, None, None),
+            Err(_) => (false, false, None, None, None),
         };
         let mut amount = swing.damage;
         if let (Some(back), Some(yaw), Some(origin)) = (swing.backstab, yaw, origin) {
@@ -475,8 +498,8 @@ impl Shot<'_, '_, '_> {
         if let Some(s) = sound {
             self.w.play.write(PlaySound::at(s.clone(), hit.point));
         }
-        if alive {
-            let group = match aabb.filter(|_| swing.hitgroups) {
+        if alive || object {
+            let group = match aabb.filter(|_| swing.hitgroups && alive) {
                 Some(b) => hitgroup_at(&b, hit.point),
                 None => Hitgroup::Generic,
             };
@@ -488,6 +511,7 @@ impl Shot<'_, '_, '_> {
                 group,
                 hit.point,
                 hit.dir,
+                DamageKind::Melee,
             );
         }
         true

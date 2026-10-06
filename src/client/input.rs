@@ -49,8 +49,9 @@ impl Plugin for LocalInputPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MouseSettings>()
             .init_resource::<WheelJump>()
+            .init_resource::<FreeLook>()
             .register_type::<MouseSettings>()
-            .add_systems(Update, (grab_cursor, write_local_intent).chain())
+            .add_systems(Update, ((grab_cursor, write_local_intent).chain(), drop_key))
             .add_systems(FixedPreUpdate, apply_wheel_jump);
         mouse_cvars(app);
     }
@@ -116,6 +117,20 @@ fn grab_cursor(
     }
 }
 
+/// G drops the held weapon (CS:S's default `bind g drop`).
+fn drop_key(
+    keys: Res<ButtonInput<KeyCode>>,
+    cursor: Single<&CursorOptions>,
+    console: Option<ResMut<crate::console::Console>>,
+) {
+    if keys.just_pressed(KeyCode::KeyG)
+        && cursor_grabbed(&cursor)
+        && let Some(mut console) = console
+    {
+        console.submit("drop");
+    }
+}
+
 /// Jumping on the mouse wheel, as CS:S players bind it: each notch (either
 /// direction) is one press of jump. Presses are queued and played out one
 /// fixed tick held, one tick released, so a jump that needs a fresh press
@@ -143,6 +158,26 @@ fn apply_wheel_jump(mut wheel: ResMut<WheelJump>, mut intent: Single<&mut Intent
     intent.jump = wheel.key_held || pulse;
 }
 
+/// Free look: while Left Alt (or `+freelook`) is held, the mouse turns
+/// only the camera, by these offsets (radians) from the aim; movement and
+/// aim keep their direction. Released, the view snaps back to the aim.
+#[derive(Resource, Default, Clone, Copy, Debug, PartialEq)]
+pub struct FreeLook {
+    pub yaw: f32,
+    pub pitch: f32,
+}
+
+impl FreeLook {
+    /// Turn by a look delta, keeping the camera's total pitch in range.
+    fn turn(&mut self, delta: Vec2, aim_pitch: f32) {
+        self.yaw = (self.yaw + delta.x + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+        self.pitch = (aim_pitch + self.pitch + delta.y).clamp(-PITCH_LIMIT, PITCH_LIMIT) - aim_pitch;
+    }
+}
+
+const PITCH_LIMIT: f32 = 89f32.to_radians();
+
+#[allow(clippy::too_many_arguments)]
 fn write_local_intent(
     mut intent: Single<&mut Intent, With<LocalPlayer>>,
     cursor: Single<&CursorOptions>,
@@ -153,7 +188,15 @@ fn write_local_intent(
     mut wheel: ResMut<WheelJump>,
     mouse_settings: Res<MouseSettings>,
     held: Option<Res<super::console::HeldActions>>,
+    mut free: ResMut<FreeLook>,
+    mut freecam: ResMut<super::view::FreeCam>,
+    time: Res<Time>,
+    menu: Option<Res<super::buy_menu::BuyMenu>>,
 ) {
+    let freelook = keys.pressed(KeyCode::AltLeft) || held.as_ref().is_some_and(|h| h.freelook);
+    if !freelook {
+        free.set_if_neq(FreeLook::default());
+    }
     if !cursor_grabbed(&cursor) {
         *wheel = WheelJump::default();
         // Not playing (menu, inspector): stop moving, keep looking where we
@@ -172,12 +215,32 @@ fn write_local_intent(
     }
 
     let axis = |pos: KeyCode, neg: KeyCode| keys.pressed(pos) as i8 as f32 - keys.pressed(neg) as i8 as f32;
+    // Flying the detached camera: the player stands still.
+    if freecam.mode == 1 {
+        let input = Vec3::new(
+            axis(KeyCode::KeyD, KeyCode::KeyA),
+            axis(KeyCode::KeyW, KeyCode::KeyS),
+            axis(KeyCode::Space, KeyCode::ControlLeft),
+        );
+        let speed = if keys.pressed(KeyCode::ShiftLeft) { 12.0 } else { 4.0 };
+        freecam.fly(input, mouse_settings.look_delta(motion.delta), speed, time.delta_secs());
+        let (yaw, pitch) = (intent.yaw, intent.pitch);
+        **intent = Intent {
+            yaw,
+            pitch,
+            ..default()
+        };
+        return;
+    }
     intent.move_axis = Vec2::new(axis(KeyCode::KeyD, KeyCode::KeyA), axis(KeyCode::KeyW, KeyCode::KeyS));
 
-    const PITCH_LIMIT: f32 = 89f32.to_radians();
     let turn = mouse_settings.look_delta(motion.delta);
-    intent.yaw = (intent.yaw + turn.x).rem_euclid(std::f32::consts::TAU);
-    intent.pitch = (intent.pitch + turn.y).clamp(-PITCH_LIMIT, PITCH_LIMIT);
+    if freelook {
+        free.turn(turn, intent.pitch);
+    } else {
+        intent.yaw = (intent.yaw + turn.x).rem_euclid(std::f32::consts::TAU);
+        intent.pitch = (intent.pitch + turn.y).clamp(-PITCH_LIMIT, PITCH_LIMIT);
+    }
 
     intent.jump = keys.pressed(KeyCode::Space);
     wheel.key_held = intent.jump;
@@ -193,6 +256,8 @@ fn write_local_intent(
     intent.secondary = mouse.pressed(MouseButton::Right);
     intent.reload = keys.pressed(KeyCode::KeyR);
     intent.last_weapon = keys.pressed(KeyCode::KeyQ);
+    // CS:S binds E to +use.
+    intent.use_key = keys.pressed(KeyCode::KeyE);
     const SLOTS: [KeyCode; 5] = [
         KeyCode::Digit1,
         KeyCode::Digit2,
@@ -200,7 +265,12 @@ fn write_local_intent(
         KeyCode::Digit4,
         KeyCode::Digit5,
     ];
-    intent.select = SLOTS.iter().position(|k| keys.pressed(*k)).map(|i| i as u8);
+    // Number keys pick from the buy menu while it's open.
+    intent.select = if menu.is_some_and(|m| m.open) {
+        None
+    } else {
+        SLOTS.iter().position(|k| keys.pressed(*k)).map(|i| i as u8)
+    };
     // Bound actions (`bind f +duck`) add to the keys.
     if let Some(h) = held {
         apply_held(&mut intent, &mut wheel, &h);
@@ -219,11 +289,24 @@ fn apply_held(intent: &mut Intent, wheel: &mut WheelJump, h: &super::console::He
     intent.fire |= h.attack;
     intent.secondary |= h.attack2;
     intent.reload |= h.reload;
+    intent.use_key |= h.use_key;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn free_look_turns_within_the_pitch_limit() {
+        let mut f = FreeLook::default();
+        f.turn(Vec2::new(0.5, 2.0), 0.5);
+        assert_eq!(f.yaw, 0.5);
+        // Aim pitch 0.5 plus the offset stays at the limit.
+        assert!((0.5 + f.pitch - PITCH_LIMIT).abs() < 1e-6);
+        // Yaw wraps to (-pi, pi].
+        f.turn(Vec2::new(3.0, 0.0), 0.5);
+        assert!(f.yaw < 0.0 && f.yaw > -std::f32::consts::PI);
+    }
 
     #[test]
     fn mouse_look_matches_css() {
@@ -232,7 +315,10 @@ mod tests {
             .init_resource::<MouseSettings>();
         mouse_cvars(&mut app);
         // CS:S defaults: 3 * 0.022 = 0.066 degrees per count.
-        let d = app.world().resource::<MouseSettings>().look_delta(Vec2::new(1000.0, -1000.0));
+        let d = app
+            .world()
+            .resource::<MouseSettings>()
+            .look_delta(Vec2::new(1000.0, -1000.0));
         assert!((d.x.to_degrees() + 66.0).abs() < 1e-3, "{d}");
         assert!((d.y.to_degrees() - 66.0).abs() < 1e-3, "{d}");
         app.world_mut()
@@ -245,7 +331,11 @@ mod tests {
         assert!((d.x.to_degrees() + 3.3).abs() < 1e-4, "{d}");
         assert!((d.y.to_degrees() - 3.3).abs() < 1e-4, "inverted: {d}");
         let console = app.world().resource::<crate::console::Console>();
-        assert!(["sensitivity", "m_yaw", "m_pitch"].iter().all(|n| console.cvar(n).unwrap().archive));
+        assert!(
+            ["sensitivity", "m_yaw", "m_pitch"]
+                .iter()
+                .all(|n| console.cvar(n).unwrap().archive)
+        );
     }
 
     #[test]

@@ -24,19 +24,28 @@ fn load(path: &str) -> Option<AnimSet> {
 
 fn bone(set: &AnimSet, names: &[(String, Option<usize>, Quat, Vec3)], name: &str) -> usize {
     let _ = set;
-    names.iter().position(|b| b.0 == name).unwrap_or_else(|| panic!("no bone {name}"))
+    names
+        .iter()
+        .position(|b| b.0 == name)
+        .unwrap_or_else(|| panic!("no bone {name}"))
 }
 
 #[track_caller]
 fn rot(got: Quat, want: [f32; 4]) {
     let w = Vec4::from_array(want);
     let g = Vec4::from(got);
-    assert!(g.distance(w).min(g.distance(-w)) < 1.5e-3, "rotation {got}, want {want:?}");
+    assert!(
+        g.distance(w).min(g.distance(-w)) < 1.5e-3,
+        "rotation {got}, want {want:?}"
+    );
 }
 
 #[track_caller]
 fn pos(got: Vec3, want: [f32; 3]) {
-    assert!(got.distance(Vec3::from_array(want)) < 1.5e-3, "position {got}, want {want:?}");
+    assert!(
+        got.distance(Vec3::from_array(want)) < 1.5e-3,
+        "position {got}, want {want:?}"
+    );
 }
 
 fn sample(set: &AnimSet, name: &str, frame: f32) -> Vec<BonePose> {
@@ -64,7 +73,10 @@ fn shared_model_decodes() {
     pos(s[calf].1, [19.0976, 0.0, 0.0]);
     pos(s[b("ValveBiped.Bip01_Pelvis")].1, [-0.410149, 0.002761, 37.420749]);
     rot(sample(&set, "@Idle_lower", 4.5)[calf].0, [0.0, 0.0, 0.375253, 0.926922]);
-    rot(sample(&set, "@Idle_lower", 60.0)[calf].0, [0.0, 0.0, 0.373931, 0.927456]);
+    rot(
+        sample(&set, "@Idle_lower", 60.0)[calf].0,
+        [0.0, 0.0, 0.373931, 0.927456],
+    );
     let s = sample(&set, "@Idle_lower", 0.0);
     let pelvis = b("ValveBiped.Bip01_Pelvis");
     pos(s[pelvis].1, [-0.4101, 0.0028, 37.4364]);
@@ -108,7 +120,10 @@ fn player_model_merges_its_includes() {
     let mut pose = set.defaults.clone();
     let params = set.default_params();
     set.accumulate(&mut pose, 1, 0.0, 1.0, &params);
-    pos(pose[bone(&set, &bones, "ValveBiped.Bip01_L_Thigh")].1, [4.1628, 0.0, 0.0]);
+    pos(
+        pose[bone(&set, &bones, "ValveBiped.Bip01_L_Thigh")].1,
+        [4.1628, 0.0, 0.0],
+    );
     let forward = bone(&set, &bones, "ValveBiped.forward");
     pos(pose[forward].1, [2.0, -3.0, 0.0]);
     rot(pose[forward].0, [-0.5572, 0.4353, -0.4353, 0.5572]);
@@ -144,7 +159,10 @@ fn grids_blend_by_pose_parameters() {
     let pelvis = b("ValveBiped.Bip01_Pelvis");
     pos(pose[pelvis].1, [-0.4101, -0.0011, 33.7320]);
     rot(pose[pelvis].0, [0.5146, 0.4902, 0.4904, 0.5043]);
-    rot(pose[b("ValveBiped.Bip01_L_Thigh")].0, [-0.6194, 0.4318, -0.5525, 0.3531]);
+    rot(
+        pose[b("ValveBiped.Bip01_L_Thigh")].0,
+        [-0.6194, 0.4318, -0.5525, 0.3531],
+    );
     rot(pose[b("ValveBiped.Bip01_L_Calf")].0, [0.0, 0.0, 0.5696, 0.8219]);
     pos(pose[b("ValveBiped.Bip01_Spine")].1, [0.0, 3.5793, -3.1906]);
     set.sequence_pose(run, 0.25, &p, &mut pose);
@@ -196,7 +214,10 @@ fn layers_accumulate() {
     let mut pose = base();
     set.accumulate(&mut pose, set.sequence("Idle_Upper_PISTOL").unwrap(), 0.0, 1.0, &p);
     pos(pose[pelvis].1, [-0.6500, -0.9282, 36.6908]);
-    rot(pose[b("ValveBiped.Bip01_L_Thigh")].0, [-0.6673, 0.2997, -0.6039, 0.3166]);
+    rot(
+        pose[b("ValveBiped.Bip01_L_Thigh")].0,
+        [-0.6673, 0.2997, -0.6039, 0.3166],
+    );
     rot(pose[head].0, [0.2741, 0.0127, 0.4176, 0.8662]);
     rot(pose[b("ValveBiped.Bip01_R_Hand")].0, [-0.3304, -0.0804, 0.2841, 0.8965]);
     let weapon = b("ValveBiped.weapon_bone");
@@ -204,7 +225,44 @@ fn layers_accumulate() {
     rot(pose[weapon].0, [-0.5305, -0.1653, -0.6531, 0.5145]);
 
     let mut pose = base();
-    set.accumulate(&mut pose, set.sequence("Run_Upper_PISTOL_staticlayer").unwrap(), 0.0, 1.0, &p);
-    rot(pose[b("ValveBiped.Bip01_L_UpperArm")].0, [-0.8185, -0.1809, -0.4614, 0.2907]);
+    set.accumulate(
+        &mut pose,
+        set.sequence("Run_Upper_PISTOL_staticlayer").unwrap(),
+        0.0,
+        1.0,
+        &p,
+    );
+    rot(
+        pose[b("ValveBiped.Bip01_L_UpperArm")].0,
+        [-0.8185, -0.1809, -0.4614, 0.2907],
+    );
     rot(pose[b("ValveBiped.Bip01_R_Hand")].0, [-0.5164, -0.0840, 0.4447, 0.7270]);
+}
+
+/// The AWP's view model is MDL version 48 (specs/cs_source/mdl_v48.md):
+/// it reads like 44. Values from the spec's test cases.
+#[test]
+fn awp_view_model_version_48() {
+    let Some(set) = load("models/weapons/v_snip_awp.mdl") else { return };
+    let frames: Vec<(&str, usize)> = set.animations.iter().map(|a| (a.name.as_str(), a.frames)).collect();
+    for (name, n) in [("@awm_idle", 11), ("@awm_fire", 42), ("@awm_draw", 31), ("@awm_reload", 111)] {
+        assert!(frames.contains(&(name, n)), "{name} {n} in {frames:?}");
+    }
+    assert_eq!(set.sequences.len(), 4);
+    let fire = set.animations.iter().find(|a| a.name == "@awm_fire").unwrap();
+    let track = |bone: usize| fire.tracks.iter().find(|t| t.bone == bone).expect("track");
+    let q = |bone: usize, f: usize| {
+        let r = track(bone).rotation.as_ref().unwrap();
+        r[f.min(r.len() - 1)]
+    };
+    let p = |bone: usize, f: usize| {
+        let v = track(bone).position.as_ref().unwrap();
+        v[f.min(v.len() - 1)]
+    };
+    rot(q(0, 0), [0.5, 0.5, 0.5, 0.5]);
+    assert!(p(0, 0).distance(Vec3::new(9.1839, 5.5584, -7.0011)) < 2e-3, "{}", p(0, 0));
+    rot(q(0, 10), [0.5181, 0.4958, 0.5081, 0.4771]);
+    assert!(p(0, 10).distance(Vec3::new(11.2582, 5.8709, -7.3214)) < 2e-3);
+    rot(q(37, 10), [-0.0409, -0.4096, 0.0667, 0.9089]);
+    rot(q(34, 0), [0.1122, 0.7034, -0.6770, -0.1851]);
 }

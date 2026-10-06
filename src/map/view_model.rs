@@ -139,6 +139,8 @@ pub struct ViewAnimator {
     pub key: Option<String>,
     /// Plays on the view model's `AnimSet`.
     pub animator: Option<anim::Animator>,
+    /// Not drawn for now, though still animated (e.g. behind a scope).
+    pub hidden: bool,
 }
 
 impl ViewAnimator {
@@ -281,9 +283,9 @@ pub(super) fn build_assets(
                         // `PropMaterial` has no normal map, so a mask in its
                         // alpha (the hands') can't apply: no reflection
                         // rather than an unmasked one.
-                        envmap: m.envmap.filter(|e| {
-                            view == MapDebugView::Normal && e.mask != super::EnvmapMask::NormalAlpha
-                        }),
+                        envmap: m
+                            .envmap
+                            .filter(|e| view == MapDebugView::Normal && e.mask != super::EnvmapMask::NormalAlpha),
                     }
                 })
                 .collect();
@@ -291,7 +293,10 @@ pub(super) fn build_assets(
             let mut global: Vec<Mat4> = Vec::with_capacity(v.bones.len());
             for b in &v.bones {
                 let local = Mat4::from_rotation_translation(b.rotation, b.position);
-                let parent = b.parent.and_then(|p| global.get(p).copied()).unwrap_or(v.root.to_matrix());
+                let parent = b
+                    .parent
+                    .and_then(|p| global.get(p).copied())
+                    .unwrap_or(v.root.to_matrix());
                 global.push(parent * local);
             }
             let inverse: Vec<Mat4> = global.iter().map(|m| m.inverse()).collect();
@@ -306,7 +311,11 @@ pub(super) fn build_assets(
             )
         })
         .collect();
-    let lighting_scale = if let MapDebugView::Lighting { scale } = view { scale } else { 1.0 };
+    let lighting_scale = if let MapDebugView::Lighting { scale } = view {
+        scale
+    } else {
+        1.0
+    };
     ViewModelAssets {
         models,
         cubemaps: data
@@ -329,7 +338,9 @@ pub fn mirrored(right_handed: bool, allow_flipping: bool, right_hand: bool) -> b
 /// A horizontal field of view given for a 4:3 screen, for a screen of
 /// `aspect` (width / height). Degrees.
 pub fn aspect_fov(fov_43: f32, aspect: f32) -> f32 {
-    2.0 * ((fov_43.to_radians() / 2.0).tan() * aspect / (4.0 / 3.0)).atan().to_degrees()
+    2.0 * ((fov_43.to_radians() / 2.0).tan() * aspect / (4.0 / 3.0))
+        .atan()
+        .to_degrees()
 }
 
 /// The vertical field of view of a horizontal 4:3 one (the same on every
@@ -392,7 +403,9 @@ pub fn attachment_transform(
 /// The camera's horizontal 4:3 field of view (degrees) from its vertical
 /// one.
 fn camera_fov_43(projection: &Projection) -> Option<f32> {
-    let Projection::Perspective(p) = projection else { return None };
+    let Projection::Perspective(p) = projection else {
+        return None;
+    };
     Some(2.0 * ((p.fov / 2.0).tan() / 0.75).atan().to_degrees())
 }
 
@@ -441,7 +454,9 @@ pub(super) fn draw_view_models(
     for (anchor, parent, anchor_camera, anchor_projection, eye, children, tonemapping, anchor_target) in &anchors {
         let state = owners.get(parent.parent()).ok();
         // In third person the own body holds the weapon; no view model.
-        let hidden = third_person.as_ref().is_some_and(|t| t.0) || settings.draw == 0;
+        let hidden = third_person.as_ref().is_some_and(|t| t.0)
+            || settings.draw == 0
+            || state.is_some_and(|(s, _)| s.hidden);
         let shown = state
             .filter(|_| !hidden)
             .and_then(|(s, _)| s.key.as_deref())
@@ -496,8 +511,13 @@ pub(super) fn draw_view_models(
                 p.near = near;
             }
         }
-        let body = cam_children.into_iter().flatten().find(|c| bodies.contains(**c)).copied();
-        let mirror = shown.is_some_and(|(_, _, m)| mirrored(m.right_handed, m.allow_flipping, settings.right_hand != 0));
+        let body = cam_children
+            .into_iter()
+            .flatten()
+            .find(|c| bodies.contains(**c))
+            .copied();
+        let mirror =
+            shown.is_some_and(|(_, _, m)| mirrored(m.right_handed, m.allow_flipping, settings.right_hand != 0));
         let current = body
             .and_then(|b| bodies.get(b).ok())
             .map(|(b, _)| (b.key.clone(), b.mirrored));
@@ -510,12 +530,19 @@ pub(super) fn draw_view_models(
             }
             continue;
         }
-        let (Some(body), Some((_, asset, model))) = (body, shown) else { continue };
-        let Ok((mut body, mut placed)) = bodies.get_mut(body) else { continue };
+        let (Some(body), Some((_, asset, model))) = (body, shown) else {
+            continue;
+        };
+        let Ok((mut body, mut placed)) = bodies.get_mut(body) else {
+            continue;
+        };
         let offset = state.and_then(|(_, o)| o.copied()).unwrap_or_default();
         *placed = placement(&offset, mirror);
         // Pose the shown model.
-        if let Some(animator) = state.and_then(|(s, _)| s.animator.as_ref()).filter(|a| a.main.is_some()) {
+        if let Some(animator) = state
+            .and_then(|(s, _)| s.animator.as_ref())
+            .filter(|a| a.main.is_some())
+        {
             for (joint, (q, p)) in body.joints.iter().zip(animator.pose(now)) {
                 if let Ok(mut t) = joints.get_mut(*joint) {
                     t.rotation = q;
@@ -531,7 +558,9 @@ pub(super) fn draw_view_models(
                 .with_rotation(offset.rotation)
                 .transform_point(asset.root.transform_point(model.light_origin)),
         );
-        let moved = body.lit_at.is_none_or(|at| at.distance(origin) > 0.5 * asset.root.scale.x);
+        let moved = body
+            .lit_at
+            .is_none_or(|at| at.distance(origin) > 0.5 * asset.root.scale.x);
         if let (true, Some(field)) = (moved, light_field.as_ref()) {
             let probe = (field.0.0)(origin);
             for m in &body.materials {
@@ -667,16 +696,18 @@ pub(super) fn build_flash_assets(
         .and_then(|t| data.textures.get(t))
         .map_or(UVec2::ONE, |t| UVec2::new(t.width, t.height));
     let [r, g, b] = flash.color;
-    let material = sprites.zip(flash.texture.and_then(|t| textures.get(t))).map(|(sprites, t)| {
-        sprites.add(SpriteMaterial {
-            params: SpriteParams {
-                color: Vec4::new(r, g, b, 1.0),
-                size: Vec2::ONE,
-            },
-            texture: Some(t.clone()),
-            glow: false,
-        })
-    });
+    let material = sprites
+        .zip(flash.texture.and_then(|t| textures.get(t)))
+        .map(|(sprites, t)| {
+            sprites.add(SpriteMaterial {
+                params: SpriteParams {
+                    color: Vec4::new(r, g, b, 1.0),
+                    size: Vec2::ONE,
+                },
+                texture: Some(t.clone()),
+                glow: false,
+            })
+        });
     Some(FlashAssets {
         mesh: meshes.add(super::sprite_material::sprite_mesh(size)),
         material,
@@ -756,7 +787,9 @@ pub(super) fn muzzle_flashes(
     let effects = effects.map(|e| *e).unwrap_or_default();
     let now = time.elapsed_secs_f64();
     for ev in events.read() {
-        let ViewModelEventKind::MuzzleFlash { attachment } = ev.kind else { continue };
+        let ViewModelEventKind::MuzzleFlash { attachment } = ev.kind else {
+            continue;
+        };
         // First person: the owner's anchor has its view model drawn.
         let first_person = anchors.iter().find_map(|(parent, eye, projection, children)| {
             if parent.parent() != ev.owner {
@@ -786,7 +819,10 @@ pub(super) fn muzzle_flashes(
             // not the attachment's own axes (on the AK they point sideways).
             let forward = (placed.to_matrix() * model.root.to_matrix()).transform_vector3(Vec3::X);
             let ahead = reproject(muzzle + forward, wf, vf);
-            Some((eye.transform_point(at), (eye.transform_point(ahead) - eye.transform_point(at)).normalize_or_zero()))
+            Some((
+                eye.transform_point(at),
+                (eye.transform_point(ahead) - eye.transform_point(at)).normalize_or_zero(),
+            ))
         });
         let world_model = || {
             muzzles
@@ -794,7 +830,9 @@ pub(super) fn muzzle_flashes(
                 .find(|(m, _)| m.owner == ev.owner)
                 .map(|(_, g)| (g.translation(), g.rotation() * Vec3::X))
         };
-        let Some((at, forward)) = first_person.or_else(world_model) else { continue };
+        let Some((at, forward)) = first_person.or_else(world_model) else {
+            continue;
+        };
         let data = &flash.data;
         if let Some(material) = &flash.material {
             let scale = dice.range(data.scale);
@@ -815,7 +853,16 @@ pub(super) fn muzzle_flashes(
             }
         }
         if let Some(light) = data.light.filter(|_| effects.muzzle_light != 0) {
-            spawn_flash_light(&mut commands, &mut pool, &spatial, &characters, at, forward, light, &mut dice);
+            spawn_flash_light(
+                &mut commands,
+                &mut pool,
+                &spatial,
+                &characters,
+                at,
+                forward,
+                light,
+                &mut dice,
+            );
         }
     }
 }
@@ -828,7 +875,16 @@ pub(super) struct FlashSize(f32);
 /// Most muzzle-flash lights at once; more flashes reuse the oldest.
 const MAX_FLASH_LIGHTS: usize = 8;
 
-type LightPool<'w, 's> = Query<'w, 's, (Entity, &'static mut DynamicLight, &'static mut PointLight, &'static mut Transform)>;
+type LightPool<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static mut DynamicLight,
+        &'static mut PointLight,
+        &'static mut Transform,
+    ),
+>;
 
 #[allow(clippy::too_many_arguments)]
 fn spawn_flash_light(
@@ -933,8 +989,12 @@ pub(super) fn size_flash_sprites(
     mut materials: Option<ResMut<Assets<SpriteMaterial>>>,
     mut cache: Local<HashMap<u32, Handle<SpriteMaterial>>>,
 ) {
-    let (Some(flash), Some(materials)) = (flash, materials.as_mut()) else { return };
-    let Some(base) = flash.material.as_ref().and_then(|m| materials.get(m)).cloned() else { return };
+    let (Some(flash), Some(materials)) = (flash, materials.as_mut()) else {
+        return;
+    };
+    let Some(base) = flash.material.as_ref().and_then(|m| materials.get(m)).cloned() else {
+        return;
+    };
     for (size, mut material) in &mut sprites {
         // Millimetre buckets.
         let key = (size.0 * 1000.0).round() as u32;

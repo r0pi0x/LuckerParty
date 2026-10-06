@@ -68,6 +68,8 @@ struct WorldParams {
     envmap_saturation: f32,
     envmap_fresnel: f32,
     envmap_tint: vec4<f32>,
+    water_fog_color: vec4<f32>,
+    water_fog_range: vec4<f32>,
 }
 
 // A lightmap page, bilinear or bicubic B-spline (4 bilinear taps; the
@@ -108,12 +110,19 @@ fn out_alpha(a: f32) -> f32 {
 }
 
 fn apply_fog(color: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
-    if params.fog_color.w < 0.5 {
+    // Under water, what is below the surface takes the water's fog.
+    var fog = params.fog_color;
+    var range = params.fog_range;
+    if params.water_fog_color.w > 0.5 && world.y < params.water_fog_range.w {
+        fog = params.water_fog_color;
+        range = params.water_fog_range;
+    }
+    if fog.w < 0.5 {
         return color;
     }
     let depth = -position_world_to_view(world).z;
-    let f = clamp(min(params.fog_range.z, (depth - params.fog_range.x) / (params.fog_range.y - params.fog_range.x)), 0.0, 1.0);
-    return mix(color, params.fog_color.rgb, f * f);
+    let f = clamp(min(range.z, (depth - range.x) / (range.y - range.x)), 0.0, 1.0);
+    return mix(color, fog.rgb, f * f);
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> params: WorldParams;
