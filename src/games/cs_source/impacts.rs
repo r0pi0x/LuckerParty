@@ -9,7 +9,7 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 
 use crate::{
-    core::Intent,
+    core::{Intent, MapWater},
     map::{
         PhysicsProp, PlaySound, PropSurface,
         decal::{DecalGroup, PlaceDecal},
@@ -66,7 +66,7 @@ pub fn impact_entry<'a>(own: &'a MapSurface, hit: &MapSurface, speed: f32) -> Op
     })
 }
 
-fn surface<'a>(sounds: &'a MapSounds, name: &str) -> Option<&'a MapSurface> {
+pub(super) fn surface<'a>(sounds: &'a MapSounds, name: &str) -> Option<&'a MapSurface> {
     sounds.surface(name).or_else(|| sounds.surface("default"))
 }
 
@@ -78,7 +78,7 @@ fn script_volume(sounds: &MapSounds, entry: &str) -> f32 {
 }
 
 /// Surface name of what a trace or contact touched.
-fn surface_of(
+pub(super) fn surface_of(
     entity: Option<Entity>,
     at: Vec3,
     props: &Query<&PropSurface>,
@@ -104,6 +104,7 @@ fn bullet_impacts(
     grid: Option<Res<SurfaceGrid>>,
     props: Query<&PropSurface>,
     characters: Query<(), With<Intent>>,
+    water: Option<Res<MapWater>>,
     mut play: MessageWriter<PlaySound>,
 ) {
     let Some(bank) = bank else {
@@ -113,10 +114,10 @@ fn bullet_impacts(
     // Played this tick per shooter: (entry, position), for pellet grouping.
     let mut played: Vec<(Entity, String, Vec3)> = Vec::new();
     for e in events.read() {
-        let WeaponEventKind::Shot { to, hit, .. } = &e.kind else {
+        let WeaponEventKind::Shot { from, to, hit, .. } = &e.kind else {
             continue;
         };
-        if hit.is_none() {
+        if hit.is_none() || in_water(*from, *to, water.as_deref()) {
             continue;
         }
         let name = surface_of(*hit, *to, &props, &characters, grid.as_deref());
@@ -134,6 +135,12 @@ fn bullet_impacts(
     }
 }
 
+/// A shot ending in water makes no impact (a splash instead, or nothing
+/// under water; specs/cs_source/impact_effects.md section 11).
+fn in_water(from: Vec3, to: Vec3, water: Option<&MapWater>) -> bool {
+    water.is_some_and(|w| super::impact_effects::water_shot(from, to, &w.0) != super::impact_effects::WaterShot::Dry)
+}
+
 /// The knife's mark on walls. Not in the public data: a guess from the
 /// decal script's slash group, to check against the game.
 const SLASH_DECAL: &str = "ManhackCut";
@@ -148,6 +155,7 @@ fn impact_decals(
     grid: Option<Res<SurfaceGrid>>,
     props: Query<&PropSurface>,
     characters: Query<(), With<Intent>>,
+    water: Option<Res<MapWater>>,
     mut decals: MessageWriter<PlaceDecal>,
 ) {
     // Characters take blood, not these (not done yet).
@@ -159,7 +167,7 @@ fn impact_decals(
                 to,
                 hit: Some(hit),
                 normal: Some(normal),
-            } if marked(*hit) => {
+            } if marked(*hit) && !in_water(*from, *to, water.as_deref()) => {
                 let name = surface_of(Some(*hit), *to, &props, &characters, grid.as_deref());
                 let Some(material) = bank
                     .as_ref()

@@ -22,6 +22,7 @@ pub mod decal;
 pub mod hud;
 mod dust;
 pub mod nav;
+pub mod particles;
 pub mod prop_material;
 pub mod rope_material;
 pub mod shadows;
@@ -30,6 +31,7 @@ pub mod soundscape;
 pub use sound::{MapSoundClip, MapSoundEntry, MapSounds, MapSurface, PlaySound, SoundLevel};
 pub mod sprite_material;
 pub mod shells;
+pub mod surface_color;
 pub mod view_model;
 pub mod world_material;
 pub use view_model::{
@@ -832,6 +834,8 @@ pub struct MapData {
     pub decals: decal::MapDecals,
     /// The game's own HUD look, when it has one.
     pub hud: Option<Arc<hud::GameHud>>,
+    /// Materials for particle effects (impacts).
+    pub particles: particles::MapParticles,
     /// What characters see of what they hold (weapons' view models).
     pub view_models: Vec<MapViewModel>,
     /// The light at any point, for moving models.
@@ -1250,6 +1254,7 @@ impl Plugin for MapPlugin {
             .init_resource::<ShowLocalBody>()
             .add_message::<decal::PlaceDecal>()
             .add_message::<ViewModelEvent>()
+            .init_resource::<particles::Particles>()
             .insert_resource(GlobalAmbientLight {
                 brightness: 600.0,
                 // Baked lighting already includes the map's ambient light.
@@ -1270,6 +1275,13 @@ impl Plugin for MapPlugin {
                     attach_sky,
                     glow_visibility,
                     dust::update_dust,
+                    (
+                        particles::step_particles,
+                        particles::draw_particles.run_if(
+                            resource_exists::<Assets<Mesh>>.and_then(resource_exists::<Assets<StandardMaterial>>),
+                        ),
+                    )
+                        .chain(),
                     show_skybox_in_place,
                     decal::place_decals,
                     (
@@ -2005,6 +2017,14 @@ fn spawn_map(
     }
 
     commands.insert_resource(decal::DecalSurfaces::new(&data));
+    commands.insert_resource(surface_color::SurfaceColors::new(data));
+    commands.insert_resource(particles::ParticleMaterials(data.particles.clone()));
+    if !texture_handles.is_empty() && !data.particles.materials.is_empty() {
+        commands.insert_resource(particles::ParticleAssets::new(
+            data.particles.clone(),
+            texture_handles.clone(),
+        ));
+    }
     if let Some(h) = &data.hud {
         commands.insert_resource(hud::ActiveHud(h.clone()));
     }
@@ -2093,6 +2113,12 @@ pub fn unload_map(world: &mut World) {
     world.remove_resource::<decal::DecalAssets>();
     world.remove_resource::<decal::ImpactDecals>();
     world.remove_resource::<hud::ActiveHud>();
+    world.remove_resource::<surface_color::SurfaceColors>();
+    world.remove_resource::<particles::ParticleAssets>();
+    world.remove_resource::<particles::ParticleMaterials>();
+    if let Some(mut p) = world.get_resource_mut::<particles::Particles>() {
+        p.groups.clear();
+    }
     view_model::unload(world);
     shells::unload(world);
     let bodies: Vec<Entity> = world

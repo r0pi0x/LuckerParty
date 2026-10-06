@@ -1963,3 +1963,42 @@ fn held_ak_has_a_muzzle_ahead_of_the_grip() {
     assert!(m.translation.length() > 15.0, "{}", m.translation);
     assert!(m.translation.normalize().dot(fwd) > 0.8, "{} vs {fwd}", m.translation);
 }
+
+/// Impact effects (specs/cs_source/impact_effects.md): surface letters from
+/// the CS:S data, the effect materials and their sprite sheets.
+#[test]
+fn impact_effect_materials_and_letters() {
+    use mashup::games::cs_source::impact_effects::{Effect, MATERIALS, effect_for};
+    let Some(map) = dust2() else { return };
+    let letter = |s: &str| map.sounds.surfaces.get(s).map(|m| m.game_material);
+    for (surface, want) in [
+        ("brick", 'C'),
+        ("sand", 'D'),
+        ("metalvent", 'V'),
+        ("metalgrate", 'G'),
+        ("glass", 'Y'),
+        ("armorflesh", 'M'),
+        ("flesh", 'F'),
+    ] {
+        assert_eq!(letter(surface), Some(want), "{surface}");
+    }
+    assert_eq!(effect_for('V'), Effect::MetalSparks);
+    let p = &map.particles;
+    for name in MATERIALS {
+        let m = p.materials.iter().find(|m| m.name == *name).unwrap_or_else(|| panic!("{name} missing"));
+        assert!(m.texture.is_some(), "{name}: no texture");
+    }
+    // Sprite sheets: the blood smoke has 16 sequences, the goop at least 13.
+    let sheet = |n: &str| &p.materials[p.find(n).unwrap()].sequences;
+    assert!(sheet("particle/smoke1/smoke1_nearcull2").len() >= 16);
+    let goop = sheet("particle/antlion_goop3/antlion_goop3");
+    assert!(goop.len() >= 13, "{} goop sequences", goop.len());
+    for frame in goop.iter().flatten() {
+        assert!(frame.iter().all(|v| (0.0..=1.0).contains(v)), "{frame:?}");
+    }
+    // Wood flecks ignore vertex alpha (they pop out, spec Q10); cement fade.
+    let mat = |n: &str| &p.materials[p.find(n).unwrap()];
+    assert!(!mat("effects/fleck_wood1").vertex_alpha);
+    assert!(mat("effects/fleck_cement1").vertex_alpha);
+    assert_eq!(mat("effects/spark").blend, mashup::map::particles::ParticleBlend::Additive);
+}
