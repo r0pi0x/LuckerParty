@@ -1013,7 +1013,8 @@ pub fn map_entities(bsp: &Bsp, leaves: &[RawLeaf]) -> Vec<crate::map::MapEntity>
                 .and_then(|m| m.strip_prefix('*'))
                 .and_then(|m| m.parse::<usize>().ok())
                 .filter(|m| *m > 0);
-            let trigger = class.starts_with("trigger_");
+            // Buy zones are trigger-like volumes too.
+            let trigger = class.starts_with("trigger_") || class == "func_buyzone";
             let mover = movers.contains(&index);
             let hulls = match model {
                 Some(model) if trigger || mover => brush_volumes_source(

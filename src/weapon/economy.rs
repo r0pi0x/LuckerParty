@@ -42,6 +42,9 @@ impl Default for BuyWindow {
 /// same slot (dropped, as CS:S does). Returns what happened.
 pub fn buy(world: &mut World, owner: Entity, name: &str) -> Result<String, String> {
     world.resource::<BuyWindow>().0.clone()?;
+    if world.get::<Money>(owner).is_some() && !in_buy_zone(world, owner) {
+        return Err("you are not in a buy zone".into());
+    }
     let name = name.to_lowercase();
     let prices = world.resource::<Prices>().clone();
     let money = world.get::<Money>(owner).map(|m| m.0);
@@ -98,6 +101,41 @@ pub fn buy(world: &mut World, owner: Entity, name: &str) -> Result<String, Strin
         super::drop::drop_this(world, owner, old, false);
     }
     Ok(format!("bought {id}"))
+}
+
+/// Whether `owner` stands in one of its team's buy zones (Source
+/// `func_buyzone`, `TeamNum` 2 terrorists, 3 CTs, else anyone). A map
+/// without zones, or no map, lets everyone buy anywhere (CS:S puts
+/// zones around the spawns then; not modelled yet).
+pub fn in_buy_zone(world: &World, owner: Entity) -> bool {
+    use crate::map::entities::{engine_to_entity, entity_rotation};
+    let Some(map) = world.get_resource::<crate::map::MapEntities>() else {
+        return true;
+    };
+    let zones: Vec<_> = map
+        .entities
+        .iter()
+        .filter(|e| e.classname().eq_ignore_ascii_case("func_buyzone") && !e.hulls.is_empty())
+        .collect();
+    if zones.is_empty() {
+        return true;
+    }
+    let Some(at) = world.get::<Transform>(owner).map(|t| t.translation) else {
+        return false;
+    };
+    // Our teams 1 and 2 are Source's 2 and 3.
+    let team = world.get::<crate::core::Team>(owner).map(|t| t.0 as i32 + 1);
+    let p = engine_to_entity(at, map.scale);
+    zones.iter().any(|z| {
+        let zone_team = z.get("TeamNum").and_then(|v| v.trim().parse::<i32>().ok()).unwrap_or(0);
+        if (zone_team == 2 || zone_team == 3) && team.is_some_and(|t| t != zone_team) {
+            return false;
+        }
+        let local = entity_rotation(z.angles()).inverse() * (p - z.origin());
+        z.hulls
+            .iter()
+            .any(|h| h.planes.iter().all(|(n, d)| n.dot(local) <= *d + 1.0))
+    })
 }
 
 /// Each registered weapon's slot (built once on a scratch world).

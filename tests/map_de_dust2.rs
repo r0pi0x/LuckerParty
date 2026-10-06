@@ -2316,3 +2316,32 @@ fn overview_lines_up_with_the_world() {
     let image = t.rgba8.chunks(4).map(|p| p[1] as f32).sum::<f32>() / (t.width * t.height) as f32;
     assert!(on_floor > image * 1.4, "nav areas average {on_floor}, image {image}");
 }
+
+/// Buy zones (func_buyzone): each team's spawns lie in its own zone and
+/// not the other's; mid isn't a buy zone.
+#[test]
+fn buy_zones_cover_each_teams_spawns() {
+    use mashup::{
+        map::MapEntities,
+        weapon::economy::{Money, in_buy_zone},
+    };
+    let Some(map) = dust2() else { return };
+    let mut w = World::new();
+    w.insert_resource(MapEntities {
+        entities: std::sync::Arc::new(map.entities.clone()),
+        scale: map.entity_scale,
+    });
+    let zones = map.entities.iter().filter(|e| e.classname() == "func_buyzone").count();
+    assert!(zones >= 2, "{zones} buy zones");
+    let check = |w: &mut World, at: Vec3, team: u8| {
+        let e = w.spawn((Transform::from_translation(at), Team(team), Money(800))).id();
+        in_buy_zone(w, e)
+    };
+    for (at, team) in map.spawns.iter().filter_map(|(p, t)| Some((*p, (*t)?))) {
+        assert!(check(&mut w, at, team.0), "team {} spawn {at} in its zone", team.0);
+        assert!(!check(&mut w, at, 3 - team.0), "team {} spawn {at} not the other's", team.0);
+    }
+    // Mid doors, nowhere near a spawn (Source -480, 420, 0).
+    let mid = Vec3::new(-480.0, 0.0, -420.0) * map.entity_scale + Vec3::Y;
+    assert!(!check(&mut w, mid, 1) && !check(&mut w, mid, 2));
+}
