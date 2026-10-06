@@ -27,7 +27,7 @@ pub struct PlayerAnimPlugin;
 impl Plugin for PlayerAnimPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<WeaponEvent>()
-            .add_systems(Update, drive.in_set(DriveAnimation));
+            .add_systems(Update, (drive.in_set(DriveAnimation), hold_weapons));
     }
 }
 
@@ -392,6 +392,20 @@ pub fn suffix(weapon: Option<&str>) -> &'static str {
         "knife" => "KNIFE",
         "hegrenade" | "flashbang" | "smokegrenade" => "GREN",
         _ => "PISTOL",
+    }
+}
+
+/// Characters hold their active weapon's world model.
+fn hold_weapons(
+    characters: Query<(Entity, Option<&Inventory>, Option<&crate::map::Held>), With<Animator>>,
+    weapons: Query<&Weapon>,
+    mut commands: Commands,
+) {
+    for (e, inventory, held) in &characters {
+        let id = inventory.and_then(|i| i.active).and_then(|w| weapons.get(w).ok()).map(|w| w.id.to_string());
+        if held.is_none_or(|h| h.0 != id) {
+            commands.entity(e).insert(crate::map::Held(id));
+        }
     }
 }
 

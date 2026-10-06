@@ -21,6 +21,12 @@ const HP: f32 = 0.01;
 pub const KNIFE: &str = "cs_source:weapon_knife";
 pub const AK47: &str = "cs_source:weapon_ak47";
 
+/// World models (the script's `playermodel`), held by characters.
+pub const WORLD_MODELS: &[(&str, &str)] = &[
+    (KNIFE, "models/weapons/w_knife_ct.mdl"),
+    (AK47, "models/weapons/w_rif_ak47.mdl"),
+];
+
 /// Sound entries the weapons use, for precaching with the map's sounds.
 pub const SOUNDS: &[&str] = &[
     "Weapon_Knife.Deploy",

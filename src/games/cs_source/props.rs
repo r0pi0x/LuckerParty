@@ -151,6 +151,53 @@ pub fn load_character(
     })
 }
 
+/// A weapon's world model held by characters: its meshes in the frame of
+/// its first bone that player skeletons also have (bone merge: that bone
+/// follows the hand), in the skeleton's axes and units.
+pub fn load_held(
+    materials: &mut MaterialLoader,
+    path: &str,
+    key: &str,
+    skeleton: &[crate::map::MapBone],
+) -> Result<crate::map::MapHeldModel, String> {
+    let (model, _) = load_model(materials, path)?;
+    let bytes = materials.read(path).ok_or_else(|| format!("{path}: not found"))?;
+    let mdl = vmdl::mdl::Mdl::read(&bytes).map_err(|e| format!("{path}: {e}"))?;
+    let mut global: Vec<(Quat, Vec3)> = Vec::with_capacity(mdl.bones.len());
+    for b in &mdl.bones {
+        let q = Quat::from_xyzw(b.quaternion.x, b.quaternion.y, b.quaternion.z, b.quaternion.w);
+        let p = Vec3::new(b.pos.x, b.pos.y, b.pos.z);
+        global.push(match global.get(b.parent.max(0) as usize).filter(|_| b.parent >= 0) {
+            Some((pq, pp)) => (*pq * q, *pp + *pq * p),
+            None => (q, p),
+        });
+    }
+    let (i, bone) = mdl
+        .bones
+        .iter()
+        .enumerate()
+        .find(|(_, b)| skeleton.iter().any(|s| s.name.eq_ignore_ascii_case(&b.name)))
+        .ok_or_else(|| format!("{path}: no bone in common with the player skeleton"))?;
+    let (q, p) = global[i];
+    let to_bone = Transform::from_rotation(q).with_translation(p).to_matrix().inverse();
+    // Engine space (meters, x z -y) back to the model's units and axes.
+    let source = |v: [f32; 3]| Vec3::new(v[0], -v[2], v[1]);
+    let mut held = convert_model_in(&model, 0, materials, false);
+    for mesh in &mut held.meshes {
+        for v in &mut mesh.positions {
+            *v = to_bone.transform_point3(source(*v) / METERS_PER_UNIT).to_array();
+        }
+        for n in &mut mesh.normals {
+            *n = to_bone.transform_vector3(source(*n)).normalize_or_zero().to_array();
+        }
+    }
+    Ok(crate::map::MapHeldModel {
+        key: key.to_string(),
+        model: held,
+        bone: bone.name.clone(),
+    })
+}
+
 /// The `prop_data` block of a model's key values (spec 2.2), lower-case
 /// keys.
 fn prop_data(text: &str) -> Option<HashMap<String, String>> {

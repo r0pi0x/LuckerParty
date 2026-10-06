@@ -87,6 +87,15 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
             Err(e) => data.warnings.push(e),
         }
     }
+    // What characters hold: the weapons' world models.
+    if let Some(skeleton) = data.characters.first().map(|c| c.bones.clone()) {
+        for (weapon, path) in super::weapons::WORLD_MODELS {
+            match super::props::load_held(&mut materials, path, weapon, &skeleton) {
+                Ok(h) => data.held.push(h),
+                Err(e) => data.warnings.push(e),
+            }
+        }
+    }
     let mut sounds = super::sound::load(&mut materials, name, &surfaces);
     super::soundscape::load(&mut materials, &bsp, name, &mut sounds);
     data.sounds = std::sync::Arc::new(sounds);

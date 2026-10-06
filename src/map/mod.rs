@@ -2,7 +2,7 @@
 //! the engine spawns. Units are meters, Y up (README: mounts own each game's
 //! units and axes; the engine sees only this).
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use avian3d::prelude::*;
 use bevy::{
@@ -284,6 +284,21 @@ pub struct BoneBox {
     pub group: crate::core::Hitgroup,
 }
 
+/// A model characters hold (a weapon's world model), keyed by what
+/// `Held` names; meshes in the frame of `bone` of the character skeleton
+/// (its axes and units).
+#[derive(Clone, Debug)]
+pub struct MapHeldModel {
+    pub key: String,
+    pub model: MapModel,
+    pub bone: String,
+}
+
+/// What a character holds (a `MapHeldModel` key), drawn in its body's
+/// hand. Games set it.
+#[derive(Component, Clone, Default, Debug, PartialEq)]
+pub struct Held(pub Option<String>);
+
 /// Which character model a character uses (index in `CharacterModels`).
 #[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
 pub struct BodyModel(pub usize);
@@ -317,6 +332,10 @@ impl CharacterModels {
 #[derive(Resource)]
 struct CharacterBodies(Vec<BodyAssets>);
 
+/// Meshes and materials of each held model, by key.
+#[derive(Resource)]
+struct HeldAssets(HashMap<String, (String, Vec<(Handle<Mesh>, Handle<StandardMaterial>)>)>);
+
 struct BodyAssets {
     parts: Vec<(Handle<Mesh>, Handle<StandardMaterial>)>,
     bindposes: Handle<bevy::mesh::skinning::SkinnedMeshInverseBindposes>,
@@ -334,6 +353,8 @@ pub struct CharacterBody {
     model: usize,
     /// Joint entities by bone index.
     joints: Vec<Entity>,
+    /// The held model shown and its key.
+    held: Option<(Entity, String)>,
 }
 
 /// Give characters other than the local player their team's body (a child
@@ -383,7 +404,7 @@ fn attach_bodies(
             .id();
         // The skeleton: a root in the source game's axes and units, then
         // each bone under its parent, in the reference pose.
-        let root = commands.spawn((assets.root, ChildOf(body))).id();
+        let root = commands.spawn((assets.root, Visibility::Inherited, ChildOf(body))).id();
         let mut joints: Vec<Entity> = Vec::with_capacity(assets.bones.len());
         for (i, b) in assets.bones.iter().enumerate() {
             let parent = b.parent.and_then(|p| joints.get(p).copied()).unwrap_or(root);
@@ -392,6 +413,7 @@ fn attach_bodies(
                     .spawn((
                         BodyJoint(i),
                         Transform::from_translation(b.position).with_rotation(b.rotation),
+                        Visibility::Inherited,
                         ChildOf(parent),
                     ))
                     .id(),
@@ -400,6 +422,7 @@ fn attach_bodies(
         commands.entity(body).insert(CharacterBody {
             model: index,
             joints: joints.clone(),
+            held: None,
         });
         for (mesh, material) in &assets.parts {
             commands.spawn((
@@ -426,6 +449,48 @@ fn turn_bodies(
                 t.rotation = Quat::from_rotation_y(yaw);
             }
         }
+    }
+}
+
+/// Draw what each character holds in its body's hand.
+fn attach_held(
+    held: Option<Res<HeldAssets>>,
+    bodies: Option<Res<CharacterBodies>>,
+    characters: Query<(&Held, &Children)>,
+    mut body_query: Query<&mut CharacterBody>,
+    mut commands: Commands,
+) {
+    let (Some(held), Some(bodies)) = (held, bodies) else { return };
+    for (want, children) in &characters {
+        let Some(c) = children.iter().find(|c| body_query.contains(*c)) else {
+            continue;
+        };
+        let mut body = body_query.get_mut(c).unwrap();
+        if body.held.as_ref().map(|(_, k)| k.as_str()) == want.0.as_deref() {
+            continue;
+        }
+        if let Some((e, _)) = body.held.take() {
+            commands.entity(e).despawn();
+        }
+        let Some(key) = &want.0 else { continue };
+        let Some((bone, parts)) = held.0.get(key) else { continue };
+        let Some(joint) = bodies.0[body.model]
+            .bones
+            .iter()
+            .position(|b| b.name.eq_ignore_ascii_case(bone))
+            .and_then(|i| body.joints.get(i).copied())
+        else {
+            continue;
+        };
+        let model = commands
+            .spawn((Transform::default(), Visibility::Inherited, ChildOf(joint)))
+            .with_children(|m| {
+                for (mesh, material) in parts {
+                    m.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone())));
+                }
+            })
+            .id();
+        body.held = Some((model, key.clone()));
     }
 }
 
@@ -687,6 +752,8 @@ pub struct MapData {
     pub nav: Option<Arc<nav::NavMesh>>,
     /// How characters look and where they can be hit, per team.
     pub characters: Vec<MapCharacterModel>,
+    /// Models characters can hold (weapons' world models).
+    pub held: Vec<MapHeldModel>,
 }
 
 /// What the BSP leaf around a point can see of the sky.
@@ -1005,7 +1072,7 @@ impl Plugin for MapPlugin {
                     glow_visibility,
                     dust::update_dust,
                     show_skybox_in_place,
-                    (attach_bodies, turn_bodies, pose_bodies.after(DriveAnimation))
+                    (attach_bodies, turn_bodies, pose_bodies.after(DriveAnimation), attach_held)
                         .run_if(resource_exists::<CharacterBodies>),
                 ),
             )
@@ -1164,6 +1231,25 @@ fn spawn_map(
                 })
                 .collect();
             commands.insert_resource(CharacterBodies(bodies));
+            let held = data
+                .held
+                .iter()
+                .map(|h| {
+                    let parts = h
+                        .model
+                        .meshes
+                        .iter()
+                        .map(|m| {
+                            (
+                                meshes.add(build_mesh(m, false)),
+                                materials.add(build_material(m, &textures, view, data.look.light_scale)),
+                            )
+                        })
+                        .collect();
+                    (h.key.clone(), (h.bone.clone(), parts))
+                })
+                .collect();
+            commands.insert_resource(HeldAssets(held));
         }
         let lightmap = data
             .lightmap
@@ -1813,6 +1899,7 @@ pub fn unload_map(world: &mut World) {
     world.remove_resource::<sound::SoundBank>();
     world.remove_resource::<CharacterModels>();
     world.remove_resource::<CharacterBodies>();
+    world.remove_resource::<HeldAssets>();
     let bodies: Vec<Entity> = world
         .query_filtered::<Entity, With<CharacterBody>>()
         .iter(world)
