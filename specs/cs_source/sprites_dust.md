@@ -10,7 +10,7 @@ Source basis: Valve's public Source SDK 2013 (current GitHub head). I read:
 
 CS:S's own game DLL source is not public. This spec assumes CS:S uses the same shared sprite and dust code, which ships in every Source multiplayer game of that era. Several layers are **not in the SDK**: the engine's model loader (how a `model` keyvalue path reaches the sprite loader), the engine's network float encoder (rounding of quantised fields), the material system (shader-parameter defaults, the pixel-diameter helper, occlusion-query hardware details) and the occlusion-proxy materials. Rules that depend on them are marked *derived* or listed under Open questions.
 
-I checked the map data directly from the user's CS:S install (de_dust2 entity lump, `materials/sprites/glow.vmt`, `materials/particle/sparkles.vmt`, texture headers). No game files are committed.
+I checked the map data directly from the user's CS:S install (de_dust2 entity lump, `materials/sprites/glow.vmt`, `materials/particle/sparkles.vmt`, texture headers). No game files are committed. A second pass re-read the sprite shader, the shader base class's parameter handling, the sprite draw and glow code, and the pixel-visibility helper to settle mode 5 colour, brightness inputs and sRGB; it also checked the full text of `sprites/glow.vmt` (no `$color`, `$alpha`, `$ignorevertexcolors`, `$nosrgb` or proxies) and de_dust2's fog controller.
 Status: draft
 
 ## Summary
@@ -22,6 +22,8 @@ Status: draft
   - Glow modes also fade with distance (1200²/d²), unless renderfx is 14 (Constant Glow).
   - Mode 3 additionally grows with distance, so it keeps a fixed size on screen.
 - renderamt is applied **more than once** in the glow modes. With de_dust2's renderfx 14 it effectively scales the light by (renderamt/255)³.
+- In mode 5, renderamt (as the sprite's brightness) is applied **once**, as alpha only; rendercolor tints once; renderfx, distance and occlusion do nothing. de_dust2's mode 5 halos (renderamt 25) therefore add at most ≈ +17/255 and are nearly invisible in game.
+- The `Alpha` input changes only the entity blend, never the brightness: glow sprites react, mode 5 sprites do not.
 - func_dustmotes spawns tiny alpha-blended particles (`particle/sparkles`) at random points **inside the brush**, at SpawnRate per second. Each lives a uniformly random LifetimeMin..LifetimeMax seconds.
   - Alpha follows a raised-cosine bump over its life (0 → 1 at mid-life → 0) and fades linearly to zero at DistMax view depth.
   - Size is constant on screen: Size/10000 of the view depth as half-width.
@@ -75,14 +77,14 @@ Status: draft
 | rendermode | 0–10, see section 3. |
 | renderfx | Modulates the entity blend (section 4). 14 (Constant Glow) disables the glow distance fade. |
 | rendercolor | Vertex RGB (how it is used depends on mode). |
-| renderamt | "Brightness": vertex alpha, and the entity blend for every mode except 0. |
+| renderamt | Read twice at spawn: it becomes both the entity's render alpha (source of the entity blend B, section 4) and the sprite's separate **brightness** (vertex alpha, and the renderfx 14 glow factor). After spawn the two are independent (section 4a). |
 | GlowProxySize | Size of the occlusion proxy, units; networked as integer 1..64 (1b). Default 2. |
 | framerate | Animation frames per second (server side). |
 | HDRColorScale | Multiplies RGB **only when HDR is enabled**. No effect in LDR. Default 1. |
 | spawnflags 1 (Start on) | Only matters for a sprite with a targetname. A named sprite without this flag starts hidden. Unnamed sprites always start visible. |
 | spawnflags 2 (Play once) | When the animation passes its last frame, the sprite hides itself. |
 | angles | **Hammer quirk:** if yaw ≠ 0 and roll = 0, yaw is moved into roll (roll = yaw, yaw = 0). Roll matters for `vp_parallel` materials (section 2). |
-| inputs | ShowSprite / HideSprite / ToggleSprite, SetScale, ColorRedValue/Green/Blue (0–255, clamped). |
+| inputs | ShowSprite / HideSprite / ToggleSprite, SetScale, ColorRedValue/Green/Blue (0–255, clamped). The generic entity inputs `Alpha` and `Color` also work: `Alpha` changes only the render alpha (B), never the brightness (section 4a). |
 
 #### 1a. Model path → material
 
@@ -138,28 +140,46 @@ Status: draft
 Notation:
 - T = texture sample, (rgb, a) in [0, 1].
 - V = vertex colour/255, (rgb, a).
-- C = the material's `$color`/`$alpha` constant (1 unless the vmt sets them).
-- The sprite shader by default does **no** sRGB conversion (`$nosrgb` defaults to on). All maths is in gamma space, on raw texture values, as LDR Source always did for sprites.
-- Output is clamped to [0, 1] per channel. There is no overbright factor; the tone-map scale is 1 in LDR.
+- C = the material's `$color` (rgb) and `$alpha` (a) constant. `$alpha` is forced to 1 by the shader when the vmt leaves it out. `$color` is not touched by the sprite shader; what an absent `$color` reads as is engine code (Open question 3). It is taken as 1 below. Only modes 5 and 7 use C at all.
+- Colour space (all modes, LDR):
+  - `$nosrgb` is declared with default 0 but the shader's own set-up forces it to **1** whenever the vmt does not set it. de_dust2's `sprites/glow` does not set it; `light_glow03` and `glow01` set it to 1 explicitly. So every sprite we care about runs the non-sRGB path.
+  - Non-sRGB path: the texture is read without sRGB decode, the vertex colour is passed through unconverted, `$color` is used as written, and the render target write has sRGB conversion **off**. All shader maths and the framebuffer blend therefore operate on raw 8-bit gamma-space values.
+  - (For completeness: with `$nosrgb 0` the texture is decoded to linear, vertex colour and `$color` are converted gamma→linear in the shader (a `$color` component above 1 is left as is), and the write re-encodes to sRGB, so blending would happen in linear space. No CS:S sprite we use takes this path.)
+  - The shader output is multiplied by the tone-map scale constant for gamma-space output. *Derived:* this is 1 in LDR (engine-supplied).
+  - On some hardware the engine asks the shader itself to convert its output through a gamma table (a hardware capability switch, engine-side). Not modelled; assume off.
+  - A Mac-only adapter path exists; ignore it.
+- Output is clamped to [0, 1] per channel. There is no overbright factor.
 - Vertex values for one sprite in one frame:
-  - V.a = renderamt (the brightness; see section 4 for transitions);
-  - V.rgb = rendercolor, except in modes 3 and 9 (section 5).
+  - V.a = the sprite's **brightness** (renderamt at spawn; section 4a). It is never the entity blend B and never modified by renderfx;
+  - V.rgb = rendercolor, except in modes 3 and 9, where it is pre-scaled (section 5).
+- The entity blend B (section 4) is handed to the engine as a global blend before every translucent entity draw, and the sprite code sets it again (to B/255 × glow factor for modes 3/9). **Nothing in the SDK passes that global blend into the sprite's material or mesh**: the sprite is drawn as a client-built quad whose only per-entity inputs are the vertex colour and alpha above. Whether the engine applies it anyway is Open question 11.
 
 | Mode (Hammer name) | Shader colour | Blend | Depth test / write | Fog colour | Draw pass |
 |---|---|---|---|---|---|
 | 0 Normal | T (vertex colour ignored) | none (opaque square, alpha ignored) | test on / write on | fog colour | translucent entity pass |
 | 1 Color, 2 Texture, 4 Solid | T·V | src·α + dst·(1−α) | on / off | fog colour | translucent pass |
 | 3 Glow, 9 World Space Glow | T·V | src·α + dst (additive) | **off** / off | black | after all other translucents ("no-Z" pass) |
-| 5 Additive | T·C, ×V only if the vmt's `$ignorevertexcolors` is 0 (see note) | src·α + dst | on / off | black | translucent pass |
+| 5 Additive | T·V·C (vertex colours on, see note; T·C if they were off) | src·α + dst | on / off | black | translucent pass |
 | 7 Additive Fractional Frame | two additive passes: frame ⌊f⌋ weighted (1 − frac f)·$alpha, then frame ⌊f⌋+1 weighted frac f·$alpha | src·α + dst | on / off | black | translucent pass |
 | 8 Alpha Add | pass 1: alpha blend; pass 2: src·(1−α) + dst | as stated | on / off | fog colour, then black | translucent pass |
 | 6 Environmental, 10 Don't Render | not drawn | | | | |
 
-Mode 5 and vertex colours:
-- `$ignorevertexcolors` is declared with a default of 1. The shader's own set-up code only fills in defaults for other parameters. *Derived (likely):* an undefined `$ignorevertexcolors` reads as 0. Under that reading:
-  - mode 5 output = T.rgb·V.rgb·C.rgb, weighted by T.a·V.a·C.a;
-  - so rendercolor and renderamt **do** apply, once each, with no distance fade or occlusion fade.
-- If instead the default 1 applies, mode 5 ignores rendercolor and renderamt entirely. See Open question 3. Test case S6 distinguishes the two.
+Mode 5 (Additive) exactly:
+- Path from the map to the pixel:
+  1. Spawn: renderamt → brightness (integer 0..255, networked in 8 bits). rendercolor → render RGB.
+  2. Client draw: if B ≤ 0, skip (renderamt 0, or a renderfx strobe at 0). Otherwise B plays no further part. renderfx (including 14) does **nothing else** in mode 5: the glow factor, distance fade, occlusion query and scale growth are glow-mode only.
+  3. All four vertices get colour (rendercolor.r, .g, .b, brightness) as bytes; V = that/255.
+  4. Pixel shader: s = T; if vertex colours are enabled, s ← s·V (all four channels); then s ← s·C (C.rgb = `$color`, C.a = `$alpha`); fog (toward black) and the light scale apply to s.rgb only.
+  5. Blend: dst.rgb ← dst.rgb + s.rgb·s.a (source factor = source alpha, destination factor = 1), depth tested, no depth write. Destination alpha is not used.
+- Result with vertex colours enabled:
+  - added = T.rgb · rendercolor/255 · C.rgb · T.a · brightness/255 · C.a · (1 − fog).
+  - rendercolor appears **once** (colour only). Brightness appears **once** (alpha only). There is no second brightness factor, no distance fade and no occlusion fade.
+- Result with vertex colours disabled: added = T.rgb · C.rgb · T.a · C.a · (1 − fog). rendercolor and brightness have no effect at all; only B = 0 can hide the sprite.
+- Which one applies depends on how `$ignorevertexcolors` reads when the vmt leaves it out (no CS:S sprite vmt sets it; `sprites/glow.vmt` contains only `$spriteorientation`, `$spriteorigin` and `$basetexture`):
+  - The parameter is declared with default 1. The shader's own set-up fills in `$alpha`, `$hdrcolorscale`, `$nosrgb` and the orientation by hand but not `$ignorevertexcolors` or `$color`.
+  - Whether declared defaults are applied to absent parameters is material-system code, outside the SDK. The SDK shows the default strings are exposed to that code through the shader interface, but not what it does with them.
+  - The live CS:S measurement settles it in practice (see S6): de_dust2's mode 5 glows (renderamt 25) are effectively invisible. With vertex colours disabled they would add ≈ T.rgb, about +176/255 at the centre of `sprites/glow`, which would be glaring. **Implement: vertex colours enabled (absent `$ignorevertexcolors` = 0), `$color` absent = 1.** The predicted +17/255 peak is close to the measured "invisible" but may still be too bright; Open questions 3 and 11 list what could account for the rest.
+- Mode 7 follows the same vertex-colour rule, and its constant colour is replaced by (frame weight·`$alpha`) in rgb and 1 in alpha.
 
 Other mode notes:
 - Mode 7: the frame is passed to the material as an integer, so the fractional blend effectively always shows a whole frame (Quirk 4).
@@ -168,7 +188,7 @@ Other mode notes:
 
 ### 4. Entity blend (renderamt and renderfx)
 
-- Each frame the client computes an entity blend B ∈ 0..255:
+- Each frame the client computes an entity blend B ∈ 0..255 (in this section "renderamt" means the entity's current render alpha: the keyvalue at spawn, later changed by the `Alpha` input; see 4a):
   - B = 255 for mode 0;
   - B = renderamt otherwise, when renderfx is 0, 14 (Constant Glow), 19 or any value not listed below.
 - renderfx variants (t = client time in seconds, k = entity index × 363):
@@ -184,8 +204,21 @@ Other mode notes:
   - 7 / 8 solidify: renderamt itself rises by 1 or 4 **per frame** to 255
   - 15 / 16 hologram/distort: renderamt set to 180, faded by depth past 100 units over 400 units (16 only), plus random −32..31
 - In every case the result is converted to an integer and clamped to 0..255.
+- Then, if the entity has a client-side distance fade (fademindist/fademaxdist) below full, B = round(B·fade). de_dust2's sprites set none.
+- B is computed once per client frame.
 - If B/255 ≤ 0 the sprite is not drawn.
-- Sprites have a separate "brightness" (renderamt) and "scale". Each can be set to change over a networked time. The client then interpolates linearly from the old to the new value over that time. Map-placed sprites never use this, so V.a = renderamt.
+
+#### 4a. Brightness versus renderamt
+
+- A sprite keeps a **brightness** (0..255, networked in 8 bits) separate from the render alpha that drives B.
+  - At spawn, brightness = renderamt. That is the only place a map-placed env_sprite gets its brightness.
+  - Brightness feeds V.a in every mode and, for renderfx 14, the glow factor (section 5).
+  - The render alpha feeds only B.
+- Brightness and scale can each be given a change-over time by game code. The client then interpolates linearly from the old to the new value over that time, truncating brightness to an integer. Map-placed sprites never use this.
+- **No map-accessible input or keyvalue changes the brightness at runtime.** The generic `Alpha` input (what `ent_fire <sprite> alpha 255` sends) and an `AddOutput renderamt N` both change only the render alpha, so only B changes:
+  - modes 3 and 9 brighten or dim, because B multiplies V.rgb (section 5);
+  - mode 5 (and 1, 2, 4, 7, 8) does not change at all, except that B = 0 hides it.
+  - That is exactly what the live test saw. Only re-spawning the entity re-reads renderamt into brightness.
 
 ### 5. Glow modes (3 and 9): visibility, distance fade, colour
 
@@ -197,18 +230,22 @@ Inputs:
 Steps:
 1. vis = visible fraction from the occlusion system (5a). If vis ≤ 0, the sprite is not drawn.
 2. If d ≤ 0, it is not drawn.
-3. Glow factor G:
-   - renderfx 14 (Constant Glow): G = (renderamt/255) · vis. There is no distance fade.
-   - otherwise: G = min(1, 1200² / d²) · vis. For mode 3 the scale is also set to s·d/200 (s = 1 if 0).
-4. blend = (B/255) · G.
-5. V.rgb = ⌊rendercolor · blend⌋, truncated to an integer per channel. V.a stays renderamt.
+3. Glow factor G (br = the sprite's brightness, section 4a):
+   - renderfx 14 (Constant Glow): G = (br/255) · vis. There is no distance fade and no mode 3 size growth: the function returns before either.
+   - otherwise: G = clamp(1200² / d², 0, 1) · vis. For mode 3 the scale is also set to s·d/200 (s = 1 if 0).
+4. blend = (B/255) · G, where B is this frame's entity blend (section 4).
+5. V.rgb = ⌊rendercolor · blend⌋, truncated to an integer per channel. V.a stays br.
 6. If blend ≤ 0, the sprite is not drawn.
-7. Draw additive, no depth test: dst += T.rgb · V.rgb · T.a · V.a.
+7. Draw additive, no depth test: dst += T.rgb · V.rgb · T.a · V.a. Vertex colours are always used in modes 3 and 9; `$color`/`$alpha` are **not** used; fog is toward black.
 
-Consequences:
+Where vis enters: only through G, which multiplies **V.rgb only**. V.a is not touched by vis, by the distance fade or by B. So the occlusion and edge fades act once, linearly, on the added colour.
+
+Consequences (with br = renderamt, as for every map-placed sprite):
 - With renderfx 0, renderamt appears twice: once in V.rgb via B and once in V.a. The intensity scales with (renderamt/255)².
-- With renderfx 14 it appears three times: (renderamt/255)³.
+- With renderfx 14 it appears three times: B and G in V.rgb, br in V.a: (renderamt/255)³.
+- After an `Alpha` input changes the render alpha to A: renderfx 14 intensity ∝ (A/255)·(br/255)·(br/255); renderfx 0 ∝ (A/255)·(br/255).
 - The distance fade is 1 out to 1200 units and then falls as 1/d². At 2400 units it is 0.25.
+- The engine is also told the global blend = blend (step 4). See Open question 11; the SDK does not apply it to the sprite.
 
 #### 5a. Occlusion proxy and fading
 
@@ -217,21 +254,29 @@ Consequences:
   - There is no fade in this case.
 - **Proxy shape.** Per sprite and per view, a flat square proxy is drawn after the scene for that view:
   - It is parallel to the view plane, with half-diagonal p = GlowProxySize. That is half-side p·0.7071 along view right and p·0.7071 / aspect along view up, where aspect = sprite width/height (1 for square textures).
-  - It is centred at P moved **toward the eye by p units** (the unenlarged p), so a sprite sitting on a wall is not hidden by that wall.
-  - If the proxy's projected size is under 5 pixels, p is enlarged so that p × (pixel diameter of a 1-unit sphere at P) = 5. *Derived:* this helper lives in the material system, not the SDK.
+  - It is centred at P moved **toward the eye by p units** (the unenlarged p), along the unit direction from the eye to P (not along view forward), so a sprite sitting on a wall is not hidden by that wall. The pull is never enlarged with distance, so it cannot push the proxy through nearby geometry toward the camera.
+  - If the proxy's projected size is under 5 pixels, p is enlarged so that p × (pixel diameter of a 1-unit sphere at P) = 5. Only the in-plane size is enlarged. The pixel-diameter value is floored at 0.0001 to avoid division by zero. *Derived:* the pixel-diameter helper lives in the material system, not the SDK (Open question 5).
+  - Proxy inputs for an env_sprite: centre P (the draw position: the attachment point if the sprite follows one, else its origin), size p = networked GlowProxySize, aspect from the sprite's texel extents, fade time 0.0625 s.
+  - Geometrically the proxy is four triangles meeting at the centre (a pyramid flattened into the plane); it covers the same square as a quad.
 - **The two queries.** For each proxy:
   - "possible" draws the proxy with the depth range squeezed to [0, 0.01], so it effectively passes the depth test everywhere on screen;
   - "visible" draws it with the normal depth test against the finished opaque and translucent scene.
   - Neither query writes colour (*derived*: the proxy materials `engine/occlusionproxy*` are not in the SDK).
-- **Clip fraction.** The fraction of the proxy's screen rectangle that lies inside the viewport, clamped to [0, 1]. It is 0 if any proxy corner is behind the eye.
+- **Clip fraction.** Computed when the "visible" query is issued (end of view), from the projected proxy corners in normalised device coordinates [−1, 1]: width from the two top corners, height from the top-left and bottom-right corners, and the same with each edge clamped to the screen. clip = (clamped area)/(full area), clamped to [0, 1]; 0 if the full area is 0.
+  - If any proxy corner is behind the eye, no query is issued that frame and clip = 0. The faded value and the "issued" frame are left as they were.
+  - The clip fraction from the "possible" query is discarded; only the "visible" query's is kept.
 - **Reading results.** Results are read the **next** frame (one frame of latency). Each frame:
   1. target = visible/possible; if target ≥ 0.95 it becomes 1. If possible = 0, the faded value snaps to 0.
   2. faded = move faded toward target by at most 16 × frame_time. Starting from 0, a full fade-in takes 1/16 s ≈ 62.5 ms.
-  3. vis = faded × clip_fraction.
+  3. vis = faded × clip_fraction, where clip_fraction is the one computed when last frame's queries were issued.
+  - vis is evaluated once per view per frame; later calls in the same view return the same value.
+  - If a result is not ready (the query reports "not available"), the previous faded × clip is returned unchanged.
+  - visible/possible and clip_fraction multiply. They are independent: both pixel counts are limited to the screen, so the edge only acts through clip_fraction.
 - **Edge cases.**
   - Before the first result arrives, vis = 0.
   - A sprite not drawn for more than one frame (left the PVS or frustum) loses its query state. It fades in again from 0 when it returns.
-  - With r_pixelvisibility_partial 0 the target is 1 if any pixel is visible, else 0. The fade-in is then half as fast (8/s) and the fade-out 16/s.
+  - With r_pixelvisibility_partial 0 the target is 1 if any pixel is visible, else 0. The fade-in is then half as fast (8/s) and the fade-out 16/s. If the query was not issued on the immediately preceding frame, the faded value snaps to 0.
+  - The fade step uses the client frame time (whatever the engine reports; not clamped by this code).
   - Each view (main, reflection, etc.) has its own query state.
 
 ### 6. Animation
@@ -357,7 +402,7 @@ Dust:
 ## Quirks
 
 1. **renderamt counted two or three times in glow modes** (section 5). Keep: it is what makes de_dust2's lamp glows look the way they do.
-2. **renderfx pulses and strobes do not change non-glow sprites' alpha.** They only switch them fully off when B hits 0. This is because vertex alpha uses renderamt, not B. Keep.
+2. **renderfx pulses and strobes do not change non-glow sprites' alpha.** They only switch them fully off when B hits 0. This is because vertex alpha uses the brightness, not B. Keep.
 3. **The last animation frame is almost never shown.** Wrapping is by fmod(frame, n−1) as soon as frame exceeds n−1, so frame n−1 only shows when frame equals it exactly. 2-frame sprites never animate. Keep for fidelity.
 4. **Mode 7 frame blending** receives an integer frame and so never blends. Keep: it is rare.
 5. **`facing_upright` faces the world origin**, not the camera: it uses the sprite's absolute position as if it were camera-relative. It is rare in CS:S maps. Recommend implementing it as written, behind a flag, and confirming in game if a map uses it.
@@ -376,9 +421,13 @@ Sprite tests use `sprites/glow` (128×128, 1 frame, `vp_parallel`, origin [0.5 0
 | S3 | scale "0.1" | spawn | client scale 0.25 → 32 × 32 units |
 | S4 | scale "100" | spawn | clamped to 64 → 8192 × 8192 units |
 | S5 | angles "0 90 0" on a vp_parallel sprite | spawn | roll becomes 90: R = view_up, U = −view_right (image rotated 90° in the view plane) |
-| S6 | de_dust2 mode 5: rendercolor 254 248 211, renderamt 25, scale 3 | draw, texel T = (1, 1, 1, 1) | 384 × 384 units, depth tested. Expected dst increase (vertex colours used): (254/255·25/255, 248/255·25/255, 211/255·25/255) = (0.0977, 0.0954, 0.0811). If $ignorevertexcolors defaults to 1: (1, 1, 1). Live check decides (Open question 3). |
+| S6 | de_dust2 mode 5: rendercolor 254 248 211, renderamt 25, renderfx 14, scale 3, `sprites/glow` (centre texel ≈ 0.69 grey, alpha 1) | draw, no fog | 384 × 384 units, depth tested. Added at the centre: 0.69 × (254, 248, 211)/255 × 25/255 = (0.0674, 0.0658, 0.0560) ≈ (+17, +17, +14)/255. For a texel T = (1, 1, 1, 1): (0.0977, 0.0954, 0.0811). Unaffected by renderfx (same result with renderfx 0), distance and occlusion. Not (0.69, 0.69, 0.69): that would be the vertex-colours-off reading, ruled out by the live measurement. |
 | S7 | de_dust2 mode 9, renderfx 14, renderamt 254, rendercolor 254 248 211, scale 0.8, vis = 1 | draw | B = 254. G = 254/255 = 0.996078. blend = 0.992172. V.rgb = (252, 246, 209), V.a = 254. Size 96 units at any distance. Added colour for T = (1, 1, 1, 1): (252/255·254/255, 246/255·254/255, 209/255·254/255) = (0.9844, 0.9609, 0.8164). No depth test. |
 | S8 | same as S7 but renderamt 200, scale 1 | draw, vis = 1 | blend = (200/255)² = 0.615148. V.rgb = (156, 152, 129), V.a = 200. Added for T = 1: (0.4798, 0.4675, 0.3967). Size 128 units. |
+| S8a | S7's sprite (renderamt 254 at spawn), then input `Alpha 128` | draw, vis = 1 | B = 128, brightness still 254. G = 254/255. blend = 128·254/255² = 0.499992. V.rgb = (126, 123, 105), V.a = 254. Added for T = 1: (0.4922, 0.4805, 0.4102). |
+| S8b | S6's mode 5 sprite, then input `Alpha 255` (or `Alpha 1`) | draw | identical to S6 (B only gates). `Alpha 0`: not drawn. |
+| S8c | mode 3, renderfx 14, scale 1, renderamt 255, vis = 1 | eye at 400 and at 2400 units | scale stays 1 (128 units, no growth with distance) and G = 1 at both distances (no distance fade). |
+| S8d | mode 5 sprite, `$alpha` absent, `$color` absent | draw | C = (1, 1, 1, 1): no effect on the result. |
 | S9 | mode 9, renderfx 0, renderamt 255, colour 255 255 255, vis 1 | eye at 600 / 1200 / 2400 units | G = 1 / 1 / 0.25. V.rgb = 255 / 255 / 63 (⌊63.75⌋). Size unchanged. |
 | S10 | mode 3, renderfx 0, scale 1, renderamt 255 | eye at 400 units, not zoomed | scale → 1 × 400/200 = 2 → 256 units. At 800 units, 4 → 512 units, so the projected size is the same. |
 | S11 | mode 3 as S10 while zoomed to FOV 40 (default 90) | eye at 400 units | d = 400 × 40/90 = 177.8. scale 0.889 → 113.8 units. Distance fade 1 (177.8 < 1200). |
@@ -404,15 +453,18 @@ Sprite tests use `sprites/glow` (128×128, 1 frame, `vp_parallel`, origin [0.5 0
 ## Open questions
 
 1. **Scale quantisation rounding.** The engine's float encoder is not in the SDK, so truncation versus nearest is unknown. It matters for values like 0.9: 0.75 (truncate) or 1.0 (nearest). Check: place an env_sprite at scale 0.9 in a test map and measure its on-screen size against scale 0.75 and 1.
-2. **Undefined shader parameters.** Does an undefined `$spriteorigin` or `$ignorevertexcolors` read as the shader's declared default ([0 0 0] and 1) or as zero/undefined?
-   - The shader's own init code fills in defaults for `$alpha`, `$hdrcolorscale` and `$nosrgb` by hand, which suggests declared defaults are *not* applied automatically.
-   - Under that reading, sprites without `$spriteorigin` are centred and mode 5 uses vertex colour.
-   - Check: screenshot de_dust2's mode 5 halo at (−1406, 1148, 168) in CS:S and compare with S6. A full-white 384-unit square-ish glow means the default is applied; a faint warm halo means it is not.
-3. Same as 2, for mode 5 specifically. It matters a lot for de_dust2's four mode 5 halos.
+2. **Undefined `$spriteorigin`.** The loader centres the quad when the material's `$spriteorigin` is absent or not a vector. If the material system filled the declared default `[0 0 0]` in as a vector, absent-origin sprites would anchor at the top-left corner instead. All CS:S sprite vmts we use set it, so this does not matter for de_dust2.
+3. **Absent `$ignorevertexcolors` and `$color` in mode 5.** The SDK cannot settle this: declared defaults (1 and, for `$color`, presumably white) are exposed to the material system, whose handling is not public. The sprite shader itself fills in `$alpha`, `$hdrcolorscale` and `$nosrgb` but neither of these.
+   - Evidence: the live CS:S measurement shows de_dust2's mode 5 halos (renderamt 25) are effectively invisible. "Vertex colours off, `$color` white" would add ≈ +176/255 at the centre: ruled out.
+   - Remaining readings: (a) vertex colours on, `$color` white → +17/255 peak (S6), the spec's choice; (b) `$color` absent reads as black → mode 5 sprites without `$color` are never visible. (b) would make every such additive sprite in every Source game invisible, which seems unlikely, but nothing in the SDK excludes it.
+   - Check: measure the screen difference at the centre of the halo at (−1406, 1148, 168) from a close, unfogged position with HDR off (`mat_hdr_level 0`), against the same view with `r_drawsprites 0`. About +17/255 (warm tint, less in blue) means (a). 0 means (b), or Open question 11. Alternatively spawn a mode 5 sprite with renderamt 255 and rendercolor 255 255 255: (a) adds ≈ +176/255 at its centre, (b) adds 0.
 4. **Model path with `materials/` prefix.** We assume the engine strips it. Confirm by checking that de_dust2's glows render (they do in game).
 5. **Pixel diameter helper** for the 5-pixel minimum proxy: assumed to be the projected diameter, in pixels, of a 1-unit-radius sphere at P, i.e. ≈ 2·H / (2·depth·tan(vfov/2)) = H/(depth·tan(vfov/2)). This is material-system code, not in the SDK.
 6. **Network bit masking** of out-of-range dust values (Lifetime > 15, SpawnRate > 4095): the engine's integer encoder is not in the SDK.
 7. **Random number range on Linux.** The dust spawn position, life and size use the C library random function scaled by 1/32767. On Windows (MSVC) that function's maximum is 32767, which gives the uniform [0, 1] behaviour described. On a Linux client with a larger maximum the positions would mostly fall outside the brush and the lives would be enormous, unless the engine replaces that function. Check: compare a mote count or screenshot of de_dust2's B-site dust between the Windows and Linux clients. Implement the Windows behaviour.
 8. **Proxy material state** (colour writes off, depth writes off, depth test on) is assumed. Those materials are engine content.
 9. **Brush-model contents for dust.** The spawn test needs the point to be "solid" in the brush model. We assume any point inside one of the model's brushes counts, whatever its tool texture.
-10. **Fog on additive sprites:** modes 3, 5, 7 and 9 fog toward black, which fades them out in fog. Not checked against de_dust2's fog controller settings.
+10. **Fog on additive sprites:** modes 3, 5, 7 and 9 fog toward black: the added colour is multiplied by (1 − fog factor). de_dust2's env_fog_controller is enabled: fogstart 500, fogend 4000, fogmaxdensity 1, colour 197 196 165. *Derived:* with linear fog the factor is clamp((dist − 500)/3500, 0, 1), so a mode 5 halo seen from 1000 units keeps 86% of S6 (≈ +15/255 peak) and one at 2000 units 57%. The fog formula (range or depth, per-vertex or per-pixel) is engine-side and not confirmed.
+11. **Engine global blend.** Before each translucent entity the client hands the engine a global blend (B/255; for glow modes, B/255 × G). The SDK's sprite path never passes it into the material or vertices, so this spec assumes it has no effect on sprites. If the engine applied it anyway (for example as an alpha or `$alpha` modulation of the bound material), every non-glow sprite would gain a factor B/255 (mode 5 at renderamt 25 would peak at ≈ +1.7/255) and glow sprites a further (B/255)·G.
+   - The live `ent_fire <sprite> alpha 255` test saw no change in the mode 5 halos. Under reading 3(a) with the engine applying B, they would have brightened about tenfold (to ≈ +17/255), so that combination is unlikely. The observation is consistent with 3(a) without engine blend (≈ +17/255 before and after) and with 3(b) (0 before and after); Open question 3's check separates those.
+12. **HDR.** The spec assumes LDR. With HDR on, the shader also multiplies the colour by HDRColorScale (1 on de_dust2) and by the tone-map light scale, which the engine sets from auto-exposure and which can be well below 1 on a bright map. Live measurements of sprite brightness must be taken with `mat_hdr_level 0` or they will read darker than this spec.

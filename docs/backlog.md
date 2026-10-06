@@ -52,11 +52,10 @@ docs/plans/active/sound.md.
   the nearest cubemap at run time (BSP cubemap lump); the model shader's
   envmap (gamma-converted tint, no fresnel). World reflections are in
   (refcmp `tunnel_floor_*`).
-- **Tunnel lamp glows**: the grey veil (mode-5 halos) is gone and sprites
-  add in gamma space as in the game, but the lamps' mode-9 glows are now
-  weaker than CS:S's (refcmp `glow_lamp`: +22 vs +56 levels 60 px below
-  the lamp, with visibility already 1). A spec pass on the SDK's sprite
-  code is resolving it (sprites_dust.md open questions).
+- **Tunnel lamp glows**: now close to CS:S (refcmp `glow_lamp`: 99/83/65
+  vs 108/94/79 below the centre lamp; the rest is the dark-area gap
+  below). Open: why mode-5 halos don't show in CS:S (sprites spec open
+  question 3); the glow just above the centre lamp is a little strong.
 - **Dark areas are 15-20% darker than CS:S** (dust2 tunnels; refcmp `fit`:
   CS:S = k·albedo·light with k 1.15-1.40 in tunnels, 1.00 outdoors). Not
   light styles (none on dust2), colour correction (no entities),

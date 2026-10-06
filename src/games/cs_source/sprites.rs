@@ -64,12 +64,14 @@ pub fn add_sprites(bsp: &Bsp, materials: &mut MaterialLoader, data: &mut MapData
         // Glows: vertex rgb = rendercolor x blend x glow factor, where the
         // blend is renderamt and Constant Glow (renderfx 14) multiplies by
         // renderamt again (no distance fade); vertex alpha is renderamt.
-        // Additive: rendercolor and renderamt once each.
+        // Additive: rendercolor x renderamt, alpha renderamt (measured on
+        // dust2's tunnel halos, spec open question 3: with renderamt once,
+        // they would show clearly; CS:S shows nothing).
         let rgb = if glow {
             let factor = if fx == 14 { amt } else { 1.0 };
             (rgb * 255.0 * amt * factor).floor() / 255.0
         } else {
-            rgb
+            (rgb * 255.0 * amt).floor() / 255.0
         };
         data.sprites.push(MapSprite {
             position: to_engine(vbsp::Vector {

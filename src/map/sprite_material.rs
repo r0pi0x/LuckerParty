@@ -1,7 +1,9 @@
 //! The material for sprites (`MapSprite`): every vertex sits at the
 //! sprite's centre and the vertex shader spreads the corners along the
 //! view's right and up axes, so the quad stays parallel to the view plane.
-//! Added to the image (one, one); glows skip the depth test. See sprite.wgsl.
+//! Added to the image (one, one); glows skip the depth test. The shader
+//! reads the scene behind (the view transmission texture) so the sum is
+//! formed in gamma space, as in the game. See sprite.wgsl.
 
 use bevy::{
     asset::{RenderAssetUsages, embedded_asset},
@@ -43,8 +45,18 @@ impl Material for SpriteMaterial {
         "embedded://mashup/map/sprite.wgsl".into()
     }
 
+    /// Opaque here only so Bevy draws sprites in the transmissive phase,
+    /// which provides the scene behind them; `specialize` sets the additive
+    /// blend and turns depth writes off. (Blended alpha modes always go to
+    /// the transparent phase, which gets no copy of the scene.)
     fn alpha_mode(&self) -> AlphaMode {
-        AlphaMode::Add
+        AlphaMode::Opaque
+    }
+
+    /// The shader reads the scene behind the sprite to add in gamma space,
+    /// as the game does.
+    fn reads_view_transmission_texture(&self) -> bool {
+        true
     }
 
     fn specialize(

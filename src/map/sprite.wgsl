@@ -5,7 +5,7 @@
 #import bevy_pbr::{
     forward_io::{Vertex, VertexOutput},
     mesh_functions,
-    mesh_view_bindings::view,
+    mesh_view_bindings::{view, view_transmission_texture, view_transmission_sampler},
     view_transformations::position_world_to_clip,
 }
 
@@ -41,9 +41,25 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     return out;
 }
 
+fn to_gamma(c: vec3<f32>) -> vec3<f32> {
+    return select(1.055 * pow(c, vec3<f32>(1.0 / 2.4)) - 0.055, c * 12.92, c <= vec3<f32>(0.0031308));
+}
+
+fn to_linear(c: vec3<f32>) -> vec3<f32> {
+    return select(pow((c + 0.055) / 1.055, vec3<f32>(2.4)), c / 12.92, c <= vec3<f32>(0.04045));
+}
+
+// The game does sprite maths on raw (gamma) texels and adds to the
+// gamma-encoded image. The blend here is additive in linear light, so the
+// shader reads the scene behind the sprite, forms the game's gamma-space
+// sum and outputs the linear difference. Overlapping sprites each add
+// their own difference.
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let t = textureSample(sprite_texture, sprite_sampler, in.uv);
-    let rgb = t.rgb * params.color.rgb * t.a * params.color.a;
-    return vec4<f32>(rgb, 0.0);
+    let c = to_gamma(t.rgb) * params.color.rgb * t.a * params.color.a;
+    let uv = (in.position.xy - view.viewport.xy) / view.viewport.zw;
+    let behind = textureSampleLevel(view_transmission_texture, view_transmission_sampler, uv, 0.0).rgb;
+    let sum = to_linear(saturate(to_gamma(saturate(behind)) + c));
+    return vec4<f32>(max(sum - behind, vec3<f32>(0.0)), 0.0);
 }

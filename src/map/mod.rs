@@ -1698,7 +1698,7 @@ struct GlowSprite {
 #[allow(clippy::type_complexity)]
 fn glow_visibility(
     query: SpatialQuery,
-    cameras: Query<&GlobalTransform, (With<Camera3d>, Without<SkyboxCamera>)>,
+    cameras: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<SkyboxCamera>)>,
     ignored: Query<Entity, Or<(With<crate::core::Intent>, With<MapPropCollider>)>>,
     mut glows: Query<(
         &GlobalTransform,
@@ -1708,7 +1708,7 @@ fn glow_visibility(
     )>,
     materials: Option<ResMut<Assets<SpriteMaterial>>>,
 ) {
-    let (Some(eye), Some(mut materials)) = (cameras.iter().next(), materials) else {
+    let (Some((eye, camera)), Some(mut materials)) = (cameras.iter().next(), materials) else {
         return;
     };
     let filter = SpatialQueryFilter::from_excluded_entities(ignored.iter());
@@ -1734,6 +1734,10 @@ fn glow_visibility(
             })
             .count() as f32
             / points.len() as f32;
+        // Times the fraction of the proxy's screen rectangle inside the
+        // viewport (0 if any corner is behind the eye), as the game's
+        // occlusion queries are clipped to the screen.
+        let seen = seen * clip_fraction(camera, eye, &points[1..]);
         visibility.set_if_neq(if seen > 0.0 {
             Visibility::Inherited
         } else {
@@ -1746,6 +1750,25 @@ fn glow_visibility(
             }
         }
     }
+}
+
+/// How much of the screen rectangle around `corners` lies in the viewport.
+fn clip_fraction(camera: &Camera, eye: &GlobalTransform, corners: &[Vec3]) -> f32 {
+    let mut lo = Vec2::splat(f32::MAX);
+    let mut hi = Vec2::splat(f32::MIN);
+    for c in corners {
+        let Some(ndc) = camera.world_to_ndc(eye, *c) else {
+            return 0.0;
+        };
+        if ndc.z < 0.0 || ndc.z > 1.0 {
+            return 0.0;
+        }
+        lo = lo.min(ndc.truncate());
+        hi = hi.max(ndc.truncate());
+    }
+    let area = (hi - lo).max(Vec2::splat(1e-6));
+    let inside = (hi.min(Vec2::ONE) - lo.max(Vec2::NEG_ONE)).max(Vec2::ZERO);
+    (inside.x * inside.y / (area.x * area.y)).clamp(0.0, 1.0)
 }
 
 /// Fog color for shaders: linear RGB, w = 1 when fog is on.
