@@ -139,6 +139,8 @@ pub struct ViewAnimator {
     pub key: Option<String>,
     /// Plays on the view model's `AnimSet`.
     pub animator: Option<anim::Animator>,
+    /// Not drawn for now, though still animated (e.g. behind a scope).
+    pub hidden: bool,
 }
 
 impl ViewAnimator {
@@ -452,7 +454,9 @@ pub(super) fn draw_view_models(
     for (anchor, parent, anchor_camera, anchor_projection, eye, children, tonemapping, anchor_target) in &anchors {
         let state = owners.get(parent.parent()).ok();
         // In third person the own body holds the weapon; no view model.
-        let hidden = third_person.as_ref().is_some_and(|t| t.0) || settings.draw == 0;
+        let hidden = third_person.as_ref().is_some_and(|t| t.0)
+            || settings.draw == 0
+            || state.is_some_and(|(s, _)| s.hidden);
         let shown = state
             .filter(|_| !hidden)
             .and_then(|(s, _)| s.key.as_deref())

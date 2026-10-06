@@ -1066,7 +1066,7 @@ fn sounds_load() {
     assert_eq!(swim.waves.len(), 4);
     assert!(matches!(swim.level, mashup::map::SoundLevel::Attenuation(a) if a == 1.0));
     // Weapon entries are precached with the map.
-    for name in mashup::games::cs_source::weapons::SOUNDS {
+    for name in mashup::games::cs_source::weapons::sounds() {
         let e = s.entry(name).unwrap_or_else(|| panic!("no {name}"));
         assert!(!e.waves.is_empty(), "{name} has no waves");
     }
@@ -1601,7 +1601,8 @@ fn bodies_animate_with_movement() {
         Some(Some(mashup::games::cs_source::weapons::AK47.to_string()))
     );
     let keys: Vec<&str> = map.held.iter().map(|h| h.key.as_str()).collect();
-    assert_eq!(keys.len(), 2, "held models {keys:?}");
+    let all = mashup::games::cs_source::weapons::WORLD_MODELS.len();
+    assert_eq!(keys.len(), all, "held models {keys:?}");
     // The drawn AK-47 picks the AK upper body at full weight.
     assert_eq!(layer(&sim, 0), Some(("Idle_Upper_AK".into(), 1.0)));
 
@@ -2244,6 +2245,50 @@ fn running_over_terrain_keeps_speed() {
             last = speed;
         }
         assert!(last > 200.0, "case {k}: running at {last:.1}");
+    }
+}
+
+/// Every gun's models and death-notice icon load from the install, and
+/// each view model's muzzle sits on the side of the eye its
+/// `VIEW_MODELS` handedness says (Source model space: +y is left, so a
+/// muzzle left of the eye means built left-handed).
+#[test]
+fn gun_models_icons_and_handedness() {
+    use mashup::games::cs_source::weapons::{AWP, GUNS, VIEW_MODELS};
+    let Some(map) = dust2() else { return };
+    let hud = map.hud.as_ref().expect("a HUD");
+    for g in GUNS {
+        let short = g.id.rsplit("weapon_").next().unwrap();
+        assert!(hud.icons.contains_key(&format!("d_{short}")), "no d_{short} icon");
+        assert!(map.held.iter().any(|h| h.key == g.id), "{} world model", g.id);
+        let Some(v) = map.view_models.iter().find(|v| v.key == g.id) else {
+            // v_snip_awp.mdl is MDL version 48; the animation reader takes 44.
+            assert_eq!(g.id, AWP, "{} view model: {:?}", g.id, map.warnings);
+            let w: Vec<_> = map.warnings.iter().filter(|w| w.contains("v_snip_awp")).collect();
+            assert!(w.iter().any(|w| w.contains("version 48")), "{:?}", map.warnings);
+            continue;
+        };
+        let set = v.animations.as_ref().expect("sequences");
+        let mut pose = set.defaults.clone();
+        let params = set.default_params();
+        set.accumulate(&mut pose, set.activity("ACT_VM_IDLE").unwrap(), 0.5, 1.0, &params);
+        let mut global: Vec<(Quat, Vec3)> = Vec::new();
+        for (b, (q, p)) in v.bones.iter().zip(&pose) {
+            global.push(match b.parent.map(|i| global[i]) {
+                Some((pq, pp)) => (pq * *q, pp + pq * *p),
+                None => (*q, *p),
+            });
+        }
+        let a = v.attachments.iter().find(|a| a.name == "1").expect("muzzle attachment");
+        let (q, p) = global[a.bone];
+        let muzzle = p + q * a.local.translation;
+        let right_handed = VIEW_MODELS.iter().find(|m| m.0 == g.id).unwrap().2;
+        eprintln!("{}: muzzle {muzzle}", g.id);
+        assert_eq!(muzzle.y < 0.0, right_handed, "{}: muzzle at {muzzle}", g.id);
+        // Draw and reload durations from the spec's view-model table.
+        let dur = |act: &str| set.duration(set.activity(act).expect(act));
+        assert!((dur("ACT_VM_DRAW") - g.draw).abs() < 1e-3, "{} draw", g.id);
+        assert!((dur("ACT_VM_RELOAD") - g.reload).abs() < 1e-3, "{} reload", g.id);
     }
 }
 

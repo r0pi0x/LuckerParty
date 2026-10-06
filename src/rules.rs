@@ -155,7 +155,7 @@ fn respawn(world: &mut World) {
         .iter(world)
         .map(|(t, s)| (*t, s.team))
         .collect();
-    let starting = world.resource::<StartingWeapons>().0.clone();
+    let starting = world.resource::<StartingWeapons>().clone();
     for e in ready {
         // The character's own team's spawns, else any.
         let team = world.get::<Team>(e).copied();
@@ -205,7 +205,8 @@ fn respawn(world: &mut World) {
                 i.pitch = 0.0;
             }
         }
-        for id in &starting {
+        let team = world.get::<Team>(e).map(|t| t.0);
+        for id in starting.for_team(team) {
             give(world, e, id);
         }
     }
