@@ -105,10 +105,22 @@ pub fn load_character(
             })
         })
         .collect();
+    let bones = mdl
+        .bones
+        .iter()
+        .map(|b| crate::map::MapBone {
+            name: b.name.clone(),
+            parent: (b.parent >= 0).then_some(b.parent as usize),
+            position: Vec3::new(b.pos.x, b.pos.y, b.pos.z),
+            rotation: Quat::from_xyzw(b.quaternion.x, b.quaternion.y, b.quaternion.z, b.quaternion.w),
+        })
+        .collect();
     Ok(crate::map::MapCharacterModel {
         team,
         model: body,
         hitboxes,
+        bones,
+        root: Transform::from_rotation(face * axes).with_scale(Vec3::splat(METERS_PER_UNIT)),
     })
 }
 
@@ -194,6 +206,22 @@ fn convert_model_in(model: &vmdl::Model, skin: i32, materials: &mut MaterialLoad
                 entry.positions.push(p[i].to_array());
                 entry.normals.push(n[i].to_array());
                 entry.uvs.push(tri[i].texture_coordinates);
+                if !root {
+                    // Skinning weights, renormalized to sum to 1.
+                    let (mut joints, mut weights) = ([0u16; 4], [0f32; 4]);
+                    for (k, w) in tri[i].bone_weights.weights().take(3).enumerate() {
+                        joints[k] = w.bone_id as u16;
+                        weights[k] = w.weight;
+                    }
+                    let sum: f32 = weights.iter().sum();
+                    if sum > 0.0 {
+                        weights.iter_mut().for_each(|w| *w /= sum);
+                    } else {
+                        weights[0] = 1.0;
+                    }
+                    entry.joints.push(joints);
+                    entry.joint_weights.push(weights);
+                }
             }
         }
     }

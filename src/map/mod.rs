@@ -132,6 +132,11 @@ pub struct MapMesh {
     pub normals: Vec<[f32; 3]>,
     /// Texture coordinates in texture repeats (1.0 = one texture width).
     pub uvs: Vec<[f32; 2]>,
+    /// Skinned meshes: up to four bones per vertex (indices into the
+    /// model's `MapBone`s) and their weights (summing to 1). Empty when
+    /// the mesh isn't skinned.
+    pub joints: Vec<[u16; 4]>,
+    pub joint_weights: Vec<[f32; 4]>,
     /// Counter-clockwise triangles when seen from the front.
     pub indices: Vec<u32>,
     /// Flat color, used when there's no texture.
@@ -256,6 +261,21 @@ pub struct MapCharacterModel {
     pub team: Option<Team>,
     pub model: MapModel,
     pub hitboxes: Vec<crate::core::Hitbox>,
+    /// The skeleton the meshes are skinned to, parents before children.
+    pub bones: Vec<MapBone>,
+    /// From the skeleton's space (the source game's axes and units) to the
+    /// character's local space.
+    pub root: Transform,
+}
+
+/// One bone of a character skeleton, in its reference pose relative to
+/// its parent (the source game's axes and units).
+#[derive(Clone, Debug)]
+pub struct MapBone {
+    pub name: String,
+    pub parent: Option<usize>,
+    pub position: Vec3,
+    pub rotation: Quat,
 }
 
 /// The loaded map's character models (see `MapCharacterModel`).
@@ -276,7 +296,18 @@ impl CharacterModels {
 /// Meshes and materials of each character model (index as in
 /// `CharacterModels`).
 #[derive(Resource)]
-struct CharacterBodies(Vec<Vec<(Handle<Mesh>, Handle<StandardMaterial>)>>);
+struct CharacterBodies(Vec<BodyAssets>);
+
+struct BodyAssets {
+    parts: Vec<(Handle<Mesh>, Handle<StandardMaterial>)>,
+    bindposes: Handle<bevy::mesh::skinning::SkinnedMeshInverseBindposes>,
+    bones: Vec<MapBone>,
+    root: Transform,
+}
+
+/// A joint of a character body's skeleton: its bone index.
+#[derive(Component)]
+pub struct BodyJoint(pub usize);
 
 /// A character's drawn body: which model, at its feet.
 #[derive(Component)]
@@ -320,19 +351,43 @@ fn attach_bodies(
             None => {}
         }
         let feet = aabb.min.y - at.translation().y;
-        commands.entity(e).with_children(|c| {
-            c.spawn((
+        let assets = &bodies.0[index];
+        let body = commands
+            .spawn((
                 Name::new("Body"),
                 CharacterBody { model: index },
                 Transform::from_xyz(0.0, feet, 0.0),
                 Visibility::Inherited,
+                ChildOf(e),
             ))
-            .with_children(|b| {
-                for (mesh, material) in &bodies.0[index] {
-                    b.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone())));
-                }
-            });
-        });
+            .id();
+        // The skeleton: a root in the source game's axes and units, then
+        // each bone under its parent, in the reference pose.
+        let root = commands.spawn((assets.root, ChildOf(body))).id();
+        let mut joints: Vec<Entity> = Vec::with_capacity(assets.bones.len());
+        for (i, b) in assets.bones.iter().enumerate() {
+            let parent = b.parent.and_then(|p| joints.get(p).copied()).unwrap_or(root);
+            joints.push(
+                commands
+                    .spawn((
+                        BodyJoint(i),
+                        Transform::from_translation(b.position).with_rotation(b.rotation),
+                        ChildOf(parent),
+                    ))
+                    .id(),
+            );
+        }
+        for (mesh, material) in &assets.parts {
+            commands.spawn((
+                Mesh3d(mesh.clone()),
+                MeshMaterial3d(material.clone()),
+                bevy::mesh::skinning::SkinnedMesh {
+                    inverse_bindposes: assets.bindposes.clone(),
+                    joints: joints.clone(),
+                },
+                ChildOf(body),
+            ));
+        }
     }
 }
 
@@ -883,6 +938,7 @@ fn spawn_map(
     mut sprite_materials: Option<ResMut<Assets<SpriteMaterial>>>,
     mut prop_materials: Option<ResMut<Assets<PropMaterial>>>,
     mut shadow_materials: Option<ResMut<Assets<shadows::ShadowMaterial>>>,
+    mut bindposes: Option<ResMut<Assets<bevy::mesh::skinning::SkinnedMeshInverseBindposes>>>,
 ) {
     let data = &pending.0;
     let view = pending.1;
@@ -947,22 +1003,49 @@ fn spawn_map(
             .map(|t| images.add(to_image(t, &data.look)))
             .collect();
         let cubemaps: Vec<Handle<Image>> = data.cubemaps.iter().map(|c| images.add(cube_image(c))).collect();
-        // Character bodies, drawn by `attach_bodies`.
-        {
+        // Character bodies, drawn by `attach_bodies`: skinned when the
+        // model has a skeleton.
+        if let Some(bindposes) = bindposes.as_mut() {
             let bodies = data
                 .characters
                 .iter()
                 .map(|c| {
-                    c.model
+                    let parts = c
+                        .model
                         .meshes
                         .iter()
                         .map(|m| {
+                            let mut mesh = build_mesh(m, false);
+                            if m.joints.len() == m.positions.len() && !c.bones.is_empty() {
+                                mesh.insert_attribute(
+                                    Mesh::ATTRIBUTE_JOINT_INDEX,
+                                    bevy::mesh::VertexAttributeValues::Uint16x4(m.joints.clone()),
+                                );
+                                mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, m.joint_weights.clone());
+                            }
                             (
-                                meshes.add(build_mesh(m, false)),
+                                meshes.add(mesh),
                                 materials.add(build_material(m, &textures, view, data.look.light_scale)),
                             )
                         })
-                        .collect()
+                        .collect();
+                    // Each bone's reference pose in body space, inverted.
+                    let mut global: Vec<Mat4> = Vec::with_capacity(c.bones.len());
+                    for b in &c.bones {
+                        let local = Mat4::from_rotation_translation(b.rotation, b.position);
+                        let parent = b
+                            .parent
+                            .and_then(|p| global.get(p).copied())
+                            .unwrap_or(c.root.to_matrix());
+                        global.push(parent * local);
+                    }
+                    let inverse: Vec<Mat4> = global.iter().map(|m| m.inverse()).collect();
+                    BodyAssets {
+                        parts,
+                        bindposes: bindposes.add(bevy::mesh::skinning::SkinnedMeshInverseBindposes::from(inverse)),
+                        bones: c.bones.clone(),
+                        root: c.root,
+                    }
                 })
                 .collect();
             commands.insert_resource(CharacterBodies(bodies));
