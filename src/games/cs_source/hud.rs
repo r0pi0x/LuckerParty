@@ -219,6 +219,14 @@ pub fn load(materials: &mut MaterialLoader) -> Option<GameHud> {
                 icon: Vec2::new(num(p, "icon_xpos"), num(p, "icon_ypos")),
                 digit: Vec2::new(num(p, "digit_xpos"), num(p, "digit_ypos")),
                 digit2: Vec2::new(num(p, "digit2_xpos"), num(p, "digit2_ypos")),
+                keys: p
+                    .items()
+                    .iter()
+                    .filter_map(|(k, v)| match v {
+                        Kv::Value(v) => Some((k.to_lowercase(), v.clone())),
+                        Kv::Block(_) => None,
+                    })
+                    .collect(),
             },
         );
     }

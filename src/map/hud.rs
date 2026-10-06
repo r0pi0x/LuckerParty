@@ -54,6 +54,15 @@ pub struct HudPanel {
     pub icon: Vec2,
     pub digit: Vec2,
     pub digit2: Vec2,
+    /// Every key as written (lower-case keys), for panel-specific values.
+    pub keys: HashMap<String, String>,
+}
+
+impl HudPanel {
+    /// A numeric key (e.g. `SmallBoxSize`).
+    pub fn num(&self, key: &str) -> Option<f32> {
+        self.keys.get(&key.to_lowercase())?.trim().parse().ok()
+    }
 }
 
 /// A HUD font: its file's bytes and the size the game asks for (virtual

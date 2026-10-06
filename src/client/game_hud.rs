@@ -38,7 +38,7 @@ impl Plugin for GameHudPlugin {
 
 /// Font handles made from the HUD's font files, by the game's font name.
 #[derive(Resource, Default)]
-struct HudFonts(HashMap<String, (Handle<Font>, f32)>);
+pub(super) struct HudFonts(pub(super) HashMap<String, (Handle<Font>, f32)>);
 
 /// Everything this HUD spawned.
 #[derive(Component)]
@@ -619,6 +619,7 @@ mod tests {
             icon: Vec2::ZERO,
             digit: Vec2::new(8.0, -4.0),
             digit2: Vec2::ZERO,
+            keys: Default::default(),
         };
         // 1440 lines: 3 pixels per unit.
         let s = 1440.0 / 480.0;

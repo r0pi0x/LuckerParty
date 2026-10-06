@@ -114,6 +114,13 @@ ourselves, so each can be checked in mashup and measured in real CS:S.
    64 hash for now (SHA-256 when networking needs it).
 2. [ ] Test map generator (`tools/testmap/`) and fixtures; compile on
    Windows; measure the reference behaviour on the probe server.
+   2026-10-06: generator done: `src/bin/testmap.rs` writes
+   `tools/testmap/mashup_logic_test.vmf` (rooms A I/O, B triggers, C
+   movers, D breakables and equipment, E spawns; a test keeps the
+   committed file current); `scripts/compile_testmap.ps1` builds it on
+   Windows into the mashup cache (and `-CopyToGame` for CS:S). Left:
+   compile it (the Linux install has no compilers), check it in mashup
+   and CS:S, then the measurements.
 3. [ ] Spec entity I/O and triggers (specs/source/entity_io.md); the
    `logic` layer; `trigger_teleport`, `trigger_push`, `trigger_hurt`,
    `trigger_multiple/once`, `logic_*`, `math_counter`. Pick two real

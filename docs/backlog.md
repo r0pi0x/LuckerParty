@@ -42,9 +42,10 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
 
 - CS:S HUD: health/armour/ammo/money/round-timer panels, death notices
   and the Tab scoreboard are in (`client/game_hud.rs`,
-  `client/scoreboard.rs`). Left: the team menu (`jointeam 2|3` exists;
-  you start as CT), ping and team scores on the scoreboard, weapon
-  selection, hint text. The radar is in (`client/radar.rs`: the map overview turning
+  `client/scoreboard.rs`), and the weapon selection
+  (`client/weapon_select.rs`, kill icons standing in for the scripts'
+  selection icons). The team menu is in (M; you start as CT). Left:
+  ping on the scoreboard, hint text, the game's own VGUI menu looks. The radar is in (`client/radar.rs`: the map overview turning
   with you, team dots, your place name); its range (2200 units) is a guess.
 - Debug overlays: `mashup_drawhitboxes`, `mashup_healthbars`,
   `mashup_drawnav`, `mashup_drawbots` exist; add more as features need
@@ -65,7 +66,7 @@ burst), HUD, deathmatch and a first bot are in.
 - The AWP's view model is in (MDL v48 reads like v44,
   specs/cs_source/mdl_v48.md); compare its fire and reload against the
   game. HL2 v48 models with zero-frame data (streamed) aren't handled.
-- Zoom sensitivity (`zoom_sensitivity_ratio`), CS:S's own scope overlay
+- Zoom sensitivity is in (`zoom_sensitivity_ratio`; measure it). CS:S's own scope overlay
   texture, the silenced world models (`w_*_silencer.mdl`).
 - Rounds, money and buying: slice 1 done (`mashup_rounds 1`,
   [plans/active/rounds.md](plans/active/rounds.md)); next: buy zones, a
