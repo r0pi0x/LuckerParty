@@ -50,6 +50,11 @@ pub struct WorldParams {
     /// Fresnel R0; 1 = none.
     pub envmap_fresnel: f32,
     pub envmap_tint: Vec4,
+    /// Under water (map::water): the water's range fog, linear colour (w = 1
+    /// when on), for points below `water_fog_range.w` (the surface plus
+    /// the fudge); start, end (meters), max density in xyz.
+    pub water_fog_color: Vec4,
+    pub water_fog_range: Vec4,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
@@ -96,8 +101,17 @@ impl Material for WorldMaterial {
         "embedded://mashup/map/world.wgsl".into()
     }
 
+    /// Alpha-tested surfaces count as masked, so the depth prepass (main
+    /// views with water) runs `world_prepass.wgsl` and drops the same texels.
     fn alpha_mode(&self) -> AlphaMode {
+        if self.alpha_mode == AlphaMode::Opaque && self.params.alpha_cutoff > 0.0 {
+            return AlphaMode::Mask(self.params.alpha_cutoff);
+        }
         self.alpha_mode
+    }
+
+    fn prepass_fragment_shader() -> ShaderRef {
+        "embedded://mashup/map/world_prepass.wgsl".into()
     }
 
     fn specialize(
@@ -135,6 +149,7 @@ pub struct WorldMaterialPlugin;
 impl Plugin for WorldMaterialPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "world.wgsl");
+        embedded_asset!(app, "world_prepass.wgsl");
         app.add_plugins(MaterialPlugin::<WorldMaterial>::default());
     }
 }

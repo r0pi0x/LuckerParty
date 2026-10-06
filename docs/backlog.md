@@ -144,11 +144,15 @@ docs/plans/active/sound.md.
 
 ## 8. Visual fidelity
 
-- **Water surfaces**: swimming works (`MapWater`), but water faces draw as
-  plain textured surfaces (or, without a base texture, their opaque fog
-  colour with cubemap reflections), without the Water shader's
-  refraction, reflection or fog: clear water looks murky. Water currents
-  (base velocity) aren't applied.
+- **Water surfaces** (specs/cs_source/water.md, `map::water`): refraction,
+  planar reflection, the cheap cubemap pass, under-water fog and bottom
+  materials are in. Left: `$underwateroverlay` (de_port's `water_warp01`
+  screen warp), the intersection view when the near plane crosses the
+  surface, `$blurrefract`/`$refracttint` and the `$basetexture` variant,
+  the water cvars (`r_waterforceexpensive`, `r_waterforcereflectentities`,
+  `mat_drawwater`, ...), under-water fog on decals, ropes and particles,
+  and a refcmp comparison of de_port/de_chateau water (no reference
+  captures yet). Water currents (base velocity) aren't applied.
 - **HDR parity**: CS:S defaults to mat_hdr_level 2 on dust2 (HDR lightmaps,
   tonemapping, bloom); the reference install runs LDR. Compare and match
   both if players use HDR. Tonemap (`env_tonemap_controller`).

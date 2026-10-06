@@ -167,6 +167,45 @@ fn additive_materials_add() {
     );
 }
 
+/// Water surfaces get the Water shader's look (specs/cs_source/water.md
+/// section 10): de_aztec refracts with the cheap cubemap pass and the
+/// map's LOD distances; de_port reflects with three-layer normals and the
+/// `srgb?` fog colour; both have a bottom material and animated normals.
+#[test]
+fn water_materials() {
+    let Some(aztec) = load("de_aztec") else { return };
+    let units = |u: f32| u * cs_source::bsp::METERS_PER_UNIT;
+    let top = aztec
+        .meshes
+        .iter()
+        .filter_map(|m| m.water)
+        .map(|i| &aztec.water_materials[i])
+        .find(|w| w.name.contains("aztecwater"))
+        .expect("aztec water");
+    assert!(top.refract && !top.reflect && top.above_water && top.envmap.is_some());
+    assert!((top.refract_amount - 0.2).abs() < 1e-6);
+    assert!((top.cheap_start - units(500.0)).abs() < 1e-4 && (top.cheap_end - units(2000.0)).abs() < 1e-4);
+    assert_eq!(top.fog_color, [0.15, 0.1, 0.0]);
+    assert_eq!(top.normal_frames.len(), 29);
+    assert_eq!(top.frame_rate, 16.0);
+    let bottom = top.bottom.as_deref().expect("bottom material");
+    assert!(!bottom.above_water && bottom.envmap.is_none());
+
+    let Some(port) = load("de_port") else { return };
+    let water = port
+        .meshes
+        .iter()
+        .filter_map(|m| m.water)
+        .map(|i| &port.water_materials[i])
+        .find(|w| w.name.contains("water_wasteland002b"))
+        .expect("port water");
+    assert!(water.reflect && water.refract && !water.reflect_entities);
+    assert!(water.scroll1.x != 0.0);
+    assert!((water.refract_amount - 5.0).abs() < 1e-6);
+    let b = |v: f32| v / 255.0;
+    assert_eq!(water.fog_color, [b(21.0), b(48.0), b(52.0)]);
+}
+
 /// Infodecals land on displacement terrain too (cs_compound: 4 of its 6
 /// previously unplaced decals; de_port 5 of 8).
 #[test]
