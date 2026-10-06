@@ -231,9 +231,17 @@ impl PlayerAnim {
         if self.jumping.is_some() {
             Activity::Hop
         } else if i.ducked {
-            if moving { Activity::CrouchWalk } else { Activity::CrouchIdle }
+            if moving {
+                Activity::CrouchWalk
+            } else {
+                Activity::CrouchIdle
+            }
         } else if moving {
-            if speed > RUN_THRESHOLD { Activity::Run } else { Activity::Walk }
+            if speed > RUN_THRESHOLD {
+                Activity::Run
+            } else {
+                Activity::Walk
+            }
         } else {
             Activity::Idle
         }
@@ -402,7 +410,10 @@ fn hold_weapons(
     mut commands: Commands,
 ) {
     for (e, inventory, held) in &characters {
-        let id = inventory.and_then(|i| i.active).and_then(|w| weapons.get(w).ok()).map(|w| w.id.to_string());
+        let id = inventory
+            .and_then(|i| i.active)
+            .and_then(|w| weapons.get(w).ok())
+            .map(|w| w.id.to_string());
         if held.is_none_or(|h| h.0 != id) {
             commands.entity(e).insert(crate::map::Held(id));
         }

@@ -40,13 +40,14 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
 
 - CS:S HUD: health/armour/ammo panels, death notices and the Tab
   scoreboard are in (`client/game_hud.rs`, `client/scoreboard.rs`). Left:
-  joining a team (`jointeam`, the team menu; the local player has no team
-  today, so every bot is an enemy), ping on the scoreboard, round timer and money panels once
-  rounds and money exist, the ammo-type icon (a `640hud1` sprite), the
-  damage direction indicators (`pain_*` sprites), weapon selection,
-  hint text, radar.
-- Debug overlays: `mashup_drawhitboxes` and `mashup_healthbars` exist;
-  add more as features need them (nav mesh, sound radii, bot state).
+  the team menu (`jointeam 2|3` exists; you start as CT), ping on the
+  scoreboard, round timer and money panels once
+  rounds and money exist, weapon selection,
+  hint text. The radar is in (`client/radar.rs`: the map overview turning
+  with you, team dots, your place name); its range (2200 units) is a guess.
+- Debug overlays: `mashup_drawhitboxes`, `mashup_healthbars`,
+  `mashup_drawnav`, `mashup_drawbots` exist; add more as features need
+  them (sound radii, triggers).
 
 ## 3. Weapons, remaining
 

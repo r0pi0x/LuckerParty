@@ -6,7 +6,7 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 
 use crate::{
-    console::resource_cvar,
+    console::{ConsoleAppExt, resource_cvar},
     core::{Died, Health, Intent, SimSet, SpawnPoint, Team, Velocity},
     weapon::{Inventory, StartingWeapons, give},
 };
@@ -25,6 +25,41 @@ impl Plugin for DeathmatchPlugin {
         resource_cvar::<Deathmatch, f32>(app, "mp_respawn_delay", "Seconds before the dead respawn.", |d| {
             &mut d.respawn_delay
         });
+        app.init_resource::<crate::core::FriendlyFire>();
+        resource_cvar::<crate::core::FriendlyFire, u8>(app, "mp_friendlyfire", "1: teammates hurt each other.", |f| {
+            &mut f.0
+        });
+        app.console_command(
+            "jointeam",
+            "jointeam <2|3>: join the terrorists (2) or counter-terrorists (3) and respawn at their spawn.",
+            |w, a| {
+                let team = match a.first().map(String::as_str) {
+                    Some("2") => Team(1),
+                    Some("3") => Team(2),
+                    _ => return Err("jointeam <2|3> (2: terrorists, 3: counter-terrorists)".into()),
+                };
+                let player = w
+                    .query_filtered::<Entity, With<crate::core::LocalPlayer>>()
+                    .iter(w)
+                    .next()
+                    .ok_or("no local player")?;
+                let mut e = w.entity_mut(player);
+                if e.get::<Team>() == Some(&team) {
+                    return Ok(Some("already on that team".into()));
+                }
+                // Switching teams: respawn at the new team's spawn now (no
+                // death counted).
+                e.insert((team, Dead { since: f64::MIN }));
+                Ok(Some(format!(
+                    "joined the {}",
+                    if team.0 == 1 {
+                        "terrorists"
+                    } else {
+                        "counter-terrorists"
+                    }
+                )))
+            },
+        );
     }
 }
 
@@ -115,20 +150,32 @@ fn respawn(world: &mut World) {
     if ready.is_empty() {
         return;
     }
-    let spawns: Vec<Transform> = world
-        .query_filtered::<&Transform, With<SpawnPoint>>()
+    let spawns: Vec<(Transform, Option<Team>)> = world
+        .query::<(&Transform, &SpawnPoint)>()
         .iter(world)
-        .copied()
+        .map(|(t, s)| (*t, s.team))
         .collect();
     let starting = world.resource::<StartingWeapons>().clone();
     for e in ready {
-        let at = if spawns.is_empty() {
+        // The character's own team's spawns, else any.
+        let team = world.get::<Team>(e).copied();
+        let own: Vec<Transform> = spawns
+            .iter()
+            .filter(|(_, t)| t.is_some() && *t == team)
+            .map(|(t, _)| *t)
+            .collect();
+        let pool: Vec<Transform> = if own.is_empty() {
+            spawns.iter().map(|(t, _)| *t).collect()
+        } else {
+            own
+        };
+        let at = if pool.is_empty() {
             None
         } else {
             let mut dm = world.resource_mut::<Deathmatch>();
-            let i = dm.next_spawn % spawns.len();
+            let i = dm.next_spawn % pool.len();
             dm.next_spawn += 1;
-            Some(spawns[i])
+            Some(pool[i])
         };
         // Fresh weapons: drop the old ones.
         let old = world.get::<Inventory>(e).map(|i| i.weapons.clone()).unwrap_or_default();

@@ -224,7 +224,9 @@ fn draw_health_bars(
             bars.insert(e, (root, fill));
             continue;
         };
-        let Ok((mut node, mut vis)) = nodes.get_mut(root) else { continue };
+        let Ok((mut node, mut vis)) = nodes.get_mut(root) else {
+            continue;
+        };
         let at = t.translation + Vec3::Y * BAR_ABOVE;
         let screen = view
             .as_ref()

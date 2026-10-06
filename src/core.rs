@@ -190,12 +190,29 @@ pub struct LocalPlayer;
 pub struct SimTick(pub u64);
 
 /// Subtract damage from health; announce deaths once.
+/// Whether characters on the same team hurt each other (CS:S
+/// `mp_friendlyfire`, default 0). Team 0 (no team) is never friendly.
+#[derive(Resource, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FriendlyFire(pub u8);
+
 fn apply_damage(
     mut damage: MessageReader<Damage>,
     mut health: Query<&mut Health, Without<God>>,
+    teams: Query<&Team>,
+    friendly_fire: Option<Res<FriendlyFire>>,
     mut died: MessageWriter<Died>,
 ) {
+    let friendly_fire = friendly_fire.is_some_and(|f| f.0 != 0);
     for d in damage.read() {
+        // Teammates don't hurt each other unless friendly fire is on (your
+        // own damage, e.g. falling, always counts).
+        let teammate = d
+            .attacker
+            .filter(|a| *a != d.target)
+            .is_some_and(|a| matches!((teams.get(a), teams.get(d.target)), (Ok(x), Ok(y)) if x == y && x.0 != 0));
+        if teammate && !friendly_fire {
+            continue;
+        }
         let Ok(mut h) = health.get_mut(d.target) else { continue };
         if h.current <= 0.0 {
             continue;
@@ -232,6 +249,7 @@ impl Plugin for CorePlugin {
             .register_type::<Hitboxes>()
             .add_message::<Damage>()
             .add_message::<Died>()
+            .init_resource::<FriendlyFire>()
             .add_systems(FixedUpdate, apply_damage.after(SimSet::Weapons))
             .register_type::<SpawnPoint>()
             .register_type::<LocalPlayer>()

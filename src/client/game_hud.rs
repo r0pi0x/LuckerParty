@@ -26,7 +26,9 @@ impl Plugin for GameHudPlugin {
                 (
                     build.run_if(resource_exists_and_changed::<ActiveHud>),
                     teardown.run_if(resource_removed::<ActiveHud>),
-                    (remember_hits, death_notices, update).chain().run_if(resource_exists::<ActiveHud>),
+                    (remember_hits, death_notices, update)
+                        .chain()
+                        .run_if(resource_exists::<ActiveHud>),
                 ),
             );
     }
@@ -96,7 +98,12 @@ fn color(c: [u8; 4]) -> Color {
     Color::srgba_u8(c[0], c[1], c[2], c[3])
 }
 
-fn build(hud: Res<ActiveHud>, mut fonts: ResMut<Assets<Font>>, old: Query<Entity, With<GameHudPart>>, mut commands: Commands) {
+fn build(
+    hud: Res<ActiveHud>,
+    mut fonts: ResMut<Assets<Font>>,
+    old: Query<Entity, With<GameHudPart>>,
+    mut commands: Commands,
+) {
     for e in &old {
         commands.entity(e).despawn();
     }
@@ -122,7 +129,9 @@ fn build(hud: Res<ActiveHud>, mut fonts: ResMut<Assets<Font>>, old: Query<Entity
         ));
     };
     for kind in [PanelKind::Health, PanelKind::Armor, PanelKind::Ammo] {
-        let Some(panel) = hud.0.panels.get(kind.name()) else { continue };
+        let Some(panel) = hud.0.panels.get(kind.name()) else {
+            continue;
+        };
         commands.spawn((
             GameHudPart,
             Part::Panel(kind),
@@ -243,7 +252,15 @@ fn update(
     weapons: Query<(&Weapon, Option<&Magazine>)>,
     notices: Res<DeathNotices>,
     mut built: Local<(u64, f32)>,
-    mut parts: Query<(Entity, &Part, &mut Node, Option<&mut Text>, Option<&mut TextFont>, Option<&mut TextColor>, &mut Visibility)>,
+    mut parts: Query<(
+        Entity,
+        &Part,
+        &mut Node,
+        Option<&mut Text>,
+        Option<&mut TextFont>,
+        Option<&mut TextColor>,
+        &mut Visibility,
+    )>,
     mut commands: Commands,
 ) {
     let (Some(fonts), Some(window)) = (fonts, windows.iter().next()) else {
@@ -280,12 +297,18 @@ fn update(
             Some(PanelKind::Ammo) => !dead && ammo.is_some(),
             None => true,
         };
-        *vis = if shown { Visibility::Inherited } else { Visibility::Hidden };
+        *vis = if shown {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
         if !shown {
             continue;
         }
         if *part == Part::Notices {
-            let Some(panel) = hud.panels.get("HudDeathNotice") else { continue };
+            let Some(panel) = hud.panels.get("HudDeathNotice") else {
+                continue;
+            };
             node.right = px(w - (panel.x.resolve(w, scale) + panel.wide * scale));
             node.top = px(panel.y.resolve(h, scale));
             if *built != (notices.1, scale) {
@@ -295,7 +318,9 @@ fn update(
             continue;
         }
         let Some(kind) = kind else { continue };
-        let Some(panel) = hud.panels.get(kind.name()) else { continue };
+        let Some(panel) = hud.panels.get(kind.name()) else {
+            continue;
+        };
         let origin = Vec2::new(panel.x.resolve(w, scale), panel.y.resolve(h, scale));
         let place = |node: &mut Node, at: Vec2| {
             node.left = px(origin.x + at.x * scale);
@@ -319,12 +344,19 @@ fn update(
             Part::Icon(_) | Part::Digits(_) | Part::Digits2(_) => {
                 let (font_name, value, at) = match (part, kind) {
                     (Part::Icon(PanelKind::Health), _) => icon(hud, "health_icon"),
-                    (Part::Icon(PanelKind::Armor), _) => {
-                        icon(hud, if armor.is_some_and(|a| a.1) { "shield_kevlar" } else { "shield" })
-                    }
-                    (Part::Digits(PanelKind::Health), _) => {
-                        ("HudNumbers".into(), format!("{:.0}", health.unwrap_or(0.0).ceil()), panel.digit)
-                    }
+                    (Part::Icon(PanelKind::Armor), _) => icon(
+                        hud,
+                        if armor.is_some_and(|a| a.1) {
+                            "shield_kevlar"
+                        } else {
+                            "shield"
+                        },
+                    ),
+                    (Part::Digits(PanelKind::Health), _) => (
+                        "HudNumbers".into(),
+                        format!("{:.0}", health.unwrap_or(0.0).ceil()),
+                        panel.digit,
+                    ),
                     (Part::Digits(PanelKind::Armor), _) => (
                         "HudNumbers".into(),
                         format!("{:.0}", armor.map_or(0.0, |a| a.0).round()),
@@ -381,12 +413,14 @@ fn rebuild_notices(
     commands: &mut Commands,
 ) {
     commands.entity(root).despawn_related::<Children>();
-    let team_color = |t: Option<Team>| match t.map(|t| t.0) {
-        Some(1) => hud.color("T_Red"),
-        Some(2) => hud.color("CT_Blue"),
-        _ => None,
-    }
-    .unwrap_or(Color::WHITE);
+    let team_color = |t: Option<Team>| {
+        match t.map(|t| t.0) {
+            Some(1) => hud.color("T_Red"),
+            Some(2) => hud.color("CT_Blue"),
+            _ => None,
+        }
+        .unwrap_or(Color::WHITE)
+    };
     let text_size = 9.0 * scale;
     for n in &notices.0 {
         let row = commands

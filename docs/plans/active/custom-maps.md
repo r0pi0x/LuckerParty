@@ -118,8 +118,16 @@ ourselves, so each can be checked in mashup and measured in real CS:S.
    `logic` layer; `trigger_teleport`, `trigger_push`, `trigger_hurt`,
    `trigger_multiple/once`, `logic_*`, `math_counter`. Pick two real
    minigame maps from the user's downloads as targets.
+   Draft specs written 2026-10-06 (need review and the probe-server
+   measurements in their Open questions): specs/source/entity_io.md,
+   specs/source/triggers.md. The install's `download/maps` is empty, so
+   the target maps are still to be chosen.
 4. [ ] Spec and build moving brush entities (doors, buttons, platforms,
    breakables) with movement support for moving solids.
+   Draft specs: specs/source/doors_buttons.md (+use, pushers, doors,
+   buttons, movelinear, rotating, tracktrain) and
+   specs/source/breakables.md (func_breakable, func_breakable_surf;
+   de_nuke's vents are func_breakable, material Metal, health 1).
 5. [ ] Gameplay entities (`game_player_equip`, `game_text`, map weapons,
    rounds) until the two target maps play through.
 6. [ ] Networking, then server-sent map download (hash check, bz2).

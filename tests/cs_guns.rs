@@ -123,7 +123,12 @@ fn hit(id: &str, meters: f32, head: bool, armour: bool) -> (i32, i32) {
     let height = if head { 1.8 * 0.92 - 0.9 } else { 1.8 * 0.72 - 0.9 };
     let point = sim.position(target) + Vec3::Y * height;
     aim_at(&mut sim, shooter, point);
-    // Crouched and still: the steady inaccuracy is smallest.
+    // Standing still; the AWP scoped (unscoped its cone is 0.08: misses
+    // at 8 m), and settled to its scoped accuracy.
+    if id == AWP {
+        press2(&mut sim, shooter);
+        sim.seconds(1.5);
+    }
     tap(&mut sim, shooter);
     let eye = sim.position(shooter) + sim.state(shooter).eye_offset;
     let d = ((point - eye).length() - 0.4) / UNIT;

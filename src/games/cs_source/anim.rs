@@ -34,7 +34,10 @@ impl Bytes<'_> {
         Ok(self.i16(at)? as u16)
     }
     fn u8(&self, at: usize) -> Result<u8, String> {
-        self.0.get(at).copied().ok_or_else(|| format!("read past the end at {at}"))
+        self.0
+            .get(at)
+            .copied()
+            .ok_or_else(|| format!("read past the end at {at}"))
     }
     fn vec3(&self, at: usize) -> Result<Vec3, String> {
         Ok(Vec3::new(self.f32(at)?, self.f32(at + 4)?, self.f32(at + 8)?))
@@ -95,7 +98,8 @@ fn parse(bytes: Vec<u8>) -> Result<Model, String> {
     if version != 44 {
         return Err(format!("model version {version}, want 44"));
     }
-    let count = |at| -> Result<(usize, usize), String> { Ok((b.i32(at)?.max(0) as usize, b.i32(at + 4)?.max(0) as usize)) };
+    let count =
+        |at| -> Result<(usize, usize), String> { Ok((b.i32(at)?.max(0) as usize, b.i32(at + 4)?.max(0) as usize)) };
     let (n, at) = count(156)?;
     let mut bones = Vec::with_capacity(n);
     for i in 0..n {
@@ -156,9 +160,7 @@ fn parse(bytes: Vec<u8>) -> Result<Model, String> {
                 return Ok(Vec::new());
             }
             let (skip, len) = if axis == 0 { (0, w) } else { (w, h) };
-            (0..len)
-                .map(|k| b.f32(o + key_at as usize + 4 * (skip + k)))
-                .collect()
+            (0..len).map(|k| b.f32(o + key_at as usize + 4 * (skip + k))).collect()
         };
         let (layers, layer_at) = count(o + 148)?;
         let autolayers = (0..layers)
@@ -180,7 +182,11 @@ fn parse(bytes: Vec<u8>) -> Result<Model, String> {
                 Ok(crate::map::anim::AnimEvent {
                     cycle: b.f32(e)?,
                     event: b.i32(e + 4)?,
-                    name: if name_at != 0 { b.name(e, e + 76)? } else { String::new() },
+                    name: if name_at != 0 {
+                        b.name(e, e + 76)?
+                    } else {
+                        String::new()
+                    },
                     options: {
                         let raw = b.0.get(e + 12..e + 76).unwrap_or_default();
                         let end = raw.iter().position(|&c| c == 0).unwrap_or(raw.len());
@@ -405,7 +411,10 @@ pub fn attachments(read: Read, path: &str) -> Result<(Vec<(String, usize, Transf
 
 pub fn bones(read: Read, path: &str) -> Result<Vec<(String, Option<usize>, Quat, Vec3)>, String> {
     let m = parse(read(path).ok_or_else(|| format!("{path}: not found"))?)?;
-    Ok(m.bones.into_iter().map(|b| (b.name, b.parent, b.rotation, b.position)).collect())
+    Ok(m.bones
+        .into_iter()
+        .map(|b| (b.name, b.parent, b.rotation, b.position))
+        .collect())
 }
 
 /// Everything the model at `path` can play, through its include models
@@ -438,7 +447,12 @@ pub fn load(read: Read, path: &str) -> Result<AnimSet, String> {
     // Each model's bone → the target's.
     let bone_maps: Vec<Vec<Option<usize>>> = models
         .iter()
-        .map(|m| m.bones.iter().map(|b| index.get(&b.name.to_lowercase()).copied()).collect())
+        .map(|m| {
+            m.bones
+                .iter()
+                .map(|b| index.get(&b.name.to_lowercase()).copied())
+                .collect()
+        })
         .collect();
     let defaults: Vec<BonePose> = target.bones.iter().map(|b| (b.rotation, b.position)).collect();
     let bases = models

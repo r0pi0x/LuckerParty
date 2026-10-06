@@ -177,7 +177,10 @@ fn s7_sway_reads_the_history_0_1_s_ago() {
     assert!(close3(offset, Vec3::new(0.060307, -0.342020, 0.0)), "{offset}");
     // The first 0.1 s: the oldest sample.
     let mut fresh = SwayHistory::default();
-    assert!(close3(fresh.push(0.0, Vec3::new(0.0, 5.0, 0.0), 0.1), Vec3::new(0.0, 5.0, 0.0)));
+    assert!(close3(
+        fresh.push(0.0, Vec3::new(0.0, 5.0, 0.0), 0.1),
+        Vec3::new(0.0, 5.0, 0.0)
+    ));
 }
 
 #[test]
@@ -192,7 +195,11 @@ fn source_angles_round_trip() {
 fn offsets_reach_the_camera_in_its_axes() {
     // Forward 1, left 2, up 3 units -> camera -Z, -X, +Y.
     let o = to_camera(Vec3::new(1.0, 2.0, 3.0), Quat::IDENTITY);
-    assert!(close3(o.translation, Vec3::new(-2.0, 3.0, -1.0) * 0.0254), "{:?}", o.translation);
+    assert!(
+        close3(o.translation, Vec3::new(-2.0, 3.0, -1.0) * 0.0254),
+        "{:?}",
+        o.translation
+    );
     // Yawing left in Source turns left in the camera.
     let q = to_camera(Vec3::ZERO, rotation(Vec3::new(0.0, 10.0, 0.0))).rotation;
     assert!((q * Vec3::NEG_Z).x < 0.0, "{q}");
@@ -323,7 +330,11 @@ mod shells {
         let mut s = flying(Vec3::new(100.0, -200.0, 0.0));
         let hit = Some((Vec3::ZERO, Vec3::Y));
         assert_eq!(shell_step(&mut s, 0.01, hit, &physics()), ShellHit::Bounced(-200.0));
-        assert!((s.velocity - Vec3::new(50.0, 100.0, 0.0)).length() < 1e-3, "{}", s.velocity);
+        assert!(
+            (s.velocity - Vec3::new(50.0, 100.0, 0.0)).length() < 1e-3,
+            "{}",
+            s.velocity
+        );
         assert!(s.bounced && !s.resting);
     }
 

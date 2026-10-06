@@ -15,16 +15,16 @@ use bevy::{
 
 use crate::core::{SpawnPoint, Team};
 // Collision-world types live in `core` (the greybox map uses them too).
-pub use hurt::{MapHurt, MapHurtVolume};
 pub use crate::core::{
     MapBrush, MapBrushCollider, MapBrushes, MapTerrain, MapTerrainCollider, MapWater, MapWaterVolume, PropSurface,
 };
+pub use hurt::{MapHurt, MapHurtVolume};
 
 pub mod anim;
 pub mod decal;
+mod dust;
 pub mod hud;
 mod hurt;
-mod dust;
 pub mod nav;
 pub mod particles;
 pub mod prop_material;
@@ -33,14 +33,14 @@ pub mod shadows;
 pub mod sound;
 pub mod soundscape;
 pub use sound::{MapSoundClip, MapSoundEntry, MapSounds, MapSurface, PlaySound, SoundLevel};
-pub mod sprite_material;
 pub mod shells;
+pub mod sprite_material;
 pub mod surface_color;
 pub mod view_model;
 pub mod world_material;
 pub use view_model::{
-    DynamicLight, EffectSettings, MapAttachment, MapViewModel, ViewAnimator, ViewModelAnchor, ViewModelCamera, ViewModelEvent,
-    ViewModelEventKind, ViewModelOffset, ViewModelSettings, ViewModels,
+    DynamicLight, EffectSettings, MapAttachment, MapViewModel, ViewAnimator, ViewModelAnchor, ViewModelCamera,
+    ViewModelEvent, ViewModelEventKind, ViewModelOffset, ViewModelSettings, ViewModels,
 };
 
 use prop_material::{PropMaterial, PropParams};
@@ -539,7 +539,9 @@ fn attach_held(
     mut body_query: Query<&mut CharacterBody>,
     mut commands: Commands,
 ) {
-    let (Some(held), Some(bodies)) = (held, bodies) else { return };
+    let (Some(held), Some(bodies)) = (held, bodies) else {
+        return;
+    };
     for (character, want, children) in &characters {
         let Some(c) = children.iter().find(|c| body_query.contains(*c)) else {
             continue;
@@ -552,7 +554,9 @@ fn attach_held(
             commands.entity(e).despawn();
         }
         let Some(key) = &want.0 else { continue };
-        let Some((bone, parts, muzzle)) = held.0.get(key) else { continue };
+        let Some((bone, parts, muzzle)) = held.0.get(key) else {
+            continue;
+        };
         let Some(joint) = bodies.0[body.model]
             .bones
             .iter()
@@ -635,7 +639,12 @@ fn attach_hitboxes(
 fn pose_hitboxes(
     time: Res<Time>,
     models: Option<Res<CharacterModels>>,
-    mut characters: Query<(&anim::Animator, &BodyModel, &crate::core::Intent, &mut crate::core::Hitboxes)>,
+    mut characters: Query<(
+        &anim::Animator,
+        &BodyModel,
+        &crate::core::Intent,
+        &mut crate::core::Hitboxes,
+    )>,
 ) {
     let Some(models) = models else { return };
     let now = time.elapsed_secs_f64();
@@ -842,6 +851,8 @@ pub struct MapData {
     pub decals: decal::MapDecals,
     /// The game's own HUD look, when it has one.
     pub hud: Option<Arc<hud::GameHud>>,
+    /// A top-down picture of the map (radar), when the game has one.
+    pub overview: Option<hud::MapOverview>,
     /// Materials for particle effects (impacts).
     pub particles: particles::MapParticles,
     /// What characters see of what they hold (weapons' view models).
@@ -1442,15 +1453,9 @@ fn spawn_map(
                 .characters
                 .iter()
                 .map(|c| {
-                    body_assets(
-                        &c.model,
-                        &c.bones,
-                        c.root,
-                        meshes,
-                        materials,
-                        bindposes,
-                        &|m| build_material(m, &textures, view, data.look.light_scale),
-                    )
+                    body_assets(&c.model, &c.bones, c.root, meshes, materials, bindposes, &|m| {
+                        build_material(m, &textures, view, data.look.light_scale)
+                    })
                 })
                 .collect();
             commands.insert_resource(CharacterBodies(bodies));
@@ -1484,7 +1489,8 @@ fn spawn_map(
                     bindposes,
                 ));
             }
-            if let Some(flash) = view_model::build_flash_assets(data, &textures, meshes, sprite_materials.as_deref_mut())
+            if let Some(flash) =
+                view_model::build_flash_assets(data, &textures, meshes, sprite_materials.as_deref_mut())
             {
                 commands.insert_resource(flash);
             }
@@ -1711,9 +1717,8 @@ fn spawn_map(
                         .meshes
                         .iter()
                         .map(|m| {
-                            [false, true].map(|skybox| {
-                                prop_materials.add(lit_prop_material(m, &textures, data, view, skybox))
-                            })
+                            [false, true]
+                                .map(|skybox| prop_materials.add(lit_prop_material(m, &textures, data, view, skybox)))
                         })
                         .collect()
                 })
@@ -2045,7 +2050,17 @@ fn spawn_map(
         ));
     }
     if let Some(h) = &data.hud {
-        commands.insert_resource(hud::ActiveHud(h.clone()));
+        let images = h
+            .sprites
+            .values()
+            .filter_map(|s| Some((s.texture, texture_handles.get(s.texture)?.clone())))
+            .collect();
+        commands.insert_resource(hud::ActiveHud(h.clone(), images));
+    }
+    if let Some(o) = &data.overview
+        && let Some(image) = texture_handles.get(o.texture)
+    {
+        commands.insert_resource(hud::ActiveOverview(o.clone(), image.clone()));
     }
     if !texture_handles.is_empty() && !data.decals.groups.is_empty() {
         commands.insert_resource(decal::DecalAssets::new(data.decals.clone(), texture_handles.clone()));
@@ -2133,6 +2148,7 @@ pub fn unload_map(world: &mut World) {
     world.remove_resource::<decal::DecalAssets>();
     world.remove_resource::<decal::ImpactDecals>();
     world.remove_resource::<hud::ActiveHud>();
+    world.remove_resource::<hud::ActiveOverview>();
     world.remove_resource::<surface_color::SurfaceColors>();
     world.remove_resource::<particles::ParticleAssets>();
     world.remove_resource::<particles::ParticleMaterials>();
@@ -2371,7 +2387,10 @@ fn body_assets(
     let mut global: Vec<Mat4> = Vec::with_capacity(bones.len());
     for b in bones {
         let local = Mat4::from_rotation_translation(b.rotation, b.position);
-        let parent = b.parent.and_then(|p| global.get(p).copied()).unwrap_or(root.to_matrix());
+        let parent = b
+            .parent
+            .and_then(|p| global.get(p).copied())
+            .unwrap_or(root.to_matrix());
         global.push(parent * local);
     }
     let inverse: Vec<Mat4> = global.iter().map(|m| m.inverse()).collect();
@@ -2452,7 +2471,11 @@ fn lit_prop_material(
             fog_color: fog_color(data.fog.as_ref().filter(|_| view == MapDebugView::Normal && !skybox)),
             fog_range: fog_range(data.fog.as_ref()),
             translucent: m.alpha.shader_mode(),
-            dynamic: if m.unlit || view != MapDebugView::Normal { 0.0 } else { 1.0 },
+            dynamic: if m.unlit || view != MapDebugView::Normal {
+                0.0
+            } else {
+                1.0
+            },
             ..default()
         },
         base: m.texture.filter(|_| !lighting_only).map(|i| textures[i].clone()),
@@ -2812,7 +2835,10 @@ fn attach_sky(
     mut commands: Commands,
     sky: Option<Res<MapSkybox>>,
     sky_camera: Option<Res<SkyCameraInfo>>,
-    cameras: Query<(Entity, Has<SkyboxCamera>), (With<Camera3d>, Without<bevy::light::Skybox>, Without<ViewModelCamera>)>,
+    cameras: Query<
+        (Entity, Has<SkyboxCamera>),
+        (With<Camera3d>, Without<bevy::light::Skybox>, Without<ViewModelCamera>),
+    >,
 ) {
     let Some(sky) = sky else { return };
     for (cam, is_sky_camera) in &cameras {

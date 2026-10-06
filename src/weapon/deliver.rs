@@ -116,7 +116,9 @@ impl Shot<'_, '_, '_> {
                 group: None,
             });
         for e in boxed.into_iter().filter(|e| !skip.contains(e)) {
-            let Some((o, d)) = self.local_ray(e, from, dir) else { continue };
+            let Some((o, d)) = self.local_ray(e, from, dir) else {
+                continue;
+            };
             let Some(boxes) = self.w.targets.get(e).ok().and_then(|t| t.hitboxes) else {
                 continue;
             };
@@ -167,7 +169,12 @@ impl Shot<'_, '_, '_> {
         let dir = Dir3::new(hit.dir).ok()?;
         if let Some(boxes) = self.w.targets.get(hit.entity).ok().and_then(|t| t.hitboxes) {
             let (o, d) = self.local_ray(hit.entity, self.eye, dir)?;
-            return boxes.0.iter().filter_map(|b| b.ray_span(o, d)).map(|(_, out)| out).reduce(f32::max);
+            return boxes
+                .0
+                .iter()
+                .filter_map(|b| b.ray_span(o, d))
+                .map(|(_, out)| out)
+                .reduce(f32::max);
         }
         let from = hit.point + *dir * STEP;
         self.w

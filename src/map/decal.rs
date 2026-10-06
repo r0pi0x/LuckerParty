@@ -129,7 +129,11 @@ impl TriSet {
     pub(super) fn new(meshes: &[MapMesh]) -> Self {
         let mut out = Self::default();
         for m in meshes {
-            if m.skybox || m.unlit || m.material.starts_with("decal:") || matches!(m.alpha, super::MapAlpha::Blend | super::MapAlpha::Add) {
+            if m.skybox
+                || m.unlit
+                || m.material.starts_with("decal:")
+                || matches!(m.alpha, super::MapAlpha::Blend | super::MapAlpha::Add)
+            {
                 continue;
             }
             for t in m.indices.chunks_exact(3) {
@@ -252,7 +256,10 @@ pub(super) fn project(
     let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, nor);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs.into_iter().map(|v| v.to_array()).collect::<Vec<_>>());
+    mesh.insert_attribute(
+        Mesh::ATTRIBUTE_UV_0,
+        uvs.into_iter().map(|v| v.to_array()).collect::<Vec<_>>(),
+    );
     // Position within the decal (0..1), for the shader's edge fade.
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, local);
     mesh.insert_indices(Indices::U32(idx));
@@ -368,7 +375,16 @@ pub(super) fn place_decals(
             Some(m) => m.clone(),
             None => {
                 let m = materials.add(DecalMaterial {
-                    params: Vec4::new(if decal.blend == DecalBlend::Modulate2x { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0),
+                    params: Vec4::new(
+                        if decal.blend == DecalBlend::Modulate2x {
+                            1.0
+                        } else {
+                            0.0
+                        },
+                        0.0,
+                        0.0,
+                        0.0,
+                    ),
                     texture,
                 });
                 assets.materials.insert(index, m.clone());
@@ -498,10 +514,15 @@ mod tests {
     fn decal_is_clipped_to_its_rectangle_on_the_surface() {
         let s = wall();
         let (right, down) = basis(Vec3::Z);
-        assert!(right.abs_diff_eq(Vec3::X, 1e-6) && down.abs_diff_eq(Vec3::NEG_Y, 1e-6), "{right} {down}");
+        assert!(
+            right.abs_diff_eq(Vec3::X, 1e-6) && down.abs_diff_eq(Vec3::NEG_Y, 1e-6),
+            "{right} {down}"
+        );
         let m = project(&s, &decal(0.1), Vec3::new(0.3, 0.2, 0.0), Vec3::Z, right, down).expect("a decal");
         let p = positions(&m);
-        let (lo, hi) = p.iter().fold((Vec3::MAX, Vec3::MIN), |(lo, hi), v| (lo.min(*v), hi.max(*v)));
+        let (lo, hi) = p
+            .iter()
+            .fold((Vec3::MAX, Vec3::MIN), |(lo, hi), v| (lo.min(*v), hi.max(*v)));
         assert!(lo.abs_diff_eq(Vec3::new(0.25, 0.15, LIFT), 1e-4), "{lo}");
         assert!(hi.abs_diff_eq(Vec3::new(0.35, 0.25, LIFT), 1e-4), "{hi}");
         // Texture coordinates stay inside the atlas rectangle.
@@ -509,7 +530,8 @@ mod tests {
             panic!("no uvs")
         };
         assert!(
-            uv.iter().all(|t| (0.5 - 1e-5..=0.75 + 1e-5).contains(&t[0]) && (0.25 - 1e-5..=0.5 + 1e-5).contains(&t[1])),
+            uv.iter()
+                .all(|t| (0.5 - 1e-5..=0.75 + 1e-5).contains(&t[0]) && (0.25 - 1e-5..=0.5 + 1e-5).contains(&t[1])),
             "{uv:?}"
         );
     }

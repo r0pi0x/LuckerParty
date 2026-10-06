@@ -1588,7 +1588,11 @@ fn bodies_animate_with_movement() {
     };
     let layer = |sim: &Sim, k: usize| {
         let a = sim.app.world().get::<Animator>(c).unwrap();
-        a.layers.get(k).copied().flatten().map(|l| (set.sequences[l.sequence].name.clone(), l.weight))
+        a.layers
+            .get(k)
+            .copied()
+            .flatten()
+            .map(|l| (set.sequences[l.sequence].name.clone(), l.weight))
     };
     assert_eq!(main(&sim), "Idle_lower");
     // It holds its weapon's world model.
@@ -1613,7 +1617,11 @@ fn bodies_animate_with_movement() {
     // Running straight ahead: move_x ~1 (stored ~1), move_y 0 (stored 0.5).
     let a = sim.app.world().get::<Animator>(c).unwrap();
     let (mx, my) = (set.param("move_x").unwrap(), set.param("move_y").unwrap());
-    assert!(a.params[mx] > 0.9 && (a.params[my] - 0.5).abs() < 0.02, "{:?}", a.params);
+    assert!(
+        a.params[mx] > 0.9 && (a.params[my] - 0.5).abs() < 0.02,
+        "{:?}",
+        a.params
+    );
 
     sim.intent(c).walk = true;
     sim.seconds(1.0);
@@ -1644,14 +1652,23 @@ fn bodies_animate_with_movement() {
     sim.intent(c).yaw = yaw + 60f32.to_radians();
     sim.seconds(0.2);
     let state = sim.app.world().get::<PlayerAnim>(c).unwrap();
-    assert!((state.feet_yaw - feet).abs() < 0.01, "feet turned {} -> {}", feet, state.feet_yaw);
+    assert!(
+        (state.feet_yaw - feet).abs() < 0.01,
+        "feet turned {} -> {}",
+        feet,
+        state.feet_yaw
+    );
     let a = sim.app.world().get::<Animator>(c).unwrap();
     let body_yaw = set.param("body_yaw").unwrap();
     assert!((a.params[body_yaw] - set.params[body_yaw].encode(60.0)).abs() < 0.01);
     // After 3 s standing still they face the eyes again.
     sim.seconds(3.5);
     let state = sim.app.world().get::<PlayerAnim>(c).unwrap();
-    assert!((state.feet_yaw - (feet + 60.0)).abs() < 0.5, "feet at {}", state.feet_yaw);
+    assert!(
+        (state.feet_yaw - (feet + 60.0)).abs() < 0.5,
+        "feet at {}",
+        state.feet_yaw
+    );
 }
 
 /// The walls below T spawn by top of mid stand on floor displacements that
@@ -1704,7 +1721,10 @@ fn falling_out_of_the_map() {
     let health = sim.app.world().get::<Health>(mortal).unwrap().current;
     assert_eq!(health, 0.0, "survived the fall");
     let at = sim.position(god);
-    assert!(at.y > lo.y && map.spawns.iter().any(|(feet, _)| feet.distance(at) < 3.0), "god mode at {at}");
+    assert!(
+        at.y > lo.y && map.spawns.iter().any(|(feet, _)| feet.distance(at) < 3.0),
+        "god mode at {at}"
+    );
 }
 
 /// Players are boxes to each other (as in Source): one can land and stand
@@ -1728,7 +1748,11 @@ fn standing_on_another_player() {
     let on_head = sim.position(above).y - floor;
     assert!(sim.state(above).on_ground, "not standing on the head");
     // Standing on a CS:S hull (62 units): origin 62 units higher.
-    assert!((on_head / 0.0254 - 62.0).abs() < 2.0, "standing {} units up", on_head / 0.0254);
+    assert!(
+        (on_head / 0.0254 - 62.0).abs() < 2.0,
+        "standing {} units up",
+        on_head / 0.0254
+    );
     // The one below walks and turns about; the rider stays up and free.
     for (k, yaw) in [0.0f32, 120.0, 240.0, 30.0].into_iter().enumerate() {
         sim.intent(below).yaw = yaw.to_radians();
@@ -1816,7 +1840,12 @@ fn riding_players_never_sticks() {
             }
         }
     }
-    assert!(stuck.is_empty(), "{} stuck moments: {:?}", stuck.len(), &stuck[..stuck.len().min(5)]);
+    assert!(
+        stuck.is_empty(),
+        "{} stuck moments: {:?}",
+        stuck.len(),
+        &stuck[..stuck.len().min(5)]
+    );
 }
 
 /// Fuzz: characters walk, run, crouch-walk and jump on random headings
@@ -2006,7 +2035,11 @@ fn view_models_load_with_their_sequences() {
     let names: Vec<&str> = ak.attachments.iter().map(|a| a.name.as_str()).collect();
     assert_eq!(names, ["1", "2"]);
     assert!(ak.attachments[0].local.translation.distance(Vec3::new(0.0, 3.5, 19.0)) < 1e-3);
-    assert!(ak.light_origin.distance(Vec3::new(10.60, 3.87, -6.35)) < 0.01, "{}", ak.light_origin);
+    assert!(
+        ak.light_origin.distance(Vec3::new(10.60, 3.87, -6.35)) < 0.01,
+        "{}",
+        ak.light_origin
+    );
     // L1: placed at the eye, the lighting point is 10.6 units ahead, 3.9
     // left and 6.35 below (camera axes: X right, Y up, -Z forward).
     let eye_space = ak.root.transform_point(ak.light_origin);
@@ -2017,12 +2050,16 @@ fn view_models_load_with_their_sequences() {
     let field = map.light_field.as_ref().expect("a light field");
     let at = map.spawns[0].0 + Vec3::Y * 1.6;
     let probe = (field.0)(at);
-    let total: f32 = probe.cube.iter().map(|c| c.length()).sum::<f32>()
-        + probe.lights.iter().map(|l| l.1.length()).sum::<f32>();
+    let total: f32 =
+        probe.cube.iter().map(|c| c.length()).sum::<f32>() + probe.lights.iter().map(|l| l.1.length()).sum::<f32>();
     assert!(total > 0.05, "no light at {at}: {probe:?}");
     let fire = set.sequence("ak47_fire1").unwrap();
     let events = &set.sequences[fire].events;
-    assert!(events.iter().any(|e| e.event == 5001 && e.options == "1" && e.cycle == 0.0));
+    assert!(
+        events
+            .iter()
+            .any(|e| e.event == 5001 && e.options == "1" && e.cycle == 0.0)
+    );
     assert!(
         events
             .iter()
@@ -2145,7 +2182,11 @@ fn impact_effect_materials_and_letters() {
     assert_eq!(effect_for('V'), Effect::MetalSparks);
     let p = &map.particles;
     for name in MATERIALS {
-        let m = p.materials.iter().find(|m| m.name == *name).unwrap_or_else(|| panic!("{name} missing"));
+        let m = p
+            .materials
+            .iter()
+            .find(|m| m.name == *name)
+            .unwrap_or_else(|| panic!("{name} missing"));
         assert!(m.texture.is_some(), "{name}: no texture");
     }
     // Sprite sheets: the blood smoke has 16 sequences, the goop at least 13.
@@ -2160,7 +2201,10 @@ fn impact_effect_materials_and_letters() {
     let mat = |n: &str| &p.materials[p.find(n).unwrap()];
     assert!(!mat("effects/fleck_wood1").vertex_alpha);
     assert!(mat("effects/fleck_cement1").vertex_alpha);
-    assert_eq!(mat("effects/spark").blend, mashup::map::particles::ParticleBlend::Additive);
+    assert_eq!(
+        mat("effects/spark").blend,
+        mashup::map::particles::ParticleBlend::Additive
+    );
 }
 
 /// Cases `walking_on_terrain_never_stubs` found (the "stubbed toe"): running
@@ -2246,4 +2290,23 @@ fn gun_models_icons_and_handedness() {
         assert!((dur("ACT_VM_DRAW") - g.draw).abs() < 1e-3, "{} draw", g.id);
         assert!((dur("ACT_VM_RELOAD") - g.reload).abs() < 1e-3, "{} reload", g.id);
     }
+}
+
+/// The radar picture lines up with the world: walkable places (nav area
+/// centres) fall on the overview's lit floor, not its dark background.
+#[test]
+fn overview_lines_up_with_the_world() {
+    let Some(map) = dust2() else { return };
+    let o = map.overview.clone().expect("dust2 has an overview");
+    let t = &map.textures[o.texture];
+    let green = |p: Vec2| -> f32 {
+        if p.x < 0.0 || p.y < 0.0 || p.x >= o.size.x || p.y >= o.size.y {
+            return 0.0;
+        }
+        t.rgba8[((p.y as u32 * t.width + p.x as u32) * 4 + 1) as usize] as f32
+    };
+    let nav = map.nav.as_ref().unwrap();
+    let on_floor = nav.areas.iter().map(|a| green(o.pixel(a.center))).sum::<f32>() / nav.areas.len() as f32;
+    let image = t.rgba8.chunks(4).map(|p| p[1] as f32).sum::<f32>() / (t.width * t.height) as f32;
+    assert!(on_floor > image * 1.4, "nav areas average {on_floor}, image {image}");
 }
