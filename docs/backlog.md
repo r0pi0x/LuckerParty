@@ -6,9 +6,12 @@ Things to build, **in priority order** (top first; reprioritized
 [plans/active/](plans/active/mvp-combat-arms-slice.md). Move items into a
 plan when work starts; delete them when done.
 
-## 1. Playtest essentials (in progress: parallel agents, 2026-10-06)
+## 1. Playtest essentials
 
-Each group is one agent's worktree; merged into main as they finish.
+A (settings, health bars, third person) is done. C is in progress in an
+agent worktree. B, D and E were paused on 2026-10-06 to free the machine;
+their partial work is in uncommitted agent worktrees under
+`.claude/worktrees/` (B: agent-abc7f16e740c6aafe, D: agent-a052e118eeb8d4c8d).
 
 - **B. Weapons: penetration and collaterals.** Implement M13 from
   specs/cs_source/weapons.md (walls by material, through players x0.5,
@@ -19,7 +22,6 @@ Each group is one agent's worktree; merged into main as they finish.
 - **D. Movement: terrain and falls.** Fuzz walking over displacements to
   find the rare "stubbed toe" stop and fix it; fall damage (measure on the
   probe server); `trigger_hurt` volumes.
-
 - **E. Other maps.** Load de_aztec, de_nuke (then the rest of the stock
   maps), screenshot their main areas, catalog visual bugs and console
   errors (de_aztec logs missing textures/materials), and fix them; add
