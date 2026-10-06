@@ -18,6 +18,7 @@ use crate::core::{SpawnPoint, Team};
 pub use crate::core::{MapBrush, MapBrushCollider, MapBrushes, MapWater, MapWaterVolume, PropSurface};
 
 pub mod anim;
+pub mod decal;
 mod dust;
 pub mod nav;
 pub mod prop_material;
@@ -790,6 +791,8 @@ pub struct MapData {
     pub characters: Vec<MapCharacterModel>,
     /// Models characters can hold (weapons' world models).
     pub held: Vec<MapHeldModel>,
+    /// Runtime decals (bullet holes, slashes) by group.
+    pub decals: decal::MapDecals,
     /// What characters see of what they hold (weapons' view models).
     pub view_models: Vec<MapViewModel>,
 }
@@ -1151,6 +1154,7 @@ impl Plugin for MapPlugin {
         }
         app.add_plugins(sound::SoundPlugin)
             .init_resource::<ShowLocalBody>()
+            .add_message::<decal::PlaceDecal>()
             .insert_resource(GlobalAmbientLight {
                 brightness: 600.0,
                 // Baked lighting already includes the map's ambient light.
@@ -1172,6 +1176,7 @@ impl Plugin for MapPlugin {
                     glow_visibility,
                     dust::update_dust,
                     show_skybox_in_place,
+                    decal::place_decals,
                     (
                         attach_bodies,
                         show_local_body,
@@ -1939,6 +1944,11 @@ fn spawn_map(
         }
     }
 
+    commands.insert_resource(decal::DecalSurfaces::new(&data.meshes));
+    if !texture_handles.is_empty() && !data.decals.groups.is_empty() {
+        commands.insert_resource(decal::DecalAssets::new(data.decals.clone(), texture_handles.clone()));
+        commands.insert_resource(decal::ImpactDecals);
+    }
     commands.insert_resource(sound::SoundBank(data.sounds.clone()));
     if !data.characters.is_empty() {
         commands.insert_resource(CharacterModels(Arc::new(data.characters.clone())));
@@ -2026,6 +2036,9 @@ pub fn unload_map(world: &mut World) {
     world.remove_resource::<CharacterModels>();
     world.remove_resource::<CharacterBodies>();
     world.remove_resource::<HeldAssets>();
+    world.remove_resource::<decal::DecalSurfaces>();
+    world.remove_resource::<decal::DecalAssets>();
+    world.remove_resource::<decal::ImpactDecals>();
     view_model::unload(world);
     let bodies: Vec<Entity> = world
         .query_filtered::<Entity, With<CharacterBody>>()

@@ -4,7 +4,7 @@
 //! upright on walls; every nearby face polygon is clipped to it. Decals
 //! reuse the face's lightmap, so they sit in the same light as the surface.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use bevy::prelude::*;
 use vbsp::{Bsp, TextureFlags};
@@ -182,3 +182,59 @@ pub fn add_decals(bsp: &Bsp, layout: &LightmapLayout, materials: &mut MaterialLo
     }
     data.meshes.extend(meshes.into_values());
 }
+
+/// Runtime decals from `scripts/decals_subrect.txt`: named groups of
+/// weighted decal materials ("Impact.Concrete": shot1..5), and the group
+/// each surface game material letter takes when shot ("TranslationData";
+/// an empty name means no decal).
+pub fn impact_decals(materials: &mut MaterialLoader) -> crate::map::decal::MapDecals {
+    let mut out = crate::map::decal::MapDecals::default();
+    let Some(text) = materials
+        .read("scripts/decals_subrect.txt")
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+    else {
+        return out;
+    };
+    let t = super::surfaceprops::tokens(&text);
+    let mut by_path: HashMap<String, Option<usize>> = HashMap::new();
+    let mut i = 0;
+    while i + 1 < t.len() {
+        if t[i + 1] != "{" {
+            i += 1;
+            continue;
+        }
+        let name = t[i].to_lowercase();
+        i += 2;
+        let mut entries = Vec::new();
+        while i + 1 < t.len() && t[i] != "}" {
+            entries.push((t[i].clone(), t[i + 1].clone()));
+            i += 2;
+        }
+        i += 1;
+        if name == "translationdata" {
+            for (letter, group) in entries {
+                if let Some(c) = letter.chars().next().filter(|_| !group.is_empty()) {
+                    out.by_material.insert(c.to_ascii_uppercase(), group.to_lowercase());
+                }
+            }
+            continue;
+        }
+        let mut variants = Vec::new();
+        for (path, weight) in entries {
+            let key = path.to_lowercase();
+            let index = *by_path.entry(key).or_insert_with(|| {
+                let d = materials.decal(&path)?;
+                out.decals.push(d);
+                Some(out.decals.len() - 1)
+            });
+            if let Some(index) = index {
+                variants.push((weight.parse().unwrap_or(1.0), index));
+            }
+        }
+        if !variants.is_empty() {
+            out.groups.insert(name, variants);
+        }
+    }
+    out
+}
+

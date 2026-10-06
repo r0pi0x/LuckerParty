@@ -81,6 +81,7 @@ fn spawn_effects(
     bodies: Query<&RigidBody>,
     assets: Res<Assets3>,
     mut marks: ResMut<Marks>,
+    decals: Option<Res<crate::map::decal::ImpactDecals>>,
     mut commands: Commands,
 ) {
     let me = local.map(|l| *l);
@@ -117,8 +118,12 @@ fn spawn_effects(
                 Transform::from_translation(start).with_scale(Vec3::ZERO),
             ));
         }
-        // Marks only on things that don't move.
+        // Marks only on things that don't move, and only where the map
+        // has no decals of its own.
         let (Some(hit), Some(n)) = (hit, normal) else { continue };
+        if decals.is_some() {
+            continue;
+        }
         if bodies.get(*hit).is_ok_and(|b| !b.is_static()) {
             continue;
         }

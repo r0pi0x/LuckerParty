@@ -51,9 +51,13 @@ framework, knife, AK-47, HUD, deathmatch and a first bot are in.
   burst/silencer M16 are measured too).
 - Money and a buy menu (`buy` gives for free).
 - Reload, grenade and death animations (world models are held by bodies).
-- Bullet hole decals from the game (per surface material, e.g. the
-  concrete/wood/metal impact decals the surface properties name) and the
-  knife's slash marks; tracers; explosion impulses.
+- Decals, remaining: on props and characters (model decals, blood);
+  check the knife's mark (`ManhackCut` is a guess) and lit decals (wood,
+  glass) against the game; tracers; explosion impulses.
+- dust2's woven basket physics props (`props_junk`/`wicker` style pots):
+  parts of the lid and rim don't draw (seen from above, faces missing).
+  Suspect the model converter's winding fix-up (it winds triangles
+  against the vertex normals) or back-face culling of a two-sided part.
 - Dropping weapons (`drop`, CS:S's G key): the world model falls as a
   physics object, can be picked up by walking over it; dead players drop
   theirs.

@@ -12,6 +12,7 @@ use crate::{
     core::Intent,
     map::{
         PhysicsProp, PlaySound, PropSurface,
+        decal::{DecalGroup, PlaceDecal},
         sound::{MapSounds, MapSurface, SoundBank, SurfaceGrid},
     },
     weapon::{WeaponEvent, WeaponEventKind},
@@ -38,7 +39,11 @@ impl Plugin for ImpactSoundsPlugin {
         app.init_resource::<LastContact>()
             .add_message::<PlaySound>()
             .add_message::<WeaponEvent>()
-            .add_systems(FixedUpdate, bullet_impacts.after(crate::core::SimSet::Weapons))
+            .add_message::<PlaceDecal>()
+            .add_systems(
+                FixedUpdate,
+                (bullet_impacts, impact_decals).after(crate::core::SimSet::Weapons),
+            )
             .add_systems(FixedPostUpdate, physics_impacts.after(PhysicsSystems::Writeback));
     }
 }
@@ -126,6 +131,63 @@ fn bullet_impacts(
         }
         played.push((e.owner, entry.clone(), *to));
         play.write(PlaySound::at(entry, *to));
+    }
+}
+
+/// The knife's mark on walls. Not in the public data: a guess from the
+/// decal script's slash group, to check against the game.
+const SLASH_DECAL: &str = "ManhackCut";
+
+/// Decals where shots and knife swings hit the world: the hit surface's
+/// impact decal ("TranslationData" by its game material), the knife's
+/// slash. Props and characters take none yet.
+fn impact_decals(
+    mut events: MessageReader<WeaponEvent>,
+    bank: Option<Res<SoundBank>>,
+    grid: Option<Res<SurfaceGrid>>,
+    props: Query<&PropSurface>,
+    characters: Query<(), With<Intent>>,
+    mut decals: MessageWriter<PlaceDecal>,
+) {
+    let on_world = |e: Entity| !props.contains(e) && !characters.contains(e);
+    for e in events.read() {
+        match &e.kind {
+            WeaponEventKind::Shot {
+                from,
+                to,
+                hit: Some(hit),
+                normal: Some(normal),
+            } if on_world(*hit) => {
+                let name = surface_of(None, *to, &props, &characters, grid.as_deref());
+                let Some(material) = bank
+                    .as_ref()
+                    .and_then(|b| surface(&b.0, &name))
+                    .map(|s| s.game_material)
+                else {
+                    continue;
+                };
+                decals.write(PlaceDecal {
+                    group: DecalGroup::Material(material),
+                    point: *to,
+                    normal: *normal,
+                    dir: (*to - *from).normalize_or_zero(),
+                    spin: true,
+                });
+            }
+            WeaponEventKind::Swing {
+                at: Some((point, normal, hit)),
+                ..
+            } if on_world(*hit) => {
+                decals.write(PlaceDecal {
+                    group: DecalGroup::Named(SLASH_DECAL.into()),
+                    point: *point,
+                    normal: *normal,
+                    dir: -*normal,
+                    spin: false,
+                });
+            }
+            _ => {}
+        }
     }
 }
 

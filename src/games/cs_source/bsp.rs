@@ -87,6 +87,7 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
             Err(e) => data.warnings.push(e),
         }
     }
+    data.decals = super::decals::impact_decals(&mut materials);
     // What characters hold: the weapons' world models.
     if let Some(skeleton) = data.characters.first().map(|c| c.bones.clone()) {
         for (weapon, path) in super::weapons::WORLD_MODELS {

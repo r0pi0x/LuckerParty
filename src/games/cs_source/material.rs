@@ -4,6 +4,8 @@
 
 use std::collections::HashMap;
 
+use bevy::math::Vec2;
+
 use vbsp::Bsp;
 
 use crate::{
@@ -218,6 +220,53 @@ impl<'a> MaterialLoader<'a> {
 
     /// A material's keys (lower-case), with "patch" materials merged over
     /// the material they include; nested blocks (proxies) are skipped.
+    /// A decal material as runtime decals draw it: a `Subrect` of a decal
+    /// atlas (its pixel rectangle), or a whole decal texture. World size is
+    /// the rectangle's texels x `$decalscale` (specs/cs_source/
+    /// overlays_decals.md, "Decal size").
+    pub fn decal(&mut self, name: &str) -> Option<crate::map::decal::MapDecal> {
+        use crate::map::decal::{DecalBlend, MapDecal};
+        let vmt = |n: &str| format!("materials/{}.vmt", normalize(n).trim_end_matches(".vmt"));
+        let shader = |text: &str| {
+            super::surfaceprops::tokens(text)
+                .first()
+                .map(|s| s.to_lowercase())
+                .unwrap_or_default()
+        };
+        let text = self.read_text(&vmt(name))?;
+        let keys = self.keys(&text, 0);
+        let float = |k: &HashMap<String, String>, key: &str| k.get(key).and_then(|v| v.trim().parse::<f32>().ok());
+        let pair = |k: &HashMap<String, String>, key: &str| -> Option<Vec2> {
+            let v: Vec<f32> = k.get(key)?.split_whitespace().filter_map(|x| x.parse().ok()).collect();
+            (v.len() == 2).then(|| Vec2::new(v[0], v[1]))
+        };
+        let (atlas_keys, atlas_shader, rect) = if shader(&text) == "subrect" {
+            let atlas = self.read_text(&vmt(keys.get("$material")?))?;
+            let rect = (pair(&keys, "$pos")?, pair(&keys, "$size")?);
+            (self.keys(&atlas, 0), shader(&atlas), Some(rect))
+        } else {
+            (keys.clone(), shader(&text), None)
+        };
+        let texture = self.texture(atlas_keys.get("$basetexture")?, true)?;
+        let t = &self.textures[texture];
+        let full = Vec2::new(t.width as f32, t.height as f32);
+        let (pos, size) = rect.unwrap_or((Vec2::ZERO, full));
+        let scale = float(&keys, "$decalscale")
+            .or_else(|| float(&atlas_keys, "$decalscale"))
+            .unwrap_or(1.0);
+        Some(MapDecal {
+            texture,
+            uv_min: pos / full,
+            uv_max: (pos + size) / full,
+            size: size * scale * super::bsp::METERS_PER_UNIT,
+            blend: if atlas_shader == "decalmodulate" {
+                DecalBlend::Modulate2x
+            } else {
+                DecalBlend::Alpha
+            },
+        })
+    }
+
     fn keys(&self, text: &str, depth: u32) -> HashMap<String, String> {
         let t = super::surfaceprops::tokens(text);
         let mut out = HashMap::new();

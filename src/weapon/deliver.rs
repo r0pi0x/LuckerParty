@@ -275,6 +275,7 @@ impl Shot<'_, '_, '_> {
             kind: WeaponEventKind::Swing {
                 hit: hit.is_some(),
                 secondary,
+                at: hit.as_ref().map(|h| (h.point, h.normal, h.entity)),
             },
         });
         let Some(hit) = hit else {

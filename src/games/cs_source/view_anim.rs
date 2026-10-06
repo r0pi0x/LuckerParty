@@ -149,7 +149,7 @@ fn drive(
                     fired = play(&mut view, &mut dice, &[PRIMARY], now);
                     dice.last_attack = now;
                 }
-                WeaponEventKind::Swing { hit, secondary } => {
+                WeaponEventKind::Swing { hit, secondary, .. } => {
                     // Slashes have no miss sequence (spec 6.2): the hit
                     // ones play either way.
                     let (names, order): (&[&str], &[&str]) = match (secondary, hit) {
