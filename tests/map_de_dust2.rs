@@ -2260,20 +2260,22 @@ fn running_over_terrain_keeps_speed() {
 /// muzzle left of the eye means built left-handed).
 #[test]
 fn gun_models_icons_and_handedness() {
-    use mashup::games::cs_source::weapons::{AWP, GUNS, VIEW_MODELS};
+    use mashup::games::cs_source::weapons::{GUNS, SILENCED_WORLD_MODELS, VIEW_MODELS, silenced_key};
     let Some(map) = dust2() else { return };
     let hud = map.hud.as_ref().expect("a HUD");
+    for (id, _) in SILENCED_WORLD_MODELS {
+        assert!(map.held.iter().any(|h| h.key == silenced_key(id)), "{id} silenced world model");
+    }
     for g in GUNS {
         let short = g.id.rsplit("weapon_").next().unwrap();
         assert!(hud.icons.contains_key(&format!("d_{short}")), "no d_{short} icon");
         assert!(map.held.iter().any(|h| h.key == g.id), "{} world model", g.id);
-        let Some(v) = map.view_models.iter().find(|v| v.key == g.id) else {
-            // v_snip_awp.mdl is MDL version 48; the animation reader takes 44.
-            assert_eq!(g.id, AWP, "{} view model: {:?}", g.id, map.warnings);
-            let w: Vec<_> = map.warnings.iter().filter(|w| w.contains("v_snip_awp")).collect();
-            assert!(w.iter().any(|w| w.contains("version 48")), "{:?}", map.warnings);
-            continue;
-        };
+        // Every gun has its view model (the AWP's is MDL version 48).
+        let v = map
+            .view_models
+            .iter()
+            .find(|v| v.key == g.id)
+            .unwrap_or_else(|| panic!("{} view model: {:?}", g.id, map.warnings));
         let set = v.animations.as_ref().expect("sequences");
         let mut pose = set.defaults.clone();
         let params = set.default_params();

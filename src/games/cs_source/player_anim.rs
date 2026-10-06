@@ -406,14 +406,23 @@ pub fn suffix(weapon: Option<&str>) -> &'static str {
 /// Characters hold their active weapon's world model.
 fn hold_weapons(
     characters: Query<(Entity, Option<&Inventory>, Option<&crate::map::Held>), With<Animator>>,
-    weapons: Query<&Weapon>,
+    weapons: Query<(&Weapon, Option<&crate::weapon::AltModes>)>,
     mut commands: Commands,
 ) {
     for (e, inventory, held) in &characters {
+        // With the silencer on, its own world model.
         let id = inventory
             .and_then(|i| i.active)
             .and_then(|w| weapons.get(w).ok())
-            .map(|w| w.id.to_string());
+            .map(|(w, modes)| {
+                let silenced = modes.is_some_and(|m| m.current == 1)
+                    && super::weapons::SILENCED_WORLD_MODELS.iter().any(|(id, _)| *id == w.id);
+                if silenced {
+                    super::weapons::silenced_key(w.id)
+                } else {
+                    w.id.to_string()
+                }
+            });
         if held.is_none_or(|h| h.0 != id) {
             commands.entity(e).insert(crate::map::Held(id));
         }

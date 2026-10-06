@@ -139,6 +139,13 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
                 Err(e) => data.warnings.push(e),
             }
         }
+        for (weapon, path) in super::weapons::SILENCED_WORLD_MODELS {
+            let key = super::weapons::silenced_key(weapon);
+            match super::props::load_held(&mut materials, path, &key, &skeleton) {
+                Ok(h) => data.held.push(h),
+                Err(e) => data.warnings.push(e),
+            }
+        }
     }
     // What the local player sees of them: the view models.
     for (weapon, path, right_handed) in super::weapons::VIEW_MODELS {

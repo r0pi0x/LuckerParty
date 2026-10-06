@@ -67,8 +67,7 @@ burst), HUD, deathmatch and a first bot are in.
   specs/cs_source/mdl_v48.md); compare its fire and reload against the
   game. HL2 v48 models with zero-frame data (streamed) aren't handled.
 - Zoom: measure `zoom_sensitivity_ratio` and compare the scope overlay
-  (the game's textures, laid out by eye) with CS:S; the silenced world
-  models (`w_*_silencer.mdl`).
+  (the game's textures, laid out by eye) with CS:S.
 - Rounds, money and buying: slice 1 done (`mashup_rounds 1`,
   [plans/active/rounds.md](plans/active/rounds.md)); next: buy zones, a
   buy menu, ammo, round sounds, objectives.
