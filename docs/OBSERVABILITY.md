@@ -102,6 +102,7 @@ same readers as the runtime mount. Install paths come from
 cargo run --bin dump -- cs_source                      # counts and sizes by type
 cargo run --bin dump -- cs_source --list --filter de_dust2
 cargo run --bin dump -- cs_source --filter materials/de_dust --extract
+cargo run --bin dump -- cs_source --sequences models/weapons/v_rif_ak47.mdl  # bones, sequences, activities
 cargo run --bin dump -- combat_arms --archives         # per-archive title, entropy, file count
 cargo run --bin dump -- combat_arms --list --filter worlds2
 cargo run --bin dump -- combat_arms --filter worlds2/warehouse.dat --extract

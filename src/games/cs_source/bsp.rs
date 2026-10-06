@@ -96,6 +96,13 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
             }
         }
     }
+    // What the local player sees of them: the view models.
+    for (weapon, path) in super::weapons::VIEW_MODELS {
+        match super::props::load_view_model(&mut materials, path, weapon, super::view_anim::fov()) {
+            Ok(v) => data.view_models.push(v),
+            Err(e) => data.warnings.push(e),
+        }
+    }
     let mut sounds = super::sound::load(&mut materials, name, &surfaces);
     super::soundscape::load(&mut materials, &bsp, name, &mut sounds);
     data.sounds = std::sync::Arc::new(sounds);

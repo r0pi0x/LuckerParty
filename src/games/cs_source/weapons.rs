@@ -27,6 +27,13 @@ pub const WORLD_MODELS: &[(&str, &str)] = &[
     (AK47, "models/weapons/w_rif_ak47.mdl"),
 ];
 
+/// View models (the script's `viewmodel`), seen by the local player. CS:S
+/// ships one knife view model for both teams.
+pub const VIEW_MODELS: &[(&str, &str)] = &[
+    (KNIFE, "models/weapons/v_knife_t.mdl"),
+    (AK47, "models/weapons/v_rif_ak47.mdl"),
+];
+
 /// Sound entries the weapons use, for precaching with the map's sounds.
 pub const SOUNDS: &[&str] = &[
     "Weapon_Knife.Deploy",

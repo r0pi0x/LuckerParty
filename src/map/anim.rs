@@ -55,6 +55,9 @@ pub struct Track {
 pub struct Sequence {
     pub name: String,
     pub activity: String,
+    /// Selection weight among sequences with the same activity (its
+    /// absolute value counts).
+    pub activity_weight: i32,
     pub looping: bool,
     /// No cross-fade into it.
     pub snap: bool,
@@ -133,6 +136,47 @@ impl AnimSet {
     /// The first sequence for an activity (e.g. `ACT_RUN`).
     pub fn activity(&self, activity: &str) -> Option<usize> {
         self.sequences.iter().position(|s| s.activity.eq_ignore_ascii_case(activity))
+    }
+
+    /// Every sequence for an activity with its selection weight
+    /// (|activity weight|, at least 1 when all are 0).
+    pub fn activities(&self, activity: &str) -> Vec<(usize, u32)> {
+        let mut out: Vec<(usize, u32)> = self
+            .sequences
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.activity.eq_ignore_ascii_case(activity))
+            .map(|(i, s)| (i, s.activity_weight.unsigned_abs()))
+            .collect();
+        if out.iter().all(|(_, w)| *w == 0) {
+            out.iter_mut().for_each(|(_, w)| *w = 1);
+        }
+        out
+    }
+
+    /// One sequence for an activity, chosen by weight with `roll` in
+    /// [0, 1) (spec weapons.md 3.8: weighted random when several).
+    pub fn pick_activity(&self, activity: &str, roll: f32) -> Option<usize> {
+        let options = self.activities(activity);
+        let total: u32 = options.iter().map(|(_, w)| w).sum();
+        if total == 0 {
+            return None;
+        }
+        let mut at = (roll.clamp(0.0, 0.999_999) * total as f32) as u32;
+        for (s, w) in &options {
+            if at < *w {
+                return Some(*s);
+            }
+            at -= w;
+        }
+        options.last().map(|(s, _)| *s)
+    }
+
+    /// Seconds sequence `s` takes to play once at its own rate (spec
+    /// weapons.md 3.8: (frames - 1) / fps; 0 for a single frame).
+    pub fn duration(&self, s: usize) -> f32 {
+        let rate = self.cycle_rate(s, &self.default_params());
+        if rate > 0.0 { 1.0 / rate } else { 0.0 }
     }
 
     pub fn param(&self, name: &str) -> Option<usize> {
@@ -529,6 +573,39 @@ impl Animator {
         }
         self.main = Some(s);
         self.playback = 1.0;
+    }
+
+    /// Start sequence `s` from cycle 0 even if it is already playing (a
+    /// view model replaying its fire sequence, spec weapons.md 3.8); the
+    /// outgoing one fades out as in `play`.
+    pub fn restart(&mut self, s: usize, now: f64) {
+        if let Some(old) = self.main.filter(|&old| old == s) {
+            let fade = self.set.sequences[old].fade_out.min(self.set.sequences[s].fade_in);
+            if self.set.sequences[s].snap {
+                self.fading.clear();
+            } else {
+                self.fading.insert(
+                    0,
+                    Fading {
+                        sequence: old,
+                        cycle: self.cycle,
+                        playback: self.playback,
+                        stopped: now,
+                        fade,
+                    },
+                );
+            }
+            self.playback = 1.0;
+        } else {
+            self.play(s, now);
+        }
+        self.cycle = 0.0;
+    }
+
+    /// Whether the main sequence is non-looping and has reached its end.
+    pub fn finished(&self) -> bool {
+        self.main
+            .is_some_and(|s| !self.set.sequences[s].looping && self.cycle >= 1.0)
     }
 
     /// Advance the main and fading cycles by `dt`; drop finished fades.

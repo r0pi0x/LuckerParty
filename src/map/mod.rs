@@ -27,7 +27,9 @@ pub mod sound;
 pub mod soundscape;
 pub use sound::{MapSoundClip, MapSoundEntry, MapSounds, MapSurface, PlaySound, SoundLevel};
 pub mod sprite_material;
+pub mod view_model;
 pub mod world_material;
+pub use view_model::{MapViewModel, ViewAnimator, ViewModelAnchor, ViewModelCamera, ViewModels};
 
 use prop_material::{PropMaterial, PropParams};
 use rope_material::{RopeMaterial, RopeParams};
@@ -788,6 +790,8 @@ pub struct MapData {
     pub characters: Vec<MapCharacterModel>,
     /// Models characters can hold (weapons' world models).
     pub held: Vec<MapHeldModel>,
+    /// What characters see of what they hold (weapons' view models).
+    pub view_models: Vec<MapViewModel>,
 }
 
 /// What the BSP leaf around a point can see of the sky.
@@ -1096,7 +1100,7 @@ struct PlayableArea((Vec3, Vec3));
 #[allow(clippy::type_complexity)]
 fn show_skybox_in_place(
     area: Option<Res<PlayableArea>>,
-    cameras: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<SkyboxCamera>)>,
+    cameras: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<SkyboxCamera>, Without<ViewModelCamera>)>,
     mut parts: Query<&mut bevy::camera::visibility::RenderLayers, Without<Camera>>,
     mut outside_before: Local<Option<bool>>,
 ) {
@@ -1176,6 +1180,9 @@ impl Plugin for MapPlugin {
                         attach_held,
                     )
                         .run_if(resource_exists::<CharacterBodies>),
+                    view_model::draw_view_models
+                        .after(DriveAnimation)
+                        .run_if(resource_exists::<view_model::ViewModelAssets>),
                 ),
             )
             .add_systems(
@@ -1294,42 +1301,15 @@ fn spawn_map(
                 .characters
                 .iter()
                 .map(|c| {
-                    let parts = c
-                        .model
-                        .meshes
-                        .iter()
-                        .map(|m| {
-                            let mut mesh = build_mesh(m, false);
-                            if m.joints.len() == m.positions.len() && !c.bones.is_empty() {
-                                mesh.insert_attribute(
-                                    Mesh::ATTRIBUTE_JOINT_INDEX,
-                                    bevy::mesh::VertexAttributeValues::Uint16x4(m.joints.clone()),
-                                );
-                                mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, m.joint_weights.clone());
-                            }
-                            (
-                                meshes.add(mesh),
-                                materials.add(build_material(m, &textures, view, data.look.light_scale)),
-                            )
-                        })
-                        .collect();
-                    // Each bone's reference pose in body space, inverted.
-                    let mut global: Vec<Mat4> = Vec::with_capacity(c.bones.len());
-                    for b in &c.bones {
-                        let local = Mat4::from_rotation_translation(b.rotation, b.position);
-                        let parent = b
-                            .parent
-                            .and_then(|p| global.get(p).copied())
-                            .unwrap_or(c.root.to_matrix());
-                        global.push(parent * local);
-                    }
-                    let inverse: Vec<Mat4> = global.iter().map(|m| m.inverse()).collect();
-                    BodyAssets {
-                        parts,
-                        bindposes: bindposes.add(bevy::mesh::skinning::SkinnedMeshInverseBindposes::from(inverse)),
-                        bones: c.bones.clone(),
-                        root: c.root,
-                    }
+                    body_assets(
+                        &c.model,
+                        &c.bones,
+                        c.root,
+                        meshes,
+                        materials,
+                        bindposes,
+                        &|m| build_material(m, &textures, view, data.look.light_scale),
+                    )
                 })
                 .collect();
             commands.insert_resource(CharacterBodies(bodies));
@@ -1352,6 +1332,30 @@ fn spawn_map(
                 })
                 .collect();
             commands.insert_resource(HeldAssets(held));
+            let views = data
+                .view_models
+                .iter()
+                .map(|v| {
+                    let assets = body_assets(
+                        &v.model,
+                        &v.bones,
+                        v.root,
+                        meshes,
+                        materials,
+                        bindposes,
+                        &|m| {
+                            let mut material = build_material(m, &textures, view, data.look.light_scale);
+                            // Mirroring turns triangles inside out.
+                            if v.mirror && material.cull_mode.is_some() {
+                                material.cull_mode = Some(bevy::render::render_resource::Face::Front);
+                            }
+                            material
+                        },
+                    );
+                    (v.key.clone(), (assets, v.fov, v.mirror))
+                })
+                .collect();
+            commands.insert_resource(view_model::ViewModelAssets(views));
         }
         let lightmap = data
             .lightmap
@@ -1939,6 +1943,9 @@ fn spawn_map(
     if !data.characters.is_empty() {
         commands.insert_resource(CharacterModels(Arc::new(data.characters.clone())));
     }
+    if !data.view_models.is_empty() {
+        commands.insert_resource(ViewModels(Arc::new(data.view_models.clone())));
+    }
     if let Some(nav) = &data.nav {
         commands.insert_resource((**nav).clone());
     }
@@ -1966,6 +1973,18 @@ fn spawn_map(
             affects_lightmapped_mesh_diffuse: false,
             ..default()
         },
+        Transform::default().looking_at(Vec3::new(-0.4, -1.0, -0.3), Vec3::Y),
+    ));
+    // The same sun for view models (their own layer), without shadows.
+    commands.spawn((
+        Name::new("Sun (view models)"),
+        MapPart,
+        DirectionalLight {
+            illuminance: 9000.0,
+            shadow_maps_enabled: false,
+            ..default()
+        },
+        bevy::camera::visibility::RenderLayers::layer(view_model::VIEW_MODEL_LAYER),
         Transform::default().looking_at(Vec3::new(-0.4, -1.0, -0.3), Vec3::Y),
     ));
 
@@ -2007,6 +2026,7 @@ pub fn unload_map(world: &mut World) {
     world.remove_resource::<CharacterModels>();
     world.remove_resource::<CharacterBodies>();
     world.remove_resource::<HeldAssets>();
+    view_model::unload(world);
     let bodies: Vec<Entity> = world
         .query_filtered::<Entity, With<CharacterBody>>()
         .iter(world)
@@ -2204,6 +2224,49 @@ fn lightmap_image(rgb: &[[f32; 3]], width: u32, height: u32) -> Image {
     image
 }
 
+/// Render assets of a skinned model: meshes with joint attributes (when
+/// it has a skeleton), materials, and inverse bind poses from the bones'
+/// reference pose under `root`.
+fn body_assets(
+    model: &MapModel,
+    bones: &[MapBone],
+    root: Transform,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    bindposes: &mut Assets<bevy::mesh::skinning::SkinnedMeshInverseBindposes>,
+    material: &dyn Fn(&MapMesh) -> StandardMaterial,
+) -> BodyAssets {
+    let parts = model
+        .meshes
+        .iter()
+        .map(|m| {
+            let mut mesh = build_mesh(m, false);
+            if m.joints.len() == m.positions.len() && !bones.is_empty() {
+                mesh.insert_attribute(
+                    Mesh::ATTRIBUTE_JOINT_INDEX,
+                    bevy::mesh::VertexAttributeValues::Uint16x4(m.joints.clone()),
+                );
+                mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, m.joint_weights.clone());
+            }
+            (meshes.add(mesh), materials.add(material(m)))
+        })
+        .collect();
+    // Each bone's reference pose in body space, inverted.
+    let mut global: Vec<Mat4> = Vec::with_capacity(bones.len());
+    for b in bones {
+        let local = Mat4::from_rotation_translation(b.rotation, b.position);
+        let parent = b.parent.and_then(|p| global.get(p).copied()).unwrap_or(root.to_matrix());
+        global.push(parent * local);
+    }
+    let inverse: Vec<Mat4> = global.iter().map(|m| m.inverse()).collect();
+    BodyAssets {
+        parts,
+        bindposes: bindposes.add(bevy::mesh::skinning::SkinnedMeshInverseBindposes::from(inverse)),
+        bones: bones.to_vec(),
+        root,
+    }
+}
+
 fn build_mesh(m: &MapMesh, with_lightmap: bool) -> Mesh {
     let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, m.positions.clone());
@@ -2360,7 +2423,7 @@ struct GlowSprite {
 #[allow(clippy::type_complexity)]
 fn glow_visibility(
     query: SpatialQuery,
-    cameras: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<SkyboxCamera>)>,
+    cameras: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<SkyboxCamera>, Without<ViewModelCamera>)>,
     ignored: Query<Entity, Or<(With<crate::core::Intent>, With<MapPropCollider>)>>,
     mut glows: Query<(
         &GlobalTransform,
@@ -2581,7 +2644,7 @@ fn attach_sky(
     mut commands: Commands,
     sky: Option<Res<MapSkybox>>,
     sky_camera: Option<Res<SkyCameraInfo>>,
-    cameras: Query<(Entity, Has<SkyboxCamera>), (With<Camera3d>, Without<bevy::light::Skybox>)>,
+    cameras: Query<(Entity, Has<SkyboxCamera>), (With<Camera3d>, Without<bevy::light::Skybox>, Without<ViewModelCamera>)>,
 ) {
     let Some(sky) = sky else { return };
     for (cam, is_sky_camera) in &cameras {
@@ -2685,7 +2748,7 @@ fn follow_sky_camera(
             Entity,
             &Camera,
         ),
-        (With<Camera3d>, Without<SkyboxCamera>),
+        (With<Camera3d>, Without<SkyboxCamera>, Without<ViewModelCamera>),
     >,
     mut sky: Query<
         (
