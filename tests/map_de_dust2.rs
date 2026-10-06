@@ -1612,6 +1612,18 @@ fn bodies_animate_with_movement() {
     assert_eq!(keys.len(), all, "held models {keys:?}");
     // The drawn AK-47 picks the AK upper body at full weight.
     assert_eq!(layer(&sim, 0), Some(("Idle_Upper_AK".into(), 1.0)));
+    // A reload plays the AK's reload gesture over it, then ends.
+    let ak = sim.app.world().get::<mashup::weapon::Inventory>(c).unwrap().active.unwrap();
+    sim.app.world_mut().write_message(mashup::weapon::WeaponEvent {
+        owner: c,
+        weapon: ak,
+        kind: mashup::weapon::WeaponEventKind::ReloadStarted,
+    });
+    sim.ticks(2);
+    let reload = layer(&sim, 5).map(|(n, _)| n.to_lowercase());
+    assert_eq!(reload.as_deref(), Some("idle_reload_ak"));
+    sim.seconds(4.0);
+    assert_eq!(layer(&sim, 5), None, "the reload gesture ends");
 
     sim.intent(c).move_axis = Vec2::Y;
     sim.seconds(1.0);

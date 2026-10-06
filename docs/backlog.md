@@ -71,7 +71,9 @@ burst), HUD, deathmatch and a first bot are in.
 - Rounds, money and buying: slice 1 done (`mashup_rounds 1`,
   [plans/active/rounds.md](plans/active/rounds.md)); next: buy zones, a
   buy menu, ammo, round sounds, objectives.
-- Reload, grenade and death animations (world models are held by bodies).
+- Grenade and death animations on bodies (the reload gesture is in:
+  `<Move>_Reload_<weapon>` by activity, an assumption for the spec's
+  `reload_<suffix>`; shotgun start/loop/end reloads not yet).
 - Impact effects, remaining (specs/cs_source/impact_effects.md; the
   surface effects, blood, bullet splashes and pane glass shards are in):
   section 9's exact shard burst at the hit point (ours spreads shards
