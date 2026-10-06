@@ -15,10 +15,6 @@ Each group is one agent's worktree; merged into main as they finish.
   above characters (`mashup_healthbars 1`); third-person camera
   (`thirdperson` / `firstperson`) showing the local player's animated
   body.
-- **B. Weapons: penetration and collaterals.** Implement M13 from
-  specs/cs_source/weapons.md (walls by material, through players x0.5,
-  object counts, compounding falloff); the measured recoil sets (moving and
-  airborne AK-47).
 - **C. First-person view models** (`v_knife_*.mdl`, `v_rif_ak47.mdl`) with
   draw/idle/fire/reload sequences, through the animation decoder.
 - **D. Movement: terrain and falls.** Fuzz walking over displacements to

@@ -37,6 +37,7 @@ pub struct WeaponFrame;
 impl Plugin for WeaponPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<WeaponRegistry>()
+            .init_resource::<PassMaterials>()
             .init_resource::<StartingWeapons>()
             .add_message::<WeaponEvent>()
             .add_message::<PlaySound>()
@@ -367,6 +368,77 @@ pub struct Hitscan {
     pub punch_scale: f32,
 }
 
+/// Delivery add-on: bullets that pass through things (Source's bullet
+/// penetration). Everything passed, walls and characters alike, counts as
+/// one object and uses part of a shared budget: a wall uses its thickness
+/// along the path divided by its material's scale (`PassMaterials`), a
+/// character a fixed amount. The bullet leaves an object only while the
+/// budget stays at or above zero and fewer than `objects` were passed;
+/// either way it still hits the next thing. Damage falls off again at
+/// every hit (by the distance from the eye) and each object passed scales
+/// what's carried on by its material's damage factor.
+#[derive(Component, Clone, Debug)]
+pub struct Penetration {
+    /// Budget, meters of a scale-1 material.
+    pub power: f32,
+    /// Objects it can pass.
+    pub objects: u32,
+    /// Objects this far from the eye or farther are not passed, meters.
+    pub max_distance: f32,
+}
+
+/// How bullets pass each kind of thing (see `Penetration`). Games set it.
+#[derive(Resource, Clone, Debug)]
+pub struct PassMaterials {
+    /// By material class (`MapSurface::game_material`).
+    pub by_class: Vec<(char, PassMaterial)>,
+    /// Classes not listed, and surfaces whose class isn't known.
+    pub default: PassMaterial,
+    /// Characters (anything with `Intent` or `Hitboxes`).
+    pub character: CharacterPass,
+}
+
+impl Default for PassMaterials {
+    fn default() -> Self {
+        Self {
+            by_class: Vec::new(),
+            default: PassMaterial { scale: 1.0, damage: 0.5 },
+            character: CharacterPass {
+                cost: f32::INFINITY,
+                damage: 0.5,
+                range_scale: 1.0,
+            },
+        }
+    }
+}
+
+impl PassMaterials {
+    pub fn get(&self, class: Option<char>) -> PassMaterial {
+        class
+            .and_then(|c| self.by_class.iter().find(|(k, _)| *k == c))
+            .map_or(self.default, |(_, m)| *m)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PassMaterial {
+    /// Meters of this material a bullet passes per meter of budget.
+    pub scale: f32,
+    /// Damage carried on after passing, as a factor.
+    pub damage: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CharacterPass {
+    /// Budget one character uses, meters.
+    pub cost: f32,
+    /// Damage carried on after passing, as a factor (of the hit's damage
+    /// before its hitgroup multiplier).
+    pub damage: f32,
+    /// After a character, the range left beyond its exit is scaled by this.
+    pub range_scale: f32,
+}
+
 /// How shots scatter around the aim, as offsets along its right and up
 /// vectors (tangent units).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -551,6 +623,14 @@ pub enum WeaponEventKind {
         /// Surface normal where it hit.
         normal: Option<Vec3>,
     },
+    /// The same bullet going on after passing something (`Penetration`):
+    /// from where it left that to where it stopped next.
+    ShotContinued {
+        from: Vec3,
+        to: Vec3,
+        hit: Option<Entity>,
+        normal: Option<Vec3>,
+    },
     /// Damage dealt to something with health (summed per firing call).
     Hit {
         target: Entity,
@@ -674,6 +754,7 @@ struct WeaponParts {
     hitscan: Option<&'static Hitscan>,
     melee: Option<&'static Melee>,
     effect: Option<&'static DamageEffect>,
+    penetration: Option<&'static Penetration>,
     sounds: Option<&'static WeaponSounds>,
 }
 
@@ -830,7 +911,7 @@ fn weapon_frame(
                     for i in 0..shots {
                         if let (Some(scan), Some(effect)) = (w.hitscan, w.effect) {
                             ctx.seed = ctx.seed.wrapping_add(i);
-                            ctx.fire(scan, effect);
+                            ctx.fire(scan, effect, w.penetration);
                         }
                         if let Some(s) = w.sounds.and_then(|s| s.fire.clone()) {
                             ctx.w.play.write(owner_sound(s, owner, eye, CHAN_WEAPON));

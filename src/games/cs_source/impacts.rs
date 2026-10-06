@@ -108,7 +108,8 @@ fn bullet_impacts(
     // Played this tick per shooter: (entry, position), for pellet grouping.
     let mut played: Vec<(Entity, String, Vec3)> = Vec::new();
     for e in events.read() {
-        let WeaponEventKind::Shot { to, hit, .. } = &e.kind else {
+        // Every surface a bullet reaches, also after passing something.
+        let (WeaponEventKind::Shot { to, hit, .. } | WeaponEventKind::ShotContinued { to, hit, .. }) = &e.kind else {
             continue;
         };
         if hit.is_none() {

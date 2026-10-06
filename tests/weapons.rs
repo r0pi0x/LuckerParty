@@ -394,3 +394,202 @@ fn armour_without_helmet_leaves_headshots_alone() {
     assert_eq!(health(&sim, target), 0.0);
     assert_eq!(sim.app.world().get::<Armor>(target).unwrap().amount, 1.0);
 }
+
+// ---------------------------------------------------------------------------
+// Penetration and collaterals (measured M13)
+
+const UNIT: f32 = 0.0254;
+
+/// Damage lost, in whole hit points.
+fn lost_hp(sim: &Sim, p: Entity) -> i32 {
+    ((1.0 - health(sim, p)) * 100.0).round() as i32
+}
+
+/// One AK-47 shot from `shooter` at `target`'s chest (72 % up the capsule),
+/// once the rifle is drawn.
+fn shoot_chest(sim: &mut Sim, shooter: Entity, target: Entity) {
+    sim.seconds(1.1);
+    let chest = sim.position(target) + Vec3::Y * (1.8 * 0.72 - 0.9);
+    aim_at(sim, shooter, chest);
+    sim.intent(shooter).fire = true;
+    sim.ticks(1);
+    sim.intent(shooter).fire = false;
+    sim.ticks(1);
+}
+
+#[test]
+fn ak47_collateral_carries_half_the_damage() {
+    // Spec M13 (through players): first at ~300 units, second at ~400,
+    // chest: 17 on the second (35 alone); the first takes its own 35.
+    let mut sim = sim();
+    let shooter = sim.spawn_character(greybox::SPAWNS[0], placeholder::ID);
+    let first = sim.spawn_character(greybox::SPAWNS[0] - Vec3::Z * 8.0, placeholder::ID);
+    let second = sim.spawn_character(greybox::SPAWNS[0] - Vec3::Z * 10.6, placeholder::ID);
+    shoot_chest(&mut sim, shooter, second);
+    assert_eq!((lost_hp(&sim, first), lost_hp(&sim, second)), (35, 17));
+}
+
+#[test]
+fn ak47_does_not_pass_two_players() {
+    // Two players use 2 x 21.5 of the AK-47's 39: the second is hit but
+    // not passed.
+    let mut sim = sim();
+    let shooter = sim.spawn_character(greybox::SPAWNS[0], placeholder::ID);
+    let first = sim.spawn_character(greybox::SPAWNS[0] - Vec3::Z * 8.0, placeholder::ID);
+    let second = sim.spawn_character(greybox::SPAWNS[0] - Vec3::Z * 10.6, placeholder::ID);
+    let third = sim.spawn_character(greybox::SPAWNS[0] - Vec3::Z * 13.0, placeholder::ID);
+    shoot_chest(&mut sim, shooter, third);
+    assert_eq!(
+        (lost_hp(&sim, first), lost_hp(&sim, second), lost_hp(&sim, third)),
+        (35, 17, 0)
+    );
+}
+
+#[test]
+fn knife_never_passes_a_player() {
+    let mut sim = sim();
+    let p = sim.spawn_character(greybox::SPAWNS[0], placeholder::ID);
+    let first = sim.spawn_character(greybox::SPAWNS[0] - Vec3::Z * 0.9, placeholder::ID);
+    let second = sim.spawn_character(greybox::SPAWNS[0] - Vec3::Z * 1.75, placeholder::ID);
+    sim.ticks(1);
+    sim.intent(p).select = Some(2);
+    sim.ticks(1);
+    sim.intent(p).select = None;
+    sim.seconds(1.1);
+    let chest = sim.position(first) + Vec3::Y * 0.3;
+    aim_at(&mut sim, p, chest);
+    for e in [first, second] {
+        sim.intent(e).yaw = std::f32::consts::PI;
+    }
+    sim.intent(p).fire = true;
+    sim.ticks(1);
+    sim.intent(p).fire = false;
+    sim.ticks(1);
+    assert_eq!((lost_hp(&sim, first), lost_hp(&sim, second)), (20, 0));
+}
+
+/// A wall of `surface` across the line from SPAWNS[0] to -Z: front face
+/// `at` meters ahead, `thick` units thick. The surface scripts give wood
+/// and concrete their CS:S material classes.
+fn wall(sim: &mut Sim, at: f32, thick: f32, surface: &str) {
+    use avian3d::prelude::*;
+    use mashup::map::{MapSounds, MapSurface, PropSurface, sound::SoundBank};
+    let mut sounds = MapSounds::default();
+    for (name, class) in [("wood", 'W'), ("concrete", 'C')] {
+        sounds.surfaces.insert(
+            name.into(),
+            MapSurface {
+                game_material: class,
+                ..default()
+            },
+        );
+    }
+    sim.app.insert_resource(SoundBank(std::sync::Arc::new(sounds)));
+    let t = thick * UNIT;
+    let z = greybox::SPAWNS[0].z - at - t / 2.0;
+    sim.app.world_mut().spawn((
+        RigidBody::Static,
+        Collider::cuboid(4.0, 3.0, t),
+        Transform::from_xyz(0.0, 1.5, z),
+        PropSurface(surface.into()),
+    ));
+}
+
+/// Damage through a wall `thick` units of `surface` 3 m ahead to a target
+/// 6 m ahead.
+fn through_wall(thick: f32, surface: &str) -> i32 {
+    let mut sim = sim();
+    let shooter = sim.spawn_character(greybox::SPAWNS[0], placeholder::ID);
+    let target = sim.spawn_character(greybox::SPAWNS[0] - Vec3::Z * 6.0, placeholder::ID);
+    wall(&mut sim, 3.0, thick, surface);
+    shoot_chest(&mut sim, shooter, target);
+    lost_hp(&sim, target)
+}
+
+#[test]
+fn ak47_passes_walls_thinner_than_its_limit() {
+    // Limits 39 x material scale: wood 78 units, concrete 15.6 (M13).
+    // Through: 36 x 0.98^(118/500) x factor x 0.98^(220/500), chest:
+    // wood x 0.6 -> 21, concrete x 0.25 -> 8 (35 with no wall).
+    assert_eq!(through_wall(70.0, "wood"), 21);
+    assert_eq!(through_wall(15.0, "concrete"), 8);
+}
+
+#[test]
+fn ak47_stops_in_walls_thicker_than_its_limit() {
+    assert_eq!(through_wall(85.0, "wood"), 0);
+    assert_eq!(through_wall(17.0, "concrete"), 0);
+}
+
+#[test]
+fn ak47_passes_two_doors_then_hits() {
+    // Two 8-unit wooden doors use 2 x 4 of 39 and both object passes: the
+    // target behind still takes damage, x 0.6 per door with falloff again
+    // at every hit: 36 x 0.98^(79/500) x 0.6 x 0.98^(158/500) x 0.6 x
+    // 0.98^(220/500) = 12.8.
+    let mut sim = sim();
+    let shooter = sim.spawn_character(greybox::SPAWNS[0], placeholder::ID);
+    let target = sim.spawn_character(greybox::SPAWNS[0] - Vec3::Z * 6.0, placeholder::ID);
+    wall(&mut sim, 2.0, 8.0, "wood");
+    wall(&mut sim, 4.0, 8.0, "wood");
+    shoot_chest(&mut sim, shooter, target);
+    assert_eq!(lost_hp(&sim, target), 12);
+}
+
+#[test]
+fn ak47_recoil_sets_for_moving_and_airborne() {
+    use mashup::weapon::ViewPunch;
+    // Measured M3: first-shot kick up 1.5 moving, 2.0 airborne.
+    let first_kick = |setup: fn(&mut Sim, Entity)| {
+        let mut sim = sim();
+        let p = sim.spawn_character(greybox::SPAWNS[0], placeholder::ID);
+        sim.seconds(1.1);
+        setup(&mut sim, p);
+        sim.intent(p).fire = true;
+        sim.ticks(1);
+        sim.intent(p).fire = false;
+        sim.app.world().get::<ViewPunch>(p).unwrap().0.x.to_degrees()
+    };
+    let moving = first_kick(|sim, p| {
+        sim.intent(p).move_axis = Vec2::new(0.0, 1.0);
+        sim.ticks(10);
+    });
+    assert!((moving - 1.5).abs() < 1e-3, "moving {moving}");
+    let airborne = first_kick(|sim, p| {
+        sim.intent(p).jump = true;
+        sim.ticks(3);
+        sim.intent(p).jump = false;
+        assert!(!sim.state(p).on_ground);
+    });
+    assert!((airborne - 2.0).abs() < 1e-3, "airborne {airborne}");
+}
+
+#[test]
+fn landing_adds_inaccuracy_by_fall_speed() {
+    use mashup::{core::Velocity, games::cs_source::weapons::Inaccuracy};
+    // Measured M1: I += InaccuracyLand x |v_z| / 301.99 on the landing tick
+    // (v_z from the tick before), then that tick's ground recovery.
+    let mut sim = sim();
+    let p = sim.spawn_character(greybox::SPAWNS[0], placeholder::ID);
+    sim.seconds(3.0);
+    let w = active(&sim, p);
+    sim.intent(p).jump = true;
+    sim.ticks(2);
+    sim.intent(p).jump = false;
+    let (mut value, mut vz) = (0.0f32, 0.0f32);
+    for _ in 0..200 {
+        let was_airborne = !sim.state(p).on_ground;
+        sim.ticks(1);
+        if was_airborne && sim.state(p).on_ground {
+            let now = sim.app.world().get::<Inaccuracy>(w).unwrap().value;
+            let raised = value + 0.08609 * vz.abs() / 301.99;
+            let expected = 0.00916 + (raised - 0.00916) * 0.1f32.powf(TICK_INTERVAL as f32 / 0.48815);
+            assert!(vz < -100.0, "fall speed {vz}");
+            assert!((now - expected).abs() < 1e-5, "{now} vs {expected}");
+            return;
+        }
+        value = sim.app.world().get::<Inaccuracy>(w).unwrap().value;
+        vz = sim.app.world().get::<Velocity>(p).unwrap().0.y / UNIT;
+    }
+    panic!("never landed");
+}
