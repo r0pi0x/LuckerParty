@@ -99,8 +99,9 @@ burst), HUD, deathmatch and a first bot are in.
   of `_RHand` and pulled the left hand onto the grip, so those bones
   aren't plain hand targets. Needs a spec of Source's IK chains, the
   sequences' IK rules and locks (the animation spec's open question "IK"),
-  and a reproduction of the floating (which pose: running, crouching,
-  firing, bots' pitch).
+  and a reproduction of the floating. With `mashup_freecam 2` the AK
+  sits in both hands standing, crouched and firing (2026-10-06); still to
+  check: pistols and the knife, running, jumping, and bots.
 
 ## 4. Bots
 
