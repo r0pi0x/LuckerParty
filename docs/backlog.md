@@ -42,9 +42,10 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
 
 - CS:S HUD: health/armour/ammo/money/round-timer panels, death notices
   and the Tab scoreboard are in (`client/game_hud.rs`,
-  `client/scoreboard.rs`). Left: the team menu (`jointeam 2|3` exists;
-  you start as CT), ping and team scores on the scoreboard, weapon
-  selection, hint text. The radar is in (`client/radar.rs`: the map overview turning
+  `client/scoreboard.rs`), and the weapon selection
+  (`client/weapon_select.rs`, kill icons standing in for the scripts'
+  selection icons). Left: the team menu (`jointeam 2|3` exists; you
+  start as CT), ping on the scoreboard, hint text. The radar is in (`client/radar.rs`: the map overview turning
   with you, team dots, your place name); its range (2200 units) is a guess.
 - Debug overlays: `mashup_drawhitboxes`, `mashup_healthbars`,
   `mashup_drawnav`, `mashup_drawbots` exist; add more as features need

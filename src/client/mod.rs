@@ -16,6 +16,7 @@ pub mod radar;
 pub mod game_text;
 pub mod scoreboard;
 pub mod view;
+pub mod weapon_select;
 
 use std::path::PathBuf;
 
@@ -181,6 +182,7 @@ impl Plugin for ClientPlugin {
                 effects::ShotEffectsPlugin,
                 view::ViewPlugin,
                 buy_menu::BuyMenuPlugin,
+                weapon_select::WeaponSelectPlugin,
             ))
             .add_systems(PostStartup, spawn_local_player)
             .add_systems(Update, (follow_eye, zoom_camera));
