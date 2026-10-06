@@ -91,6 +91,12 @@ pub fn release_cursor(cursor: &mut CursorOptions) {
     cursor.grab_mode = CursorGrabMode::None;
 }
 
+/// Lock and hide the cursor so the mouse turns the view.
+pub fn capture_cursor(cursor: &mut CursorOptions) {
+    cursor.visible = false;
+    cursor.grab_mode = CursorGrabMode::Locked;
+}
+
 fn grab_cursor(
     mut cursor: Single<&mut CursorOptions>,
     mouse: Res<ButtonInput<MouseButton>>,
@@ -106,8 +112,7 @@ fn grab_cursor(
     } else if keys.just_pressed(KeyCode::Escape) {
         release_cursor(&mut cursor);
     } else if mouse.just_pressed(MouseButton::Left) && !cursor_grabbed(&cursor) {
-        cursor.visible = false;
-        cursor.grab_mode = CursorGrabMode::Locked;
+        capture_cursor(&mut cursor);
     }
 }
 
