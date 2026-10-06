@@ -75,6 +75,33 @@ pub struct Sequence {
     pub autolayers: Vec<AutoLayer>,
     /// Per target bone; 0 leaves the bone alone.
     pub bone_weights: Vec<f32>,
+    /// Animation events, by cycle (games decide what they mean).
+    pub events: Vec<AnimEvent>,
+}
+
+/// An event a sequence fires when its cycle passes `cycle`.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct AnimEvent {
+    pub cycle: f32,
+    /// Its number (0 for named events).
+    pub event: i32,
+    /// Its name, for named events.
+    pub name: String,
+    pub options: String,
+}
+
+impl Sequence {
+    /// Events whose cycle the playback passed going from `from` to `to`
+    /// (`from` excluded, `to` included); `from` None: the sequence was
+    /// (re)started, so events at cycle 0 fire too. A looping sequence that
+    /// wrapped fires the end of the old loop and the start of the new.
+    pub fn events_between(&self, from: Option<f32>, to: f32) -> impl Iterator<Item = &AnimEvent> {
+        self.events.iter().filter(move |e| match from {
+            None => e.cycle <= to,
+            Some(f) if to >= f => e.cycle > f && e.cycle <= to,
+            Some(f) => e.cycle > f || e.cycle <= to,
+        })
+    }
 }
 
 #[derive(Debug, Default, Clone)]

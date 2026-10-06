@@ -80,6 +80,16 @@ Only `Reflect`-registered types are visible; register new core components in
   units) puts the camera behind the local player and draws its own
   animated body: `+thirdperson` in a `--screenshot` run shows the local
   player's model and animation.
+- View model (CS:S cvars): `viewmodel_fov` (54), `cl_righthand` (1;
+  0 puts weapons in the left hand), `r_drawviewmodel 0` hides it,
+  `cl_bobcycle`/`cl_bobup` (bob), `cl_wpn_sway_interp`/`cl_wpn_sway_scale`
+  (sway: e.g. 20 to exaggerate it), `muzzleflash_light 0` turns the
+  flash's light off, `cl_ejectbrass 0` stops shells. The first two and
+  `muzzleflash_light` are archived. To check the flash lighting a wall,
+  stand at one and fire: `+setpos 470 2330 -78 +setang 0 15 0 ++attack`
+  on de_dust2 with a few `--frames` values (a flash lasts 0.05 s, every
+  0.1 s), against the same without `++attack`. `dump cs_source
+  --sequences <model>` shows a model's animation events and attachments.
 - Remote: `curl -s localhost:15702 -d '{"jsonrpc":"2.0","id":1,
   "method":"mashup/console","params":{"line":"getpos; cvarlist sv_"}}'`
   runs a line now and returns the lines it printed.

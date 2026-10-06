@@ -1,5 +1,5 @@
 // World surfaces the way Source's LightmappedGeneric draws them at LDR:
-// texture x baked light, no dynamic lighting. With a normal map, the light
+// texture x baked light, plus the scene's point lights (muzzle flashes). With a normal map, the light
 // is Valve's radiosity normal mapping ("Shading in Valve's Source Engine",
 // SIGGRAPH 2006): three directional lightmaps, weighted per pixel by the
 // squared, normalised alignment of the tangent-space normal with three
@@ -8,7 +8,30 @@
 #import bevy_pbr::{
     forward_io::VertexOutput,
     mesh_view_bindings::view,
+    mesh_view_bindings as view_bindings,
+    clustered_forward as clustering,
     view_transformations::position_world_to_view,
+}
+
+// The scene's point lights (muzzle flashes; map::DynamicLight), in
+// lightmap units: colour x (1 - d^2/r^2) x cosine. Same as prop.wgsl.
+fn dynamic_light(p: vec3<f32>, n: vec3<f32>, frag_coord: vec2<f32>) -> vec3<f32> {
+    let view_z = dot(vec4<f32>(
+        view.view_from_world[0].z,
+        view.view_from_world[1].z,
+        view.view_from_world[2].z,
+        view.view_from_world[3].z
+    ), vec4<f32>(p, 1.0));
+    let cluster = clustering::view_fragment_cluster_index(frag_coord, view_z, false);
+    let ranges = clustering::unpack_clusterable_object_index_ranges(cluster);
+    var sum = vec3<f32>(0.0);
+    for (var i = ranges.first_point_light_index_offset; i < ranges.first_spot_light_index_offset; i = i + 1u) {
+        let light = &view_bindings::clustered_lights.data[clustering::get_clusterable_object_id(i)];
+        let to = (*light).position_radius.xyz - p;
+        let falloff = saturate(1.0 - dot(to, to) * (*light).color_inverse_square_range.w);
+        sum = sum + (*light).color_inverse_square_range.rgb * falloff * max(dot(n, normalize(to)), 0.0);
+    }
+    return sum;
 }
 
 struct WorldParams {
@@ -233,6 +256,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     if params.debug_view == 2.0 {
         return albedo;
     }
+    light = light + dynamic_light(in.world_position.xyz, normalize(in.world_normal), in.position.xy);
     var color = albedo.rgb * light * params.light_scale;
     if params.envmap > 0.5 {
         color = color + envmap_term(in, n_ts, albedo.a, normal_texel.a);

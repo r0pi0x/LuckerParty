@@ -233,7 +233,9 @@ fn spawn_local_player(
             crate::map::sound::SoundListener,
             Camera3d::default(),
             Projection::Perspective(PerspectiveProjection {
-                fov: 74f32.to_radians(),
+                // Source's fov 90 (horizontal at 4:3), kept vertically:
+                // 2 atan(3/4) = 73.74 degrees.
+                fov: 2.0 * 0.75f32.atan(),
                 ..default()
             }),
         ));

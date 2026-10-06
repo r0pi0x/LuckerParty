@@ -8,6 +8,7 @@ use std::{
     process::ExitCode,
 };
 
+use bevy::math::Vec3;
 use mashup::{
     games::{combat_arms, cs_source},
     mount::{
@@ -179,7 +180,16 @@ fn sequences(mount: &Mount, path: &str) -> Result<(), String> {
             a.fps,
             if s.looping { " looping" } else { "" }
         );
+        for e in &s.events {
+            println!("        event {:.4} {} {:?} {:?}", e.cycle, e.event, e.name, e.options);
+        }
     }
+    let (attachments, illum) = cs_source::anim::attachments(&read, path)?;
+    for (name, bone, t) in attachments {
+        let (x, y, z) = (t.rotation * Vec3::X, t.rotation * Vec3::Y, t.rotation * Vec3::Z);
+        println!("  attachment {name:?} bone {bone} at {} axes x {x} y {y} z {z}", t.translation);
+    }
+    println!("  illumination position {illum}");
     Ok(())
 }
 

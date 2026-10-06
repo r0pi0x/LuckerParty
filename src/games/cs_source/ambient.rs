@@ -244,7 +244,12 @@ impl MapLighting {
             y: -s.z,
             z: s.y,
         };
-        let Some(samples) = leaf_index(bsp, point).and_then(|i| self.leaves.get(i)) else {
+        self.ambient_in(leaf_index(bsp, point), p)
+    }
+
+    /// The ambient cube at `p` (engine space) in BSP leaf `leaf`.
+    pub fn ambient_in(&self, leaf: Option<usize>, p: Vec3) -> AmbientCube {
+        let Some(samples) = leaf.and_then(|i| self.leaves.get(i)) else {
             return AmbientCube::default();
         };
         let mut sum = [Vec3::ZERO; 6];
