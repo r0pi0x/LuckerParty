@@ -15,7 +15,10 @@ How to check:
   dev --bin refcmp -- capture-ours --views tools/refcmp/<map>.toml`. The
   reference game is shared: ask the coordinating session before capturing
   it (`capture-ref`).
-- `tests/map_stock.rs` holds a test per fix.
+- `tests/map_stock.rs` holds a test per fix, and ignored debug aids:
+  `props_near` (props and their light near a point), `dark_textures`
+  (near-black textures, mips, mod2x details), `pick` (which surface a
+  `--views` pixel shows).
 
 ## Catalog
 
@@ -32,7 +35,7 @@ How to check:
 | 9 | "Decoding Uv88 images is not supported" | aztec, inferno, militia, chateau, piranesi, port | water | Water's `$bumpmap` is a DuDv map | Fixed: water uses `$normalmap` |
 | 10 | Water surfaces black | de_aztec canals, others | aztec cam1 | No Water shader (no base texture; refraction/reflection/fog missing) | Open: backlog 7 "Water surfaces" |
 | 11 | Decals that find no surface (assault 46, nuke 21, train 21, others ≤ 8) and overlays without geometry (train 8, assault 5) | many | | Probably on brush entities (now drawn) or displacements, which decals and overlays don't project onto | Open |
-| 12 | A dark, unlit-looking building block behind the street | cs_office | cam0, left | Unknown: needs the reference view | Open: reference capture needed |
+| 12 | Black blocks over building walls | cs_office (street, garage), de_nuke | office cam0, left | Additive security-light decals (`decals/offseclight`) drawn opaque | Fixed with 5 |
 | 13 | View model drawn in `--views` captures | all | | No `r_drawviewmodel` equivalent; capture hides nothing | Open (client) |
 | 15 | Switchable lights that start on missing (office projector, assault red lights) | cs_office, cs_assault | office h1 room | Only lightmap style 0 was read | Fixed: styles lit at map start are summed |
 | 14 | `--views` crashed (wgpu: attachments of different sizes) | all | | The view-model camera stayed on the window when `--views` retargeted the main camera | Fixed: follows the anchor camera's target |
@@ -54,7 +57,7 @@ not bugs).
 
 - Reference captures for de_aztec, cs_office, de_nuke at the views above
   (needs the shared reference game), to confirm WorldTwoTextureBlend's
-  look and item 12.
+  look and overall brightness.
 - Other stock maps' views (de_train, de_inferno, cs_italy, de_dust, ...).
 - Brush entity render modes other than normal and 10 (translucent
   func_brush via renderamt).

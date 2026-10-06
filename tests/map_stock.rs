@@ -181,6 +181,104 @@ fn switchable_lights_that_start_on_are_baked_in() {
     assert!(brighter * 2 > faces, "{brighter} of {faces} faces brighter with the projector on");
 }
 
+/// Debug aid: `MAP=cs_office cargo test ... --ignored dark_textures --
+/// --nocapture` lists world and prop materials whose base texture is
+/// nearly black, or missing.
+#[test]
+#[ignore = "debug aid"]
+fn dark_textures() {
+    let Ok(name) = std::env::var("MAP") else { return };
+    let Some(map) = load(&name) else { return };
+    for m in map.meshes.iter().chain(map.models.iter().flat_map(|m| m.meshes.iter())) {
+        let Some(t) = m.texture.map(|i| &map.textures[i]) else {
+            if m.alpha != mashup::map::MapAlpha::Add {
+                println!("{} untextured", m.material);
+            }
+            continue;
+        };
+        let n = (t.rgba8.len() / 4).max(1) as f32;
+        let mean = t.rgba8.chunks(4).map(|p| p[0] as f32 + p[1] as f32 + p[2] as f32).sum::<f32>() / (3.0 * 255.0 * n);
+        if mean < 0.05 {
+            println!("{} {} {mean:.3} {}x{}", m.material, t.name, t.width, t.height);
+        }
+        if let Some(d) = m.detail {
+            let t = &map.textures[d.texture];
+            let n = (t.rgba8.len() / 4).max(1) as f32;
+            let dm = t.rgba8.chunks(4).map(|p| p[0] as f32 + p[1] as f32 + p[2] as f32).sum::<f32>() / (3.0 * 255.0 * n);
+            if d.mode == 0 && dm < 0.3 {
+                println!("{} detail {} mod2x mean {dm:.3}", m.material, t.name);
+            }
+        }
+    }
+    // Shipped mips much darker than the full-size image (distant surfaces
+    // turn black).
+    let mean = |px: &[u8]| {
+        let n = (px.len() / 4).max(1) as f32;
+        px.chunks(4).map(|p| p[0] as f32 + p[1] as f32 + p[2] as f32).sum::<f32>() / (3.0 * 255.0 * n)
+    };
+    for t in &map.textures {
+        let full = mean(&t.rgba8);
+        for (level, mip) in t.mips.iter().enumerate() {
+            let m = mean(mip);
+            if (m - full).abs() > 0.25 * full.max(0.05) {
+                println!("{} mip {} mean {m:.3} vs {full:.3}", t.name, level + 1);
+                break;
+            }
+        }
+    }
+}
+
+/// Debug aid: which world mesh a `--views` pixel shows. `MAP=cs_office
+/// EYE=x,y,z LOOK=yaw,pitch PX=250,330 cargo test ... --ignored pick --
+/// --nocapture` (engine space and angles as in views.json; 1280x720).
+#[test]
+#[ignore = "debug aid"]
+fn pick() {
+    use bevy::math::{Quat, Vec3};
+    let (Ok(name), Ok(eye), Ok(look), Ok(px)) = (
+        std::env::var("MAP"),
+        std::env::var("EYE"),
+        std::env::var("LOOK"),
+        std::env::var("PX"),
+    ) else {
+        return;
+    };
+    let Some(map) = load(&name) else { return };
+    let nums = |s: &str| s.split(',').map(|v| v.parse::<f32>().unwrap()).collect::<Vec<_>>();
+    let (e, l, p) = (nums(&eye), nums(&look), nums(&px));
+    let eye = Vec3::new(e[0], e[1], e[2]);
+    // 74 degrees vertical (CS:S's 90 at 4:3), 16:9.
+    let ty = (73.74f32 / 2.0).to_radians().tan();
+    let (x, y) = ((p[0] + 0.5) / 640.0 - 1.0, 1.0 - (p[1] + 0.5) / 360.0);
+    let local = Vec3::new(x * ty * 16.0 / 9.0, y * ty, -1.0).normalize();
+    let rot = Quat::from_rotation_y(l[0].to_radians()) * Quat::from_rotation_x(l[1].to_radians());
+    let dir = rot * local;
+    let mut hits = Vec::new();
+    for m in &map.meshes {
+        for tri in m.indices.chunks(3) {
+            let [a, b, c] = [0, 1, 2].map(|k| Vec3::from(m.positions[tri[k] as usize]));
+            let (e1, e2) = (b - a, c - a);
+            let h = dir.cross(e2);
+            let det = e1.dot(h);
+            if det.abs() < 1e-9 {
+                continue;
+            }
+            let s = eye - a;
+            let u = s.dot(h) / det;
+            let q = s.cross(e1);
+            let v = dir.dot(q) / det;
+            let t = e2.dot(q) / det;
+            if u >= 0.0 && v >= 0.0 && u + v <= 1.0 && t > 0.0 {
+                hits.push((t, m.material.clone(), m.skybox, m.alpha, m.texture.map(|i| map.textures[i].name.clone())));
+            }
+        }
+    }
+    hits.sort_by(|a, b| a.0.total_cmp(&b.0));
+    for h in hits.iter().take(5) {
+        println!("{h:?}");
+    }
+}
+
 /// Debug aid: `MAP=de_aztec AT=-280,-1512,-160 R=600 cargo test ...
 /// --ignored props_near -- --nocapture` lists props near a Source point.
 #[test]
