@@ -194,8 +194,9 @@ pub enum EnvmapMask {
 /// shader's fast-path rule has been applied.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MapEnvmap {
-    /// Index into `MapData::cubemaps`.
-    pub cubemap: usize,
+    /// Index into `MapData::cubemaps`; None: the cubemap sample nearest
+    /// to each object using the material (`MapData::cubemap_samples`).
+    pub cubemap: Option<usize>,
     pub mask: EnvmapMask,
     pub tint: [f32; 3],
     pub contrast: f32,
@@ -541,6 +542,9 @@ pub struct MapData {
     pub textures: Vec<MapTexture>,
     /// Baked reflection cubemaps (`MapEnvmap::cubemap` indexes these).
     pub cubemaps: Vec<MapCubemap>,
+    /// Where the map's cubemaps were baked: (position, index into
+    /// `cubemaps`), for objects that take the nearest.
+    pub cubemap_samples: Vec<(Vec3, usize)>,
     pub lightmap: Option<MapLightmap>,
     pub models: Vec<MapModel>,
     pub props: Vec<MapProp>,
@@ -995,6 +999,12 @@ fn spawn_map(
     let mut model_parts: Vec<Vec<(Handle<Mesh>, Handle<StandardMaterial>)>> = Vec::new();
     // Per model mesh: [in the world (fogged), in the 3D skybox].
     let mut lit_model_materials: Vec<Vec<[Handle<PropMaterial>; 2]>> = Vec::new();
+    // Cubemap handles, and prop materials with the nearest one, made as
+    // props need them: (model, mesh, sky layer, cubemap).
+    let mut cubemap_handles: Vec<Handle<Image>> = Vec::new();
+    let mut texture_handles: Vec<Handle<Image>> = Vec::new();
+    let mut envmap_variants: std::collections::HashMap<(usize, usize, bool, usize), Handle<PropMaterial>> =
+        std::collections::HashMap::new();
 
     if let (Some(meshes), Some(materials), Some(images)) = (meshes.as_mut(), materials.as_mut(), images.as_mut()) {
         let textures: Vec<Handle<Image>> = data
@@ -1003,6 +1013,8 @@ fn spawn_map(
             .map(|t| images.add(to_image(t, &data.look)))
             .collect();
         let cubemaps: Vec<Handle<Image>> = data.cubemaps.iter().map(|c| images.add(cube_image(c))).collect();
+        cubemap_handles = cubemaps.clone();
+        texture_handles = textures.clone();
         // Character bodies, drawn by `attach_bodies`: skinned when the
         // model has a skeleton.
         if let Some(bindposes) = bindposes.as_mut() {
@@ -1160,7 +1172,11 @@ fn spawn_map(
                             MapDebugView::Lighting { .. } => 1.0,
                             MapDebugView::Albedo => 2.0,
                         },
-                        envmap: if m.envmap.is_some() { 1.0 } else { 0.0 },
+                        envmap: if m.envmap.is_some_and(|e| e.cubemap.is_some()) {
+                            1.0
+                        } else {
+                            0.0
+                        },
                         envmap_mask: match m.envmap.map(|e| e.mask) {
                             Some(EnvmapMask::NormalAlpha) if m.normal_map.is_some() => 1.0,
                             Some(EnvmapMask::BaseAlphaInverted) => 2.0,
@@ -1184,7 +1200,7 @@ fn spawn_map(
                         .normal_map
                         .filter(|_| bumped || (m.envmap.is_some() && g_sign != 0.0))
                         .map(|i| textures[i].clone()),
-                    envmap: m.envmap.map(|e| cubemaps[e.cubemap].clone()),
+                    envmap: m.envmap.and_then(|e| e.cubemap).map(|c| cubemaps[c].clone()),
                     envmap_mask: match m.envmap.map(|e| e.mask) {
                         Some(EnvmapMask::Texture(i)) => Some(textures[i].clone()),
                         _ => None,
@@ -1282,8 +1298,11 @@ fn spawn_map(
                                         ),
                                         fog_range: fog_range(data.fog.as_ref()),
                                         translucent: if m.alpha == MapAlpha::Blend { 1.0 } else { 0.0 },
+                                        ..default()
                                     },
                                     base: m.texture.filter(|_| !lighting_only).map(|i| textures[i].clone()),
+                                    envmap: None,
+                                    envmap_mask: None,
                                     alpha_mode: match m.alpha {
                                         MapAlpha::Opaque | MapAlpha::Mask(_) => AlphaMode::Opaque,
                                         MapAlpha::Blend => AlphaMode::Blend,
@@ -1559,8 +1578,40 @@ fn spawn_map(
             // Baked: own mesh copy with per-vertex light, unlit material
             // (texture x light, like the lightmapped world).
             (Some(probe), Some(meshes), Some(mats)) => {
-                for (m, material) in data.models[prop.model].meshes.iter().zip(mats) {
-                    let material = &material[prop.skybox as usize];
+                for (mesh_index, (m, material)) in data.models[prop.model].meshes.iter().zip(mats).enumerate() {
+                    let mut material = material[prop.skybox as usize].clone();
+                    // `env_cubemap`: the cubemap baked nearest to the prop.
+                    if let (Some(env), Some(prop_materials)) =
+                        (m.envmap.filter(|e| e.cubemap.is_none()), prop_materials.as_mut())
+                        && let Some(&(_, cube)) = data.cubemap_samples.iter().min_by(|a, b| {
+                            a.0.distance(prop.translation)
+                                .total_cmp(&b.0.distance(prop.translation))
+                        })
+                        && let Some(cube_handle) = cubemap_handles.get(cube)
+                    {
+                        let key = (prop.model, mesh_index, prop.skybox, cube);
+                        material = envmap_variants
+                            .entry(key)
+                            .or_insert_with(|| {
+                                let mut variant = prop_materials.get(&material).cloned().expect("prop material");
+                                variant.envmap = Some(cube_handle.clone());
+                                variant.params.envmap = 1.0;
+                                variant.params.envmap_mask = match env.mask {
+                                    EnvmapMask::BaseAlphaInverted => 2.0,
+                                    EnvmapMask::Texture(_) => 3.0,
+                                    _ => 0.0,
+                                };
+                                if let EnvmapMask::Texture(t) = env.mask {
+                                    variant.envmap_mask = texture_handles.get(t).cloned();
+                                }
+                                variant.params.envmap_contrast = env.contrast;
+                                variant.params.envmap_saturation = env.saturation;
+                                variant.params.envmap_tint =
+                                    Vec3::from_array(env.tint.map(gamma_to_linear)).extend(1.0);
+                                prop_materials.add(variant)
+                            })
+                            .clone();
+                    }
                     let layer = layer_of(prop.skybox);
                     let colors: Vec<[f32; 4]> = m
                         .normals
@@ -1575,12 +1626,7 @@ fn spawn_map(
                         .collect();
                     let mut mesh = build_mesh(m, false);
                     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
-                    commands.spawn((
-                        Mesh3d(meshes.add(mesh)),
-                        MeshMaterial3d(material.clone()),
-                        layer,
-                        ChildOf(id),
-                    ));
+                    commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(material), layer, ChildOf(id)));
                 }
             }
             _ => {
@@ -1758,6 +1804,16 @@ fn to_image(t: &MapTexture, look: &MapLook) -> Image {
         ..default()
     });
     image
+}
+
+/// Source's parameter gamma-to-linear table (specs/cs_source/shaders.md
+/// Quirks): rounded to 1/255; 0.95 and up become 1; above 1 unchanged.
+fn gamma_to_linear(v: f32) -> f32 {
+    if v > 1.0 {
+        return v;
+    }
+    let v = (v * 255.0).round() / 255.0;
+    if v >= 0.95 { 1.0 } else { v.powf(2.2) }
 }
 
 /// A baked cubemap as a cube texture (six sRGB layers, clamped, linear).

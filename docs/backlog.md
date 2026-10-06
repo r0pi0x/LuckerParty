@@ -50,10 +50,6 @@ docs/plans/active/sound.md.
 
 ## 5. Visual fidelity
 
-- **Env maps on props**: unpatched `env_cubemap` materials (models) take
-  the nearest cubemap at run time (BSP cubemap lump); the model shader's
-  envmap (gamma-converted tint, no fresnel). World reflections are in
-  (refcmp `tunnel_floor_*`).
 - **Water surfaces**: swimming works (`MapWater`), but water faces draw as
   plain textured surfaces, without the Water shader's refraction,
   reflection or fog. Water currents (base velocity) aren't applied.

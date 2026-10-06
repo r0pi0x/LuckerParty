@@ -99,6 +99,28 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
     super::decals::add_decals(&bsp, &layout, &mut materials, &mut data);
     super::overlays::add_overlays(&bsp, &bytes, &layout, &mut materials, &mut data);
     super::sky::add_sky(&bsp, &mut materials, &mut data);
+    // Cubemap samples (lump 42: origin as three ints, then a size): the
+    // baked cubemap at each, for objects that take the nearest.
+    for origin in cubemap_samples(&bytes) {
+        let path = format!(
+            "maps/{}/c{}_{}_{}",
+            name.to_lowercase(),
+            origin[0],
+            origin[1],
+            origin[2]
+        );
+        if let Some(c) = materials.cubemap(&path) {
+            let at = Vec3::new(origin[0] as f32, origin[1] as f32, origin[2] as f32);
+            data.cubemap_samples.push((
+                to_engine(vbsp::Vector {
+                    x: at.x,
+                    y: at.y,
+                    z: at.z,
+                }),
+                c,
+            ));
+        }
+    }
     data.warnings.extend(materials.missing);
     data.textures = materials.textures;
     data.cubemaps = materials.cubemaps;
@@ -748,4 +770,25 @@ fn parse_vector(s: &str) -> Option<vbsp::Vector> {
     let mut it = s.split_whitespace().map(|p| p.parse::<f32>());
     let (x, y, z) = (it.next()?.ok()?, it.next()?.ok()?, it.next()?.ok()?);
     Some(vbsp::Vector { x, y, z })
+}
+
+/// The cubemap lump's sample origins (lump 42, 16 bytes each: three i32
+/// coordinates and a size).
+fn cubemap_samples(bytes: &[u8]) -> Vec<[i32; 3]> {
+    let lump = |i: usize| -> Option<(usize, usize)> {
+        let at = 8 + i * 16;
+        let off = i32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?);
+        let len = i32::from_le_bytes(bytes.get(at + 4..at + 8)?.try_into().ok()?);
+        Some((off.max(0) as usize, len.max(0) as usize))
+    };
+    let Some((off, len)) = lump(42) else { return Vec::new() };
+    let Some(data) = bytes.get(off..off + len) else {
+        return Vec::new();
+    };
+    data.chunks_exact(16)
+        .map(|c| {
+            let i = |k: usize| i32::from_le_bytes(c[k * 4..k * 4 + 4].try_into().unwrap());
+            [i(0), i(1), i(2)]
+        })
+        .collect()
 }

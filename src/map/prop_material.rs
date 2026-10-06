@@ -18,6 +18,15 @@ pub struct PropParams {
     /// 1 when alpha blended; otherwise the output alpha is 1 (see
     /// `WorldParams::translucent`).
     pub translucent: f32,
+    /// 1 when the prop reflects `envmap` (Source VertexLitGeneric
+    /// `$envmap`: no fresnel).
+    pub envmap: f32,
+    /// 0 no mask, 2 one minus base alpha, 3 `envmap_mask` colour.
+    pub envmap_mask: f32,
+    pub envmap_contrast: f32,
+    pub envmap_saturation: f32,
+    /// Linear tint (the model shader converts the material's gamma value).
+    pub envmap_tint: Vec4,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
@@ -28,6 +37,12 @@ pub struct PropMaterial {
     #[texture(1)]
     #[sampler(2)]
     pub base: Option<Handle<Image>>,
+    /// Cube texture sampled with Source-frame (Z-up) directions.
+    #[texture(3, dimension = "cube")]
+    #[sampler(4)]
+    pub envmap: Option<Handle<Image>>,
+    #[texture(5)]
+    pub envmap_mask: Option<Handle<Image>>,
     pub alpha_mode: AlphaMode,
     pub double_sided: bool,
 }

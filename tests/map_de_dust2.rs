@@ -1376,11 +1376,25 @@ fn envmaps_load() {
     assert_eq!(e.mask, EnvmapMask::NormalAlpha);
     // Fast path: $envmapsaturation .0001 with no contrast is ignored.
     assert_eq!((e.contrast, e.saturation, e.fresnel), (0.0, 1.0, 1.0));
-    let c = &map.cubemaps[e.cubemap];
+    let c = &map.cubemaps[e.cubemap.expect("a baked cubemap")];
     assert_eq!(c.size, 64);
     assert!(c.faces.iter().all(|f| f.len() == 64 * 64 * 4));
     // Faces differ (not six copies of one image).
     assert_ne!(c.faces[4], c.faces[5]);
+    // The cubemap lump's samples (37 on dust2) load for props.
+    assert_eq!(map.cubemap_samples.len(), 37);
+    // Cars reflect the nearest cubemap, tinted by the DX9 block (.125 on
+    // car002b).
+    let car = map
+        .models
+        .iter()
+        .flat_map(|m| &m.meshes)
+        .find(|m| m.material.contains("car002b"))
+        .expect("car002b");
+    let e = car.envmap.expect("car envmap");
+    assert_eq!(e.cubemap, None);
+    assert_eq!(e.mask, EnvmapMask::BaseAlphaInverted);
+    assert!((e.tint[0] - 0.125).abs() < 1e-4, "{:?}", e.tint);
 }
 
 /// `map` loads in place (mashup::map::change_map): a second load replaces

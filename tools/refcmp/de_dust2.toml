@@ -139,3 +139,10 @@ angles = [0, 0]
 name = "glow_halo"
 position = [-1406.0, 1040.0, 140.0]
 angles = [-10, 90]
+
+# A car (env_cubemap: the nearest baked cubemap, masked by 1 - base alpha,
+# tinted .125 by the DX9 block).
+[[view]]
+name = "car_reflection"
+position = [1462.0, 2026.0, 110.0]
+angles = [12, 31]

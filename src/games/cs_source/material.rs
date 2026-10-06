@@ -247,21 +247,40 @@ impl<'a> MaterialLoader<'a> {
             }
             return out;
         }
-        // shader { key value ... }: the first block's own keys only.
+        // shader { key value ... }: the first block's own keys, then the
+        // DirectX 9 fallback block's (`<shader>_dx9`), which LDR CS:S uses
+        // at DX level 90 and up; other nested blocks (proxies, HDR) are
+        // skipped.
         let mut level = 0;
         let mut i = 0;
+        let mut dx9 = HashMap::new();
+        let mut in_dx9 = false;
         while i < t.len() {
             match t[i].as_str() {
                 "{" => level += 1,
-                "}" => level -= 1,
-                key if level == 1 && t.get(i + 1).is_some_and(|v| v != "{" && v != "}") => {
-                    out.insert(key.to_lowercase(), t[i + 1].clone());
+                "}" => {
+                    level -= 1;
+                    if level <= 1 {
+                        in_dx9 = false;
+                    }
+                }
+                key if level == 1 && t.get(i + 1).is_some_and(|v| v == "{") => {
+                    let k = key.to_lowercase();
+                    in_dx9 = k.ends_with("_dx9") && !k.contains("hdr");
+                }
+                key if t.get(i + 1).is_some_and(|v| v != "{" && v != "}") => {
+                    if level == 1 {
+                        out.insert(key.to_lowercase(), t[i + 1].clone());
+                    } else if level == 2 && in_dx9 {
+                        dx9.insert(key.to_lowercase(), t[i + 1].clone());
+                    }
                     i += 1;
                 }
                 _ => {}
             }
             i += 1;
         }
+        out.extend(dx9);
         out
     }
 
@@ -271,12 +290,13 @@ impl<'a> MaterialLoader<'a> {
         use crate::map::EnvmapMask;
         let keys = self.keys(text, 0);
         let name = keys.get("$envmap")?.clone();
-        // Unpatched "env_cubemap" is assigned per object by the engine at
-        // run time (props); not handled yet.
-        if name.eq_ignore_ascii_case("env_cubemap") {
-            return None;
-        }
-        let cubemap = self.cubemap(&name)?;
+        // Unpatched "env_cubemap": the engine picks the nearest of the
+        // map's cubemaps per object at run time.
+        let cubemap = if name.eq_ignore_ascii_case("env_cubemap") {
+            None
+        } else {
+            Some(self.cubemap(&name)?)
+        };
         let num = |k: &str, d: f32| keys.get(k).and_then(|v| vector(v)).map_or(d, |v| v[0]);
         let flag = |k: &str| keys.get(k).is_some_and(|v| v.trim() != "0");
         let mask = if flag("$normalmapalphaenvmapmask") && bumped {
@@ -311,7 +331,7 @@ impl<'a> MaterialLoader<'a> {
     }
 
     /// A cubemap texture's six faces (largest mip; sRGB).
-    fn cubemap(&mut self, name: &str) -> Option<usize> {
+    pub fn cubemap(&mut self, name: &str) -> Option<usize> {
         let path = format!("materials/{}.vtf", normalize(name).trim_end_matches(".vtf"));
         if let Some(c) = self.cube_by_path.get(&path) {
             return *c;
