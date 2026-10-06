@@ -112,7 +112,8 @@ burst), HUD, deathmatch and a first bot are in.
 ## 4. Bots
 
 - CS:S bot path costs and route variety (nav spec open questions 2–4),
-  checking corners, teamwork.
+  checking corners, teamwork, team roles (attackers to a site, defenders
+  holding one; today both roam toward the objectives 70 % of the time).
 
 ## 5. Console, remaining
 

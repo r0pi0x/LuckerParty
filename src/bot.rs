@@ -128,6 +128,37 @@ impl Bot {
     }
 }
 
+/// Share of roaming goals picked at the map's objectives (bomb sites,
+/// hostages) rather than anywhere, so teams meet where CS:S bots do.
+const OBJECTIVE_SHARE: f32 = 0.7;
+
+/// The map's objective points (engine space, feet height of the volume's
+/// bottom or the entity): bomb sites (`func_bomb_target`), hostage rescue
+/// zones and hostages.
+pub fn objectives(map: &crate::map::MapEntities) -> Vec<Vec3> {
+    use crate::map::entities::{entity_rotation, entity_to_engine};
+    map.entities
+        .iter()
+        .filter_map(|e| {
+            let class = e.classname();
+            match class {
+                "func_bomb_target" | "func_hostage_rescue" => {
+                    let points: Vec<Vec3> = e.hulls.iter().flat_map(|h| h.points.iter().copied()).collect();
+                    if points.is_empty() {
+                        return None;
+                    }
+                    let lo = points.iter().fold(Vec3::splat(f32::MAX), |a, p| a.min(*p));
+                    let hi = points.iter().fold(Vec3::splat(f32::MIN), |a, p| a.max(*p));
+                    let local = Vec3::new((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0, lo.z);
+                    Some(entity_to_engine(e.origin() + entity_rotation(e.angles()) * local, map.scale))
+                }
+                "hostage_entity" | "info_bomb_target" => Some(entity_to_engine(e.origin(), map.scale)),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
 /// Seconds a bot keeps chasing what it saw or heard.
 const MEMORY: f64 = 15.0;
 /// A remembered or roaming goal counts as reached within this, m.
@@ -246,8 +277,16 @@ fn think(
     nav: Option<Res<NavMesh>>,
     cfg: Res<BotConfig>,
     time: Res<Time>,
+    entities: Option<Res<crate::map::MapEntities>>,
+    mut goals: Local<Option<(usize, Vec<Vec3>)>>,
 ) {
     let dt = time.delta_secs();
+    // The map's objectives, worked out once per map.
+    let key = entities.as_ref().map_or(0, |m| std::sync::Arc::as_ptr(&m.entities) as usize);
+    if goals.as_ref().is_none_or(|(k, _)| *k != key) {
+        *goals = Some((key, entities.as_deref().map(objectives).unwrap_or_default()));
+    }
+    let objective_points: &[Vec3] = goals.as_ref().map_or(&[], |(_, g)| g);
     for (me, mut bot, mut intent, t, state, team, health) in &mut bots {
         if health.current <= 0.0 {
             bot.target = None;
@@ -352,8 +391,14 @@ fn think(
             Some((at, _)) => at,
             None => {
                 if bot.roam.is_none() && !nav.areas.is_empty() {
-                    let i = (bot.rand() * nav.areas.len() as f32) as usize % nav.areas.len();
-                    bot.roam = Some(nav.areas[i].center);
+                    let at_objective = !objective_points.is_empty() && bot.rand() < OBJECTIVE_SHARE;
+                    bot.roam = Some(if at_objective {
+                        let k = (bot.rand() * objective_points.len() as f32) as usize % objective_points.len();
+                        objective_points[k]
+                    } else {
+                        let i = (bot.rand() * nav.areas.len() as f32) as usize % nav.areas.len();
+                        nav.areas[i].center
+                    });
                     bot.repath = 0.0;
                 }
                 match bot.roam {

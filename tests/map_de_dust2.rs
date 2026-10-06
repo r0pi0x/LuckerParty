@@ -2360,3 +2360,23 @@ fn buy_zones_cover_each_teams_spawns() {
     let mid = Vec3::new(-480.0, 0.0, -420.0) * map.entity_scale + Vec3::Y;
     assert!(!check(&mut w, mid, 1) && !check(&mut w, mid, 2));
 }
+
+/// Bots' objectives: dust2's two bomb sites, on the floor near the
+/// overview's A and B (nav places BombsiteA/BombsiteB).
+#[test]
+fn bot_objectives_are_the_bomb_sites() {
+    use mashup::{bot::objectives, map::MapEntities};
+    let Some(map) = dust2() else { return };
+    let goals = objectives(&MapEntities {
+        entities: std::sync::Arc::new(map.entities.clone()),
+        scale: map.entity_scale,
+    });
+    assert_eq!(goals.len(), 2, "{goals:?}");
+    let nav = map.nav.as_ref().expect("nav mesh");
+    let mut places: Vec<String> = goals
+        .iter()
+        .filter_map(|g| nav.area_at(*g + Vec3::Y * 0.5).and_then(|a| nav.places.get(nav.areas[a].place?).cloned()))
+        .collect();
+    places.sort();
+    assert_eq!(places, ["BombsiteA", "BombsiteB"], "{goals:?}");
+}
