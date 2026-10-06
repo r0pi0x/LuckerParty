@@ -29,6 +29,11 @@ pub const CHAN_ITEM: u8 = 3;
 
 pub struct WeaponPlugin;
 
+/// The weapon frame within `SimSet::Weapons`: games order their weapon
+/// feel (inaccuracy, recoil) before or after it.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct WeaponFrame;
+
 impl Plugin for WeaponPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<WeaponRegistry>()
@@ -39,7 +44,9 @@ impl Plugin for WeaponPlugin {
                 FixedUpdate,
                 (
                     (give_starting_weapons, select_weapons).chain().before(SimSet::Movement),
-                    (weapon_frame, timed_sounds).chain().in_set(SimSet::Weapons),
+                    (weapon_frame.in_set(WeaponFrame), timed_sounds)
+                        .chain()
+                        .in_set(SimSet::Weapons),
                 ),
             );
         app.init_resource::<Console>();
@@ -254,6 +261,10 @@ pub enum FireTiming {
     Set,
     /// next += cycle per shot; several shots per tick if behind.
     Accumulate,
+    /// CS:S (measured, spec M4): a fresh press sets next = now + cycle;
+    /// while held, next = previous next + cycle, at most one shot a tick
+    /// (the AK-47's 0.1 s fires 7, 7, 7, 6 ticks apart).
+    CarryOver,
 }
 
 /// Cost: a magazine. Rounds move from the reserve when a reload ends.
@@ -264,6 +275,10 @@ pub struct Magazine {
     pub reserve: u32,
     /// Seconds from starting a reload to the swap.
     pub reload_time: f32,
+    /// Holding attack on an empty clip reloads as soon as allowed (the
+    /// SDK); otherwise it dry-fires once and the reload waits for the
+    /// buttons to be released (CS:S, measured M10).
+    pub reload_while_held: bool,
 }
 
 /// Delivery: instant traces from the eye.
@@ -271,9 +286,28 @@ pub struct Magazine {
 pub struct Hitscan {
     pub range: f32,
     pub pellets: u32,
-    /// Spread scale along the aim's right and up vectors (spec 4.3).
-    pub spread: f32,
+    pub spread: SpreadShape,
+    /// Shots go along the view plus this times the owner's `ViewPunch`.
+    pub punch_scale: f32,
 }
+
+/// How shots scatter around the aim, as offsets along its right and up
+/// vectors (tangent units).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SpreadShape {
+    /// SDK template: each axis U(-.5,.5)+U(-.5,.5), times the scale.
+    Template(f32),
+    /// CS:S (measured M2): a uniform radius up to `inaccuracy` at a random
+    /// angle, plus one up to `spread` at another. Game code updates
+    /// `inaccuracy` as it changes.
+    Disc { inaccuracy: f32, spread: f32 },
+}
+
+/// Recoil on a character's view (pitch up, yaw left; radians): added to
+/// the camera, and to shots by `Hitscan::punch_scale`. Games that model
+/// recoil add and decay it.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
+pub struct ViewPunch(pub Vec2);
 
 /// Delivery: melee swings, one per attack button.
 #[derive(Component, Clone, Debug)]
@@ -288,14 +322,26 @@ pub struct Swing {
     /// Half size of the box swept when the line misses (spec 6.1); none: no
     /// fallback.
     pub hull: Option<f32>,
+    /// How far the box is swept (the SDK: range minus the box's corner
+    /// distance; CS:S's knife: the full range).
+    pub hull_reach: f32,
     /// The box only hits targets within this cosine of the view.
     pub facing_cos: f32,
     pub damage: f32,
-    /// Damage when hitting from behind (target facing away), if different.
+    /// (window, damage): this damage instead when the previous swing of
+    /// this kind was less than `window` seconds ago (CS:S slash: 15 within
+    /// 0.9 s of the last slash).
+    pub follow_up: Option<(f32, f32)>,
+    /// Damage when hitting from behind, if different: the target faces
+    /// within acos(`BACKSTAB_COS`) of the attacker-to-target bearing.
     pub backstab: Option<f32>,
-    /// Seconds until either attack after a hit / a miss.
+    /// Hits scale by hitgroup (the SDK); CS:S's knife reports generic.
+    pub hitgroups: bool,
+    /// Seconds until either attack after a hit.
     pub hit_refire: f32,
+    /// After a miss: until this swing again, and until the other one.
     pub miss_refire: f32,
+    pub miss_refire_other: f32,
     /// Impulse per unit of damage, kg·m/s.
     pub force: f32,
     pub sound_hit: Option<String>,
@@ -313,6 +359,9 @@ pub struct DamageEffect {
     pub hitgroups: HitgroupScale,
     /// Impulse given to physics objects per shot, kg·m/s.
     pub impulse: f32,
+    /// Damage dealt is truncated to whole multiples of this (CS:S: one hit
+    /// point, 0.01); 0 keeps fractions.
+    pub quantum: f32,
 }
 
 /// Damage multiplier per hitgroup.
@@ -374,6 +423,8 @@ pub struct WeaponState {
     pub next_empty_sound: f64,
     /// Shots since the trigger was last released.
     pub burst: u32,
+    /// When each swing (primary, secondary) was last made.
+    pub last_swing: [Option<f64>; 2],
     /// Sounds waiting for their time (reload parts).
     pending: Vec<(f64, String)>,
 }
@@ -535,6 +586,7 @@ fn weapon_frame(
         &Transform,
         &MovementState,
         Option<&Health>,
+        Option<&ViewPunch>,
     )>,
     mut weapons: Query<WeaponParts>,
     mut world: deliver::World,
@@ -542,7 +594,7 @@ fn weapon_frame(
 ) {
     let now = time.elapsed_secs_f64();
     let dt = time.delta_secs();
-    for (owner, intent, mut inv, transform, state, health) in &mut owners {
+    for (owner, intent, mut inv, transform, state, health, punch) in &mut owners {
         if health.is_some_and(|h| h.current <= 0.0) {
             continue;
         }
@@ -561,7 +613,9 @@ fn weapon_frame(
             continue;
         }
         let eye = transform.translation + state.eye_offset;
-        let aim = intent.look_rotation();
+        // Shots follow the view plus the weapon's share of the recoil.
+        let kick = punch.map_or(Vec2::ZERO, |p| p.0) * w.hitscan.map_or(0.0, |h| h.punch_scale);
+        let aim = Quat::from_euler(EulerRot::YXZ, intent.yaw + kick.y, intent.pitch + kick.x, 0.0);
         let mut ctx = deliver::Shot {
             owner,
             weapon: active,
@@ -599,10 +653,11 @@ fn weapon_frame(
             && let Some(swing) = w.melee.and_then(|m| m.secondary.clone())
             && w.state.next_secondary <= now
         {
+            let swing = follow_up(&swing, w.state.last_swing[1], now);
             let hit = ctx.swing(&swing, true);
-            let next = now + if hit { swing.hit_refire } else { swing.miss_refire } as f64;
-            w.state.next_primary = next;
-            w.state.next_secondary = next;
+            let (own, other) = swing_refire(&swing, hit, now, &mut w.state.last_swing[1]);
+            w.state.next_secondary = own;
+            w.state.next_primary = other;
             blocked = true;
         }
 
@@ -613,7 +668,9 @@ fn weapon_frame(
                 // Semi-automatic: wait for a fresh press.
             } else if w.magazine.as_ref().is_some_and(|m| m.clip == 0) {
                 if w.state.fired_on_empty {
-                    try_reload(&mut w, &mut inv, now, owner, &mut ctx.w.events);
+                    if w.magazine.as_ref().is_some_and(|m| m.reload_while_held) {
+                        try_reload(&mut w, &mut inv, now, owner, &mut ctx.w.events);
+                    }
                 } else {
                     // Fire on empty (spec 3.5).
                     w.state.fired_on_empty = true;
@@ -636,10 +693,11 @@ fn weapon_frame(
                     w.state.next_primary = now;
                 }
                 if let Some(swing) = w.melee.map(|m| m.primary.clone()) {
+                    let swing = follow_up(&swing, w.state.last_swing[0], now);
                     let hit = ctx.swing(&swing, false);
-                    let next = now + if hit { swing.hit_refire } else { swing.miss_refire } as f64;
-                    w.state.next_primary = next;
-                    w.state.next_secondary = next;
+                    let (own, other) = swing_refire(&swing, hit, now, &mut w.state.last_swing[0]);
+                    w.state.next_primary = own;
+                    w.state.next_secondary = other;
                     w.state.burst += 1;
                 } else if let Some(trigger) = w.trigger.cloned() {
                     let mut shots = 0;
@@ -654,6 +712,12 @@ fn weapon_frame(
                                 shots += 1;
                                 w.state.next_primary += trigger.cycle as f64;
                             }
+                        }
+                        FireTiming::CarryOver => {
+                            // A fresh press reset the timer to now above.
+                            shots = 1;
+                            w.state.next_primary += trigger.cycle as f64;
+                            w.state.next_secondary = w.state.next_primary;
                         }
                     }
                     if let Some(mag) = w.magazine.as_mut() {
@@ -691,6 +755,28 @@ fn weapon_frame(
                 try_reload(&mut w, &mut inv, now, owner, &mut ctx.w.events);
             }
         }
+    }
+}
+
+/// The swing with its follow-up damage when the previous one was recent.
+fn follow_up(swing: &Swing, last_swing: Option<f64>, now: f64) -> Swing {
+    match (swing.follow_up, last_swing) {
+        (Some((window, damage)), Some(t)) if now - t < window as f64 => Swing {
+            damage,
+            ..swing.clone()
+        },
+        _ => swing.clone(),
+    }
+}
+
+/// Next times for (this swing, the other) after a swing, recording it.
+fn swing_refire(swing: &Swing, hit: bool, now: f64, last_swing: &mut Option<f64>) -> (f64, f64) {
+    *last_swing = Some(now);
+    if hit {
+        let t = now + swing.hit_refire as f64;
+        (t, t)
+    } else {
+        (now + swing.miss_refire as f64, now + swing.miss_refire_other as f64)
     }
 }
 

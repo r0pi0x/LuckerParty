@@ -78,18 +78,18 @@ fn characters_start_with_knife_and_ak47_drawn() {
 
 #[test]
 fn deploy_then_fire_every_seven_ticks() {
-    // T5: the first shot 67 ticks after the draw (1.0 s); T6: held fire
-    // every 7 ticks (0.1 s cycle, "set" rule).
+    // T5: the first shot 67 ticks after the draw (1.0 s).
     let mut sim = sim();
     let p = sim.spawn_character(greybox::SPAWNS[0], placeholder::ID);
     sim.ticks(1); // weapons given and the AK-47 drawn this tick
     sim.intent(p).fire = true;
     let first = ticks_until_shot(&mut sim, p, 200).expect("never fired");
     assert_eq!(first, 67, "first shot after the draw");
-    for _ in 0..5 {
-        assert_eq!(ticks_until_shot(&mut sim, p, 20), Some(7));
-    }
-    assert_eq!(magazine(&sim, p).clip, 24);
+    // Held: next = previous next + 0.1 s, one shot a tick at most, so the
+    // AK-47 fires 7, 7, 7, 6 ticks apart (measured M4: exactly 600 rpm).
+    let gaps: Vec<u32> = (0..6).map(|_| ticks_until_shot(&mut sim, p, 20).unwrap()).collect();
+    assert_eq!(gaps, [7, 7, 6, 7, 7, 6]);
+    assert_eq!(magazine(&sim, p).clip, 23);
 }
 
 #[test]
@@ -154,9 +154,8 @@ fn ak47_shot_damages_a_target_once_per_shot() {
     sim.intent(shooter).fire = false;
     sim.ticks(1);
     let lost = 1.0 - health(&sim, target);
-    // 36 hp at ~8 m (315 units): 36 * 0.98^(315/500).
-    let expected = 0.36 * 0.98f32.powf(8.0 / 0.0254 / 500.0);
-    assert!((lost - expected).abs() < 0.01, "lost {lost}, expected {expected}");
+    // 36 hp at ~8 m (about 315 units): int(36 * 0.98^(d/500)) = 35 (M5).
+    assert!((lost - 0.35).abs() < 1e-4, "lost {lost}");
 }
 
 #[test]
@@ -277,4 +276,71 @@ fn a_bot_shoots_an_enemy_in_sight() {
         sim.app.world().get::<mashup::bot::Bot>(bot).unwrap().target,
         Some(player)
     );
+}
+
+#[test]
+fn knife_follow_up_slash_and_miss_refires() {
+    // Measured M11: 20, then 15 within 0.9 s of the last slash; a slash
+    // hit blocks both attacks 0.5 s.
+    let mut sim = sim();
+    let p = sim.spawn_character(greybox::SPAWNS[0], placeholder::ID);
+    let target = sim.spawn_character(greybox::SPAWNS[0] - Vec3::Z * 0.9, placeholder::ID);
+    sim.ticks(1);
+    sim.intent(p).select = Some(2);
+    sim.ticks(1);
+    sim.intent(p).select = None;
+    sim.seconds(1.1);
+    let chest = sim.position(target) + Vec3::Y * 0.3;
+    aim_at(&mut sim, p, chest);
+    sim.intent(target).yaw = std::f32::consts::PI;
+    sim.intent(p).fire = true;
+    // Held: hits every 34 ticks (0.5 s), 20 then 15s.
+    sim.ticks(70);
+    sim.intent(p).fire = false;
+    sim.ticks(1);
+    let lost = ((1.0 - health(&sim, target)) * 100.0).round() as i32;
+    assert_eq!(lost, 20 + 15 + 15, "three slashes");
+}
+
+#[test]
+fn ak47_recoil_kicks_and_inaccuracy_grows() {
+    use mashup::{games::cs_source::weapons::Inaccuracy, weapon::ViewPunch};
+    let mut sim = sim();
+    let p = sim.spawn_character(greybox::SPAWNS[0], placeholder::ID);
+    // The spawn drop lands (+InaccuracyLand); let that recover too.
+    sim.seconds(3.0);
+    let w = active(&sim, p);
+    let rest = sim.app.world().get::<Inaccuracy>(w).unwrap().value;
+    assert!((rest - 0.00916).abs() < 1e-5);
+    sim.intent(p).fire = true;
+    sim.ticks(1);
+    sim.intent(p).fire = false;
+    // First shot: 1 degree up, 0.375 sideways (M3), plus the fire penalty.
+    let punch = sim.app.world().get::<ViewPunch>(p).unwrap().0;
+    assert!((punch.x.to_degrees() - 1.0).abs() < 1e-3, "{punch}");
+    assert!((punch.y.to_degrees().abs() - 0.375).abs() < 1e-3, "{punch}");
+    let after = sim.app.world().get::<Inaccuracy>(w).unwrap().value;
+    assert!((after - (0.00916 + 0.01158)).abs() < 1e-5, "{after}");
+    // Both recover: the punch is gone within a second, the penalty is
+    // back near rest after its recovery time.
+    sim.seconds(1.0);
+    assert_eq!(sim.app.world().get::<ViewPunch>(p).unwrap().0, Vec2::ZERO);
+    let v = sim.app.world().get::<Inaccuracy>(w).unwrap().value;
+    assert!(v - 0.00916 < 0.0002, "{v}");
+}
+
+#[test]
+fn empty_clip_held_dry_fires_once_then_reloads_on_release() {
+    // Measured M10: no reload while attack stays held.
+    let mut sim = sim();
+    let p = sim.spawn_character(greybox::SPAWNS[0], placeholder::ID);
+    sim.seconds(1.1);
+    let w = active(&sim, p);
+    sim.app.world_mut().get_mut::<Magazine>(w).unwrap().clip = 1;
+    sim.intent(p).fire = true;
+    sim.seconds(3.0);
+    assert_eq!(magazine(&sim, p).clip, 0, "reloaded while held");
+    sim.intent(p).fire = false;
+    sim.seconds(2.6);
+    assert_eq!(magazine(&sim, p).clip, 30);
 }

@@ -268,14 +268,16 @@ fn spawn_local_player(
 /// Place the camera at the movement implementation's eye position and aim it
 /// along the look angles.
 fn follow_eye(
-    players: Query<(&Intent, &MovementState, &Children), With<LocalPlayer>>,
+    players: Query<(&Intent, &MovementState, &Children, Option<&crate::weapon::ViewPunch>), With<LocalPlayer>>,
     mut cameras: Query<&mut Transform, With<FirstPersonCamera>>,
 ) {
-    for (intent, state, children) in &players {
+    for (intent, state, children, punch) in &players {
+        // Recoil kicks the view (pitch up, yaw left).
+        let p = punch.map_or(Vec2::ZERO, |p| p.0);
         let mut cams = cameras.iter_many_mut(children);
         while let Some(mut cam) = cams.fetch_next() {
             cam.translation = state.eye_offset;
-            cam.rotation = intent.look_rotation();
+            cam.rotation = Quat::from_euler(EulerRot::YXZ, intent.yaw + p.y, intent.pitch + p.x, 0.0);
         }
     }
 }

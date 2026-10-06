@@ -203,7 +203,10 @@ fn draw_crosshair(
     let spread = inv
         .and_then(|i| i.active)
         .and_then(|w| scans.get(w).ok())
-        .map_or(0.0, |s| s.spread);
+        .map_or(0.0, |s| match s.spread {
+            crate::weapon::SpreadShape::Template(s) => s,
+            crate::weapon::SpreadShape::Disc { inaccuracy, spread } => inaccuracy + spread,
+        });
     let fov = match proj {
         Projection::Perspective(p) => p.fov,
         _ => 1.0,

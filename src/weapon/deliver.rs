@@ -5,7 +5,7 @@
 use avian3d::prelude::*;
 use bevy::prelude::*;
 
-use super::{DamageEffect, Hitscan, Swing, WeaponEvent, WeaponEventKind};
+use super::{DamageEffect, Hitscan, SpreadShape, Swing, WeaponEvent, WeaponEventKind};
 use crate::{
     core::{Damage, Health, Hitgroup, Intent},
     map::PlaySound,
@@ -77,9 +77,21 @@ impl Shot<'_, '_, '_> {
         let mut total: Vec<(Entity, f32, Hitgroup, Vec3, Vec3)> = Vec::new();
         for pellet in 0..scan.pellets.max(1) {
             let mut rng = Rng::new(self.seed.wrapping_add(1 + pellet));
-            let x = rng.range(-0.5, 0.5) + rng.range(-0.5, 0.5);
-            let y = rng.range(-0.5, 0.5) + rng.range(-0.5, 0.5);
-            let dir = spread_dir(self.aim, scan.spread, x, y);
+            let dir = match scan.spread {
+                SpreadShape::Template(s) => {
+                    let x = rng.range(-0.5, 0.5) + rng.range(-0.5, 0.5);
+                    let y = rng.range(-0.5, 0.5) + rng.range(-0.5, 0.5);
+                    spread_dir(self.aim, s, x, y)
+                }
+                SpreadShape::Disc { inaccuracy, spread } => {
+                    let mut offset = Vec2::ZERO;
+                    for r in [inaccuracy, spread] {
+                        let angle = rng.range(0.0, std::f32::consts::TAU);
+                        offset += Vec2::from_angle(angle) * rng.range(0.0, 1.0) * r;
+                    }
+                    spread_dir(self.aim, 1.0, offset.x, offset.y)
+                }
+            };
             let hit = self.trace(dir, scan.range);
             self.w.events.write(WeaponEvent {
                 owner: self.owner,
@@ -113,7 +125,7 @@ impl Shot<'_, '_, '_> {
             }
         }
         for (target, amount, hitgroup, point, dir) in total {
-            self.apply(target, amount, hitgroup, point, dir);
+            self.apply(target, quantize(amount, effect.quantum), hitgroup, point, dir);
         }
     }
 
@@ -160,7 +172,7 @@ impl Shot<'_, '_, '_> {
         {
             // Box swept to the range minus its corner distance, counting
             // only targets roughly in front.
-            let reach = (swing.range - half * 3f32.sqrt()).max(0.0);
+            let reach = swing.hull_reach;
             let shape = Collider::cuboid(half * 2.0, half * 2.0, half * 2.0);
             let config = ShapeCastConfig::from_max_distance(reach);
             if let Some(h) = self
@@ -196,15 +208,22 @@ impl Shot<'_, '_, '_> {
             }
             return false;
         };
-        let (alive, yaw, aabb) = match self.w.targets.get(hit.entity) {
-            Ok(t) => (t.health.is_some(), t.intent.map(|i| i.yaw_rotation()), t.aabb.copied()),
-            Err(_) => (false, None, None),
+        let (alive, yaw, aabb, origin) = match self.w.targets.get(hit.entity) {
+            Ok(t) => (
+                t.health.is_some(),
+                t.intent.map(|i| i.yaw_rotation()),
+                t.aabb.copied(),
+                Some(t.transform.translation),
+            ),
+            Err(_) => (false, None, None, None),
         };
         let mut amount = swing.damage;
-        if let (Some(back), Some(yaw)) = (swing.backstab, yaw) {
-            // Backstab: the target faces away from the swing.
+        if let (Some(back), Some(yaw), Some(origin)) = (swing.backstab, yaw, origin) {
+            // Backstab: the target faces along the bearing from the
+            // attacker to it (not the attacker's view; measured M11).
             let facing = (yaw * Vec3::NEG_Z).with_y(0.0).normalize_or_zero();
-            if facing.dot(forward.with_y(0.0).normalize_or_zero()) > BACKSTAB_COS {
+            let bearing = (origin - self.eye).with_y(0.0).normalize_or_zero();
+            if facing.dot(bearing) >= BACKSTAB_COS {
                 amount = back;
             }
         }
@@ -218,16 +237,28 @@ impl Shot<'_, '_, '_> {
             self.w.play.write(PlaySound::at(s.clone(), hit.point));
         }
         if alive {
-            let group = aabb.map_or(Hitgroup::Generic, |b| hitgroup_at(&b, hit.point));
+            let group = match aabb.filter(|_| swing.hitgroups) {
+                Some(b) => hitgroup_at(&b, hit.point),
+                None => Hitgroup::Generic,
+            };
             self.apply(hit.entity, amount, group, hit.point, hit.dir);
         }
         true
     }
 }
 
-/// Facing test for backstabs: the target's view within ≈45° of the
-/// attacker's (unmeasured; spec Q9).
-const BACKSTAB_COS: f32 = 0.7071;
+/// Backstab facing test: within 36.87° (CS:S measured: 36° backstab, 37°
+/// front).
+const BACKSTAB_COS: f32 = 0.8;
+
+/// `amount` truncated to whole multiples of `quantum` (0: unchanged),
+/// tolerant of float error just below a whole step.
+pub fn quantize(amount: f32, quantum: f32) -> f32 {
+    if quantum <= 0.0 {
+        return amount;
+    }
+    (amount / quantum + 1e-4).floor() * quantum
+}
 
 /// Aim direction bent by spread factors `x`, `y` (spec 4.3, CS template):
 /// normalize(forward + x·s·right + y·s·up).

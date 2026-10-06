@@ -25,9 +25,14 @@ Started 2026-10-05, from specs/cs_source/weapons.md. MVP plan items 4–5.
 1. [x] Framework, knife, AK-47, HUD (crosshair, health, ammo, hit marker,
    killfeed), deathmatch respawns, a first bot brain (no navigation),
    `tests/weapons.rs` (spec T5, T6, T8, T10, T11).
-2. [ ] Merge the probe measurements (M1–M17): inaccuracy model, recoil /
-   punch (aim = view + punch), hitgroup multipliers, falloff, armour,
-   penetration, knife numbers, fire timing rule.
+2. [x] Merge the probe measurements: carry-over refire (7,7,7,6 ticks),
+   dry fire on a held empty clip, whole-point damage with the measured
+   hitgroups and falloff, the knife (follow-up slash, bearing-based
+   backstab, generic hits, miss refires, box reach), AK-47 inaccuracy
+   (`Inaccuracy`) and recoil (`Recoil`, view punch, shots along view + 2 x
+   punch). Not yet: armour (players have none), penetration (unmeasured),
+   the landing rule and airborne/moving recoil sets (unmeasured), zoom
+   and fire modes (no weapons using them yet).
 3. [x] Bot navigation from specs/cs_source/nav.md. (CS:S bots' own path
    cost and follower aren't in the SDK; ours use the stock cost and a
    simple follower: crossing points, jump up ledges and when stuck.)
