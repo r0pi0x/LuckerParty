@@ -174,7 +174,7 @@ fn impact_decals(
                     point: *to,
                     normal: *normal,
                     dir: (*to - *from).normalize_or_zero(),
-                    spin: true,
+                    spin: false,
                 });
             }
             WeaponEventKind::Swing {

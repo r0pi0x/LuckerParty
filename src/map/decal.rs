@@ -173,15 +173,11 @@ impl TriSet {
 }
 
 /// Decal axes on a surface: right and down as seen from in front. Walls
-/// stay upright; floors and ceilings follow `dir`.
-pub fn basis(normal: Vec3, dir: Vec3) -> (Vec3, Vec3) {
+/// stay upright; floors and ceilings align to world X (the rule map decals
+/// follow; CS:S's bullet holes aren't turned either).
+pub fn basis(normal: Vec3) -> (Vec3, Vec3) {
     let n = normal.normalize_or_zero();
-    let up = if n.y.abs() < 0.7 {
-        Vec3::Y
-    } else {
-        let d = dir - n * dir.dot(n);
-        if d.length_squared() > 1e-6 { d.normalize() } else { Vec3::X }
-    };
+    let up = if n.y.abs() < 0.7 { Vec3::Y } else { Vec3::X };
     let right = up.cross(n).normalize_or_zero();
     let down = right.cross(n).normalize_or_zero();
     (right, down)
@@ -225,7 +221,7 @@ pub(super) fn project(
 ) -> Option<Mesh> {
     let n = normal.normalize_or_zero();
     let r = decal.size.max_element() * 0.75 + REACH;
-    let (mut pos, mut nor, mut uvs, mut idx) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut pos, mut nor, mut uvs, mut local, mut idx) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for i in surfaces.near(point, r) {
         let [a, b, c, tn] = surfaces.tris[i as usize];
         if tn.dot(n) < 0.5 || tn.dot(point - a).abs() > REACH {
@@ -244,6 +240,7 @@ pub(super) fn project(
             pos.push((*p + tn * LIFT).to_array());
             nor.push(tn.to_array());
             uvs.push(decal.uv_min + (decal.uv_max - decal.uv_min) * *t);
+            local.push(t.to_array());
         }
         for k in 1..poly.len() as u32 - 1 {
             idx.extend([base, base + k, base + k + 1]);
@@ -256,6 +253,8 @@ pub(super) fn project(
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, nor);
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs.into_iter().map(|v| v.to_array()).collect::<Vec<_>>());
+    // Position within the decal (0..1), for the shader's edge fade.
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, local);
     mesh.insert_indices(Indices::U32(idx));
     Some(mesh)
 }
@@ -329,7 +328,7 @@ pub(super) fn place_decals(
     for ask in asks.read() {
         let Some(index) = assets.pick(&ask.group) else { continue };
         let decal = assets.data.decals[index].clone();
-        let (mut right, mut down) = basis(ask.normal, ask.dir);
+        let (mut right, mut down) = basis(ask.normal);
         if ask.spin {
             let turn = Quat::from_axis_angle(ask.normal.normalize_or_zero(), assets.random() * std::f32::consts::TAU);
             (right, down) = (turn * right, turn * down);
@@ -422,16 +421,17 @@ impl Material for DecalMaterial {
         1000.0
     }
 
-    /// The framebuffer times the shader's factor; no depth writes.
+    /// The framebuffer times twice the shader's output; no depth writes.
     fn specialize(
         _pipeline: &bevy::pbr::MaterialPipeline,
         descriptor: &mut bevy::render::render_resource::RenderPipelineDescriptor,
         _layout: &bevy::mesh::MeshVertexBufferLayoutRef,
         _key: bevy::pbr::MaterialPipelineKey<Self>,
     ) -> Result<(), bevy::render::render_resource::SpecializedMeshPipelineError> {
+        // src x dst + dst x src = 2 x src x dst.
         let multiply = BlendComponent {
             src_factor: BlendFactor::Dst,
-            dst_factor: BlendFactor::Zero,
+            dst_factor: BlendFactor::Src,
             operation: BlendOperation::Add,
         };
         let keep = BlendComponent {
@@ -497,7 +497,7 @@ mod tests {
     #[test]
     fn decal_is_clipped_to_its_rectangle_on_the_surface() {
         let s = wall();
-        let (right, down) = basis(Vec3::Z, Vec3::NEG_Z);
+        let (right, down) = basis(Vec3::Z);
         assert!(right.abs_diff_eq(Vec3::X, 1e-6) && down.abs_diff_eq(Vec3::NEG_Y, 1e-6), "{right} {down}");
         let m = project(&s, &decal(0.1), Vec3::new(0.3, 0.2, 0.0), Vec3::Z, right, down).expect("a decal");
         let p = positions(&m);
@@ -517,7 +517,7 @@ mod tests {
     #[test]
     fn decal_over_an_edge_is_cut_off() {
         let s = wall();
-        let (right, down) = basis(Vec3::Z, Vec3::NEG_Z);
+        let (right, down) = basis(Vec3::Z);
         let m = project(&s, &decal(0.2), Vec3::new(1.95, 0.0, 0.0), Vec3::Z, right, down).unwrap();
         let max_x = positions(&m).iter().map(|p| p.x).fold(f32::MIN, f32::max);
         assert!((max_x - 2.0).abs() < 1e-4, "{max_x}");
@@ -526,7 +526,7 @@ mod tests {
     #[test]
     fn nothing_out_of_reach_or_facing_away() {
         let s = wall();
-        let (right, down) = basis(Vec3::Z, Vec3::NEG_Z);
+        let (right, down) = basis(Vec3::Z);
         assert!(project(&s, &decal(0.1), Vec3::new(0.0, 0.0, 0.5), Vec3::Z, right, down).is_none());
         assert!(project(&s, &decal(0.1), Vec3::ZERO, Vec3::X, Vec3::Z, Vec3::NEG_Y).is_none());
     }
