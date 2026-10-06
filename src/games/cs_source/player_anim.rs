@@ -542,6 +542,10 @@ mod tests {
         assert_eq!(suffix(Some("cs_source:weapon_ak47")), "AK");
         assert_eq!(suffix(Some("cs_source:weapon_knife")), "KNIFE");
         assert_eq!(suffix(Some("cs_source:weapon_usp")), "PISTOL");
+        assert_eq!(suffix(Some("cs_source:weapon_glock")), "PISTOL");
+        assert_eq!(suffix(Some("cs_source:weapon_deagle")), "PISTOL");
+        assert_eq!(suffix(Some("cs_source:weapon_m4a1")), "M4");
+        assert_eq!(suffix(Some("cs_source:weapon_awp")), "AWP");
         assert_eq!(suffix(None), "Pistol");
     }
 }

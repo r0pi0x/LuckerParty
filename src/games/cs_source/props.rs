@@ -174,7 +174,8 @@ pub fn load_view_model(
         }
     }
     let read = |p: &str| materials.read(p);
-    let bones = super::anim::bones(&read, path)?
+    let bones = super::anim::bones(&read, path)
+        .map_err(|e| format!("{path}: {e}"))?
         .into_iter()
         .map(|(name, parent, rotation, position)| crate::map::MapBone {
             name,
@@ -183,7 +184,9 @@ pub fn load_view_model(
             rotation,
         })
         .collect();
-    let animations = super::anim::load(&read, path).map(std::sync::Arc::new)?;
+    let animations = super::anim::load(&read, path)
+        .map(std::sync::Arc::new)
+        .map_err(|e| format!("{path}: {e}"))?;
     let (attachments, light_origin) = super::anim::attachments(&read, path)?;
     // Source axes to ours (x, z, -y): -90 degrees about X.
     let axes = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
@@ -327,6 +330,7 @@ fn convert_model_in(model: &vmdl::Model, skin: i32, materials: &mut MaterialLoad
                 double_sided: r.double_sided,
                 unlit: r.unlit,
                 envmap: r.envmap,
+                tint: r.tint,
                 ..default()
             }
         });
@@ -384,6 +388,7 @@ fn convert_model_in(model: &vmdl::Model, skin: i32, materials: &mut MaterialLoad
         bounds: (a.min(b), a.max(b)),
         collision: None,
         surfaceprop: None,
+        illum: None,
     }
 }
 
@@ -616,6 +621,13 @@ fn place_props(
                         .filter(|s| !s.is_empty())
                         .or(Some(m.surface_prop()).filter(|s| !s.is_empty()))
                         .map(str::to_lowercase);
+                    // The model's lighting position (its header's
+                    // illumination position, in the same space as its
+                    // vertices).
+                    model.illum = materials
+                        .read(&prop.model)
+                        .and_then(|b| vmdl::mdl::Mdl::read(&b).ok())
+                        .map(|mdl| to_engine(v(m.apply_root_transform(mdl.header.illumination_position))));
                     data.models.push(model);
                     if let Some(pd) = pd {
                         prop_datas.insert(data.models.len() - 1, pd);
@@ -648,11 +660,14 @@ fn place_props(
         let translation = to_engine(prop.origin);
         let rotation = rotation(prop.angles);
         // Like the game for maps without baked prop lighting: one lighting
-        // point per prop (its bounds' centre, or the mapper's lighting
-        // origin), so a prop is lit or shadowed as a whole.
-        let origin = match prop.lighting_origin {
-            Some(o) => to_engine(o),
-            None => {
+        // point per prop (the mapper's lighting origin, else the model's
+        // illumination position, else its bounds' centre), so a prop is lit
+        // or shadowed as a whole. (The collision bounds' centre can sit
+        // under the ground: de_nuke's dumpsters lost the sun.)
+        let origin = match (prop.lighting_origin, data.models[model].illum) {
+            (Some(o), _) => to_engine(o),
+            (None, Some(illum)) => translation + rotation * illum,
+            (None, None) => {
                 let (lo, hi) = data.models[model].bounds;
                 translation + rotation * ((lo + hi) / 2.0)
             }

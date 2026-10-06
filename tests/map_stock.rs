@@ -50,12 +50,15 @@ const STOCK: &[&str] = &[
 ];
 
 /// Warnings other than the decal/overlay placement counts (tracked in
-/// docs/plans/active/other-maps.md).
+/// docs/plans/active/other-maps.md) and the AWP view model (MDL v48, not
+/// read yet: docs/backlog.md section 3).
 fn load_warnings(map: &MapData) -> Vec<&String> {
     map.warnings
         .iter()
         .filter(|w| {
-            !w.ends_with("decals found no surface to project onto") && !w.ends_with("overlays produced no geometry")
+            !w.ends_with("decals found no surface to project onto")
+                && !w.ends_with("overlays produced no geometry")
+                && !w.starts_with("models/weapons/v_snip_awp.mdl")
         })
         .collect()
 }

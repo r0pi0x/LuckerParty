@@ -344,9 +344,13 @@ pub fn direct(light: &WorldLight, p: Vec3, n: Vec3) -> Option<(Vec3, Vec3, f32)>
 
 /// Geometry that blocks light, for shadow rays.
 pub struct Occluders {
-    /// Convex hulls (one compound) and triangle surfaces (separate: compound
-    /// shapes can't contain triangle meshes).
+    /// Convex hulls (one compound).
     colliders: Vec<avian3d::prelude::Collider>,
+    /// Terrain triangles (corners, front normal, bounds). One-sided: they
+    /// block only rays meeting their front, like the game's displacement
+    /// collision (a point under terrain still sees the sun through it;
+    /// de_nuke's dumpsters sit with their centres below the ground).
+    terrain: Vec<([Vec3; 3], Vec3, Vec3, Vec3)>,
 }
 
 impl Occluders {
@@ -357,23 +361,35 @@ impl Occluders {
             .filter_map(|h| Collider::convex_hull(h.iter().map(|p| Vec3::from(*p)).collect()))
             .map(|c| (Vec3::ZERO, Quat::IDENTITY, c))
             .collect();
-        let mut colliders = vec![Collider::compound(parts)];
-        if !triangles.1.is_empty() {
-            colliders.push(Collider::trimesh(
-                triangles.0.iter().map(|p| Vec3::from(*p)).collect(),
-                triangles.1.to_vec(),
-            ));
-        }
-        Self { colliders }
+        let colliders = if parts.is_empty() { Vec::new() } else { vec![Collider::compound(parts)] };
+        let terrain = triangles
+            .1
+            .iter()
+            .filter_map(|t| {
+                let [a, b, c] = t.map(|i| Vec3::from(triangles.0[i as usize]));
+                let n = (b - a).cross(c - a).normalize_or_zero();
+                (n != Vec3::ZERO).then(|| ([a, b, c], n, a.min(b).min(c), a.max(b).max(c)))
+            })
+            .collect();
+        Self { colliders, terrain }
     }
 
     /// Whether anything blocks the segment from `p` along `dir` for `max`
     /// meters (infinite: up to the map's extent).
     pub fn blocked(&self, p: Vec3, dir: Vec3, max: f32) -> bool {
         let max = if max.is_finite() { max } else { 500.0 };
-        self.colliders
+        if self
+            .colliders
             .iter()
             .any(|c| c.cast_ray(Vec3::ZERO, Quat::IDENTITY, p, dir, max, false).is_some())
+        {
+            return true;
+        }
+        let end = p + dir * max;
+        let (lo, hi) = (p.min(end), p.max(end));
+        self.terrain.iter().any(|([a, b, c], n, tlo, thi)| {
+            n.dot(dir) < 0.0 && tlo.cmple(hi).all() && thi.cmpge(lo).all() && ray_triangle(p, dir, *a, *b, *c).is_some_and(|t| t > 0.0 && t < max)
+        })
     }
 }
 
@@ -392,5 +408,46 @@ impl MapLighting {
             }
         }
         light
+    }
+}
+
+/// Distance along `dir` from `p` to triangle (a, b, c), either side
+/// (Moller-Trumbore).
+fn ray_triangle(p: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
+    let (e1, e2) = (b - a, c - a);
+    let h = dir.cross(e2);
+    let det = e1.dot(h);
+    if det.abs() < 1e-9 {
+        return None;
+    }
+    let inv = 1.0 / det;
+    let s = p - a;
+    let u = inv * s.dot(h);
+    if !(0.0..=1.0).contains(&u) {
+        return None;
+    }
+    let q = s.cross(e1);
+    let v = inv * dir.dot(q);
+    if v < 0.0 || u + v > 1.0 {
+        return None;
+    }
+    Some(inv * e2.dot(q))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terrain_blocks_light_from_its_front_only() {
+        // A floor triangle at y = 1 facing up (counter-clockwise from above).
+        let positions = [[-10.0, 1.0, 10.0], [10.0, 1.0, 10.0], [0.0, 1.0, -10.0]];
+        let o = Occluders::new(&[], (&positions, &[[0, 1, 2]]));
+        // From above, looking down through it: blocked.
+        assert!(o.blocked(Vec3::new(0.0, 2.0, 0.0), Vec3::NEG_Y, 5.0));
+        // From below, toward the sky: passes (one-sided, as in the game).
+        assert!(!o.blocked(Vec3::ZERO, Vec3::Y, 5.0));
+        // Too short to reach it.
+        assert!(!o.blocked(Vec3::new(0.0, 2.0, 0.0), Vec3::NEG_Y, 0.5));
     }
 }

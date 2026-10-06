@@ -10,7 +10,7 @@ use mashup::{
     games::cs_source::{
         TICK_INTERVAL,
         view_anim::ViewAnimPlugin,
-        weapons::{AK47, CsWeaponsPlugin, KNIFE},
+        weapons::{AK47, AWP, CsWeaponsPlugin, GLOCK, KNIFE, M4A1},
     },
     greybox::{self, GreyboxMapPlugin},
     harness::Sim,
@@ -19,7 +19,7 @@ use mashup::{
         anim::{AnimEvent, AnimSet, Animation, Sequence},
     },
     movement::placeholder,
-    weapon::{Inventory, Magazine},
+    weapon::{Inventory, Magazine, give},
 };
 
 /// (name, activity, frames, fps, looping)
@@ -125,6 +125,37 @@ fn sim() -> Sim {
                 ("stab_miss", "ACT_VM_MISSCENTER", 61, 40.0, false),
                 ("midslash1", "ACT_VM_HITCENTER", 66, 55.0, false),
                 ("midslash2", "ACT_VM_HITCENTER", 66, 55.0, false),
+            ],
+        ),
+        // Parts of v_rif_m4a1, v_pist_glock18 and v_pist_deagle (dump
+        // --sequences), and an AWP stand-in (its model is MDL v48).
+        view_model(
+            M4A1,
+            &[
+                ("idle", "ACT_VM_IDLE_SILENCED", 9, 16.0, false),
+                ("shoot1", "ACT_VM_PRIMARYATTACK_SILENCED", 9, 20.0, false),
+                ("add_silencer", "ACT_VM_ATTACH_SILENCER", 61, 30.0, false),
+                ("idle_unsil", "ACT_VM_IDLE", 9, 16.0, false),
+                ("shoot1_unsil", "ACT_VM_PRIMARYATTACK", 31, 20.0, false),
+                ("draw_unsil", "ACT_VM_DRAW", 40, 40.0, false),
+                ("detach_silencer", "ACT_VM_DETACH_SILENCER", 61, 30.0, false),
+            ],
+        ),
+        view_model(
+            GLOCK,
+            &[
+                ("glock_idle", "ACT_VM_IDLE", 10, 30.0, false),
+                ("glock_fireburst1", "ACT_VM_SECONDARYATTACK", 31, 40.0, false),
+                ("glock_firesingle", "ACT_VM_PRIMARYATTACK", 21, 40.0, false),
+                ("glock_firelast", "ACT_VM_DRYFIRE", 21, 35.0, false),
+                ("glock_draw", "ACT_VM_DRAW", 49, 45.0, false),
+            ],
+        ),
+        view_model(
+            AWP,
+            &[
+                ("idle", "ACT_VM_IDLE", 10, 30.0, false),
+                ("draw", "ACT_VM_DRAW", 31, 30.0, false),
             ],
         ),
     ])));
@@ -288,4 +319,88 @@ fn events_fire_when_the_cycle_passes_them() {
 
 fn active(sim: &Sim, p: Entity) -> Entity {
     sim.app.world().get::<Inventory>(p).unwrap().active.unwrap()
+}
+
+/// A character holding `id`, drawn.
+fn holding(sim: &mut Sim, id: &str) -> Entity {
+    let p = sim.spawn_character(greybox::SPAWNS[0], placeholder::ID);
+    sim.ticks(1);
+    give(sim.app.world_mut(), p, id).unwrap();
+    sim.seconds(1.2);
+    p
+}
+
+fn press(sim: &mut Sim, p: Entity, secondary: bool) {
+    let mut i = sim.intent(p);
+    if secondary {
+        i.secondary = true;
+    } else {
+        i.fire = true;
+    }
+    sim.ticks(1);
+    let mut i = sim.intent(p);
+    i.secondary = false;
+    i.fire = false;
+}
+
+#[test]
+fn m4a1_screws_the_silencer_on_and_plays_its_silenced_set() {
+    let mut sim = sim();
+    let p = holding(&mut sim, M4A1);
+    assert_eq!(activity(&sim, p), "ACT_VM_IDLE");
+    press(&mut sim, p, true);
+    sim.ticks(1);
+    assert_eq!(activity(&sim, p), "ACT_VM_ATTACH_SILENCER");
+    sim.seconds(2.1);
+    press(&mut sim, p, false);
+    assert_eq!(activity(&sim, p), "ACT_VM_PRIMARYATTACK_SILENCED");
+    sim.seconds(2.0);
+    assert_eq!(activity(&sim, p), "ACT_VM_IDLE_SILENCED");
+    press(&mut sim, p, true);
+    sim.ticks(1);
+    assert_eq!(activity(&sim, p), "ACT_VM_DETACH_SILENCER");
+}
+
+#[test]
+fn glock_burst_plays_one_burst_sequence_and_the_last_round_its_own() {
+    let mut sim = sim();
+    let p = holding(&mut sim, GLOCK);
+    press(&mut sim, p, true);
+    sim.seconds(0.4);
+    press(&mut sim, p, false);
+    assert_eq!(activity(&sim, p), "ACT_VM_SECONDARYATTACK");
+    let cycle = |sim: &Sim| {
+        let v = sim.app.world().get::<ViewAnimator>(p).unwrap();
+        v.animator.as_ref().unwrap().cycle
+    };
+    // The burst's later rounds (4 and 8 ticks on) don't restart it.
+    sim.ticks(9);
+    assert!(cycle(&sim) > 0.15, "restarted: cycle {}", cycle(&sim));
+    // Back to single fire; the clip's last round plays the "last" sequence.
+    sim.seconds(1.0);
+    press(&mut sim, p, true);
+    sim.seconds(0.4);
+    let w = active(&sim, p);
+    sim.app.world_mut().get_mut::<Magazine>(w).unwrap().clip = 1;
+    press(&mut sim, p, false);
+    assert_eq!(activity(&sim, p), "ACT_VM_DRYFIRE");
+}
+
+#[test]
+fn the_awp_scope_hides_the_view_model() {
+    let mut sim = sim();
+    let p = holding(&mut sim, AWP);
+    let hidden = |sim: &Sim| sim.app.world().get::<ViewAnimator>(p).unwrap().hidden;
+    assert!(!hidden(&sim));
+    press(&mut sim, p, true);
+    sim.ticks(1);
+    assert!(hidden(&sim));
+    // Still animated underneath.
+    assert_eq!(view(&sim, p).0.as_deref(), Some(AWP));
+    sim.seconds(0.4);
+    press(&mut sim, p, true);
+    sim.seconds(0.4);
+    press(&mut sim, p, true);
+    sim.ticks(1);
+    assert!(!hidden(&sim));
 }

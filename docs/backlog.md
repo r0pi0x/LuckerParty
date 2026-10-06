@@ -42,21 +42,30 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   scoreboard are in (`client/game_hud.rs`, `client/scoreboard.rs`). Left:
   the team menu (`jointeam 2|3` exists; you start as CT), ping on the
   scoreboard, round timer and money panels once
-  rounds and money exist, the ammo-type icon (a `640hud1` sprite), the
-  damage direction indicators (`pain_*` sprites), weapon selection,
+  rounds and money exist, weapon selection,
   hint text. The radar is in (`client/radar.rs`: the map overview turning
   with you, team dots, your place name); its range (2200 units) is a guess.
-- Debug overlays: `mashup_drawhitboxes` and `mashup_healthbars` exist;
-  add more as features need them (nav mesh, sound radii, bot state).
+- Debug overlays: `mashup_drawhitboxes`, `mashup_healthbars`,
+  `mashup_drawnav`, `mashup_drawbots` exist; add more as features need
+  them (sound radii, triggers).
 
 ## 3. Weapons, remaining
 
 In progress: [plans/active/weapons.md](plans/active/weapons.md). The
-framework, knife, AK-47, HUD, deathmatch and a first bot are in.
+framework, knife, AK-47, M4A1, AWP, USP, Glock, Deagle (zoom, silencers,
+burst), HUD, deathmatch and a first bot are in.
 
-- The other CS:S weapons from the script tables (M4A1, USP, Glock,
-  Deagle, AWP first: their recoil and inaccuracy are measured; zoom M15,
-  burst/silencer M16 are measured too).
+- The other CS:S guns from the spec's script tables, as `Gun` rows in
+  `games/cs_source/weapons.rs`: rifles (aug, famas with its burst, galil,
+  sg552 and aug scopes), snipers (scout, sg550, g3sg1), SMGs, m249,
+  p228/fiveseven/elite; their recoil isn't measured (probe M3 first), nor
+  the 556MM/9MM/57MM/357SIG penetration. Shotguns (m3, xm1014) need
+  pellets plus the shell-by-shell reload (M9).
+- The AWP's view model: `v_snip_awp.mdl` is MDL version 48 and `anim.rs`
+  reads 44 (spec the v48 header differences first); then its reload
+  sounds from the model events.
+- Zoom sensitivity (`zoom_sensitivity_ratio`), CS:S's own scope overlay
+  texture, the silenced world models (`w_*_silencer.mdl`).
 - Money and a buy menu (`buy` gives for free).
 - Reload, grenade and death animations (world models are held by bodies).
 - Impact effects, remaining (specs/cs_source/impact_effects.md; the
@@ -93,8 +102,8 @@ framework, knife, AK-47, HUD, deathmatch and a first bot are in.
 The console and overlays are in (src/console.rs, src/client/console.rs).
 
 - `net_graph` beyond cl_showfps 2; `cl_showpos 2`.
-- Select-and-copy in the output (clipboard); `con_dump` writes it to a
-  file meanwhile.
+- Select-and-copy with the mouse in the output; `con_copy [lines]` copies
+  to the clipboard and `con_dump` writes a file meanwhile.
 
 ## 6. Sound, remaining
 

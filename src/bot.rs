@@ -116,6 +116,18 @@ pub struct Bot {
     roam: Option<Vec3>,
 }
 
+impl Bot {
+    /// The route being walked (engine space) and the next point's index.
+    pub fn route(&self) -> (&[Vec3], usize) {
+        (&self.route, self.next)
+    }
+
+    /// Where the bot is roaming to, with nothing better to do.
+    pub fn roam_goal(&self) -> Option<Vec3> {
+        self.roam
+    }
+}
+
 /// Seconds a bot keeps chasing what it saw or heard.
 const MEMORY: f64 = 15.0;
 /// A remembered or roaming goal counts as reached within this, m.

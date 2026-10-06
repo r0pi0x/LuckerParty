@@ -208,6 +208,8 @@ pub struct MapMesh {
     /// positions are relative to that entity's origin and unrotated
     /// (engine axes), drawn under its `MapBrushEntity` node.
     pub entity: Option<usize>,
+    /// Colour multiplier (linear) on the texture (Source `$color`/`$color2`).
+    pub tint: Option<[f32; 3]>,
 }
 
 /// A baked environment cubemap: six square RGBA8 sRGB faces in the
@@ -298,6 +300,9 @@ pub struct MapModel {
     pub collision: Option<MapCollision>,
     /// Surface property name (footsteps on the prop), lower-case.
     pub surfaceprop: Option<String>,
+    /// Where the model is lit from, in model space (Source
+    /// `$illumposition`), when the game gives one.
+    pub illum: Option<Vec3>,
 }
 
 /// A character body from the game: meshes in the character's local space
@@ -2100,7 +2105,12 @@ fn spawn_map(
         ));
     }
     if let Some(h) = &data.hud {
-        commands.insert_resource(hud::ActiveHud(h.clone()));
+        let images = h
+            .sprites
+            .values()
+            .filter_map(|s| Some((s.texture, texture_handles.get(s.texture)?.clone())))
+            .collect();
+        commands.insert_resource(hud::ActiveHud(h.clone(), images));
     }
     if let Some(o) = &data.overview
         && let Some(image) = texture_handles.get(o.texture)
@@ -2466,11 +2476,15 @@ fn build_material(m: &MapMesh, textures: &[Handle<Image>], view: MapDebugView, l
     } else {
         1.0
     };
+    let tint = m.tint.map_or(LinearRgba::WHITE, |[r, g, b]| LinearRgba::rgb(r, g, b));
     StandardMaterial {
         base_color: if m.texture.is_some() || lighting_only {
-            Color::WHITE
+            tint.into()
         } else {
-            Color::srgb_u8(r, g, b)
+            {
+                let c = Color::srgb_u8(r, g, b).to_linear();
+                LinearRgba::rgb(c.red * tint.red, c.green * tint.green, c.blue * tint.blue).into()
+            }
         },
         base_color_texture: m.texture.filter(|_| !lighting_only).map(|i| textures[i].clone()),
         unlit: view == MapDebugView::Albedo,
@@ -2504,12 +2518,13 @@ fn lit_prop_material(
 ) -> PropMaterial {
     let [r, g, b] = m.color;
     let lighting_only = matches!(view, MapDebugView::Lighting { .. });
+    let tint = m.tint.map_or(Vec4::ONE, |[r, g, b]| Vec4::new(r, g, b, 1.0));
     PropMaterial {
         params: PropParams {
             base_color: if m.texture.is_some() || lighting_only {
-                Vec4::ONE
+                tint
             } else {
-                Color::srgb_u8(r, g, b).to_linear().to_vec4()
+                Color::srgb_u8(r, g, b).to_linear().to_vec4() * tint
             },
             alpha_cutoff: if let MapAlpha::Mask(c) = m.alpha { c } else { 0.0 },
             fog_color: fog_color(data.fog.as_ref().filter(|_| view == MapDebugView::Normal && !skybox)),

@@ -177,9 +177,24 @@ pub fn load(materials: &mut MaterialLoader) -> Option<GameHud> {
                 .or_else(|| kv.items().iter().find_map(|(_, v)| find(v)))
         }
         let t = find(&t).cloned().unwrap_or(t);
+        let num = |v: &Kv, k: &str| v.str(k).and_then(|x| x.trim().parse::<f32>().ok());
         for (name, v) in t.items() {
             if let (Some(font), Some(ch)) = (v.str("font"), v.str("character").and_then(|c| c.chars().next())) {
                 hud.icons.insert(name.clone(), (font.to_string(), ch));
+            } else if let Some(file) = v.str("file") {
+                // Icons cut from a sprite sheet (pixel rectangle).
+                let rect = [num(v, "x"), num(v, "y"), num(v, "width"), num(v, "height")];
+                if let ([Some(x), Some(y), Some(w), Some(h)], Some(texture)) =
+                    (rect, materials.resolve(file).texture)
+                {
+                    hud.sprites.insert(
+                        name.clone(),
+                        crate::map::hud::HudSprite {
+                            texture,
+                            rect: [x, y, w, h],
+                        },
+                    );
+                }
             }
         }
     }

@@ -64,6 +64,15 @@ pub struct HudFont {
     pub tall: f32,
 }
 
+/// An icon cut from a texture.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HudSprite {
+    /// Index into `MapData::textures`.
+    pub texture: usize,
+    /// Pixels: x, y, width, height.
+    pub rect: [f32; 4],
+}
+
 /// A game's HUD look.
 #[derive(Clone, Debug, Default)]
 pub struct GameHud {
@@ -75,6 +84,8 @@ pub struct GameHud {
     pub icons: HashMap<String, (String, char)>,
     /// Named colours (RGBA 0..255).
     pub colors: HashMap<String, [u8; 4]>,
+    /// Icon name -> a rectangle of a texture (pixels).
+    pub sprites: HashMap<String, HudSprite>,
 }
 
 impl GameHud {
@@ -116,7 +127,7 @@ pub struct ActiveOverview(pub MapOverview, pub Handle<Image>);
 
 /// The loaded map's game HUD (see `GameHud`).
 #[derive(Resource, Clone, Debug)]
-pub struct ActiveHud(pub Arc<GameHud>);
+pub struct ActiveHud(pub Arc<GameHud>, pub HashMap<usize, Handle<Image>>);
 
 #[cfg(test)]
 mod tests {
