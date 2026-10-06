@@ -1,7 +1,9 @@
 //! Debug overlays drawn with gizmos: the nav mesh around you
 //! (`mashup_drawnav 1`: areas coloured by place, links between them) and
 //! what each bot is doing (`mashup_drawbots 1`: its target, where it last
-//! saw or heard an enemy, the route it walks and where it roams).
+//! saw or heard an enemy, the route it walks and where it roams) and
+//! ragdolls (`mashup_ragdoll_debug 1`: each body's bounds and axes, each
+//! joint from its parent body's anchor to the child body).
 
 use bevy::prelude::*;
 
@@ -9,7 +11,10 @@ use crate::{
     bot::Bot,
     console::resource_cvar,
     core::{Intent, LocalPlayer},
-    map::nav::NavMesh,
+    map::{
+        nav::NavMesh,
+        ragdoll::{RagdollBody, RagdollJoint, RagdollSettings},
+    },
 };
 
 pub struct DebugViewsPlugin;
@@ -17,7 +22,25 @@ pub struct DebugViewsPlugin;
 impl Plugin for DebugViewsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<DebugViews>()
-            .add_systems(Update, (draw_nav, draw_bots));
+            .add_systems(Update, (draw_nav, draw_bots, draw_ragdolls));
+        resource_cvar::<DebugViews, u8>(
+            app,
+            "mashup_ragdoll_debug",
+            "1: draw ragdoll bodies (bounds, axes) and joints (parent anchor to child).",
+            |d| &mut d.ragdolls,
+        );
+        resource_cvar::<RagdollSettings, u8>(
+            app,
+            "cl_ragdoll_physics_enable",
+            "Enable/disable ragdoll physics (0: the dead just vanish).",
+            |s| &mut s.enabled,
+        );
+        resource_cvar::<RagdollSettings, f32>(
+            app,
+            "ragdoll_sleepaftertime",
+            "After this many seconds of being basically stationary, the ragdoll will go to sleep.",
+            |s| &mut s.sleep_after,
+        );
         resource_cvar::<DebugViews, u8>(
             app,
             "mashup_drawnav",
@@ -37,6 +60,7 @@ impl Plugin for DebugViewsPlugin {
 struct DebugViews {
     nav: u8,
     bots: u8,
+    ragdolls: u8,
 }
 
 /// Areas within this of you are drawn at `mashup_drawnav 1`, m.
@@ -109,5 +133,35 @@ fn draw_bots(
         if let Some(goal) = bot.roam_goal() {
             gizmos.sphere(Isometry3d::from_translation(goal + Vec3::Y * 0.3), 0.25, Color::srgb(0.6, 0.4, 1.0));
         }
+    }
+}
+
+fn draw_ragdolls(
+    views: Res<DebugViews>,
+    bodies: Query<(&GlobalTransform, &avian3d::prelude::ColliderAabb), With<RagdollBody>>,
+    joints: Query<&RagdollJoint>,
+    mut gizmos: Gizmos,
+) {
+    if views.ragdolls == 0 {
+        return;
+    }
+    for (t, aabb) in &bodies {
+        let centre = (aabb.min + aabb.max) / 2.0;
+        gizmos.cube(
+            Transform::from_translation(centre).with_scale(aabb.max - aabb.min),
+            Color::srgb(0.3, 0.9, 0.4),
+        );
+        gizmos.axes(*t, 0.1);
+    }
+    for j in &joints {
+        let (Ok((p, _)), Ok((c, _))) = (bodies.get(j.parent), bodies.get(j.child)) else {
+            continue;
+        };
+        let anchor = p.transform_point(j.anchor);
+        gizmos.line(p.translation(), anchor, Color::srgb(1.0, 0.9, 0.2));
+        // Red when the child drifted from its anchor.
+        let drift = anchor.distance(c.translation());
+        let color = if drift > 0.02 { Color::srgb(1.0, 0.1, 0.1) } else { Color::WHITE };
+        gizmos.sphere(Isometry3d::from_translation(anchor), 0.015, color);
     }
 }

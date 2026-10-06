@@ -123,7 +123,7 @@ pub fn load_character(
             }
         })
         .collect();
-    let bones = mdl
+    let bones: Vec<crate::map::MapBone> = mdl
         .bones
         .iter()
         .map(|b| crate::map::MapBone {
@@ -140,14 +140,95 @@ pub fn load_character(
             None
         }
     };
+    let ragdoll = match materials.read(&format!("{}.phy", path.trim_end_matches(".mdl"))) {
+        Some(bytes) => match super::phy::parse_ragdoll(&bytes) {
+            Ok(phy) => ragdoll(&phy, &bones, path),
+            Err(e) => {
+                warn!("{path}: ragdoll: {e}");
+                None
+            }
+        },
+        None => None,
+    };
     Ok(crate::map::MapCharacterModel {
         team,
+        ragdoll,
         animations,
         boxes,
         model: body,
         hitboxes,
         bones,
         root: Transform::from_rotation(face * axes).with_scale(Vec3::splat(METERS_PER_UNIT)),
+    })
+}
+
+/// Most solids a ragdoll may have (specs/cs_source/ragdolls.md, Constants).
+const RAGDOLL_MAX_BODIES: usize = 24;
+
+/// A player model's `.phy` as its ragdoll (specs/cs_source/ragdolls.md 1):
+/// a body per solid whose bone the skeleton has (the pieces are already in
+/// that bone's frame, inches), joints between kept bodies with their
+/// limits in radians. None for a model with too many solids or no joints.
+pub fn ragdoll(phy: &super::phy::PhyRagdoll, bones: &[crate::map::MapBone], path: &str) -> Option<crate::map::MapRagdoll> {
+    use crate::map::{MapRagdoll, MapRagdollBody, MapRagdollJoint};
+    if phy.solids.len() > RAGDOLL_MAX_BODIES || phy.solids.is_empty() {
+        return None;
+    }
+    // Solid index → body index (solids naming a missing bone are dropped).
+    let mut body_of = vec![None; phy.solids.iter().map(|s| s.index + 1).max().unwrap_or(0)];
+    let mut bodies = Vec::new();
+    for s in &phy.solids {
+        let Some(bone) = bones.iter().position(|b| b.name.eq_ignore_ascii_case(&s.name)) else {
+            warn!("{path}: ragdoll solid {} names a missing bone {:?}", s.index, s.name);
+            continue;
+        };
+        body_of[s.index] = Some(bodies.len());
+        bodies.push(MapRagdollBody {
+            bone,
+            pieces: s
+                .pieces
+                .iter()
+                .map(|tris| {
+                    let mut points: Vec<Vec3> = Vec::new();
+                    for v in tris.iter().flatten() {
+                        if !points.iter().any(|p| p.distance_squared(*v) < 1e-8) {
+                            points.push(*v);
+                        }
+                    }
+                    points
+                })
+                .collect(),
+            mass: s.mass,
+            damping: s.damping,
+            rotdamping: s.rotdamping,
+            inertia: s.inertia,
+            surfaceprop: s.surfaceprop.clone(),
+        });
+    }
+    let body = |i: usize| body_of.get(i).copied().flatten();
+    let joints: Vec<MapRagdollJoint> = phy
+        .joints
+        .iter()
+        .filter_map(|j| {
+            Some(MapRagdollJoint {
+                parent: body(j.parent)?,
+                child: body(j.child)?,
+                limits: j.limits.map(|(lo, hi)| (lo.to_radians(), hi.to_radians())),
+            })
+        })
+        .collect();
+    if joints.is_empty() {
+        return None;
+    }
+    let collision_pairs = phy
+        .collision_pairs
+        .iter()
+        .filter_map(|(a, b)| Some((body(*a)?, body(*b)?)))
+        .collect();
+    Some(MapRagdoll {
+        bodies,
+        joints,
+        collision_pairs,
     })
 }
 

@@ -183,7 +183,7 @@ pub(super) fn camera_offset(
     let Ok(dir) = Dir3::new(look * Vec3::Z) else {
         return eye;
     };
-    let filter = SpatialQueryFilter::from_excluded_entities(characters);
+    let filter = SpatialQueryFilter::from_excluded_entities(characters).with_mask(crate::core::SOLID_LAYERS);
     let config = ShapeCastConfig {
         max_distance: ideal,
         ignore_origin_penetration: true,
