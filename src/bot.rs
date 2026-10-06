@@ -3,7 +3,9 @@
 //! weapons as players. The brain turns toward the nearest enemy it can see
 //! at a limited turn rate, strafes, and fires once it has seen them for a
 //! reaction time and is on target. With nobody in sight it walks the map's
-//! navigation mesh toward the nearest enemy.
+//! navigation mesh to where it last saw or heard an enemy (sounds within
+//! their falloff range: shots carry far, footsteps less), else roams to
+//! random places on the mesh.
 
 use std::sync::Arc;
 
@@ -24,7 +26,7 @@ pub struct BotPlugin;
 impl Plugin for BotPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<BotConfig>()
-            .add_systems(FixedUpdate, think.before(SimSet::Movement));
+            .add_systems(FixedUpdate, (hear, think).chain().before(SimSet::Movement));
         resource_cvar::<BotConfig, u8>(app, "bot_stop", "1: bots stand still.", |c| &mut c.stop);
         resource_cvar::<BotConfig, u8>(app, "bot_dont_shoot", "1: bots never fire.", |c| &mut c.dont_shoot);
         resource_cvar::<BotConfig, f32>(
@@ -108,6 +110,50 @@ pub struct Bot {
     progress: (Vec3, f32),
     /// Current aim offset (yaw, pitch radians) and seconds until re-rolled.
     wobble: (Vec2, f32),
+    /// Where an enemy was last seen or heard (feet), and when.
+    pub lead: Option<(Vec3, f64)>,
+    /// Where the bot is roaming to (feet), with nothing better to do.
+    roam: Option<Vec3>,
+}
+
+/// Seconds a bot keeps chasing what it saw or heard.
+const MEMORY: f64 = 15.0;
+/// A remembered or roaming goal counts as reached within this, m.
+const ARRIVED: f32 = 2.0;
+/// A sound is heard when its distance gain at the bot is above this.
+const HEARING_GAIN: f32 = 0.05;
+
+/// Bots hear enemies' sounds (shots, footsteps, impacts they cause).
+fn hear(
+    mut sounds: MessageReader<crate::map::PlaySound>,
+    bank: Option<Res<crate::map::sound::SoundBank>>,
+    mut bots: Query<(&mut Bot, &Transform, &Team, &Health)>,
+    teams: Query<(&Team, &Transform)>,
+    time: Res<Time>,
+) {
+    let now = time.elapsed_secs_f64();
+    for s in sounds.read() {
+        let (Some(source), Some(at)) = (s.source, s.at) else {
+            continue;
+        };
+        let Ok((source_team, source_at)) = teams.get(source) else {
+            continue;
+        };
+        let level = bank
+            .as_ref()
+            .and_then(|b| b.0.entry(&s.entry).map(|e| e.level))
+            .unwrap_or(crate::map::SoundLevel::Db(75.0));
+        let feet = source_at.translation - Vec3::Y * CAPSULE_HEIGHT / 2.0;
+        for (mut bot, t, team, health) in &mut bots {
+            if team == source_team || health.current <= 0.0 {
+                continue;
+            }
+            let units = t.translation.distance(at) / 0.0254;
+            if crate::map::sound::distance_gain(level, units) >= HEARING_GAIN {
+                bot.lead = Some((feet, now));
+            }
+        }
+    }
 }
 
 /// Spawn a bot on `team` at a spawn point (the team's, if the map has
@@ -198,8 +244,6 @@ fn think(
         let eye = t.translation + state.eye_offset;
         // The nearest living enemy in sight.
         let mut best: Option<(Entity, Vec3, f32)> = None;
-        // The nearest living enemy anywhere, to hunt when none is in sight.
-        let mut hunt: Option<(Vec3, f32)> = None;
         for (e, ot, oteam, oh) in &others {
             if e == me || oteam == team || oh.current <= 0.0 {
                 continue;
@@ -207,9 +251,6 @@ fn think(
             let aim = ot.translation + Vec3::Y * AIM_HEIGHT;
             let to = aim - eye;
             let dist = to.length();
-            if hunt.is_none_or(|h| dist < h.1) {
-                hunt = Some((ot.translation, dist));
-            }
             if best.is_some_and(|b| b.2 <= dist) {
                 continue;
             }
@@ -226,6 +267,11 @@ fn think(
         intent.fire = false;
         match best {
             Some((e, aim, _)) => {
+                // Remember where they were (feet) for after they hide.
+                bot.lead = Some((
+                    aim - Vec3::Y * (AIM_HEIGHT + CAPSULE_HEIGHT / 2.0),
+                    time.elapsed_secs_f64(),
+                ));
                 if bot.target == Some(e) {
                     bot.seen += dt;
                 } else {
@@ -277,19 +323,34 @@ fn think(
             bot.route.clear();
             continue;
         }
-        let (Some(nav), Some((goal, _))) = (nav.as_deref(), hunt) else {
-            continue;
-        };
+        let Some(nav) = nav.as_deref() else { continue };
         let feet = t.translation - Vec3::Y * CAPSULE_HEIGHT / 2.0;
-        walk_route(
-            &mut bot,
-            &mut intent,
-            nav,
-            feet,
-            goal - Vec3::Y * CAPSULE_HEIGHT / 2.0,
-            &cfg,
-            dt,
-        );
+        let now = time.elapsed_secs_f64();
+        // Chase what was seen or heard; once there (or it's stale), roam.
+        if bot
+            .lead
+            .is_some_and(|(at, when)| now - when > MEMORY || at.distance(feet) < ARRIVED)
+        {
+            bot.lead = None;
+        }
+        if bot.roam.is_some_and(|at| at.distance(feet) < ARRIVED) {
+            bot.roam = None;
+        }
+        let goal = match bot.lead {
+            Some((at, _)) => at,
+            None => {
+                if bot.roam.is_none() && !nav.areas.is_empty() {
+                    let i = (bot.rand() * nav.areas.len() as f32) as usize % nav.areas.len();
+                    bot.roam = Some(nav.areas[i].center);
+                    bot.repath = 0.0;
+                }
+                match bot.roam {
+                    Some(at) => at,
+                    None => continue,
+                }
+            }
+        };
+        walk_route(&mut bot, &mut intent, nav, feet, goal, &cfg, dt);
     }
 }
 

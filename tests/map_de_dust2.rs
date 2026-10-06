@@ -1259,7 +1259,7 @@ fn impact_sounds() {
 }
 
 /// Bots walk dust2's navigation mesh (specs/cs_source/nav.md) toward an
-/// enemy they can't see, until they see them.
+/// enemy they heard but can't see, until they see them.
 #[test]
 fn bot_walks_the_nav_mesh_to_an_enemy() {
     use mashup::games::cs_source::{
@@ -1283,6 +1283,21 @@ fn bot_walks_the_nav_mesh_to_an_enemy() {
     assert!(rot.angle_between(Quat::IDENTITY) < 1e-4, "bot spawned rotated");
     let start = sim.position(bot);
     let start_dist = start.distance(stand);
+    // The bot doesn't know where the player is until it hears a shot.
+    sim.seconds(1.2);
+    assert!(
+        sim.app.world().get::<mashup::bot::Bot>(bot).unwrap().lead.is_none(),
+        "knew too early"
+    );
+    sim.intent(player).pitch = -0.5;
+    sim.intent(player).fire = true;
+    sim.ticks(1);
+    sim.intent(player).fire = false;
+    sim.ticks(1);
+    assert!(
+        sim.app.world().get::<mashup::bot::Bot>(bot).unwrap().lead.is_some(),
+        "didn't hear the shot"
+    );
     let mut found = None;
     for s in 0..60 {
         sim.seconds(0.5);

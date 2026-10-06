@@ -24,8 +24,8 @@ framework, knife, AK-47, HUD, deathmatch and a first bot are in.
 - Money and a buy menu (`buy` gives for free); penetration (measure
   M13 on a thin wall first); the other CS:S weapons from the
   script tables (zoom M15, burst/silencer M16 are measured).
-- Bot behaviour: awareness (sound, memory), CS:S bot path costs and
-  route variety (nav spec open questions 2–4).
+- Bot behaviour: CS:S bot path costs and route variety (nav spec open
+  questions 2–4), checking corners, teamwork.
 - Collaterals (bullets through players) and wall penetration: being
   measured (M13).
 - Character animation (run, crouch, aim) for bodies and hitboxes; view
