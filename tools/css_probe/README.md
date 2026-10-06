@@ -47,6 +47,14 @@ Notes:
   and on placement resets its move type, remembered ladder and jump
   stamina. Its log adds the water level and ladder state per tick.
 
+## Fall damage
+
+`fallmeas.py` (specs/cs_source/fall_damage.md) drops the probe bot onto the
+CT spawn floor of de_dust2 with chosen downward speeds and prints fall
+speed and damage per landing; `fallmeas.py armor` checks armour and death.
+It uses `mashup_health <hp> [armor]` (respawns the probe bot if dead, sets
+its health and armour) and `mashup_wrun`'s `player_hurt` rows.
+
 ## Weapon measurements
 
 `weapcmp.py` (driver, Python 3, no dependencies; `rcon.py` is a minimal

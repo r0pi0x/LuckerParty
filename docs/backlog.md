@@ -21,9 +21,6 @@ Each group is one agent's worktree; merged into main as they finish.
   airborne AK-47).
 - **C. First-person view models** (`v_knife_*.mdl`, `v_rif_ak47.mdl`) with
   draw/idle/fire/reload sequences, through the animation decoder.
-- **D. Movement: terrain and falls.** Fuzz walking over displacements to
-  find the rare "stubbed toe" stop and fix it; fall damage (measure on the
-  probe server); `trigger_hurt` volumes.
 
 ## 2. Weapons, remaining
 

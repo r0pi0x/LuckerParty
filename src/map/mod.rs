@@ -15,9 +15,11 @@ use bevy::{
 
 use crate::core::{SpawnPoint, Team};
 // Collision-world types live in `core` (the greybox map uses them too).
+pub use hurt::{MapHurt, MapHurtVolume};
 pub use crate::core::{MapBrush, MapBrushCollider, MapBrushes, MapWater, MapWaterVolume, PropSurface};
 
 pub mod anim;
+mod hurt;
 mod dust;
 pub mod nav;
 pub mod prop_material;
@@ -739,6 +741,8 @@ pub struct MapData {
     pub sky_vis: Option<MapSkyVis>,
     /// Water and slime volumes.
     pub water: Vec<MapWaterVolume>,
+    /// Volumes that hurt characters inside them (Source `trigger_hurt`).
+    pub hurt: Vec<MapHurtVolume>,
     /// Dynamic prop shadows, when the game draws them.
     pub shadows: Option<MapShadows>,
     /// Gravity for physics bodies, m/s^2 (downward), when the game sets it.
@@ -1126,6 +1130,7 @@ impl Plugin for MapPlugin {
                     .before(crate::core::SimSet::Movement),
             )
             .add_systems(FixedUpdate, fall_out_of_map.after(crate::core::SimSet::Movement))
+            .add_systems(FixedUpdate, hurt::hurt_characters.after(crate::core::SimSet::Movement))
             .add_systems(
                 Update,
                 (
@@ -1914,6 +1919,7 @@ fn spawn_map(
         }
         commands.insert_resource(MapWater(data.water.clone()));
     }
+    commands.insert_resource(MapHurt::new(data.hurt.clone()));
 
     commands.spawn((
         Name::new("Sun"),
@@ -1989,6 +1995,7 @@ pub fn unload_map(world: &mut World) {
     world.remove_resource::<MapBrushes>();
     world.remove_resource::<KillHeight>();
     world.remove_resource::<MapWater>();
+    world.remove_resource::<MapHurt>();
     world.insert_resource(Gravity::default());
     soundscape::reset(world);
 }

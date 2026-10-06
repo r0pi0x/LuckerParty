@@ -329,6 +329,7 @@ pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> (MapData, LightmapLayo
     data.collision_hulls = brush_hulls(bsp);
     data.collision_brushes = collision_brushes(bsp);
     data.water = water_volumes(bsp);
+    data.hurt = hurt_volumes(bsp);
 
     let (lightmap, placements, white) = atlas.build();
     for (material, mesh) in by_material.iter_mut() {
@@ -589,22 +590,7 @@ const PLAYER_SOLID: BrushFlags = BrushFlags::SOLID
 /// BSP tree. Brush entities (buy zones, bomb sites, doors) have their own
 /// trees and are excluded here.
 fn world_brushes(bsp: &Bsp) -> std::collections::BTreeSet<usize> {
-    let mut out = std::collections::BTreeSet::new();
-    let Some(world) = bsp.models.first() else { return out };
-    let mut stack = vec![world.head_node];
-    while let Some(child) = stack.pop() {
-        if child >= 0 {
-            if let Some(node) = bsp.nodes.get(child as usize) {
-                stack.extend(node.children);
-            }
-        } else if let Some(leaf) = bsp.leaf((-child - 1) as usize) {
-            let first = leaf.first_leaf_brush as usize;
-            for lb in bsp.leaf_brushes.iter().skip(first).take(leaf.leaf_brush_count as usize) {
-                out.insert(lb.brush as usize);
-            }
-        }
-    }
-    out
+    model_brushes(bsp, 0)
 }
 
 /// Every player-solid world brush as a convex hull in engine space: the
@@ -678,7 +664,6 @@ fn map_brush(points: Vec<[f32; 3]>, planes: Vec<(Vec3, f32)>, ladder: bool) -> c
 
 /// World brushes with any of `mask`'s contents, as hulls and planes.
 fn brush_volumes(bsp: &Bsp, mask: BrushFlags) -> Vec<(usize, Vec<[f32; 3]>, Vec<(Vec3, f32)>)> {
-    const EPS: f32 = 0.01;
     // Plane index (either side) -> corners of displacement base faces on it.
     let mut disp_bases: std::collections::HashMap<u16, Vec<Vec<Vec3>>> = Default::default();
     let Some(world) = bsp.models().next() else {
@@ -735,45 +720,132 @@ fn brush_volumes(bsp: &Bsp, mask: BrushFlags) -> Vec<(usize, Vec<[f32; 3]>, Vec<
         if carries_displacement {
             continue;
         }
-        let mut points: Vec<Vec3> = Vec::new();
-        for i in 0..planes.len() {
-            for j in i + 1..planes.len() {
-                for k in j + 1..planes.len() {
-                    let (n1, d1) = planes[i];
-                    let (n2, d2) = planes[j];
-                    let (n3, d3) = planes[k];
-                    let denom = n1.dot(n2.cross(n3));
-                    if denom.abs() < 1e-6 {
-                        continue;
-                    }
-                    let p = (n2.cross(n3) * d1 + n3.cross(n1) * d2 + n1.cross(n2) * d3) / denom;
-                    let inside = planes.iter().all(|(n, d)| n.dot(p) <= d + EPS);
-                    if inside && !points.iter().any(|q| q.distance_squared(p) < EPS) {
-                        points.push(p);
-                    }
+        if let Some((points, engine_planes)) = brush_shape(&planes) {
+            out.push((index, points, engine_planes));
+        }
+    }
+    out
+}
+
+/// A brush's corners (where three planes meet inside the rest) and its
+/// planes, both in engine space, from its Source planes; None when
+/// degenerate.
+#[allow(clippy::type_complexity)]
+fn brush_shape(planes: &[(Vec3, f32)]) -> Option<(Vec<[f32; 3]>, Vec<(Vec3, f32)>)> {
+    const EPS: f32 = 0.01;
+    let mut points: Vec<Vec3> = Vec::new();
+    for i in 0..planes.len() {
+        for j in i + 1..planes.len() {
+            for k in j + 1..planes.len() {
+                let (n1, d1) = planes[i];
+                let (n2, d2) = planes[j];
+                let (n3, d3) = planes[k];
+                let denom = n1.dot(n2.cross(n3));
+                if denom.abs() < 1e-6 {
+                    continue;
+                }
+                let p = (n2.cross(n3) * d1 + n3.cross(n1) * d2 + n1.cross(n2) * d3) / denom;
+                let inside = planes.iter().all(|(n, d)| n.dot(p) <= d + EPS);
+                if inside && !points.iter().any(|q| q.distance_squared(p) < EPS) {
+                    points.push(p);
                 }
             }
         }
-        if points.len() >= 4 {
-            // Source plane n.p = d becomes n'.p' = d * meters-per-unit,
-            // with n' the same rotation of n as positions get.
-            let engine_planes = planes
-                .iter()
-                .map(|(n, d)| {
-                    (
-                        to_engine_dir(vbsp::Vector { x: n.x, y: n.y, z: n.z }),
-                        d * METERS_PER_UNIT,
-                    )
-                })
-                .collect();
-            out.push((
-                index,
-                points
+    }
+    if points.len() < 4 {
+        return None;
+    }
+    // Source plane n.p = d becomes n'.p' = d * meters-per-unit, with n' the
+    // same rotation of n as positions get.
+    let engine_planes = planes
+        .iter()
+        .map(|(n, d)| {
+            (
+                to_engine_dir(vbsp::Vector { x: n.x, y: n.y, z: n.z }),
+                d * METERS_PER_UNIT,
+            )
+        })
+        .collect();
+    let points = points
+        .iter()
+        .map(|p| to_engine(vbsp::Vector { x: p.x, y: p.y, z: p.z }).to_array())
+        .collect();
+    Some((points, engine_planes))
+}
+
+/// Brushes in a brush model's tree (model 0 is the world).
+fn model_brushes(bsp: &Bsp, model: usize) -> std::collections::BTreeSet<usize> {
+    let mut out = std::collections::BTreeSet::new();
+    let Some(m) = bsp.models.get(model) else { return out };
+    let mut stack = vec![m.head_node];
+    while let Some(child) = stack.pop() {
+        if child >= 0 {
+            if let Some(node) = bsp.nodes.get(child as usize) {
+                stack.extend(node.children);
+            }
+        } else if let Some(leaf) = bsp.leaf((-child - 1) as usize) {
+            let first = leaf.first_leaf_brush as usize;
+            for lb in bsp.leaf_brushes.iter().skip(first).take(leaf.leaf_brush_count as usize) {
+                out.insert(lb.brush as usize);
+            }
+        }
+    }
+    out
+}
+
+/// `trigger_hurt` entities (specs/cs_source/fall_damage.md, "trigger_hurt"):
+/// their brush model's brushes and damage per second. Disabled ones
+/// (StartDisabled 1, which only map logic enables) and ones that hurt only
+/// non-players (spawnflags without "clients") are left out.
+pub fn hurt_volumes(bsp: &Bsp) -> Vec<crate::map::MapHurtVolume> {
+    let mut out = Vec::new();
+    for ent in bsp.entities.iter() {
+        if ent.prop("classname") != Some("trigger_hurt") {
+            continue;
+        }
+        let flags: u32 = ent.prop("spawnflags").and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+        let disabled = ent.prop("StartDisabled").is_some_and(|v| v.trim() == "1");
+        // Spawnflag 1: clients. Older maps leave spawnflags 0 meaning all.
+        if disabled || (flags != 0 && flags & 1 == 0) {
+            continue;
+        }
+        let Some(model) = ent
+            .prop("model")
+            .and_then(|m| m.strip_prefix('*'))
+            .and_then(|m| m.parse::<usize>().ok())
+        else {
+            continue;
+        };
+        let damage: f32 = ent.prop("damage").and_then(|v| v.trim().parse().ok()).unwrap_or(10.0);
+        let damage_model: u32 = ent.prop("damagemodel").and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+        if damage_model != 0 {
+            warn!("trigger_hurt with damagemodel {damage_model} (doubling) hurts at a constant rate here");
+        }
+        // Brush entities sit at their origin (usually 0 for triggers).
+        let origin = ent.prop("origin").and_then(parse_vector);
+        let origin = origin.map_or(Vec3::ZERO, |o| Vec3::new(o.x, o.y, o.z));
+        let brushes: Vec<crate::map::MapBrush> = model_brushes(bsp, model)
+            .into_iter()
+            .filter_map(|i| {
+                let brush = &bsp.brushes[i];
+                let first = brush.brush_side as usize;
+                let sides = &bsp.brush_sides[first..first + brush.num_brush_sides as usize];
+                let planes: Vec<(Vec3, f32)> = sides
                     .iter()
-                    .map(|p| to_engine(vbsp::Vector { x: p.x, y: p.y, z: p.z }).to_array())
-                    .collect(),
-                engine_planes,
-            ));
+                    .filter_map(|side| bsp.plane(side.plane as usize))
+                    .map(|p| {
+                        let n = Vec3::new(p.normal.x, p.normal.y, p.normal.z);
+                        (n, p.dist + n.dot(origin))
+                    })
+                    .collect();
+                brush_shape(&planes).map(|(points, planes)| map_brush(points, planes, false))
+            })
+            .collect();
+        if !brushes.is_empty() {
+            out.push(crate::map::MapHurtVolume {
+                brushes,
+                damage_per_second: damage,
+            });
         }
     }
     out

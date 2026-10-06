@@ -1817,3 +1817,121 @@ fn riding_players_never_sticks() {
     }
     assert!(stuck.is_empty(), "{} stuck moments: {:?}", stuck.len(), &stuck[..stuck.len().min(5)]);
 }
+
+/// Fuzz: characters walk, run, crouch-walk and jump on random headings
+/// over dust2's terrain (displacements). Holding a move key on the ground,
+/// away from brushes, props and other characters, the horizontal speed
+/// never collapses in one tick (the "stubbed toe").
+#[test]
+fn walking_on_terrain_never_stubs() {
+    use mashup::{
+        core::{MapBrushes, Velocity},
+        games::cs_source::movement::{self, SourceMovement, SourceMovementPlugin},
+    };
+    let Some(map) = dust2() else { return };
+    let (lo, hi) = map.playable.expect("playable area");
+    let mut rng = 0x9e3779b97f4a7c15u64;
+    let mut rand = move || {
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        (rng >> 11) as f32 / (1u64 << 53) as f32
+    };
+    // Walkable terrain triangles (engine space), inside the playable area.
+    let tris: Vec<Vec3> = map
+        .collision_indices
+        .iter()
+        .filter_map(|t| {
+            let [a, b, c] = t.map(|i| Vec3::from(map.collision_positions[i as usize]));
+            let n = (b - a).cross(c - a).normalize_or_zero();
+            let centre = (a + b + c) / 3.0;
+            (n.y > 0.8 && centre.cmpgt(lo).all() && centre.cmplt(hi).all()).then_some(centre)
+        })
+        .collect();
+    assert!(tris.len() > 1000, "{} terrain triangles", tris.len());
+    let mut sim = Sim::new((MapPlugin::new(map.clone()), SourceMovementPlugin));
+    sim.set_tick_interval(mashup::games::cs_source::TICK_INTERVAL);
+    sim.app
+        .insert_resource(mashup::slots::Loadout { movement: movement::ID });
+    let brushes = sim.app.world().resource::<MapBrushes>().0.clone();
+    const N: usize = 12;
+    let players: Vec<Entity> = (0..N)
+        .map(|k| sim.spawn_character(tris[k * 97] + Vec3::Y, movement::ID))
+        .collect();
+    let feet = |sim: &Sim, p: Entity| movement::to_source(sim.position(p)) - Vec3::Z * 36.0;
+    let mut stubs = Vec::new();
+    let rounds = 20;
+    for round in 0..rounds {
+        // Place everyone on a random terrain spot, well apart.
+        let mut placed: Vec<Vec3> = Vec::new();
+        for &p in &players {
+            let spot = loop {
+                let c = tris[(rand() * tris.len() as f32) as usize % tris.len()];
+                if placed.iter().all(|q| q.distance(c) > 4.0) {
+                    break c;
+                }
+            };
+            placed.push(spot);
+            let w = sim.app.world_mut();
+            w.get_mut::<Transform>(p).unwrap().translation = spot + Vec3::Y * (36.0 * 0.0254 + 0.05);
+            w.get_mut::<Velocity>(p).unwrap().0 = Vec3::ZERO;
+        }
+        sim.seconds(0.3);
+        let mut prev: Vec<(bool, f32)> = vec![(false, 0.0); N];
+        for tick in 0..200 {
+            if tick % 20 == 0 {
+                for &p in &players {
+                    let mut i = sim.intent(p);
+                    i.yaw = rand() * std::f32::consts::TAU;
+                    i.move_axis = match (rand() * 4.0) as u32 {
+                        0 => Vec2::Y,
+                        1 => Vec2::new(1.0, 1.0),
+                        2 => Vec2::X,
+                        _ => Vec2::new(-1.0, 1.0),
+                    };
+                    let r = rand();
+                    i.walk = r < 0.2;
+                    i.crouch = (0.2..0.4).contains(&r);
+                }
+            }
+            for &p in &players {
+                let jump = rand() < 0.02;
+                sim.intent(p).jump = jump;
+                sim.intent(p).yaw += (rand() - 0.5) * 0.1;
+            }
+            let before: Vec<Vec3> = players.iter().map(|&p| feet(&sim, p)).collect();
+            sim.ticks(1);
+            for (k, &p) in players.iter().enumerate() {
+                let me = sim.app.world().get::<SourceMovement>(p).unwrap().clone();
+                let speed = sim.velocity(p).xz().length() / 0.0254;
+                let (was_ground, was_speed) = prev[k];
+                prev[k] = (me.on_ground, speed);
+                if !(was_ground && me.on_ground && was_speed > 60.0 && speed < was_speed * 0.5) {
+                    continue;
+                }
+                // Something solid nearby (brushes, other characters) may
+                // stop it for real.
+                let f = feet(&sim, p);
+                let (a, b) = (
+                    movement::to_engine(f + Vec3::new(-24.0, -24.0, 1.0)),
+                    movement::to_engine(f + Vec3::new(24.0, 24.0, 70.0)),
+                );
+                let (bl, bh) = (a.min(b), a.max(b));
+                let near_brush = brushes.iter().any(|br| br.max.cmpgt(bl).all() && br.min.cmplt(bh).all());
+                let near_player = players
+                    .iter()
+                    .any(|&q| q != p && (feet(&sim, q) - f).truncate().length() < 64.0);
+                if near_brush || near_player {
+                    continue;
+                }
+                let intent = sim.intent(p).clone();
+                eprintln!(
+                    "stub round {round} tick {tick}: feet {:?} -> {:?}, speed {was_speed:.1} -> {speed:.1}, yaw {:.1}, axis {:?}, walk {} crouch {} ducked {} jump {} normal {:?}",
+                    before[k], f, intent.yaw.to_degrees(), intent.move_axis, intent.walk, intent.crouch, me.ducked, intent.jump, me.ground_normal
+                );
+                stubs.push((round, tick, before[k]));
+            }
+        }
+    }
+    assert!(stubs.is_empty(), "{} stubs: {:?}", stubs.len(), &stubs[..stubs.len().min(5)]);
+}

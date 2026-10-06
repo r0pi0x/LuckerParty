@@ -193,6 +193,9 @@ cargo run --features dev --bin movecmp -- fuzz --runs 16 --ticks 150   # ladders
   buttons): movecmp holds duck on our side while the bot is ducked in the
   air, so jumps differ only by the bot's instant 8.5-unit duck on the jump
   tick.
+- Damage measurements: `tools/css_probe/fallmeas.py` (fall damage; see
+  tools/css_probe/README.md). `player_hurt` rows of `mashup_wrun` logs
+  carry each hit's damage.
 - `movecmp fuzz`: seeded random inputs (keys, jump, duck, turning and
   pitch, in bursts) from ladder spots on de_nuke and water spots on
   de_aztec (found and checked in our sim), plus a straight climb per
