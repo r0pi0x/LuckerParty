@@ -13,6 +13,10 @@ plan when work starts; delete them when done.
   0.022, so the same number feels like CS:S), archived; maybe a small
   options screen later.
 - `trigger_hurt` volumes (falling out of the map already kills).
+- Fall damage (CS:S: measure the safe fall speed and damage per unit/s on
+  the probe server; the landing sound already scales with the fall).
+- First-person weapon view models (`v_rif_ak47.mdl` etc.) with their
+  draw/idle/fire/reload animations (the animation decoder handles them).
 - Debug health bars above characters (a cvar, e.g. `mashup_healthbars 1`).
 - Third-person camera (`thirdperson` / `firstperson` commands, CS:S
   style, sv_cheats-free here); shows the local player's own animated body.
@@ -38,8 +42,7 @@ framework, knife, AK-47, HUD, deathmatch and a first bot are in.
   questions 2–4), checking corners, teamwork.
 - Collaterals (bullets through players) and wall penetration: being
   measured (M13).
-- Reload, grenade and death animations; first-person view models (world
-  models are held by bodies).
+- Reload, grenade and death animations (world models are held by bodies).
 - Impact decals, tracers, muzzle flash; explosion impulses.
 
 ## 3. Sound, remaining

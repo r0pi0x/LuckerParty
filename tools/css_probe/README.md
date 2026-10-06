@@ -64,8 +64,23 @@ weapon state plus `E` rows for weapon events every tick; an optional sixth
 input column selects weapon slot n-1 that tick), `mashup_give <weapon> [clip]
 [reserve]`, `mashup_target x y z yaw health armor helmet hover` (the second
 player; it is held at that yaw and its health/armour are restored after every
-hit), `mashup_trace x y z pitch yaw [ignore_shooter]` (bullet-mask trace with
-hitgroup), `mashup_scan` (finds long clear sightlines) and `mashup_info`.
+hit), `mashup_targetn n x y z yaw hover` (extra targets 1–3, other players
+held the same way; needs that many more bots, e.g. `bot_add_t`),
+`mashup_trace x y z pitch yaw [ignore_shooter]` (bullet-mask trace with
+hitgroup), `mashup_wall x y z pitch yaw` (first surface along a ray, where
+the ray leaves it again, thickness, surface props of both faces and the free
+distance behind; players ignored), `mashup_walls` (thin walls seen from a
+grid of ground points), `mashup_scan` (finds long clear sightlines) and
+`mashup_info`.
+
+Penetration helpers: `surfprops.py` maps a trace's surface props index to the
+surface name and game material letter (reads `scripts/surfaceproperties*.txt`
+from the server install through `vpkls.py`, a minimal VPK reader; nothing is
+extracted into the repo). In weapmeas.py: `pen_series`/`pen_shot` (damage
+behind a layer), `wall_pass` + `aim_catalog` (pass/fail by thickness),
+`collateral`, `multi`, `reach_ground` (players and walls on one line),
+`recoil_taps`, `recoil_state`, `kick_fit`, `kick_vs_speed` (recoil);
+`passmap.py` + `passmap_summary.py` (pass/fail by thickness from one spot).
 
 Notes:
 - The bot AI sets the bot's view angles and weapon on its own; weapon runs
@@ -74,5 +89,8 @@ Notes:
   switch to the knife and toggles silencers. Deploy timing is therefore
   measured by giving the gun mid-run (`weapmeas.deploy`).
 - A bot that joins mid-round waits dead; `mashup_target` respawns it.
+- With the server's `maxplayers 4` only three bots joined (the shooter and two
+  targets).
 - Afterwards restore the movement setup: `bot_kick`, `bot_join_team ct`,
-  `bot_quota 1`, `mp_friendlyfire 0`.
+  `bot_quota 1`, `mp_friendlyfire 0` (and `changelevel de_dust2` if the map
+  was changed).

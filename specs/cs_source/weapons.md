@@ -1171,13 +1171,180 @@ Each zoom toggle sets `next_secondary = curtime + 0.3`; it does not touch
 buckshot 32, flashbang 2, hegrenade 1, smokegrenade 1. Penetration power and
 impulse per ammo type are not exposed as cvars.
 
+### M13 Penetration (walls)
+
+Method: dust2 surfaces of known game material (surface props index from a
+server-side trace, mapped to the material letter through the install's
+`scripts/surfaceproperties*.txt` in manifest order, `tools/css_probe/
+surfprops.py`). Thickness along each shot's actual path (eye → its first
+`bullet_impact`) measured with two opposite traces (`mashup_wall`):
+wooden doors (`DE_DUST/DOOR011`, wood, W, 8.06 thick, two leaves 80 apart at
+B), wooden static props (W, chords 4–135), a concrete wall (C,
+`SITEBWALL01A`, chords 7–29), the 16-unit concrete half wall at B (C), a
+sand wall (`STONEWALL02C`, sand, D, chords 16–23) and the military crates
+(`DUMLTRYCRSD2`, metal, M, chords 1–62).
+Pass/fail: an impact on the next surface behind the layer (no target, ≈ 800
+shots, oblique aims at different chords). Damage: the hovering target (back
+to the shooter, chest on the line) behind the layer, eye → target 120–760.
+Weapons AK-47, AWP (scoped), Deagle, USP; shooter crouched, still.
+
+- **The bullet passes** a layer when its thickness along the path is at most
+  the weapon's limit for that material (table). Thicker: the bullet stops at
+  the entry face (one impact). Measured limits (last pass / first fail):
+
+  | material | USP | Deagle | AK-47 | AWP |
+  |---|---|---|---|---|
+  | wood (W) | 29.7 / 30.0 | 59.2 / 60.0 | 77.6 / 78.2 | 83.0 / 93.9 (a few fails at 79–81 unexplained) |
+  | metal (M) | 2.9 / 17.4 | 30.0 / 30.6 | 32.6 / 40.7 | 44.7 / 46.8 |
+  | sand (D) | fails at 16.1 | fails at 16.1 | 19.48 / 19.5 | ≥ 18.8 (thicker not tried) |
+  | concrete (C) | fails at 7.2 (thinnest tried) | 9.25 / 13.75 | 15.5 / 16.0 | 17.7 / 18.4 |
+
+  All pins fit `limit = P × m` with P per ammo type 45ACP 15, 50AE 30,
+  762MM 39, 338MAG 45 and m wood 2.0, metal 1.0, sand (dirt) 0.5,
+  concrete 0.4. Only products are measured: P and m are fixed up to a common
+  factor (choosing m metal = 1). Other materials (tile, grate, glass,
+  plaster, …) not measured.
+- **Number of objects**: walls and players count alike. A bullet passes
+  `Penetration` objects (USP 1, Deagle and AK-47 2, AWP 3) and still hits
+  the next one (damage or impact), then stops: USP door → stops on the
+  second door 80 behind or on a player; AK-47/Deagle door, door → impact on
+  the rock behind; door, player → impact on the second door; AWP door,
+  player, door → rock; AWP door, door, player → hits a second player behind.
+  Cases that stop earlier than the count allows (AK-47 and Deagle after two
+  players, AWP after player, door, player: the last player is hit but not
+  passed; USP never passes a player) fit a shared budget: each object
+  passed uses `thickness / m` of `P` (wood 8.06 → 4.03, a player ≈ 21–22),
+  and the bullet only leaves an object while the budget stays ≥ 0. This is
+  a fit to these cases only (Q7).
+- **Damage**: every surface or player the bullet reaches multiplies the
+  current damage by `RangeModifier^(d/500)` with `d` the distance from the
+  eye to that hit (total travelled, *not* the segment), and each object
+  passed then multiplies it by the material's factor: wood **0.6**,
+  concrete **0.25**, player **0.5**. A player hit deals the current damage
+  × `RangeModifier^(d/500)` × hitgroup multiplier, truncated, armour as in
+  M7. So falloff is applied again at every hit, compounding:
+  through one door at `d1` to a target at `d2`:
+  `Damage × RM^(d1/500) × 0.6 × RM^(d2/500) × group`.
+  Fits every damage logged (≈ 60 hits, 4 weapons, 1–3 objects passed), e.g.
+  AWP through two doors (68, 150) to a chest at 294 → 40 and on to a second
+  player at 394 → 20; Deagle player (35), door (68), chest at 105 → 14;
+  USP door at 102, chest at 124 → 18; AWP concrete 16 at 150, chest at 220
+  → 28. No dependence on thickness was seen (wood 8.07 vs 9.31 and
+  concrete 16.06 vs 17.72 give the same damage).
+- **Max distance**: a bullet only passes an object if the distance from the
+  eye to it is below the ammo's limit: 50AE passes a player at 1006 and not
+  at 1015 (≈ 1000); 762MM and 338MAG still pass at 4000 (not bounded
+  further).
+- **Range after passing a player**: halved. The AK-47 and AWP (Range 8192)
+  reach the wall 4269 away after a player only when the player's entry is
+  ≥ 330 away (≤ 325: no impact); the Deagle (Range 4096) reaches a wall at
+  2310 after a player at 900 but not at 300. Both fit `remaining = (Range −
+  distance at the player's exit) / 2` with the chest ≈ 16–20 thick. Not
+  checked for walls.
+- Quirk: with a player 15 units in front of a wall the wall's entry impact is
+  often missing and the bullet appears beyond the wall; the player and the
+  wall seem to be crossed as one object. Not analysed.
+- Unexplained: an 8-unit concrete wall whose far side is `TOOLSNODRAW`
+  (props `default`) stopped even the AWP (dust2 `TEMPLEWALL04A` at
+  (−1312, 1104, 290–340)). Damage factors for metal and sand not measured.
+
+### M13 Through players (collaterals)
+
+Method: two (three with a wall) bots hovering on the clear range line,
+backs to the shooter, 50–2500 units apart, the line crossing both at the
+same height (chest, stomach or leg); a second identical shot with the first
+bot moved away gives the reference. 2–3 shots per case.
+
+| weapon | passes a player | 2nd player damage (chest, 1st at 300, 2nd at 400) | alone | passes two players |
+|---|---|---|---|---|
+| AK-47 | yes | 17 | 35 | no (no impact behind the 2nd) |
+| AWP | yes | 56 | 114 | yes (impact on the wall behind) |
+| Deagle | yes | 20 | 45 | no |
+| USP | **no** (stops in the first, also at 50 behind) | – | – | – |
+
+- The second player's damage is the first-player rule above: the damage
+  carried on is the first hit's damage *before* its hitgroup multiplier
+  × 0.5, then falloff again at the second hit, then the second hitgroup.
+  The first hitgroup does not matter (AK-47 through the chest, stomach or
+  leg of the first: 17, 21, 13 on the same group of the second; the
+  reference 35, 44, 26). Side-on first bots were hit in the chest, so an
+  arm-first case was not obtained.
+- Players and walls share the object count and budget (M13): AK-47 player,
+  door, player → hits the second player and stops; AWP player, door,
+  player → the same.
+- Reach behind the first player: AK-47 hit the second 2494 behind a first
+  at 150; AWP after two players at 600/700 reaches a wall at 1034, but not
+  the wall 4269 away behind players at 500/600, as the halving of the
+  remaining range after each player predicts (≈ 2490). Misses at long
+  gaps are also spread (Deagle cone ≈ 18 units at 1300).
+
+### M3 Recoil (more weapons, moving, airborne)
+
+Method as M3: full-clip bursts (M4A1: 4 standing, 2 crouched + 2 more for
+caps), semi-automatics pressed once per refire (USP, Glock 11 ticks, Deagle
+16, AWP 101, unscoped), AK-47 bursts while side-running (221), walking
+(114.9) and from the tick after a jump; first-shot kick at falling speeds
+(released run, 5–208 units/s). Punch decay checked every non-firing tick.
+
+- Decay: the M3 rule (`L ← max(L − (10 + 0.5 L) × 0.015, 0)`) for every
+  weapon (max error 1e-5).
+- Automatic kick: `up = a` for n = 1, `a + b n` after; `side = c`, then
+  `c + e n` (n = `m_iShotsFired` after the shot), clamped:
+
+  | weapon / state | a | b | c | e | pitch cap | yaw cap |
+  |---|---|---|---|---|---|---|
+  | AK-47 standing (M3) | 1.0 | 0.175 | 0.375 | 0.0375 | −5.75 | 1.75 |
+  | AK-47 crouched (M3) | 0.9 | 0.15 | 0.35 | 0.025 | – | – |
+  | AK-47 moving (any speed > 0, also 5 u/s; walk and run alike) | 1.5 | 0.225 | 0.45 | 0.05 | −6.5 | 2.5 |
+  | AK-47 airborne | 2.0 | 0.5 | 1.0 | 0.35 | −9.0 | 6.0 (reached once) |
+  | M4A1 standing (silencer off) | 0.65 | 0.25 | 0.35 | 0.015 | −3.5 | 2.25 |
+  | M4A1 crouched | 0.6 | 0.2 | 0.3 | 0.0125 | −3.25 | 2.0 |
+
+  "Moving" is decided by the speed on the shot tick: 5.06 u/s gives the
+  moving set, 0 the standing one. Side flips: M4A1 13 of 116 (standing),
+  18 of 116 (crouched); with M3's 17 of 145 overall 48 of 377 ≈ 1/8.
+- Semi-automatic (USP, Deagle, AWP unscoped): every shot kicks straight up
+  by **2.0**, no sideways part; `m_iShotsFired` is back to 0 between
+  presses so every shot is "shot 1". USP refired after 11 ticks adds to the
+  remaining punch (−2.0, −2.25, −2.48, …). **Glock: no punch at all.**
+  Burst/silenced/scoped modes not measured.
+- Bullets follow view + 2 × punch for the M4A1 as for the AK-47 (residuals
+  inside the cone with 2×, up to 2.3° outside with 1×).
+
+### M1, M2 Inaccuracy (more weapons, landing)
+
+Method: `m_fAccuracyPenalty` per tick around shots, falls and a jump; USP
+shots at a wall while side-stepping at 95, 140, 180 and 250 (120 each).
+
+- The M1/M2 rule holds with each weapon's script values: rest = Stand
+  (Crouch when ducked), each shot `+InaccuracyFire` after the tick's decay,
+  recovery `0.1^(t/RecoveryTime)` (USP 0.008 → 0.04295 → 0.018199 ten ticks
+  later; Glock, Deagle, AWP unscoped, M4A1 likewise to 1e-6). With attack
+  held it settles where one tick's decay cancels the fire term (M4A1
+  0.03698): there is no cap.
+- **Landing**: on the landing tick
+  `I += InaccuracyLand × |v_z| / 301.99` (`v_z` = vertical speed on the tick
+  before; 301.99 ≈ the jump speed), and the same tick's ground recovery
+  then applies. Fits falls of 10, 30, 60 units (v_z −108, −204, −300) and a
+  jump landing for AK-47, M4A1, USP, AWP to 1e-5 (e.g. AK-47 jump: 0.093034
+  → 0.163267).
+- Airborne after a jump the AK-47's `I` falls by 0.96752 per tick toward
+  0.0069 (fits 44 ticks to 1e-5; = Crouch value, time to 10 % 1.046 s =
+  3 × RecoveryTimeCrouch), but a bot falling without a jump stays at the
+  Stand value; not resolved.
+- Movement term, USP (max speed 250): extra cone 0.0019 at 95.4, 0.0068
+  at 140, 0.0112 at 180, 0.0182 at 250 (`InaccuracyMove` 0.01724): the
+  AK-47's `Move × clamp((v − vmax/3)/(2 vmax/3), 0, 1)` within the error
+  (≈ ±10 %), possibly ≈ 0.001 higher throughout.
+
 ### Not measured yet
 
-M2's dependency on shots fired beyond 5, M9 shotgun reload, M12 hitbox reach,
-M13 penetration (no thin wall of known material found quickly on dust2; the
-64-unit wall at the CT spawn stops everything), M14 drop/pickup, silenced
-damage, the landing rule, moving/airborne recoil sets, the knife's
-hitbox/hull interplay, and the RNG (Q1).
+M9 shotgun reload, M12 hitbox reach, M14 drop/pickup, silenced damage, the
+knife's hitbox/hull interplay, the RNG (Q1); for M13 the damage factors of
+metal, sand and other materials, penetration distances of other ammo types,
+whether the range halving applies after walls, and shotgun pellets; recoil
+of the other automatic weapons, crouched-moving and burst/scoped/silenced
+modes; the airborne inaccuracy target.
 
 ## Open questions
 
@@ -1188,11 +1355,15 @@ hitbox/hull interplay, and the RNG (Q1).
   seeds (M2), or accept statistically equal spread.
 - **Q2 Inaccuracy formula** (section 7.1): measurement M1, M2. *Mostly
   resolved: "CS:S values (measured)", M1/M2 (recovery, fire, jump, move
-  term, cone shape); landing rule and airborne target still open.*
+  term, cone shape); landing rule and the per-weapon check in "M1, M2
+  Inaccuracy (more weapons, landing)"; the airborne target (0.0069 after a
+  jump, none when falling) still open.*
 - **Q3 Recoil kick and decay**, and how much punch adds to the aim: M3.
   *Resolved for the AK-47 standing/crouched (measured section, M3): linear
-  decay rule, kick formula, aim = view + 2 × punch. Other weapons and
-  moving/airborne kick sets not measured.*
+  decay rule, kick formula, aim = view + 2 × punch. M4A1, pistols, AWP and
+  the AK-47's moving/airborne sets in "M3 Recoil (more weapons, moving,
+  airborne)" (Glock: no punch). Other automatics, scoped/silenced/burst
+  modes not measured.*
 - **Q4 Fire timing rule** ("set" vs. "accumulate"): M4. *Resolved (measured
   section, M4): accumulate while held (one shot per tick max), set on a
   fresh press; the tick table above applies to tapping only.*
@@ -1204,6 +1375,16 @@ hitbox/hull interplay, and the RNG (Q1).
 - **Q6 Hitbox surrounding bounds**: are hits on arms/head outside the
   collision hull registered? M12.
 - **Q7 Penetration** model, per-ammo power/distance, material table: M13.
+  *Mostly resolved (measured section, M13 and "M13 Through players"):
+  max thickness `P × m` (P 45ACP 15, 50AE 30, 762MM 39, 338MAG 45; m wood 2,
+  metal 1, sand 0.5, concrete 0.4), object count = `Penetration`, damage ×
+  0.6 wood / 0.25 concrete / 0.5 player with falloff re-applied at every
+  hit, 50AE stops penetrating beyond ≈ 1000, range halved after a player.
+  Open: the shared budget (thickness / m spent from P across objects) is a
+  fit to the cases that stop early, not tested directly (e.g. door then a
+  thick crate); a player's cost (≈ 21–22) vs. its thickness; damage factors
+  of other materials; other ammo distances; the 8-unit concrete wall with a
+  nodraw back face that stopped the AWP; the player-against-wall merge.*
 - **Q8 Ammo impulses** for physics props (shared with physics_props.md Q11):
   shoot a known-mass prop and measure Δv.
 - **Q9 Knife** damages, ranges, refire, backstab: M11.

@@ -71,6 +71,9 @@ int g_target;
 int g_traceIgnore = -1;
 int g_tArmor;
 bool g_tHelmet;
+// Extra targets (mashup_targetn 1..3), held at their yaw like the target.
+int g_extra[4];
+float g_extraYaw[4];
 
 public void OnPluginStart()
 {
@@ -81,10 +84,16 @@ public void OnPluginStart()
         "mashup_give <weapon> [clip] [reserve]: replace the shooter's weapon in that slot and draw it");
     RegServerCmd("mashup_target", Command_Target,
         "mashup_target <x> <y> <z> <yaw> <health> <armor> <helmet 0|1> <hover 0|1>: place the target");
+    RegServerCmd("mashup_targetn", Command_TargetN,
+        "mashup_targetn <n 1-3> <x> <y> <z> <yaw> <hover 0|1>: place the n-th other player as an extra target (same health/armour as the target); n with x = off clears it");
     RegServerCmd("mashup_trace", Command_Trace,
         "mashup_trace <x> <y> <z> <pitch> <yaw> [ignore shooter 0|1]: bullet-mask trace, prints the hit");
     RegServerCmd("mashup_scan", Command_Scan,
         "mashup_scan <x0> <x1> <y0> <y1> <step> <ztop> <mindist>: ground points with long level sightlines");
+    RegServerCmd("mashup_wall", Command_Wall,
+        "mashup_wall <x> <y> <z> <pitch> <yaw>: first surface along the ray, its exit point, thickness and what follows");
+    RegServerCmd("mashup_walls", Command_Walls,
+        "mashup_walls <x0> <x1> <y0> <y1> <step> <ztop> <maxthick> <minbehind>: thin walls seen from ground points");
     RegServerCmd("mashup_info", Command_Info, "mashup_info: position and angles of all living players");
     HookEvent("weapon_fire", Event_Any);
     HookEvent("bullet_impact", Event_Any);
@@ -108,6 +117,69 @@ int FindTarget2()
         }
     }
     return 0;
+}
+
+// The n-th (0-based) other player in the game, respawned when dead.
+int FindOther(int n)
+{
+    int shooter = FindBot();
+    int k = 0;
+    for (int i = 1; i <= MaxClients; i++) {
+        if (i != shooter && IsClientInGame(i) && GetClientTeam(i) > 1) {
+            if (k == n) {
+                if (!IsPlayerAlive(i)) {
+                    CS_RespawnPlayer(i);
+                }
+                return i;
+            }
+            k++;
+        }
+    }
+    return 0;
+}
+
+public Action Command_TargetN(int args)
+{
+    int n = GetCmdArgInt(1);
+    if (n < 1 || n > 3) {
+        PrintToServer("mashup: n must be 1-3");
+        return Plugin_Handled;
+    }
+    char x[32];
+    GetCmdArg(2, x, sizeof(x));
+    if (StrEqual(x, "off")) {
+        g_extra[n] = 0;
+        return Plugin_Handled;
+    }
+    int t = FindOther(n);
+    if (t == 0) {
+        PrintToServer("mashup: no player for extra target %d", n);
+        return Plugin_Handled;
+    }
+    float pos[3];
+    float ang[3];
+    float zero[3];
+    pos[0] = GetCmdArgFloat(2);
+    pos[1] = GetCmdArgFloat(3);
+    pos[2] = GetCmdArgFloat(4);
+    ang[1] = GetCmdArgFloat(5);
+    g_extra[n] = t;
+    g_extraYaw[n] = ang[1];
+    SetEntityMoveType(t, GetCmdArgInt(6) != 0 ? MOVETYPE_NONE : MOVETYPE_WALK);
+    TeleportEntity(t, pos, ang, zero);
+    ResetTarget(t);
+    PrintToServer("mashup: extra target %d = client %d at %.1f %.1f %.1f yaw %.1f", n, t, pos[0], pos[1], pos[2], ang[1]);
+    return Plugin_Handled;
+}
+
+float HeldYaw(int client)
+{
+    for (int n = 1; n < 4; n++) {
+        if (g_extra[n] == client) {
+            return g_extraYaw[n];
+        }
+    }
+    return -1000.0;
 }
 
 public Action Command_WRun(int args)
@@ -185,6 +257,15 @@ public void OnGameFrame()
         SetEntPropVector(g_target, Prop_Data, "v_angle", a);
         TeleportEntity(g_target, NULL_VECTOR, a, NULL_VECTOR);
     }
+    for (int n = 1; n < 4; n++) {
+        int t = g_extra[n];
+        if (t != 0 && IsClientInGame(t) && IsPlayerAlive(t)) {
+            float a[3];
+            a[1] = g_extraYaw[n];
+            SetEntPropVector(t, Prop_Data, "v_angle", a);
+            TeleportEntity(t, NULL_VECTOR, a, NULL_VECTOR);
+        }
+    }
 }
 
 public Action Command_Scan(int args)
@@ -230,6 +311,145 @@ public Action Command_Scan(int args)
                 }
                 if (d >= minDist) {
                     PrintToServer("mashup_scan %.0f %.0f %.1f yaw %.0f dist %.0f", x, y, ground[2], ang[1], d);
+                }
+            }
+        }
+    }
+    return Plugin_Handled;
+}
+
+// Along the ray from pos (angles ang): the first surface hit within maxDist,
+// where the ray leaves the solid again (first point along the ray from which
+// a trace back to the entry no longer starts in solid, 0.25-unit steps) and
+// the free distance behind it. Returns false when nothing is hit or no exit
+// is found within 512 units.
+bool WallAlong(const float pos[3], const float ang[3], float maxDist, float entry[3], float exitp[3], int &entProps,
+    int &exitProps, int &ent, int &exitEnt, float &behind, int &nextProps, char[] surf, int surfLen, char[] exitSurf,
+    int exitSurfLen)
+{
+    float dir[3];
+    GetAngleVectors(ang, dir, NULL_VECTOR, NULL_VECTOR);
+    g_traceIgnore = -1;
+    TR_TraceRayFilter(pos, ang, MASK_SHOT, RayType_Infinite, TraceFilterNoPlayers);
+    if (TR_StartSolid() || TR_GetFraction() >= 1.0) {
+        return false;
+    }
+    TR_GetEndPosition(entry);
+    if (GetVectorDistance(pos, entry) > maxDist) {
+        return false;
+    }
+    entProps = TR_GetSurfaceProps();
+    ent = TR_GetEntityIndex();
+    TR_GetSurfaceName(null, surf, surfLen);
+    for (float k = 0.25; k <= 512.0; k += 0.25) {
+        float q[3];
+        for (int i = 0; i < 3; i++) {
+            q[i] = entry[i] + dir[i] * k;
+        }
+        TR_TraceRayFilter(q, entry, MASK_SHOT, RayType_EndPoint, TraceFilterNoPlayers);
+        if (TR_StartSolid()) {
+            continue;
+        }
+        TR_GetEndPosition(exitp);
+        exitProps = TR_GetSurfaceProps();
+        exitEnt = TR_GetEntityIndex();
+        TR_GetSurfaceName(null, exitSurf, exitSurfLen);
+        float from[3];
+        for (int i = 0; i < 3; i++) {
+            from[i] = q[i];
+        }
+        TR_TraceRayFilter(from, ang, MASK_SHOT, RayType_Infinite, TraceFilterNoPlayers);
+        float end[3];
+        TR_GetEndPosition(end);
+        behind = GetVectorDistance(exitp, end);
+        nextProps = TR_GetSurfaceProps();
+        return true;
+    }
+    return false;
+}
+
+public Action Command_Wall(int args)
+{
+    float pos[3];
+    float ang[3];
+    pos[0] = GetCmdArgFloat(1);
+    pos[1] = GetCmdArgFloat(2);
+    pos[2] = GetCmdArgFloat(3);
+    ang[0] = GetCmdArgFloat(4);
+    ang[1] = GetCmdArgFloat(5);
+    float entry[3];
+    float exitp[3];
+    int p1;
+    int p2;
+    int e1;
+    int e2;
+    int pn;
+    float behind;
+    char s1[64];
+    char s2[64];
+    if (!WallAlong(pos, ang, 1.0e9, entry, exitp, p1, p2, e1, e2, behind, pn, s1, sizeof(s1), s2, sizeof(s2))) {
+        PrintToServer("mashup_wall none");
+        return Plugin_Handled;
+    }
+    char cls[64] = "world";
+    if (e1 > 0 && IsValidEntity(e1)) {
+        GetEntityClassname(e1, cls, sizeof(cls));
+    }
+    PrintToServer("mashup_wall entry %.3f %.3f %.3f exit %.3f %.3f %.3f thick %.3f dist %.3f ent %d %s props %d exitent %d exitprops %d behind %.1f nextprops %d surf %s exitsurf %s",
+        entry[0], entry[1], entry[2], exitp[0], exitp[1], exitp[2], GetVectorDistance(entry, exitp),
+        GetVectorDistance(pos, entry), e1, cls, p1, e2, p2, behind, pn, s1, s2);
+    return Plugin_Handled;
+}
+
+public Action Command_Walls(int args)
+{
+    float x0 = GetCmdArgFloat(1);
+    float x1 = GetCmdArgFloat(2);
+    float y0 = GetCmdArgFloat(3);
+    float y1 = GetCmdArgFloat(4);
+    float step = GetCmdArgFloat(5);
+    float ztop = GetCmdArgFloat(6);
+    float maxThick = GetCmdArgFloat(7);
+    float minBehind = GetCmdArgFloat(8);
+    for (float x = x0; x <= x1; x += step) {
+        for (float y = y0; y <= y1; y += step) {
+            float top[3];
+            float down[3] = {90.0, 0.0, 0.0};
+            top[0] = x;
+            top[1] = y;
+            top[2] = ztop;
+            g_traceIgnore = -1;
+            TR_TraceRayFilter(top, down, MASK_PLAYERSOLID, RayType_Infinite, TraceFilter);
+            if (TR_StartSolid() || TR_GetFraction() >= 1.0) {
+                continue;
+            }
+            float eye[3];
+            TR_GetEndPosition(eye);
+            eye[2] += 48.0;
+            for (int k = 0; k < 16; k++) {
+                float ang[3];
+                ang[1] = 22.5 * k;
+                float entry[3];
+                float exitp[3];
+                int p1;
+                int p2;
+                int e1;
+                int e2;
+                int pn;
+                float behind;
+                char s1[64];
+                char s2[64];
+                if (!WallAlong(eye, ang, 400.0, entry, exitp, p1, p2, e1, e2, behind, pn, s1, sizeof(s1), s2, sizeof(s2))) {
+                    continue;
+                }
+                float t = GetVectorDistance(entry, exitp);
+                if (t <= maxThick && behind >= minBehind) {
+                    char cls[64] = "world";
+                    if (e1 > 0 && IsValidEntity(e1)) {
+                        GetEntityClassname(e1, cls, sizeof(cls));
+                    }
+                    PrintToServer("mashup_walls %.0f %.0f %.1f yaw %.1f dist %.0f thick %.2f behind %.0f ent %s props %d/%d surf %s",
+                        eye[0], eye[1], eye[2], ang[1], GetVectorDistance(eye, entry), t, behind, cls, p1, p2, s1);
                 }
             }
         }
@@ -294,6 +514,12 @@ public Action Command_Target(int args)
 public bool TraceFilter(int entity, int mask)
 {
     return entity != g_traceIgnore;
+}
+
+// Walls only: skips every player.
+public bool TraceFilterNoPlayers(int entity, int mask)
+{
+    return entity == 0 || entity > MaxClients;
 }
 
 public Action Command_Trace(int args)
@@ -428,6 +654,9 @@ public Action Command_Run(int args)
 {
     // Plain movement runs: no weapon rows, no target held in place.
     g_target = 0;
+    for (int n = 1; n < 4; n++) {
+        g_extra[n] = 0;
+    }
     return StartRun(false);
 }
 
@@ -504,6 +733,15 @@ public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3
     if (client == g_target && client != g_bot && g_target != 0) {
         angles[0] = 0.0;
         angles[1] = g_tYaw;
+        angles[2] = 0.0;
+        SetEntPropVector(client, Prop_Data, "v_angle", angles);
+        TeleportEntity(client, NULL_VECTOR, angles, NULL_VECTOR);
+        return Plugin_Changed;
+    }
+    float held = HeldYaw(client);
+    if (held > -999.0 && client != g_bot) {
+        angles[0] = 0.0;
+        angles[1] = held;
         angles[2] = 0.0;
         SetEntPropVector(client, Prop_Data, "v_angle", angles);
         TeleportEntity(client, NULL_VECTOR, angles, NULL_VECTOR);
