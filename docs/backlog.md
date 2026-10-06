@@ -1,51 +1,56 @@
 # Backlog
 
 Things to build, **in priority order** (top first; reprioritized
-2026-10-05). Shortcuts already in the code live in
+2026-10-06). Shortcuts already in the code live in
 [tech-debt.md](tech-debt.md); the MVP plan is in
 [plans/active/](plans/active/mvp-combat-arms-slice.md). Move items into a
 plan when work starts; delete them when done.
 
-## 0. Player settings
+## 1. Playtest essentials (in progress: parallel agents, 2026-10-06)
 
-- Master volume: CS:S `volume` cvar (0-1, archived to config.cfg).
-- Mouse sensitivity: CS:S `sensitivity` cvar (with `m_yaw`/`m_pitch`
-  0.022, so the same number feels like CS:S), archived; maybe a small
-  options screen later.
-- `trigger_hurt` volumes (falling out of the map already kills).
-- Fall damage (CS:S: measure the safe fall speed and damage per unit/s on
-  the probe server; the landing sound already scales with the fall).
-- First-person weapon view models (`v_rif_ak47.mdl` etc.) with their
-  draw/idle/fire/reload animations (the animation decoder handles them).
-- Debug health bars above characters (a cvar, e.g. `mashup_healthbars 1`).
-- Third-person camera (`thirdperson` / `firstperson` commands, CS:S
-  style, sv_cheats-free here); shows the local player's own animated body.
+Each group is one agent's worktree; merged into main as they finish.
 
-## 1. Console, remaining
+- **A. Client: settings and debug views.** `volume` and `sensitivity`
+  cvars (archived; CS:S's m_yaw/m_pitch 0.022 scale); debug health bars
+  above characters (`mashup_healthbars 1`); third-person camera
+  (`thirdperson` / `firstperson`) showing the local player's animated
+  body.
+- **B. Weapons: penetration and collaterals.** Implement M13 from
+  specs/cs_source/weapons.md (walls by material, through players x0.5,
+  object counts, compounding falloff); the measured recoil sets (moving and
+  airborne AK-47).
+- **C. First-person view models** (`v_knife_*.mdl`, `v_rif_ak47.mdl`) with
+  draw/idle/fire/reload sequences, through the animation decoder.
+- **D. Movement: terrain and falls.** Fuzz walking over displacements to
+  find the rare "stubbed toe" stop and fix it; fall damage (measure on the
+  probe server); `trigger_hurt` volumes.
 
-The console and overlays are in (src/console.rs, src/client/console.rs).
-Left for later:
-
-- `net_graph` beyond cl_showfps 2; `cl_showpos 2`; money for `buy`.
-- Select-and-copy in the output (clipboard); `con_dump` writes it to a
-  file meanwhile.
-
-## 2. Weapons
+## 2. Weapons, remaining
 
 In progress: [plans/active/weapons.md](plans/active/weapons.md). The
 framework, knife, AK-47, HUD, deathmatch and a first bot are in.
 
-- Money and a buy menu (`buy` gives for free); penetration (measure
-  M13 on a thin wall first); the other CS:S weapons from the
-  script tables (zoom M15, burst/silencer M16 are measured).
-- Bot behaviour: CS:S bot path costs and route variety (nav spec open
-  questions 2–4), checking corners, teamwork.
-- Collaterals (bullets through players) and wall penetration: being
-  measured (M13).
+- The other CS:S weapons from the script tables (M4A1, USP, Glock,
+  Deagle, AWP first: their recoil and inaccuracy are measured; zoom M15,
+  burst/silencer M16 are measured too).
+- Money and a buy menu (`buy` gives for free).
 - Reload, grenade and death animations (world models are held by bodies).
 - Impact decals, tracers, muzzle flash; explosion impulses.
 
-## 3. Sound, remaining
+## 3. Bots
+
+- CS:S bot path costs and route variety (nav spec open questions 2–4),
+  checking corners, teamwork.
+
+## 4. Console, remaining
+
+The console and overlays are in (src/console.rs, src/client/console.rs).
+
+- `net_graph` beyond cl_showfps 2; `cl_showpos 2`.
+- Select-and-copy in the output (clipboard); `con_dump` writes it to a
+  file meanwhile.
+
+## 5. Sound, remaining
 
 docs/plans/active/sound.md.
 
@@ -56,12 +61,12 @@ docs/plans/active/sound.md.
 - Measure on the probe server: the distance curves (replace the H1/H2
   guesses), CS:S footstep silence rules, the jump sound, wave choice.
 
-## 4. Physics props, remaining
+## 6. Physics props, remaining
 
 - The player physics shadow for `prop_physics` (dust2 has none).
 - Impact damage, breakable props.
 
-## 5. Visual fidelity
+## 7. Visual fidelity
 
 - **Water surfaces**: swimming works (`MapWater`), but water faces draw as
   plain textured surfaces, without the Water shader's refraction,
@@ -73,7 +78,7 @@ docs/plans/active/sound.md.
 - Fog on ropes; detail blend modes other than 0 and 1;
   `$basetexturetransform` (unused on dust2).
 
-## 6. Long tail
+## 8. Long tail
 
 Counts are from de_dust2's entity lump and static prop lump.
 
