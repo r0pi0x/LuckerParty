@@ -512,6 +512,8 @@ struct PropPlacement {
     physicsmode: i32,
     /// The entity it's parented to (`parentname`), by index.
     parent: Option<usize>,
+    /// The entity that placed it, by index (entity props).
+    entity: Option<usize>,
 }
 
 pub fn add_static_props(
@@ -548,6 +550,7 @@ pub fn add_static_props(
             massscale: 0.0,
             physicsmode: 0,
             parent: None,
+            entity: None,
         });
     }
     placements.extend(entity_props(bsp));
@@ -564,7 +567,8 @@ fn entity_props(bsp: &Bsp) -> Vec<PropPlacement> {
     };
     bsp.entities
         .iter()
-        .filter_map(|e| {
+        .enumerate()
+        .filter_map(|(index, e)| {
             let class = e.prop("classname")?;
             let physics = class.starts_with("prop_physics");
             if !physics && !class.starts_with("prop_dynamic") {
@@ -594,6 +598,7 @@ fn entity_props(bsp: &Bsp) -> Vec<PropPlacement> {
                         .iter()
                         .position(|o| o.prop("targetname").is_some_and(|n| n.eq_ignore_ascii_case(p)))
                 }),
+                entity: Some(index),
             })
         })
         .collect()
@@ -692,6 +697,7 @@ fn place_props(
             casts_shadow: prop.class.is_some(),
             physics: physics.filter(|_| prop.parent.is_none()),
             parent: prop.parent,
+            entity: prop.entity,
         });
     }
     failed.sort();

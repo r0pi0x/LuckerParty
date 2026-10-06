@@ -27,6 +27,7 @@ pub mod breakables;
 pub use breakables::{BrushPanes, GlassShatter, SpawnGibs};
 mod dust;
 pub mod hud;
+pub mod live_sound;
 pub mod loose;
 pub mod nav;
 pub mod particles;
@@ -35,6 +36,7 @@ pub mod rope_material;
 pub mod shadows;
 pub mod sound;
 pub mod soundscape;
+pub use live_sound::{LiveSounds, SoundControl, SoundKey, StartSound};
 pub use sound::{MapSoundClip, MapSoundEntry, MapSounds, MapSurface, PlaySound, SoundLevel};
 pub mod shells;
 pub mod sprite_material;
@@ -766,6 +768,9 @@ pub struct MapProp {
     /// The mover entity it's attached to (index into `MapData::entities`):
     /// it rides that entity's node (de_nuke's door handles) and isn't solid.
     pub parent: Option<usize>,
+    /// The entity it was placed by (index into `MapData::entities`); its
+    /// node then carries `PropEntity`.
+    pub entity: Option<usize>,
 }
 
 /// A physics prop's body (specs/cs_source/physics_props.md 3, 4).
@@ -2054,6 +2059,9 @@ fn spawn_map(
             Visibility::default(),
             ChildOf(rider.map_or(root, |r| r.0)),
         ));
+        if let Some(index) = prop.entity {
+            e.insert(PropEntity(index));
+        }
         let solid = if rider.is_some() { PropSolid::None } else { prop.solid };
         match (solid, &model_colliders[prop.model]) {
             (PropSolid::Mesh, Some(collider)) if dynamic.is_some() => {
@@ -2325,6 +2333,7 @@ pub fn unload_map(world: &mut World) {
     world.remove_resource::<MapTerrain>();
     world.insert_resource(Gravity::default());
     soundscape::reset(world);
+    live_sound::reset(world);
 }
 
 /// Replace the loaded map with `data` (spawned now, as at startup).
@@ -2662,6 +2671,11 @@ pub struct PhysicsProp {
 /// A prop entity's index in `MapData::props`.
 #[derive(Component, Debug, Clone, Copy)]
 pub struct PropIndex(pub usize);
+
+/// The map entity a prop node was placed by (index into
+/// `MapData::entities`), so logic can find it (a sound playing from it).
+#[derive(Component, Debug, Clone, Copy)]
+pub struct PropEntity(pub usize);
 
 /// What it takes to redraw prop shadows when props move.
 #[derive(Resource)]

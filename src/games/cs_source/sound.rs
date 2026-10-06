@@ -10,7 +10,7 @@ use super::{
     material::MaterialLoader,
     surfaceprops::{SurfaceProps, tokens},
 };
-use crate::map::{MapSoundEntry, MapSounds, MapSurface, SoundLevel, sound::Interval};
+use crate::map::{MapEntity, MapSoundEntry, MapSounds, MapSurface, SoundLevel, sound::Interval};
 
 /// An entry as written: its keys, and its waves in order.
 #[derive(Clone, Debug, Default)]
@@ -185,15 +185,41 @@ pub fn round_sounds() -> crate::map::RoundSounds {
     }
 }
 
+/// What the map's ambient_generics play ("message"): script entries, and
+/// raw wave files (anything naming a .wav or .mp3). Sentences ("!...")
+/// are left out.
+pub fn ambient_messages(entities: &[MapEntity]) -> (Vec<String>, Vec<String>) {
+    let (mut entries, mut raw) = (Vec::new(), Vec::new());
+    for e in entities.iter().filter(|e| e.classname().eq_ignore_ascii_case("ambient_generic")) {
+        let Some(m) = e.get("message").map(str::trim).filter(|m| !m.is_empty() && !m.starts_with('!')) else {
+            continue;
+        };
+        let lower = m.to_lowercase();
+        let list = if lower.contains(".wav") || lower.contains(".mp3") {
+            &mut raw
+        } else {
+            &mut entries
+        };
+        if !list.contains(&lower) {
+            list.push(lower);
+        }
+    }
+    (entries, raw)
+}
+
 /// The map's sounds: the entries it uses and their decoded waves, plus the
-/// surfaces' step sounds and game materials.
-pub fn load(materials: &mut MaterialLoader, map: &str, surfaces: &SurfaceProps) -> MapSounds {
+/// surfaces' step sounds and game materials. The map's ambient_generic
+/// sounds are loaded too, a raw wave as an entry named by its path
+/// (volume 1, pitch 100, level 75: the entity gives its own).
+pub fn load(materials: &mut MaterialLoader, map: &str, surfaces: &SurfaceProps, entities: &[MapEntity]) -> MapSounds {
     let scripts = SoundScripts::load(materials, map);
     let mut out = MapSounds::default();
+    let (ambient_entries, ambient_raw) = ambient_messages(entities);
     let mut wanted: HashSet<String> = ALWAYS
         .iter()
         .chain(super::weapons::sounds().iter())
         .map(|s| s.to_lowercase())
+        .chain(ambient_entries)
         .collect();
     for name in surfaces.names() {
         let num = |key: &str, fallback: f32| {
@@ -287,6 +313,27 @@ pub fn load(materials: &mut MaterialLoader, map: &str, surfaces: &SurfaceProps) 
                 channel: keys.get("channel").map_or(0, |c| channel(c)),
             },
         );
+    }
+    for name in ambient_raw {
+        let file = wave_file(&name);
+        let index = *decoded.entry(file.clone()).or_insert_with(|| {
+            let clip = materials.read(&file).and_then(|b| super::wav::decode(&b).ok());
+            clip.map(|c| {
+                out.clips.push(c);
+                out.clips.len() - 1
+            })
+        });
+        let Some(index) = index else {
+            failed += 1;
+            continue;
+        };
+        out.entries.entry(name).or_insert(MapSoundEntry {
+            waves: vec![index],
+            volume: Interval::fixed(1.0),
+            pitch: Interval::fixed(100.0),
+            level: SoundLevel::Db(75.0),
+            channel: 6,
+        });
     }
     if failed > 0 {
         bevy::log::warn!("sounds: {failed} waves couldn't be read or decoded");

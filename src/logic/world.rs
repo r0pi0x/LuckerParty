@@ -166,6 +166,27 @@ pub enum Effect {
     SetHealth { target: Entity, health: f32 },
     /// A sound entry (or file) at a point (entity space).
     Sound { entry: String, at: Vec3 },
+    /// Start an entity's long-lived sound (ambient_generic), replacing
+    /// the one it plays: at `at` (entity space), or following `source`
+    /// when it names one. Volume (0..1), pitch (percent) and level (dB)
+    /// override the entry's when given.
+    AmbientStart {
+        id: EntId,
+        entry: String,
+        at: Vec3,
+        source: Option<EntId>,
+        volume: Option<f32>,
+        pitch: Option<f32>,
+        level: Option<f32>,
+    },
+    /// New volume/pitch for the entity's playing sound.
+    AmbientChange {
+        id: EntId,
+        volume: Option<f32>,
+        pitch: Option<f32>,
+    },
+    /// Stop the entity's sound.
+    AmbientStop { id: EntId },
     /// A HUD message for everyone (`to` None) or one player.
     GameText {
         to: Option<Entity>,
@@ -688,7 +709,16 @@ impl LogicWorld {
 
     /// End of a frame: remove killed entities; next tick.
     pub fn end_frame(&mut self) {
-        for (g, slot) in &mut self.slots {
+        for (i, (g, slot)) in self.slots.iter_mut().enumerate() {
+            if let Some(e) = slot.as_ref().filter(|e| e.killed)
+                && let Class::Ambient(a) = &e.class
+            {
+                let id = EntId {
+                    index: i as u32,
+                    generation: *g,
+                };
+                super::ambient::removed(&mut self.effects, id, a);
+            }
             if slot.as_ref().is_some_and(|e| e.killed) {
                 *slot = None;
                 *g += 1;
