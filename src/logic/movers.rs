@@ -63,7 +63,7 @@ pub struct Pusher {
 }
 
 impl Pusher {
-    fn at(origin: Vec3, angles: Vec3) -> Self {
+    pub(super) fn at(origin: Vec3, angles: Vec3) -> Self {
         Self {
             origin,
             angles,
@@ -524,7 +524,7 @@ pub(super) fn activate_attached(w: &mut LogicWorld, id: EntId) {
         return;
     };
     let pp = pusher(&w.get(p).unwrap().class).unwrap().clone();
-    if let Some(Class::Attached(a)) = w.get_mut(id).map(|e| &mut e.class) {
+    if let Some(a) = w.get_mut(id).and_then(|e| attached_mut(&mut e.class)) {
         a.parent = Some(p);
         a.offset = entity_rotation(pp.angles).inverse() * (a.push.origin - pp.origin);
         a.parent_angles = pp.angles;
@@ -532,10 +532,28 @@ pub(super) fn activate_attached(w: &mut LogicWorld, id: EntId) {
     w.refresh_solid(id);
 }
 
+/// The parent link of a parented brush (or breakable).
+pub fn attached(class: &Class) -> Option<&Attached> {
+    match class {
+        Class::Attached(a) => Some(a),
+        Class::Breakable(b) => Some(&b.attach),
+        _ => None,
+    }
+}
+
+fn attached_mut(class: &mut Class) -> Option<&mut Attached> {
+    match class {
+        Class::Attached(a) => Some(a),
+        Class::Breakable(b) => Some(&mut b.attach),
+        _ => None,
+    }
+}
+
 /// The pusher of a mover entity.
 pub fn pusher(class: &Class) -> Option<&Pusher> {
     match class {
         Class::Attached(a) => Some(&a.push),
+        Class::Breakable(b) => Some(&b.attach.push),
         Class::Door(d) => Some(&d.push),
         Class::Button(b) => Some(&b.push),
         Class::MoveLinear(m) => Some(&m.push),
@@ -549,6 +567,7 @@ pub fn pusher(class: &Class) -> Option<&Pusher> {
 fn pusher_mut(class: &mut Class) -> Option<&mut Pusher> {
     match class {
         Class::Attached(a) => Some(&mut a.push),
+        Class::Breakable(b) => Some(&mut b.attach.push),
         Class::Door(d) => Some(&mut d.push),
         Class::Button(b) => Some(&mut b.push),
         Class::MoveLinear(m) => Some(&mut m.push),
@@ -965,6 +984,7 @@ pub(super) fn think(w: &mut LogicWorld, id: EntId) {
                 t_set_speed(w, id, s);
             }
         }
+        Class::Breakable(_) => super::breakables::think(w, id),
         _ => {}
     }
 }
@@ -1422,7 +1442,7 @@ impl LogicWorld {
     /// Parented brushes take their parent's pose.
     fn follow_parents(&mut self) {
         for id in self.ids() {
-            let Some(Class::Attached(a)) = self.get(id).map(|e| &e.class) else { continue };
+            let Some(a) = self.get(id).and_then(|e| attached(&e.class)) else { continue };
             let Some(parent) = a.parent else { continue };
             let Some(pp) = self.get(parent).and_then(|e| pusher(&e.class)).cloned() else {
                 continue;
@@ -1431,7 +1451,7 @@ impl LogicWorld {
             let origin = pp.origin + entity_rotation(pp.angles) * offset;
             let angles = base + (pp.angles - parent_base);
             let (visible, velocity) = (pp.visible, pp.velocity);
-            if let Some(Class::Attached(a)) = self.get_mut(id).map(|e| &mut e.class)
+            if let Some(a) = self.get_mut(id).and_then(|e| attached_mut(&mut e.class))
                 && (a.push.origin != origin || a.push.angles != angles || a.push.visible != visible)
             {
                 a.push.origin = origin;

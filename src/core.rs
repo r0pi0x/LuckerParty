@@ -156,7 +156,32 @@ pub struct Damage {
     /// Direction the damage travelled (unit).
     pub dir: Vec3,
     pub hitgroup: Hitgroup,
+    /// How it was dealt (breakables scale damage by it).
+    pub kind: DamageKind,
 }
+
+/// How damage was dealt (Source damage types, as far as anything here
+/// tells them apart).
+#[derive(Reflect, Default, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DamageKind {
+    #[default]
+    Generic,
+    /// Hitscan shots.
+    Bullet,
+    /// Melee swings (the knife).
+    Melee,
+    Blast,
+    /// Crushed by a mover.
+    Crush,
+    Fall,
+}
+
+/// Takes `Damage` without having `Health`: something else (the logic
+/// layer's breakables) reads the messages aimed at it. Weapons hit it as
+/// a plain object (no hitgroups, no flesh sounds).
+#[derive(Component, Reflect, Default, Clone, Copy, Debug)]
+#[reflect(Component)]
+pub struct Damageable;
 
 /// An oriented box on a character's body that shots test (Source
 /// hitboxes), in the character's local space: feet at the origin, Y up,
@@ -299,6 +324,7 @@ impl Plugin for CorePlugin {
             .register_type::<BaseVelocity>()
             .register_type::<EntityGravity>()
             .register_type::<Hitboxes>()
+            .register_type::<Damageable>()
             .add_message::<Damage>()
             .add_message::<Died>()
             .init_resource::<FriendlyFire>()

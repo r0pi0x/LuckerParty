@@ -11,25 +11,25 @@ use crate::map::hud::{GameHud, HudCoord, HudFont, HudPanel};
 
 /// A KeyValues tree: each key holds a string or a block.
 #[derive(Debug, Clone)]
-enum Kv {
+pub(crate) enum Kv {
     Value(String),
     Block(Vec<(String, Kv)>),
 }
 
 impl Kv {
-    fn get(&self, key: &str) -> Option<&Kv> {
+    pub(crate) fn get(&self, key: &str) -> Option<&Kv> {
         match self {
             Kv::Block(items) => items.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v),
             Kv::Value(_) => None,
         }
     }
-    fn str(&self, key: &str) -> Option<&str> {
+    pub(crate) fn str(&self, key: &str) -> Option<&str> {
         match self.get(key)? {
             Kv::Value(v) => Some(v),
             Kv::Block(_) => None,
         }
     }
-    fn items(&self) -> &[(String, Kv)] {
+    pub(crate) fn items(&self) -> &[(String, Kv)] {
         match self {
             Kv::Block(items) => items,
             Kv::Value(_) => &[],
@@ -38,7 +38,7 @@ impl Kv {
 }
 
 /// Parse KeyValues text; platform conditionals (`[$WIN32]`) are dropped.
-fn parse(text: &str) -> Kv {
+pub(crate) fn parse(text: &str) -> Kv {
     let tokens: Vec<String> = super::surfaceprops::tokens(text)
         .into_iter()
         .filter(|t| !(t.starts_with('[') && t.ends_with(']')))

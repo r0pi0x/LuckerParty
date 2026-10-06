@@ -17,6 +17,7 @@ fn hit(sim: &mut Sim, attacker: Entity, target: Entity, amount: f32) {
         point: Vec3::ZERO,
         dir: Vec3::X,
         hitgroup: Hitgroup::Chest,
+        kind: Default::default(),
     });
     sim.ticks(1);
 }

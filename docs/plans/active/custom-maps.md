@@ -131,7 +131,7 @@ ourselves, so each can be checked in mashup and measured in real CS:S.
    are unit tests (src/logic/tests.rs); tests/map_logic.rs runs teleport
    and push with Source movement. Open: the target maps, the probe-server
    measurements in the specs' open questions.
-4. [ ] Spec and build moving brush entities (doors, buttons, platforms,
+4. [x] Spec and build moving brush entities (doors, buttons, platforms,
    breakables) with movement support for moving solids.
    Draft specs: specs/source/doors_buttons.md (+use, pushers, doors,
    buttons, movelinear, rotating, tracktrain) and
@@ -146,7 +146,12 @@ ourselves, so each can be checked in mashup and measured in real CS:S.
    `core::MovingSolid` that Source movement sweeps and rides (base
    velocity on leaving). Tests: unit tests per spec case, a door on use
    and a lift (tests/map_logic.rs), de_nuke's door pairs
-   (tests/map_de_nuke_doors.rs). Left: breakables, prop_door_rotating,
+   (tests/map_de_nuke_doors.rs). Breakables built 2026-10-06
+   (src/logic/breakables.rs; nodes like movers, `core::Damageable`,
+   weapon damage routed through `LogicSet::Damage`; gibs and window panes
+   in `map::breakables`; tests: spec cases as unit tests,
+   tests/map_breakables.rs shoots and knifes de_nuke's vents and shoots a
+   cs_office window). Left: breakable follow-ups (backlog 7), prop_door_rotating,
    props parented to movers, train orientation and control.
 5. [ ] Gameplay entities (`game_player_equip`, `game_text`, map weapons,
    rounds) until the two target maps play through.

@@ -19,6 +19,7 @@ fn kill(sim: &mut Sim, attacker: Entity, target: Entity) {
         point: Vec3::ZERO,
         dir: Vec3::X,
         hitgroup: Hitgroup::Chest,
+        kind: Default::default(),
     });
     sim.ticks(2);
 }

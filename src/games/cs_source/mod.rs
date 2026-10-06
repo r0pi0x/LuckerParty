@@ -2,6 +2,7 @@
 
 pub mod ambient;
 pub mod anim;
+pub mod breakables;
 pub mod bsp;
 pub mod decals;
 pub mod dust;

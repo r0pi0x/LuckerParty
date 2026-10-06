@@ -129,8 +129,9 @@ fn old_maps_light_props_with_ambient_cubes() {
 
 /// Brush entities draw and collide where they stand: cs_office's first
 /// window (func_breakable_surf, model *1, Source x -628..-508 at y -344..-340,
-/// z -148..-52), baked into the world; its sliding door (func_door *7,
-/// stored around its origin 584 -1872 -252) is a mover: drawn and solid
+/// z -148..-52) is a breakable, so it has its own node: drawn there and
+/// solid through its volumes (origin 0 0 0); its sliding door (func_door
+/// *7, stored around its origin 584 -1872 -252) is a mover: drawn and solid
 /// through its own node, so its meshes and volumes are local to it.
 #[test]
 fn brush_entities_draw_and_collide() {
@@ -138,17 +139,28 @@ fn brush_entities_draw_and_collide() {
     let Some(map) = load("cs_office") else { return };
     let src = |x: f32, y: f32, z: f32| Vec3::new(x, z, -y) * 0.0254;
     let at = src(-568.0, -342.0, -100.0);
+    let (window, w) = map
+        .entities
+        .iter()
+        .enumerate()
+        .find(|(_, e)| e.get("model") == Some("*1"))
+        .expect("cs_office's first window");
+    assert_eq!(w.classname(), "func_breakable_surf");
+    assert!(w.mover, "the window has its own node");
     let drawn = map
         .meshes
         .iter()
-        .filter(|m| m.entity.is_none())
+        .filter(|m| m.entity == Some(window))
         .flat_map(|m| m.positions.iter())
         .any(|p| Vec3::from(*p).distance(at) < 100.0 * 0.0254);
     assert!(drawn, "window not drawn");
-    let solid = map
-        .collision_brushes
+    let (lo, hi) = w
+        .hulls
         .iter()
-        .any(|b| (b.min - Vec3::splat(0.05)).cmple(at).all() && (b.max + Vec3::splat(0.05)).cmpge(at).all());
+        .flat_map(|h| &h.points)
+        .fold((Vec3::MAX, Vec3::MIN), |(lo, hi), q| (lo.min(*q), hi.max(*q)));
+    let p = Vec3::new(-568.0, -342.0, -100.0) - w.origin();
+    let solid = (lo - Vec3::splat(2.0)).cmple(p).all() && (hi + Vec3::splat(2.0)).cmpge(p).all();
     assert!(solid, "window not solid");
 
     let (index, door) = map

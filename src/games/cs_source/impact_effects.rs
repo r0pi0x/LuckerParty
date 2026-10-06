@@ -74,6 +74,8 @@ pub const MATERIALS: &[&str] = &[
     "particle/particle_glow_03",
     "effects/splash2",
     "effects/splashwake1",
+    "effects/fleck_glass1",
+    "effects/fleck_glass2",
 ];
 
 /// Load the effect materials (runtime, from the install).
@@ -102,6 +104,7 @@ pub struct EffectMaterials {
     pub glow: Option<usize>,
     pub splash: Option<usize>,
     pub wake: Option<usize>,
+    pub fleck_glass: [Option<usize>; 2],
 }
 
 impl EffectMaterials {
@@ -122,6 +125,7 @@ impl EffectMaterials {
             glow: f("particle/particle_glow_03"),
             splash: f("effects/splash2"),
             wake: f("effects/splashwake1"),
+            fleck_glass: [f("effects/fleck_glass1"), f("effects/fleck_glass2")],
         }
     }
 
@@ -143,6 +147,7 @@ impl EffectMaterials {
             glow: s,
             splash: s,
             wake: s,
+            fleck_glass: [s, s],
         }
     }
 }
@@ -983,6 +988,101 @@ pub fn water_splash(rng: &mut ParticleRng, m: &EffectMaterials, o: Vec3, s: f32,
     out
 }
 
+/// Shards of a shattered window pane (spec section 9's glass shards,
+/// spread over the pane): flat translucent squares from the pane's area,
+/// thrown along its push and normal, falling, bouncing (keep 0.3) and
+/// fading over their last 2 s. `light` is the light at the pane (0-1).
+/// Sizes and counts per pane are ours (the pane burst isn't specced).
+pub fn glass_shards(
+    rng: &mut ParticleRng,
+    m: &EffectMaterials,
+    pane: &crate::map::GlassShatter,
+    light: Vec3,
+    world: &impl WorldTrace,
+) -> Option<ParticleGroup> {
+    let mats = m.fleck_glass;
+    if mats.iter().all(Option::is_none) {
+        return None;
+    }
+    let n = pane.normal.normalize_or_zero();
+    let along = pane.velocity.normalize_or_zero();
+    // The pane's in-plane axes.
+    let right = n.cross(Vec3::Y).try_normalize().unwrap_or(Vec3::X);
+    let up = right.cross(n).normalize_or_zero();
+    let area = pane.size.x * pane.size.y / (UNIT * UNIT);
+    let count = ((area / 16.0) as i32).clamp(2, 12) + rng.int(0, 2);
+    let lit = light.clamp(Vec3::ZERO, Vec3::ONE) * 0.7 + Vec3::splat(0.3);
+    let color = Vec3::new(200.0, 200.0, 210.0) / 255.0 * lit;
+    let planes = probe_planes(
+        pane.at,
+        Some(if along == Vec3::ZERO { n } else { along }),
+        150.0 * UNIT,
+        800.0 * UNIT,
+        world,
+    );
+    let mut g = ParticleGroup::new(Motion {
+        gravity: 800.0 * UNIT,
+        bounce: Some(Bounce {
+            keep: 0.3,
+            land_normal_y: 0.5,
+            land_speed: LAND_SPEED * UNIT,
+            planes,
+        }),
+        ..default()
+    });
+    let sigma = rng.float(2.0, 6.0);
+    for _ in 0..count {
+        let Some(mat) = mats[rng.int(0, 1) as usize].or(mats[0]).or(mats[1]) else {
+            continue;
+        };
+        let at = pane.at + right * rng.float(-0.5, 0.5) * pane.size.x + up * rng.float(-0.5, 0.5) * pane.size.y;
+        let side = (sigma + rng.float(-sigma / 2.0, sigma / 2.0)).trunc().max(1.0);
+        let push = if along == Vec3::ZERO {
+            n * rng.float(-1.0, 1.0)
+        } else {
+            along
+        };
+        let v = (push * rng.float(20.0, 120.0) + rng.vec3(-30.0, 30.0)) * UNIT;
+        let normal = (n + rng.vec3(-0.8, 0.8)).normalize_or(n);
+        g.particles.push(Particle {
+            fade: Fade::Tail(2.0),
+            size: Ramp::constant(side * UNIT),
+            shape: Shape::Flat {
+                normal,
+                yaw: rng.float(0.0, 360.0),
+                yaw_speed: rng.float(-800.0, 800.0),
+            },
+            ..sprite(at, v, rng.float(2.5, 5.0), mat, color)
+        });
+    }
+    Some(g)
+}
+
+/// Shards where window panes shatter.
+fn glass_effects(
+    mut panes: MessageReader<crate::map::GlassShatter>,
+    materials: Option<Res<ParticleMaterials>>,
+    colors: Option<Res<SurfaceColors>>,
+    mut particles: ResMut<Particles>,
+    mut rng: ResMut<EffectRng>,
+    world: WorldTracer,
+) {
+    let Some(materials) = materials else {
+        panes.clear();
+        return;
+    };
+    let mats = EffectMaterials::new(&materials.0);
+    for pane in panes.read() {
+        if pane.tile {
+            continue;
+        }
+        let light = colors.as_deref().map_or(Vec3::ONE, |c| light_below(c, &world, pane.at));
+        if let Some(g) = glass_shards(&mut rng.0, &mats, pane, light, &world) {
+            particles.add(g);
+        }
+    }
+}
+
 pub struct ImpactEffectsPlugin;
 
 impl Plugin for ImpactEffectsPlugin {
@@ -993,10 +1093,12 @@ impl Plugin for ImpactEffectsPlugin {
             .add_message::<WeaponEvent>()
             .add_message::<PlaceDecal>()
             .add_message::<PlaySound>()
+            .add_message::<crate::map::GlassShatter>()
             .add_systems(
                 FixedUpdate,
                 (impact_effects, blood_effects).after(crate::core::SimSet::Weapons),
-            );
+            )
+            .add_systems(Update, glass_effects);
         {
             let mut p = app.world_mut().resource_mut::<Particles>();
             p.cap = MAX_PARTICLES;
