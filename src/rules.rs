@@ -26,12 +26,9 @@ impl Plugin for DeathmatchPlugin {
             &mut d.respawn_delay
         });
         app.init_resource::<crate::core::FriendlyFire>();
-        resource_cvar::<crate::core::FriendlyFire, u8>(
-            app,
-            "mp_friendlyfire",
-            "1: teammates hurt each other.",
-            |f| &mut f.0,
-        );
+        resource_cvar::<crate::core::FriendlyFire, u8>(app, "mp_friendlyfire", "1: teammates hurt each other.", |f| {
+            &mut f.0
+        });
         app.console_command(
             "jointeam",
             "jointeam <2|3>: join the terrorists (2) or counter-terrorists (3) and respawn at their spawn.",
@@ -55,7 +52,11 @@ impl Plugin for DeathmatchPlugin {
                 e.insert((team, Dead { since: f64::MIN }));
                 Ok(Some(format!(
                     "joined the {}",
-                    if team.0 == 1 { "terrorists" } else { "counter-terrorists" }
+                    if team.0 == 1 {
+                        "terrorists"
+                    } else {
+                        "counter-terrorists"
+                    }
                 )))
             },
         );

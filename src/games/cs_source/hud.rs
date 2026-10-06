@@ -97,7 +97,10 @@ fn family_name(ttf: &[u8]) -> Option<String> {
         let (len, off) = (u16_at(rec + 8)? as usize, u16_at(rec + 10)? as usize);
         let bytes = ttf.get(strings + off..strings + off + len)?;
         let text = if platform == 0 || platform == 3 {
-            let units: Vec<u16> = bytes.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+            let units: Vec<u16> = bytes
+                .chunks_exact(2)
+                .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                .collect();
             String::from_utf16_lossy(&units)
         } else {
             bytes.iter().map(|&b| b as char).collect()
@@ -155,7 +158,13 @@ pub fn load(materials: &mut MaterialLoader) -> Option<GameHud> {
             continue;
         };
         if let Some(data) = files.get(&family.to_lowercase()) {
-            hud.fonts.insert(name.clone(), HudFont { data: data.clone(), tall });
+            hud.fonts.insert(
+                name.clone(),
+                HudFont {
+                    data: data.clone(),
+                    tall,
+                },
+            );
         }
     }
 
@@ -164,7 +173,8 @@ pub fn load(materials: &mut MaterialLoader) -> Option<GameHud> {
         let t = parse(&t);
         // Entries sit in a "TextureData" block (under the file's root key).
         fn find<'a>(kv: &'a Kv) -> Option<&'a Kv> {
-            kv.get("TextureData").or_else(|| kv.items().iter().find_map(|(_, v)| find(v)))
+            kv.get("TextureData")
+                .or_else(|| kv.items().iter().find_map(|(_, v)| find(v)))
         }
         let t = find(&t).cloned().unwrap_or(t);
         for (name, v) in t.items() {
@@ -200,6 +210,42 @@ pub fn load(materials: &mut MaterialLoader) -> Option<GameHud> {
     (!hud.panels.is_empty()).then_some(hud)
 }
 
+/// The map's radar picture: `resource/overviews/<map>.txt` (upper-left
+/// world corner `pos_x`/`pos_y`, `scale` world units per pixel of a
+/// 1024-wide image, `rotate`) and its material, preferring the `_radar`
+/// variant the game's radar uses.
+pub fn overview(materials: &mut MaterialLoader, map: &str) -> Option<crate::map::hud::MapOverview> {
+    let text = materials.read(&format!("resource/overviews/{}.txt", map.to_lowercase()))?;
+    let kv = parse(&String::from_utf8_lossy(&text));
+    let o = &kv.items().first()?.1;
+    let num = |k: &str| o.str(k).and_then(|v| v.trim().parse::<f32>().ok());
+    let material = o.str("material")?.to_string();
+    // The _radar variant only when it exists (resolving a missing material
+    // counts as a load warning).
+    let radar = format!("{material}_radar");
+    let name = if materials.read(&format!("materials/{radar}.vmt")).is_some() {
+        radar
+    } else {
+        material
+    };
+    let texture = materials.resolve(&name).texture?;
+    let size = {
+        let t = &materials.textures[texture];
+        Vec2::new(t.width as f32, t.height as f32)
+    };
+    let (pos_x, pos_y, scale) = (num("pos_x")?, num("pos_y")?, num("scale")?);
+    let unit = super::bsp::METERS_PER_UNIT;
+    // Source x is engine x, Source y is engine -z; scale is for a 1024-pixel
+    // image.
+    Some(crate::map::hud::MapOverview {
+        texture,
+        origin: Vec2::new(pos_x * unit, -pos_y * unit),
+        meters_per_pixel: scale * unit * 1024.0 / size.x,
+        rotate: num("rotate").is_some_and(|r| r != 0.0),
+        size,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,6 +260,9 @@ mod tests {
         let h = root.get("hudhealth").unwrap();
         assert_eq!(h.str("xpos"), Some("8"));
         assert_eq!(h.str("ypos"), Some("446"));
-        assert_eq!(color(root.get("Colors").unwrap().str("Orange").unwrap()), Some([255, 176, 0, 255]));
+        assert_eq!(
+            color(root.get("Colors").unwrap().str("Orange").unwrap()),
+            Some([255, 176, 0, 255])
+        );
     }
 }

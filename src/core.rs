@@ -206,9 +206,10 @@ fn apply_damage(
     for d in damage.read() {
         // Teammates don't hurt each other unless friendly fire is on (your
         // own damage, e.g. falling, always counts).
-        let teammate = d.attacker.filter(|a| *a != d.target).is_some_and(|a| {
-            matches!((teams.get(a), teams.get(d.target)), (Ok(x), Ok(y)) if x == y && x.0 != 0)
-        });
+        let teammate = d
+            .attacker
+            .filter(|a| *a != d.target)
+            .is_some_and(|a| matches!((teams.get(a), teams.get(d.target)), (Ok(x), Ok(y)) if x == y && x.0 != 0));
         if teammate && !friendly_fire {
             continue;
         }

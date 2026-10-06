@@ -75,17 +75,44 @@ pub fn pass_materials() -> PassMaterials {
     PassMaterials {
         by_class: vec![
             // Wood: scale and damage measured.
-            ('W', PassMaterial { scale: 2.0, damage: 0.6 }),
+            (
+                'W',
+                PassMaterial {
+                    scale: 2.0,
+                    damage: 0.6,
+                },
+            ),
             // Metal, sand (dirt): scales measured; damage factors are not
             // (UNMEASURED: halfway between wood and concrete, as players).
-            ('M', PassMaterial { scale: 1.0, damage: 0.5 }),
-            ('D', PassMaterial { scale: 0.5, damage: 0.5 }),
+            (
+                'M',
+                PassMaterial {
+                    scale: 1.0,
+                    damage: 0.5,
+                },
+            ),
+            (
+                'D',
+                PassMaterial {
+                    scale: 0.5,
+                    damage: 0.5,
+                },
+            ),
             // Concrete: both measured.
-            ('C', PassMaterial { scale: 0.4, damage: 0.25 }),
+            (
+                'C',
+                PassMaterial {
+                    scale: 0.4,
+                    damage: 0.25,
+                },
+            ),
         ],
         // UNMEASURED (tile, grate, glass, plastic, ...): metal's scale and a
         // halved damage.
-        default: PassMaterial { scale: 1.0, damage: 0.5 },
+        default: PassMaterial {
+            scale: 1.0,
+            damage: 0.5,
+        },
         character: CharacterPass {
             // A fit to the measured stop cases (21-22 units per player).
             cost: 21.5 * UNIT,
@@ -107,7 +134,10 @@ impl Plugin for CsWeaponsPlugin {
                 FixedUpdate,
                 (before_shots.before(WeaponFrame), after_shots.after(WeaponFrame)).in_set(SimSet::Weapons),
             )
-            .add_plugins((super::impacts::ImpactSoundsPlugin, super::impact_effects::ImpactEffectsPlugin))
+            .add_plugins((
+                super::impacts::ImpactSoundsPlugin,
+                super::impact_effects::ImpactEffectsPlugin,
+            ))
             .insert_resource(pass_materials());
         let mut start = app.world_mut().get_resource_or_init::<StartingWeapons>();
         if start.0.is_empty() {

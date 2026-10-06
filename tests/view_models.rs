@@ -133,7 +133,11 @@ fn sim() -> Sim {
 
 fn view(sim: &Sim, p: Entity) -> (Option<String>, Option<String>, Option<String>) {
     let v = sim.app.world().get::<ViewAnimator>(p).expect("a view animator");
-    (v.key.clone(), v.activity().map(str::to_string), v.sequence().map(str::to_string))
+    (
+        v.key.clone(),
+        v.activity().map(str::to_string),
+        v.sequence().map(str::to_string),
+    )
 }
 
 fn activity(sim: &Sim, p: Entity) -> String {
@@ -270,9 +274,7 @@ fn every_shot_fires_the_flash_and_brass_events() {
 #[test]
 fn events_fire_when_the_cycle_passes_them() {
     let seq = Sequence {
-        events: [0.0, 0.5, 1.0]
-            .map(|cycle| AnimEvent { cycle, ..default() })
-            .to_vec(),
+        events: [0.0, 0.5, 1.0].map(|cycle| AnimEvent { cycle, ..default() }).to_vec(),
         ..default()
     };
     let cycles = |from, to| seq.events_between(from, to).map(|e| e.cycle).collect::<Vec<f32>>();

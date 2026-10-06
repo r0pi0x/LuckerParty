@@ -728,7 +728,11 @@ fn vector(v: &str) -> Option<[f32; 3]> {
 /// A VTF's sprite sheet (resource tag 0x10): per sequence, its frames'
 /// texture rectangles (first image of each frame). None without one.
 pub fn sheet(bytes: &[u8]) -> Option<Vec<Vec<[f32; 4]>>> {
-    let u32_at = |o: usize| bytes.get(o..o + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    let u32_at = |o: usize| {
+        bytes
+            .get(o..o + 4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    };
     let f32_at = |o: usize| u32_at(o).map(f32::from_bits);
     // Resources exist from version 7.3: count at 68, entries from 80.
     if u32_at(4)? != 7 || u32_at(8)? < 3 {

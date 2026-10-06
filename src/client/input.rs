@@ -232,7 +232,10 @@ mod tests {
             .init_resource::<MouseSettings>();
         mouse_cvars(&mut app);
         // CS:S defaults: 3 * 0.022 = 0.066 degrees per count.
-        let d = app.world().resource::<MouseSettings>().look_delta(Vec2::new(1000.0, -1000.0));
+        let d = app
+            .world()
+            .resource::<MouseSettings>()
+            .look_delta(Vec2::new(1000.0, -1000.0));
         assert!((d.x.to_degrees() + 66.0).abs() < 1e-3, "{d}");
         assert!((d.y.to_degrees() - 66.0).abs() < 1e-3, "{d}");
         app.world_mut()
@@ -245,7 +248,11 @@ mod tests {
         assert!((d.x.to_degrees() + 3.3).abs() < 1e-4, "{d}");
         assert!((d.y.to_degrees() - 3.3).abs() < 1e-4, "inverted: {d}");
         let console = app.world().resource::<crate::console::Console>();
-        assert!(["sensitivity", "m_yaw", "m_pitch"].iter().all(|n| console.cvar(n).unwrap().archive));
+        assert!(
+            ["sensitivity", "m_yaw", "m_pitch"]
+                .iter()
+                .all(|n| console.cvar(n).unwrap().archive)
+        );
     }
 
     #[test]

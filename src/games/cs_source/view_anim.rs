@@ -12,8 +12,8 @@ use crate::{
     console::{Console, resource_cvar},
     core::Health,
     map::{
-        DriveAnimation, EffectSettings, MapFlashLight, MapMuzzleFlash, ViewAnimator, ViewModelEvent, ViewModelEventKind,
-        ViewModelSettings, ViewModels, anim::AnimEvent,
+        DriveAnimation, EffectSettings, MapFlashLight, MapMuzzleFlash, ViewAnimator, ViewModelEvent,
+        ViewModelEventKind, ViewModelSettings, ViewModels, anim::AnimEvent,
     },
     weapon::{Inventory, Weapon, WeaponEvent, WeaponEventKind},
 };
@@ -201,9 +201,7 @@ fn cvars(app: &mut App) {
         "1: muzzle flashes light the world, props and view models.",
         |e| &mut e.muzzle_light,
     );
-    resource_cvar::<EffectSettings, u8>(app, "cl_ejectbrass", "1: weapons eject shells.", |e| {
-        &mut e.eject_brass
-    });
+    resource_cvar::<EffectSettings, u8>(app, "cl_ejectbrass", "1: weapons eject shells.", |e| &mut e.eject_brass);
     let mut console = app.world_mut().resource_mut::<Console>();
     for name in ["viewmodel_fov", "cl_righthand", "muzzleflash_light"] {
         console.archive(name);
@@ -231,7 +229,9 @@ impl ViewModelPlay {
 
 /// Play the first available of `activities` from the start.
 fn play(view: &mut ViewAnimator, dice: &mut ViewModelPlay, activities: &[&str], now: f64) -> bool {
-    let Some(animator) = view.animator.as_mut() else { return false };
+    let Some(animator) = view.animator.as_mut() else {
+        return false;
+    };
     let roll = dice.roll();
     let Some(s) = activities.iter().find_map(|a| animator.set.pick_activity(a, roll)) else {
         return false;
@@ -249,7 +249,9 @@ fn play_named(
     activities: &[&str],
     now: f64,
 ) -> bool {
-    let Some(animator) = view.animator.as_mut() else { return false };
+    let Some(animator) = view.animator.as_mut() else {
+        return false;
+    };
     let found: Vec<usize> = names.iter().filter_map(|n| animator.set.sequence(n)).collect();
     if found.is_empty() {
         return play(view, dice, activities, now);
@@ -333,7 +335,9 @@ fn drive(
                 _ => {}
             }
         }
-        let Some(animator) = view.animator.as_mut() else { continue };
+        let Some(animator) = view.animator.as_mut() else {
+            continue;
+        };
         animator.advance(dt, now);
         // Events the cycle passed (spec view_models.md 6): a restart re-arms
         // them, so those at cycle 0 fire on its first frame.

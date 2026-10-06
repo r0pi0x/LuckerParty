@@ -50,7 +50,11 @@ pub fn import_map(file: &Path) -> Result<String, String> {
 /// `import_map` into the content folder `cache`.
 pub fn import_map_into(file: &Path, cache: &Path) -> Result<String, String> {
     let bytes = std::fs::read(file).map_err(|e| format!("{}: {e}", file.display()))?;
-    let file_name = file.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_lowercase();
+    let file_name = file
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default()
+        .to_lowercase();
     let (bsp, name) = if let Some(stem) = file_name.strip_suffix(".bsp.bz2") {
         let mut out = Vec::new();
         use std::io::Read;
@@ -73,7 +77,9 @@ pub fn import_map_into(file: &Path, cache: &Path) -> Result<String, String> {
     std::fs::create_dir_all(&maps).map_err(|e| format!("{}: {e}", maps.display()))?;
     let target = maps.join(format!("{name}.bsp"));
     std::fs::write(&target, &bsp).map_err(|e| format!("{}: {e}", target.display()))?;
-    let hash = bsp.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ *b as u64).wrapping_mul(0x0100_0000_01b3));
+    let hash = bsp.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+        (h ^ *b as u64).wrapping_mul(0x0100_0000_01b3)
+    });
     let entry = format!(
         "[[map]]\nname = {name:?}\nsize = {}\nfnv64 = \"{hash:016x}\"\nfrom = {:?}\n\n",
         bsp.len(),

@@ -42,7 +42,10 @@ fn teammates_do_not_hurt_each_other_unless_friendly_fire() {
     // Your own damage (falling) always counts.
     hit(&mut sim, b, b, 0.1);
     assert!(health(&sim, b) < full);
-    sim.app.world_mut().resource_mut::<Console>().submit("mp_friendlyfire 1");
+    sim.app
+        .world_mut()
+        .resource_mut::<Console>()
+        .submit("mp_friendlyfire 1");
     sim.ticks(1);
     let before = health(&sim, a);
     hit(&mut sim, b, a, 0.2);

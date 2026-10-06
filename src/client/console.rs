@@ -1411,7 +1411,14 @@ fn client_commands(app: &mut App) {
                 .filter(|m| m.contains(&filter))
                 .map(|m| {
                     let from = map_source(&m);
-                    format!("{m}{}", if from == "game" { String::new() } else { format!("  ({from})") })
+                    format!(
+                        "{m}{}",
+                        if from == "game" {
+                            String::new()
+                        } else {
+                            format!("  ({from})")
+                        }
+                    )
                 })
                 .collect();
             Ok(Some(if lines.is_empty() {
@@ -1541,10 +1548,16 @@ mod tests {
         press(&mut app, KeyCode::Backquote);
         assert!(app.world().resource::<ConsoleUi>().open && !grabbed(&app));
         press(&mut app, KeyCode::Backquote);
-        assert!(!app.world().resource::<ConsoleUi>().open && grabbed(&app), "tilde should recapture");
+        assert!(
+            !app.world().resource::<ConsoleUi>().open && grabbed(&app),
+            "tilde should recapture"
+        );
         press(&mut app, KeyCode::Backquote);
         press(&mut app, KeyCode::Escape);
-        assert!(!app.world().resource::<ConsoleUi>().open && !grabbed(&app), "escape leaves the mouse free");
+        assert!(
+            !app.world().resource::<ConsoleUi>().open && !grabbed(&app),
+            "escape leaves the mouse free"
+        );
     }
 
     use super::*;

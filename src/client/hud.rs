@@ -182,17 +182,21 @@ fn draw_hud(
         String::new()
     } else {
         format!(
-        "+ {:.0}{armor}    K {}  D {}",
-        (health.current * 100.0).ceil(),
-        score.kills,
-        score.deaths
-    )
+            "+ {:.0}{armor}    K {}  D {}",
+            (health.current * 100.0).ceil(),
+            score.kills,
+            score.deaths
+        )
     };
-    ammo_text.0 = if !plain { String::new() } else { match inv.and_then(|i| i.active).and_then(|w| weapons.get(w).ok()) {
-        Some((w, Some(m))) => format!("{}\n{} | {}", short(w.id), m.clip, m.reserve),
-        Some((w, None)) => short(w.id).to_string(),
-        None => String::new(),
-    } };
+    ammo_text.0 = if !plain {
+        String::new()
+    } else {
+        match inv.and_then(|i| i.active).and_then(|w| weapons.get(w).ok()) {
+            Some((w, Some(m))) => format!("{}\n{} | {}", short(w.id), m.clip, m.reserve),
+            Some((w, None)) => short(w.id).to_string(),
+            None => String::new(),
+        }
+    };
     center.0 = if dead.is_some() {
         "You died. Respawning...".into()
     } else {

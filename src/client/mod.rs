@@ -7,9 +7,10 @@ pub mod console;
 pub mod debug;
 pub mod effects;
 pub mod game_hud;
-pub mod scoreboard;
 pub mod hud;
 pub mod input;
+pub mod radar;
+pub mod scoreboard;
 pub mod view;
 
 use std::path::PathBuf;
@@ -169,6 +170,7 @@ impl Plugin for ClientPlugin {
                 hud::HudPlugin,
                 game_hud::GameHudPlugin,
                 scoreboard::ScoreboardPlugin,
+                radar::RadarPlugin,
                 effects::ShotEffectsPlugin,
                 view::ViewPlugin,
             ))

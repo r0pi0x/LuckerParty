@@ -89,7 +89,11 @@ fn aztec_walls_blend_two_textures() {
     assert_eq!(detail.scale, [4.0, 4.0]);
     // The canals (Water, no base texture) draw their fog colour and
     // reflect the baked cubemap.
-    let water: Vec<_> = map.meshes.iter().filter(|m| m.material.contains("aztecwater")).collect();
+    let water: Vec<_> = map
+        .meshes
+        .iter()
+        .filter(|m| m.material.contains("aztecwater"))
+        .collect();
     assert!(!water.is_empty());
     for m in water {
         assert!(m.texture.is_some() && m.envmap.is_some(), "{}", m.material);

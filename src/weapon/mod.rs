@@ -402,7 +402,10 @@ impl Default for PassMaterials {
     fn default() -> Self {
         Self {
             by_class: Vec::new(),
-            default: PassMaterial { scale: 1.0, damage: 0.5 },
+            default: PassMaterial {
+                scale: 1.0,
+                damage: 0.5,
+            },
             character: CharacterPass {
                 cost: f32::INFINITY,
                 damage: 0.5,
