@@ -51,6 +51,10 @@ framework, knife, AK-47, HUD, deathmatch and a first bot are in.
   burst/silencer M16 are measured too).
 - Money and a buy menu (`buy` gives for free).
 - Reload, grenade and death animations (world models are held by bodies).
+- Impact effects: the dust/smoke puff, debris and sparks where bullets
+  hit, by surface material (spec in progress: specs/cs_source/
+  impact_effects.md). The muzzle flash's light on nearby walls is part of
+  the view-model work (1C follow-up).
 - Decals, remaining: on characters (blood);
   check the knife's mark (`ManhackCut` is a guess) and lit decals (wood,
   glass) against the game; tracers; explosion impulses.
