@@ -204,6 +204,8 @@ pub struct MapMesh {
     pub surface: Option<String>,
     /// Reflection of a baked cubemap (Source `$envmap`).
     pub envmap: Option<MapEnvmap>,
+    /// Colour multiplier (linear) on the texture (Source `$color`/`$color2`).
+    pub tint: Option<[f32; 3]>,
 }
 
 /// A baked environment cubemap: six square RGBA8 sRGB faces in the
@@ -2422,11 +2424,15 @@ fn build_material(m: &MapMesh, textures: &[Handle<Image>], view: MapDebugView, l
     } else {
         1.0
     };
+    let tint = m.tint.map_or(LinearRgba::WHITE, |[r, g, b]| LinearRgba::rgb(r, g, b));
     StandardMaterial {
         base_color: if m.texture.is_some() || lighting_only {
-            Color::WHITE
+            tint.into()
         } else {
-            Color::srgb_u8(r, g, b)
+            {
+                let c = Color::srgb_u8(r, g, b).to_linear();
+                LinearRgba::rgb(c.red * tint.red, c.green * tint.green, c.blue * tint.blue).into()
+            }
         },
         base_color_texture: m.texture.filter(|_| !lighting_only).map(|i| textures[i].clone()),
         unlit: view == MapDebugView::Albedo,
@@ -2460,12 +2466,13 @@ fn lit_prop_material(
 ) -> PropMaterial {
     let [r, g, b] = m.color;
     let lighting_only = matches!(view, MapDebugView::Lighting { .. });
+    let tint = m.tint.map_or(Vec4::ONE, |[r, g, b]| Vec4::new(r, g, b, 1.0));
     PropMaterial {
         params: PropParams {
             base_color: if m.texture.is_some() || lighting_only {
-                Vec4::ONE
+                tint
             } else {
-                Color::srgb_u8(r, g, b).to_linear().to_vec4()
+                Color::srgb_u8(r, g, b).to_linear().to_vec4() * tint
             },
             alpha_cutoff: if let MapAlpha::Mask(c) = m.alpha { c } else { 0.0 },
             fog_color: fog_color(data.fog.as_ref().filter(|_| view == MapDebugView::Normal && !skybox)),

@@ -330,6 +330,7 @@ fn convert_model_in(model: &vmdl::Model, skin: i32, materials: &mut MaterialLoad
                 double_sided: r.double_sided,
                 unlit: r.unlit,
                 envmap: r.envmap,
+                tint: r.tint,
                 ..default()
             }
         });

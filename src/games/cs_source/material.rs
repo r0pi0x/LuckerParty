@@ -54,6 +54,9 @@ pub struct Resolved {
     pub surfaceprop: Option<String>,
     /// `$envmap` with a baked cubemap.
     pub envmap: Option<crate::map::MapEnvmap>,
+    /// `$color` x `$color2` (linear multiplier; the `srgb?` variants, which
+    /// the game uses as it renders in sRGB, win).
+    pub tint: Option<[f32; 3]>,
 }
 
 pub struct MaterialLoader<'a> {
@@ -114,6 +117,7 @@ impl<'a> MaterialLoader<'a> {
                     unlit: false,
                     surfaceprop: None,
                     envmap: None,
+                    tint: None,
                 }
             }
         }
@@ -132,6 +136,7 @@ impl<'a> MaterialLoader<'a> {
             unlit: false,
             surfaceprop: None,
             envmap: None,
+            tint: None,
         };
         let vmt_path = format!("materials/{}.vmt", normalize(name));
         let Some(text) = self.read_text(&vmt_path) else {
@@ -247,6 +252,7 @@ impl<'a> MaterialLoader<'a> {
             unlit: matches!(material, vmt_parser::material::Material::UnlitGeneric(_)),
             surfaceprop: material.surface_prop().map(str::to_lowercase),
             envmap: self.envmap(&text, normal_map.is_some()),
+            tint: tint(&self.keys(&text, 0)),
         }
     }
 
@@ -629,6 +635,34 @@ fn detail_blend_mode(text: &str) -> u32 {
     material_key(text, "$detailblendmode").unwrap_or(0)
 }
 
+/// `$color` x `$color2` from a material's keys, preferring their `srgb?`
+/// forms: `[r g b]` as given, `{r g b}` as 0..255 bytes (gamma, decoded).
+/// None when neither is set or both are white.
+fn tint(keys: &HashMap<String, String>) -> Option<[f32; 3]> {
+    let vector = |name: &str| -> Option<[f32; 3]> {
+        let v = keys.get(&format!("srgb?{name}")).or_else(|| keys.get(name))?.trim();
+        let bytes = v.starts_with('{');
+        let n: Vec<f32> = v
+            .trim_matches(|c| c == '[' || c == ']' || c == '{' || c == '}')
+            .split_whitespace()
+            .filter_map(|x| x.parse().ok())
+            .collect();
+        let n: [f32; 3] = match n.as_slice() {
+            [a, b, c] => [*a, *b, *c],
+            [a] => [*a, *a, *a],
+            _ => return None,
+        };
+        Some(if bytes { n.map(|x| (x / 255.0).powf(2.2)) } else { n })
+    };
+    let (a, b) = (vector("$color"), vector("$color2"));
+    let t = match (a, b) {
+        (None, None) => return None,
+        (Some(a), None) | (None, Some(a)) => a,
+        (Some(a), Some(b)) => [a[0] * b[0], a[1] * b[1], a[2] * b[2]],
+    };
+    (t != [1.0, 1.0, 1.0]).then_some(t)
+}
+
 /// A material key's value read from its text, when the parser's defaults
 /// can't tell "absent" from a given value.
 fn material_key<T: std::str::FromStr>(text: &str, key: &str) -> Option<T> {
@@ -775,6 +809,23 @@ pub fn sheet(bytes: &[u8]) -> Option<Vec<Vec<[f32; 4]>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn colour_multipliers() {
+        let keys = |pairs: &[(&str, &str)]| -> HashMap<String, String> {
+            pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        };
+        // de_nuke's warehouse light cones: the srgb? form wins.
+        assert_eq!(
+            tint(&keys(&[("srgb?$color2", "[.4 .4 .4]"), ("$color2", "[.9 .9 .9]")])),
+            Some([0.4, 0.4, 0.4])
+        );
+        // Braces are gamma bytes; $color and $color2 multiply.
+        let t = tint(&keys(&[("$color", "{255 128 0}"), ("$color2", "[0.5 1 1]")])).unwrap();
+        assert!((t[0] - 0.5).abs() < 1e-6 && (t[1] - (128.0f32 / 255.0).powf(2.2)).abs() < 1e-6 && t[2] == 0.0);
+        assert_eq!(tint(&keys(&[("$color", "[1 1 1]")])), None);
+        assert_eq!(tint(&keys(&[])), None);
+    }
 
     #[test]
     fn unknown_shaders_parse_as_their_stand_in() {
