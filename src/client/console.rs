@@ -1020,6 +1020,8 @@ pub struct HeldActions {
     pub attack: bool,
     pub attack2: bool,
     pub reload: bool,
+    /// The use key (`+use`): doors, buttons.
+    pub use_key: bool,
     /// The scoreboard (`+showscores`, Tab in CS:S).
     pub showscores: bool,
 }
@@ -1035,6 +1037,7 @@ const ACTIONS: &[&str] = &[
     "attack",
     "attack2",
     "reload",
+    "use",
     "showscores",
 ];
 
@@ -1301,6 +1304,7 @@ fn client_commands(app: &mut App) {
                         "moveright" => h.moveright = on,
                         "attack2" => h.attack2 = on,
                         "reload" => h.reload = on,
+                        "use" => h.use_key = on,
                         "showscores" => h.showscores = on,
                         _ => h.attack = on,
                     }

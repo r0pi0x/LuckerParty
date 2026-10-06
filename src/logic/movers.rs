@@ -1339,12 +1339,13 @@ impl LogicWorld {
             };
             match result {
                 Ok(()) => {
+                    let spinner = matches!(self.get(id).map(|e| &e.class), Some(Class::Rotating(_)));
                     let unblocked = {
                         let pm = push_of(self, id).unwrap();
                         pm.origin += d;
                         pm.angles += da;
-                        // Keep spinning angles small.
-                        if pm.goal_angles.is_none() {
+                        // Keep endlessly spinning angles small.
+                        if spinner {
                             pm.angles = Vec3::new(
                                 pm.angles.x.rem_euclid(360.0),
                                 pm.angles.y.rem_euclid(360.0),
