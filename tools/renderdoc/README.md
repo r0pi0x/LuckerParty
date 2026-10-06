@@ -54,3 +54,8 @@ or it stops at first-run prompts.
 - `debugpx.py`: per-step shader debugger trace of one pixel (RD_EID, RD_X,
   RD_Y): sampled values, intermediate and final colour.
 - `savetex.py`: saves the 1024x512 textures (lightmap atlases) as PNG.
+- `sprites.py`: draws sampling a texture of a size (RD_W, RD_H; default
+  128x128, sprites/glow): blend state, vertex shader outputs (positions,
+  vertex colour) and pixel shader constants.
+- `history.py`: pixel history (RD_X, RD_Y): each draw that touched the
+  pixel, colour before/after, depth, and whether it failed depth tests.

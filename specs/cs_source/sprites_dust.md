@@ -450,6 +450,8 @@ Sprite tests use `sprites/glow` (128×128, 1 frame, `vp_parallel`, origin [0.5 0
 | D10 | dust: no Alpha key | render | all vertex alphas 0 → nothing drawn |
 | D11 | dust: LifetimeMax "20" | network | 4-bit field: 20 mod 16 = 4 (*derived*: the encoder masks to the bit count). Treat values > 15 as 15 or mod 16, see Open question 6. |
 
+**Live check (2026-10-05, RenderDoc capture of CS:S, de_dust2 tunnel):** the mode-5 halo at (−1406, 1148, 168) is drawn with vertex colour (254, 248, 211)/255 and vertex alpha 25/255, blend src·α + dst, depth tested; at its centre pixel it raises the gamma-space colour from 0.153 to 0.224 (+18/255). So vertex colours are used and brightness applies once (S6's first expectation); a missing `$color` reads as 1.
+
 ## Open questions
 
 1. **Scale quantisation rounding.** The engine's float encoder is not in the SDK, so truncation versus nearest is unknown. It matters for values like 0.9: 0.75 (truncate) or 1.0 (nearest). Check: place an env_sprite at scale 0.9 in a test map and measure its on-screen size against scale 0.75 and 1.

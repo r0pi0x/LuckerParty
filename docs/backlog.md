@@ -52,15 +52,6 @@ docs/plans/active/sound.md.
   the nearest cubemap at run time (BSP cubemap lump); the model shader's
   envmap (gamma-converted tint, no fresnel). World reflections are in
   (refcmp `tunnel_floor_*`).
-- **Tunnel lamp glows**: now close to CS:S (refcmp `glow_lamp`: 99/83/65
-  vs 108/94/79 below the centre lamp; the rest is the dark-area gap
-  below). Open: why mode-5 halos don't show in CS:S (sprites spec open
-  question 3); the glow just above the centre lamp is a little strong.
-- **Dark areas are 15-20% darker than CS:S** (dust2 tunnels; refcmp `fit`:
-  CS:S = k·albedo·light with k 1.15-1.40 in tunnels, 1.00 outdoors). Not
-  light styles (none on dust2), colour correction (no entities),
-  mat_monitorgamma (2.2) or the sRGB/2.2 lightmap round trip (modelled).
-  Next: RenderDoc a tunnel wall draw and compare lightmap texels.
 - **Water surfaces**: swimming works (`MapWater`), but water faces draw as
   plain textured surfaces, without the Water shader's refraction,
   reflection or fog. Water currents (base velocity) aren't applied.
