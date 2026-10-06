@@ -17,7 +17,8 @@ use bevy::prelude::*;
 use crate::{
     core::{Damage, Health, Hitgroup, Intent, MapBrush, MaxSpeed, MovementState, SimSet, Velocity},
     map::{
-        MapBrushCollider, MapBrushes, MapWater, PhysicsProp, PlaySound, PropSurface, PushAway,
+        MapBrushCollider, MapBrushes, MapTerrain, MapTerrainCollider, MapWater, PhysicsProp, PlaySound, PropSurface,
+        PushAway,
         sound::{SoundBank, SurfaceGrid},
     },
     slots::RegisterSlots,
@@ -527,9 +528,14 @@ impl Trace {
     }
 }
 
-/// Box sweeps against the world, in Source units. Brushes are swept
-/// exactly against their planes (as Source traces do); everything else
-/// (props, displacement triangles) through physics shape casts.
+/// Box sweeps against the world, in Source units. Brushes and terrain
+/// triangles (displacements, as thin solids with bevel planes) are swept
+/// exactly against their planes (as Source traces do), so both stop the
+/// same distance short and count resting contact the same way; props go
+/// through physics shape casts. (Shape casts against the terrain's one
+/// triangle-mesh collider stopped players dead now and then: edge contacts
+/// on flat ground gave sideways normals, and a contact ignored as grazing
+/// hid any real hit behind it, leaving the box inside the terrain.)
 struct Tracer<'a, 'w, 's> {
     query: &'a SpatialQuery<'w, 's>,
     filter: SpatialQueryFilter,
@@ -545,6 +551,8 @@ struct Tracer<'a, 'w, 's> {
     /// Other characters' boxes (engine space), swept exactly like brushes:
     /// players are axis-aligned boxes to each other, as in Source.
     others: &'a [MapBrush],
+    /// Terrain triangles (displacements), swept exactly like brushes.
+    terrain: Option<&'a MapTerrain>,
 }
 
 /// Brush sweep result, engine space.
@@ -582,7 +590,8 @@ impl Tracer<'_, '_, '_> {
         let brushes = self.brushes.map_or(&[][..], |b| &b.0[..]);
         let lo = from.min(to) - half - Vec3::splat(eps);
         let hi = from.max(to) + half + Vec3::splat(eps);
-        'brush: for (i, b) in brushes.iter().chain(self.others).enumerate() {
+        let terrain = self.terrain_near(lo, hi);
+        'brush: for (i, b) in brushes.iter().chain(self.others).chain(terrain).enumerate() {
             if b.max.cmplt(lo).any() || b.min.cmpgt(hi).any() {
                 continue;
             }
@@ -633,12 +642,23 @@ impl Tracer<'_, '_, '_> {
         out
     }
 
+    /// Terrain brushes whose bounds overlap `lo`..`hi` (engine space).
+    fn terrain_near(&self, lo: Vec3, hi: Vec3) -> impl Iterator<Item = &MapBrush> {
+        let mut near = Vec::new();
+        if let Some(t) = self.terrain {
+            t.near(lo, hi, &mut near);
+        }
+        near.into_iter()
+            .filter_map(|i| self.terrain.map(|t| &t.brushes[i as usize]))
+    }
+
     /// Whether a box (engine centre and half size) overlaps a brush by more
     /// than the solid skin.
     fn in_brush(&self, half: Vec3, centre: Vec3) -> bool {
         let skin = SOLID_SKIN * METERS_PER_UNIT;
         let brushes = self.brushes.map_or(&[][..], |b| &b.0[..]);
-        brushes.iter().chain(self.others).any(|b| {
+        let terrain = self.terrain_near(centre - half, centre + half);
+        brushes.iter().chain(self.others).chain(terrain).any(|b| {
             b.max.cmpgt(centre - half).all()
                 && b.min.cmplt(centre + half).all()
                 && b.planes
@@ -1696,7 +1716,8 @@ impl Mover<'_, '_, '_, '_> {
             self.v.z = 0.0;
             if self.me.fall_speed > 0.0 {
                 if self.me.water_level == 0 && self.me.fall_speed > self.cfg.fall_safe {
-                    self.fall_damage = ((self.me.fall_speed - self.cfg.fall_safe) * self.cfg.fall_damage_per_speed).floor();
+                    self.fall_damage =
+                        ((self.me.fall_speed - self.cfg.fall_safe) * self.cfg.fall_damage_per_speed).floor();
                 }
                 self.landing_sound(self.me.fall_speed);
                 self.me.last_landing_speed = self.me.fall_speed;
@@ -1729,6 +1750,7 @@ fn step(
     brushes: Option<Res<MapBrushes>>,
     water: Option<Res<MapWater>>,
     brush_colliders: Query<Entity, With<MapBrushCollider>>,
+    (terrain, terrain_colliders): (Option<Res<MapTerrain>>, Query<Entity, With<MapTerrainCollider>>),
     props: Query<(Entity, &Transform, &PhysicsProp), Without<SourceMovement>>,
     surfaces: Option<Res<SurfaceGrid>>,
     prop_surfaces: Query<&PropSurface>,
@@ -1755,7 +1777,12 @@ fn step(
     let mut boxes: Vec<(Entity, MapBrush)> = q
         .iter()
         .filter(|(e, ..)| alive(*e))
-        .map(|(e, _, me, t, ..)| (e, hull_box(to_source(t.translation) - Vec3::Z * ORIGIN_ABOVE_FEET, me.ducked)))
+        .map(|(e, _, me, t, ..)| {
+            (
+                e,
+                hull_box(to_source(t.translation) - Vec3::Z * ORIGIN_ABOVE_FEET, me.ducked),
+            )
+        })
         .collect();
     boxes.extend(
         other_characters
@@ -1764,15 +1791,24 @@ fn step(
             .map(|(e, aabb, _)| (e, MapBrush::from_box(aabb.min, aabb.max))),
     );
     // Characters (dead ones too) never block through physics casts.
-    let characters: Vec<Entity> = q.iter().map(|(e, ..)| e).chain(other_characters.iter().map(|(e, ..)| e)).collect();
+    let characters: Vec<Entity> = q
+        .iter()
+        .map(|(e, ..)| e)
+        .chain(other_characters.iter().map(|(e, ..)| e))
+        .collect();
     for (entity, intent, mut me, mut transform, mut vel, mut state, weapon_speed) in &mut q {
-        let others: Vec<MapBrush> = boxes.iter().filter(|(e, _)| *e != entity).map(|(_, b)| b.clone()).collect();
+        let others: Vec<MapBrush> = boxes
+            .iter()
+            .filter(|(e, _)| *e != entity)
+            .map(|(_, b)| b.clone())
+            .collect();
         // With brushes swept exactly, physics queries skip the same brushes.
         // Players pass through multiplayer physics props (their own
         // collision group); props that collide stay in.
         let excluded = std::iter::once(entity)
             .chain(characters.iter().copied())
             .chain(brushes.as_ref().map(|_| brush_colliders.iter()).into_iter().flatten())
+            .chain(terrain.as_ref().map(|_| terrain_colliders.iter()).into_iter().flatten())
             .chain(
                 props
                     .iter()
@@ -1797,6 +1833,7 @@ fn step(
             sounds: bank.as_ref().map(|b| &*b.0),
             heights: (cfg.stand_height, cfg.duck_height),
             others: &others,
+            terrain: terrain.as_deref(),
         };
         let mut mover = Mover {
             cfg: &cfg,

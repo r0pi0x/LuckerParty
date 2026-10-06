@@ -68,11 +68,13 @@ fn main() {
         mashup::games::cs_source::movement::SourceMovementPlugin,
         mashup::games::cs_source::weapons::CsWeaponsPlugin,
         mashup::games::cs_source::player_anim::PlayerAnimPlugin,
+        mashup::games::cs_source::view_anim::ViewAnimPlugin,
         mashup::map::world_material::WorldMaterialPlugin,
         mashup::map::rope_material::RopeMaterialPlugin,
         mashup::map::sprite_material::SpriteMaterialPlugin,
         mashup::map::prop_material::PropMaterialPlugin,
         mashup::map::shadows::ShadowMaterialPlugin,
+        mashup::map::decal::DecalMaterialPlugin,
     ))
     // A game's maps run at that game's server tick.
     .insert_resource(match args.map.as_deref() {

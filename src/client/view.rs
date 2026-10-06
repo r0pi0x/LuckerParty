@@ -1,0 +1,305 @@
+//! Player-facing view settings and debug views: the third-person camera
+//! (`thirdperson` / `firstperson`, `cam_idealdist`), the master `volume`,
+//! and health bars over characters (`mashup_healthbars`).
+
+use std::collections::HashMap;
+
+use avian3d::prelude::*;
+use bevy::{
+    audio::{GlobalVolume, Volume},
+    prelude::*,
+};
+
+use super::FirstPersonCamera;
+use crate::{
+    console::{Console, ConsoleAppExt, resource_cvar},
+    core::{Health, Intent, LocalPlayer},
+    map::ShowLocalBody,
+    rules::Dead,
+};
+
+/// Source units to meters (cam_idealdist is in CS:S units).
+const METERS_PER_UNIT: f32 = 0.0254;
+/// Radius of the sphere swept back from the eye to place the camera, so
+/// it stops short of walls (CS:S sweeps a 28-unit box).
+const CAMERA_RADIUS: f32 = 0.2;
+
+/// First or third person, and how far behind the eye the third-person
+/// camera sits.
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct CameraMode {
+    pub third_person: bool,
+    /// CS:S units (cam_idealdist).
+    pub ideal_dist: f32,
+}
+
+impl Default for CameraMode {
+    fn default() -> Self {
+        Self {
+            third_person: false,
+            ideal_dist: 150.0,
+        }
+    }
+}
+
+#[derive(Resource, Default)]
+struct HealthBars(u8);
+
+pub struct ViewPlugin;
+
+impl Plugin for ViewPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<CameraMode>()
+            .init_resource::<HealthBars>()
+            .init_resource::<ShowLocalBody>()
+            .add_systems(Update, (show_local_body, draw_health_bars.after(super::follow_eye)));
+        view_console(app);
+    }
+}
+
+fn view_console(app: &mut App) {
+    app.console_command(
+        "thirdperson",
+        "Camera behind the player (cam_idealdist), showing your own body.",
+        |w, _| {
+            w.resource_mut::<CameraMode>().third_person = true;
+            Ok(None)
+        },
+    )
+    .console_command("firstperson", "Camera back at the eyes.", |w, _| {
+        w.resource_mut::<CameraMode>().third_person = false;
+        Ok(None)
+    })
+    .console_cvar(
+        "volume",
+        "Sound volume, 0 to 1.",
+        "1",
+        |w| {
+            Some(
+                w.get_resource::<GlobalVolume>()
+                    .map_or(1.0, |g| g.volume.to_linear())
+                    .to_string(),
+            )
+        },
+        |w, v| {
+            let v: f32 = v.trim().parse().map_err(|_| format!("bad value \"{v}\""))?;
+            w.insert_resource(GlobalVolume::new(Volume::Linear(v.clamp(0.0, 1.0))));
+            Ok(())
+        },
+    );
+    resource_cvar::<CameraMode, f32>(
+        app,
+        "cam_idealdist",
+        "Third-person camera distance behind the eye, in CS:S units.",
+        |m| &mut m.ideal_dist,
+    );
+    resource_cvar::<HealthBars, u8>(
+        app,
+        "mashup_healthbars",
+        "1: health bars above other living characters.",
+        |h| &mut h.0,
+    );
+    app.world_mut().resource_mut::<Console>().archive("volume");
+}
+
+/// Where the third-person camera sits relative to the eye: `ideal` meters
+/// back along the view, or at `hit` meters if something is in the way.
+pub fn third_person_offset(look: Quat, ideal: f32, hit: Option<f32>) -> Vec3 {
+    let d = hit.map_or(ideal, |h| h.min(ideal)).max(0.0);
+    look * Vec3::Z * d
+}
+
+/// The camera's offset from the character's origin: the eye in first
+/// person; in third person, behind it, pulled in by a sweep against
+/// everything but characters.
+pub(super) fn camera_offset(
+    mode: &CameraMode,
+    origin: Vec3,
+    eye: Vec3,
+    look: Quat,
+    spatial: &SpatialQuery,
+    characters: impl IntoIterator<Item = Entity>,
+) -> Vec3 {
+    if !mode.third_person {
+        return eye;
+    }
+    let ideal = mode.ideal_dist.max(0.0) * METERS_PER_UNIT;
+    let Ok(dir) = Dir3::new(look * Vec3::Z) else {
+        return eye;
+    };
+    let filter = SpatialQueryFilter::from_excluded_entities(characters);
+    let config = ShapeCastConfig {
+        max_distance: ideal,
+        ignore_origin_penetration: true,
+        ..default()
+    };
+    let hit = spatial
+        .cast_shape(
+            &Collider::sphere(CAMERA_RADIUS),
+            origin + eye,
+            Quat::IDENTITY,
+            dir,
+            &config,
+            &filter,
+        )
+        .map(|h| h.distance);
+    eye + third_person_offset(look, ideal, hit)
+}
+
+/// Draw the local player's body in third person while alive.
+fn show_local_body(
+    mode: Res<CameraMode>,
+    local: Option<Single<Has<Dead>, With<LocalPlayer>>>,
+    mut show: ResMut<ShowLocalBody>,
+) {
+    let dead = local.is_some_and(|d| *d);
+    show.set_if_neq(ShowLocalBody(mode.third_person && !dead));
+}
+
+#[derive(Component)]
+struct HealthBar;
+
+const BAR_WIDTH: f32 = 40.0;
+const BAR_HEIGHT: f32 = 7.0;
+/// Meters above the character's origin (its centre).
+const BAR_ABOVE: f32 = crate::character::CAPSULE_HEIGHT / 2.0 + 0.25;
+
+/// `mashup_healthbars 1`: a bar over each living character other than the
+/// local player, green when full, red when nearly dead.
+#[allow(clippy::type_complexity)]
+fn draw_health_bars(
+    on: Res<HealthBars>,
+    player: Option<Single<&Transform, With<LocalPlayer>>>,
+    camera: Query<(&Camera, &Transform), With<FirstPersonCamera>>,
+    characters: Query<(Entity, &Transform, &Health, Has<Dead>), (With<Intent>, Without<LocalPlayer>)>,
+    mut nodes: Query<(&mut Node, &mut Visibility), With<HealthBar>>,
+    mut fills: Query<(&mut Node, &mut BackgroundColor), Without<HealthBar>>,
+    mut bars: Local<HashMap<Entity, (Entity, Entity)>>,
+    mut commands: Commands,
+) {
+    if on.0 == 0 {
+        for (_, (root, _)) in bars.drain() {
+            commands.entity(root).despawn();
+        }
+        return;
+    }
+    // The camera as it will render this frame (its transform was just set).
+    let view = match (player, camera.iter().next()) {
+        (Some(p), Some((c, t))) => Some((c, GlobalTransform::from(p.mul_transform(*t)))),
+        _ => None,
+    };
+    bars.retain(|owner, (root, _)| {
+        let alive = characters.contains(*owner);
+        if !alive {
+            commands.entity(*root).despawn();
+        }
+        alive
+    });
+    for (e, t, health, dead) in &characters {
+        let Some(&(root, fill)) = bars.get(&e) else {
+            let root = commands
+                .spawn((
+                    HealthBar,
+                    Node {
+                        position_type: PositionType::Absolute,
+                        width: px(BAR_WIDTH),
+                        height: px(BAR_HEIGHT),
+                        border: UiRect::all(px(1.0)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.7)),
+                    Visibility::Hidden,
+                ))
+                .id();
+            let fill = commands
+                .spawn((
+                    Node {
+                        height: percent(100.0),
+                        ..default()
+                    },
+                    BackgroundColor(Color::NONE),
+                    ChildOf(root),
+                ))
+                .id();
+            bars.insert(e, (root, fill));
+            continue;
+        };
+        let Ok((mut node, mut vis)) = nodes.get_mut(root) else { continue };
+        let at = t.translation + Vec3::Y * BAR_ABOVE;
+        let screen = view
+            .as_ref()
+            .filter(|_| !dead && health.current > 0.0)
+            .and_then(|(c, g)| c.world_to_viewport(g, at).ok());
+        let Some(p) = screen else {
+            vis.set_if_neq(Visibility::Hidden);
+            continue;
+        };
+        vis.set_if_neq(Visibility::Visible);
+        node.left = px(p.x - BAR_WIDTH / 2.0);
+        node.top = px(p.y - BAR_HEIGHT);
+        if let Ok((mut fill_node, mut color)) = fills.get_mut(fill) {
+            let f = (health.current / health.max.max(1e-6)).clamp(0.0, 1.0);
+            fill_node.width = percent(f * 100.0);
+            color.0 = Color::srgb(1.0 - f, f, 0.1);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app() -> App {
+        let mut app = App::new();
+        app.add_plugins(crate::console::ConsolePlugin)
+            .init_resource::<CameraMode>()
+            .init_resource::<HealthBars>();
+        view_console(&mut app);
+        app
+    }
+
+    fn run(app: &mut App, line: &str) {
+        app.world_mut().resource_mut::<Console>().submit(line);
+        app.update();
+    }
+
+    #[test]
+    fn thirdperson_and_firstperson_toggle_the_camera() {
+        let mut app = app();
+        assert!(!app.world().resource::<CameraMode>().third_person);
+        run(&mut app, "thirdperson");
+        assert!(app.world().resource::<CameraMode>().third_person);
+        run(&mut app, "cam_idealdist 100; firstperson");
+        let mode = *app.world().resource::<CameraMode>();
+        assert!(!mode.third_person);
+        assert_eq!(mode.ideal_dist, 100.0);
+    }
+
+    #[test]
+    fn volume_is_clamped_and_archived() {
+        let mut app = app();
+        run(&mut app, "volume 0.25");
+        let v = app.world().resource::<GlobalVolume>().volume.to_linear();
+        assert!((v - 0.25).abs() < 1e-6, "{v}");
+        run(&mut app, "volume 3");
+        assert_eq!(app.world().resource::<GlobalVolume>().volume.to_linear(), 1.0);
+        run(&mut app, "volume -1");
+        assert_eq!(app.world().resource::<GlobalVolume>().volume.to_linear(), 0.0);
+        assert!(app.world().resource::<Console>().cvar("volume").unwrap().archive);
+    }
+
+    #[test]
+    fn third_person_camera_sits_behind_and_stops_at_walls() {
+        // Looking down -Z (yaw 0): behind is +Z.
+        let look = Quat::IDENTITY;
+        let ideal = 150.0 * METERS_PER_UNIT;
+        let free = third_person_offset(look, ideal, None);
+        assert!((free - Vec3::Z * ideal).length() < 1e-5, "{free}");
+        // A wall 1 m back pulls the camera in to it.
+        assert!((third_person_offset(look, ideal, Some(1.0)) - Vec3::Z).length() < 1e-5);
+        // Looking down 45 degrees, the camera is behind and above.
+        let down = Quat::from_euler(EulerRot::YXZ, 0.0, -45f32.to_radians(), 0.0);
+        let o = third_person_offset(down, ideal, None);
+        assert!(o.y > 0.0 && o.z > 0.0, "{o}");
+    }
+}

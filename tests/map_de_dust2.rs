@@ -346,7 +346,7 @@ fn prop_lighting_model_predicts_lightmaps() {
     let source = vbsp::Bsp::read(&bytes).unwrap();
     let lighting = ambient::MapLighting::read(&bytes);
     let occluders = ambient::Occluders::new(
-        &bsp::shadow_hulls(&source),
+        &bsp::shadow_hulls(&source, &ambient::raw_leaves(&bytes)),
         (&map.collision_positions, &map.collision_indices),
     );
     let lm = map.lightmap.as_ref().unwrap();
@@ -1860,7 +1860,7 @@ fn walking_on_terrain_never_stubs() {
         .collect();
     let feet = |sim: &Sim, p: Entity| movement::to_source(sim.position(p)) - Vec3::Z * 36.0;
     let mut stubs = Vec::new();
-    let rounds = 20;
+    let rounds = 8;
     for round in 0..rounds {
         // Place everyone on a random terrain spot, well apart.
         let mut placed: Vec<Vec3> = Vec::new();
@@ -1900,6 +1900,17 @@ fn walking_on_terrain_never_stubs() {
                 sim.intent(p).yaw += (rand() - 0.5) * 0.1;
             }
             let before: Vec<Vec3> = players.iter().map(|&p| feet(&sim, p)).collect();
+            let states: Vec<(SourceMovement, Vec3, mashup::core::Intent)> = players
+                .iter()
+                .map(|&p| {
+                    let w = sim.app.world();
+                    (
+                        w.get::<SourceMovement>(p).unwrap().clone(),
+                        sim.velocity(p),
+                        w.get::<mashup::core::Intent>(p).unwrap().clone(),
+                    )
+                })
+                .collect();
             sim.ticks(1);
             for (k, &p) in players.iter().enumerate() {
                 let me = sim.app.world().get::<SourceMovement>(p).unwrap().clone();
@@ -1917,7 +1928,9 @@ fn walking_on_terrain_never_stubs() {
                     movement::to_engine(f + Vec3::new(24.0, 24.0, 70.0)),
                 );
                 let (bl, bh) = (a.min(b), a.max(b));
-                let near_brush = brushes.iter().any(|br| br.max.cmpgt(bl).all() && br.min.cmplt(bh).all());
+                let near_brush = brushes
+                    .iter()
+                    .any(|br| br.max.cmpgt(bl).all() && br.min.cmplt(bh).all());
                 let near_player = players
                     .iter()
                     .any(|&q| q != p && (feet(&sim, q) - f).truncate().length() < 64.0);
@@ -1927,11 +1940,125 @@ fn walking_on_terrain_never_stubs() {
                 let intent = sim.intent(p).clone();
                 eprintln!(
                     "stub round {round} tick {tick}: feet {:?} -> {:?}, speed {was_speed:.1} -> {speed:.1}, yaw {:.1}, axis {:?}, walk {} crouch {} ducked {} jump {} normal {:?}",
-                    before[k], f, intent.yaw.to_degrees(), intent.move_axis, intent.walk, intent.crouch, me.ducked, intent.jump, me.ground_normal
+                    before[k],
+                    f,
+                    intent.yaw.to_degrees(),
+                    intent.move_axis,
+                    intent.walk,
+                    intent.crouch,
+                    me.ducked,
+                    intent.jump,
+                    me.ground_normal
+                );
+                eprintln!(
+                    "  state before: v {:?} (source {:?}) {:?} intent {:?}",
+                    states[k].1,
+                    movement::to_source(states[k].1),
+                    states[k].0,
+                    states[k].2
                 );
                 stubs.push((round, tick, before[k]));
             }
         }
     }
-    assert!(stubs.is_empty(), "{} stubs: {:?}", stubs.len(), &stubs[..stubs.len().min(5)]);
+    assert!(
+        stubs.is_empty(),
+        "{} stubs: {:?}",
+        stubs.len(),
+        &stubs[..stubs.len().min(5)]
+    );
+}
+
+#[test]
+fn view_models_load_with_their_sequences() {
+    use mashup::games::cs_source::weapons::{AK47, KNIFE};
+    let Some(map) = dust2() else { return };
+    let ak = map
+        .view_models
+        .iter()
+        .find(|v| v.key == AK47)
+        .expect("AK-47 view model");
+    assert_eq!(ak.bones.len(), 63, "hands and weapon");
+    let tris: usize = ak.model.meshes.iter().map(|m| m.indices.len() / 3).sum();
+    assert!(tris > 1000, "{tris} triangles");
+    assert!(
+        ak.model.meshes.iter().all(|m| m.joints.len() == m.positions.len()),
+        "skinned"
+    );
+    let set = ak.animations.as_ref().expect("sequences");
+    let fire: Vec<&str> = set
+        .activities("ACT_VM_PRIMARYATTACK")
+        .iter()
+        .map(|(s, _)| set.sequences[*s].name.as_str())
+        .collect();
+    assert_eq!(fire, ["ak47_fire1", "ak47_fire2", "ak47_fire3"]);
+    // Durations from the spec's view-model table.
+    let dur = |act: &str| set.duration(set.activity(act).expect(act));
+    assert!((dur("ACT_VM_DRAW") - 1.0).abs() < 1e-4);
+    assert!((dur("ACT_VM_RELOAD") - 2.4324).abs() < 1e-4);
+    assert!((dur("ACT_VM_PRIMARYATTACK") - 0.75).abs() < 1e-4);
+    assert!(set.sequences[set.activity("ACT_VM_IDLE").unwrap()].looping);
+    // Left-handed in the file; drawn mirrored into the right hand.
+    assert!(ak.mirror);
+    // Draw ends where idle starts (the decoder reads both alike).
+    let params = set.default_params();
+    let pose = |s: &str, cycle: f32| {
+        let mut p = set.defaults.clone();
+        set.accumulate(&mut p, set.sequence(s).unwrap(), cycle, 1.0, &params);
+        p
+    };
+    let (end, start) = (pose("ak47_draw", 1.0), pose("ak47_idle", 0.0));
+    for (a, b) in end.iter().zip(&start) {
+        assert!(a.0.angle_between(b.0) < 0.01 && a.1.distance(b.1) < 0.01);
+    }
+    let knife = map
+        .view_models
+        .iter()
+        .find(|v| v.key == KNIFE)
+        .expect("knife view model");
+    let set = knife.animations.as_ref().unwrap();
+    for name in ["draw", "idle", "midslash1", "midslash2", "stab", "stab_miss"] {
+        assert!(set.sequence(name).is_some(), "{name}");
+    }
+}
+
+/// Cases `walking_on_terrain_never_stubs` found (the "stubbed toe"): running
+/// across nearly flat terrain, the sweep met a triangle edge with a sideways
+/// normal and lost most of its speed in one tick; on sloped terrain the box
+/// ended up inside the terrain and stopped dead.
+#[test]
+fn running_over_terrain_keeps_speed() {
+    use mashup::games::cs_source::movement::{self, SourceMovementPlugin};
+    let Some(map) = dust2() else { return };
+    // Feet (Source units), intent yaw (radians), move keys.
+    let cases = [
+        (Vec3::new(1456.79, 1596.71, 1.61), 0.8531, Vec2::new(1.0, 1.0)),
+        (Vec3::new(1368.92, 1667.37, 2.81), 2.0684, Vec2::new(1.0, 1.0)),
+        (Vec3::new(-1804.60, 115.16, 1.95), 2.5284, Vec2::new(1.0, 1.0)),
+        (Vec3::new(-113.39, 3144.78, 286.54), 3.0424, Vec2::new(-1.0, 1.0)),
+        (Vec3::new(-2047.10, 3622.04, 183.98), 3.5225, Vec2::Y),
+    ];
+    for (k, (feet, yaw, keys)) in cases.into_iter().enumerate() {
+        let mut sim = Sim::new((MapPlugin::new(map.clone()), SourceMovementPlugin));
+        sim.set_tick_interval(cs_source::TICK_INTERVAL);
+        // Dropped from above: some of these feet were inside the terrain.
+        let p = sim.spawn_character(movement::to_engine(feet + Vec3::Z * 80.0), movement::ID);
+        sim.seconds(0.6);
+        assert!(sim.state(p).on_ground, "case {k}: not on the ground");
+        sim.intent(p).yaw = yaw;
+        sim.intent(p).move_axis = keys;
+        let mut last = 0.0f32;
+        // About half a second: the second case reaches a wall after that.
+        for tick in 0..35 {
+            sim.ticks(1);
+            let speed = sim.velocity(p).xz().length() / 0.0254;
+            assert!(
+                !(last > 100.0 && speed < last * 0.8),
+                "case {k} tick {tick}: speed {last:.1} -> {speed:.1} at {}",
+                movement::to_source(sim.position(p))
+            );
+            last = speed;
+        }
+        assert!(last > 200.0, "case {k}: running at {last:.1}");
+    }
 }

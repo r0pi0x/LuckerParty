@@ -73,6 +73,13 @@ Only `Reflect`-registered types are visible; register new core components in
   by hitgroup, where shots test them (e.g. `+bot_stop 1 +bot_add 2
   +mashup_drawhitboxes 1` with `--screenshot` to check they follow the
   animated body).
+- `mashup_healthbars 1` draws a health bar over every other living
+  character (green full, red nearly dead), e.g. to watch damage land in a
+  `--screenshot` run with `+bot_add 2`.
+- `thirdperson` (back with `firstperson`; distance `cam_idealdist`, CS:S
+  units) puts the camera behind the local player and draws its own
+  animated body: `+thirdperson` in a `--screenshot` run shows the local
+  player's model and animation.
 - Remote: `curl -s localhost:15702 -d '{"jsonrpc":"2.0","id":1,
   "method":"mashup/console","params":{"line":"getpos; cvarlist sv_"}}'`
   runs a line now and returns the lines it printed.
@@ -95,6 +102,7 @@ same readers as the runtime mount. Install paths come from
 cargo run --bin dump -- cs_source                      # counts and sizes by type
 cargo run --bin dump -- cs_source --list --filter de_dust2
 cargo run --bin dump -- cs_source --filter materials/de_dust --extract
+cargo run --bin dump -- cs_source --sequences models/weapons/v_rif_ak47.mdl  # bones, sequences, activities
 cargo run --bin dump -- combat_arms --archives         # per-archive title, entropy, file count
 cargo run --bin dump -- combat_arms --list --filter worlds2
 cargo run --bin dump -- combat_arms --filter worlds2/warehouse.dat --extract
@@ -118,8 +126,15 @@ cargo run --features dev --bin refcmp -- capture-ours --only a_sign
 ```
 
 - Views: `tools/refcmp/<map>.toml` (Source eye positions and angles; add
-  more as needed). Output: `~/.local/share/mashup/dump/refcmp/<map>/`
-  (game imagery; never in the repo).
+  more as needed; pass `--views tools/refcmp/<map>.toml` for maps other
+  than dust2). de_aztec, cs_office and de_nuke have views generated from
+  their own entities (intermission cameras, spawns, bomb/rescue zones).
+  `camera` names the map's `point_viewcontrol`; maps whose cameras have
+  no name (de_aztec) use the class name, which moves all of them.
+  Output: `~/.local/share/mashup/dump/refcmp/<map>/` (game imagery; never
+  in the repo). Our captures currently show the view model.
+- Load warnings of every stock map: `cargo test --features dev --test
+  map_stock -- --ignored --nocapture all_stock_maps_warnings`.
 - CS:S runs through the Steam client (logged in once on this machine) and
   is driven over RCON on 127.0.0.1:27015, so it works with the desktop
   locked: the tool waits for the map to load, repositions the map's
@@ -173,6 +188,7 @@ The reference CS:S (see refcmp) can also be measured directly over RCON:
 cargo run --features dev --bin movecmp            # all scenarios
 cargo run --features dev --bin movecmp -- --only bhop --keep-running
 cargo run --features dev --bin movecmp -- fuzz --runs 16 --ticks 150   # ladders and water
+cargo run --features dev --bin movecmp -- --offline   # against the last CS:S logs, no server
 ```
 
 - Each scenario (in `src/bin/movecmp.rs`) is a start position and per-tick
@@ -193,6 +209,9 @@ cargo run --features dev --bin movecmp -- fuzz --runs 16 --ticks 150   # ladders
   buttons): movecmp holds duck on our side while the bot is ducked in the
   air, so jumps differ only by the bot's instant 8.5-unit duck on the jump
   tick.
+- `--offline` replays the scenarios against the CS:S logs the last online
+  run left in the server's `cstrike/mashup/<name>.out` (same inputs), for
+  checking movement changes without starting the server.
 - Damage measurements: `tools/css_probe/fallmeas.py` (fall damage; see
   tools/css_probe/README.md). `player_hurt` rows of `mashup_wrun` logs
   carry each hit's damage.

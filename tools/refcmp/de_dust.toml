@@ -1,0 +1,77 @@
+# Views of de_dust for spotting visual bugs (docs/plans/active/other-maps.md),
+# generated from its entities: intermission cameras, the first T and CT
+# spawns, and bomb/rescue zone centres looking four ways.
+# Source eye positions; angles are [pitch, yaw] in Source degrees.
+
+map = "de_dust"
+camera = "cam1"
+
+[[view]]
+name = "cam0"
+position = [-944, 3024, 48]
+angles = [12.3, 256]
+
+[[view]]
+name = "cam1"
+position = [1344, 464, 160]
+angles = [13.1, 54.5]
+
+[[view]]
+name = "cam2"
+position = [-112, 1216, 128]
+angles = [8.1, 70.7]
+
+[[view]]
+name = "cam3"
+position = [-1184.03, 544.279, 128]
+angles = [13.2, 65.8]
+
+[[view]]
+name = "t_spawn"
+position = [1376, 3168, -48]
+angles = [0, 180]
+
+[[view]]
+name = "ct_spawn"
+position = [160, -1712, 154]
+angles = [0, 112]
+
+[[view]]
+name = "zone0_0"
+position = [1952, 608, 64]
+angles = [10, 0]
+
+[[view]]
+name = "zone0_90"
+position = [1952, 608, 64]
+angles = [10, 90]
+
+[[view]]
+name = "zone0_180"
+position = [1952, 608, 64]
+angles = [10, 180]
+
+[[view]]
+name = "zone0_270"
+position = [1952, 608, 64]
+angles = [10, 270]
+
+[[view]]
+name = "zone1_0"
+position = [352, -1656, 128]
+angles = [10, 0]
+
+[[view]]
+name = "zone1_90"
+position = [352, -1656, 128]
+angles = [10, 90]
+
+[[view]]
+name = "zone1_180"
+position = [352, -1656, 128]
+angles = [10, 180]
+
+[[view]]
+name = "zone1_270"
+position = [352, -1656, 128]
+angles = [10, 270]

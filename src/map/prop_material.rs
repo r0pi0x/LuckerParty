@@ -15,7 +15,7 @@ pub struct PropParams {
     pub fog_color: Vec4,
     /// Fog start, end (meters), max density.
     pub fog_range: Vec4,
-    /// 1 when alpha blended; otherwise the output alpha is 1 (see
+    /// 1 when alpha blended, 2 additive; otherwise the output alpha is 1 (see
     /// `WorldParams::translucent`).
     pub translucent: f32,
     /// 1 when the prop reflects `envmap` (Source VertexLitGeneric

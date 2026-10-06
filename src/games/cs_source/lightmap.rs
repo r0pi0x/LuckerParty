@@ -52,6 +52,56 @@ pub fn face_bumped_samples(lump: &[u8], face: &vbsp::Face, bumped: bool) -> Opti
     Some([block(lump, face, 1)?, block(lump, face, 2)?, block(lump, face, 3)?])
 }
 
+/// A face's lighting with every light style that is lit at map start
+/// added together: style 0, the animated presets (1-31, at their normal
+/// brightness) and switchable styles (32+) unless `dark(style)` (their
+/// lights start off). Each style stores the flat block and, for bumped
+/// faces, the three directional blocks, one style after another. Returns
+/// the flat block and the bumped pages.
+pub fn face_samples_lit(
+    lump: &[u8],
+    face: &vbsp::Face,
+    bumped: bool,
+    dark: &dyn Fn(u8) -> bool,
+) -> (Option<FaceSamples>, Option<[FaceSamples; 3]>) {
+    let per_style = if bumped { 4 } else { 1 };
+    let sum = |index: u32| -> Option<FaceSamples> {
+        let mut out: Option<FaceSamples> = None;
+        for (k, &style) in face.styles.iter().enumerate() {
+            if style == 255 {
+                break;
+            }
+            if style >= 32 && dark(style) {
+                continue;
+            }
+            let b = block(lump, face, k as u32 * per_style + index)?;
+            match &mut out {
+                None => out = Some(b),
+                Some(o) => o.rgb.iter_mut().zip(&b.rgb).for_each(|(a, b)| {
+                    a[0] += b[0];
+                    a[1] += b[1];
+                    a[2] += b[2];
+                }),
+            }
+        }
+        // Lit only by lights that start off: black, not unlit.
+        if out.is_none() {
+            out = block(lump, face, index).map(|mut b| {
+                b.rgb.fill([0.0; 3]);
+                b
+            });
+        }
+        out
+    };
+    let flat = sum(0);
+    let pages = if bumped {
+        (|| Some([sum(1)?, sum(2)?, sum(3)?]))()
+    } else {
+        None
+    };
+    (flat, pages)
+}
+
 fn block(lump: &[u8], face: &vbsp::Face, index: u32) -> Option<FaceSamples> {
     if face.light_offset < 0 || face.styles[0] == 255 {
         return None;

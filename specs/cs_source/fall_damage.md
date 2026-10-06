@@ -74,7 +74,10 @@ in the movement spec's stamina values).
 ## trigger_hurt
 
 Of the stock maps on the reference install, only de_port has one (the sea
-under the map: model *11, a box −7424..7936 × −6816..2144 × −128..128,
+under the map: model *11, a box −7424..7936 × −6816..2144 × −128..128
+around the entity's origin (256, 2976, 128), so −7168..8192 × −3840..5120 ×
+0..256 in the world (brush entity models are stored relative to their
+origin, as the BSP's other brush entities show),
 `damage` 50, `damagetype` 16384 (drown), `damagemodel` 0, `damagecap` 20,
 `spawnflags` 1, `StartDisabled` 0). dust2 has none.
 

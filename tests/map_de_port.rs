@@ -31,17 +31,15 @@ fn trigger_hurt_bites_every_half_second() {
     let Some(map) = port() else { return };
     assert_eq!(map.hurt.len(), 1, "de_port has one trigger_hurt");
     let volume = &map.hurt[0];
-    for b in &volume.brushes {
-        eprintln!("brush {} .. {} planes {}", movement::to_source(b.min), movement::to_source(b.max), b.planes.len());
-    }
     assert_eq!(volume.damage_per_second, 50.0);
-    // Its brushes span the measured model bounds (Source units).
+    // Its brushes span the model's bounds placed at the entity's origin
+    // (256, 2976, 128), Source units.
     let lo = volume.brushes.iter().map(|b| b.min).fold(Vec3::MAX, Vec3::min);
     let hi = volume.brushes.iter().map(|b| b.max).fold(Vec3::MIN, Vec3::max);
     let (a, b) = (movement::to_source(lo), movement::to_source(hi));
     let (lo, hi) = (a.min(b), a.max(b));
     assert!(
-        lo.distance(Vec3::new(-7424.0, -6816.0, -128.0)) < 1.0 && hi.distance(Vec3::new(7936.0, 2144.0, 128.0)) < 1.0,
+        lo.distance(Vec3::new(-7168.0, -3840.0, 0.0)) < 1.0 && hi.distance(Vec3::new(8192.0, 5120.0, 256.0)) < 1.0,
         "bounds {lo} .. {hi}"
     );
 
@@ -56,7 +54,11 @@ fn trigger_hurt_bites_every_half_second() {
         sim.ticks(1);
         let h = sim.app.world().get::<Health>(p).unwrap().current;
         if h < last {
-            assert!((last - h - 0.25).abs() < 1e-5 || h == 0.0, "bit {} at tick {tick}", last - h);
+            assert!(
+                (last - h - 0.25).abs() < 1e-5 || h == 0.0,
+                "bit {} at tick {tick}",
+                last - h
+            );
             bites.push(tick);
             last = h;
         }

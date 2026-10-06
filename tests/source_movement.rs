@@ -570,7 +570,10 @@ fn no_fall_damage_into_water() {
     };
     let mut sim = Sim::new((TestMap, SourceMovementPlugin));
     sim.set_tick_interval(mashup::games::cs_source::TICK_INTERVAL);
-    let (a, b) = (to_engine(Vec3::new(-200.0, -3200.0, 0.0)), to_engine(Vec3::new(200.0, -2800.0, 10.0)));
+    let (a, b) = (
+        to_engine(Vec3::new(-200.0, -3200.0, 0.0)),
+        to_engine(Vec3::new(200.0, -2800.0, 10.0)),
+    );
     sim.app.insert_resource(MapWater(vec![MapWaterVolume {
         brush: MapBrush::from_box(a.min(b), a.max(b)),
         slime: false,
@@ -579,7 +582,16 @@ fn no_fall_damage_into_water() {
     sim.app.world_mut().get_mut::<Velocity>(p).unwrap().0 = to_engine(Vec3::Z * -800.0);
     sim.seconds(0.3);
     let me = sim.app.world().get::<SourceMovement>(p).unwrap().clone();
-    assert!(me.on_ground && me.water_level == 1, "ground {} water {}", me.on_ground, me.water_level);
+    assert!(
+        me.on_ground && me.water_level == 1,
+        "ground {} water {}",
+        me.on_ground,
+        me.water_level
+    );
     assert!(me.last_landing_speed > 800.0);
-    assert_eq!(sim.app.world().get::<Health>(p).unwrap().current, 1.0, "hurt landing in water");
+    assert_eq!(
+        sim.app.world().get::<Health>(p).unwrap().current,
+        1.0,
+        "hurt landing in water"
+    );
 }

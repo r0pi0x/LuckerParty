@@ -207,6 +207,10 @@ fn toggle(
             // Typing shouldn't move the player: the game reads input only
             // while the mouse is grabbed.
             super::input::release_cursor(&mut cursor);
+        } else if !close {
+            // Closed with the console key: straight back to playing. (Escape
+            // leaves the mouse free, as it does outside the console.)
+            super::input::capture_cursor(&mut cursor);
         }
     }
 }
@@ -1457,6 +1461,33 @@ struct NoclipBack(&'static str);
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn closing_with_the_console_key_captures_the_mouse() {
+        use bevy::window::{CursorGrabMode, CursorOptions};
+        let mut app = App::new();
+        app.init_resource::<ConsoleUi>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .add_systems(Update, toggle);
+        app.world_mut().spawn((ConsoleRoot, Visibility::Hidden));
+        let window = app.world_mut().spawn(CursorOptions::default()).id();
+        let press = |app: &mut App, key: KeyCode| {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.clear();
+            keys.press(key);
+            app.update();
+            app.world_mut().resource_mut::<ButtonInput<KeyCode>>().release(key);
+        };
+        let grabbed = |app: &App| app.world().get::<CursorOptions>(window).unwrap().grab_mode != CursorGrabMode::None;
+        press(&mut app, KeyCode::Backquote);
+        assert!(app.world().resource::<ConsoleUi>().open && !grabbed(&app));
+        press(&mut app, KeyCode::Backquote);
+        assert!(!app.world().resource::<ConsoleUi>().open && grabbed(&app), "tilde should recapture");
+        press(&mut app, KeyCode::Backquote);
+        press(&mut app, KeyCode::Escape);
+        assert!(!app.world().resource::<ConsoleUi>().open && !grabbed(&app), "escape leaves the mouse free");
+    }
+
     use super::*;
     use crate::console::ConsolePlugin;
 

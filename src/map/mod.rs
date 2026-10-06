@@ -16,9 +16,12 @@ use bevy::{
 use crate::core::{SpawnPoint, Team};
 // Collision-world types live in `core` (the greybox map uses them too).
 pub use hurt::{MapHurt, MapHurtVolume};
-pub use crate::core::{MapBrush, MapBrushCollider, MapBrushes, MapWater, MapWaterVolume, PropSurface};
+pub use crate::core::{
+    MapBrush, MapBrushCollider, MapBrushes, MapTerrain, MapTerrainCollider, MapWater, MapWaterVolume, PropSurface,
+};
 
 pub mod anim;
+pub mod decal;
 mod hurt;
 mod dust;
 pub mod nav;
@@ -29,7 +32,9 @@ pub mod sound;
 pub mod soundscape;
 pub use sound::{MapSoundClip, MapSoundEntry, MapSounds, MapSurface, PlaySound, SoundLevel};
 pub mod sprite_material;
+pub mod view_model;
 pub mod world_material;
+pub use view_model::{MapViewModel, ViewAnimator, ViewModelAnchor, ViewModelCamera, ViewModels};
 
 use prop_material::{PropMaterial, PropParams};
 use rope_material::{RopeMaterial, RopeParams};
@@ -122,6 +127,30 @@ pub enum MapAlpha {
     /// Cut out below this alpha.
     Mask(f32),
     Blend,
+    /// Added to what's behind (Source `$additive`: light glows, beams).
+    Add,
+}
+
+impl MapAlpha {
+    /// The material shaders' `translucent` parameter: 0 opaque, 1 blend,
+    /// 2 additive.
+    pub fn shader_mode(self) -> f32 {
+        match self {
+            MapAlpha::Opaque | MapAlpha::Mask(_) => 0.0,
+            MapAlpha::Blend => 1.0,
+            MapAlpha::Add => 2.0,
+        }
+    }
+
+    /// Blend state for the material shaders (they output alpha 0 when
+    /// additive, so premultiplied blending adds).
+    pub fn shader_alpha_mode(self) -> AlphaMode {
+        match self {
+            MapAlpha::Opaque | MapAlpha::Mask(_) => AlphaMode::Opaque,
+            MapAlpha::Blend => AlphaMode::Blend,
+            MapAlpha::Add => AlphaMode::Add,
+        }
+    }
 }
 
 /// Triangles sharing one material.
@@ -212,11 +241,12 @@ pub struct MapEnvmap {
 /// and combined with the base color (specs/cs_source/shaders.md).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MapDetail {
-    /// Index into `MapData::textures` (linear for mode 0, sRGB for 1).
+    /// Index into `MapData::textures` (linear for mode 0, sRGB otherwise).
     pub texture: usize,
     pub scale: [f32; 2],
     pub factor: f32,
-    /// 0: multiply by 2 x detail ("mod2x"); 1: add.
+    /// 0: multiply by 2 x detail ("mod2x"); 1: add; 2: blend the detail
+    /// over the base by its alpha.
     pub mode: u8,
 }
 
@@ -359,8 +389,14 @@ pub struct CharacterBody {
     held: Option<(Entity, String)>,
 }
 
-/// Give characters other than the local player their team's body (a child
-/// at the feet), and turn bodies with their character's yaw.
+/// Whether the local player's own body is drawn (third person). The
+/// client sets it; the body is there either way, animated, and hidden
+/// when this is false.
+#[derive(Resource, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShowLocalBody(pub bool);
+
+/// Give characters their team's body (a child at the feet); the local
+/// player's is hidden unless `ShowLocalBody`.
 #[allow(clippy::type_complexity)]
 fn attach_bodies(
     models: Option<Res<CharacterModels>>,
@@ -372,16 +408,18 @@ fn attach_bodies(
             &ColliderAabb,
             &GlobalTransform,
             Option<&Children>,
+            Has<crate::core::LocalPlayer>,
         ),
-        (With<crate::core::Intent>, Without<crate::core::LocalPlayer>),
+        With<crate::core::Intent>,
     >,
     existing: Query<&CharacterBody>,
+    show_local: Res<ShowLocalBody>,
     mut commands: Commands,
 ) {
     let (Some(models), Some(bodies)) = (models, bodies) else {
         return;
     };
-    for (e, team, aabb, at, children) in &characters {
+    for (e, team, aabb, at, children, local) in &characters {
         let Some((index, _)) = models.for_team(team.copied()) else {
             continue;
         };
@@ -400,7 +438,7 @@ fn attach_bodies(
             .spawn((
                 Name::new("Body"),
                 Transform::from_xyz(0.0, feet, 0.0),
-                Visibility::Inherited,
+                body_visibility(local, *show_local),
                 ChildOf(e),
             ))
             .id();
@@ -440,6 +478,32 @@ fn attach_bodies(
     }
 }
 
+fn body_visibility(local: bool, show_local: ShowLocalBody) -> Visibility {
+    if local && !show_local.0 {
+        Visibility::Hidden
+    } else {
+        Visibility::Inherited
+    }
+}
+
+/// Show or hide the local player's body when `ShowLocalBody` changes.
+fn show_local_body(
+    show: Res<ShowLocalBody>,
+    local: Query<&Children, With<crate::core::LocalPlayer>>,
+    mut bodies: Query<&mut Visibility, With<CharacterBody>>,
+) {
+    let want = body_visibility(true, *show);
+    for children in &local {
+        let mut it = bodies.iter_many_mut(children);
+        while let Some(mut vis) = it.fetch_next() {
+            if *vis != want {
+                *vis = want;
+            }
+        }
+    }
+}
+
+/// Turn bodies with their character's yaw.
 fn turn_bodies(
     characters: Query<(&crate::core::Intent, &Children, Option<&anim::Animator>)>,
     mut bodies: Query<&mut Transform, With<CharacterBody>>,
@@ -758,6 +822,10 @@ pub struct MapData {
     pub characters: Vec<MapCharacterModel>,
     /// Models characters can hold (weapons' world models).
     pub held: Vec<MapHeldModel>,
+    /// Runtime decals (bullet holes, slashes) by group.
+    pub decals: decal::MapDecals,
+    /// What characters see of what they hold (weapons' view models).
+    pub view_models: Vec<MapViewModel>,
 }
 
 /// What the BSP leaf around a point can see of the sky.
@@ -999,6 +1067,9 @@ struct SkyVis(MapSkyVis);
 #[derive(Resource, Clone, Copy, Debug)]
 pub struct KillHeight(pub f32);
 
+/// How thick terrain surfaces are as solids (`MapTerrain`), meters: 2 units.
+const TERRAIN_THICKNESS: f32 = 2.0 * 0.0254;
+
 /// How far below the map's lowest point (meters) falling ends.
 const KILL_MARGIN: f32 = 3.0;
 
@@ -1066,7 +1137,7 @@ struct PlayableArea((Vec3, Vec3));
 #[allow(clippy::type_complexity)]
 fn show_skybox_in_place(
     area: Option<Res<PlayableArea>>,
-    cameras: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<SkyboxCamera>)>,
+    cameras: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<SkyboxCamera>, Without<ViewModelCamera>)>,
     mut parts: Query<&mut bevy::camera::visibility::RenderLayers, Without<Camera>>,
     mut outside_before: Local<Option<bool>>,
 ) {
@@ -1116,6 +1187,8 @@ impl Plugin for MapPlugin {
                 .insert_resource(ActiveMapLook(data.look.clone()));
         }
         app.add_plugins(sound::SoundPlugin)
+            .init_resource::<ShowLocalBody>()
+            .add_message::<decal::PlaceDecal>()
             .insert_resource(GlobalAmbientLight {
                 brightness: 600.0,
                 // Baked lighting already includes the map's ambient light.
@@ -1138,8 +1211,18 @@ impl Plugin for MapPlugin {
                     glow_visibility,
                     dust::update_dust,
                     show_skybox_in_place,
-                    (attach_bodies, turn_bodies, pose_bodies.after(DriveAnimation), attach_held)
+                    decal::place_decals,
+                    (
+                        attach_bodies,
+                        show_local_body,
+                        turn_bodies,
+                        pose_bodies.after(DriveAnimation),
+                        attach_held,
+                    )
                         .run_if(resource_exists::<CharacterBodies>),
+                    view_model::draw_view_models
+                        .after(DriveAnimation)
+                        .run_if(resource_exists::<view_model::ViewModelAssets>),
                 ),
             )
             .add_systems(
@@ -1201,9 +1284,16 @@ fn spawn_map(
         .id();
 
     if !data.collision_indices.is_empty() {
+        commands.insert_resource(MapTerrain::from_triangles(
+            data.collision_indices
+                .iter()
+                .map(|t| t.map(|i| Vec3::from(data.collision_positions[i as usize]))),
+            TERRAIN_THICKNESS,
+        ));
         commands.entity(root).with_child((
             Name::new("Map collision (surfaces)"),
             MapPart,
+            MapTerrainCollider,
             RigidBody::Static,
             Collider::trimesh(
                 data.collision_positions.iter().map(|p| Vec3::from(*p)).collect(),
@@ -1258,42 +1348,15 @@ fn spawn_map(
                 .characters
                 .iter()
                 .map(|c| {
-                    let parts = c
-                        .model
-                        .meshes
-                        .iter()
-                        .map(|m| {
-                            let mut mesh = build_mesh(m, false);
-                            if m.joints.len() == m.positions.len() && !c.bones.is_empty() {
-                                mesh.insert_attribute(
-                                    Mesh::ATTRIBUTE_JOINT_INDEX,
-                                    bevy::mesh::VertexAttributeValues::Uint16x4(m.joints.clone()),
-                                );
-                                mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, m.joint_weights.clone());
-                            }
-                            (
-                                meshes.add(mesh),
-                                materials.add(build_material(m, &textures, view, data.look.light_scale)),
-                            )
-                        })
-                        .collect();
-                    // Each bone's reference pose in body space, inverted.
-                    let mut global: Vec<Mat4> = Vec::with_capacity(c.bones.len());
-                    for b in &c.bones {
-                        let local = Mat4::from_rotation_translation(b.rotation, b.position);
-                        let parent = b
-                            .parent
-                            .and_then(|p| global.get(p).copied())
-                            .unwrap_or(c.root.to_matrix());
-                        global.push(parent * local);
-                    }
-                    let inverse: Vec<Mat4> = global.iter().map(|m| m.inverse()).collect();
-                    BodyAssets {
-                        parts,
-                        bindposes: bindposes.add(bevy::mesh::skinning::SkinnedMeshInverseBindposes::from(inverse)),
-                        bones: c.bones.clone(),
-                        root: c.root,
-                    }
+                    body_assets(
+                        &c.model,
+                        &c.bones,
+                        c.root,
+                        meshes,
+                        materials,
+                        bindposes,
+                        &|m| build_material(m, &textures, view, data.look.light_scale),
+                    )
                 })
                 .collect();
             commands.insert_resource(CharacterBodies(bodies));
@@ -1316,6 +1379,30 @@ fn spawn_map(
                 })
                 .collect();
             commands.insert_resource(HeldAssets(held));
+            let views = data
+                .view_models
+                .iter()
+                .map(|v| {
+                    let assets = body_assets(
+                        &v.model,
+                        &v.bones,
+                        v.root,
+                        meshes,
+                        materials,
+                        bindposes,
+                        &|m| {
+                            let mut material = build_material(m, &textures, view, data.look.light_scale);
+                            // Mirroring turns triangles inside out.
+                            if v.mirror && material.cull_mode.is_some() {
+                                material.cull_mode = Some(bevy::render::render_resource::Face::Front);
+                            }
+                            material
+                        },
+                    );
+                    (v.key.clone(), (assets, v.fov, v.mirror))
+                })
+                .collect();
+            commands.insert_resource(view_model::ViewModelAssets(views));
         }
         let lightmap = data
             .lightmap
@@ -1406,7 +1493,7 @@ fn spawn_map(
                         light_scale: data.look.light_scale,
                         lightmap_scale: if source_ldr { SOURCE_LIGHTMAP_SCALE } else { 1.0 },
                         bicubic: if data.look.bicubic_lightmaps { 1.0 } else { 0.0 },
-                        translucent: if m.alpha == MapAlpha::Blend { 1.0 } else { 0.0 },
+                        translucent: m.alpha.shader_mode(),
                         blend: if blended { 1.0 } else { 0.0 },
                         blend_masked: if blend.mask.is_some() { 1.0 } else { 0.0 },
                         blend_normal: if bumped && blend.normal_map.is_some() { 1.0 } else { 0.0 },
@@ -1471,10 +1558,7 @@ fn spawn_map(
                         .map(|i| textures[i].clone()),
                     blend_mask: blend.mask.filter(|_| blended).map(|i| textures[i].clone()),
                     detail: m.detail.map(|d| textures[d.texture].clone()),
-                    alpha_mode: match m.alpha {
-                        MapAlpha::Opaque | MapAlpha::Mask(_) => AlphaMode::Opaque,
-                        MapAlpha::Blend => AlphaMode::Blend,
-                    },
+                    alpha_mode: m.alpha.shader_alpha_mode(),
                     double_sided: m.double_sided,
                 };
                 commands.spawn((
@@ -1552,16 +1636,13 @@ fn spawn_map(
                                             data.fog.as_ref().filter(|_| view == MapDebugView::Normal && !skybox),
                                         ),
                                         fog_range: fog_range(data.fog.as_ref()),
-                                        translucent: if m.alpha == MapAlpha::Blend { 1.0 } else { 0.0 },
+                                        translucent: m.alpha.shader_mode(),
                                         ..default()
                                     },
                                     base: m.texture.filter(|_| !lighting_only).map(|i| textures[i].clone()),
                                     envmap: None,
                                     envmap_mask: None,
-                                    alpha_mode: match m.alpha {
-                                        MapAlpha::Opaque | MapAlpha::Mask(_) => AlphaMode::Opaque,
-                                        MapAlpha::Blend => AlphaMode::Blend,
-                                    },
+                                    alpha_mode: m.alpha.shader_alpha_mode(),
                                     double_sided: m.double_sided,
                                 })
                             })
@@ -1899,9 +1980,17 @@ fn spawn_map(
         }
     }
 
+    commands.insert_resource(decal::DecalSurfaces::new(&data));
+    if !texture_handles.is_empty() && !data.decals.groups.is_empty() {
+        commands.insert_resource(decal::DecalAssets::new(data.decals.clone(), texture_handles.clone()));
+        commands.insert_resource(decal::ImpactDecals);
+    }
     commands.insert_resource(sound::SoundBank(data.sounds.clone()));
     if !data.characters.is_empty() {
         commands.insert_resource(CharacterModels(Arc::new(data.characters.clone())));
+    }
+    if !data.view_models.is_empty() {
+        commands.insert_resource(ViewModels(Arc::new(data.view_models.clone())));
     }
     if let Some(nav) = &data.nav {
         commands.insert_resource((**nav).clone());
@@ -1931,6 +2020,18 @@ fn spawn_map(
             affects_lightmapped_mesh_diffuse: false,
             ..default()
         },
+        Transform::default().looking_at(Vec3::new(-0.4, -1.0, -0.3), Vec3::Y),
+    ));
+    // The same sun for view models (their own layer), without shadows.
+    commands.spawn((
+        Name::new("Sun (view models)"),
+        MapPart,
+        DirectionalLight {
+            illuminance: 9000.0,
+            shadow_maps_enabled: false,
+            ..default()
+        },
+        bevy::camera::visibility::RenderLayers::layer(view_model::VIEW_MODEL_LAYER),
         Transform::default().looking_at(Vec3::new(-0.4, -1.0, -0.3), Vec3::Y),
     ));
 
@@ -1972,6 +2073,10 @@ pub fn unload_map(world: &mut World) {
     world.remove_resource::<CharacterModels>();
     world.remove_resource::<CharacterBodies>();
     world.remove_resource::<HeldAssets>();
+    world.remove_resource::<decal::DecalSurfaces>();
+    world.remove_resource::<decal::DecalAssets>();
+    world.remove_resource::<decal::ImpactDecals>();
+    view_model::unload(world);
     let bodies: Vec<Entity> = world
         .query_filtered::<Entity, With<CharacterBody>>()
         .iter(world)
@@ -1996,6 +2101,7 @@ pub fn unload_map(world: &mut World) {
     world.remove_resource::<KillHeight>();
     world.remove_resource::<MapWater>();
     world.remove_resource::<MapHurt>();
+    world.remove_resource::<MapTerrain>();
     world.insert_resource(Gravity::default());
     soundscape::reset(world);
 }
@@ -2170,6 +2276,49 @@ fn lightmap_image(rgb: &[[f32; 3]], width: u32, height: u32) -> Image {
     image
 }
 
+/// Render assets of a skinned model: meshes with joint attributes (when
+/// it has a skeleton), materials, and inverse bind poses from the bones'
+/// reference pose under `root`.
+fn body_assets(
+    model: &MapModel,
+    bones: &[MapBone],
+    root: Transform,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    bindposes: &mut Assets<bevy::mesh::skinning::SkinnedMeshInverseBindposes>,
+    material: &dyn Fn(&MapMesh) -> StandardMaterial,
+) -> BodyAssets {
+    let parts = model
+        .meshes
+        .iter()
+        .map(|m| {
+            let mut mesh = build_mesh(m, false);
+            if m.joints.len() == m.positions.len() && !bones.is_empty() {
+                mesh.insert_attribute(
+                    Mesh::ATTRIBUTE_JOINT_INDEX,
+                    bevy::mesh::VertexAttributeValues::Uint16x4(m.joints.clone()),
+                );
+                mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, m.joint_weights.clone());
+            }
+            (meshes.add(mesh), materials.add(material(m)))
+        })
+        .collect();
+    // Each bone's reference pose in body space, inverted.
+    let mut global: Vec<Mat4> = Vec::with_capacity(bones.len());
+    for b in bones {
+        let local = Mat4::from_rotation_translation(b.rotation, b.position);
+        let parent = b.parent.and_then(|p| global.get(p).copied()).unwrap_or(root.to_matrix());
+        global.push(parent * local);
+    }
+    let inverse: Vec<Mat4> = global.iter().map(|m| m.inverse()).collect();
+    BodyAssets {
+        parts,
+        bindposes: bindposes.add(bevy::mesh::skinning::SkinnedMeshInverseBindposes::from(inverse)),
+        bones: bones.to_vec(),
+        root,
+    }
+}
+
 fn build_mesh(m: &MapMesh, with_lightmap: bool) -> Mesh {
     let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, m.positions.clone());
@@ -2204,6 +2353,7 @@ fn build_material(m: &MapMesh, textures: &[Handle<Image>], view: MapDebugView, l
             MapAlpha::Opaque => AlphaMode::Opaque,
             MapAlpha::Mask(cutoff) => AlphaMode::Mask(cutoff),
             MapAlpha::Blend => AlphaMode::Blend,
+            MapAlpha::Add => AlphaMode::Add,
         },
         double_sided: m.double_sided,
         cull_mode: if m.double_sided {
@@ -2326,7 +2476,7 @@ struct GlowSprite {
 #[allow(clippy::type_complexity)]
 fn glow_visibility(
     query: SpatialQuery,
-    cameras: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<SkyboxCamera>)>,
+    cameras: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<SkyboxCamera>, Without<ViewModelCamera>)>,
     ignored: Query<Entity, Or<(With<crate::core::Intent>, With<MapPropCollider>)>>,
     mut glows: Query<(
         &GlobalTransform,
@@ -2547,7 +2697,7 @@ fn attach_sky(
     mut commands: Commands,
     sky: Option<Res<MapSkybox>>,
     sky_camera: Option<Res<SkyCameraInfo>>,
-    cameras: Query<(Entity, Has<SkyboxCamera>), (With<Camera3d>, Without<bevy::light::Skybox>)>,
+    cameras: Query<(Entity, Has<SkyboxCamera>), (With<Camera3d>, Without<bevy::light::Skybox>, Without<ViewModelCamera>)>,
 ) {
     let Some(sky) = sky else { return };
     for (cam, is_sky_camera) in &cameras {
@@ -2603,8 +2753,12 @@ fn sky_image(sky: &MapSky, textures: &[MapTexture]) -> Image {
                 if turns >= 4 {
                     u = size - 1 - u;
                 }
-                let sx = (u as u64 * t.width as u64 / size as u64) as u32;
-                let sy = (v as u64 * t.height as u64 / size as u64) as u32;
+                // Skip each face's outermost texel row and column: sky
+                // textures leave them as borders (dust2's side faces end in
+                // a black row) that the game never shows, while a cube map
+                // blends them in at every seam.
+                let inner = |p: u32, n: u32| 1 + (p as u64 * n.saturating_sub(2) as u64 / size as u64) as u32;
+                let (sx, sy) = (inner(u, t.width).min(t.width - 1), inner(v, t.height).min(t.height - 1));
                 let i = ((sy * t.width + sx) * 4) as usize;
                 data.extend_from_slice(&t.rgba8[i..i + 4]);
             }
@@ -2651,7 +2805,7 @@ fn follow_sky_camera(
             Entity,
             &Camera,
         ),
-        (With<Camera3d>, Without<SkyboxCamera>),
+        (With<Camera3d>, Without<SkyboxCamera>, Without<ViewModelCamera>),
     >,
     mut sky: Query<
         (

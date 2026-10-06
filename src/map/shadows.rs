@@ -129,6 +129,10 @@ pub fn silhouette(
     let mut out = vec![0.0f32; (n * n) as usize];
     let scale = n as f32;
     for m in &model.meshes {
+        // Additive glows and beams cast no shadow.
+        if m.alpha == MapAlpha::Add {
+            continue;
+        }
         let texture = (m.alpha != MapAlpha::Opaque)
             .then_some(m.texture)
             .flatten()

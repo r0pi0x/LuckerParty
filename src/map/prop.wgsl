@@ -61,5 +61,9 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         let f = clamp(min(params.fog_range.z, (depth - params.fog_range.x) / (params.fog_range.y - params.fog_range.x)), 0.0, 1.0);
         rgb = mix(rgb, params.fog_color.rgb, f * f);
     }
+    // Additive (translucent 2): alpha 0 under premultiplied blending adds.
+    if params.translucent > 1.5 {
+        return vec4<f32>(rgb, 0.0);
+    }
     return vec4<f32>(rgb, select(1.0, color.a, params.translucent > 0.5));
 }
