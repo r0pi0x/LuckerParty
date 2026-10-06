@@ -1410,6 +1410,49 @@ fn client_commands(app: &mut App) {
         Ok(None)
     })
     .console_command(
+        "mashup_hurtme",
+        "mashup_hurtme <head|chest|stomach|leftarm|rightarm|leftleg|rightleg|generic> [amount=100] [from yaw, degrees: 0 = shot from the front]: a bullet hit on yourself at that hitbox (e.g. to see your ragdoll in thirdperson).",
+        |w, a| {
+            use crate::core::{Damage, DamageKind, Health, Hitboxes, Hitgroup, Intent};
+            let group = match a.first().map(|s| s.to_ascii_lowercase()).as_deref() {
+                Some("head") => Hitgroup::Head,
+                Some("chest") => Hitgroup::Chest,
+                Some("stomach") => Hitgroup::Stomach,
+                Some("leftarm") => Hitgroup::LeftArm,
+                Some("rightarm") => Hitgroup::RightArm,
+                Some("leftleg") => Hitgroup::LeftLeg,
+                Some("rightleg") => Hitgroup::RightLeg,
+                Some("generic") => Hitgroup::Generic,
+                _ => return Err("mashup_hurtme <hitgroup> [amount] [from yaw]".into()),
+            };
+            let amount = a.get(1).and_then(|v| v.parse::<f32>().ok()).unwrap_or(100.0) / 100.0;
+            let from = a.get(2).and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0).to_radians();
+            let p = local_player(w)?;
+            let t = *w.get::<Transform>(p).ok_or("no transform")?;
+            let yaw = w.get::<Intent>(p).ok_or("no intent")?.yaw_rotation();
+            let feet = w
+                .get::<avian3d::prelude::ColliderAabb>(p)
+                .map_or(t.translation, |b| t.translation.with_y(b.min.y));
+            let point = w
+                .get::<Hitboxes>(p)
+                .and_then(|h| h.0.iter().find(|b| b.group == group).map(|b| feet + yaw * b.center))
+                .unwrap_or(t.translation);
+            // Shot from `from` around the facing: travelling toward it.
+            let dir = yaw * Quat::from_rotation_y(from) * Vec3::Z;
+            let _ = w.get::<Health>(p).ok_or("no health")?;
+            w.write_message(Damage {
+                target: p,
+                attacker: None,
+                amount,
+                point,
+                dir,
+                hitgroup: group,
+                kind: DamageKind::Bullet,
+            });
+            Ok(None)
+        },
+    )
+    .console_command(
         "maps",
         "maps [filter]: list the maps that can be loaded (the game's, its downloads, imported).",
         |_, a| {
