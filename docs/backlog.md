@@ -91,8 +91,16 @@ burst), HUD, deathmatch and a first bot are in.
   rigid bodies with joint limits), seeded with the death pose and the
   killing hit's impulse.
 - Held weapons don't stay in other players' hands (they float around the
-  hands): check the bone merge onto `weapon_bone` and the hand bones, and
-  the IK hand locks the animation spec leaves out (open question "IK").
+  hands). Findings 2026-10-06: the world model's mesh follows the player's
+  animated `weapon_bone` (child of the spine), which is right; the arms
+  only follow their own animation. At idle the hands already sit on the
+  AK (checked with `+thirdperson +cam_idealyaw 140`). A two-bone IK onto
+  `weapon_bone_RHand`/`_LHand` was tried and dropped: `_LHand` is a child
+  of `_RHand` and pulled the left hand onto the grip, so those bones
+  aren't plain hand targets. Needs a spec of Source's IK chains, the
+  sequences' IK rules and locks (the animation spec's open question "IK"),
+  and a reproduction of the floating (which pose: running, crouching,
+  firing, bots' pitch).
 
 ## 4. Bots
 

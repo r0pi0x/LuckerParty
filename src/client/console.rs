@@ -1024,6 +1024,8 @@ pub struct HeldActions {
     pub use_key: bool,
     /// The scoreboard (`+showscores`, Tab in CS:S).
     pub showscores: bool,
+    /// Free look (`+freelook`, Left Alt): the mouse turns the camera only.
+    pub freelook: bool,
 }
 
 const ACTIONS: &[&str] = &[
@@ -1039,6 +1041,7 @@ const ACTIONS: &[&str] = &[
     "reload",
     "use",
     "showscores",
+    "freelook",
 ];
 
 /// Source key names.
@@ -1306,6 +1309,7 @@ fn client_commands(app: &mut App) {
                         "reload" => h.reload = on,
                         "use" => h.use_key = on,
                         "showscores" => h.showscores = on,
+                        "freelook" => h.freelook = on,
                         _ => h.attack = on,
                     }
                     Ok(None)
