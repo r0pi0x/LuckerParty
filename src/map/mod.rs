@@ -991,6 +991,66 @@ struct SkyCameraInfo(MapSkyCamera);
 #[derive(Resource)]
 struct SkyVis(MapSkyVis);
 
+/// Characters below this height (meters) have fallen out of the map.
+#[derive(Resource, Clone, Copy, Debug)]
+pub struct KillHeight(pub f32);
+
+/// How far below the map's lowest point (meters) falling ends.
+const KILL_MARGIN: f32 = 3.0;
+
+/// Falling out of the map kills; characters that can't die (god mode, no
+/// health) go back to a spawn point instead.
+#[allow(clippy::type_complexity)]
+fn fall_out_of_map(
+    kill: Option<Res<KillHeight>>,
+    mut characters: Query<
+        (
+            Entity,
+            &mut Transform,
+            Option<&mut crate::core::Velocity>,
+            Option<&crate::core::Health>,
+            Has<crate::core::God>,
+            Option<&Team>,
+        ),
+        With<crate::core::Intent>,
+    >,
+    spawns: Query<(&Transform, &crate::core::SpawnPoint), Without<crate::core::Intent>>,
+    mut damage: MessageWriter<crate::core::Damage>,
+) {
+    let Some(kill) = kill else { return };
+    for (e, mut at, velocity, health, god, team) in &mut characters {
+        if at.translation.y >= kill.0 {
+            continue;
+        }
+        match health {
+            Some(h) if !god => {
+                if h.current > 0.0 {
+                    damage.write(crate::core::Damage {
+                        target: e,
+                        attacker: None,
+                        amount: h.current.max(1.0) * 1000.0,
+                        point: at.translation,
+                        dir: Vec3::NEG_Y,
+                        hitgroup: crate::core::Hitgroup::Generic,
+                    });
+                }
+            }
+            _ => {
+                let spawn = spawns
+                    .iter()
+                    .find(|(_, s)| s.team.is_some() && s.team == team.copied())
+                    .or_else(|| spawns.iter().next());
+                if let Some((s, _)) = spawn {
+                    at.translation = s.translation;
+                    if let Some(mut v) = velocity {
+                        v.0 = Vec3::ZERO;
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// The map's playable area (see `MapData::playable`).
 #[derive(Resource)]
 struct PlayableArea((Vec3, Vec3));
@@ -1065,6 +1125,7 @@ impl Plugin for MapPlugin {
                     .chain()
                     .before(crate::core::SimSet::Movement),
             )
+            .add_systems(FixedUpdate, fall_out_of_map.after(crate::core::SimSet::Movement))
             .add_systems(
                 Update,
                 (
@@ -1842,6 +1903,11 @@ fn spawn_map(
     }
     commands.insert_resource(sound::SurfaceGrid::new(&data));
     if !brushes.is_empty() {
+        let floor = data
+            .playable
+            .map(|(lo, _)| lo.y)
+            .unwrap_or_else(|| brushes.iter().map(|b| b.min.y).fold(f32::MAX, f32::min));
+        commands.insert_resource(KillHeight(floor - KILL_MARGIN));
         commands.insert_resource(MapBrushes(brushes));
         if let Some(g) = data.gravity {
             commands.insert_resource(Gravity(Vec3::NEG_Y * g));
@@ -1921,6 +1987,7 @@ pub fn unload_map(world: &mut World) {
     world.remove_resource::<nav::NavMesh>();
     world.remove_resource::<sound::SurfaceGrid>();
     world.remove_resource::<MapBrushes>();
+    world.remove_resource::<KillHeight>();
     world.remove_resource::<MapWater>();
     world.insert_resource(Gravity::default());
     soundscape::reset(world);

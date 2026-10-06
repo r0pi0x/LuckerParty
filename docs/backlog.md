@@ -12,8 +12,7 @@ plan when work starts; delete them when done.
 - Mouse sensitivity: CS:S `sensitivity` cvar (with `m_yaw`/`m_pitch`
   0.022, so the same number feels like CS:S), archived; maybe a small
   options screen later.
-- Falling out of the map: below the map's bounds (or into a kill volume),
-  respawn at a spawn point or die (`trigger_hurt` where the map has one).
+- `trigger_hurt` volumes (falling out of the map already kills).
 - Debug health bars above characters (a cvar, e.g. `mashup_healthbars 1`).
 - Third-person camera (`thirdperson` / `firstperson` commands, CS:S
   style, sv_cheats-free here); shows the local player's own animated body.

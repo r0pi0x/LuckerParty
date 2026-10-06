@@ -1678,3 +1678,30 @@ fn walls_on_displacements_are_solid() {
     sim.seconds(1.5);
     assert!(x(&sim) > -512.0 + 15.0, "walked into the west wall to x {}", x(&sim));
 }
+
+/// Falling out of the map kills; a character in god mode goes back to a
+/// spawn point instead.
+#[test]
+fn falling_out_of_the_map() {
+    use mashup::{
+        core::{God, Health},
+        games::cs_source::movement::{self, SourceMovementPlugin},
+        map::KillHeight,
+    };
+    let Some(map) = dust2() else { return };
+    let mut sim = Sim::new((MapPlugin::new(map.clone()), SourceMovementPlugin));
+    sim.set_tick_interval(mashup::games::cs_source::TICK_INTERVAL);
+    let kill = sim.app.world().resource::<KillHeight>().0;
+    let (lo, _) = map.playable.expect("dust2 has a playable area");
+    assert!(kill < lo.y && kill > lo.y - 10.0, "kill height {kill}, floor {}", lo.y);
+    // Off the edge of the world: fall from just above the kill height.
+    let out = Vec3::new(500.0, kill + 0.5, 500.0);
+    let mortal = sim.spawn_character(out, movement::ID);
+    let god = sim.spawn_character(out + Vec3::X * 2.0, movement::ID);
+    sim.app.world_mut().entity_mut(god).insert(God);
+    sim.seconds(1.0);
+    let health = sim.app.world().get::<Health>(mortal).unwrap().current;
+    assert_eq!(health, 0.0, "survived the fall");
+    let at = sim.position(god);
+    assert!(at.y > lo.y && map.spawns.iter().any(|(feet, _)| feet.distance(at) < 3.0), "god mode at {at}");
+}
