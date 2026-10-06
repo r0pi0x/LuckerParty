@@ -25,6 +25,11 @@ Each group is one agent's worktree; merged into main as they finish.
   find the rare "stubbed toe" stop and fix it; fall damage (measure on the
   probe server); `trigger_hurt` volumes.
 
+- **E. Other maps.** Load de_aztec, de_nuke (then the rest of the stock
+  maps), screenshot their main areas, catalog visual bugs and console
+  errors (de_aztec logs missing textures/materials), and fix them; add
+  refcmp views where the reference game shows a difference.
+
 ## 2. Weapons, remaining
 
 In progress: [plans/active/weapons.md](plans/active/weapons.md). The
