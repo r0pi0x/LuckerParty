@@ -75,6 +75,7 @@ fn main() {
         mashup::map::prop_material::PropMaterialPlugin,
         mashup::map::shadows::ShadowMaterialPlugin,
         mashup::map::decal::DecalMaterialPlugin,
+        mashup::map::water::WaterMaterialPlugin,
     ))
     // A game's maps run at that game's server tick.
     .insert_resource(match args.map.as_deref() {

@@ -27,6 +27,8 @@ struct PropParams {
     probe_cube: array<vec4<f32>, 6>,
     probe_light_dir: array<vec4<f32>, 4>,
     probe_light_color: array<vec4<f32>, 4>,
+    water_fog_color: vec4<f32>,
+    water_fog_range: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> params: PropParams;
@@ -107,10 +109,17 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         spec = mix(vec3<f32>(dot(spec, LUMA)), spec, params.envmap_saturation);
         rgb = rgb + spec;
     }
-    if params.fog_color.w > 0.5 {
+    // Under water, what is below the surface takes the water's fog.
+    var fog = params.fog_color;
+    var range = params.fog_range;
+    if params.water_fog_color.w > 0.5 && in.world_position.y < params.water_fog_range.w {
+        fog = params.water_fog_color;
+        range = params.water_fog_range;
+    }
+    if fog.w > 0.5 {
         let depth = -position_world_to_view(in.world_position.xyz).z;
-        let f = clamp(min(params.fog_range.z, (depth - params.fog_range.x) / (params.fog_range.y - params.fog_range.x)), 0.0, 1.0);
-        rgb = mix(rgb, params.fog_color.rgb, f * f);
+        let f = clamp(min(range.z, (depth - range.x) / (range.y - range.x)), 0.0, 1.0);
+        rgb = mix(rgb, fog.rgb, f * f);
     }
     // Additive (translucent 2): alpha 0 under premultiplied blending adds.
     if params.translucent > 1.5 {

@@ -646,7 +646,7 @@ pub(super) fn step_particles(time: Res<Time>, mut particles: ResMut<Particles>, 
 pub(super) fn draw_particles(
     particles: Res<Particles>,
     assets: Option<ResMut<ParticleAssets>>,
-    cameras: Query<&GlobalTransform, (With<Camera3d>, Without<SkyboxCamera>, Without<ViewModelCamera>)>,
+    cameras: Query<&GlobalTransform, (With<Camera3d>, Without<SkyboxCamera>, Without<ViewModelCamera>, Without<super::water::WaterReflectionCamera>)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut transforms: Query<&mut Transform>,
