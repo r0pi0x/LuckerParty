@@ -52,6 +52,7 @@ impl Plugin for ConsoleUiPlugin {
                     draw_console,
                     draw_overlays,
                     draw_notify,
+                    finish_map_load,
                     draw_sound_marks,
                 )
                     .chain(),
@@ -1196,6 +1197,57 @@ fn map_names() -> Vec<String> {
         .clone()
 }
 
+/// A map loading in the background for the `map` command.
+#[derive(Resource)]
+struct MapLoad {
+    id: String,
+    task: bevy::tasks::Task<Result<crate::map::MapData, String>>,
+}
+
+/// Swap in a map once its background load finishes.
+fn finish_map_load(w: &mut World) {
+    let Some(mut load) = w.get_resource_mut::<MapLoad>() else {
+        return;
+    };
+    let Some(result) = bevy::tasks::block_on(bevy::tasks::poll_once(&mut load.task)) else {
+        return;
+    };
+    let id = load.id.clone();
+    w.remove_resource::<MapLoad>();
+    let data = match result {
+        Ok(d) => d,
+        Err(e) => {
+            w.resource_mut::<Console>()
+                .print(crate::console::Level::Error, format!("map {id}: {e}"));
+            return;
+        }
+    };
+    let summary = format!(
+        "loaded {id}: {} triangles, {} spawns",
+        data.triangle_count(),
+        data.spawns.len()
+    );
+    crate::greybox::unload(w);
+    crate::map::change_map(w, data, crate::map::MapDebugView::Normal);
+    w.insert_resource(Time::<Fixed>::from_seconds(crate::games::cs_source::TICK_INTERVAL));
+    // Follow the map's presentation (Source LDR: no tonemapping).
+    let tonemapping = w.resource::<crate::map::ActiveMapLook>().0.tonemapping;
+    let cams: Vec<Entity> = w
+        .query_filtered::<Entity, With<super::FirstPersonCamera>>()
+        .iter(w)
+        .collect();
+    for c in cams {
+        let t = if tonemapping {
+            bevy::core_pipeline::tonemapping::Tonemapping::default()
+        } else {
+            bevy::core_pipeline::tonemapping::Tonemapping::None
+        };
+        w.entity_mut(c).insert(t);
+    }
+    crate::rules::respawn_everyone(w);
+    w.resource_mut::<Console>().info(summary);
+}
+
 fn local_player(w: &mut World) -> Result<Entity, String> {
     let mut q = w.query_filtered::<Entity, With<LocalPlayer>>();
     q.single(w).map_err(|_| "no local player".to_string())
@@ -1327,34 +1379,15 @@ fn client_commands(app: &mut App) {
             if !map_names().is_empty() && !map_names().iter().any(|m| m == name) {
                 return Err(format!("no map \"{name}\" in the install"));
             }
-            // Load in place: the map is swapped and everyone respawns at
-            // its spawn points on the next tick.
+            // Load in the background, then swap in place (finish_map_load):
+            // everyone respawns at the new spawn points.
             let id = format!("cs_source:{name}");
-            let data = crate::games::load_map(&id)?;
-            let summary = format!(
-                "loaded {id}: {} triangles, {} spawns",
-                data.triangle_count(),
-                data.spawns.len()
-            );
-            crate::greybox::unload(w);
-            crate::map::change_map(w, data, crate::map::MapDebugView::Normal);
-            w.insert_resource(Time::<Fixed>::from_seconds(crate::games::cs_source::TICK_INTERVAL));
-            // Follow the map's presentation (Source LDR: no tonemapping).
-            let tonemapping = w.resource::<crate::map::ActiveMapLook>().0.tonemapping;
-            let cams: Vec<Entity> = w
-                .query_filtered::<Entity, With<super::FirstPersonCamera>>()
-                .iter(w)
-                .collect();
-            for c in cams {
-                let t = if tonemapping {
-                    bevy::core_pipeline::tonemapping::Tonemapping::default()
-                } else {
-                    bevy::core_pipeline::tonemapping::Tonemapping::None
-                };
-                w.entity_mut(c).insert(t);
-            }
-            crate::rules::respawn_everyone(w);
-            Ok(Some(summary))
+            let task = bevy::tasks::AsyncComputeTaskPool::get().spawn({
+                let id = id.clone();
+                async move { crate::games::load_map(&id) }
+            });
+            w.insert_resource(MapLoad { id: id.clone(), task });
+            Ok(Some(format!("loading {id}...")))
         },
     )
     .console_command("quit", "Quit (binds and changed cvars are saved).", |w, _| {

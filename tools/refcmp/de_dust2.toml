@@ -177,3 +177,9 @@ angles = [0, 200]
 name = "survey_catwalk"
 position = [-200.0, 1500.0, 150.0]
 angles = [8, 20]
+
+# Close-up of a floor (full-resolution mip): texture sharpness check.
+[[view]]
+name = "sharp_floor_close"
+position = [-200.0, 1500.0, 40.0]
+angles = [80, 20]
