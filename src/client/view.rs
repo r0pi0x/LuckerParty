@@ -31,6 +31,9 @@ pub struct CameraMode {
     pub third_person: bool,
     /// CS:S units (cam_idealdist).
     pub ideal_dist: f32,
+    /// Degrees the third-person camera orbits around the player
+    /// (cam_idealyaw; 180 looks at your front).
+    pub ideal_yaw: f32,
 }
 
 impl Default for CameraMode {
@@ -38,6 +41,7 @@ impl Default for CameraMode {
         Self {
             third_person: false,
             ideal_dist: 150.0,
+            ideal_yaw: 0.0,
         }
     }
 }
@@ -93,6 +97,12 @@ fn view_console(app: &mut App) {
         "Third-person camera distance behind the eye, in CS:S units.",
         |m| &mut m.ideal_dist,
     );
+    resource_cvar::<CameraMode, f32>(
+        app,
+        "cam_idealyaw",
+        "Third-person camera orbit around the player, in degrees (180: from the front).",
+        |m| &mut m.ideal_yaw,
+    );
     resource_cvar::<HealthBars, u8>(
         app,
         "mashup_healthbars",
@@ -109,9 +119,19 @@ pub fn third_person_offset(look: Quat, ideal: f32, hit: Option<f32>) -> Vec3 {
     look * Vec3::Z * d
 }
 
+/// The camera's view direction: the look, turned by `cam_idealyaw` in
+/// third person.
+pub(super) fn camera_look(mode: &CameraMode, look: Quat) -> Quat {
+    if mode.third_person {
+        Quat::from_rotation_y(mode.ideal_yaw.to_radians()) * look
+    } else {
+        look
+    }
+}
+
 /// The camera's offset from the character's origin: the eye in first
-/// person; in third person, behind it, pulled in by a sweep against
-/// everything but characters.
+/// person; in third person, behind it (along `look`, from `camera_look`),
+/// pulled in by a sweep against everything but characters.
 pub(super) fn camera_offset(
     mode: &CameraMode,
     origin: Vec3,
@@ -275,6 +295,8 @@ mod tests {
         let mode = *app.world().resource::<CameraMode>();
         assert!(!mode.third_person);
         assert_eq!(mode.ideal_dist, 100.0);
+        run(&mut app, "cam_idealyaw 180");
+        assert_eq!(app.world().resource::<CameraMode>().ideal_yaw, 180.0);
     }
 
     #[test]

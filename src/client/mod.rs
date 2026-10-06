@@ -319,13 +319,20 @@ fn follow_eye(
     >,
     mut cameras: Query<&mut Transform, With<FirstPersonCamera>>,
     mode: Res<view::CameraMode>,
+    free: Res<input::FreeLook>,
     spatial: avian3d::prelude::SpatialQuery,
     characters: Query<Entity, With<Intent>>,
 ) {
     for (at, intent, state, children, punch) in &players {
         // Recoil kicks the view (pitch up, yaw left).
         let p = punch.map_or(Vec2::ZERO, |p| p.0);
-        let look = Quat::from_euler(EulerRot::YXZ, intent.yaw + p.y, intent.pitch + p.x, 0.0);
+        let look = Quat::from_euler(
+            EulerRot::YXZ,
+            intent.yaw + p.y + free.yaw,
+            intent.pitch + p.x + free.pitch,
+            0.0,
+        );
+        let look = view::camera_look(&mode, look);
         let offset = view::camera_offset(&mode, at.translation, state.eye_offset, look, &spatial, &characters);
         let mut cams = cameras.iter_many_mut(children);
         while let Some(mut cam) = cams.fetch_next() {

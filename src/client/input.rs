@@ -49,6 +49,7 @@ impl Plugin for LocalInputPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MouseSettings>()
             .init_resource::<WheelJump>()
+            .init_resource::<FreeLook>()
             .register_type::<MouseSettings>()
             .add_systems(Update, (grab_cursor, write_local_intent).chain())
             .add_systems(FixedPreUpdate, apply_wheel_jump);
@@ -143,6 +144,26 @@ fn apply_wheel_jump(mut wheel: ResMut<WheelJump>, mut intent: Single<&mut Intent
     intent.jump = wheel.key_held || pulse;
 }
 
+/// Free look: while Left Alt (or `+freelook`) is held, the mouse turns
+/// only the camera, by these offsets (radians) from the aim; movement and
+/// aim keep their direction. Released, the view snaps back to the aim.
+#[derive(Resource, Default, Clone, Copy, Debug, PartialEq)]
+pub struct FreeLook {
+    pub yaw: f32,
+    pub pitch: f32,
+}
+
+impl FreeLook {
+    /// Turn by a look delta, keeping the camera's total pitch in range.
+    fn turn(&mut self, delta: Vec2, aim_pitch: f32) {
+        self.yaw = (self.yaw + delta.x + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+        self.pitch = (aim_pitch + self.pitch + delta.y).clamp(-PITCH_LIMIT, PITCH_LIMIT) - aim_pitch;
+    }
+}
+
+const PITCH_LIMIT: f32 = 89f32.to_radians();
+
+#[allow(clippy::too_many_arguments)]
 fn write_local_intent(
     mut intent: Single<&mut Intent, With<LocalPlayer>>,
     cursor: Single<&CursorOptions>,
@@ -153,7 +174,12 @@ fn write_local_intent(
     mut wheel: ResMut<WheelJump>,
     mouse_settings: Res<MouseSettings>,
     held: Option<Res<super::console::HeldActions>>,
+    mut free: ResMut<FreeLook>,
 ) {
+    let freelook = keys.pressed(KeyCode::AltLeft) || held.as_ref().is_some_and(|h| h.freelook);
+    if !freelook {
+        free.set_if_neq(FreeLook::default());
+    }
     if !cursor_grabbed(&cursor) {
         *wheel = WheelJump::default();
         // Not playing (menu, inspector): stop moving, keep looking where we
@@ -174,10 +200,13 @@ fn write_local_intent(
     let axis = |pos: KeyCode, neg: KeyCode| keys.pressed(pos) as i8 as f32 - keys.pressed(neg) as i8 as f32;
     intent.move_axis = Vec2::new(axis(KeyCode::KeyD, KeyCode::KeyA), axis(KeyCode::KeyW, KeyCode::KeyS));
 
-    const PITCH_LIMIT: f32 = 89f32.to_radians();
     let turn = mouse_settings.look_delta(motion.delta);
-    intent.yaw = (intent.yaw + turn.x).rem_euclid(std::f32::consts::TAU);
-    intent.pitch = (intent.pitch + turn.y).clamp(-PITCH_LIMIT, PITCH_LIMIT);
+    if freelook {
+        free.turn(turn, intent.pitch);
+    } else {
+        intent.yaw = (intent.yaw + turn.x).rem_euclid(std::f32::consts::TAU);
+        intent.pitch = (intent.pitch + turn.y).clamp(-PITCH_LIMIT, PITCH_LIMIT);
+    }
 
     intent.jump = keys.pressed(KeyCode::Space);
     wheel.key_held = intent.jump;
@@ -224,6 +253,18 @@ fn apply_held(intent: &mut Intent, wheel: &mut WheelJump, h: &super::console::He
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn free_look_turns_within_the_pitch_limit() {
+        let mut f = FreeLook::default();
+        f.turn(Vec2::new(0.5, 2.0), 0.5);
+        assert_eq!(f.yaw, 0.5);
+        // Aim pitch 0.5 plus the offset stays at the limit.
+        assert!((0.5 + f.pitch - PITCH_LIMIT).abs() < 1e-6);
+        // Yaw wraps to (-pi, pi].
+        f.turn(Vec2::new(3.0, 0.0), 0.5);
+        assert!(f.yaw < 0.0 && f.yaw > -std::f32::consts::PI);
+    }
 
     #[test]
     fn mouse_look_matches_css() {

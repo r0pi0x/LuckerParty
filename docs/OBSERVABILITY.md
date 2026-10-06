@@ -89,7 +89,10 @@ Only `Reflect`-registered types are visible; register new core components in
 - `thirdperson` (back with `firstperson`; distance `cam_idealdist`, CS:S
   units) puts the camera behind the local player and draws its own
   animated body: `+thirdperson` in a `--screenshot` run shows the local
-  player's model and animation.
+  player's model and animation. `cam_idealyaw` orbits the camera
+  (degrees; `+cam_idealyaw 140` looks at the player's front, e.g. to see
+  how the hands hold the weapon). Holding Left Alt (`+freelook`) turns
+  only the camera; the aim stays put.
 - View model (CS:S cvars): `viewmodel_fov` (54), `cl_righthand` (1;
   0 puts weapons in the left hand), `r_drawviewmodel 0` hides it,
   `cl_bobcycle`/`cl_bobup` (bob), `cl_wpn_sway_interp`/`cl_wpn_sway_scale`

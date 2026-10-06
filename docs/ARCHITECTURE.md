@@ -79,8 +79,8 @@ A module may use only the modules below it. Enforced by
 | `src/bin/refcmp.rs` | Dev tool: compare views against real CS:S (RCON-driven capture, metrics, side-by-sides) |
 | `src/bin/dump.rs` | Dev tool: summarize, list and extract a game install's files; `--sequences` lists a model's bones and sequences |
 | `src/harness.rs` | `Sim`: headless app stepped by exact fixed ticks, for tests |
-| `src/client/view.rs` | Third-person camera (`thirdperson`/`firstperson`, `cam_idealdist`, swept back from the eye against the world), master `volume` (Bevy `GlobalVolume`), `mashup_healthbars` |
-| `src/client/` | Local input (mouse look as CS:S: `sensitivity` x `m_yaw`/`m_pitch` degrees per count), first-person camera (FOV from `Zoomed`), debug UI, `--screenshot`, remote protocol; `hud.rs`: crosshair (gap from spread), sniper scope overlay, health, ammo, hit marker, killfeed, capsule bodies for other characters |
+| `src/client/view.rs` | Third-person camera (`thirdperson`/`firstperson`, `cam_idealdist`, `cam_idealyaw` orbit, swept back from the eye against the world), master `volume` (Bevy `GlobalVolume`), `mashup_healthbars` |
+| `src/client/` | Local input (mouse look as CS:S: `sensitivity` x `m_yaw`/`m_pitch` degrees per count; Left Alt / `+freelook` turns only the camera), first-person camera (FOV from `Zoomed`), debug UI, `--screenshot`, remote protocol; `hud.rs`: crosshair (gap from spread), sniper scope overlay, health, ammo, hit marker, killfeed, capsule bodies for other characters |
 | `src/lib.rs` | `SimPlugins` (everything the simulation needs) |
 | `src/main.rs` | The game binary: `SimPlugins` + map + `ClientPlugin` |
 
