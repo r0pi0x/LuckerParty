@@ -94,6 +94,8 @@ public void OnPluginStart()
         "mashup_wall <x> <y> <z> <pitch> <yaw>: first surface along the ray, its exit point, thickness and what follows");
     RegServerCmd("mashup_walls", Command_Walls,
         "mashup_walls <x0> <x1> <y0> <y1> <step> <ztop> <maxthick> <minbehind>: thin walls seen from ground points");
+    RegServerCmd("mashup_health", Command_Health,
+        "mashup_health <hp> [armor]: respawn the probe bot if dead and set its health and armour (fall damage runs)");
     RegServerCmd("mashup_info", Command_Info, "mashup_info: position and angles of all living players");
     HookEvent("weapon_fire", Event_Any);
     HookEvent("bullet_impact", Event_Any);
@@ -454,6 +456,25 @@ public Action Command_Walls(int args)
             }
         }
     }
+    return Plugin_Handled;
+}
+
+public Action Command_Health(int args)
+{
+    int bot = FindBot();
+    for (int i = 1; i <= MaxClients && bot == 0; i++) {
+        if (IsClientInGame(i) && IsFakeClient(i) && GetClientTeam(i) > 1) {
+            CS_RespawnPlayer(i);
+            bot = i;
+        }
+    }
+    if (bot == 0) {
+        PrintToServer("mashup: no bot");
+        return Plugin_Handled;
+    }
+    SetEntityHealth(bot, GetCmdArgInt(1));
+    SetEntProp(bot, Prop_Send, "m_ArmorValue", args >= 2 ? GetCmdArgInt(2) : 0);
+    PrintToServer("mashup: bot %d health %d armor %d", bot, GetClientHealth(bot), GetEntProp(bot, Prop_Send, "m_ArmorValue"));
     return Plugin_Handled;
 }
 

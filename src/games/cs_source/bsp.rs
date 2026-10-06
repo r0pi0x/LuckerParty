@@ -412,6 +412,7 @@ pub fn convert(bsp: &Bsp, bytes: &[u8], name: &str) -> (MapData, LightmapLayout)
     data.collision_hulls = brush_hulls(bsp, &leaves);
     data.collision_brushes = collision_brushes(bsp, &leaves);
     data.water = water_volumes(bsp, &leaves);
+    data.hurt = hurt_volumes(bsp, &leaves);
 
     let (lightmap, placements, white) = atlas.build();
     for (material, mesh) in by_material.iter_mut() {
@@ -810,6 +811,7 @@ pub fn entity_hulls(bsp: &Bsp, leaves: &[RawLeaf]) -> Vec<(usize, Vec<[f32; 3]>,
                 PLAYER_SOLID.union(BrushFlags::LADDER),
                 model_brushes(bsp, leaves, e.model),
                 Some(e.transform),
+                false,
             )
         })
         .collect()
@@ -871,16 +873,18 @@ fn map_brush(points: Vec<[f32; 3]>, planes: Vec<(Vec3, f32)>, ladder: bool) -> c
 
 /// World brushes with any of `mask`'s contents, as hulls and planes.
 fn brush_volumes(bsp: &Bsp, leaves: &[RawLeaf], mask: BrushFlags) -> Vec<(usize, Vec<[f32; 3]>, Vec<(Vec3, f32)>)> {
-    brush_volumes_in(bsp, mask, world_brushes(bsp, leaves), None)
+    brush_volumes_in(bsp, mask, world_brushes(bsp, leaves), None, false)
 }
 
 /// `brush_volumes` for a set of brushes, optionally placed by a Source-space
-/// rotation and origin (brush entity models).
+/// rotation and origin (brush entity models). `triggers`: keep brushes with
+/// trigger textures (a trigger entity's own volume).
 fn brush_volumes_in(
     bsp: &Bsp,
     mask: BrushFlags,
     brushes: std::collections::BTreeSet<usize>,
     transform: Option<(Quat, Vec3)>,
+    triggers: bool,
 ) -> Vec<(usize, Vec<[f32; 3]>, Vec<(Vec3, f32)>)> {
     const EPS: f32 = 0.01;
     // Plane index (either side) -> corners of displacement base faces on it.
@@ -901,7 +905,7 @@ fn brush_volumes_in(
     let mut out = Vec::new();
     for index in brushes {
         let brush = &bsp.brushes[index];
-        if !brush.flags.intersects(mask) {
+        if !triggers && !brush.flags.intersects(mask) {
             continue;
         }
         let first = brush.brush_side as usize;
@@ -914,7 +918,7 @@ fn brush_volumes_in(
                     t.flags.intersects(TextureFlags::TRIGGER) || t.name().eq_ignore_ascii_case("tools/toolstrigger")
                 })
         });
-        if trigger {
+        if trigger && !triggers {
             continue;
         }
         let planes: Vec<(Vec3, f32)> = sides
@@ -988,6 +992,65 @@ fn brush_volumes_in(
                     .collect(),
                 engine_planes,
             ));
+        }
+    }
+    out
+}
+
+/// `trigger_hurt` entities (specs/cs_source/fall_damage.md, "trigger_hurt"):
+/// their brush model's brushes where the entity places them, and damage per
+/// second. Disabled ones (StartDisabled 1, which only map logic enables)
+/// and ones that don't hurt players (spawnflags without "clients", when
+/// not 0) are left out.
+pub fn hurt_volumes(bsp: &Bsp, leaves: &[RawLeaf]) -> Vec<crate::map::MapHurtVolume> {
+    let mut out = Vec::new();
+    for ent in bsp.entities.iter() {
+        if ent.prop("classname") != Some("trigger_hurt") {
+            continue;
+        }
+        let num = |k: &'static str| ent.prop(k).and_then(|v| v.trim().parse::<f32>().ok());
+        let flags = num("spawnflags").unwrap_or(0.0) as u32;
+        if num("StartDisabled").unwrap_or(0.0) != 0.0 || (flags != 0 && flags & 1 == 0) {
+            continue;
+        }
+        let Some(model) = ent
+            .prop("model")
+            .and_then(|m| m.strip_prefix('*'))
+            .and_then(|m| m.parse::<usize>().ok())
+        else {
+            continue;
+        };
+        let damage_model = num("damagemodel").unwrap_or(0.0);
+        if damage_model != 0.0 {
+            warn!("trigger_hurt with damagemodel {damage_model} (doubling) hurts at a constant rate here");
+        }
+        // Placed like other brush entity models: relative to the origin.
+        let origin = ent
+            .prop("origin")
+            .and_then(parse_vector)
+            .map_or(Vec3::ZERO, |o| Vec3::new(o.x, o.y, o.z));
+        let angles = ent
+            .prop("angles")
+            .and_then(parse_vector)
+            .map_or(Vec3::ZERO, |a| Vec3::new(a.x, a.y, a.z));
+        let rotation = Quat::from_rotation_z(angles.y.to_radians())
+            * Quat::from_rotation_y(angles.x.to_radians())
+            * Quat::from_rotation_x(angles.z.to_radians());
+        let brushes: Vec<crate::map::MapBrush> = brush_volumes_in(
+            bsp,
+            BrushFlags::all(),
+            model_brushes(bsp, leaves, model),
+            Some((rotation, origin)),
+            true,
+        )
+        .into_iter()
+        .map(|(_, points, planes)| map_brush(points, planes, false))
+        .collect();
+        if !brushes.is_empty() {
+            out.push(crate::map::MapHurtVolume {
+                brushes,
+                damage_per_second: num("damage").unwrap_or(10.0),
+            });
         }
     }
     out

@@ -419,7 +419,7 @@ So vz holds constant while still waist-deep, then falls by only 6.25 per tick (h
     - otherwise volume 0.5.
   - If the volume > 0: landing sound, step-sound timer = 400 ms, and the punch angle's **roll** = fall speed × 0.013 degrees (then pitch is clamped to ≤ 8, which has no effect since only roll was set).
   - Fall speed resets to 0.
-- The damage slope is 100 hp per (1024 − 580) units/s, so 0.2252 hp per unit/s above 580 (inferred: the shared header defines the slope, the game DLL applies it; see Open questions).
+- The damage slope is 100 hp per (1024 − 580) units/s, so 0.2252 hp per unit/s above 580 (inferred: the shared header defines the slope, the game DLL applies it). CS:S measured differently: 100 hp per 416 units/s, truncated to whole points (specs/cs_source/fall_damage.md).
 - Slamming into a wall: if horizontal speed lost during one slide move > 1160, a rough landing effect at volume 1. If > 580, volume 0.85. These play sound and set the view roll from the current fall speed. There is no damage in shared code.
 
 ### Punch angle decay
@@ -730,7 +730,7 @@ Knife script: MaxPlayerSpeed 250, Damage 50, WeaponArmorRatio 1.7, Range 4096 (t
 8. **Answered (see CS:S values: bunny-hop cap, 286).** Was: **Bunny-hop limit:** with sv_enablebunnyhopping 0, CS:S caps speed on jump (believed: if speed > 1.1 × max speed, scale down to 1.1 × max speed). Measure by jumping at > 275 units/s with a knife.
 9. **Answered (measured):** the walk key lowers the player's max speed to 0.52 × the weapon speed (see Walking). Still open: whether CS:S applies any delay when pressing or releasing it. The measurements show it acting on the same tick.
 10. **Backpedal:** whether sv_backspeed 0.6 is applied in CS:S. Measure backward top speed.
-11. **Fall damage formula as applied by CS:S:** the shared header gives the slope 100/(1024 − 580). CS:S applies the actual damage (and may scale it, e.g. ×1.25 is sometimes cited). Measure HP lost from known drop heights.
+11. **Answered (specs/cs_source/fall_damage.md):** floor((fall − 580) × 100/416), no ×1.25. Was: **Fall damage formula as applied by CS:S:** the shared header gives the slope 100/(1024 − 580). CS:S applies the actual damage (and may scale it, e.g. ×1.25 is sometimes cited). Measure HP lost from known drop heights.
 12. **Answered (SDK client input code, CS:S build):** cl_forwardspeed, cl_sidespeed and cl_backspeed are 400 (cheat-protected), and cl_upspeed is 320. All are above every weapon speed, so the server rescale always applies.
 13. **Ladder climb speed in CS:S:** shared is 200. Confirm.
 14. **func_ladder solidity:** the ladder probe uses the player-solid mask, so a ladder must block the player to be found. Confirm how CS:S maps compile func_ladder brushes (contents seen by the probe) by reading the BSP brush contents of a ladder in a map with our loader, and confirm that the player rests against the ladder face.

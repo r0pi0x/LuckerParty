@@ -15,11 +15,15 @@ use bevy::{
 
 use crate::core::{SpawnPoint, Team};
 // Collision-world types live in `core` (the greybox map uses them too).
-pub use crate::core::{MapBrush, MapBrushCollider, MapBrushes, MapWater, MapWaterVolume, PropSurface};
+pub use hurt::{MapHurt, MapHurtVolume};
+pub use crate::core::{
+    MapBrush, MapBrushCollider, MapBrushes, MapTerrain, MapTerrainCollider, MapWater, MapWaterVolume, PropSurface,
+};
 
 pub mod anim;
 pub mod decal;
 pub mod hud;
+mod hurt;
 mod dust;
 pub mod nav;
 pub mod particles;
@@ -817,6 +821,8 @@ pub struct MapData {
     pub sky_vis: Option<MapSkyVis>,
     /// Water and slime volumes.
     pub water: Vec<MapWaterVolume>,
+    /// Volumes that hurt characters inside them (Source `trigger_hurt`).
+    pub hurt: Vec<MapHurtVolume>,
     /// Dynamic prop shadows, when the game draws them.
     pub shadows: Option<MapShadows>,
     /// Gravity for physics bodies, m/s^2 (downward), when the game sets it.
@@ -1136,6 +1142,9 @@ struct SkyVis(MapSkyVis);
 #[derive(Resource, Clone, Copy, Debug)]
 pub struct KillHeight(pub f32);
 
+/// How thick terrain surfaces are as solids (`MapTerrain`), meters: 2 units.
+const TERRAIN_THICKNESS: f32 = 2.0 * 0.0254;
+
 /// How far below the map's lowest point (meters) falling ends.
 const KILL_MARGIN: f32 = 3.0;
 
@@ -1271,6 +1280,7 @@ impl Plugin for MapPlugin {
                     .before(crate::core::SimSet::Movement),
             )
             .add_systems(FixedUpdate, fall_out_of_map.after(crate::core::SimSet::Movement))
+            .add_systems(FixedUpdate, hurt::hurt_characters.after(crate::core::SimSet::Movement))
             .add_systems(
                 Update,
                 (
@@ -1368,9 +1378,16 @@ fn spawn_map(
         .id();
 
     if !data.collision_indices.is_empty() {
+        commands.insert_resource(MapTerrain::from_triangles(
+            data.collision_indices
+                .iter()
+                .map(|t| t.map(|i| Vec3::from(data.collision_positions[i as usize]))),
+            TERRAIN_THICKNESS,
+        ));
         commands.entity(root).with_child((
             Name::new("Map collision (surfaces)"),
             MapPart,
+            MapTerrainCollider,
             RigidBody::Static,
             Collider::trimesh(
                 data.collision_positions.iter().map(|p| Vec3::from(*p)).collect(),
@@ -2060,6 +2077,7 @@ fn spawn_map(
         }
         commands.insert_resource(MapWater(data.water.clone()));
     }
+    commands.insert_resource(MapHurt::new(data.hurt.clone()));
 
     commands.spawn((
         Name::new("Sun"),
@@ -2146,6 +2164,8 @@ pub fn unload_map(world: &mut World) {
     world.remove_resource::<MapBrushes>();
     world.remove_resource::<KillHeight>();
     world.remove_resource::<MapWater>();
+    world.remove_resource::<MapHurt>();
+    world.remove_resource::<MapTerrain>();
     world.insert_resource(Gravity::default());
     soundscape::reset(world);
 }

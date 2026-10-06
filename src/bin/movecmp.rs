@@ -264,6 +264,8 @@ struct State {
 struct Args {
     only: Option<String>,
     keep_running: bool,
+    /// Compare with the CS:S logs of the last online run (no server).
+    offline: bool,
     fuzz: Option<Fuzz>,
 }
 
@@ -279,6 +281,7 @@ fn main() -> ExitCode {
     let mut args = Args {
         only: None,
         keep_running: false,
+        offline: false,
         fuzz: None,
     };
     let mut it = std::env::args().skip(1);
@@ -306,9 +309,13 @@ fn main() -> ExitCode {
                 args.keep_running = true;
                 Ok(())
             }
+            "--offline" => {
+                args.offline = true;
+                Ok(())
+            }
             "-h" | "--help" => {
                 println!(
-                    "usage: movecmp [--only <name>] [--keep-running]\n       \
+                    "usage: movecmp [--only <name>] [--keep-running] [--offline]\n       \
                      movecmp fuzz [--seed N] [--runs N] [--ticks N] [--tolerance UNITS] [--only <map or kind>]\n  \
                      scenarios: {}\n  fuzz: random inputs at de_nuke ladders and de_aztec water",
                     scenarios()
@@ -349,7 +356,7 @@ fn run(args: &Args) -> Result<bool, String> {
     let out_dir = default_dump_dir("movecmp").ok_or("no data dir")?;
     std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
 
-    let started = ensure_server(&server, &out_dir)?;
+    let started = !args.offline && ensure_server(&server, &out_dir)?;
     let mut maps: std::collections::HashMap<String, Arc<MapData>> = Default::default();
     let mut load = |name: &str| -> Result<Arc<MapData>, String> {
         if let Some(m) = maps.get(name) {
@@ -386,8 +393,12 @@ fn run(args: &Args) -> Result<bool, String> {
     let mut failed = 0;
     for s in &list {
         let map = load(&s.map)?;
-        ensure_map(&s.map)?;
-        let theirs = run_css(&server, s)?;
+        let theirs = if args.offline {
+            read_css(&server, s)?
+        } else {
+            ensure_map(&s.map)?;
+            run_css(&server, s)?
+        };
         let ours = run_ours(&map, s, &theirs);
         let (max_pos, mismatched) = report(s, &theirs, &ours, &out_dir)?;
         if let Some(f) = &args.fuzz
@@ -715,6 +726,25 @@ fn run_css(server: &Path, s: &Scenario) -> Result<Vec<State>, String> {
             return Err(format!("{}: CS:S logged {} of {want} ticks", s.name, rows.len()));
         }
     }
+}
+
+/// The CS:S log a previous online run left for `s` (same inputs).
+fn read_css(server: &Path, s: &Scenario) -> Result<Vec<State>, String> {
+    let output = server.join("cstrike").join("mashup").join(format!("{}.out", s.name));
+    let rows: Vec<State> = std::fs::read_to_string(&output)
+        .map_err(|e| format!("{}: {e} (run it online once)", output.display()))?
+        .lines()
+        .filter_map(parse_row)
+        .collect();
+    if rows.len() < s.inputs.len() + 1 {
+        return Err(format!(
+            "{}: the log has {} of {} ticks",
+            s.name,
+            rows.len(),
+            s.inputs.len() + 1
+        ));
+    }
+    Ok(rows)
 }
 
 fn parse_row(line: &str) -> Option<State> {

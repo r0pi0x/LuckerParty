@@ -525,3 +525,73 @@ fn teleport_onto_the_floor_is_grounded_at_once() {
         "friction on the first tick after the teleport",
     );
 }
+
+/// Fall damage (specs/cs_source/fall_damage.md), CS:S values at its 0.015 s
+/// tick: dropped from 40 units with a downward start speed, as on the probe
+/// server. Lands with the probe's fall speed and takes its damage.
+#[test]
+fn fall_damage_as_measured() {
+    use mashup::core::Health;
+    // (start speed, measured fall speed, measured damage); None: dead.
+    let cases = [
+        (400.0f32, 460.0f32, Some(0.0f32)),
+        (530.0, 578.0, Some(0.0)),
+        (537.0, 585.0, Some(1.0)),
+        (600.0, 648.0, Some(16.0)),
+        (800.0, 836.0, Some(61.0)),
+        (960.0, 984.0, Some(97.0)),
+        (972.0, 996.0, None),
+        (1100.0, 1124.0, None),
+    ];
+    for (start, fall, damage) in cases {
+        let mut sim = Sim::new((TestMap, SourceMovementPlugin));
+        sim.set_tick_interval(mashup::games::cs_source::TICK_INTERVAL);
+        let p = sim.spawn_character(to_engine(Vec3::new(0.0, -3000.0, 40.0 + 36.0)), movement::ID);
+        sim.app.world_mut().get_mut::<Velocity>(p).unwrap().0 = to_engine(Vec3::Z * -start);
+        sim.seconds(0.3);
+        let me = sim.app.world().get::<SourceMovement>(p).unwrap().clone();
+        assert!(me.on_ground, "start {start}: not landed");
+        close(me.last_landing_speed, fall, 0.01, &format!("start {start}: fall speed"));
+        let health = sim.app.world().get::<Health>(p).unwrap().current;
+        match damage {
+            Some(d) => close(health, 1.0 - d / 100.0, 1e-5, &format!("start {start}: health")),
+            None => assert_eq!(health, 0.0, "start {start}: survived a fatal fall"),
+        }
+    }
+}
+
+/// No fall damage landing in shallow water (feet wet): the landing check
+/// skips damage in water.
+#[test]
+fn no_fall_damage_into_water() {
+    use mashup::{
+        core::Health,
+        map::{MapWater, MapWaterVolume},
+    };
+    let mut sim = Sim::new((TestMap, SourceMovementPlugin));
+    sim.set_tick_interval(mashup::games::cs_source::TICK_INTERVAL);
+    let (a, b) = (
+        to_engine(Vec3::new(-200.0, -3200.0, 0.0)),
+        to_engine(Vec3::new(200.0, -2800.0, 10.0)),
+    );
+    sim.app.insert_resource(MapWater(vec![MapWaterVolume {
+        brush: MapBrush::from_box(a.min(b), a.max(b)),
+        slime: false,
+    }]));
+    let p = sim.spawn_character(to_engine(Vec3::new(0.0, -3000.0, 40.0 + 36.0)), movement::ID);
+    sim.app.world_mut().get_mut::<Velocity>(p).unwrap().0 = to_engine(Vec3::Z * -800.0);
+    sim.seconds(0.3);
+    let me = sim.app.world().get::<SourceMovement>(p).unwrap().clone();
+    assert!(
+        me.on_ground && me.water_level == 1,
+        "ground {} water {}",
+        me.on_ground,
+        me.water_level
+    );
+    assert!(me.last_landing_speed > 800.0);
+    assert_eq!(
+        sim.app.world().get::<Health>(p).unwrap().current,
+        1.0,
+        "hurt landing in water"
+    );
+}

@@ -288,6 +288,143 @@ impl MapBrush {
     }
 }
 
+impl MapBrush {
+    /// A triangle as a thin solid: the triangle's face (normal `(b - a) x
+    /// (c - a)`), a back face `thickness` behind it, its three sides, and
+    /// the bevel planes a box sweep needs to be exact (the box's axes and
+    /// each edge crossed with each axis), all as supporting planes.
+    pub fn from_triangle(a: Vec3, b: Vec3, c: Vec3, thickness: f32) -> Option<Self> {
+        let n = (b - a).cross(c - a).try_normalize()?;
+        let back = n * -thickness;
+        let corners = [a, b, c, a + back, b + back, c + back];
+        let edges = [b - a, c - b, a - c, n];
+        let mut axes: Vec<Vec3> = vec![Vec3::X, Vec3::Y, Vec3::Z, n];
+        for e in &edges[..3] {
+            axes.push(n.cross(*e));
+        }
+        for e in edges {
+            for axis in [Vec3::X, Vec3::Y, Vec3::Z] {
+                axes.push(e.cross(axis));
+            }
+        }
+        let mut planes: Vec<(Vec3, f32)> = Vec::with_capacity(axes.len() * 2);
+        for axis in axes {
+            let Some(m) = axis.try_normalize() else { continue };
+            for m in [m, -m] {
+                if planes.iter().any(|(q, _)| q.dot(m) > 1.0 - 1e-6) {
+                    continue;
+                }
+                let d = corners.iter().map(|p| m.dot(*p)).fold(f32::MIN, f32::max);
+                planes.push((m, d));
+            }
+        }
+        // The face first: sweeps that tie report the earliest plane.
+        let face = planes.iter().position(|(m, _)| m.dot(n) > 1.0 - 1e-6)?;
+        planes.swap(0, face);
+        let min = corners.iter().fold(Vec3::MAX, |acc, p| acc.min(*p));
+        let max = corners.iter().fold(Vec3::MIN, |acc, p| acc.max(*p));
+        Some(Self {
+            planes,
+            min,
+            max,
+            ladder: false,
+            surface: None,
+        })
+    }
+}
+
+/// The loaded map's terrain triangles (Source displacements) as thin
+/// solids (`MapBrush::from_triangle`), with a grid to find the ones near a
+/// box quickly. Movement that sweeps brushes exactly sweeps these the same
+/// way instead of casting against the terrain's physics collider.
+#[derive(Resource, Clone, Debug, Default)]
+pub struct MapTerrain {
+    pub brushes: Vec<MapBrush>,
+    /// Grid over engine x and z: origin, cell size and counts.
+    origin: Vec2,
+    cell: f32,
+    size: (usize, usize),
+    cells: Vec<Vec<u32>>,
+}
+
+impl MapTerrain {
+    /// Grid cell size, meters.
+    const CELL: f32 = 2.0;
+
+    pub fn from_triangles(triangles: impl IntoIterator<Item = [Vec3; 3]>, thickness: f32) -> Self {
+        let brushes: Vec<MapBrush> = triangles
+            .into_iter()
+            .filter_map(|[a, b, c]| MapBrush::from_triangle(a, b, c, thickness))
+            .collect();
+        if brushes.is_empty() {
+            return Self::default();
+        }
+        let lo = brushes.iter().fold(Vec2::MAX, |acc, b| acc.min(b.min.xz()));
+        let hi = brushes.iter().fold(Vec2::MIN, |acc, b| acc.max(b.max.xz()));
+        let size = (
+            ((hi.x - lo.x) / Self::CELL).floor() as usize + 1,
+            ((hi.y - lo.y) / Self::CELL).floor() as usize + 1,
+        );
+        let mut terrain = Self {
+            brushes,
+            origin: lo,
+            cell: Self::CELL,
+            size,
+            cells: vec![Vec::new(); size.0 * size.1],
+        };
+        for i in 0..terrain.brushes.len() {
+            let (x0, z0, x1, z1) = terrain.cell_range(terrain.brushes[i].min, terrain.brushes[i].max);
+            for z in z0..=z1 {
+                for x in x0..=x1 {
+                    terrain.cells[z * size.0 + x].push(i as u32);
+                }
+            }
+        }
+        terrain
+    }
+
+    fn cell_range(&self, lo: Vec3, hi: Vec3) -> (usize, usize, usize, usize) {
+        let to = |v: f32, o: f32, n: usize| (((v - o) / self.cell).floor().max(0.0) as usize).min(n - 1);
+        (
+            to(lo.x, self.origin.x, self.size.0),
+            to(lo.z, self.origin.y, self.size.1),
+            to(hi.x, self.origin.x, self.size.0),
+            to(hi.z, self.origin.y, self.size.1),
+        )
+    }
+
+    /// Indices of brushes whose bounds may overlap `lo`..`hi` (sorted,
+    /// no repeats), into `out`.
+    pub fn near(&self, lo: Vec3, hi: Vec3, out: &mut Vec<u32>) {
+        out.clear();
+        if self.cells.is_empty()
+            || hi.x < self.origin.x
+            || hi.z < self.origin.y
+            || lo.x > self.origin.x + self.cell * self.size.0 as f32
+            || lo.z > self.origin.y + self.cell * self.size.1 as f32
+        {
+            return;
+        }
+        let (x0, z0, x1, z1) = self.cell_range(lo, hi);
+        for z in z0..=z1 {
+            for x in x0..=x1 {
+                out.extend(self.cells[z * self.size.0 + x].iter().copied().filter(|&i| {
+                    let b = &self.brushes[i as usize];
+                    b.max.cmpge(lo).all() && b.min.cmple(hi).all()
+                }));
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+    }
+}
+
+/// Marks the physics collider built from the terrain triangles
+/// (`MapTerrain`), so movement that sweeps them exactly can leave it out
+/// of physics queries.
+#[derive(Component, Debug)]
+pub struct MapTerrainCollider;
+
 /// A water (or slime) volume, for swimming.
 #[derive(Clone, Debug)]
 pub struct MapWaterVolume {

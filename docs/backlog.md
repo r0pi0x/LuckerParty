@@ -17,9 +17,6 @@ agent worktrees under `.claude/worktrees/` (D: agent-a052e118eeb8d4c8d).
   remaining: check its open questions against CS:S (flash look, shell
   direction, near plane), view-model sound events, brass for other
   players.
-- **D. Movement: terrain and falls.** Fuzz walking over displacements to
-  find the rare "stubbed toe" stop and fix it; fall damage (measure on the
-  probe server); `trigger_hurt` volumes.
 - **E. Other maps.** In progress:
   [plans/active/other-maps.md](plans/active/other-maps.md) (catalog).
   Fixed: aztec's walls, props' ambient light on older maps, brush
@@ -34,7 +31,7 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
 - A test map with every supported entity (`mashup_logic_test`, generated
   `.vmf`, compiled with Valve's tools; plan section "Test map").
 - Entity I/O and triggers (spec first): outputs/inputs with delays,
-  `logic_*`, `math_counter`, `trigger_teleport`/`push`/`hurt`/`multiple`/
+  `logic_*`, `math_counter`, `trigger_teleport`/`push`/`multiple`/
   `once`; then moving brush entities (doors, buttons, platforms,
   breakables) with movement on moving solids. Target: two real minigame
   maps from the user's downloads.
