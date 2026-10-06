@@ -73,6 +73,12 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
     );
     super::props::add_static_props(&bsp, &mut materials, &lighting, &occluders, &mut data);
     super::ropes::add_ropes(&bsp, &mut materials, &lighting, &occluders, &mut data);
+    // The same query at run time, for view models (spec view_models.md 9).
+    if let Some(tree) = data.sky_vis.clone() {
+        data.light_field = Some(crate::map::MapLightField(std::sync::Arc::new(move |p| {
+            super::props::probe_with(&|q| lighting.ambient_in(tree.leaf(q), q), &lighting, &occluders, p)
+        })));
+    }
     super::sprites::add_sprites(&bsp, &mut materials, &mut data);
     super::dust::add_dust(&bsp, &mut materials, &mut data);
     let surfaces = super::surfaceprops::SurfaceProps::load(&mut materials);
@@ -98,12 +104,24 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
         }
     }
     // What the local player sees of them: the view models.
-    for (weapon, path) in super::weapons::VIEW_MODELS {
-        match super::props::load_view_model(&mut materials, path, weapon, super::view_anim::fov()) {
+    for (weapon, path, right_handed) in super::weapons::VIEW_MODELS {
+        match super::props::load_view_model(&mut materials, path, weapon, *right_handed) {
             Ok(v) => data.view_models.push(v),
             Err(e) => data.warnings.push(e),
         }
     }
+    data.muzzle_flash = Some(super::view_anim::muzzle_flash(&mut materials));
+    for (key, path, bounce) in super::view_anim::SHELLS {
+        match super::props::load_shell(&mut materials, path) {
+            Ok(model) => data.shells.push(crate::map::shells::MapShell {
+                key: key.to_string(),
+                model,
+                bounce: Some(bounce.to_string()),
+            }),
+            Err(e) => data.warnings.push(e),
+        }
+    }
+    data.shell_physics = Some(super::view_anim::shell_physics());
     let mut sounds = super::sound::load(&mut materials, name, &surfaces);
     super::soundscape::load(&mut materials, &bsp, name, &mut sounds);
     data.sounds = std::sync::Arc::new(sounds);

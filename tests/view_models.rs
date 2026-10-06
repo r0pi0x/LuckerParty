@@ -9,14 +9,14 @@ use bevy::prelude::*;
 use mashup::{
     games::cs_source::{
         TICK_INTERVAL,
-        view_anim::{self, ViewAnimPlugin},
+        view_anim::ViewAnimPlugin,
         weapons::{AK47, CsWeaponsPlugin, KNIFE},
     },
     greybox::{self, GreyboxMapPlugin},
     harness::Sim,
     map::{
-        MapModel, MapViewModel, ViewAnimator, ViewModels,
-        anim::{AnimSet, Animation, Sequence},
+        DriveAnimation, MapModel, MapViewModel, ViewAnimator, ViewModelEvent, ViewModelEventKind, ViewModels,
+        anim::{AnimEvent, AnimSet, Animation, Sequence},
     },
     movement::placeholder,
     weapon::{Inventory, Magazine},
@@ -49,6 +49,25 @@ fn set(seqs: &[Seq]) -> AnimSet {
             grid: (1, 1),
             anims: vec![i],
             bone_weights: vec![1.0],
+            // As in v_rif_ak47.mdl (dump --sequences).
+            events: if name.starts_with("ak47_fire") {
+                vec![
+                    AnimEvent {
+                        cycle: 0.0,
+                        event: 5001,
+                        name: String::new(),
+                        options: "1".into(),
+                    },
+                    AnimEvent {
+                        cycle: 0.0,
+                        event: 0,
+                        name: "AE_CLIENT_EFFECT_ATTACH".into(),
+                        options: "EjectBrass_762Nato 2 150".into(),
+                    },
+                ]
+            } else {
+                Vec::new()
+            },
             ..default()
         });
     }
@@ -62,14 +81,27 @@ fn view_model(key: &str, seqs: &[Seq]) -> MapViewModel {
         bones: Vec::new(),
         root: Transform::default(),
         animations: Some(Arc::new(set(seqs))),
-        fov: view_anim::fov(),
-        mirror: false,
+        right_handed: false,
+        allow_flipping: true,
+        attachments: Vec::new(),
+        light_origin: Vec3::ZERO,
     }
+}
+
+/// View-model effects sent so far.
+#[derive(Resource, Default)]
+struct Effects(Vec<ViewModelEvent>);
+
+fn collect(mut events: MessageReader<ViewModelEvent>, mut out: ResMut<Effects>) {
+    out.0.extend(events.read().cloned());
 }
 
 fn sim() -> Sim {
     let mut sim = Sim::new((GreyboxMapPlugin, CsWeaponsPlugin, ViewAnimPlugin));
     sim.set_tick_interval(TICK_INTERVAL);
+    sim.app
+        .init_resource::<Effects>()
+        .add_systems(Update, collect.after(DriveAnimation));
     // v_rif_ak47 and v_knife_t's sequences as in the install (dump
     // --sequences; durations match the spec's table).
     sim.app.insert_resource(ViewModels(Arc::new(vec![
@@ -201,6 +233,55 @@ fn the_dead_show_no_view_model() {
     sim.app.world_mut().get_mut::<mashup::core::Health>(p).unwrap().current = 0.0;
     sim.ticks(1);
     assert_eq!(view(&sim, p).0, None);
+}
+
+/// Spec view_models.md E1: every shot restarts a fire sequence and re-arms
+/// its events, so the muzzle flash and brass fire on both of two quick
+/// shots, even when the same fire sequence is picked twice.
+#[test]
+fn every_shot_fires_the_flash_and_brass_events() {
+    let mut sim = sim();
+    let p = sim.spawn_character(greybox::SPAWNS[0], placeholder::ID);
+    sim.seconds(1.2);
+    assert_eq!(activity(&sim, p), "ACT_VM_IDLE");
+    sim.app.world_mut().resource_mut::<Effects>().0.clear();
+    for _ in 0..2 {
+        sim.intent(p).fire = true;
+        sim.ticks(1);
+        sim.intent(p).fire = false;
+        sim.seconds(0.1);
+    }
+    let effects = &sim.app.world().resource::<Effects>().0;
+    let count = |kind: ViewModelEventKind| effects.iter().filter(|e| e.owner == p && e.kind == kind).count();
+    let flashes = count(ViewModelEventKind::MuzzleFlash { attachment: 0 });
+    let brass = count(ViewModelEventKind::EjectBrass {
+        attachment: 1,
+        shell: "762Nato".into(),
+        speed: 150.0,
+    });
+    assert_eq!((flashes, brass), (2, 2), "{effects:?}");
+    // Idling fires nothing.
+    sim.app.world_mut().resource_mut::<Effects>().0.clear();
+    sim.seconds(3.0);
+    assert!(sim.app.world().resource::<Effects>().0.is_empty());
+}
+
+/// Events between two cycles: the start of a (re)started sequence counts.
+#[test]
+fn events_fire_when_the_cycle_passes_them() {
+    let seq = Sequence {
+        events: [0.0, 0.5, 1.0]
+            .map(|cycle| AnimEvent { cycle, ..default() })
+            .to_vec(),
+        ..default()
+    };
+    let cycles = |from, to| seq.events_between(from, to).map(|e| e.cycle).collect::<Vec<f32>>();
+    assert_eq!(cycles(None, 0.1), [0.0]);
+    assert!(cycles(Some(0.0), 0.1).is_empty());
+    assert_eq!(cycles(Some(0.4), 0.6), [0.5]);
+    assert_eq!(cycles(Some(0.6), 1.0), [1.0]);
+    // A loop wrapped from 0.9 to 0.1.
+    assert_eq!(cycles(Some(0.9), 0.1), [0.0, 1.0]);
 }
 
 fn active(sim: &Sim, p: Entity) -> Entity {

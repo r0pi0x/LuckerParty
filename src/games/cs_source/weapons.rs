@@ -27,11 +27,17 @@ pub const WORLD_MODELS: &[(&str, &str)] = &[
     (AK47, "models/weapons/w_rif_ak47.mdl"),
 ];
 
-/// View models (the script's `viewmodel`), seen by the local player. CS:S
-/// ships one knife view model for both teams.
-pub const VIEW_MODELS: &[(&str, &str)] = &[
-    (KNIFE, "models/weapons/v_knife_t.mdl"),
-    (AK47, "models/weapons/v_rif_ak47.mdl"),
+/// View models (the script's `viewmodel`), seen by the local player, and
+/// whether each is built right-handed (the script's `BuiltRightHanded`;
+/// spec view_models.md 2). CS:S ships one knife view model for both teams.
+/// The scripts are encrypted, so handedness comes from the models: the AK
+/// is held left of the eye (left-handed), the knife right of it
+/// (`tests/map_de_dust2.rs::view_model_handedness_in_the_files`). With the
+/// default `cl_righthand 1` only the AK is mirrored, so both end up in the
+/// right hand, as CS:S shows them.
+pub const VIEW_MODELS: &[(&str, &str, bool)] = &[
+    (KNIFE, "models/weapons/v_knife_t.mdl", true),
+    (AK47, "models/weapons/v_rif_ak47.mdl", false),
 ];
 
 /// Sound entries the weapons use, for precaching with the map's sounds.
@@ -45,6 +51,9 @@ pub const SOUNDS: &[&str] = &[
     "Weapon_AK47.Clipout",
     "Weapon_AK47.Clipin",
     "Default.ClipEmpty_Rifle",
+    "Bounce.PistolShell",
+    "Bounce.RifleShell",
+    "Bounce.ShotgunShell",
 ];
 
 /// Hitgroup multipliers (measured M6).

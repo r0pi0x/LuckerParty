@@ -17,7 +17,9 @@ their partial work is in uncommitted agent worktrees under
   object counts, compounding falloff); the measured recoil sets (moving and
   airborne AK-47).
 - **C. First-person view models**: done (docs/plans/active/view-models.md);
-  remaining: bob/sway, muzzle flash, `cl_righthand`.
+  remaining: check its open questions against CS:S (flash look, shell
+  direction, near plane), view-model sound events, brass for other
+  players.
 - **D. Movement: terrain and falls.** Fuzz walking over displacements to
   find the rare "stubbed toe" stop and fix it; fall damage (measure on the
   probe server); `trigger_hurt` volumes.

@@ -23,6 +23,7 @@ pub mod soundscape;
 pub mod sprites;
 pub mod surfaceprops;
 pub mod view_anim;
+pub mod view_motion;
 pub mod vpk;
 pub mod wav;
 pub mod weapons;
