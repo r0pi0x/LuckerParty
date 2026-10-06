@@ -42,6 +42,7 @@ pub mod shells;
 pub mod sprite_material;
 pub mod surface_color;
 pub mod view_model;
+pub mod vis;
 pub mod water;
 pub mod world_material;
 pub use view_model::{
@@ -761,6 +762,10 @@ pub struct MapProp {
     pub casts_shadow: bool,
     /// Simulated as a rigid body, when set.
     pub physics: Option<MapPhysics>,
+    /// Fade distances from the camera (start, gone), meters, when the prop
+    /// fades out with distance. Drawn fully up to the far one, then hidden
+    /// (the fade between isn't drawn yet; docs/tech-debt.md).
+    pub fade: Option<(f32, f32)>,
     /// The mover entity it's attached to (index into `MapData::entities`):
     /// it rides that entity's node (de_nuke's door handles) and isn't solid.
     pub parent: Option<usize>,
@@ -855,6 +860,9 @@ pub struct MapData {
     /// set, the camera draws the sky only from places that see it, and
     /// clears to black inside solid.
     pub sky_vis: Option<MapSkyVis>,
+    /// Precomputed visibility (clusters and potentially visible sets),
+    /// when the game's maps have it: parts the camera can't see are hidden.
+    pub visibility: Option<Arc<vis::MapVisibility>>,
     /// Water and slime volumes.
     pub water: Vec<MapWaterVolume>,
     /// The map's entities (keyvalues, brush volumes) for the logic layer,
@@ -1314,6 +1322,8 @@ impl Plugin for MapPlugin {
         ragdoll::plugin(app);
         app.add_plugins(sound::SoundPlugin)
             .init_resource::<ShowLocalBody>()
+            .init_resource::<vis::NoVis>()
+            .init_resource::<vis::VisStats>()
             .add_message::<decal::PlaceDecal>()
             .add_message::<ViewModelEvent>()
             .add_message::<SpawnGibs>()
@@ -1393,6 +1403,13 @@ impl Plugin for MapPlugin {
                 follow_sky_camera
                     .after(bevy::transform::TransformSystems::Propagate)
                     .before(bevy::camera::visibility::VisibilitySystems::UpdateFrusta),
+            )
+            .add_systems(
+                PostUpdate,
+                // From this frame's camera, before visibility propagates.
+                vis::cull
+                    .after(bevy::transform::TransformSystems::Propagate)
+                    .before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate),
             );
     }
 }
@@ -1684,10 +1701,31 @@ fn spawn_map(
                 sky_handle.as_ref(),
             );
         }
+        // World meshes in chunks with tight bounds, tagged with the
+        // clusters they touch (see `vis`). Meshes of entities with their own
+        // node (movers, breakables) stay whole and untagged.
+        let visibility = data.visibility.as_deref().filter(|_| !merged_world());
+        let tag = |e: &mut EntityCommands, clusters: Vec<u32>| {
+            if visibility.is_some() && !clusters.is_empty() {
+                e.insert(vis::VisClusters::new(clusters));
+            }
+        };
+        let chunk_size = vis::chunk_size();
         for m in &data.meshes {
             if water_drawn && m.water.is_some() {
                 continue;
             }
+            let own_node = parent_of(m) != root;
+            let mesh_vis = visibility.filter(|_| !own_node);
+            // Chunks are placed at their centre (vertices relative to it,
+            // small numbers), each a map part of its own.
+            let chunks: Vec<(MapMesh, Vec<u32>, Vec3)> = vis::split_mesh(m, mesh_vis, chunk_size)
+                .into_iter()
+                .map(|(mut chunk, clusters)| {
+                    let centre = if mesh_vis.is_some() { vis::recentre(&mut chunk) } else { Vec3::ZERO };
+                    (chunk, clusters, centre)
+                })
+                .collect();
             let lit = lightmap.as_ref().filter(|_| m.lightmap_uvs.len() == m.positions.len());
             // Lightmapped world surfaces: Source-style texture x baked light.
             if let (Some(_), Some(lm), Some(world_materials)) = (lit, world_lightmap.as_ref(), world_materials.as_mut())
@@ -1782,39 +1820,48 @@ fn spawn_map(
                     alpha_mode: m.alpha.shader_alpha_mode(),
                     double_sided: m.double_sided,
                 };
-                commands.spawn((
-                    Name::new(m.material.clone()),
-                    MapPart,
-                    world_layer_of(m.skybox),
-                    Mesh3d(meshes.add({
-                        let mut mesh = build_mesh(m, true);
-                        if blended {
-                            let colors: Vec<[f32; 4]> = m.blend_weights.iter().map(|w| [1.0, 1.0, 1.0, *w]).collect();
-                            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
-                        }
-                        mesh
-                    })),
-                    MeshMaterial3d(world_materials.add(material)),
-                    Transform::default(),
-                    ChildOf(parent_of(m)),
-                ));
+                let material = world_materials.add(material);
+                for (chunk, clusters, centre) in chunks {
+                    let mut e = commands.spawn((
+                        Name::new(chunk.material.clone()),
+                        MapPart,
+                        world_layer_of(chunk.skybox),
+                        Mesh3d(meshes.add({
+                            let mut mesh = build_mesh(&chunk, true);
+                            if blended {
+                                let colors: Vec<[f32; 4]> =
+                                    chunk.blend_weights.iter().map(|w| [1.0, 1.0, 1.0, *w]).collect();
+                                mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+                            }
+                            mesh
+                        })),
+                        MeshMaterial3d(material.clone()),
+                        Transform::from_translation(centre),
+                        ChildOf(parent_of(m)),
+                    ));
+                    tag(&mut e, clusters);
+                }
                 continue;
             }
-            let mut part = commands.spawn((
-                Name::new(m.material.clone()),
-                MapPart,
-                world_layer_of(m.skybox),
-                Mesh3d(meshes.add(build_mesh(m, lit.is_some()))),
-                MeshMaterial3d(materials.add(build_material(m, &textures, view, data.look.light_scale))),
-                Transform::default(),
-                ChildOf(parent_of(m)),
-            ));
-            if let Some(image) = lit {
-                part.insert(bevy::pbr::Lightmap {
-                    image: image.clone(),
-                    uv_rect: Rect::new(0.0, 0.0, 1.0, 1.0),
-                    bicubic_sampling: false,
-                });
+            let material = materials.add(build_material(m, &textures, view, data.look.light_scale));
+            for (chunk, clusters, centre) in chunks {
+                let mut part = commands.spawn((
+                    Name::new(chunk.material.clone()),
+                    MapPart,
+                    world_layer_of(chunk.skybox),
+                    Mesh3d(meshes.add(build_mesh(&chunk, lit.is_some()))),
+                    MeshMaterial3d(material.clone()),
+                    Transform::from_translation(centre),
+                    ChildOf(parent_of(m)),
+                ));
+                if let Some(image) = lit {
+                    part.insert(bevy::pbr::Lightmap {
+                        image: image.clone(),
+                        uv_rect: Rect::new(0.0, 0.0, 1.0, 1.0),
+                        bicubic_sampling: false,
+                    });
+                }
+                tag(&mut part, clusters);
             }
         }
         model_parts = data
@@ -1853,7 +1900,8 @@ fn spawn_map(
         if view == MapDebugView::Normal {
             for (i, dust) in data.dust.iter().enumerate() {
                 let mesh = meshes.add(dust::empty_mesh());
-                commands.spawn((
+                let clusters = visibility.map(|v| vis::box_clusters(v, dust.min, dust.max)).unwrap_or_default();
+                let mut e = commands.spawn((
                     Name::new(format!("Dust {i}")),
                     MapPart,
                     Mesh3d(mesh.clone()),
@@ -1872,6 +1920,7 @@ fn spawn_map(
                     Transform::default(),
                     ChildOf(root),
                 ));
+                tag(&mut e, clusters);
             }
         }
         if let Some(sprite_materials) = sprite_materials.as_mut()
@@ -1899,6 +1948,10 @@ fn spawn_map(
                     Transform::from_translation(sprite.position),
                     ChildOf(root),
                 ));
+                if let Some(v) = visibility {
+                    let r = Vec3::splat(sprite.size.max_element() / 2.0);
+                    tag(&mut e, vis::box_clusters(v, sprite.position - r, sprite.position + r));
+                }
                 if sprite.glow {
                     e.insert(GlowSprite {
                         color: sprite.color,
@@ -1912,13 +1965,22 @@ fn spawn_map(
         {
             for (i, rope) in data.ropes.iter().enumerate() {
                 let mesh = meshes.add(rope_material::rope_mesh(rope));
+                let clusters = match visibility {
+                    Some(v) if !rope.points.is_empty() => {
+                        let lo = rope.points.iter().fold(Vec3::MAX, |a, p| a.min(*p));
+                        let hi = rope.points.iter().fold(Vec3::MIN, |a, p| a.max(*p));
+                        let r = Vec3::splat(rope.width);
+                        vis::box_clusters(v, lo - r, hi + r)
+                    }
+                    _ => Vec::new(),
+                };
                 let strips =
                     rope.back
                         .map(|(t, n)| (t, n, true))
                         .into_iter()
                         .chain([(rope.texture, rope.normal_map, false)]);
                 for (texture, normal, back) in strips {
-                    commands.spawn((
+                    let mut e = commands.spawn((
                         Name::new(format!("Rope {i}{}", if back { " (back)" } else { "" })),
                         MapPart,
                         Mesh3d(mesh.clone()),
@@ -1937,6 +1999,7 @@ fn spawn_map(
                         Transform::default(),
                         ChildOf(root),
                     ));
+                    tag(&mut e, clusters.clone());
                 }
             }
         }
@@ -1958,7 +2021,14 @@ fn spawn_map(
             });
             let mut entities = std::collections::HashMap::new();
             for (prop, mesh) in built.meshes {
-                let e = commands
+                let clusters = match (visibility, bevy::camera::primitives::MeshAabb::compute_aabb(&mesh)) {
+                    // Physics props' shadows move with them: always drawn.
+                    (Some(v), Some(aabb)) if data.props[prop].physics.is_none() => {
+                        vis::box_clusters(v, Vec3::from(aabb.min()), Vec3::from(aabb.max()))
+                    }
+                    _ => Vec::new(),
+                };
+                let mut e = commands
                     .spawn((
                         Name::new(format!("Shadow of prop {prop}")),
                         MapPart,
@@ -1968,9 +2038,9 @@ fn spawn_map(
                         bevy::light::NotShadowCaster,
                         Transform::default(),
                         ChildOf(root),
-                    ))
-                    .id();
-                entities.insert(prop, e);
+                    ));
+                tag(&mut e, clusters);
+                entities.insert(prop, e.id());
             }
             commands.insert_resource(ShadowState {
                 data: data.clone(),
@@ -2053,6 +2123,32 @@ fn spawn_map(
             Visibility::default(),
             ChildOf(rider.map_or(root, |r| r.0)),
         ));
+        // Props that stay put are hidden where the camera can't see them,
+        // and beyond their fade distance.
+        if !prop.skybox && dynamic.is_none() && rider.is_none() && !merged_world() {
+            let clusters = match data.visibility.as_deref() {
+                Some(v) => {
+                    let (lo, hi) = model.bounds;
+                    let corners = (0..8).map(|k| {
+                        let c = Vec3::new(
+                            if k & 1 == 0 { lo.x } else { hi.x },
+                            if k & 2 == 0 { lo.y } else { hi.y },
+                            if k & 4 == 0 { lo.z } else { hi.z },
+                        );
+                        prop.translation + prop.rotation * c
+                    });
+                    let (min, max) = corners.fold((Vec3::MAX, Vec3::MIN), |(a, b), p| (a.min(p), b.max(p)));
+                    vis::box_clusters(v, min, max)
+                }
+                None => Vec::new(),
+            };
+            if !clusters.is_empty() || prop.fade.is_some() {
+                e.insert(vis::VisClusters::new(clusters));
+            }
+            if let Some((_, far)) = prop.fade {
+                e.insert(vis::FadeDistance(far));
+            }
+        }
         let solid = if rider.is_some() { PropSolid::None } else { prop.solid };
         match (solid, &model_colliders[prop.model]) {
             (PropSolid::Mesh, Some(collider)) if dynamic.is_some() => {
@@ -2176,6 +2272,9 @@ fn spawn_map(
         }
     }
 
+    if let Some(v) = data.visibility.as_ref().filter(|_| !merged_world()) {
+        commands.insert_resource(vis::ActiveVisibility(v.clone()));
+    }
     commands.insert_resource(decal::DecalSurfaces::new(&data));
     commands.insert_resource(surface_color::SurfaceColors::new(data));
     commands.insert_resource(particles::ParticleMaterials(data.particles.clone()));
@@ -2253,6 +2352,13 @@ fn spawn_map(
     }
 }
 
+/// Comparison hook: MASHUP_MERGED_WORLD=1 spawns the world as one mesh per
+/// material with no visibility culling (as before chunking), for A/B
+/// measurements against `vis`.
+fn merged_world() -> bool {
+    std::env::var("MASHUP_MERGED_WORLD").is_ok_and(|v| v == "1")
+}
+
 /// Remove the loaded map: its entities, its resources and the sky on
 /// cameras. Characters stay.
 pub fn unload_map(world: &mut World) {
@@ -2275,6 +2381,7 @@ pub fn unload_map(world: &mut World) {
     world.remove_resource::<SkyCameraInfo>();
     world.remove_resource::<ActiveMapHas3dSky>();
     world.remove_resource::<SkyVis>();
+    world.remove_resource::<vis::ActiveVisibility>();
     world.remove_resource::<ShadowState>();
     world.remove_resource::<sound::SoundBank>();
     world.remove_resource::<CharacterModels>();
@@ -2746,7 +2853,7 @@ struct MapPropCollider;
 /// A glow sprite: drawn over everything, faded by how much of its
 /// occlusion proxy is visible.
 #[derive(Component)]
-struct GlowSprite {
+pub(crate) struct GlowSprite {
     color: Vec4,
     proxy: f32,
 }
@@ -2766,6 +2873,7 @@ fn glow_visibility(
         &GlowSprite,
         &MeshMaterial3d<SpriteMaterial>,
         &mut Visibility,
+        Option<&vis::VisClusters>,
     )>,
     materials: Option<ResMut<Assets<SpriteMaterial>>>,
 ) {
@@ -2775,7 +2883,12 @@ fn glow_visibility(
     let filter = SpatialQueryFilter::from_excluded_entities(ignored.iter());
     let from = eye.translation();
     let (right, up) = (eye.right().as_vec3(), eye.up().as_vec3());
-    for (glow, sprite, material, mut visibility) in &mut glows {
+    for (glow, sprite, material, mut visibility, clusters) in &mut glows {
+        // Not potentially visible: hidden, no occlusion tests.
+        if clusters.is_some_and(|c| !c.potentially_visible) {
+            visibility.set_if_neq(Visibility::Hidden);
+            continue;
+        }
         let p = glow.translation();
         let centre = p + (from - p).normalize_or_zero() * sprite.proxy;
         let r = sprite.proxy / std::f32::consts::SQRT_2;
@@ -2804,11 +2917,13 @@ fn glow_visibility(
         } else {
             Visibility::Hidden
         });
-        if let Some(mut m) = materials.get_mut(&material.0) {
-            let color = (sprite.color.truncate() * seen).extend(sprite.color.w);
-            if m.params.color != color {
-                m.params.color = color;
-            }
+        // Only touch the material when the colour changes: a mutable
+        // borrow alone re-prepares it for the GPU.
+        let color = (sprite.color.truncate() * seen).extend(sprite.color.w);
+        if materials.get(&material.0).is_some_and(|m| m.params.color != color)
+            && let Some(mut m) = materials.get_mut(&material.0)
+        {
+            m.params.color = color;
         }
     }
 }

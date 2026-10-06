@@ -9,7 +9,7 @@ use vbsp::Bsp;
 
 use super::bsp::{METERS_PER_UNIT, to_engine};
 
-fn lump(bytes: &[u8], index: usize) -> &[u8] {
+pub(super) fn lump(bytes: &[u8], index: usize) -> &[u8] {
     let at = 8 + index * 16;
     let Some(entry) = bytes.get(at..at + 8) else { return &[] };
     let ofs = i32::from_le_bytes(entry[0..4].try_into().unwrap()).max(0) as usize;
@@ -22,6 +22,8 @@ fn lump(bytes: &[u8], index: usize) -> &[u8] {
 #[derive(Clone, Copy, Debug)]
 pub struct RawLeaf {
     pub contents: i32,
+    /// Visibility cluster; -1 for solid leaves and leaves in none.
+    pub cluster: i16,
     /// Leaf flags: 0x01 sees the 3D sky, 0x04 sees the 2D sky.
     pub flags: u8,
     pub mins: [i16; 3],
@@ -50,6 +52,7 @@ pub fn raw_leaves(bytes: &[u8]) -> Vec<RawLeaf> {
         .chunks_exact(size)
         .map(|b| RawLeaf {
             contents: i32_at(b, 0),
+            cluster: i16_at(b, 4),
             // Area in the low 9 bits, flags in the high 7.
             flags: (u16::from_le_bytes([b[6], b[7]]) >> 9) as u8,
             mins: [i16_at(b, 8), i16_at(b, 10), i16_at(b, 12)],

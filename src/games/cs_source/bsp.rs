@@ -99,6 +99,7 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
         }
     }
     data.sky_vis = Some(sky_vis(&bsp, &bytes));
+    data.visibility = visibility(&bsp, &bytes).map(std::sync::Arc::new);
     let lighting = super::ambient::MapLighting::read(&bytes);
     let occluders = super::ambient::Occluders::new(
         &shadow_hulls(&bsp, &super::ambient::raw_leaves(&bytes)),
@@ -733,6 +734,47 @@ fn sky_vis(bsp: &Bsp, bytes: &[u8]) -> crate::map::MapSkyVis {
         })
         .collect();
     crate::map::MapSkyVis { planes, nodes, leaves }
+}
+
+/// The world's visibility (public BSP v20 description): leaf clusters
+/// (lump 10) and each cluster's potentially visible set, run-length
+/// encoded in the visibility lump (4) after a cluster count and per
+/// cluster a PVS and a PAS offset from the lump's start. None when the map
+/// was compiled without vis.
+pub fn visibility(bsp: &Bsp, bytes: &[u8]) -> Option<crate::map::vis::MapVisibility> {
+    let lump = super::ambient::lump(bytes, 4);
+    let int = |at: usize| lump.get(at..at + 4).map(|b| i32::from_le_bytes(b.try_into().unwrap()));
+    let count = int(0)?.max(0) as usize;
+    if count == 0 || lump.len() < 4 + count * 8 {
+        return None;
+    }
+    let visible = (0..count)
+        .map(|c| {
+            let offset = int(4 + c * 8).unwrap_or(0).max(0) as usize;
+            let mut row = crate::map::vis::decompress_row(lump.get(offset..).unwrap_or(&[]), count);
+            // A cluster always sees itself.
+            row[c / 64] |= 1 << (c % 64);
+            row
+        })
+        .collect();
+    let tree = sky_vis(bsp, bytes);
+    let leaf_clusters = super::ambient::raw_leaves(bytes)
+        .iter()
+        .map(|l| {
+            if l.contents & super::ambient::CONTENTS_SOLID != 0 {
+                -1
+            } else {
+                l.cluster as i32
+            }
+        })
+        .collect();
+    Some(crate::map::vis::MapVisibility {
+        planes: tree.planes,
+        nodes: tree.nodes,
+        leaf_clusters,
+        cluster_count: count,
+        visible,
+    })
 }
 
 /// Fog keys shared by `sky_camera` and `env_fog_controller`.

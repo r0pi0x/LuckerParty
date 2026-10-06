@@ -131,6 +131,32 @@ Only `Reflect`-registered types are visible; register new core components in
   config.cfg (written on quit when binds/cvars changed), autoexec.cfg,
   history.txt; `exec name` runs name.cfg from there.
 
+## 3c. Performance
+
+Details and baseline numbers: [performance.md](performance.md).
+
+- `mashup_perf 1` (2: every render pass) shows frame times (avg, p95,
+  max), the main world's CPU time, GPU time per render pass, entity,
+  mesh and triangle counts and visibility culling (camera cluster,
+  clusters and map parts potentially visible).
+- `refcmp bench --views tools/refcmp/<map>.toml` times 200 frames at each
+  view (vsync off) and prints a table; `-- <args>` passes options to
+  mashup (e.g. `-- +r_novis 1`). Build first; it runs the mashup next to
+  it (`--profile playtest` for optimized numbers).
+- `r_novis 1` draws every map part (no visibility culling);
+  `MASHUP_MERGED_WORLD=1` spawns the world as one mesh per material with no
+  culling, as before chunking (A/B comparisons).
+- `refcmp vischeck --views tools/refcmp/<map>.toml` renders the views
+  plus views from spawns and nav areas with culling off and on (game time
+  frozen with `host_timescale 0`), lists the views that differ and fails
+  if any differs by more than 0.5% of its pixels (small differences:
+  geometry seen through sky brushes, which culling hides as the game
+  does; see performance.md). `cargo test --test map_vis` checks the same with rays from
+  ~300 player positions per map (`MASHUP_VIS_FULL=1`: every nav area).
+- `cargo run --profile playtest --features profile` writes a Chrome trace
+  (`trace-*.json`) with every system's CPU time; open it in
+  https://ui.perfetto.dev.
+
 ## 4. Logs
 
 `RUST_LOG=mashup=debug cargo run --features dev`. Log state changes that matter

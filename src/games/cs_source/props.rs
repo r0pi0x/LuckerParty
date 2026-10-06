@@ -591,6 +591,9 @@ struct PropPlacement {
     spawnflags: u32,
     massscale: f32,
     physicsmode: i32,
+    /// Fade distances (`fademindist`, `fademaxdist`), units; None when the
+    /// prop never fades (max 0 or less).
+    fade: Option<(f32, f32)>,
     /// The entity it's parented to (`parentname`), by index.
     parent: Option<usize>,
 }
@@ -628,6 +631,7 @@ pub fn add_static_props(
             spawnflags: 0,
             massscale: 0.0,
             physicsmode: 0,
+            fade: (prop.fade_max_distance > 0.0).then_some((prop.fade_min_distance, prop.fade_max_distance)),
             parent: None,
         });
     }
@@ -670,6 +674,12 @@ fn entity_props(bsp: &Bsp) -> Vec<PropPlacement> {
                 spawnflags: e.prop("spawnflags").and_then(|v| v.trim().parse().ok()).unwrap_or(0),
                 massscale: e.prop("massscale").and_then(|v| v.trim().parse().ok()).unwrap_or(0.0),
                 physicsmode: e.prop("physicsmode").and_then(|v| v.trim().parse().ok()).unwrap_or(0),
+                fade: {
+                    let key = |k: &'static str| e.prop(k).and_then(|v| v.trim().parse::<f32>().ok());
+                    key("fademaxdist")
+                        .filter(|max| *max > 0.0)
+                        .map(|max| (key("fademindist").unwrap_or(0.0), max))
+                },
                 parent: e.prop("parentname").filter(|p| !p.is_empty()).and_then(|p| {
                     bsp.entities
                         .iter()
@@ -773,6 +783,7 @@ fn place_props(
             casts_shadow: prop.class.is_some(),
             physics: physics.filter(|_| prop.parent.is_none()),
             parent: prop.parent,
+            fade: prop.fade.map(|(a, b)| (a * METERS_PER_UNIT, b * METERS_PER_UNIT)),
         });
     }
     failed.sort();
