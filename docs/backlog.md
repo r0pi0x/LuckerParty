@@ -120,8 +120,8 @@ The console and overlays are in (src/console.rs, src/client/console.rs).
 
 - `net_graph` shows local numbers only (fps, frame time, tick rate,
   entities); ping and traffic once there is networking. `cl_showpos 2`.
-- Select-and-copy with the mouse in the output; `con_copy [lines]` copies
-  to the clipboard and `con_dump` writes a file meanwhile.
+- Mouse selection copies whole lines (drag over the output); selecting
+  part of a line isn't possible.
 
 ## 6. Sound, remaining
 

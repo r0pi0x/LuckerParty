@@ -50,6 +50,7 @@ impl Plugin for ConsoleUiPlugin {
                     drain_log,
                     record_sounds,
                     draw_console,
+                    select_rows,
                     draw_overlays,
                     draw_notify,
                     finish_map_load,
@@ -83,6 +84,11 @@ pub struct ConsoleUi {
     scroll: usize,
     pub filter: String,
     pub timestamps: bool,
+    /// The output lines on screen, and a selection of them (first and
+    /// last row, in the order dragged) made with the mouse.
+    shown: Vec<String>,
+    selection: Option<(usize, usize)>,
+    dragging: bool,
 }
 
 const HISTORY_MAX: usize = 1000;
@@ -93,6 +99,9 @@ const SUGGESTIONS: usize = 8;
 struct ConsoleRoot;
 #[derive(Component)]
 struct ConsoleOutput;
+/// One row of the output on screen.
+#[derive(Component)]
+struct ConsoleRow(usize);
 #[derive(Component)]
 struct ConsoleInput;
 #[derive(Component)]
@@ -126,10 +135,9 @@ fn spawn_ui(mut commands: Commands) {
         .with_children(|c| {
             c.spawn((
                 ConsoleOutput,
-                Text::default(),
-                font(14.0),
                 Node {
                     overflow: Overflow::clip(),
+                    flex_direction: FlexDirection::Column,
                     ..default()
                 },
             ));
@@ -627,9 +635,12 @@ fn draw_console(
         ui.scroll = ui.scroll.min(max_scroll);
         let end = lines.len() - ui.scroll;
         let start = end.saturating_sub(VISIBLE_LINES);
+        ui.shown = lines[start..end].iter().map(|l| l.text.clone()).collect();
+        ui.selection = None;
+        ui.dragging = false;
         commands.entity(*output).despawn_related::<Children>();
         commands.entity(*output).with_children(|c| {
-            for l in &lines[start..end] {
+            for (row, l) in lines[start..end].iter().enumerate() {
                 let color = match l.level {
                     Level::Input => Color::srgb(0.6, 0.8, 1.0),
                     Level::Info => Color::srgb(0.85, 0.85, 0.85),
@@ -641,11 +652,25 @@ fn draw_console(
                 } else {
                     String::new()
                 };
-                c.spawn((TextSpan::new(format!("{stamp}{}\n", l.text)), TextColor(color)));
+                c.spawn((
+                    ConsoleRow(row),
+                    Text::new(format!("{stamp}{}", l.text)),
+                    TextFont {
+                        font_size: FontSize::Px(14.0),
+                        ..default()
+                    },
+                    TextColor(color),
+                    Interaction::default(),
+                    BackgroundColor(Color::NONE),
+                ));
             }
             if ui.scroll > 0 {
                 c.spawn((
-                    TextSpan::new(format!("-- {} more below (PageDown) --\n", ui.scroll)),
+                    Text::new(format!("-- {} more below (PageDown) --", ui.scroll)),
+                    TextFont {
+                        font_size: FontSize::Px(14.0),
+                        ..default()
+                    },
                     TextColor(Color::srgb(0.5, 0.5, 0.5)),
                 ));
             }
@@ -665,6 +690,54 @@ fn draw_console(
             format!("] {before}|{after}")
         }
     };
+}
+
+/// Rows from `a` to `b` in either order.
+fn row_range((a, b): (usize, usize)) -> std::ops::RangeInclusive<usize> {
+    a.min(b)..=a.max(b)
+}
+
+/// Drag over output rows to select them; on release they go to the
+/// clipboard (as terminals copy on select).
+fn select_rows(
+    mut ui: ResMut<ConsoleUi>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    mut rows: Query<(&ConsoleRow, &Interaction, &mut BackgroundColor)>,
+) {
+    if !ui.open {
+        return;
+    }
+    let hovered = rows
+        .iter()
+        .find(|(_, i, _)| matches!(i, Interaction::Hovered | Interaction::Pressed))
+        .map(|(r, ..)| r.0);
+    if mouse.just_pressed(MouseButton::Left) {
+        ui.selection = hovered.map(|r| (r, r));
+        ui.dragging = ui.selection.is_some();
+    } else if ui.dragging && mouse.pressed(MouseButton::Left) {
+        if let (Some(r), Some(sel)) = (hovered, ui.selection.as_mut()) {
+            sel.1 = r;
+        }
+    } else if ui.dragging && mouse.just_released(MouseButton::Left) {
+        ui.dragging = false;
+        if let Some(sel) = ui.selection {
+            let text: Vec<&str> = row_range(sel).filter_map(|r| ui.shown.get(r).map(String::as_str)).collect();
+            if let Err(e) = arboard::Clipboard::new().and_then(|mut c| c.set_text(text.join("\n"))) {
+                warn!("clipboard: {e}");
+            }
+        }
+    }
+    let selected = ui.selection.map(row_range);
+    for (row, _, mut bg) in &mut rows {
+        let want = if selected.as_ref().is_some_and(|s| s.contains(&row.0)) {
+            Color::srgba(0.3, 0.45, 0.8, 0.45)
+        } else {
+            Color::NONE
+        };
+        if bg.0 != want {
+            bg.0 = want;
+        }
+    }
 }
 
 /// Suggestions under the console as you type (needs the world to read
@@ -1622,6 +1695,12 @@ mod tests {
         assert!(score("sv_enablebunnyhopping", "bunny").unwrap() < score("sv_enablebunnyhopping", "sebh").unwrap());
         assert!(score("sv_enablebunnyhopping", "sebh").is_some(), "letters in order");
         assert!(score("cl_showpos", "xyz").is_none());
+    }
+
+    #[test]
+    fn selections_cover_rows_dragged_either_way() {
+        assert_eq!(row_range((5, 2)), 2..=5);
+        assert_eq!(row_range((3, 3)), 3..=3);
     }
 
     #[test]
