@@ -73,6 +73,13 @@ Only `Reflect`-registered types are visible; register new core components in
   by hitgroup, where shots test them (e.g. `+bot_stop 1 +bot_add 2
   +mashup_drawhitboxes 1` with `--screenshot` to check they follow the
   animated body).
+- `mashup_healthbars 1` draws a health bar over every other living
+  character (green full, red nearly dead), e.g. to watch damage land in a
+  `--screenshot` run with `+bot_add 2`.
+- `thirdperson` (back with `firstperson`; distance `cam_idealdist`, CS:S
+  units) puts the camera behind the local player and draws its own
+  animated body: `+thirdperson` in a `--screenshot` run shows the local
+  player's model and animation.
 - Remote: `curl -s localhost:15702 -d '{"jsonrpc":"2.0","id":1,
   "method":"mashup/console","params":{"line":"getpos; cvarlist sv_"}}'`
   runs a line now and returns the lines it printed.

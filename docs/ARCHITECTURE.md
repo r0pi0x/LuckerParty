@@ -54,7 +54,7 @@ A module may use only the modules below it. Enforced by
 | `src/mount/` | `Mount` (ordered layers, first match wins), `FileSource`, `LooseDir`, path normalization, `mashup.local.toml` loading |
 | `src/map/prop_material.rs`, `prop.wgsl` | Props lit by a light probe (vertex colours), Source range fog, and `env_cubemap` reflections of the nearest baked cubemap |
 | `src/map/world_material.rs`, `world.wgsl` | World surfaces: texture x baked light with radiosity normal mapping, plus baked-cubemap reflections (Source LightmappedGeneric at LDR) |
-| `src/map/mod.rs` | `MapData` (meters, Y up, meshes per material, textures, lightmap atlas, collision, prop models and placements, spawns, ropes) and `MapPlugin` that spawns it (re-exports the `core` collision types) |
+| `src/map/mod.rs` | `MapData` (meters, Y up, meshes per material, textures, lightmap atlas, collision, prop models and placements, spawns, ropes) and `MapPlugin` that spawns it (re-exports the `core` collision types); character bodies (the local player's hidden unless `ShowLocalBody`) |
 | `src/map/anim.rs` | Skeletal animation for any game: `AnimSet` (sampled animations, sequences on pose-parameter grids, autolayers), the blend/layer math, and the `Animator` component that `pose_bodies` turns into body joint transforms; games drive it in `DriveAnimation` |
 | `src/map/nav.rs` | `NavMesh` (any game): areas with corner heights, directed links and ladders in engine space; area queries, A* with the stock cost, crossing points, `route` |
 | `src/map/soundscape.rs` | Soundscape playback: zone/emitter selection, looping ambience with crossfades, random one-shots |
@@ -67,7 +67,8 @@ A module may use only the modules below it. Enforced by
 | `src/bin/refcmp.rs` | Dev tool: compare views against real CS:S (RCON-driven capture, metrics, side-by-sides) |
 | `src/bin/dump.rs` | Dev tool: summarize, list and extract a game install's files |
 | `src/harness.rs` | `Sim`: headless app stepped by exact fixed ticks, for tests |
-| `src/client/` | Local input, first-person camera, debug UI, `--screenshot`, remote protocol; `hud.rs`: crosshair (gap from spread), health, ammo, hit marker, killfeed, capsule bodies for other characters |
+| `src/client/view.rs` | Third-person camera (`thirdperson`/`firstperson`, `cam_idealdist`, swept back from the eye against the world), master `volume` (Bevy `GlobalVolume`), `mashup_healthbars` |
+| `src/client/` | Local input (mouse look as CS:S: `sensitivity` x `m_yaw`/`m_pitch` degrees per count), first-person camera, debug UI, `--screenshot`, remote protocol; `hud.rs`: crosshair (gap from spread), health, ammo, hit marker, killfeed, capsule bodies for other characters |
 | `src/lib.rs` | `SimPlugins` (everything the simulation needs) |
 | `src/main.rs` | The game binary: `SimPlugins` + map + `ClientPlugin` |
 

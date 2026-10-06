@@ -357,8 +357,14 @@ pub struct CharacterBody {
     held: Option<(Entity, String)>,
 }
 
-/// Give characters other than the local player their team's body (a child
-/// at the feet), and turn bodies with their character's yaw.
+/// Whether the local player's own body is drawn (third person). The
+/// client sets it; the body is there either way, animated, and hidden
+/// when this is false.
+#[derive(Resource, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShowLocalBody(pub bool);
+
+/// Give characters their team's body (a child at the feet); the local
+/// player's is hidden unless `ShowLocalBody`.
 #[allow(clippy::type_complexity)]
 fn attach_bodies(
     models: Option<Res<CharacterModels>>,
@@ -370,16 +376,18 @@ fn attach_bodies(
             &ColliderAabb,
             &GlobalTransform,
             Option<&Children>,
+            Has<crate::core::LocalPlayer>,
         ),
-        (With<crate::core::Intent>, Without<crate::core::LocalPlayer>),
+        With<crate::core::Intent>,
     >,
     existing: Query<&CharacterBody>,
+    show_local: Res<ShowLocalBody>,
     mut commands: Commands,
 ) {
     let (Some(models), Some(bodies)) = (models, bodies) else {
         return;
     };
-    for (e, team, aabb, at, children) in &characters {
+    for (e, team, aabb, at, children, local) in &characters {
         let Some((index, _)) = models.for_team(team.copied()) else {
             continue;
         };
@@ -398,7 +406,7 @@ fn attach_bodies(
             .spawn((
                 Name::new("Body"),
                 Transform::from_xyz(0.0, feet, 0.0),
-                Visibility::Inherited,
+                body_visibility(local, *show_local),
                 ChildOf(e),
             ))
             .id();
@@ -438,6 +446,32 @@ fn attach_bodies(
     }
 }
 
+fn body_visibility(local: bool, show_local: ShowLocalBody) -> Visibility {
+    if local && !show_local.0 {
+        Visibility::Hidden
+    } else {
+        Visibility::Inherited
+    }
+}
+
+/// Show or hide the local player's body when `ShowLocalBody` changes.
+fn show_local_body(
+    show: Res<ShowLocalBody>,
+    local: Query<&Children, With<crate::core::LocalPlayer>>,
+    mut bodies: Query<&mut Visibility, With<CharacterBody>>,
+) {
+    let want = body_visibility(true, *show);
+    for children in &local {
+        let mut it = bodies.iter_many_mut(children);
+        while let Some(mut vis) = it.fetch_next() {
+            if *vis != want {
+                *vis = want;
+            }
+        }
+    }
+}
+
+/// Turn bodies with their character's yaw.
 fn turn_bodies(
     characters: Query<(&crate::core::Intent, &Children, Option<&anim::Animator>)>,
     mut bodies: Query<&mut Transform, With<CharacterBody>>,
@@ -1112,6 +1146,7 @@ impl Plugin for MapPlugin {
                 .insert_resource(ActiveMapLook(data.look.clone()));
         }
         app.add_plugins(sound::SoundPlugin)
+            .init_resource::<ShowLocalBody>()
             .insert_resource(GlobalAmbientLight {
                 brightness: 600.0,
                 // Baked lighting already includes the map's ambient light.
@@ -1133,7 +1168,13 @@ impl Plugin for MapPlugin {
                     glow_visibility,
                     dust::update_dust,
                     show_skybox_in_place,
-                    (attach_bodies, turn_bodies, pose_bodies.after(DriveAnimation), attach_held)
+                    (
+                        attach_bodies,
+                        show_local_body,
+                        turn_bodies,
+                        pose_bodies.after(DriveAnimation),
+                        attach_held,
+                    )
                         .run_if(resource_exists::<CharacterBodies>),
                 ),
             )
