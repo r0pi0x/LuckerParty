@@ -239,6 +239,17 @@ pub struct LightmapLayout {
 pub fn convert(bsp: &Bsp, bytes: &[u8], name: &str) -> (MapData, LightmapLayout) {
     let lighting = lightmap::lighting_lump(bytes);
     let leaves = super::ambient::raw_leaves(bytes);
+    // Switchable light styles (32+) whose lights start off (spawnflag 1);
+    // the others are lit at map start (cs_office's projector, cs_assault's
+    // red lights).
+    let dark_styles: std::collections::HashSet<u8> = bsp
+        .entities
+        .iter()
+        .filter(|e| e.prop("classname").is_some_and(|c| c.starts_with("light")))
+        .filter(|e| e.prop("spawnflags").and_then(|f| f.trim().parse::<i32>().ok()).unwrap_or(0) & 1 != 0)
+        .filter_map(|e| e.prop("style").and_then(|s| s.trim().parse::<u8>().ok()))
+        .filter(|s| *s >= 32)
+        .collect();
     let mut by_material: BTreeMap<String, MapMesh> = BTreeMap::new();
     // Per mesh: each vertex's lightmap block slot and luxel coordinate,
     // resolved to atlas UVs once all blocks are packed.
@@ -330,8 +341,13 @@ pub fn convert(bsp: &Bsp, bytes: &[u8], name: &str) -> (MapData, LightmapLayout)
             continue;
         }
 
-        let bumped = lightmap::face_bumped_samples(lighting, &face, flags.contains(TextureFlags::BUMPLIGHT));
-        let slot = lightmap::face_samples(lighting, &face).map(|s| atlas.add_bumped(s, bumped));
+        let (flat, bumped) = lightmap::face_samples_lit(
+            lighting,
+            &face,
+            flags.contains(TextureFlags::BUMPLIGHT),
+            &|style| dark_styles.contains(&style),
+        );
+        let slot = flat.map(|s| atlas.add_bumped(s, bumped));
         if in_world {
             *face_slots.last_mut().unwrap() = slot;
         }

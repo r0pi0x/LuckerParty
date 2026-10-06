@@ -148,6 +148,39 @@ fn additive_materials_add() {
     );
 }
 
+/// Switchable lights that start on (cs_office's projector: style 32, no
+/// "starts dark" flag) add their own lightmap style to the faces they light.
+#[test]
+fn switchable_lights_that_start_on_are_baked_in() {
+    use cs_source::lightmap;
+    if !installed() {
+        return;
+    }
+    let install = LocalConfig::load().unwrap().game_path(cs_source::GAME).unwrap();
+    let mount = cs_source::mount::open(&install).unwrap();
+    let bytes = mount.read("maps/cs_office.bsp").unwrap();
+    let bsp = vbsp::Bsp::read(&bytes).unwrap();
+    let lump = lightmap::lighting_lump(&bytes);
+    let (mut faces, mut brighter) = (0, 0);
+    for face in bsp.models().next().unwrap().faces() {
+        if !face.styles.contains(&32) {
+            continue;
+        }
+        faces += 1;
+        let bumped = face.texture().flags.contains(vbsp::TextureFlags::BUMPLIGHT);
+        let total = |s: &lightmap::FaceSamples| s.rgb.iter().map(|c| c[0] + c[1] + c[2]).sum::<f32>();
+        let base = lightmap::face_samples(lump, &face).map_or(0.0, |s| total(&s));
+        let on = lightmap::face_samples_lit(lump, &face, bumped, &|_| false).0.map_or(0.0, |s| total(&s));
+        let off = lightmap::face_samples_lit(lump, &face, bumped, &|_| true).0.map_or(0.0, |s| total(&s));
+        assert!((off - base).abs() <= 1e-3 * base.max(1.0), "style 0 alone when the light is off");
+        if on > base * 1.01 {
+            brighter += 1;
+        }
+    }
+    assert!(faces > 0, "the projector lights some faces");
+    assert!(brighter * 2 > faces, "{brighter} of {faces} faces brighter with the projector on");
+}
+
 /// Debug aid: `MAP=de_aztec AT=-280,-1512,-160 R=600 cargo test ...
 /// --ignored props_near -- --nocapture` lists props near a Source point.
 #[test]

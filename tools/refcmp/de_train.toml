@@ -1,0 +1,67 @@
+# Views of de_train for spotting visual bugs (docs/plans/active/other-maps.md),
+# generated from its entities: intermission cameras, the first T and CT
+# spawns, and bomb/rescue zone centres looking four ways.
+# Source eye positions; angles are [pitch, yaw] in Source degrees.
+
+map = "de_train"
+camera = "cam1"
+
+[[view]]
+name = "cam0"
+position = [-480, -1657, -57]
+angles = [0, 48.9]
+
+[[view]]
+name = "cam1"
+position = [828, -216, 133]
+angles = [8.5, 152.3]
+
+[[view]]
+name = "t_spawn"
+position = [-1760, 1568, -144]
+angles = [0, 270]
+
+[[view]]
+name = "ct_spawn"
+position = [1728, -1428, -219]
+angles = [0, 134]
+
+[[view]]
+name = "zone0_0"
+position = [36, -1280, -296]
+angles = [10, 0]
+
+[[view]]
+name = "zone0_90"
+position = [36, -1280, -296]
+angles = [10, 90]
+
+[[view]]
+name = "zone0_180"
+position = [36, -1280, -296]
+angles = [10, 180]
+
+[[view]]
+name = "zone0_270"
+position = [36, -1280, -296]
+angles = [10, 270]
+
+[[view]]
+name = "zone1_0"
+position = [1292, -160, -156]
+angles = [10, 0]
+
+[[view]]
+name = "zone1_90"
+position = [1292, -160, -156]
+angles = [10, 90]
+
+[[view]]
+name = "zone1_180"
+position = [1292, -160, -156]
+angles = [10, 180]
+
+[[view]]
+name = "zone1_270"
+position = [1292, -160, -156]
+angles = [10, 270]

@@ -138,6 +138,7 @@ Counts are from de_dust2's entity lump and static prop lump.
   don't open, breakables don't break, func_rotating doesn't turn, render
   modes other than normal and 10 (translucent func_brush) aren't applied.
 - **Fire** (`env_fire`, 16) and other effects, if they show in normal play.
-- **Lightmap styles** (switchable lights).
+- **Lightmap styles**: switching lights and animated styles (lights lit at
+  map start are baked in).
 - **Baked per-vertex prop lighting (`.vhv`)** for maps that ship it (dust2
   doesn't; its props use the per-prop light probe, as in the game).

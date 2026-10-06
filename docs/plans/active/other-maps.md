@@ -34,12 +34,21 @@ How to check:
 | 11 | Decals that find no surface (assault 46, nuke 21, train 21, others ≤ 8) and overlays without geometry (train 8, assault 5) | many | | Probably on brush entities (now drawn) or displacements, which decals and overlays don't project onto | Open |
 | 12 | A dark, unlit-looking building block behind the street | cs_office | cam0, left | Unknown: needs the reference view | Open: reference capture needed |
 | 13 | View model drawn in `--views` captures | all | | No `r_drawviewmodel` equivalent; capture hides nothing | Open (client) |
+| 15 | Switchable lights that start on missing (office projector, assault red lights) | cs_office, cs_assault | office h1 room | Only lightmap style 0 was read | Fixed: styles lit at map start are summed |
 | 14 | `--views` crashed (wgpu: attachments of different sizes) | all | | The view-model camera stayed on the window when `--views` retargeted the main camera | Fixed: follows the anchor camera's target |
 
-Not seen in the captured views so far: z-fighting on cs_office (the
-office, garage and street views are clean). The most likely candidates
-before these fixes were the black props (2) and missing windows (3);
-check again once the reference views are available.
+Z-fighting: none found on cs_office, de_nuke or de_aztec. Method: each
+view captured twice, the second 2 mm to the side; z-fighting flickers
+between the two while everything else stays put (`magick compare -metric
+AE -fuzz 19%` per pair, view model cropped out). Only alpha-tested edges
+(branches, fences) differed. The most likely things the user saw before
+these fixes were the black props (2) and missing windows (3); if it
+persists, a view (`getpos`) of where would let the same check find it.
+
+Also looked at (no new bugs beyond the open items): de_train, de_inferno,
+cs_italy, de_dust (views in tools/refcmp/). de_train's bomb-zone views sit
+under train cars and inferno's cam10 inside a wall (generated positions,
+not bugs).
 
 ## Next
 
