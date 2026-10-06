@@ -19,8 +19,8 @@ Each group is one agent's worktree; merged into main as they finish.
   specs/cs_source/weapons.md (walls by material, through players x0.5,
   object counts, compounding falloff); the measured recoil sets (moving and
   airborne AK-47).
-- **C. First-person view models** (`v_knife_*.mdl`, `v_rif_ak47.mdl`) with
-  draw/idle/fire/reload sequences, through the animation decoder.
+- **C. First-person view models**: done (docs/plans/active/view-models.md);
+  remaining: bob/sway, muzzle flash, `cl_righthand`.
 - **D. Movement: terrain and falls.** Fuzz walking over displacements to
   find the rare "stubbed toe" stop and fix it; fall damage (measure on the
   probe server); `trigger_hurt` volumes.

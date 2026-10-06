@@ -68,6 +68,7 @@ fn main() {
         mashup::games::cs_source::movement::SourceMovementPlugin,
         mashup::games::cs_source::weapons::CsWeaponsPlugin,
         mashup::games::cs_source::player_anim::PlayerAnimPlugin,
+        mashup::games::cs_source::view_anim::ViewAnimPlugin,
         mashup::map::world_material::WorldMaterialPlugin,
         mashup::map::rope_material::RopeMaterialPlugin,
         mashup::map::sprite_material::SpriteMaterialPlugin,

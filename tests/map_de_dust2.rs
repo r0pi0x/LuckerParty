@@ -1817,3 +1817,48 @@ fn riding_players_never_sticks() {
     }
     assert!(stuck.is_empty(), "{} stuck moments: {:?}", stuck.len(), &stuck[..stuck.len().min(5)]);
 }
+
+#[test]
+fn view_models_load_with_their_sequences() {
+    use mashup::games::cs_source::weapons::{AK47, KNIFE};
+    let Some(map) = dust2() else { return };
+    let ak = map.view_models.iter().find(|v| v.key == AK47).expect("AK-47 view model");
+    assert_eq!(ak.bones.len(), 63, "hands and weapon");
+    let tris: usize = ak.model.meshes.iter().map(|m| m.indices.len() / 3).sum();
+    assert!(tris > 1000, "{tris} triangles");
+    assert!(
+        ak.model.meshes.iter().all(|m| m.joints.len() == m.positions.len()),
+        "skinned"
+    );
+    let set = ak.animations.as_ref().expect("sequences");
+    let fire: Vec<&str> = set
+        .activities("ACT_VM_PRIMARYATTACK")
+        .iter()
+        .map(|(s, _)| set.sequences[*s].name.as_str())
+        .collect();
+    assert_eq!(fire, ["ak47_fire1", "ak47_fire2", "ak47_fire3"]);
+    // Durations from the spec's view-model table.
+    let dur = |act: &str| set.duration(set.activity(act).expect(act));
+    assert!((dur("ACT_VM_DRAW") - 1.0).abs() < 1e-4);
+    assert!((dur("ACT_VM_RELOAD") - 2.4324).abs() < 1e-4);
+    assert!((dur("ACT_VM_PRIMARYATTACK") - 0.75).abs() < 1e-4);
+    assert!(set.sequences[set.activity("ACT_VM_IDLE").unwrap()].looping);
+    // Left-handed in the file; drawn mirrored into the right hand.
+    assert!(ak.mirror);
+    // Draw ends where idle starts (the decoder reads both alike).
+    let params = set.default_params();
+    let pose = |s: &str, cycle: f32| {
+        let mut p = set.defaults.clone();
+        set.accumulate(&mut p, set.sequence(s).unwrap(), cycle, 1.0, &params);
+        p
+    };
+    let (end, start) = (pose("ak47_draw", 1.0), pose("ak47_idle", 0.0));
+    for (a, b) in end.iter().zip(&start) {
+        assert!(a.0.angle_between(b.0) < 0.01 && a.1.distance(b.1) < 0.01);
+    }
+    let knife = map.view_models.iter().find(|v| v.key == KNIFE).expect("knife view model");
+    let set = knife.animations.as_ref().unwrap();
+    for name in ["draw", "idle", "midslash1", "midslash2", "stab", "stab_miss"] {
+        assert!(set.sequence(name).is_some(), "{name}");
+    }
+}

@@ -224,6 +224,8 @@ fn spawn_local_player(
         ))
         .with_child((
             FirstPersonCamera,
+            // The local player's weapon is drawn here (map::view_model).
+            crate::map::ViewModelAnchor,
             crate::map::sound::SoundListener,
             Camera3d::default(),
             Projection::Perspective(PerspectiveProjection {

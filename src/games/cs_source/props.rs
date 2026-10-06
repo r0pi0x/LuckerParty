@@ -151,6 +151,54 @@ pub fn load_character(
     })
 }
 
+/// A weapon's first-person view model (spec weapons.md 3.3: the script's
+/// `viewmodel`): its meshes skinned to its own skeleton (hands and
+/// weapon), in the eye's space (Source view models have their origin at
+/// the eye, facing +X), and its sequences.
+pub fn load_view_model(
+    materials: &mut MaterialLoader,
+    path: &str,
+    key: &str,
+    fov: f32,
+) -> Result<crate::map::MapViewModel, String> {
+    let (model, _) = load_model(materials, path)?;
+    // Source models face +X; the eye looks along -Z.
+    let face = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+    let mut view = convert_model_in(&model, 0, materials, false);
+    for mesh in &mut view.meshes {
+        for p in &mut mesh.positions {
+            *p = (face * Vec3::from(*p)).to_array();
+        }
+        for n in &mut mesh.normals {
+            *n = (face * Vec3::from(*n)).to_array();
+        }
+    }
+    let read = |p: &str| materials.read(p);
+    let bones = super::anim::bones(&read, path)?
+        .into_iter()
+        .map(|(name, parent, rotation, position)| crate::map::MapBone {
+            name,
+            parent,
+            position,
+            rotation,
+        })
+        .collect();
+    let animations = super::anim::load(&read, path).map(std::sync::Arc::new)?;
+    // Source axes to ours (x, z, -y): -90 degrees about X.
+    let axes = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+    Ok(crate::map::MapViewModel {
+        key: key.to_string(),
+        model: view,
+        bones,
+        root: Transform::from_rotation(face * axes).with_scale(Vec3::splat(METERS_PER_UNIT)),
+        animations: Some(animations),
+        fov,
+        // CS:S's view models are left-handed; the game's default
+        // cl_righthand 1 shows them mirrored, in the right hand.
+        mirror: true,
+    })
+}
+
 /// A weapon's world model held by characters: its meshes in the frame of
 /// its first bone that player skeletons also have (bone merge: that bone
 /// follows the hand), in the skeleton's axes and units.

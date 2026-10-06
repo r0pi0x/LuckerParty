@@ -64,6 +64,7 @@ struct Bone {
 struct RawSequence {
     name: String,
     activity: String,
+    activity_weight: i32,
     flags: i32,
     fade: (f32, f32),
     grid: (usize, usize),
@@ -175,6 +176,7 @@ fn parse(bytes: Vec<u8>) -> Result<Model, String> {
         sequences.push(RawSequence {
             name: b.name(o, o + 4)?,
             activity: b.name(o, o + 8)?,
+            activity_weight: b.i32(o + 20)?,
             flags: b.i32(o + 12)?,
             fade: (b.f32(o + 104)?, b.f32(o + 108)?),
             grid: (w, h),
@@ -480,6 +482,7 @@ pub fn load(read: Read, path: &str) -> Result<AnimSet, String> {
             set.sequences.push(Sequence {
                 name: s.name.clone(),
                 activity: s.activity.clone(),
+                activity_weight: s.activity_weight,
                 looping: s.flags & 0x1 != 0,
                 snap: s.flags & 0x2 != 0,
                 delta: s.flags & 0x4 != 0,
