@@ -1944,7 +1944,7 @@ fn spawn_map(
         }
     }
 
-    commands.insert_resource(decal::DecalSurfaces::new(&data.meshes));
+    commands.insert_resource(decal::DecalSurfaces::new(&data));
     if !texture_handles.is_empty() && !data.decals.groups.is_empty() {
         commands.insert_resource(decal::DecalAssets::new(data.decals.clone(), texture_handles.clone()));
         commands.insert_resource(decal::ImpactDecals);

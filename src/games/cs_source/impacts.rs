@@ -140,7 +140,8 @@ const SLASH_DECAL: &str = "ManhackCut";
 
 /// Decals where shots and knife swings hit the world: the hit surface's
 /// impact decal ("TranslationData" by its game material), the knife's
-/// slash. Props and characters take none yet.
+/// slash, on the world or the prop that was hit. Characters take none
+/// yet.
 fn impact_decals(
     mut events: MessageReader<WeaponEvent>,
     bank: Option<Res<SoundBank>>,
@@ -149,7 +150,8 @@ fn impact_decals(
     characters: Query<(), With<Intent>>,
     mut decals: MessageWriter<PlaceDecal>,
 ) {
-    let on_world = |e: Entity| !props.contains(e) && !characters.contains(e);
+    // Characters take blood, not these (not done yet).
+    let marked = |e: Entity| !characters.contains(e);
     for e in events.read() {
         match &e.kind {
             WeaponEventKind::Shot {
@@ -157,8 +159,8 @@ fn impact_decals(
                 to,
                 hit: Some(hit),
                 normal: Some(normal),
-            } if on_world(*hit) => {
-                let name = surface_of(None, *to, &props, &characters, grid.as_deref());
+            } if marked(*hit) => {
+                let name = surface_of(Some(*hit), *to, &props, &characters, grid.as_deref());
                 let Some(material) = bank
                     .as_ref()
                     .and_then(|b| surface(&b.0, &name))
@@ -167,6 +169,7 @@ fn impact_decals(
                     continue;
                 };
                 decals.write(PlaceDecal {
+                    target: Some(*hit),
                     group: DecalGroup::Material(material),
                     point: *to,
                     normal: *normal,
@@ -177,8 +180,9 @@ fn impact_decals(
             WeaponEventKind::Swing {
                 at: Some((point, normal, hit)),
                 ..
-            } if on_world(*hit) => {
+            } if marked(*hit) => {
                 decals.write(PlaceDecal {
+                    target: Some(*hit),
                     group: DecalGroup::Named(SLASH_DECAL.into()),
                     point: *point,
                     normal: *normal,

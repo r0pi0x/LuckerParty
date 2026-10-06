@@ -55,9 +55,11 @@ pub struct MapDecals {
 /// Put a decal from `group` on the world at `point`, on the surface with
 /// `normal`; `dir` is the direction of whatever made it. `spin` turns it
 /// randomly in the surface plane (bullet holes); otherwise walls keep it
-/// upright.
+/// upright. With a `target` prop (or one of its colliders) the decal goes
+/// on that prop's model and moves with it; otherwise on the world.
 #[derive(Message, Clone, Debug)]
 pub struct PlaceDecal {
+    pub target: Option<Entity>,
     pub group: DecalGroup,
     pub point: Vec3,
     pub normal: Vec3,
@@ -85,15 +87,26 @@ pub const MAX_DECALS: usize = 512;
 /// Triangles whose plane passes farther than this from the point (meters)
 /// take no part of the decal.
 const REACH: f32 = 0.1;
-/// Lift off the surface (meters).
-const LIFT: f32 = 0.003;
+/// Lift off the surface (meters): above the map's own decals (0.15 units)
+/// and overlays (up to 0.25 units), so impacts draw on top of them.
+const LIFT: f32 = 0.35 * 0.0254;
 const CELL: f32 = 1.0;
 
-/// World triangles decals can land on, in a uniform grid.
-#[derive(Resource, Default)]
-pub(super) struct DecalSurfaces {
+/// Triangles (corners and normal) in a uniform grid.
+#[derive(Default)]
+pub(super) struct TriSet {
     tris: Vec<[Vec3; 4]>,
     cells: HashMap<IVec3, Vec<u32>>,
+}
+
+/// What decals can land on: the world's triangles, and each prop model's
+/// in its own space.
+#[derive(Resource, Default)]
+pub(super) struct DecalSurfaces {
+    world: TriSet,
+    models: Vec<TriSet>,
+    /// Prop index -> model index.
+    props: Vec<usize>,
 }
 
 fn cell(p: Vec3) -> IVec3 {
@@ -101,7 +114,17 @@ fn cell(p: Vec3) -> IVec3 {
 }
 
 impl DecalSurfaces {
-    /// Opaque world surfaces (not the 3D skybox, other decals or overlays,
+    pub(super) fn new(data: &super::MapData) -> Self {
+        Self {
+            world: TriSet::new(&data.meshes),
+            models: data.models.iter().map(|m| TriSet::new(&m.meshes)).collect(),
+            props: data.props.iter().map(|p| p.model).collect(),
+        }
+    }
+}
+
+impl TriSet {
+    /// Opaque surfaces (not the 3D skybox, other decals or overlays,
     /// unlit or blended surfaces).
     pub(super) fn new(meshes: &[MapMesh]) -> Self {
         let mut out = Self::default();
@@ -193,7 +216,7 @@ fn clip(mut poly: Vec<(Vec3, Vec2)>) -> Vec<(Vec3, Vec2)> {
 /// texture coordinates within `decal`'s rectangle. None when nothing is
 /// in reach.
 pub(super) fn project(
-    surfaces: &DecalSurfaces,
+    surfaces: &TriSet,
     decal: &MapDecal,
     point: Vec3,
     normal: Vec3,
@@ -290,6 +313,8 @@ impl DecalAssets {
 pub(super) fn place_decals(
     mut asks: MessageReader<PlaceDecal>,
     surfaces: Option<Res<DecalSurfaces>>,
+    props: Query<(&super::PropIndex, &GlobalTransform)>,
+    parents: Query<&ChildOf>,
     assets: Option<ResMut<DecalAssets>>,
     meshes: Option<ResMut<Assets<Mesh>>>,
     materials: Option<ResMut<Assets<DecalMaterial>>>,
@@ -309,7 +334,32 @@ pub(super) fn place_decals(
             let turn = Quat::from_axis_angle(ask.normal.normalize_or_zero(), assets.random() * std::f32::consts::TAU);
             (right, down) = (turn * right, turn * down);
         }
-        let Some(mesh) = project(&surfaces, &decal, ask.point, ask.normal, right, down) else {
+        // On a prop: its model, in its own space, as its child. A hit
+        // collider may be the prop or a child of it.
+        let prop = ask.target.and_then(|t| {
+            std::iter::once(t)
+                .chain(parents.get(t).ok().map(|c| c.parent()))
+                .find_map(|e| props.get(e).ok().map(|(i, at)| (e, i.0, at.affine().inverse())))
+        });
+        let projected = match prop {
+            Some((entity, index, to_local)) => {
+                let Some(set) = surfaces.props.get(index).and_then(|m| surfaces.models.get(*m)) else {
+                    continue;
+                };
+                let local = |v: Vec3| to_local.transform_vector3(v).normalize_or_zero();
+                project(
+                    set,
+                    &decal,
+                    to_local.transform_point3(ask.point),
+                    local(ask.normal),
+                    local(right),
+                    local(down),
+                )
+                .map(|m| (m, Some(entity)))
+            }
+            None => project(&surfaces.world, &decal, ask.point, ask.normal, right, down).map(|m| (m, None)),
+        };
+        let Some((mesh, parent)) = projected else {
             continue;
         };
         let Some(texture) = assets.textures.get(decal.texture).cloned() else {
@@ -326,15 +376,18 @@ pub(super) fn place_decals(
                 m
             }
         };
-        let e = commands
-            .spawn((
-                Name::new("Decal"),
-                Mesh3d(meshes.add(mesh)),
-                MeshMaterial3d(material),
-                Transform::default(),
-                MapPart,
-            ))
-            .id();
+        let mut decal_entity = commands.spawn((
+            Name::new("Decal"),
+            Mesh3d(meshes.add(mesh)),
+            MeshMaterial3d(material),
+            Transform::default(),
+            Visibility::default(),
+            MapPart,
+        ));
+        if let Some(p) = parent {
+            decal_entity.insert(ChildOf(p));
+        }
+        let e = decal_entity.id();
         assets.placed.push_back(e);
         while assets.placed.len() > MAX_DECALS {
             if let Some(old) = assets.placed.pop_front() {
@@ -361,6 +414,12 @@ impl Material for DecalMaterial {
 
     fn alpha_mode(&self) -> AlphaMode {
         AlphaMode::Blend
+    }
+
+    /// Sorted after the map's own decals and overlays (same surfaces,
+    /// lower lift), so impacts draw on top of them.
+    fn depth_bias(&self) -> f32 {
+        1000.0
     }
 
     /// The framebuffer times the shader's factor; no depth writes.
@@ -408,14 +467,14 @@ impl Plugin for DecalMaterialPlugin {
 mod tests {
     use super::*;
 
-    fn wall() -> DecalSurfaces {
+    fn wall() -> TriSet {
         // A 4 m square wall facing +Z at z = 0, two triangles.
         let m = MapMesh {
             positions: vec![[-2.0, -2.0, 0.0], [2.0, -2.0, 0.0], [2.0, 2.0, 0.0], [-2.0, 2.0, 0.0]],
             indices: vec![0, 1, 2, 0, 2, 3],
             ..default()
         };
-        DecalSurfaces::new(&[m])
+        TriSet::new(&[m])
     }
 
     fn decal(size: f32) -> MapDecal {

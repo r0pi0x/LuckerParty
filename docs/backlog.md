@@ -51,7 +51,7 @@ framework, knife, AK-47, HUD, deathmatch and a first bot are in.
   burst/silencer M16 are measured too).
 - Money and a buy menu (`buy` gives for free).
 - Reload, grenade and death animations (world models are held by bodies).
-- Decals, remaining: on props and characters (model decals, blood);
+- Decals, remaining: on characters (blood);
   check the knife's mark (`ManhackCut` is a guess) and lit decals (wood,
   glass) against the game; tracers; explosion impulses.
 - dust2's woven basket physics props (`props_junk`/`wicker` style pots):
