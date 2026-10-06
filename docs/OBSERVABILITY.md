@@ -76,6 +76,12 @@ Only `Reflect`-registered types are visible; register new core components in
 - `mashup_healthbars 1` draws a health bar over every other living
   character (green full, red nearly dead), e.g. to watch damage land in a
   `--screenshot` run with `+bot_add 2`.
+- `mashup_particles` prints the live particle groups and counts (and how
+  many count against the 2048 cap), e.g. over the remote console after
+  shooting. Impact effects obey `r_drawflecks`, `cl_show_splashes` and
+  `violence_hblood` (0/1). To see a shot's effects in a `--screenshot`
+  run, fire with `++attack` and keep `--frames` low enough that they are
+  still alive (dust lives about a second, sparks a tenth of one).
 - `thirdperson` (back with `firstperson`; distance `cam_idealdist`, CS:S
   units) puts the camera behind the local player and draws its own
   animated body: `+thirdperson` in a `--screenshot` run shows the local

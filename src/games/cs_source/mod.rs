@@ -6,6 +6,7 @@ pub mod bsp;
 pub mod decals;
 pub mod dust;
 pub mod hud;
+pub mod impact_effects;
 pub mod impacts;
 pub mod lightmap;
 pub mod material;
