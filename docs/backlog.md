@@ -100,6 +100,12 @@ docs/plans/active/sound.md.
 
 - The player physics shadow for `prop_physics` (dust2 has none).
 - Impact damage, breakable props.
+- Breakable glass as in cs_office (`func_breakable_surf`): windows that
+  take a hole per bullet, crack around it, shatter in pieces when hit
+  hard or damaged enough, and let bullets and players through once
+  broken; the glass-break decal, shard and grit effects (impact effects
+  spec covers the shards) and break sounds. Needs a spec (public SDK) and
+  brush entities, which the world loader skips today.
 
 ## 8. Visual fidelity
 
