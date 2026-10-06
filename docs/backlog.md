@@ -107,7 +107,8 @@ docs/plans/active/sound.md.
 - **Water surfaces**: swimming works (`MapWater`), but water faces draw as
   plain textured surfaces (or, without a base texture, their opaque fog
   colour with cubemap reflections), without the Water shader's
-  refraction, reflection or fog: clear water looks murky. Water currents (base velocity) aren't applied.
+  refraction, reflection or fog: clear water looks murky. Water currents
+  (base velocity) aren't applied.
 - **HDR parity**: CS:S defaults to mat_hdr_level 2 on dust2 (HDR lightmaps,
   tonemapping, bloom); the reference install runs LDR. Compare and match
   both if players use HDR. Tonemap (`env_tonemap_controller`).
