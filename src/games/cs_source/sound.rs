@@ -164,7 +164,26 @@ pub(super) fn wave_file(wave: &str) -> String {
 }
 
 /// Entries the movement and world use, beyond the surfaces' steps.
-const ALWAYS: &[&str] = &["Player.Swim", "Player.FallDamage"];
+const ALWAYS: &[&str] = &[
+    "Player.Swim",
+    "Player.FallDamage",
+    "Event.TERWin",
+    "Event.CTWin",
+    "Event.RoundDraw",
+    "radio.moveout",
+    "radio.letsgo",
+    "radio.locknload",
+];
+
+/// The announcer's round sounds (game_sounds_radio.txt entries).
+pub fn round_sounds() -> crate::map::RoundSounds {
+    crate::map::RoundSounds {
+        attackers_win: Some("Event.TERWin".into()),
+        defenders_win: Some("Event.CTWin".into()),
+        draw: Some("Event.RoundDraw".into()),
+        start: ["radio.moveout", "radio.letsgo", "radio.locknload"].map(String::from).to_vec(),
+    }
+}
 
 /// The map's sounds: the entries it uses and their decoded waves, plus the
 /// surfaces' step sounds and game materials.

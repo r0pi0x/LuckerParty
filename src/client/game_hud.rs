@@ -453,9 +453,22 @@ fn round_banner(
     rounds: Option<Res<RoundState>>,
     banner: Query<Entity, With<RoundBanner>>,
     windows: Query<&Window>,
+    sounds: Option<Res<crate::map::RoundSounds>>,
+    mut play: MessageWriter<crate::map::PlaySound>,
+    mut was_live: Local<bool>,
     mut commands: Commands,
 ) {
     use crate::rules::rounds::{ATTACKERS, DEFENDERS, Phase};
+    // "Let's go!" as a round goes live.
+    let live = rounds.as_ref().is_some_and(|r| matches!(r.phase, Phase::Live { .. }));
+    if live
+        && !*was_live
+        && let Some(s) = sounds.as_ref().filter(|s| !s.start.is_empty())
+    {
+        let n = rounds.as_ref().map_or(0, |r| r.number as usize);
+        play.write(crate::map::PlaySound::ui(s.start[n % s.start.len()].clone()));
+    }
+    *was_live = live;
     let over = rounds.is_some_and(|r| matches!(r.phase, Phase::Over { .. }));
     if !over {
         for e in &banner {
@@ -463,6 +476,13 @@ fn round_banner(
         }
     }
     let Some(end) = ended.read().last() else { return };
+    if let Some(entry) = sounds.as_ref().and_then(|s| match end.winner {
+        Some(ATTACKERS) => s.attackers_win.clone(),
+        Some(DEFENDERS) => s.defenders_win.clone(),
+        _ => s.draw.clone(),
+    }) {
+        play.write(crate::map::PlaySound::ui(entry));
+    }
     let text = match end.winner {
         Some(ATTACKERS) => "Terrorists Win!",
         Some(DEFENDERS) => "Counter-Terrorists Win!",

@@ -34,9 +34,11 @@ restarts.
    (`primammo`/`secammo`), bots buying, the game's own VGUI buy-menu look
    (ours: `client/buy_menu.rs`, B or `buymenu`, number keys, team-only
    guns marked; rounds start from the team pistol and knife).
-3. Round sounds (`Event.TERWin`/`Event.CTWin`/`Event.RoundDraw` game
-   sounds), the scoreboard's team scores, round restarts re-creating map
-   entities (logic layer).
+3. Round restarts re-creating map entities (logic layer). Done: the
+   announcer (`map::RoundSounds`: `Event.TERWin`/`Event.CTWin`/
+   `Event.RoundDraw`, a radio line when the round goes live; whether the
+   game plays it at freeze end for both teams is to check) and team
+   scores on the scoreboard.
 4. Objectives: bomb (plant/defuse, C4), hostages; mp_timelimit and
    mp_maxrounds; team switching rules (mp_limitteams, autoteambalance).
 

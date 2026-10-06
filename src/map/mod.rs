@@ -805,6 +805,16 @@ pub struct MapShadows {
     pub distance: f32,
 }
 
+/// Sound entries the announcer plays for rounds: a side's win, a draw,
+/// and one picked at random when a round goes live.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct RoundSounds {
+    pub attackers_win: Option<String>,
+    pub defenders_win: Option<String>,
+    pub draw: Option<String>,
+    pub start: Vec<String>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct MapData {
     pub name: String,
@@ -857,6 +867,8 @@ pub struct MapData {
     pub water_materials: Vec<water::MapWaterMaterial>,
     /// Dynamic prop shadows, when the game draws them.
     pub shadows: Option<MapShadows>,
+    /// The announcer's round sounds (sound entries), when the game has them.
+    pub round_sounds: RoundSounds,
     /// Gravity for physics bodies, m/s^2 (downward), when the game sets it.
     pub gravity: Option<f32>,
     /// The playable area (engine space, min and max), when the map has a 3D
@@ -2202,6 +2214,7 @@ fn spawn_map(
             commands.insert_resource(Gravity(Vec3::NEG_Y * g));
         }
         commands.insert_resource(MapWater(data.water.clone()));
+        commands.insert_resource(data.round_sounds.clone());
     }
 
     commands.spawn((
@@ -2290,6 +2303,7 @@ pub fn unload_map(world: &mut World) {
     world.remove_resource::<MapBrushes>();
     world.remove_resource::<KillHeight>();
     world.remove_resource::<MapWater>();
+    world.remove_resource::<RoundSounds>();
     world.remove_resource::<MapEntities>();
     world.remove_resource::<water::MapWaterRender>();
     world.remove_resource::<water::WaterView>();
