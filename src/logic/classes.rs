@@ -35,6 +35,8 @@ pub enum Class {
     PathTrack(PathTrack),
     /// func_brush: shown and solid while enabled.
     Brush(Box<Toggle>),
+    /// A brush entity parented to a mover: follows it.
+    Attached(Box<movers::Attached>),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -248,6 +250,9 @@ impl Class {
             "func_tracktrain" => Class::Train(Box::new(Train::spawn(w, id))),
             "path_track" => Class::PathTrack(PathTrack::spawn(w, id)),
             "func_brush" => Class::Brush(Box::new(Toggle::spawn_brush(w, id))),
+            _ if !e.hulls.is_empty() && e.kv("parentname").is_some_and(|p| !p.is_empty()) => {
+                Class::Attached(Box::new(movers::Attached::spawn(w, id)))
+            }
             _ => Class::None,
         }
     }
@@ -336,6 +341,7 @@ pub(super) fn class_activate(w: &mut LogicWorld, id: EntId) {
             movers::activate(w, id)
         }
         Class::PathTrack(_) => movers::activate_path(w, id),
+        Class::Attached(_) => movers::activate_attached(w, id),
         _ => {}
     }
 }
@@ -779,6 +785,7 @@ pub(super) fn class_input(
         | Class::Train(_)
         | Class::PathTrack(_)
         | Class::Brush(_) => return movers::input(w, id, input, value, activator, caller),
+        Class::Attached(_) => return false,
         Class::None | Class::Auto => return false,
     }
     true

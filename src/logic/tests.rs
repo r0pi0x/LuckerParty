@@ -1354,3 +1354,27 @@ fn func_brush_toggles() {
     assert!(w.mover_solid(b).is_some());
     assert!(w.mover_poses()[0].4);
 }
+
+#[test]
+fn parented_brushes_follow_their_mover() {
+    let mut w = world();
+    let d = spawn_brush(
+        &mut w,
+        &[("classname", "func_door_rotating"), ("targetname", "door"), ("distance", "90"), ("speed", "100"), ("wait", "-1")],
+        Vec3::new(0.0, -2.0, 0.0),
+        Vec3::new(64.0, 2.0, 100.0),
+    );
+    let glass = spawn_brush(
+        &mut w,
+        &[("classname", "func_breakable"), ("parentname", "door"), ("origin", "32 0 50")],
+        Vec3::new(-8.0, -1.0, -8.0),
+        Vec3::new(8.0, 1.0, 8.0),
+    );
+    w.activate();
+    w.queue_input("door", "Open", Value::Void, 0.0, None);
+    run_to(&mut w, 100);
+    assert_eq!(angles_of(&w, d).y, 90.0);
+    let o = origin_of(&w, glass);
+    assert!((o - Vec3::new(0.0, 32.0, 50.0)).length() < 1e-3, "window at {o}");
+    assert_eq!(angles_of(&w, glass).y, 90.0);
+}

@@ -30,11 +30,13 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
 
 - A test map with every supported entity (`mashup_logic_test`, generated
   `.vmf`, compiled with Valve's tools; plan section "Test map").
-- Entity I/O and triggers (spec first): outputs/inputs with delays,
-  `logic_*`, `math_counter`, `trigger_teleport`/`push`/`multiple`/
-  `once`; then moving brush entities (doors, buttons, platforms,
-  breakables) with movement on moving solids. Target: two real minigame
-  maps from the user's downloads.
+- Entity I/O, triggers and moving brushes are in (`src/logic`, slices 3
+  and 4 of the plan). Left: breakables (specs/source/breakables.md),
+  `prop_door_rotating` (model doors: cs_assault, de_port), props parented
+  to movers (de_nuke's door knobs stay put), train facing/banking and
+  player train control, `trigger_soundscape` through the general touch
+  code, round restarts re-creating entities, env_global. Target: two
+  real minigame maps from the user's downloads.
 
 ## 2b. HUD and debug views
 
@@ -120,11 +122,8 @@ docs/plans/active/sound.md.
 
 - The player physics shadow for `prop_physics` (dust2 has none).
 - Impact damage, breakable props.
-- The "use" key (CS:S `+use`, E): trace from the eye to usable
-  entities; doors on de_nuke (and elsewhere) open and close with it
-  (`func_door`, `func_door_rotating`, `prop_door_rotating`: movement,
-  speed, wait/return, blocking, sounds). Shares the moving-brush work
-  with the minigame plan.
+- `prop_door_rotating` (model doors) with the use key; brush doors
+  (`func_door`, `func_door_rotating`) and `+use` are done (src/logic).
 - Breakable vents on de_nuke (`func_breakable` with health and material
   gibs): take damage, break into gibs, open the vent.
 - Breakable glass as in cs_office (`func_breakable_surf`): windows that
@@ -169,9 +168,10 @@ Counts are from de_dust2's entity lump and static prop lump.
 - **Verify inferred Source rules** with the comparison tool, using a local
   copy of a map with test entities added where dust2 has no example: floor
   and ceiling decal orientation, decal reach, overall brightness/tonemapping.
-- **Brush entities**: they draw and collide where they spawn; doors
-  don't open, breakables don't break, func_rotating doesn't turn, render
-  modes other than normal and 10 (translucent func_brush) aren't applied.
+- **Brush entities**: movers (doors, buttons, func_rotating, trains,
+  func_brush) move through the logic layer; breakables don't break, and
+  render modes other than normal and 10 (translucent func_brush) aren't
+  applied.
 - **Fire** (`env_fire`, 16) and other effects, if they show in normal play.
 - **Lightmap styles**: switching lights and animated styles (lights lit at
   map start are baked in).

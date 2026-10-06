@@ -524,6 +524,16 @@ pub fn brush_entities(bsp: &Bsp) -> Vec<BrushEntity> {
     ];
     // Never solid to players.
     const NOT_SOLID: &[&str] = &["func_illusionary", "func_lod"];
+    // Names of entities that move, for brushes parented to them.
+    let moving_names: std::collections::BTreeSet<String> = bsp
+        .entities
+        .iter()
+        .filter(|e| {
+            e.prop("classname").is_some_and(|c| MOVERS.contains(&c))
+                && e.prop("parentname").is_none_or(|p| p.is_empty())
+        })
+        .filter_map(|e| e.prop("targetname").map(|n| n.to_ascii_lowercase()))
+        .collect();
     let mut out = Vec::new();
     for (index, ent) in bsp.entities.iter().enumerate() {
         let Some(class) = ent.prop("classname") else { continue };
@@ -552,9 +562,13 @@ pub fn brush_entities(bsp: &Bsp) -> Vec<BrushEntity> {
             * Quat::from_rotation_x(angles.z.to_radians());
         let render_mode = num("rendermode").unwrap_or(0.0) as i32;
         let start_disabled = num("StartDisabled").unwrap_or(0.0) != 0.0;
-        // Parented brushes would have to follow their parent; they stay
-        // where they spawn for now.
-        let mover = MOVERS.contains(&class) && ent.prop("parentname").is_none_or(|p| p.is_empty());
+        // Movers, and brushes parented to one (they follow it: de_nuke's
+        // door windows). Movers parented to anything else stay put for now.
+        let parent = ent.prop("parentname").filter(|p| !p.is_empty());
+        let mover = match parent {
+            None => MOVERS.contains(&class),
+            Some(p) => moving_names.contains(&p.to_ascii_lowercase()),
+        };
         // A disabled func_brush that can toggle is drawn through its node
         // (the logic layer hides it).
         let drawn = render_mode != 10 && !(class == "func_brush" && start_disabled && !mover);

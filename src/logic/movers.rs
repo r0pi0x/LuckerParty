@@ -490,9 +490,52 @@ impl Toggle {
     }
 }
 
+/// A brush entity parented to a mover: keeps its offset from the parent
+/// as the parent moves and turns (it does not push players itself).
+#[derive(Clone, Debug)]
+pub struct Attached {
+    pub push: Pusher,
+    pub parent: Option<EntId>,
+    /// Origin and angles relative to the parent at activation.
+    pub offset: Vec3,
+    pub base_angles: Vec3,
+    pub parent_angles: Vec3,
+}
+
+impl Attached {
+    pub(super) fn spawn(w: &mut LogicWorld, id: EntId) -> Attached {
+        let e = w.get(id).unwrap();
+        Attached {
+            push: Pusher::at(e.origin, e.angles),
+            parent: None,
+            offset: Vec3::ZERO,
+            base_angles: e.angles,
+            parent_angles: Vec3::ZERO,
+        }
+    }
+}
+
+pub(super) fn activate_attached(w: &mut LogicWorld, id: EntId) {
+    let name = w.get(id).and_then(|e| e.kv("parentname")).unwrap_or("").to_string();
+    let parent = w.find(&name).filter(|p| w.get(*p).and_then(|e| pusher(&e.class)).is_some());
+    let Some(p) = parent else {
+        w.log.push(format!("parented brush: no moving parent '{name}'"));
+        w.refresh_solid(id);
+        return;
+    };
+    let pp = pusher(&w.get(p).unwrap().class).unwrap().clone();
+    if let Some(Class::Attached(a)) = w.get_mut(id).map(|e| &mut e.class) {
+        a.parent = Some(p);
+        a.offset = entity_rotation(pp.angles).inverse() * (a.push.origin - pp.origin);
+        a.parent_angles = pp.angles;
+    }
+    w.refresh_solid(id);
+}
+
 /// The pusher of a mover entity.
 pub fn pusher(class: &Class) -> Option<&Pusher> {
     match class {
+        Class::Attached(a) => Some(&a.push),
         Class::Door(d) => Some(&d.push),
         Class::Button(b) => Some(&b.push),
         Class::MoveLinear(m) => Some(&m.push),
@@ -505,6 +548,7 @@ pub fn pusher(class: &Class) -> Option<&Pusher> {
 
 fn pusher_mut(class: &mut Class) -> Option<&mut Pusher> {
     match class {
+        Class::Attached(a) => Some(&mut a.push),
         Class::Door(d) => Some(&mut d.push),
         Class::Button(b) => Some(&mut b.push),
         Class::MoveLinear(m) => Some(&mut m.push),
@@ -1315,7 +1359,7 @@ impl LogicWorld {
         let dt = self.dt as f64;
         for id in self.ids() {
             let Some(e) = self.get(id) else { continue };
-            if pusher(&e.class).is_none() || e.killed {
+            if pusher(&e.class).is_none() || e.killed || matches!(e.class, Class::Attached(_)) {
                 continue;
             }
             if matches!(e.class, Class::Train(_)) {
@@ -1371,6 +1415,31 @@ impl LogicWorld {
             }
             self.mover_think(id);
             self.settle(id);
+        }
+        self.follow_parents();
+    }
+
+    /// Parented brushes take their parent's pose.
+    fn follow_parents(&mut self) {
+        for id in self.ids() {
+            let Some(Class::Attached(a)) = self.get(id).map(|e| &e.class) else { continue };
+            let Some(parent) = a.parent else { continue };
+            let Some(pp) = self.get(parent).and_then(|e| pusher(&e.class)).cloned() else {
+                continue;
+            };
+            let (offset, base, parent_base) = (a.offset, a.base_angles, a.parent_angles);
+            let origin = pp.origin + entity_rotation(pp.angles) * offset;
+            let angles = base + (pp.angles - parent_base);
+            let (visible, velocity) = (pp.visible, pp.velocity);
+            if let Some(Class::Attached(a)) = self.get_mut(id).map(|e| &mut e.class)
+                && (a.push.origin != origin || a.push.angles != angles || a.push.visible != visible)
+            {
+                a.push.origin = origin;
+                a.push.angles = angles;
+                a.push.visible = visible;
+                a.push.velocity = velocity;
+                self.refresh_solid(id);
+            }
         }
     }
 
