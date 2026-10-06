@@ -238,7 +238,17 @@ pub struct God;
 pub struct Died {
     pub entity: Entity,
     pub attacker: Option<Entity>,
+    /// The hit that killed it (direction and point push its ragdoll).
+    pub damage: Damage,
 }
+
+/// Physics layer of ragdoll bodies. They collide only with the default
+/// layer (the world, props), not with characters or each other, and
+/// gameplay queries (movement, bullets, sight) leave them out with
+/// `SOLID_LAYERS` (specs/cs_source/ragdolls.md 4: ragdolls are debris).
+pub const RAGDOLL_LAYER: avian3d::prelude::LayerMask = avian3d::prelude::LayerMask(1 << 1);
+/// Every layer but ragdolls: the mask for gameplay spatial queries.
+pub const SOLID_LAYERS: avian3d::prelude::LayerMask = avian3d::prelude::LayerMask(!(1 << 1));
 
 /// A speed cap the character's equipment imposes (e.g. the held weapon),
 /// meters per second. Movement implementations that model it read it.
@@ -271,13 +281,14 @@ pub struct SimTick(pub u64);
 #[derive(Resource, Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RoundRestarts(pub u32);
 
-/// Subtract damage from health; announce deaths once.
 /// Whether characters on the same team hurt each other (CS:S
 /// `mp_friendlyfire`, default 0). Team 0 (no team) is never friendly.
 #[derive(Resource, Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FriendlyFire(pub u8);
 
-fn apply_damage(
+/// Subtract damage from health; announce deaths once (public so other
+/// systems can order themselves after it).
+pub fn apply_damage(
     mut damage: MessageReader<Damage>,
     mut health: Query<&mut Health, Without<God>>,
     teams: Query<&Team>,
@@ -305,6 +316,7 @@ fn apply_damage(
             died.write(Died {
                 entity: d.target,
                 attacker: d.attacker,
+                damage: d.clone(),
             });
         }
     }

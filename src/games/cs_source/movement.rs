@@ -1923,7 +1923,7 @@ fn step(
         let prop_surface = |e: Entity| prop_surfaces.get(e).ok().map(|s| s.0.clone());
         let tracer = Tracer {
             query: &query,
-            filter: SpatialQueryFilter::from_excluded_entities(excluded),
+            filter: SpatialQueryFilter::from_excluded_entities(excluded).with_mask(crate::core::SOLID_LAYERS),
             brushes: brushes.as_deref(),
             water: water.as_deref(),
             surfaces: surfaces.as_deref(),

@@ -306,7 +306,7 @@ fn think(
                 continue;
             }
             let Ok(dir) = Dir3::new(to) else { continue };
-            let filter = SpatialQueryFilter::from_excluded_entities([me]);
+            let filter = SpatialQueryFilter::from_excluded_entities([me]).with_mask(crate::core::SOLID_LAYERS);
             let visible = spatial
                 .cast_ray(eye, dir, dist, true, &filter)
                 .is_none_or(|h| h.entity == e || h.distance >= dist - 0.05);

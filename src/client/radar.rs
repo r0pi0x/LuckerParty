@@ -260,7 +260,7 @@ fn update(
         let visible = friend || {
             let to = p + Vec3::Y * 0.5 - eye;
             Dir3::new(to).is_ok_and(|dir| {
-                let filter = SpatialQueryFilter::from_excluded_entities([me_entity, e]);
+                let filter = SpatialQueryFilter::from_excluded_entities([me_entity, e]).with_mask(crate::core::SOLID_LAYERS);
                 spatial.cast_ray(eye, dir, to.length(), true, &filter).is_none()
             })
         };

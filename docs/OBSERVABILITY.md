@@ -83,6 +83,13 @@ Only `Reflect`-registered types are visible; register new core components in
   by hitgroup, where shots test them (e.g. `+bot_stop 1 +bot_add 2
   +mashup_drawhitboxes 1` with `--screenshot` to check they follow the
   animated body).
+- `mashup_ragdoll_debug 1` draws ragdoll bodies (bounds, axes) and
+  joints (yellow to the anchor on the parent; a red dot when the child
+  drifted from it). `cl_ragdoll_physics_enable 0` turns ragdolls off,
+  `ragdoll_sleepaftertime` sets when still ones are frozen. To see one:
+  `--map cs_source:de_dust2 --frames 400 +mp_respawn_delay 1000
+  +thirdperson +cam_idealyaw 90 +wait 150 +mashup_hurtme head` (or
+  `chest 100 90`: a body shot from the side) with `--screenshot`.
 - `mashup_healthbars 1` draws a health bar over every other living
   character (green full, red nearly dead), e.g. to watch damage land in a
   `--screenshot` run with `+bot_add 2`.
