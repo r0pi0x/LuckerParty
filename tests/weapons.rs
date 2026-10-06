@@ -446,6 +446,32 @@ fn ak47_does_not_pass_two_players() {
 }
 
 #[test]
+fn awp_penetration_passes_two_players() {
+    // The AWP isn't in yet: the AK-47 with 338MAG's power 45 and three
+    // objects (M13) passes two players (2 x 21.5) and hits a third, with
+    // x 0.5 carried per player and falloff again at every hit:
+    // 35.57 x 0.5 x 0.98^(401/500) x 0.5 x 0.98^(495/500) = 8.6.
+    use mashup::weapon::Penetration;
+    let mut sim = sim();
+    let shooter = sim.spawn_character(greybox::SPAWNS[0], placeholder::ID);
+    let first = sim.spawn_character(greybox::SPAWNS[0] - Vec3::Z * 8.0, placeholder::ID);
+    let second = sim.spawn_character(greybox::SPAWNS[0] - Vec3::Z * 10.6, placeholder::ID);
+    let third = sim.spawn_character(greybox::SPAWNS[0] - Vec3::Z * 13.0, placeholder::ID);
+    sim.ticks(1);
+    let w = active(&sim, shooter);
+    sim.app.world_mut().entity_mut(w).insert(Penetration {
+        power: 45.0 * UNIT,
+        objects: 3,
+        max_distance: f32::INFINITY,
+    });
+    shoot_chest(&mut sim, shooter, third);
+    assert_eq!(
+        (lost_hp(&sim, first), lost_hp(&sim, second), lost_hp(&sim, third)),
+        (35, 17, 8)
+    );
+}
+
+#[test]
 fn knife_never_passes_a_player() {
     let mut sim = sim();
     let p = sim.spawn_character(greybox::SPAWNS[0], placeholder::ID);

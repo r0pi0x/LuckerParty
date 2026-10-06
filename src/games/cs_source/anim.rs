@@ -64,6 +64,7 @@ struct Bone {
 struct RawSequence {
     name: String,
     activity: String,
+    activity_weight: i32,
     flags: i32,
     fade: (f32, f32),
     grid: (usize, usize),
@@ -74,6 +75,7 @@ struct RawSequence {
     /// (sequence, start, peak, tail, end), indices local.
     autolayers: Vec<(usize, [f32; 4])>,
     weights: Vec<f32>,
+    events: Vec<crate::map::anim::AnimEvent>,
 }
 
 /// One `.mdl` file's animation data, indices local to it.
@@ -168,6 +170,25 @@ fn parse(bytes: Vec<u8>) -> Result<Model, String> {
                 ))
             })
             .collect::<Result<_, String>>()?;
+        // Events (80 bytes each): cycle, number, type, 64 bytes of
+        // options, then the offset of a name for named events.
+        let (n_events, events_at) = count(o + 24)?;
+        let events = (0..n_events)
+            .map(|k| {
+                let e = o + events_at + 80 * k;
+                let name_at = b.i32(e + 76)?;
+                Ok(crate::map::anim::AnimEvent {
+                    cycle: b.f32(e)?,
+                    event: b.i32(e + 4)?,
+                    name: if name_at != 0 { b.name(e, e + 76)? } else { String::new() },
+                    options: {
+                        let raw = b.0.get(e + 12..e + 76).unwrap_or_default();
+                        let end = raw.iter().position(|&c| c == 0).unwrap_or(raw.len());
+                        String::from_utf8_lossy(&raw[..end]).into_owned()
+                    },
+                })
+            })
+            .collect::<Result<_, String>>()?;
         let weight_at = o + b.i32(o + 156)? as usize;
         let weights = (0..bones.len())
             .map(|k| b.f32(weight_at + 4 * k))
@@ -175,6 +196,7 @@ fn parse(bytes: Vec<u8>) -> Result<Model, String> {
         sequences.push(RawSequence {
             name: b.name(o, o + 4)?,
             activity: b.name(o, o + 8)?,
+            activity_weight: b.i32(o + 20)?,
             flags: b.i32(o + 12)?,
             fade: (b.f32(o + 104)?, b.f32(o + 108)?),
             grid: (w, h),
@@ -184,6 +206,7 @@ fn parse(bytes: Vec<u8>) -> Result<Model, String> {
             keys: [keys(0)?, keys(1)?],
             autolayers,
             weights,
+            events,
         });
     }
     Ok(Model {
@@ -352,6 +375,34 @@ fn decode(m: &Model, a: usize) -> Result<Animation, String> {
 
 /// The target model's bones in its reference pose (name, parent, local
 /// rotation and position).
+/// A model's attachments (name, bone, transform in the bone's space) and
+/// its illumination position (model space), from the header.
+pub fn attachments(read: Read, path: &str) -> Result<(Vec<(String, usize, Transform)>, Vec3), String> {
+    let bytes = read(path).ok_or_else(|| format!("{path}: not found"))?;
+    let b = Bytes(&bytes);
+    let illum = b.vec3(92)?;
+    let (n, at) = (b.i32(240)?.max(0) as usize, b.i32(244)?.max(0) as usize);
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        // Name offset, flags, bone, then a 3x4 matrix (rows; the last
+        // column is the translation); 92 bytes each.
+        let o = at + i * 92;
+        let m = |r: usize, c: usize| b.f32(o + 12 + 4 * (r * 4 + c));
+        let axes = Mat3::from_cols(
+            Vec3::new(m(0, 0)?, m(1, 0)?, m(2, 0)?),
+            Vec3::new(m(0, 1)?, m(1, 1)?, m(2, 1)?),
+            Vec3::new(m(0, 2)?, m(1, 2)?, m(2, 2)?),
+        );
+        let translation = Vec3::new(m(0, 3)?, m(1, 3)?, m(2, 3)?);
+        out.push((
+            b.name(o, o)?,
+            b.i32(o + 8)?.max(0) as usize,
+            Transform::from_translation(translation).with_rotation(Quat::from_mat3(&axes)),
+        ));
+    }
+    Ok((out, illum))
+}
+
 pub fn bones(read: Read, path: &str) -> Result<Vec<(String, Option<usize>, Quat, Vec3)>, String> {
     let m = parse(read(path).ok_or_else(|| format!("{path}: not found"))?)?;
     Ok(m.bones.into_iter().map(|b| (b.name, b.parent, b.rotation, b.position)).collect())
@@ -480,6 +531,7 @@ pub fn load(read: Read, path: &str) -> Result<AnimSet, String> {
             set.sequences.push(Sequence {
                 name: s.name.clone(),
                 activity: s.activity.clone(),
+                activity_weight: s.activity_weight,
                 looping: s.flags & 0x1 != 0,
                 snap: s.flags & 0x2 != 0,
                 delta: s.flags & 0x4 != 0,
@@ -495,6 +547,7 @@ pub fn load(read: Read, path: &str) -> Result<AnimSet, String> {
                 axes: [axis(0), axis(1)],
                 autolayers: Vec::new(),
                 bone_weights: weights,
+                events: s.events.clone(),
             });
         }
     }

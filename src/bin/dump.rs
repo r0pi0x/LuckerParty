@@ -8,6 +8,7 @@ use std::{
     process::ExitCode,
 };
 
+use bevy::math::Vec3;
 use mashup::{
     games::{combat_arms, cs_source},
     mount::{
@@ -22,6 +23,8 @@ usage: dump <game> [options]
   (no option)          summary: file counts and sizes by extension
   --list               list every file with its size
   --archives           combat_arms: per-archive title, entropy and file count
+  --sequences <model>  cs_source: a model's bones, sequences (activity, frames, fps,
+                       duration, looping) and pose parameters, includes merged
   --filter <text>      only paths containing <text> (case-insensitive)
   --extract            write the (filtered) files to --out
   --out <dir>          extraction folder (default: per-user data dir; never inside the repo)
@@ -33,6 +36,7 @@ struct Args {
     archives: bool,
     extract: bool,
     filter: Option<String>,
+    sequences: Option<String>,
     out: Option<PathBuf>,
     install: Option<PathBuf>,
 }
@@ -49,6 +53,7 @@ fn parse() -> Result<Args, String> {
         archives: false,
         extract: false,
         filter: None,
+        sequences: None,
         out: None,
         install: None,
     };
@@ -59,6 +64,7 @@ fn parse() -> Result<Args, String> {
             "--archives" => a.archives = true,
             "--extract" => a.extract = true,
             "--filter" => a.filter = Some(value()?.to_lowercase()),
+            "--sequences" => a.sequences = Some(value()?.to_lowercase().replace('\\', "/")),
             "--out" => a.out = Some(value()?.into()),
             "--install" => a.install = Some(value()?.into()),
             _ => return Err(format!("unknown option {flag}")),
@@ -120,6 +126,9 @@ fn human(bytes: u64) -> String {
 
 fn dump_cs_source(args: &Args, install: &Path) -> Result<(), String> {
     let mount = cs_source::mount::open(install).map_err(|e| e.to_string())?;
+    if let Some(path) = &args.sequences {
+        return sequences(&mount, path);
+    }
     report(args, &mount, &[])
 }
 
@@ -145,6 +154,43 @@ fn dump_combat_arms(args: &Args, install: &Path) -> Result<(), String> {
         }
     }
     report(args, &mount, &locked)
+}
+
+/// A model's skeleton and what it can play (our own `.mdl` decoder).
+fn sequences(mount: &Mount, path: &str) -> Result<(), String> {
+    let read = |p: &str| mount.read(&p.to_lowercase().replace('\\', "/")).ok();
+    let bones = cs_source::anim::bones(&read, path)?;
+    let set = cs_source::anim::load(&read, path)?;
+    println!("{path}: {} bones, {} animations, {} sequences", bones.len(), set.animations.len(), set.sequences.len());
+    for (i, (name, parent, _, _)) in bones.iter().enumerate() {
+        println!("  bone {i:>3} {name} (parent {parent:?})");
+    }
+    for p in &set.params {
+        println!("  param {} {}..{} (wrap {})", p.name, p.start, p.end, p.looping);
+    }
+    for (i, s) in set.sequences.iter().enumerate() {
+        let a = &set.animations[s.anims[0]];
+        let duration = if a.frames > 1 { (a.frames - 1) as f32 / a.fps } else { 0.0 };
+        println!(
+            "  seq {i:>3} {:24} {:28} w{:<3} {:>4} frames {:>5.1} fps {duration:>7.4} s{}",
+            s.name,
+            s.activity,
+            s.activity_weight,
+            a.frames,
+            a.fps,
+            if s.looping { " looping" } else { "" }
+        );
+        for e in &s.events {
+            println!("        event {:.4} {} {:?} {:?}", e.cycle, e.event, e.name, e.options);
+        }
+    }
+    let (attachments, illum) = cs_source::anim::attachments(&read, path)?;
+    for (name, bone, t) in attachments {
+        let (x, y, z) = (t.rotation * Vec3::X, t.rotation * Vec3::Y, t.rotation * Vec3::Z);
+        println!("  attachment {name:?} bone {bone} at {} axes x {x} y {y} z {z}", t.translation);
+    }
+    println!("  illumination position {illum}");
+    Ok(())
 }
 
 fn report(args: &Args, mount: &Mount, locked: &[String]) -> Result<(), String> {

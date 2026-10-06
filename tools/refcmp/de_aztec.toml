@@ -1,0 +1,72 @@
+# Views of de_aztec for spotting visual bugs (docs/plans/active/other-maps.md),
+# generated from its entities: intermission cameras, the first T and CT
+# spawns, and bomb/rescue zone centres looking four ways.
+# Source eye positions; angles are [pitch, yaw] in Source degrees.
+
+map = "de_aztec"
+camera = "point_viewcontrol"
+
+[[view]]
+name = "cam0"
+position = [384, -1216, 16]
+angles = [9.2, 143]
+
+[[view]]
+name = "cam1"
+position = [-704, 576, 16]
+angles = [29.7, 22.8]
+
+[[view]]
+name = "cam2"
+position = [1344, 96, 64]
+angles = [26.9, 152]
+
+[[view]]
+name = "t_spawn"
+position = [2352, -256, -176]
+angles = [0, 180]
+
+[[view]]
+name = "ct_spawn"
+position = [-2960, -576, -100]
+angles = [0, 0]
+
+[[view]]
+name = "zone0_0"
+position = [-280, -1512, -160]
+angles = [10, 0]
+
+[[view]]
+name = "zone0_90"
+position = [-280, -1512, -160]
+angles = [10, 90]
+
+[[view]]
+name = "zone0_180"
+position = [-280, -1512, -160]
+angles = [10, 180]
+
+[[view]]
+name = "zone0_270"
+position = [-280, -1512, -160]
+angles = [10, 270]
+
+[[view]]
+name = "zone1_0"
+position = [-1792, 1056, -160]
+angles = [10, 0]
+
+[[view]]
+name = "zone1_90"
+position = [-1792, 1056, -160]
+angles = [10, 90]
+
+[[view]]
+name = "zone1_180"
+position = [-1792, 1056, -160]
+angles = [10, 180]
+
+[[view]]
+name = "zone1_270"
+position = [-1792, 1056, -160]
+angles = [10, 270]

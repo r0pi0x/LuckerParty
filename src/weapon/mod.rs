@@ -641,6 +641,8 @@ pub enum WeaponEventKind {
     Swing {
         hit: bool,
         secondary: bool,
+        /// Where it hit: point, surface normal and what was hit.
+        at: Option<(Vec3, Vec3, Entity)>,
     },
     DryFire,
     ReloadStarted,

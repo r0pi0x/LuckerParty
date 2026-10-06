@@ -151,6 +151,65 @@ pub fn load_character(
     })
 }
 
+/// A weapon's first-person view model (spec weapons.md 3.3: the script's
+/// `viewmodel`): its meshes skinned to its own skeleton (hands and
+/// weapon), in the eye's space (Source view models have their origin at
+/// the eye, facing +X), and its sequences.
+pub fn load_view_model(
+    materials: &mut MaterialLoader,
+    path: &str,
+    key: &str,
+    right_handed: bool,
+) -> Result<crate::map::MapViewModel, String> {
+    let (model, _) = load_model(materials, path)?;
+    // Source models face +X; the eye looks along -Z.
+    let face = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+    let mut view = convert_model_in(&model, 0, materials, false);
+    for mesh in &mut view.meshes {
+        for p in &mut mesh.positions {
+            *p = (face * Vec3::from(*p)).to_array();
+        }
+        for n in &mut mesh.normals {
+            *n = (face * Vec3::from(*n)).to_array();
+        }
+    }
+    let read = |p: &str| materials.read(p);
+    let bones = super::anim::bones(&read, path)?
+        .into_iter()
+        .map(|(name, parent, rotation, position)| crate::map::MapBone {
+            name,
+            parent,
+            position,
+            rotation,
+        })
+        .collect();
+    let animations = super::anim::load(&read, path).map(std::sync::Arc::new)?;
+    let (attachments, light_origin) = super::anim::attachments(&read, path)?;
+    // Source axes to ours (x, z, -y): -90 degrees about X.
+    let axes = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+    Ok(crate::map::MapViewModel {
+        key: key.to_string(),
+        model: view,
+        bones,
+        root: Transform::from_rotation(face * axes).with_scale(Vec3::splat(METERS_PER_UNIT)),
+        animations: Some(animations),
+        right_handed,
+        allow_flipping: true,
+        attachments: attachments
+            .into_iter()
+            .map(|(name, bone, local)| crate::map::MapAttachment { name, bone, local })
+            .collect(),
+        light_origin,
+    })
+}
+
+/// A shell model (spec view_models.md 8), in its own space (engine axes,
+/// meters).
+pub fn load_shell(materials: &mut MaterialLoader, path: &str) -> Result<crate::map::MapModel, String> {
+    let (model, _) = load_model(materials, path)?;
+    Ok(convert_model(&model, 0, materials))
+}
+
 /// A weapon's world model held by characters: its meshes in the frame of
 /// its first bone that player skeletons also have (bone merge: that bone
 /// follows the hand), in the skeleton's axes and units.
@@ -191,10 +250,25 @@ pub fn load_held(
             *n = to_bone.transform_vector3(source(*n)).normalize_or_zero().to_array();
         }
     }
+    // The muzzle attachment (spec view_models.md 6: `muzzle_flash`), in the
+    // same frame.
+    let muzzle = super::anim::attachments(&|p| materials.read(p), path)
+        .ok()
+        .and_then(|(list, _)| {
+            let (_, b, local) = list
+                .iter()
+                .find(|(n, _, _)| n.eq_ignore_ascii_case("muzzle_flash"))
+                .or_else(|| list.first())?
+                .clone();
+            let (bq, bp) = *global.get(b)?;
+            let m = to_bone * Mat4::from_rotation_translation(bq, bp) * local.to_matrix();
+            Some(Transform::from_matrix(m))
+        });
     Ok(crate::map::MapHeldModel {
         key: key.to_string(),
         model: held,
         bone: bone.name.clone(),
+        muzzle,
     })
 }
 
@@ -602,12 +676,24 @@ fn place_props(
 }
 
 pub fn probe(bsp: &Bsp, lighting: &MapLighting, occluders: &Occluders, origin: Vec3) -> LightProbe {
+    probe_with(&|p| lighting.ambient_at(bsp, p), lighting, occluders, origin)
+}
+
+/// The light at `origin` (the game's light-at-a-point query, as props
+/// bake it): the ambient cube from `ambient`, nudged out of solid, plus
+/// the world lights that reach it.
+pub fn probe_with(
+    ambient: &dyn Fn(Vec3) -> ambient::AmbientCube,
+    lighting: &MapLighting,
+    occluders: &Occluders,
+    origin: Vec3,
+) -> LightProbe {
     let offsets = [Vec3::ZERO, Vec3::Y, Vec3::X, -Vec3::X, Vec3::Z, -Vec3::Z, -Vec3::Y]
         .into_iter()
         .flat_map(|d| [0.0, 0.25, 0.5, 1.0].map(|k| d * k));
     let (point, cube) = offsets
         .map(|o| origin + o)
-        .map(|p| (p, lighting.ambient_at(bsp, p)))
+        .map(|p| (p, ambient(p)))
         .find(|(_, c)| c.0.iter().any(|v| v.max_element() > 0.0))
         .unwrap_or((origin, Default::default()));
     let lights = lighting

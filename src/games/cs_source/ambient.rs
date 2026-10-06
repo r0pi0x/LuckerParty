@@ -1,6 +1,6 @@
 //! Lighting data for things that aren't lightmapped (props, later
 //! characters), per the public BSP v20 description: per-leaf ambient light
-//! cubes (lumps 52/56, HDR 51/55) and the compiled light list ("world
+//! cubes (lumps 52/56, HDR 51/55; one cube per leaf in older maps) and the compiled light list ("world
 //! lights", lump 15). All results are in engine axes and lightmap units
 //! (1.0 shows a texture at its own brightness).
 
@@ -26,6 +26,11 @@ pub struct RawLeaf {
     pub flags: u8,
     pub mins: [i16; 3],
     pub maxs: [i16; 3],
+    /// Its brushes: a range of the leaf-brush lump.
+    pub first_leaf_brush: u16,
+    pub leaf_brush_count: u16,
+    /// Version 0 leaves (BSP v19 maps) carry their own ambient light cube.
+    pub ambient: Option<AmbientCube>,
 }
 
 pub const CONTENTS_SOLID: i32 = 0x1;
@@ -49,6 +54,9 @@ pub fn raw_leaves(bytes: &[u8]) -> Vec<RawLeaf> {
             flags: (u16::from_le_bytes([b[6], b[7]]) >> 9) as u8,
             mins: [i16_at(b, 8), i16_at(b, 10), i16_at(b, 12)],
             maxs: [i16_at(b, 14), i16_at(b, 16), i16_at(b, 18)],
+            first_leaf_brush: u16::from_le_bytes([b[24], b[25]]),
+            leaf_brush_count: u16::from_le_bytes([b[26], b[27]]),
+            ambient: (version == 0).then(|| compressed_cube(&b[30..54])),
         })
         .collect()
 }
@@ -67,6 +75,13 @@ fn i32_at(b: &[u8], at: usize) -> i32 {
 fn rgbe(b: &[u8]) -> Vec3 {
     let scale = 2f32.powi(b[3] as i8 as i32);
     Vec3::new(b[0] as f32, b[1] as f32, b[2] as f32) * scale
+}
+
+/// A stored light cube (six RGBE colours, Source order +X -X +Y -Y +Z -Z)
+/// in engine axes: X, Z up, -Y.
+fn compressed_cube(b: &[u8]) -> AmbientCube {
+    let c: Vec<Vec3> = b[..24].as_chunks::<4>().0.iter().map(|c| rgbe(c)).collect();
+    AmbientCube([c[0], c[1], c[4], c[5], c[3], c[2]])
 }
 
 fn src(x: f32, y: f32, z: f32) -> Vec3 {
@@ -131,6 +146,33 @@ impl MapLighting {
         }
         let raw = raw_leaves(bytes);
         let mut leaves = Vec::new();
+        // Older maps have one cube per leaf instead of sample lists: inside
+        // version 0 leaves (BSP v19: de_aztec, cs_office), or as the
+        // ambient lump without an index (early v20: de_nuke, de_train).
+        if index.is_empty() {
+            let mut lone = lump(bytes, 56);
+            if lone.is_empty() {
+                lone = lump(bytes, 55);
+            }
+            let cubes: Vec<AmbientCube> = if raw.iter().all(|l| l.ambient.is_some()) {
+                raw.iter().filter_map(|l| l.ambient).collect()
+            } else if lone.len() == raw.len() * 24 {
+                lone.as_chunks::<24>().0.iter().map(|c| compressed_cube(c)).collect()
+            } else {
+                Vec::new()
+            };
+            for (leaf, cube) in raw.iter().zip(cubes) {
+                let centre = (Vec3::from(leaf.mins.map(f32::from)) + Vec3::from(leaf.maxs.map(f32::from))) / 2.0;
+                leaves.push(vec![Sample {
+                    position: to_engine(vbsp::Vector {
+                        x: centre.x,
+                        y: centre.y,
+                        z: centre.z,
+                    }),
+                    cube,
+                }]);
+            }
+        }
         for (i, entry) in index.as_chunks::<4>().0.iter().enumerate() {
             let count = u16::from_le_bytes([entry[0], entry[1]]) as usize;
             let first = u16::from_le_bytes([entry[2], entry[3]]) as usize;
@@ -139,13 +181,12 @@ impl MapLighting {
                 let lo = Vec3::new(leaf.mins[0] as f32, leaf.mins[1] as f32, leaf.mins[2] as f32);
                 let hi = Vec3::new(leaf.maxs[0] as f32, leaf.maxs[1] as f32, leaf.maxs[2] as f32);
                 for s in samples.as_chunks::<28>().0.iter().skip(first).take(count) {
-                    let cube: Vec<Vec3> = s[..24].as_chunks::<4>().0.iter().map(|c| rgbe(c)).collect();
                     let frac = Vec3::new(s[24] as f32, s[25] as f32, s[26] as f32) / 255.0;
                     let p = lo + (hi - lo) * frac;
                     // Source order +X -X +Y -Y +Z -Z; engine: X, Z up, -Y.
                     list.push(Sample {
                         position: to_engine(vbsp::Vector { x: p.x, y: p.y, z: p.z }),
-                        cube: AmbientCube([cube[0], cube[1], cube[4], cube[5], cube[3], cube[2]]),
+                        cube: compressed_cube(s),
                     });
                 }
             }
@@ -203,7 +244,12 @@ impl MapLighting {
             y: -s.z,
             z: s.y,
         };
-        let Some(samples) = leaf_index(bsp, point).and_then(|i| self.leaves.get(i)) else {
+        self.ambient_in(leaf_index(bsp, point), p)
+    }
+
+    /// The ambient cube at `p` (engine space) in BSP leaf `leaf`.
+    pub fn ambient_in(&self, leaf: Option<usize>, p: Vec3) -> AmbientCube {
+        let Some(samples) = leaf.and_then(|i| self.leaves.get(i)) else {
             return AmbientCube::default();
         };
         let mut sum = [Vec3::ZERO; 6];

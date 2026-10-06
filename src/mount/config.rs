@@ -85,6 +85,13 @@ impl LocalConfig {
     }
 }
 
+/// Mashup's own content cache for a game (maps fetched or imported, laid
+/// out like the game's download folder): a per-user data folder, never
+/// the game install and never the repo (docs/plans/active/custom-maps.md).
+pub fn content_dir(game: &str) -> Option<PathBuf> {
+    Some(dirs::data_local_dir()?.join("mashup").join("content").join(game))
+}
+
 /// Where `dump` writes by default: a per-user data folder, never the repo.
 pub fn default_dump_dir(game: &str) -> Option<PathBuf> {
     Some(dirs::data_local_dir()?.join("mashup").join("dump").join(game))

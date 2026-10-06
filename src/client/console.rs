@@ -207,6 +207,10 @@ fn toggle(
             // Typing shouldn't move the player: the game reads input only
             // while the mouse is grabbed.
             super::input::release_cursor(&mut cursor);
+        } else if !close {
+            // Closed with the console key: straight back to playing. (Escape
+            // leaves the mouse free, as it does outside the console.)
+            super::input::capture_cursor(&mut cursor);
         }
     }
 }
@@ -1166,10 +1170,15 @@ fn run_binds(
 // ------------------------------------------------------------- commands
 
 /// Maps in the CS:S install (for `map` completion), found once.
+/// Map names found by `map_names`, until an import changes them.
+static MAP_NAMES: Mutex<Option<Vec<String>>> = Mutex::new(None);
+
+/// Every map the game can load: the install's, its downloads and
+/// mashup's cache (cached; `import` refreshes it).
 fn map_names() -> Vec<String> {
-    static NAMES: OnceLock<Vec<String>> = OnceLock::new();
-    NAMES
-        .get_or_init(|| {
+    let mut cached = MAP_NAMES.lock().unwrap_or_else(|e| e.into_inner());
+    cached
+        .get_or_insert_with(|| {
             let Some(path) = crate::mount::config::LocalConfig::load()
                 .ok()
                 .and_then(|c| c.game_path(crate::games::cs_source::GAME))
@@ -1195,6 +1204,23 @@ fn map_names() -> Vec<String> {
             names
         })
         .clone()
+}
+
+/// Where a map comes from: the game's own content, its download folder, or
+/// mashup's cache.
+fn map_source(name: &str) -> &'static str {
+    let file = format!("maps/{name}.bsp");
+    let in_dir = |dir: Option<std::path::PathBuf>| dir.is_some_and(|d| d.join(&file).is_file());
+    let install = crate::mount::config::LocalConfig::load()
+        .ok()
+        .and_then(|c| c.game_path(crate::games::cs_source::GAME));
+    if in_dir(crate::mount::config::content_dir(crate::games::cs_source::GAME)) {
+        "imported"
+    } else if in_dir(install.map(|p| p.join("cstrike/download"))) {
+        "downloaded"
+    } else {
+        "game"
+    }
 }
 
 /// A map loading in the background for the `map` command.
@@ -1372,6 +1398,39 @@ fn client_commands(app: &mut App) {
         Ok(None)
     })
     .console_command(
+        "maps",
+        "maps [filter]: list the maps that can be loaded (the game's, its downloads, imported).",
+        |_, a| {
+            let filter = a.first().map(|f| f.to_lowercase()).unwrap_or_default();
+            let lines: Vec<String> = map_names()
+                .into_iter()
+                .filter(|m| m.contains(&filter))
+                .map(|m| {
+                    let from = map_source(&m);
+                    format!("{m}{}", if from == "game" { String::new() } else { format!("  ({from})") })
+                })
+                .collect();
+            Ok(Some(if lines.is_empty() {
+                "no maps match".into()
+            } else {
+                format!("{}\n{} maps", lines.join("\n"), lines.len())
+            }))
+        },
+    )
+    .console_command(
+        "import",
+        "import <file.bsp|file.bsp.bz2>: copy a map into mashup's content cache (never the game folder).",
+        |_, a| {
+            let path = a.join(" ");
+            if path.is_empty() {
+                return Err("import <file.bsp|file.bsp.bz2>".into());
+            }
+            let name = crate::games::cs_source::mount::import_map(std::path::Path::new(&path))?;
+            *MAP_NAMES.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            Ok(Some(format!("imported {name}; load it with: map {name}")))
+        },
+    )
+    .console_command(
         "map",
         "map <name>: load a CS:S map (Tab lists the install's maps).",
         |w, a| {
@@ -1457,6 +1516,33 @@ struct NoclipBack(&'static str);
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn closing_with_the_console_key_captures_the_mouse() {
+        use bevy::window::{CursorGrabMode, CursorOptions};
+        let mut app = App::new();
+        app.init_resource::<ConsoleUi>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .add_systems(Update, toggle);
+        app.world_mut().spawn((ConsoleRoot, Visibility::Hidden));
+        let window = app.world_mut().spawn(CursorOptions::default()).id();
+        let press = |app: &mut App, key: KeyCode| {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.clear();
+            keys.press(key);
+            app.update();
+            app.world_mut().resource_mut::<ButtonInput<KeyCode>>().release(key);
+        };
+        let grabbed = |app: &App| app.world().get::<CursorOptions>(window).unwrap().grab_mode != CursorGrabMode::None;
+        press(&mut app, KeyCode::Backquote);
+        assert!(app.world().resource::<ConsoleUi>().open && !grabbed(&app));
+        press(&mut app, KeyCode::Backquote);
+        assert!(!app.world().resource::<ConsoleUi>().open && grabbed(&app), "tilde should recapture");
+        press(&mut app, KeyCode::Backquote);
+        press(&mut app, KeyCode::Escape);
+        assert!(!app.world().resource::<ConsoleUi>().open && !grabbed(&app), "escape leaves the mouse free");
+    }
+
     use super::*;
     use crate::console::ConsolePlugin;
 

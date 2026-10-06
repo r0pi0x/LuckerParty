@@ -232,9 +232,13 @@ fn fade_loops(
     mut loops: Query<(Entity, &mut ScapeLoop, Option<&mut AudioSink>)>,
     listener: Query<&GlobalTransform, With<SoundListener>>,
     time: Res<Time>,
+    global: Option<Res<bevy::audio::GlobalVolume>>,
     mut commands: Commands,
 ) {
     let ear = listener.iter().next().map(|l| l.translation());
+    // Setting a sink's volume replaces the global factor Bevy applied when
+    // it started, so apply it here too (and follow changes to it).
+    let master = global.map_or(1.0, |g| g.volume.to_linear());
     let step = time.delta_secs() / FADE_TIME;
     for (e, mut l, sink) in &mut loops {
         l.volume += (l.target - l.volume).clamp(-step, step);
@@ -247,7 +251,7 @@ fn fade_loops(
             _ => 1.0,
         };
         if let Some(mut sink) = sink {
-            sink.set_volume(Volume::Linear(l.volume * gain));
+            sink.set_volume(Volume::Linear(l.volume * gain * master));
         }
     }
 }

@@ -8,6 +8,7 @@ use bevy::prelude::*;
 use vbsp::{BrushFlags, Bsp, TextureFlags};
 
 use super::{
+    ambient::RawLeaf,
     lightmap::{self, AtlasBuilder},
     material::MaterialLoader,
 };
@@ -48,7 +49,7 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
     let path = format!("maps/{name}.bsp");
     let bytes = mount.read(&path).map_err(|e| format!("{path}: {e}"))?;
     let bsp = Bsp::read(&bytes).map_err(|e| format!("{path}: {e}"))?;
-    let (mut data, layout) = convert(&bsp, lightmap::lighting_lump(&bytes), name);
+    let (mut data, layout) = convert(&bsp, &bytes, name);
 
     let mut materials = MaterialLoader::new(&bsp, mount);
     for mesh in &mut data.meshes {
@@ -68,11 +69,17 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
     data.sky_vis = Some(sky_vis(&bsp, &bytes));
     let lighting = super::ambient::MapLighting::read(&bytes);
     let occluders = super::ambient::Occluders::new(
-        &shadow_hulls(&bsp),
+        &shadow_hulls(&bsp, &super::ambient::raw_leaves(&bytes)),
         (&data.collision_positions, &data.collision_indices),
     );
     super::props::add_static_props(&bsp, &mut materials, &lighting, &occluders, &mut data);
     super::ropes::add_ropes(&bsp, &mut materials, &lighting, &occluders, &mut data);
+    // The same query at run time, for view models (spec view_models.md 9).
+    if let Some(tree) = data.sky_vis.clone() {
+        data.light_field = Some(crate::map::MapLightField(std::sync::Arc::new(move |p| {
+            super::props::probe_with(&|q| lighting.ambient_in(tree.leaf(q), q), &lighting, &occluders, p)
+        })));
+    }
     super::sprites::add_sprites(&bsp, &mut materials, &mut data);
     super::dust::add_dust(&bsp, &mut materials, &mut data);
     let surfaces = super::surfaceprops::SurfaceProps::load(&mut materials);
@@ -87,6 +94,8 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
             Err(e) => data.warnings.push(e),
         }
     }
+    data.decals = super::decals::impact_decals(&mut materials);
+    data.hud = super::hud::load(&mut materials).map(std::sync::Arc::new);
     // What characters hold: the weapons' world models.
     if let Some(skeleton) = data.characters.first().map(|c| c.bones.clone()) {
         for (weapon, path) in super::weapons::WORLD_MODELS {
@@ -96,6 +105,25 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
             }
         }
     }
+    // What the local player sees of them: the view models.
+    for (weapon, path, right_handed) in super::weapons::VIEW_MODELS {
+        match super::props::load_view_model(&mut materials, path, weapon, *right_handed) {
+            Ok(v) => data.view_models.push(v),
+            Err(e) => data.warnings.push(e),
+        }
+    }
+    data.muzzle_flash = Some(super::view_anim::muzzle_flash(&mut materials));
+    for (key, path, bounce) in super::view_anim::SHELLS {
+        match super::props::load_shell(&mut materials, path) {
+            Ok(model) => data.shells.push(crate::map::shells::MapShell {
+                key: key.to_string(),
+                model,
+                bounce: Some(bounce.to_string()),
+            }),
+            Err(e) => data.warnings.push(e),
+        }
+    }
+    data.shell_physics = Some(super::view_anim::shell_physics());
     let mut sounds = super::sound::load(&mut materials, name, &surfaces);
     super::soundscape::load(&mut materials, &bsp, name, &mut sounds);
     data.sounds = std::sync::Arc::new(sounds);
@@ -226,8 +254,27 @@ pub struct LightmapLayout {
 }
 
 /// Geometry, collision, lightmaps and spawns, without materials.
-/// `lighting` is the BSP's lighting lump (see `lightmap::lighting_lump`).
-pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> (MapData, LightmapLayout) {
+/// `bytes` is the whole BSP file (for lumps vbsp doesn't keep as stored).
+pub fn convert(bsp: &Bsp, bytes: &[u8], name: &str) -> (MapData, LightmapLayout) {
+    let lighting = lightmap::lighting_lump(bytes);
+    let leaves = super::ambient::raw_leaves(bytes);
+    // Switchable light styles (32+) whose lights start off (spawnflag 1);
+    // the others are lit at map start (cs_office's projector, cs_assault's
+    // red lights).
+    let dark_styles: std::collections::HashSet<u8> = bsp
+        .entities
+        .iter()
+        .filter(|e| e.prop("classname").is_some_and(|c| c.starts_with("light")))
+        .filter(|e| {
+            e.prop("spawnflags")
+                .and_then(|f| f.trim().parse::<i32>().ok())
+                .unwrap_or(0)
+                & 1
+                != 0
+        })
+        .filter_map(|e| e.prop("style").and_then(|s| s.trim().parse::<u8>().ok()))
+        .filter(|s| *s >= 32)
+        .collect();
     let mut by_material: BTreeMap<String, MapMesh> = BTreeMap::new();
     // Per mesh: each vertex's lightmap block slot and luxel coordinate,
     // resolved to atlas UVs once all blocks are packed.
@@ -241,12 +288,36 @@ pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> (MapData, LightmapLayo
     };
 
     let bounds = playable_bounds(bsp);
-    // The world is model 0; brush entities (doors, breakables) come later.
+    // The world is model 0; drawn brush entities (doors, windows,
+    // func_brush) follow, placed by their origin and angles.
     let world = bsp.models().next().expect("BSP has no world model");
-    for face in world.faces() {
-        face_slots.push(None);
+    let entities = brush_entities(bsp);
+    let faces = world
+        .faces()
+        .map(|f| (f, None))
+        .chain(entities.iter().filter(|e| e.drawn).flat_map(|e| {
+            bsp.models()
+                .nth(e.model)
+                .into_iter()
+                .flat_map(|m| m.faces().collect::<Vec<_>>())
+                .map(|f| (f, Some(e.transform)))
+        }));
+    for (face, transform) in faces {
+        let in_world = transform.is_none();
+        // Source-space position of a face vertex (brush entity models are
+        // stored around their origin).
+        let place = |v: vbsp::Vector| match transform {
+            Some((r, o)) => {
+                let p = r * Vec3::new(v.x, v.y, v.z) + o;
+                vbsp::Vector { x: p.x, y: p.y, z: p.z }
+            }
+            None => v,
+        };
+        if in_world {
+            face_slots.push(None);
+        }
         let centre = {
-            let pts: Vec<vbsp::Vector> = face.vertices().map(|v| v.position).collect();
+            let pts: Vec<vbsp::Vector> = face.vertices().map(|v| place(v.position)).collect();
             let n = pts.len().max(1) as f32;
             vbsp::Vector {
                 x: pts.iter().map(|p| p.x).sum::<f32>() / n,
@@ -260,13 +331,19 @@ pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> (MapData, LightmapLayo
         if flags.intersects(NOT_DRAWN) && flags.intersects(NOT_SOLID) {
             continue;
         }
-        let face_normal = to_engine_dir(face.normal());
+        let face_normal = match transform {
+            Some((r, _)) => {
+                let n = r * Vec3::new(face.normal().x, face.normal().y, face.normal().z);
+                to_engine_dir(vbsp::Vector { x: n.x, y: n.y, z: n.z })
+            }
+            None => to_engine_dir(face.normal()),
+        };
         let displaced_face = face.displacement().is_some();
         // Re-wind triangles to face the plane normal.
         let tris: Vec<[(vbsp::Vector, Vec2, f32); 3]> = face_triangles_blend(&face)
             .into_iter()
             .map(|t| {
-                let [a, b, c] = t.map(|(v, _, _)| to_engine(v));
+                let [a, b, c] = t.map(|(v, _, _)| to_engine(place(v)));
                 if (b - a).cross(c - a).dot(face_normal) < 0.0 {
                     [t[0], t[2], t[1]]
                 } else {
@@ -277,7 +354,7 @@ pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> (MapData, LightmapLayo
 
         // Brush solids come from the brush lump below; only displacement
         // surfaces (which have no brush volume) collide as triangles.
-        if displaced_face && !flags.intersects(NOT_SOLID) {
+        if in_world && displaced_face && !flags.intersects(NOT_SOLID) {
             for t in &tris {
                 let base = data.collision_positions.len() as u32;
                 data.collision_positions
@@ -289,9 +366,14 @@ pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> (MapData, LightmapLayo
             continue;
         }
 
-        let bumped = lightmap::face_bumped_samples(lighting, &face, flags.contains(TextureFlags::BUMPLIGHT));
-        let slot = lightmap::face_samples(lighting, &face).map(|s| atlas.add_bumped(s, bumped));
-        *face_slots.last_mut().unwrap() = slot;
+        let (flat, bumped) =
+            lightmap::face_samples_lit(lighting, &face, flags.contains(TextureFlags::BUMPLIGHT), &|style| {
+                dark_styles.contains(&style)
+            });
+        let slot = flat.map(|s| atlas.add_bumped(s, bumped));
+        if in_world {
+            *face_slots.last_mut().unwrap() = slot;
+        }
         let material = tex.name().to_lowercase();
         // Meshes are per material and per part (world or 3D skybox).
         let key = if skybox {
@@ -308,7 +390,7 @@ pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> (MapData, LightmapLayo
         let lm = pending_lm.entry(key).or_default();
         let displaced = face.displacement().is_some();
         for t in &tris {
-            let p: [Vec3; 3] = t.map(|(v, _, _)| to_engine(v));
+            let p: [Vec3; 3] = t.map(|(v, _, _)| to_engine(place(v)));
             // Brush faces are flat; displacements get per-triangle normals.
             let n = if displaced {
                 (p[1] - p[0]).cross(p[2] - p[0]).normalize_or_zero()
@@ -317,7 +399,7 @@ pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> (MapData, LightmapLayo
             };
             for (v, luxel, blend) in t {
                 mesh.indices.push(mesh.positions.len() as u32);
-                mesh.positions.push(to_engine(*v).to_array());
+                mesh.positions.push(to_engine(place(*v)).to_array());
                 mesh.normals.push(n.to_array());
                 mesh.uvs.push(tex.uv(*v));
                 mesh.blend_weights.push(*blend);
@@ -326,9 +408,9 @@ pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> (MapData, LightmapLayo
         }
     }
 
-    data.collision_hulls = brush_hulls(bsp);
-    data.collision_brushes = collision_brushes(bsp);
-    data.water = water_volumes(bsp);
+    data.collision_hulls = brush_hulls(bsp, &leaves);
+    data.collision_brushes = collision_brushes(bsp, &leaves);
+    data.water = water_volumes(bsp, &leaves);
 
     let (lightmap, placements, white) = atlas.build();
     for (material, mesh) in by_material.iter_mut() {
@@ -373,6 +455,87 @@ pub fn convert(bsp: &Bsp, lighting: &[u8], name: &str) -> (MapData, LightmapLayo
     // Physics bodies fall at sv_gravity (800 units/s^2), read at load.
     data.gravity = Some(800.0 * METERS_PER_UNIT);
     (data, layout)
+}
+
+/// A brush entity's model and placement.
+pub struct BrushEntity {
+    /// Index into the BSP's models.
+    pub model: usize,
+    /// Source-space rotation and origin (units).
+    pub transform: (Quat, Vec3),
+    /// Drawn (not a trigger or volume, not render mode 10).
+    pub drawn: bool,
+    /// Players collide with it (doors and breakables as they spawn: closed,
+    /// unbroken).
+    pub solid: bool,
+}
+
+/// Brush entities that render or collide. Volumes (triggers, buy zones,
+/// bomb sites, area portals, occluders, precipitation, dust) do neither.
+pub fn brush_entities(bsp: &Bsp) -> Vec<BrushEntity> {
+    const VOLUMES: &[&str] = &[
+        "func_buyzone",
+        "func_bomb_target",
+        "func_hostage_rescue",
+        "func_escapezone",
+        "func_vip_safetyzone",
+        "func_no_defuse",
+        "func_areaportal",
+        "func_areaportalwindow",
+        "func_occluder",
+        "func_precipitation",
+        "func_dustmotes",
+        "func_dustcloud",
+        "func_smokevolume",
+        "func_clip_vphysics",
+        "func_viscluster",
+        "func_ladderendpoint",
+        "func_vehicleclip",
+    ];
+    // Never solid to players.
+    const NOT_SOLID: &[&str] = &["func_illusionary", "func_lod"];
+    let mut out = Vec::new();
+    for ent in bsp.entities.iter() {
+        let Some(class) = ent.prop("classname") else { continue };
+        let Some(model) = ent
+            .prop("model")
+            .and_then(|m| m.strip_prefix('*'))
+            .and_then(|m| m.parse().ok())
+        else {
+            continue;
+        };
+        if model == 0 || class.starts_with("trigger_") || VOLUMES.contains(&class) {
+            continue;
+        }
+        let num = |k: &'static str| ent.prop(k).and_then(|v| v.trim().parse::<f32>().ok());
+        let origin = ent
+            .prop("origin")
+            .and_then(parse_vector)
+            .map_or(Vec3::ZERO, |o| Vec3::new(o.x, o.y, o.z));
+        let angles = ent
+            .prop("angles")
+            .and_then(parse_vector)
+            .map_or(Vec3::ZERO, |a| Vec3::new(a.x, a.y, a.z));
+        // Source angles: pitch about Y, yaw about Z, roll about X.
+        let rotation = Quat::from_rotation_z(angles.y.to_radians())
+            * Quat::from_rotation_y(angles.x.to_radians())
+            * Quat::from_rotation_x(angles.z.to_radians());
+        let render_mode = num("rendermode").unwrap_or(0.0) as i32;
+        let start_disabled = num("StartDisabled").unwrap_or(0.0) != 0.0;
+        let drawn = render_mode != 10 && !(class == "func_brush" && start_disabled);
+        let solid = !NOT_SOLID.contains(&class)
+            // func_brush "Solidity": 0 toggle (with the brush), 1 never, 2 always.
+            && !(class == "func_brush" && (num("Solidity") == Some(1.0) || (start_disabled && num("Solidity") != Some(2.0))))
+            // func_rotating spawnflag 64: not solid.
+            && !(class == "func_rotating" && (num("spawnflags").unwrap_or(0.0) as i32) & 64 != 0);
+        out.push(BrushEntity {
+            model,
+            transform: (rotation, origin),
+            drawn,
+            solid,
+        });
+    }
+    out
 }
 
 /// The playable world's bounds (Source units), from the world's
@@ -588,16 +751,23 @@ const PLAYER_SOLID: BrushFlags = BrushFlags::SOLID
 /// Indices of brushes that belong to the world (model 0), found through its
 /// BSP tree. Brush entities (buy zones, bomb sites, doors) have their own
 /// trees and are excluded here.
-fn world_brushes(bsp: &Bsp) -> std::collections::BTreeSet<usize> {
+fn world_brushes(bsp: &Bsp, leaves: &[RawLeaf]) -> std::collections::BTreeSet<usize> {
+    model_brushes(bsp, leaves, 0)
+}
+
+/// Indices of a model's brushes, through its BSP tree.
+/// `leaves` are the leaves as stored (`ambient::raw_leaves`): vbsp's own
+/// list is sorted by cluster, so its indices don't match the tree's.
+fn model_brushes(bsp: &Bsp, leaves: &[RawLeaf], model: usize) -> std::collections::BTreeSet<usize> {
     let mut out = std::collections::BTreeSet::new();
-    let Some(world) = bsp.models.first() else { return out };
+    let Some(world) = bsp.models.get(model) else { return out };
     let mut stack = vec![world.head_node];
     while let Some(child) = stack.pop() {
         if child >= 0 {
             if let Some(node) = bsp.nodes.get(child as usize) {
                 stack.extend(node.children);
             }
-        } else if let Some(leaf) = bsp.leaf((-child - 1) as usize) {
+        } else if let Some(leaf) = leaves.get((-child - 1) as usize) {
             let first = leaf.first_leaf_brush as usize;
             for lb in bsp.leaf_brushes.iter().skip(first).take(leaf.leaf_brush_count as usize) {
                 out.insert(lb.brush as usize);
@@ -607,25 +777,47 @@ fn world_brushes(bsp: &Bsp) -> std::collections::BTreeSet<usize> {
     out
 }
 
-/// Every player-solid world brush as a convex hull in engine space: the
+/// Every player-solid world and brush entity brush as a convex hull in engine space: the
 /// corners where three of its planes meet and no other plane cuts them off.
-pub fn brush_hulls(bsp: &Bsp) -> Vec<Vec<[f32; 3]>> {
-    brush_hulls_indexed(bsp).into_iter().map(|(_, h, _)| h).collect()
+pub fn brush_hulls(bsp: &Bsp, leaves: &[RawLeaf]) -> Vec<Vec<[f32; 3]>> {
+    brush_hulls_indexed(bsp, leaves)
+        .into_iter()
+        .chain(entity_hulls(bsp, leaves))
+        .map(|(_, h, _)| h)
+        .collect()
 }
 
 /// The same brushes as planes (engine space), bevel planes included, for
 /// exact swept-box collision.
-pub fn collision_brushes(bsp: &Bsp) -> Vec<crate::map::MapBrush> {
-    brush_hulls_indexed(bsp)
+pub fn collision_brushes(bsp: &Bsp, leaves: &[RawLeaf]) -> Vec<crate::map::MapBrush> {
+    brush_hulls_indexed(bsp, leaves)
         .into_iter()
+        .chain(entity_hulls(bsp, leaves))
         .map(|(i, points, planes)| map_brush(points, planes, bsp.brushes[i].flags.contains(BrushFlags::LADDER)))
+        .collect()
+}
+
+/// Player-solid brushes of solid brush entities (doors, windows,
+/// breakables) where they spawn, as `brush_hulls_indexed` gives them.
+pub fn entity_hulls(bsp: &Bsp, leaves: &[RawLeaf]) -> Vec<(usize, Vec<[f32; 3]>, Vec<(Vec3, f32)>)> {
+    brush_entities(bsp)
+        .into_iter()
+        .filter(|e| e.solid)
+        .flat_map(|e| {
+            brush_volumes_in(
+                bsp,
+                PLAYER_SOLID.union(BrushFlags::LADDER),
+                model_brushes(bsp, leaves, e.model),
+                Some(e.transform),
+            )
+        })
         .collect()
 }
 
 /// Hulls that block light: player-solid brushes minus sky brushes (rays
 /// that reach the sky are lit).
-pub fn shadow_hulls(bsp: &Bsp) -> Vec<Vec<[f32; 3]>> {
-    brush_hulls_indexed(bsp)
+pub fn shadow_hulls(bsp: &Bsp, leaves: &[RawLeaf]) -> Vec<Vec<[f32; 3]>> {
+    brush_hulls_indexed(bsp, leaves)
         .into_iter()
         .filter(|(i, _, _)| {
             let b = &bsp.brushes[*i];
@@ -645,14 +837,14 @@ pub fn shadow_hulls(bsp: &Bsp) -> Vec<Vec<[f32; 3]>> {
 
 /// `brush_hulls` with each hull's brush index (for diagnostics) and its
 /// planes in engine space (outward normal, distance in meters).
-pub fn brush_hulls_indexed(bsp: &Bsp) -> Vec<(usize, Vec<[f32; 3]>, Vec<(Vec3, f32)>)> {
+pub fn brush_hulls_indexed(bsp: &Bsp, leaves: &[RawLeaf]) -> Vec<(usize, Vec<[f32; 3]>, Vec<(Vec3, f32)>)> {
     // Ladders block players too (you climb what you run into).
-    brush_volumes(bsp, PLAYER_SOLID.union(BrushFlags::LADDER))
+    brush_volumes(bsp, leaves, PLAYER_SOLID.union(BrushFlags::LADDER))
 }
 
 /// Water and slime brushes as volumes.
-pub fn water_volumes(bsp: &Bsp) -> Vec<crate::map::MapWaterVolume> {
-    brush_volumes(bsp, BrushFlags::WATER.union(BrushFlags::SLIME))
+pub fn water_volumes(bsp: &Bsp, leaves: &[RawLeaf]) -> Vec<crate::map::MapWaterVolume> {
+    brush_volumes(bsp, leaves, BrushFlags::WATER.union(BrushFlags::SLIME))
         .into_iter()
         .map(|(i, points, planes)| crate::map::MapWaterVolume {
             brush: map_brush(points, planes, false),
@@ -677,7 +869,18 @@ fn map_brush(points: Vec<[f32; 3]>, planes: Vec<(Vec3, f32)>, ladder: bool) -> c
 }
 
 /// World brushes with any of `mask`'s contents, as hulls and planes.
-fn brush_volumes(bsp: &Bsp, mask: BrushFlags) -> Vec<(usize, Vec<[f32; 3]>, Vec<(Vec3, f32)>)> {
+fn brush_volumes(bsp: &Bsp, leaves: &[RawLeaf], mask: BrushFlags) -> Vec<(usize, Vec<[f32; 3]>, Vec<(Vec3, f32)>)> {
+    brush_volumes_in(bsp, mask, world_brushes(bsp, leaves), None)
+}
+
+/// `brush_volumes` for a set of brushes, optionally placed by a Source-space
+/// rotation and origin (brush entity models).
+fn brush_volumes_in(
+    bsp: &Bsp,
+    mask: BrushFlags,
+    brushes: std::collections::BTreeSet<usize>,
+    transform: Option<(Quat, Vec3)>,
+) -> Vec<(usize, Vec<[f32; 3]>, Vec<(Vec3, f32)>)> {
     const EPS: f32 = 0.01;
     // Plane index (either side) -> corners of displacement base faces on it.
     let mut disp_bases: std::collections::HashMap<u16, Vec<Vec<Vec3>>> = Default::default();
@@ -695,7 +898,7 @@ fn brush_volumes(bsp: &Bsp, mask: BrushFlags) -> Vec<(usize, Vec<[f32; 3]>, Vec<
         disp_bases.entry(face.plane_num & !1).or_default().push(corners);
     }
     let mut out = Vec::new();
-    for index in world_brushes(bsp) {
+    for index in brushes {
         let brush = &bsp.brushes[index];
         if !brush.flags.intersects(mask) {
             continue;
@@ -716,7 +919,16 @@ fn brush_volumes(bsp: &Bsp, mask: BrushFlags) -> Vec<(usize, Vec<[f32; 3]>, Vec<
         let planes: Vec<(Vec3, f32)> = sides
             .iter()
             .filter_map(|side| bsp.plane(side.plane as usize))
-            .map(|p| (Vec3::new(p.normal.x, p.normal.y, p.normal.z), p.dist))
+            .map(|p| {
+                let n = Vec3::new(p.normal.x, p.normal.y, p.normal.z);
+                match transform {
+                    Some((r, o)) => {
+                        let n = r * n;
+                        (n, p.dist + n.dot(o))
+                    }
+                    None => (n, p.dist),
+                }
+            })
             .collect();
         // A brush carrying a displacement collides as the displacement
         // surface (added as triangles), not as its original volume. Compiled
@@ -725,13 +937,14 @@ fn brush_volumes(bsp: &Bsp, mask: BrushFlags) -> Vec<(usize, Vec<[f32; 3]>, Vec<
         // face, all of whose corners lie on that side. (Only its centre is
         // not enough: dust2's walls stand on floor displacements that share
         // their bottom plane and reach under them.)
-        let carries_displacement = sides.iter().any(|side| {
-            disp_bases.get(&(side.plane & !1)).is_some_and(|faces| {
-                faces
-                    .iter()
-                    .any(|corners| corners.iter().all(|c| planes.iter().all(|(n, d)| n.dot(*c) <= d + 1.0)))
-            })
-        });
+        let carries_displacement = transform.is_none()
+            && sides.iter().any(|side| {
+                disp_bases.get(&(side.plane & !1)).is_some_and(|faces| {
+                    faces
+                        .iter()
+                        .any(|corners| corners.iter().all(|c| planes.iter().all(|(n, d)| n.dot(*c) <= d + 1.0)))
+                })
+            });
         if carries_displacement {
             continue;
         }

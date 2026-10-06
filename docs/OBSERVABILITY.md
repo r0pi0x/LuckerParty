@@ -73,6 +73,23 @@ Only `Reflect`-registered types are visible; register new core components in
   by hitgroup, where shots test them (e.g. `+bot_stop 1 +bot_add 2
   +mashup_drawhitboxes 1` with `--screenshot` to check they follow the
   animated body).
+- `mashup_healthbars 1` draws a health bar over every other living
+  character (green full, red nearly dead), e.g. to watch damage land in a
+  `--screenshot` run with `+bot_add 2`.
+- `thirdperson` (back with `firstperson`; distance `cam_idealdist`, CS:S
+  units) puts the camera behind the local player and draws its own
+  animated body: `+thirdperson` in a `--screenshot` run shows the local
+  player's model and animation.
+- View model (CS:S cvars): `viewmodel_fov` (54), `cl_righthand` (1;
+  0 puts weapons in the left hand), `r_drawviewmodel 0` hides it,
+  `cl_bobcycle`/`cl_bobup` (bob), `cl_wpn_sway_interp`/`cl_wpn_sway_scale`
+  (sway: e.g. 20 to exaggerate it), `muzzleflash_light 0` turns the
+  flash's light off, `cl_ejectbrass 0` stops shells. The first two and
+  `muzzleflash_light` are archived. To check the flash lighting a wall,
+  stand at one and fire: `+setpos 470 2330 -78 +setang 0 15 0 ++attack`
+  on de_dust2 with a few `--frames` values (a flash lasts 0.05 s, every
+  0.1 s), against the same without `++attack`. `dump cs_source
+  --sequences <model>` shows a model's animation events and attachments.
 - Remote: `curl -s localhost:15702 -d '{"jsonrpc":"2.0","id":1,
   "method":"mashup/console","params":{"line":"getpos; cvarlist sv_"}}'`
   runs a line now and returns the lines it printed.
@@ -95,6 +112,7 @@ same readers as the runtime mount. Install paths come from
 cargo run --bin dump -- cs_source                      # counts and sizes by type
 cargo run --bin dump -- cs_source --list --filter de_dust2
 cargo run --bin dump -- cs_source --filter materials/de_dust --extract
+cargo run --bin dump -- cs_source --sequences models/weapons/v_rif_ak47.mdl  # bones, sequences, activities
 cargo run --bin dump -- combat_arms --archives         # per-archive title, entropy, file count
 cargo run --bin dump -- combat_arms --list --filter worlds2
 cargo run --bin dump -- combat_arms --filter worlds2/warehouse.dat --extract
@@ -118,8 +136,15 @@ cargo run --features dev --bin refcmp -- capture-ours --only a_sign
 ```
 
 - Views: `tools/refcmp/<map>.toml` (Source eye positions and angles; add
-  more as needed). Output: `~/.local/share/mashup/dump/refcmp/<map>/`
-  (game imagery; never in the repo).
+  more as needed; pass `--views tools/refcmp/<map>.toml` for maps other
+  than dust2). de_aztec, cs_office and de_nuke have views generated from
+  their own entities (intermission cameras, spawns, bomb/rescue zones).
+  `camera` names the map's `point_viewcontrol`; maps whose cameras have
+  no name (de_aztec) use the class name, which moves all of them.
+  Output: `~/.local/share/mashup/dump/refcmp/<map>/` (game imagery; never
+  in the repo). Our captures currently show the view model.
+- Load warnings of every stock map: `cargo test --features dev --test
+  map_stock -- --ignored --nocapture all_stock_maps_warnings`.
 - CS:S runs through the Steam client (logged in once on this machine) and
   is driven over RCON on 127.0.0.1:27015, so it works with the desktop
   locked: the tool waits for the map to load, repositions the map's

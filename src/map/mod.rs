@@ -18,6 +18,8 @@ use crate::core::{SpawnPoint, Team};
 pub use crate::core::{MapBrush, MapBrushCollider, MapBrushes, MapWater, MapWaterVolume, PropSurface};
 
 pub mod anim;
+pub mod decal;
+pub mod hud;
 mod dust;
 pub mod nav;
 pub mod prop_material;
@@ -27,7 +29,13 @@ pub mod sound;
 pub mod soundscape;
 pub use sound::{MapSoundClip, MapSoundEntry, MapSounds, MapSurface, PlaySound, SoundLevel};
 pub mod sprite_material;
+pub mod shells;
+pub mod view_model;
 pub mod world_material;
+pub use view_model::{
+    DynamicLight, EffectSettings, MapAttachment, MapViewModel, ViewAnimator, ViewModelAnchor, ViewModelCamera, ViewModelEvent,
+    ViewModelEventKind, ViewModelOffset, ViewModelSettings, ViewModels,
+};
 
 use prop_material::{PropMaterial, PropParams};
 use rope_material::{RopeMaterial, RopeParams};
@@ -120,6 +128,30 @@ pub enum MapAlpha {
     /// Cut out below this alpha.
     Mask(f32),
     Blend,
+    /// Added to what's behind (Source `$additive`: light glows, beams).
+    Add,
+}
+
+impl MapAlpha {
+    /// The material shaders' `translucent` parameter: 0 opaque, 1 blend,
+    /// 2 additive.
+    pub fn shader_mode(self) -> f32 {
+        match self {
+            MapAlpha::Opaque | MapAlpha::Mask(_) => 0.0,
+            MapAlpha::Blend => 1.0,
+            MapAlpha::Add => 2.0,
+        }
+    }
+
+    /// Blend state for the material shaders (they output alpha 0 when
+    /// additive, so premultiplied blending adds).
+    pub fn shader_alpha_mode(self) -> AlphaMode {
+        match self {
+            MapAlpha::Opaque | MapAlpha::Mask(_) => AlphaMode::Opaque,
+            MapAlpha::Blend => AlphaMode::Blend,
+            MapAlpha::Add => AlphaMode::Add,
+        }
+    }
 }
 
 /// Triangles sharing one material.
@@ -210,11 +242,12 @@ pub struct MapEnvmap {
 /// and combined with the base color (specs/cs_source/shaders.md).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MapDetail {
-    /// Index into `MapData::textures` (linear for mode 0, sRGB for 1).
+    /// Index into `MapData::textures` (linear for mode 0, sRGB otherwise).
     pub texture: usize,
     pub scale: [f32; 2],
     pub factor: f32,
-    /// 0: multiply by 2 x detail ("mod2x"); 1: add.
+    /// 0: multiply by 2 x detail ("mod2x"); 1: add; 2: blend the detail
+    /// over the base by its alpha.
     pub mode: u8,
 }
 
@@ -292,6 +325,9 @@ pub struct MapHeldModel {
     pub key: String,
     pub model: MapModel,
     pub bone: String,
+    /// Where it shoots from, in the bone's frame (muzzle flashes; +X
+    /// forward).
+    pub muzzle: Option<Transform>,
 }
 
 /// What a character holds (a `MapHeldModel` key), drawn in its body's
@@ -334,7 +370,8 @@ struct CharacterBodies(Vec<BodyAssets>);
 
 /// Meshes and materials of each held model, by key.
 #[derive(Resource)]
-struct HeldAssets(HashMap<String, (String, Vec<(Handle<Mesh>, Handle<StandardMaterial>)>)>);
+#[allow(clippy::type_complexity)]
+struct HeldAssets(HashMap<String, (String, Vec<(Handle<Mesh>, Handle<StandardMaterial>)>, Option<Transform>)>);
 
 struct BodyAssets {
     parts: Vec<(Handle<Mesh>, Handle<StandardMaterial>)>,
@@ -357,8 +394,14 @@ pub struct CharacterBody {
     held: Option<(Entity, String)>,
 }
 
-/// Give characters other than the local player their team's body (a child
-/// at the feet), and turn bodies with their character's yaw.
+/// Whether the local player's own body is drawn (third person). The
+/// client sets it; the body is there either way, animated, and hidden
+/// when this is false.
+#[derive(Resource, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShowLocalBody(pub bool);
+
+/// Give characters their team's body (a child at the feet); the local
+/// player's is hidden unless `ShowLocalBody`.
 #[allow(clippy::type_complexity)]
 fn attach_bodies(
     models: Option<Res<CharacterModels>>,
@@ -370,16 +413,18 @@ fn attach_bodies(
             &ColliderAabb,
             &GlobalTransform,
             Option<&Children>,
+            Has<crate::core::LocalPlayer>,
         ),
-        (With<crate::core::Intent>, Without<crate::core::LocalPlayer>),
+        With<crate::core::Intent>,
     >,
     existing: Query<&CharacterBody>,
+    show_local: Res<ShowLocalBody>,
     mut commands: Commands,
 ) {
     let (Some(models), Some(bodies)) = (models, bodies) else {
         return;
     };
-    for (e, team, aabb, at, children) in &characters {
+    for (e, team, aabb, at, children, local) in &characters {
         let Some((index, _)) = models.for_team(team.copied()) else {
             continue;
         };
@@ -398,7 +443,7 @@ fn attach_bodies(
             .spawn((
                 Name::new("Body"),
                 Transform::from_xyz(0.0, feet, 0.0),
-                Visibility::Inherited,
+                body_visibility(local, *show_local),
                 ChildOf(e),
             ))
             .id();
@@ -438,6 +483,32 @@ fn attach_bodies(
     }
 }
 
+fn body_visibility(local: bool, show_local: ShowLocalBody) -> Visibility {
+    if local && !show_local.0 {
+        Visibility::Hidden
+    } else {
+        Visibility::Inherited
+    }
+}
+
+/// Show or hide the local player's body when `ShowLocalBody` changes.
+fn show_local_body(
+    show: Res<ShowLocalBody>,
+    local: Query<&Children, With<crate::core::LocalPlayer>>,
+    mut bodies: Query<&mut Visibility, With<CharacterBody>>,
+) {
+    let want = body_visibility(true, *show);
+    for children in &local {
+        let mut it = bodies.iter_many_mut(children);
+        while let Some(mut vis) = it.fetch_next() {
+            if *vis != want {
+                *vis = want;
+            }
+        }
+    }
+}
+
+/// Turn bodies with their character's yaw.
 fn turn_bodies(
     characters: Query<(&crate::core::Intent, &Children, Option<&anim::Animator>)>,
     mut bodies: Query<&mut Transform, With<CharacterBody>>,
@@ -456,12 +527,12 @@ fn turn_bodies(
 fn attach_held(
     held: Option<Res<HeldAssets>>,
     bodies: Option<Res<CharacterBodies>>,
-    characters: Query<(&Held, &Children)>,
+    characters: Query<(Entity, &Held, &Children)>,
     mut body_query: Query<&mut CharacterBody>,
     mut commands: Commands,
 ) {
     let (Some(held), Some(bodies)) = (held, bodies) else { return };
-    for (want, children) in &characters {
+    for (character, want, children) in &characters {
         let Some(c) = children.iter().find(|c| body_query.contains(*c)) else {
             continue;
         };
@@ -473,7 +544,7 @@ fn attach_held(
             commands.entity(e).despawn();
         }
         let Some(key) = &want.0 else { continue };
-        let Some((bone, parts)) = held.0.get(key) else { continue };
+        let Some((bone, parts, muzzle)) = held.0.get(key) else { continue };
         let Some(joint) = bodies.0[body.model]
             .bones
             .iter()
@@ -487,6 +558,9 @@ fn attach_held(
             .with_children(|m| {
                 for (mesh, material) in parts {
                     m.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone())));
+                }
+                if let Some(t) = muzzle {
+                    m.spawn((*t, view_model::HeldMuzzle { owner: character }));
                 }
             })
             .id();
@@ -754,6 +828,47 @@ pub struct MapData {
     pub characters: Vec<MapCharacterModel>,
     /// Models characters can hold (weapons' world models).
     pub held: Vec<MapHeldModel>,
+    /// Runtime decals (bullet holes, slashes) by group.
+    pub decals: decal::MapDecals,
+    /// The game's own HUD look, when it has one.
+    pub hud: Option<Arc<hud::GameHud>>,
+    /// What characters see of what they hold (weapons' view models).
+    pub view_models: Vec<MapViewModel>,
+    /// The light at any point, for moving models.
+    pub light_field: Option<MapLightField>,
+    /// What shots look like at the muzzle (flash sprites and light).
+    pub muzzle_flash: Option<MapMuzzleFlash>,
+    /// Spent shell types and how they fly.
+    pub shells: Vec<shells::MapShell>,
+    pub shell_physics: Option<shells::MapShellPhysics>,
+}
+
+/// A muzzle flash: view-facing additive sprites strung out along the
+/// muzzle's forward axis, shown for `life` seconds, and a brief point
+/// light (`DynamicLight`) that lights the world, props and view models.
+#[derive(Clone, Debug, Default)]
+pub struct MapMuzzleFlash {
+    /// Index into `MapData::textures`.
+    pub texture: Option<usize>,
+    /// Each sprite: distance ahead of the muzzle and full size (meters),
+    /// before the random scale.
+    pub sprites: Vec<(f32, f32)>,
+    /// Random size factor range.
+    pub scale: (f32, f32),
+    /// sRGB colour multiplier of the sprites.
+    pub color: [f32; 3],
+    pub life: f32,
+    pub light: Option<MapFlashLight>,
+}
+
+/// A muzzle flash's light: colour in lightmap units (1 = a fully lit
+/// surface shows its texture), radius range (meters, picked at random) and
+/// lifetime; its radius shrinks to 0 over the lifetime.
+#[derive(Clone, Copy, Debug)]
+pub struct MapFlashLight {
+    pub color: Vec3,
+    pub radius: (f32, f32),
+    pub life: f32,
 }
 
 /// What the BSP leaf around a point can see of the sky.
@@ -782,17 +897,37 @@ pub struct MapSkyVis {
 
 impl MapSkyVis {
     pub fn at(&self, p: Vec3) -> LeafSky {
+        self.leaf(p)
+            .and_then(|l| self.leaves.get(l).copied())
+            .unwrap_or(LeafSky::None)
+    }
+
+    /// The index of the leaf containing `p`.
+    pub fn leaf(&self, p: Vec3) -> Option<usize> {
         let mut node = 0i32;
         while node >= 0 {
-            let Some(&(plane, children)) = self.nodes.get(node as usize) else {
-                return LeafSky::None;
-            };
+            let &(plane, children) = self.nodes.get(node as usize)?;
             let (n, d) = self.planes[plane];
             node = if n.dot(p) - d >= 0.0 { children[0] } else { children[1] };
         }
-        self.leaves.get((-node - 1) as usize).copied().unwrap_or(LeafSky::None)
+        Some((-node - 1) as usize)
     }
 }
+
+/// The light arriving at any point (engine space), for models that move
+/// (view models): the same probe static props bake, queried at run time.
+#[derive(Clone)]
+pub struct MapLightField(pub Arc<dyn Fn(Vec3) -> LightProbe + Send + Sync>);
+
+impl std::fmt::Debug for MapLightField {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("MapLightField")
+    }
+}
+
+/// The loaded map's light field, when the game provides one.
+#[derive(Resource, Clone)]
+pub struct LightField(pub MapLightField);
 
 /// A dust mote volume (`func_dustmotes`): slow specks spawned inside a box,
 /// fading in and out over their life and with distance
@@ -1062,7 +1197,7 @@ struct PlayableArea((Vec3, Vec3));
 #[allow(clippy::type_complexity)]
 fn show_skybox_in_place(
     area: Option<Res<PlayableArea>>,
-    cameras: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<SkyboxCamera>)>,
+    cameras: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<SkyboxCamera>, Without<ViewModelCamera>)>,
     mut parts: Query<&mut bevy::camera::visibility::RenderLayers, Without<Camera>>,
     mut outside_before: Local<Option<bool>>,
 ) {
@@ -1112,6 +1247,9 @@ impl Plugin for MapPlugin {
                 .insert_resource(ActiveMapLook(data.look.clone()));
         }
         app.add_plugins(sound::SoundPlugin)
+            .init_resource::<ShowLocalBody>()
+            .add_message::<decal::PlaceDecal>()
+            .add_message::<ViewModelEvent>()
             .insert_resource(GlobalAmbientLight {
                 brightness: 600.0,
                 // Baked lighting already includes the map's ambient light.
@@ -1133,8 +1271,28 @@ impl Plugin for MapPlugin {
                     glow_visibility,
                     dust::update_dust,
                     show_skybox_in_place,
-                    (attach_bodies, turn_bodies, pose_bodies.after(DriveAnimation), attach_held)
+                    decal::place_decals,
+                    (
+                        attach_bodies,
+                        show_local_body,
+                        turn_bodies,
+                        pose_bodies.after(DriveAnimation),
+                        attach_held,
+                    )
                         .run_if(resource_exists::<CharacterBodies>),
+                    view_model::draw_view_models
+                        .after(DriveAnimation)
+                        .run_if(resource_exists::<view_model::ViewModelAssets>),
+                    (
+                        view_model::muzzle_flashes,
+                        view_model::size_flash_sprites,
+                        view_model::age_effects,
+                        shells::eject,
+                        shells::fly,
+                    )
+                        .chain()
+                        .after(DriveAnimation)
+                        .after(view_model::draw_view_models),
                 ),
             )
             .add_systems(
@@ -1253,42 +1411,15 @@ fn spawn_map(
                 .characters
                 .iter()
                 .map(|c| {
-                    let parts = c
-                        .model
-                        .meshes
-                        .iter()
-                        .map(|m| {
-                            let mut mesh = build_mesh(m, false);
-                            if m.joints.len() == m.positions.len() && !c.bones.is_empty() {
-                                mesh.insert_attribute(
-                                    Mesh::ATTRIBUTE_JOINT_INDEX,
-                                    bevy::mesh::VertexAttributeValues::Uint16x4(m.joints.clone()),
-                                );
-                                mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, m.joint_weights.clone());
-                            }
-                            (
-                                meshes.add(mesh),
-                                materials.add(build_material(m, &textures, view, data.look.light_scale)),
-                            )
-                        })
-                        .collect();
-                    // Each bone's reference pose in body space, inverted.
-                    let mut global: Vec<Mat4> = Vec::with_capacity(c.bones.len());
-                    for b in &c.bones {
-                        let local = Mat4::from_rotation_translation(b.rotation, b.position);
-                        let parent = b
-                            .parent
-                            .and_then(|p| global.get(p).copied())
-                            .unwrap_or(c.root.to_matrix());
-                        global.push(parent * local);
-                    }
-                    let inverse: Vec<Mat4> = global.iter().map(|m| m.inverse()).collect();
-                    BodyAssets {
-                        parts,
-                        bindposes: bindposes.add(bevy::mesh::skinning::SkinnedMeshInverseBindposes::from(inverse)),
-                        bones: c.bones.clone(),
-                        root: c.root,
-                    }
+                    body_assets(
+                        &c.model,
+                        &c.bones,
+                        c.root,
+                        meshes,
+                        materials,
+                        bindposes,
+                        &|m| build_material(m, &textures, view, data.look.light_scale),
+                    )
                 })
                 .collect();
             commands.insert_resource(CharacterBodies(bodies));
@@ -1307,10 +1438,30 @@ fn spawn_map(
                             )
                         })
                         .collect();
-                    (h.key.clone(), (h.bone.clone(), parts))
+                    (h.key.clone(), (h.bone.clone(), parts, h.muzzle))
                 })
                 .collect();
             commands.insert_resource(HeldAssets(held));
+            if let Some(prop_materials) = prop_materials.as_mut() {
+                commands.insert_resource(view_model::build_assets(
+                    data,
+                    &textures,
+                    &cubemaps,
+                    view,
+                    meshes,
+                    prop_materials,
+                    bindposes,
+                ));
+            }
+            if let Some(flash) = view_model::build_flash_assets(data, &textures, meshes, sprite_materials.as_deref_mut())
+            {
+                commands.insert_resource(flash);
+            }
+            if let Some(prop_materials) = prop_materials.as_mut()
+                && let Some(shells) = shells::build_assets(data, &textures, view, meshes, prop_materials)
+            {
+                commands.insert_resource(shells);
+            }
         }
         let lightmap = data
             .lightmap
@@ -1401,7 +1552,7 @@ fn spawn_map(
                         light_scale: data.look.light_scale,
                         lightmap_scale: if source_ldr { SOURCE_LIGHTMAP_SCALE } else { 1.0 },
                         bicubic: if data.look.bicubic_lightmaps { 1.0 } else { 0.0 },
-                        translucent: if m.alpha == MapAlpha::Blend { 1.0 } else { 0.0 },
+                        translucent: m.alpha.shader_mode(),
                         blend: if blended { 1.0 } else { 0.0 },
                         blend_masked: if blend.mask.is_some() { 1.0 } else { 0.0 },
                         blend_normal: if bumped && blend.normal_map.is_some() { 1.0 } else { 0.0 },
@@ -1466,10 +1617,7 @@ fn spawn_map(
                         .map(|i| textures[i].clone()),
                     blend_mask: blend.mask.filter(|_| blended).map(|i| textures[i].clone()),
                     detail: m.detail.map(|d| textures[d.texture].clone()),
-                    alpha_mode: match m.alpha {
-                        MapAlpha::Opaque | MapAlpha::Mask(_) => AlphaMode::Opaque,
-                        MapAlpha::Blend => AlphaMode::Blend,
-                    },
+                    alpha_mode: m.alpha.shader_alpha_mode(),
                     double_sided: m.double_sided,
                 };
                 commands.spawn((
@@ -1524,7 +1672,6 @@ fn spawn_map(
             })
             .collect();
         if let Some(prop_materials) = prop_materials.as_mut() {
-            let lighting_only = matches!(view, MapDebugView::Lighting { .. });
             lit_model_materials = data
                 .models
                 .iter()
@@ -1533,32 +1680,8 @@ fn spawn_map(
                         .meshes
                         .iter()
                         .map(|m| {
-                            let [r, g, b] = m.color;
                             [false, true].map(|skybox| {
-                                prop_materials.add(PropMaterial {
-                                    params: PropParams {
-                                        base_color: if m.texture.is_some() || lighting_only {
-                                            Vec4::ONE
-                                        } else {
-                                            Color::srgb_u8(r, g, b).to_linear().to_vec4()
-                                        },
-                                        alpha_cutoff: if let MapAlpha::Mask(c) = m.alpha { c } else { 0.0 },
-                                        fog_color: fog_color(
-                                            data.fog.as_ref().filter(|_| view == MapDebugView::Normal && !skybox),
-                                        ),
-                                        fog_range: fog_range(data.fog.as_ref()),
-                                        translucent: if m.alpha == MapAlpha::Blend { 1.0 } else { 0.0 },
-                                        ..default()
-                                    },
-                                    base: m.texture.filter(|_| !lighting_only).map(|i| textures[i].clone()),
-                                    envmap: None,
-                                    envmap_mask: None,
-                                    alpha_mode: match m.alpha {
-                                        MapAlpha::Opaque | MapAlpha::Mask(_) => AlphaMode::Opaque,
-                                        MapAlpha::Blend => AlphaMode::Blend,
-                                    },
-                                    double_sided: m.double_sided,
-                                })
+                                prop_materials.add(lit_prop_material(m, &textures, data, view, skybox))
                             })
                         })
                         .collect()
@@ -1844,20 +1967,7 @@ fn spawn_map(
                             .entry(key)
                             .or_insert_with(|| {
                                 let mut variant = prop_materials.get(&material).cloned().expect("prop material");
-                                variant.envmap = Some(cube_handle.clone());
-                                variant.params.envmap = 1.0;
-                                variant.params.envmap_mask = match env.mask {
-                                    EnvmapMask::BaseAlphaInverted => 2.0,
-                                    EnvmapMask::Texture(_) => 3.0,
-                                    _ => 0.0,
-                                };
-                                if let EnvmapMask::Texture(t) = env.mask {
-                                    variant.envmap_mask = texture_handles.get(t).cloned();
-                                }
-                                variant.params.envmap_contrast = env.contrast;
-                                variant.params.envmap_saturation = env.saturation;
-                                variant.params.envmap_tint =
-                                    Vec3::from_array(env.tint.map(gamma_to_linear)).extend(1.0);
+                                set_prop_envmap(&mut variant, &env, cube_handle.clone(), &texture_handles);
                                 prop_materials.add(variant)
                             })
                             .clone();
@@ -1894,9 +2004,23 @@ fn spawn_map(
         }
     }
 
+    commands.insert_resource(decal::DecalSurfaces::new(&data));
+    if let Some(h) = &data.hud {
+        commands.insert_resource(hud::ActiveHud(h.clone()));
+    }
+    if !texture_handles.is_empty() && !data.decals.groups.is_empty() {
+        commands.insert_resource(decal::DecalAssets::new(data.decals.clone(), texture_handles.clone()));
+        commands.insert_resource(decal::ImpactDecals);
+    }
     commands.insert_resource(sound::SoundBank(data.sounds.clone()));
     if !data.characters.is_empty() {
         commands.insert_resource(CharacterModels(Arc::new(data.characters.clone())));
+    }
+    if !data.view_models.is_empty() {
+        commands.insert_resource(ViewModels(Arc::new(data.view_models.clone())));
+    }
+    if let Some(field) = &data.light_field {
+        commands.insert_resource(LightField(field.clone()));
     }
     if let Some(nav) = &data.nav {
         commands.insert_resource((**nav).clone());
@@ -1927,7 +2051,6 @@ fn spawn_map(
         },
         Transform::default().looking_at(Vec3::new(-0.4, -1.0, -0.3), Vec3::Y),
     ));
-
     for (i, (feet, team)) in data.spawns.iter().enumerate() {
         commands.spawn((
             Name::new(format!("Spawn {i}")),
@@ -1966,6 +2089,12 @@ pub fn unload_map(world: &mut World) {
     world.remove_resource::<CharacterModels>();
     world.remove_resource::<CharacterBodies>();
     world.remove_resource::<HeldAssets>();
+    world.remove_resource::<decal::DecalSurfaces>();
+    world.remove_resource::<decal::DecalAssets>();
+    world.remove_resource::<decal::ImpactDecals>();
+    world.remove_resource::<hud::ActiveHud>();
+    view_model::unload(world);
+    shells::unload(world);
     let bodies: Vec<Entity> = world
         .query_filtered::<Entity, With<CharacterBody>>()
         .iter(world)
@@ -2163,6 +2292,49 @@ fn lightmap_image(rgb: &[[f32; 3]], width: u32, height: u32) -> Image {
     image
 }
 
+/// Render assets of a skinned model: meshes with joint attributes (when
+/// it has a skeleton), materials, and inverse bind poses from the bones'
+/// reference pose under `root`.
+fn body_assets(
+    model: &MapModel,
+    bones: &[MapBone],
+    root: Transform,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+    bindposes: &mut Assets<bevy::mesh::skinning::SkinnedMeshInverseBindposes>,
+    material: &dyn Fn(&MapMesh) -> StandardMaterial,
+) -> BodyAssets {
+    let parts = model
+        .meshes
+        .iter()
+        .map(|m| {
+            let mut mesh = build_mesh(m, false);
+            if m.joints.len() == m.positions.len() && !bones.is_empty() {
+                mesh.insert_attribute(
+                    Mesh::ATTRIBUTE_JOINT_INDEX,
+                    bevy::mesh::VertexAttributeValues::Uint16x4(m.joints.clone()),
+                );
+                mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, m.joint_weights.clone());
+            }
+            (meshes.add(mesh), materials.add(material(m)))
+        })
+        .collect();
+    // Each bone's reference pose in body space, inverted.
+    let mut global: Vec<Mat4> = Vec::with_capacity(bones.len());
+    for b in bones {
+        let local = Mat4::from_rotation_translation(b.rotation, b.position);
+        let parent = b.parent.and_then(|p| global.get(p).copied()).unwrap_or(root.to_matrix());
+        global.push(parent * local);
+    }
+    let inverse: Vec<Mat4> = global.iter().map(|m| m.inverse()).collect();
+    BodyAssets {
+        parts,
+        bindposes: bindposes.add(bevy::mesh::skinning::SkinnedMeshInverseBindposes::from(inverse)),
+        bones: bones.to_vec(),
+        root,
+    }
+}
+
 fn build_mesh(m: &MapMesh, with_lightmap: bool) -> Mesh {
     let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, m.positions.clone());
@@ -2197,6 +2369,7 @@ fn build_material(m: &MapMesh, textures: &[Handle<Image>], view: MapDebugView, l
             MapAlpha::Opaque => AlphaMode::Opaque,
             MapAlpha::Mask(cutoff) => AlphaMode::Mask(cutoff),
             MapAlpha::Blend => AlphaMode::Blend,
+            MapAlpha::Add => AlphaMode::Add,
         },
         double_sided: m.double_sided,
         cull_mode: if m.double_sided {
@@ -2207,6 +2380,57 @@ fn build_material(m: &MapMesh, textures: &[Handle<Image>], view: MapDebugView, l
         lightmap_exposure: LIGHTMAP_EXPOSURE * scale * light_scale,
         ..default()
     }
+}
+
+/// The material of a prop mesh lit by a light probe (`PropMaterial`),
+/// without its cubemap; `skybox`: in the 3D skybox (no fog there).
+fn lit_prop_material(
+    m: &MapMesh,
+    textures: &[Handle<Image>],
+    data: &MapData,
+    view: MapDebugView,
+    skybox: bool,
+) -> PropMaterial {
+    let [r, g, b] = m.color;
+    let lighting_only = matches!(view, MapDebugView::Lighting { .. });
+    PropMaterial {
+        params: PropParams {
+            base_color: if m.texture.is_some() || lighting_only {
+                Vec4::ONE
+            } else {
+                Color::srgb_u8(r, g, b).to_linear().to_vec4()
+            },
+            alpha_cutoff: if let MapAlpha::Mask(c) = m.alpha { c } else { 0.0 },
+            fog_color: fog_color(data.fog.as_ref().filter(|_| view == MapDebugView::Normal && !skybox)),
+            fog_range: fog_range(data.fog.as_ref()),
+            translucent: m.alpha.shader_mode(),
+            dynamic: if m.unlit || view != MapDebugView::Normal { 0.0 } else { 1.0 },
+            ..default()
+        },
+        base: m.texture.filter(|_| !lighting_only).map(|i| textures[i].clone()),
+        envmap: None,
+        envmap_mask: None,
+        alpha_mode: m.alpha.shader_alpha_mode(),
+        double_sided: m.double_sided,
+        cull_front: false,
+    }
+}
+
+/// Make `material` reflect `cube` as `env` says (Source `$envmap`).
+fn set_prop_envmap(material: &mut PropMaterial, env: &MapEnvmap, cube: Handle<Image>, textures: &[Handle<Image>]) {
+    material.envmap = Some(cube);
+    material.params.envmap = 1.0;
+    material.params.envmap_mask = match env.mask {
+        EnvmapMask::BaseAlphaInverted => 2.0,
+        EnvmapMask::Texture(_) => 3.0,
+        _ => 0.0,
+    };
+    if let EnvmapMask::Texture(t) = env.mask {
+        material.envmap_mask = textures.get(t).cloned();
+    }
+    material.params.envmap_contrast = env.contrast;
+    material.params.envmap_saturation = env.saturation;
+    material.params.envmap_tint = Vec3::from_array(env.tint.map(gamma_to_linear)).extend(1.0);
 }
 
 /// A simulated physics prop: how players interact with it, its mass (kg)
@@ -2319,8 +2543,8 @@ struct GlowSprite {
 #[allow(clippy::type_complexity)]
 fn glow_visibility(
     query: SpatialQuery,
-    cameras: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<SkyboxCamera>)>,
-    ignored: Query<Entity, Or<(With<crate::core::Intent>, With<MapPropCollider>)>>,
+    cameras: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<SkyboxCamera>, Without<ViewModelCamera>)>,
+    ignored: Query<Entity, With<crate::core::Intent>>,
     mut glows: Query<(
         &GlobalTransform,
         &GlowSprite,
@@ -2540,7 +2764,7 @@ fn attach_sky(
     mut commands: Commands,
     sky: Option<Res<MapSkybox>>,
     sky_camera: Option<Res<SkyCameraInfo>>,
-    cameras: Query<(Entity, Has<SkyboxCamera>), (With<Camera3d>, Without<bevy::light::Skybox>)>,
+    cameras: Query<(Entity, Has<SkyboxCamera>), (With<Camera3d>, Without<bevy::light::Skybox>, Without<ViewModelCamera>)>,
 ) {
     let Some(sky) = sky else { return };
     for (cam, is_sky_camera) in &cameras {
@@ -2596,8 +2820,12 @@ fn sky_image(sky: &MapSky, textures: &[MapTexture]) -> Image {
                 if turns >= 4 {
                     u = size - 1 - u;
                 }
-                let sx = (u as u64 * t.width as u64 / size as u64) as u32;
-                let sy = (v as u64 * t.height as u64 / size as u64) as u32;
+                // Skip each face's outermost texel row and column: sky
+                // textures leave them as borders (dust2's side faces end in
+                // a black row) that the game never shows, while a cube map
+                // blends them in at every seam.
+                let inner = |p: u32, n: u32| 1 + (p as u64 * n.saturating_sub(2) as u64 / size as u64) as u32;
+                let (sx, sy) = (inner(u, t.width).min(t.width - 1), inner(v, t.height).min(t.height - 1));
                 let i = ((sy * t.width + sx) * 4) as usize;
                 data.extend_from_slice(&t.rgba8[i..i + 4]);
             }
@@ -2644,7 +2872,7 @@ fn follow_sky_camera(
             Entity,
             &Camera,
         ),
-        (With<Camera3d>, Without<SkyboxCamera>),
+        (With<Camera3d>, Without<SkyboxCamera>, Without<ViewModelCamera>),
     >,
     mut sky: Query<
         (

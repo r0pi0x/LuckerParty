@@ -1,5 +1,7 @@
 //! The material for props lit by a light probe: texture x the per-vertex
-//! light baked into the mesh's vertex colors, with Source's range fog
+//! light baked into the mesh's vertex colors (static props), or x the
+//! probe evaluated per pixel from uniforms (moving models: view models),
+//! plus the scene's point lights (muzzle flashes), with Source's range fog
 //! (the same f^2 curve as the world, see world.wgsl). See prop.wgsl.
 
 use bevy::{
@@ -15,7 +17,7 @@ pub struct PropParams {
     pub fog_color: Vec4,
     /// Fog start, end (meters), max density.
     pub fog_range: Vec4,
-    /// 1 when alpha blended; otherwise the output alpha is 1 (see
+    /// 1 when alpha blended, 2 additive; otherwise the output alpha is 1 (see
     /// `WorldParams::translucent`).
     pub translucent: f32,
     /// 1 when the prop reflects `envmap` (Source VertexLitGeneric
@@ -27,6 +29,34 @@ pub struct PropParams {
     pub envmap_saturation: f32,
     /// Linear tint (the model shader converts the material's gamma value).
     pub envmap_tint: Vec4,
+    /// 1: add the scene's point lights (`DynamicLight`s), see
+    /// `dynamic_light` in prop.wgsl.
+    pub dynamic: f32,
+    /// 1: lit per pixel by the probe below instead of vertex colours.
+    pub probe: f32,
+    /// `LightProbe::cube` (+X -X +Y -Y +Z -Z), lightmap units.
+    pub probe_cube: [Vec4; 6],
+    /// Up to four directional lights: direction toward the light (xyz)
+    /// and colour; unused ones are zero.
+    pub probe_light_dir: [Vec4; 4],
+    pub probe_light_color: [Vec4; 4],
+}
+
+impl PropParams {
+    /// Light the material per pixel with `probe` (times `scale`).
+    pub fn set_probe(&mut self, probe: &super::LightProbe, scale: f32) {
+        self.probe = 1.0;
+        for (c, v) in self.probe_cube.iter_mut().zip(probe.cube) {
+            *c = (v * scale).extend(0.0);
+        }
+        let mut lights: Vec<&(Vec3, Vec3)> = probe.lights.iter().collect();
+        lights.sort_by(|a, b| b.1.max_element().total_cmp(&a.1.max_element()));
+        for i in 0..4 {
+            let (dir, color) = lights.get(i).map_or((Vec3::ZERO, Vec3::ZERO), |l| (l.0, l.1 * scale));
+            self.probe_light_dir[i] = dir.extend(0.0);
+            self.probe_light_color[i] = color.extend(0.0);
+        }
+    }
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
@@ -45,6 +75,8 @@ pub struct PropMaterial {
     pub envmap_mask: Option<Handle<Image>>,
     pub alpha_mode: AlphaMode,
     pub double_sided: bool,
+    /// Cull front faces instead of back ones (drawn mirrored).
+    pub cull_front: bool,
 }
 
 impl Material for PropMaterial {
@@ -64,6 +96,8 @@ impl Material for PropMaterial {
     ) -> Result<(), bevy::render::render_resource::SpecializedMeshPipelineError> {
         if key.bind_group_data.double_sided {
             descriptor.primitive.cull_mode = None;
+        } else if key.bind_group_data.cull_front {
+            descriptor.primitive.cull_mode = Some(bevy::render::render_resource::Face::Front);
         }
         Ok(())
     }
@@ -73,12 +107,14 @@ impl Material for PropMaterial {
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PropMaterialKey {
     double_sided: bool,
+    cull_front: bool,
 }
 
 impl From<&PropMaterial> for PropMaterialKey {
     fn from(m: &PropMaterial) -> Self {
         Self {
             double_sided: m.double_sided,
+            cull_front: m.cull_front,
         }
     }
 }

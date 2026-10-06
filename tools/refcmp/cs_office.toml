@@ -1,0 +1,122 @@
+# Views of cs_office for spotting visual bugs (docs/plans/active/other-maps.md),
+# generated from its entities: intermission cameras, the first T and CT
+# spawns, and bomb/rescue zone centres looking four ways.
+# Source eye positions; angles are [pitch, yaw] in Source degrees.
+
+map = "cs_office"
+camera = "cam1"
+
+[[view]]
+name = "cam0"
+position = [-1281, -976, -254]
+angles = [-3.2, 48.4]
+
+[[view]]
+name = "t_spawn"
+position = [1536, 76, -87]
+angles = [0, 128]
+
+[[view]]
+name = "ct_spawn"
+position = [-1112, -1552, -268]
+angles = [0, 90]
+
+[[view]]
+name = "zone0_0"
+position = [-584, -1872, -272]
+angles = [10, 0]
+
+[[view]]
+name = "zone0_90"
+position = [-584, -1872, -272]
+angles = [10, 90]
+
+[[view]]
+name = "zone0_180"
+position = [-584, -1872, -272]
+angles = [10, 180]
+
+[[view]]
+name = "zone0_270"
+position = [-584, -1872, -272]
+angles = [10, 270]
+
+[[view]]
+name = "zone1_0"
+position = [-1192, -1580, -272]
+angles = [10, 0]
+
+[[view]]
+name = "zone1_90"
+position = [-1192, -1580, -272]
+angles = [10, 90]
+
+[[view]]
+name = "zone1_180"
+position = [-1192, -1580, -272]
+angles = [10, 180]
+
+[[view]]
+name = "zone1_270"
+position = [-1192, -1580, -272]
+angles = [10, 270]
+
+[[view]]
+name = "h0_0"
+position = [1784, 734, -60]
+angles = [5, 0]
+
+[[view]]
+name = "h0_90"
+position = [1784, 734, -60]
+angles = [5, 90]
+
+[[view]]
+name = "h0_180"
+position = [1784, 734, -60]
+angles = [5, 180]
+
+[[view]]
+name = "h0_270"
+position = [1784, 734, -60]
+angles = [5, 270]
+
+[[view]]
+name = "h1_0"
+position = [2048, -344, -92]
+angles = [5, 0]
+
+[[view]]
+name = "h1_90"
+position = [2048, -344, -92]
+angles = [5, 90]
+
+[[view]]
+name = "h1_180"
+position = [2048, -344, -92]
+angles = [5, 180]
+
+[[view]]
+name = "h1_270"
+position = [2048, -344, -92]
+angles = [5, 270]
+
+[[view]]
+name = "win_0"
+position = [-568, -250, -100]
+angles = [5, 0]
+
+[[view]]
+name = "win_90"
+position = [-568, -250, -100]
+angles = [5, 90]
+
+[[view]]
+name = "win_180"
+position = [-568, -250, -100]
+angles = [5, 180]
+
+[[view]]
+name = "win_270"
+position = [-568, -250, -100]
+angles = [5, 270]

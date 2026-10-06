@@ -8,14 +8,38 @@ use bevy::{
 
 use crate::core::{Intent, LocalPlayer};
 
-#[derive(Resource, Reflect)]
+/// Mouse look as CS:S does it: each count of raw mouse motion (no
+/// acceleration) turns the view by `sensitivity * m_yaw` degrees
+/// sideways and `sensitivity * m_pitch` degrees up or down (negative
+/// `m_pitch` inverts).
+#[derive(Resource, Reflect, Clone, Copy, Debug, PartialEq)]
 #[reflect(Resource)]
-pub struct MouseSensitivity(pub f32);
+pub struct MouseSettings {
+    pub sensitivity: f32,
+    pub m_yaw: f32,
+    pub m_pitch: f32,
+}
 
-impl Default for MouseSensitivity {
+impl Default for MouseSettings {
     fn default() -> Self {
-        // Radians per pixel of mouse motion.
-        Self(0.0022)
+        // CS:S defaults.
+        Self {
+            sensitivity: 3.0,
+            m_yaw: 0.022,
+            m_pitch: 0.022,
+        }
+    }
+}
+
+impl MouseSettings {
+    /// Radians to turn (yaw left, pitch up) for a mouse delta in counts
+    /// (x right, y down).
+    pub fn look_delta(&self, counts: Vec2) -> Vec2 {
+        Vec2::new(
+            -counts.x * self.sensitivity * self.m_yaw,
+            -counts.y * self.sensitivity * self.m_pitch,
+        ) * std::f32::consts::PI
+            / 180.0
     }
 }
 
@@ -23,11 +47,38 @@ pub struct LocalInputPlugin;
 
 impl Plugin for LocalInputPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<MouseSensitivity>()
+        app.init_resource::<MouseSettings>()
             .init_resource::<WheelJump>()
-            .register_type::<MouseSensitivity>()
+            .register_type::<MouseSettings>()
             .add_systems(Update, (grab_cursor, write_local_intent).chain())
             .add_systems(FixedPreUpdate, apply_wheel_jump);
+        mouse_cvars(app);
+    }
+}
+
+fn mouse_cvars(app: &mut App) {
+    use crate::console::{Console, resource_cvar};
+    resource_cvar::<MouseSettings, f32>(
+        app,
+        "sensitivity",
+        "Mouse sensitivity: degrees per count are this times m_yaw / m_pitch.",
+        |m| &mut m.sensitivity,
+    );
+    resource_cvar::<MouseSettings, f32>(
+        app,
+        "m_yaw",
+        "Mouse yaw factor (degrees per count at sensitivity 1).",
+        |m| &mut m.m_yaw,
+    );
+    resource_cvar::<MouseSettings, f32>(
+        app,
+        "m_pitch",
+        "Mouse pitch factor (degrees per count at sensitivity 1; negative inverts).",
+        |m| &mut m.m_pitch,
+    );
+    let mut console = app.world_mut().resource_mut::<Console>();
+    for name in ["sensitivity", "m_yaw", "m_pitch"] {
+        console.archive(name);
     }
 }
 
@@ -38,6 +89,12 @@ pub fn cursor_grabbed(cursor: &CursorOptions) -> bool {
 pub fn release_cursor(cursor: &mut CursorOptions) {
     cursor.visible = true;
     cursor.grab_mode = CursorGrabMode::None;
+}
+
+/// Lock and hide the cursor so the mouse turns the view.
+pub fn capture_cursor(cursor: &mut CursorOptions) {
+    cursor.visible = false;
+    cursor.grab_mode = CursorGrabMode::Locked;
 }
 
 fn grab_cursor(
@@ -55,8 +112,7 @@ fn grab_cursor(
     } else if keys.just_pressed(KeyCode::Escape) {
         release_cursor(&mut cursor);
     } else if mouse.just_pressed(MouseButton::Left) && !cursor_grabbed(&cursor) {
-        cursor.visible = false;
-        cursor.grab_mode = CursorGrabMode::Locked;
+        capture_cursor(&mut cursor);
     }
 }
 
@@ -95,7 +151,7 @@ fn write_local_intent(
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
     mut wheel: ResMut<WheelJump>,
-    sensitivity: Res<MouseSensitivity>,
+    mouse_settings: Res<MouseSettings>,
     held: Option<Res<super::console::HeldActions>>,
 ) {
     if !cursor_grabbed(&cursor) {
@@ -119,8 +175,9 @@ fn write_local_intent(
     intent.move_axis = Vec2::new(axis(KeyCode::KeyD, KeyCode::KeyA), axis(KeyCode::KeyW, KeyCode::KeyS));
 
     const PITCH_LIMIT: f32 = 89f32.to_radians();
-    intent.yaw = (intent.yaw - motion.delta.x * sensitivity.0).rem_euclid(std::f32::consts::TAU);
-    intent.pitch = (intent.pitch - motion.delta.y * sensitivity.0).clamp(-PITCH_LIMIT, PITCH_LIMIT);
+    let turn = mouse_settings.look_delta(motion.delta);
+    intent.yaw = (intent.yaw + turn.x).rem_euclid(std::f32::consts::TAU);
+    intent.pitch = (intent.pitch + turn.y).clamp(-PITCH_LIMIT, PITCH_LIMIT);
 
     intent.jump = keys.pressed(KeyCode::Space);
     wheel.key_held = intent.jump;
@@ -167,6 +224,29 @@ fn apply_held(intent: &mut Intent, wheel: &mut WheelJump, h: &super::console::He
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mouse_look_matches_css() {
+        let mut app = App::new();
+        app.add_plugins(crate::console::ConsolePlugin)
+            .init_resource::<MouseSettings>();
+        mouse_cvars(&mut app);
+        // CS:S defaults: 3 * 0.022 = 0.066 degrees per count.
+        let d = app.world().resource::<MouseSettings>().look_delta(Vec2::new(1000.0, -1000.0));
+        assert!((d.x.to_degrees() + 66.0).abs() < 1e-3, "{d}");
+        assert!((d.y.to_degrees() - 66.0).abs() < 1e-3, "{d}");
+        app.world_mut()
+            .resource_mut::<crate::console::Console>()
+            .submit("sensitivity 1.5; m_pitch -0.022");
+        app.update();
+        let m = *app.world().resource::<MouseSettings>();
+        assert_eq!(m.sensitivity, 1.5);
+        let d = m.look_delta(Vec2::new(100.0, 100.0));
+        assert!((d.x.to_degrees() + 3.3).abs() < 1e-4, "{d}");
+        assert!((d.y.to_degrees() - 3.3).abs() < 1e-4, "inverted: {d}");
+        let console = app.world().resource::<crate::console::Console>();
+        assert!(["sensitivity", "m_yaw", "m_pitch"].iter().all(|n| console.cvar(n).unwrap().archive));
+    }
 
     #[test]
     fn losing_focus_releases_the_cursor() {

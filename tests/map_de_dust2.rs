@@ -346,7 +346,7 @@ fn prop_lighting_model_predicts_lightmaps() {
     let source = vbsp::Bsp::read(&bytes).unwrap();
     let lighting = ambient::MapLighting::read(&bytes);
     let occluders = ambient::Occluders::new(
-        &bsp::shadow_hulls(&source),
+        &bsp::shadow_hulls(&source, &ambient::raw_leaves(&bytes)),
         (&map.collision_positions, &map.collision_indices),
     );
     let lm = map.lightmap.as_ref().unwrap();
@@ -1816,4 +1816,150 @@ fn riding_players_never_sticks() {
         }
     }
     assert!(stuck.is_empty(), "{} stuck moments: {:?}", stuck.len(), &stuck[..stuck.len().min(5)]);
+}
+
+#[test]
+fn view_models_load_with_their_sequences() {
+    use mashup::games::cs_source::weapons::{AK47, KNIFE};
+    let Some(map) = dust2() else { return };
+    let ak = map.view_models.iter().find(|v| v.key == AK47).expect("AK-47 view model");
+    assert_eq!(ak.bones.len(), 63, "hands and weapon");
+    let tris: usize = ak.model.meshes.iter().map(|m| m.indices.len() / 3).sum();
+    assert!(tris > 1000, "{tris} triangles");
+    assert!(
+        ak.model.meshes.iter().all(|m| m.joints.len() == m.positions.len()),
+        "skinned"
+    );
+    let set = ak.animations.as_ref().expect("sequences");
+    let fire: Vec<&str> = set
+        .activities("ACT_VM_PRIMARYATTACK")
+        .iter()
+        .map(|(s, _)| set.sequences[*s].name.as_str())
+        .collect();
+    assert_eq!(fire, ["ak47_fire1", "ak47_fire2", "ak47_fire3"]);
+    // Durations from the spec's view-model table.
+    let dur = |act: &str| set.duration(set.activity(act).expect(act));
+    assert!((dur("ACT_VM_DRAW") - 1.0).abs() < 1e-4);
+    assert!((dur("ACT_VM_RELOAD") - 2.4324).abs() < 1e-4);
+    assert!((dur("ACT_VM_PRIMARYATTACK") - 0.75).abs() < 1e-4);
+    assert!(set.sequences[set.activity("ACT_VM_IDLE").unwrap()].looping);
+    // Left-handed in the file (drawn mirrored into the right hand with
+    // cl_righthand 1); the muzzle and ejection-port attachments and the
+    // lighting origin as the spec lists them (view_models.md 6, 9).
+    assert!(!ak.right_handed && ak.allow_flipping);
+    let names: Vec<&str> = ak.attachments.iter().map(|a| a.name.as_str()).collect();
+    assert_eq!(names, ["1", "2"]);
+    assert!(ak.attachments[0].local.translation.distance(Vec3::new(0.0, 3.5, 19.0)) < 1e-3);
+    assert!(ak.light_origin.distance(Vec3::new(10.60, 3.87, -6.35)) < 0.01, "{}", ak.light_origin);
+    // L1: placed at the eye, the lighting point is 10.6 units ahead, 3.9
+    // left and 6.35 below (camera axes: X right, Y up, -Z forward).
+    let eye_space = ak.root.transform_point(ak.light_origin);
+    let expect = Vec3::new(-3.87, -6.35, -10.60) * 0.0254;
+    assert!(eye_space.distance(expect) < 0.001, "{eye_space} vs {expect}");
+    // The map's light field lights it: somewhere at a spawn's eye height
+    // there is light.
+    let field = map.light_field.as_ref().expect("a light field");
+    let at = map.spawns[0].0 + Vec3::Y * 1.6;
+    let probe = (field.0)(at);
+    let total: f32 = probe.cube.iter().map(|c| c.length()).sum::<f32>()
+        + probe.lights.iter().map(|l| l.1.length()).sum::<f32>();
+    assert!(total > 0.05, "no light at {at}: {probe:?}");
+    let fire = set.sequence("ak47_fire1").unwrap();
+    let events = &set.sequences[fire].events;
+    assert!(events.iter().any(|e| e.event == 5001 && e.options == "1" && e.cycle == 0.0));
+    assert!(
+        events
+            .iter()
+            .any(|e| e.name == "AE_CLIENT_EFFECT_ATTACH" && e.options == "EjectBrass_762Nato 2 150")
+    );
+    // Draw ends where idle starts (the decoder reads both alike).
+    let params = set.default_params();
+    let pose = |s: &str, cycle: f32| {
+        let mut p = set.defaults.clone();
+        set.accumulate(&mut p, set.sequence(s).unwrap(), cycle, 1.0, &params);
+        p
+    };
+    let (end, start) = (pose("ak47_draw", 1.0), pose("ak47_idle", 0.0));
+    for (a, b) in end.iter().zip(&start) {
+        assert!(a.0.angle_between(b.0) < 0.01 && a.1.distance(b.1) < 0.01);
+    }
+    let knife = map.view_models.iter().find(|v| v.key == KNIFE).expect("knife view model");
+    let set = knife.animations.as_ref().unwrap();
+    for name in ["draw", "idle", "midslash1", "midslash2", "stab", "stab_miss"] {
+        assert!(set.sequence(name).is_some(), "{name}");
+    }
+}
+
+/// CS:S's own HUD look loads from the install: panel layout, the HUD
+/// number and icon fonts, icon glyphs and the scheme's colours.
+#[test]
+fn game_hud_loads() {
+    use mashup::map::hud::HudCoord;
+    let Some(map) = dust2() else { return };
+    let hud = map.hud.as_ref().expect("a HUD");
+    let health = &hud.panels["HudHealth"];
+    assert_eq!((health.x, health.y), (HudCoord::Start(8.0), HudCoord::Start(446.0)));
+    assert_eq!(hud.panels["HudAmmo"].x, HudCoord::End(157.0));
+    for f in ["HudNumbers", "Icons", "CSTypeDeath"] {
+        assert!(hud.fonts.get(f).is_some_and(|f| f.data.len() > 1000), "font {f}");
+    }
+    assert_eq!(hud.icons["health_icon"], ("Icons".to_string(), 'b'));
+    assert_eq!(hud.icons["d_ak47"], ("CSTypeDeath".to_string(), 'b'));
+    assert_eq!(hud.colors["FgColor"], [255, 176, 0, 255]);
+}
+
+/// Which side of the eye each view model holds its weapon in the file
+/// (Source model space: +y is left), in its idle pose. Explains the
+/// handedness table in `weapons::VIEW_MODELS` (spec view_models.md 2).
+#[test]
+fn view_model_handedness_in_the_files() {
+    use mashup::games::cs_source::weapons::{AK47, KNIFE};
+    let Some(map) = dust2() else { return };
+    let side = |key: &str, bone: &str| {
+        let v = map.view_models.iter().find(|v| v.key == key).unwrap();
+        let set = v.animations.as_ref().unwrap();
+        let mut pose = set.defaults.clone();
+        let params = set.default_params();
+        set.accumulate(&mut pose, set.activity("ACT_VM_IDLE").unwrap(), 0.5, 1.0, &params);
+        let mut global: Vec<(Quat, Vec3)> = Vec::new();
+        for (b, (q, p)) in v.bones.iter().zip(&pose) {
+            global.push(match b.parent.map(|i| global[i]) {
+                Some((pq, pp)) => (pq * *q, pp + pq * *p),
+                None => (*q, *p),
+            });
+        }
+        let i = v.bones.iter().position(|b| b.name.eq_ignore_ascii_case(bone)).unwrap();
+        eprintln!("{key} {bone}: {:?}", global[i].1);
+        for a in &v.attachments {
+            let (q, p) = global[a.bone];
+            eprintln!(
+                "  attachment {} at {} x {}",
+                a.name,
+                p + q * a.local.translation,
+                q * (a.local.rotation * Vec3::X)
+            );
+        }
+        global[i].1
+    };
+    // The AK sits left of the eye (built left-handed), the knife right
+    // (built right-handed).
+    assert!(side(AK47, "v_weapon.AK47_Parent").y > 0.0);
+    assert!(side(KNIFE, "v_weapon.knife_Parent").y < 0.0);
+    side(KNIFE, "v_weapon.Right_Hand");
+    side(KNIFE, "v_weapon.Left_Hand");
+    side(AK47, "v_weapon.Right_Hand");
+    side(AK47, "v_weapon.Left_Hand");
+}
+
+#[test]
+fn held_ak_has_a_muzzle_ahead_of_the_grip() {
+    use mashup::games::cs_source::weapons::AK47;
+    let Some(map) = dust2() else { return };
+    let ak = map.held.iter().find(|h| h.key == AK47).expect("held AK");
+    let m = ak.muzzle.expect("muzzle attachment");
+    let fwd = m.rotation * Vec3::X;
+    eprintln!("muzzle at {} forward {fwd}", m.translation);
+    // The muzzle is well away from the grip, along its own forward axis.
+    assert!(m.translation.length() > 15.0, "{}", m.translation);
+    assert!(m.translation.normalize().dot(fwd) > 0.8, "{} vs {fwd}", m.translation);
 }

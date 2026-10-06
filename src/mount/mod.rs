@@ -32,8 +32,13 @@ pub trait FileSource: Send + Sync {
 pub fn normalize(path: &str) -> String {
     // Doubled separators occur in game data (e.g. a model's texture
     // directory `models\props_junk\\`); file systems ignore them, so do we.
+    // So are `.` components (static prop names like `./models/...` on
+    // de_nuke and de_train).
     let path = path.replace('\\', "/").to_lowercase();
-    path.split('/').filter(|p| !p.is_empty()).collect::<Vec<_>>().join("/")
+    path.split('/')
+        .filter(|p| !p.is_empty() && *p != ".")
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// Layers searched in order; the first layer that has a file wins, like a
@@ -146,5 +151,13 @@ impl FileSource for LooseDir {
             dir = found.path();
         }
         dir.is_file().then(|| fs::read(dir))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn normalize_drops_empty_and_dot_components() {
+        assert_eq!(super::normalize("./Models\\props//a.MDL"), "models/props/a.mdl");
     }
 }

@@ -162,8 +162,11 @@ fn draw_hud(
     mut health_text: Single<&mut Text, (With<HealthText>, Without<AmmoText>, Without<CenterText>)>,
     mut ammo_text: Single<&mut Text, (With<AmmoText>, Without<HealthText>, Without<CenterText>)>,
     mut center: Single<&mut Text, (With<CenterText>, Without<HealthText>, Without<AmmoText>)>,
+    game_hud: Option<Res<crate::map::hud::ActiveHud>>,
 ) {
     let Some(p) = player else { return };
+    // The game's own HUD draws health, armour and ammo when there is one.
+    let plain = game_hud.is_none();
     let (health, armor, inv, score, dead) = *p;
     let score = score.copied().unwrap_or_default();
     let armor = match armor.filter(|a| a.amount > 0.0) {
@@ -174,17 +177,22 @@ fn draw_hud(
         ),
         None => String::new(),
     };
-    health_text.0 = format!(
+    // (With the game's HUD, kills and deaths belong on a scoreboard.)
+    health_text.0 = if !plain {
+        String::new()
+    } else {
+        format!(
         "+ {:.0}{armor}    K {}  D {}",
         (health.current * 100.0).ceil(),
         score.kills,
         score.deaths
-    );
-    ammo_text.0 = match inv.and_then(|i| i.active).and_then(|w| weapons.get(w).ok()) {
+    )
+    };
+    ammo_text.0 = if !plain { String::new() } else { match inv.and_then(|i| i.active).and_then(|w| weapons.get(w).ok()) {
         Some((w, Some(m))) => format!("{}\n{} | {}", short(w.id), m.clip, m.reserve),
         Some((w, None)) => short(w.id).to_string(),
         None => String::new(),
-    };
+    } };
     center.0 = if dead.is_some() {
         "You died. Respawning...".into()
     } else {
@@ -278,7 +286,14 @@ fn killfeed(
     mut feed: ResMut<Killfeed>,
     mut text: Single<&mut Text, With<KillfeedText>>,
     time: Res<Time>,
+    game_hud: Option<Res<crate::map::hud::ActiveHud>>,
 ) {
+    // The game's own HUD shows its death notices instead.
+    if game_hud.is_some() {
+        died.clear();
+        text.0.clear();
+        return;
+    }
     let name = |e: Entity| match names.get(e) {
         Ok((_, true)) => "You".to_string(),
         Ok((Some(n), _)) => n.to_string(),

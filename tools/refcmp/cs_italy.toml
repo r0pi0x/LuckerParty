@@ -1,0 +1,37 @@
+# Views of cs_italy for spotting visual bugs (docs/plans/active/other-maps.md),
+# generated from its entities: intermission cameras, the first T and CT
+# spawns, and bomb/rescue zone centres looking four ways.
+# Source eye positions; angles are [pitch, yaw] in Source degrees.
+
+map = "cs_italy"
+camera = "point_viewcontrol"
+
+[[view]]
+name = "t_spawn"
+position = [272, 2168, 116]
+angles = [0, 234]
+
+[[view]]
+name = "ct_spawn"
+position = [-768, -1856, -136]
+angles = [0, 89]
+
+[[view]]
+name = "zone0_0"
+position = [-664, -1608, -160]
+angles = [10, 0]
+
+[[view]]
+name = "zone0_90"
+position = [-664, -1608, -160]
+angles = [10, 90]
+
+[[view]]
+name = "zone0_180"
+position = [-664, -1608, -160]
+angles = [10, 180]
+
+[[view]]
+name = "zone0_270"
+position = [-664, -1608, -160]
+angles = [10, 270]

@@ -6,8 +6,10 @@ pub mod capture;
 pub mod console;
 pub mod debug;
 pub mod effects;
+pub mod game_hud;
 pub mod hud;
 pub mod input;
+pub mod view;
 
 use std::path::PathBuf;
 
@@ -164,7 +166,9 @@ impl Plugin for ClientPlugin {
                 capture::CapturePlugin,
                 console::ConsoleUiPlugin,
                 hud::HudPlugin,
+                game_hud::GameHudPlugin,
                 effects::ShotEffectsPlugin,
+                view::ViewPlugin,
             ))
             .add_systems(PostStartup, spawn_local_player)
             .add_systems(Update, follow_eye);
@@ -224,10 +228,14 @@ fn spawn_local_player(
         ))
         .with_child((
             FirstPersonCamera,
+            // The local player's weapon is drawn here (map::view_model).
+            crate::map::ViewModelAnchor,
             crate::map::sound::SoundListener,
             Camera3d::default(),
             Projection::Perspective(PerspectiveProjection {
-                fov: 74f32.to_radians(),
+                // Source's fov 90 (horizontal at 4:3), kept vertically:
+                // 2 atan(3/4) = 73.74 degrees.
+                fov: 2.0 * 0.75f32.atan(),
                 ..default()
             }),
         ));
@@ -265,19 +273,34 @@ fn spawn_local_player(
     }
 }
 
-/// Place the camera at the movement implementation's eye position and aim it
-/// along the look angles.
+/// Place the camera at the movement implementation's eye position (or
+/// behind it in third person) and aim it along the look angles.
+#[allow(clippy::type_complexity)]
 fn follow_eye(
-    players: Query<(&Intent, &MovementState, &Children, Option<&crate::weapon::ViewPunch>), With<LocalPlayer>>,
+    players: Query<
+        (
+            &Transform,
+            &Intent,
+            &MovementState,
+            &Children,
+            Option<&crate::weapon::ViewPunch>,
+        ),
+        (With<LocalPlayer>, Without<FirstPersonCamera>),
+    >,
     mut cameras: Query<&mut Transform, With<FirstPersonCamera>>,
+    mode: Res<view::CameraMode>,
+    spatial: avian3d::prelude::SpatialQuery,
+    characters: Query<Entity, With<Intent>>,
 ) {
-    for (intent, state, children, punch) in &players {
+    for (at, intent, state, children, punch) in &players {
         // Recoil kicks the view (pitch up, yaw left).
         let p = punch.map_or(Vec2::ZERO, |p| p.0);
+        let look = Quat::from_euler(EulerRot::YXZ, intent.yaw + p.y, intent.pitch + p.x, 0.0);
+        let offset = view::camera_offset(&mode, at.translation, state.eye_offset, look, &spatial, &characters);
         let mut cams = cameras.iter_many_mut(children);
         while let Some(mut cam) = cams.fetch_next() {
-            cam.translation = state.eye_offset;
-            cam.rotation = Quat::from_euler(EulerRot::YXZ, intent.yaw + p.y, intent.pitch + p.x, 0.0);
+            cam.translation = offset;
+            cam.rotation = look;
         }
     }
 }
