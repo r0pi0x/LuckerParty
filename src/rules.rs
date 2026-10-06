@@ -226,7 +226,14 @@ pub(crate) fn put_at_spawn(world: &mut World, e: Entity, fresh: bool) {
         }
         if fresh {
             let team = world.get::<Team>(e).map(|t| t.0);
-            for id in starting.for_team(team) {
+            // Rounds start from the team's own kit (you buy the rest);
+            // deathmatch adds the extras everyone gets.
+            let rounds = world.get_resource::<rounds::RoundSettings>().is_some_and(|r| r.enabled != 0);
+            let mut kit = starting.for_team(team);
+            if rounds {
+                kit.retain(|id| !starting.all.contains(id));
+            }
+            for id in kit {
                 give(world, e, id);
             }
         }

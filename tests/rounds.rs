@@ -52,6 +52,8 @@ fn rounds_freeze_then_play_and_eliminations_pay() {
     let (mut sim, t, ct, ct2) = setup();
     assert!(matches!(phase(&sim), Phase::Freeze { .. }), "{:?}", phase(&sim));
     assert_eq!(money(&sim, t), 800);
+    // No free rifle in rounds: a pistol and the knife (here none: Sim has
+    // no weapons registered), bought up from there.
     assert!(sim.app.world().resource::<BuyWindow>().0.is_ok());
     // Frozen: walking does nothing.
     let start = sim.position(t);

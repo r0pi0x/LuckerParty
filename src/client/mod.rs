@@ -2,6 +2,7 @@
 //! debug tools and agent-facing tools (screenshots, remote inspection).
 //! Simulation code must never depend on this module.
 
+pub mod buy_menu;
 pub mod capture;
 pub mod console;
 pub mod debug;
@@ -179,6 +180,7 @@ impl Plugin for ClientPlugin {
                 radar::RadarPlugin,
                 effects::ShotEffectsPlugin,
                 view::ViewPlugin,
+                buy_menu::BuyMenuPlugin,
             ))
             .add_systems(PostStartup, spawn_local_player)
             .add_systems(Update, (follow_eye, zoom_camera));

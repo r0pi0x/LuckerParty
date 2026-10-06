@@ -191,6 +191,7 @@ fn write_local_intent(
     mut free: ResMut<FreeLook>,
     mut freecam: ResMut<super::view::FreeCam>,
     time: Res<Time>,
+    menu: Option<Res<super::buy_menu::BuyMenu>>,
 ) {
     let freelook = keys.pressed(KeyCode::AltLeft) || held.as_ref().is_some_and(|h| h.freelook);
     if !freelook {
@@ -264,7 +265,12 @@ fn write_local_intent(
         KeyCode::Digit4,
         KeyCode::Digit5,
     ];
-    intent.select = SLOTS.iter().position(|k| keys.pressed(*k)).map(|i| i as u8);
+    // Number keys pick from the buy menu while it's open.
+    intent.select = if menu.is_some_and(|m| m.open) {
+        None
+    } else {
+        SLOTS.iter().position(|k| keys.pressed(*k)).map(|i| i as u8)
+    };
     // Bound actions (`bind f +duck`) add to the keys.
     if let Some(h) = held {
         apply_held(&mut intent, &mut wheel, &h);

@@ -19,6 +19,8 @@ pub struct Money(pub u32);
 pub struct Prices {
     /// By full weapon ID.
     pub weapons: HashMap<&'static str, u32>,
+    /// Weapons only one team may buy (weapon ID -> `core::Team` number).
+    pub team_only: HashMap<&'static str, u8>,
     /// Kevlar; kevlar and helmet; the helmet alone (over full kevlar).
     pub vest: u32,
     pub vest_helmet: u32,
@@ -76,6 +78,11 @@ pub fn buy(world: &mut World, owner: Entity, name: &str) -> Result<String, Strin
         .map(|d| d.id)
         .ok_or_else(|| format!("no weapon {wanted}"))?;
     let held: Vec<Entity> = world.get::<Inventory>(owner).map(|i| i.weapons.clone()).unwrap_or_default();
+    if let Some(team) = prices.team_only.get(id)
+        && world.get::<crate::core::Team>(owner).is_some_and(|t| t.0 != *team)
+    {
+        return Err("your team can't buy that weapon".into());
+    }
     if held.iter().any(|w| world.get::<Weapon>(*w).is_some_and(|w| w.id == id)) {
         return Err("you already have that weapon".into());
     }
@@ -129,6 +136,10 @@ mod tests {
     #[test]
     fn buying_costs_money_and_checks_funds_and_the_window() {
         let (mut w, p) = world();
+        w.resource_mut::<Prices>().team_only.insert("g:weapon_rifle", 1);
+        w.entity_mut(p).insert(crate::core::Team(2));
+        assert!(buy(&mut w, p, "rifle").unwrap_err().contains("team"));
+        w.entity_mut(p).insert(crate::core::Team(1));
         assert!(buy(&mut w, p, "rifle").is_ok());
         assert_eq!(w.get::<Money>(p), Some(&Money(500)));
         assert!(buy(&mut w, p, "rifle").unwrap_err().contains("already"));

@@ -31,8 +31,9 @@ restarts.
    from the freeze's end, the clock during the freeze, a draw's bonus,
    rewards per weapon (CS:S pays 300 for every gun and the knife?).
 2. Buy zones (`func_buyzone`, else around the team's spawns), ammo buying
-   (`primammo`/`secammo`), a buy menu (the game's `buymenu` layout or our
-   own), bots buying.
+   (`primammo`/`secammo`), bots buying, the game's own VGUI buy-menu look
+   (ours: `client/buy_menu.rs`, B or `buymenu`, number keys, team-only
+   guns marked; rounds start from the team pistol and knife).
 3. Round sounds (`Event.TERWin`/`Event.CTWin`/`Event.RoundDraw` game
    sounds), the scoreboard's team scores, round restarts re-creating map
    entities (logic layer).

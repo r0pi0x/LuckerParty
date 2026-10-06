@@ -207,6 +207,9 @@ fn prices() -> crate::weapon::economy::Prices {
     for (id, price) in [(AK47, 2500), (M4A1, 3100), (AWP, 4750), (USP, 500), (GLOCK, 400), (DEAGLE, 650)] {
         p.weapons.insert(id, price);
     }
+    // The scripts' team column (our team 1: terrorists, 2: CTs).
+    p.team_only.insert(AK47, 1);
+    p.team_only.insert(M4A1, 2);
     p
 }
 

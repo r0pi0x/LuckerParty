@@ -177,7 +177,8 @@ fn teams_start_with_their_pistol_and_the_rifle_drawn() {
 fn buy_gives_each_gun_by_its_cs_name() {
     let mut sim = sim();
     let p = sim.spawn_character(greybox::SPAWNS[0], placeholder::ID);
-    sim.app.world_mut().entity_mut(p).insert(LocalPlayer);
+    // A CT: the M4A1 is theirs only.
+    sim.app.world_mut().entity_mut(p).insert((LocalPlayer, mashup::core::Team(2)));
     sim.ticks(1);
     for (name, id, slot) in [
         ("m4a1", M4A1, 0),
