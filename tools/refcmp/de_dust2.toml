@@ -146,3 +146,34 @@ angles = [-10, 90]
 name = "car_reflection"
 position = [1462.0, 2026.0, 110.0]
 angles = [12, 31]
+
+# Survey views across the map (mid, long, B, spawns, catwalk).
+[[view]]
+name = "survey_mid_doors"
+position = [-450.0, 1000.0, 64.0]
+angles = [5, 270]
+
+[[view]]
+name = "survey_long_a"
+position = [1300.0, 1000.0, 70.0]
+angles = [3, 90]
+
+[[view]]
+name = "survey_b_site"
+position = [-1750.0, 2400.0, 130.0]
+angles = [10, 300]
+
+[[view]]
+name = "survey_t_spawn"
+position = [-400.0, -800.0, 170.0]
+angles = [5, 90]
+
+[[view]]
+name = "survey_ct_spawn"
+position = [400.0, 2300.0, -60.0]
+angles = [0, 200]
+
+[[view]]
+name = "survey_catwalk"
+position = [-200.0, 1500.0, 150.0]
+angles = [8, 20]
