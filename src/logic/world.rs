@@ -380,6 +380,34 @@ pub struct LogicWorld {
     pub(super) solids: Vec<Option<Vec<MapBrush>>>,
     /// Players holding use last tick.
     pub(super) use_held: Vec<Entity>,
+    /// Round restarts since the map loaded (0: the map's first round).
+    pub round: u32,
+}
+
+/// Classes a round restart keeps as they are instead of re-creating
+/// them (entity_io.md open question 1: the preserve list the spec quotes
+/// from the public multiplayer code; CS:S's own list is unknown). Matched
+/// case-insensitively; a trailing `*` matches a prefix.
+pub const ROUND_KEEP: &[&str] = &[
+    "worldspawn",
+    "func_brush",
+    "func_wall",
+    "func_buyzone",
+    "info_target",
+    "env_soundscape*",
+    "trigger_soundscape",
+    "keyframe_rope",
+    "move_rope",
+    "sky_camera",
+];
+
+/// Whether a round restart keeps entities of this class.
+pub fn kept_on_restart(classname: &str) -> bool {
+    let c = classname.to_ascii_lowercase();
+    ROUND_KEEP.iter().any(|k| match k.strip_suffix('*') {
+        Some(prefix) => c.starts_with(prefix),
+        None => c == *k,
+    })
 }
 
 impl LogicWorld {
@@ -400,7 +428,91 @@ impl LogicWorld {
             fired: Vec::new(),
             solids: Vec::new(),
             use_held: Vec::new(),
+            round: 0,
         }
+    }
+
+    /// Spawn a map's entities (each remembers its index) and activate
+    /// them. Returns their ids, in map order.
+    pub fn load_map(&mut self, entities: &[crate::map::MapEntity]) -> Vec<EntId> {
+        let ids = self.spawn_map(entities);
+        self.activate();
+        ids
+    }
+
+    fn spawn_map(&mut self, entities: &[crate::map::MapEntity]) -> Vec<EntId> {
+        entities
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                let id = self.spawn(&e.keyvalues, e.hulls.clone());
+                if let Some(ent) = self.get_mut(id) {
+                    ent.map_index = Some(i);
+                }
+                id
+            })
+            .collect()
+    }
+
+    /// A round restart (Counter-Strike): every map entity is re-created
+    /// from `entities` as at map load and activated again, except the
+    /// classes in `ROUND_KEEP`, which stay as they are (or stay gone).
+    /// Queued events are dropped; time, players and the random sequence
+    /// go on. This world must have been built by `load_map` from the same
+    /// entities. Returns the ids, in map order (removed kept ones too:
+    /// they don't resolve).
+    pub fn round_restart(&mut self, entities: &[crate::map::MapEntity]) -> Vec<EntId> {
+        let mut fresh = LogicWorld::new(self.dt);
+        fresh.tick = self.tick;
+        fresh.rng = self.rng;
+        fresh.record = self.record;
+        fresh.round = self.round + 1;
+        fresh.players = std::mem::take(&mut self.players);
+        fresh.player_names = std::mem::take(&mut self.player_names);
+        fresh.use_held = std::mem::take(&mut self.use_held);
+        fresh.effects = std::mem::take(&mut self.effects);
+        fresh.log = std::mem::take(&mut self.log);
+        fresh.deliveries = std::mem::take(&mut self.deliveries);
+        fresh.fired = std::mem::take(&mut self.fired);
+        let mut ids = fresh.spawn_map(entities);
+        // Kept entities may hold connections added since the map loaded.
+        fresh.next_connection = fresh.next_connection.max(self.next_connection);
+        // Kept entities: the old ones in their slots (same index: both
+        // worlds spawned the map in order), with their solids.
+        let mut kept = Vec::new();
+        for (i, e) in entities.iter().enumerate() {
+            if !kept_on_restart(e.classname()) {
+                continue;
+            }
+            let Some(old) = self.slots.get(i) else { continue };
+            if old.1.as_ref().is_some_and(|o| o.map_index != Some(i)) {
+                continue;
+            }
+            fresh.slots[i] = old.clone();
+            ids[i] = EntId {
+                index: i as u32,
+                generation: old.0,
+            };
+            let solid = self.solids.get(i).cloned().flatten();
+            if fresh.solids.len() <= i {
+                fresh.solids.resize(i + 1, None);
+            }
+            fresh.solids[i] = solid;
+            kept.push(i);
+        }
+        for id in fresh.ids() {
+            if !kept.contains(&(id.index as usize)) {
+                super::classes::class_activate(&mut fresh, id);
+            }
+        }
+        fresh.log.push(format!(
+            "round restart {}: {} entities re-created, {} kept",
+            fresh.round,
+            entities.len() - kept.len(),
+            kept.len()
+        ));
+        *self = fresh;
+        ids
     }
 
     pub fn seed(&mut self, seed: u64) {
