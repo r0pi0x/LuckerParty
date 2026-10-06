@@ -73,8 +73,8 @@ fn materials_and_models_resolve() {
     }
 }
 
-/// WorldTwoTextureBlend draws its second texture over the base by the
-/// second texture's alpha (detail blend mode 2).
+/// WorldTwoTextureBlend's walls use the 2x grime mask (detail mode 4,
+/// specs/cs_source/shaders_two_texture_blend.md): the stone is the detail.
 #[test]
 fn aztec_walls_blend_two_textures() {
     let Some(map) = load("de_aztec") else { return };
@@ -85,7 +85,7 @@ fn aztec_walls_blend_two_textures() {
         .expect("an aztec stone wall");
     assert!(wall.texture.is_some());
     let detail = wall.detail.expect("the stonework as the detail layer");
-    assert_eq!(detail.mode, 2);
+    assert_eq!(detail.mode, 4);
     assert_eq!(detail.scale, [4.0, 4.0]);
     // The canals (Water, no base texture) draw their fog colour and
     // reflect the baked cubemap.

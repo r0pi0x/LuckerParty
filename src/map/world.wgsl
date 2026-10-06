@@ -212,16 +212,33 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
             albedo = vec4<f32>(albedo.rgb * mix(vec3<f32>(1.0), 2.0 * d.rgb, params.detail_factor), albedo.a);
         } else if params.detail < 2.5 {
             albedo = vec4<f32>(albedo.rgb + params.detail_factor * d.rgb, albedo.a);
-        } else {
-            // Translucent detail (mode 2, WorldTwoTextureBlend): the
-            // decoded detail over the base by its own alpha.
+        } else if params.detail < 3.5 {
+            // Translucent detail (mode 2): the decoded detail over the base
+            // by its own alpha.
             albedo = vec4<f32>(mix(albedo.rgb, d.rgb, d.a * params.detail_factor), albedo.a);
+        } else if params.detail < 4.5 {
+            // WorldTwoTextureBlend, detail over base: the raw detail texel.
+            albedo = vec4<f32>(mix(albedo.rgb, d.rgb, d.a), albedo.a);
+        } else {
+            // WorldTwoTextureBlend's 2x grime mask: the detail is the
+            // surface, darkened by twice the decoded base where the
+            // detail's alpha says so. Alpha stays the base's.
+            let k = saturate(2.0 * albedo.rgb);
+            let m = saturate(k * d.a + (1.0 - d.a));
+            albedo = vec4<f32>(m * d.rgb, albedo.a);
         }
     }
+    // WorldTwoTextureBlend lights with one bilinear lightmap tap times a
+    // fixed 2.0, not 2^2.2; its bump uses the detail coordinates and
+    // unsquared weights.
+    let two_texture = params.detail > 3.5;
     if params.alpha_cutoff > 0.0 && albedo.a < params.alpha_cutoff {
         discard;
     }
     var light = sample_lightmap(lightmap, in.uv_b);
+    if two_texture {
+        light = textureSampleLevel(lightmap, lightmap_sampler, in.uv_b, 0.0).rgb;
+    }
     // The normal map (tangent space, signs fixed), for bump lighting and
     // reflections; its alpha can mask reflections.
     let normal_texel = textureSample(normal_texture, normal_sampler, in.uv);
@@ -229,7 +246,8 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     n_ts.x = n_ts.x * params.normal_x_sign;
     n_ts.y = n_ts.y * params.normal_g_sign;
     if params.bumped > 0.5 {
-        var n = textureSample(normal_texture, normal_sampler, in.uv).xyz * 2.0 - 1.0;
+        let bump_uv = select(in.uv, in.uv * params.detail_scale, two_texture);
+        var n = textureSample(normal_texture, normal_sampler, bump_uv).xyz * 2.0 - 1.0;
         if params.blend > 0.5 && params.blend_normal > 0.5 {
             let n2 = textureSample(normal2_texture, normal_sampler, in.uv).xyz * 2.0 - 1.0;
             n = mix(n, n2, b);
@@ -241,13 +259,20 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
             saturate(dot(n, BASIS_1)),
             saturate(dot(n, BASIS_2)),
         );
-        w = w * w;
+        if !two_texture {
+            w = w * w;
+        }
         w = w / max(w.x + w.y + w.z, 1e-4);
         light = w.x * sample_lightmap(lightmap_b0, in.uv_b)
             + w.y * sample_lightmap(lightmap_b1, in.uv_b)
             + w.z * sample_lightmap(lightmap_b2, in.uv_b);
     }
     light = light * params.lightmap_scale;
+    if two_texture {
+        // The usual scale is 2^2.2 for Source's LDR lightmaps; this shader
+        // uses 2.0.
+        light = light * (2.0 / 4.594793);
+    }
     if params.debug_view == 1.0 {
         albedo = vec4<f32>(1.0, 1.0, 1.0, albedo.a);
         light = light * 0.25;

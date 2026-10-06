@@ -199,8 +199,17 @@ impl<'a> MaterialLoader<'a> {
         };
         // The parser defaults a missing $detailblendmode to 1; the game's
         // default is 0 (mod2x), so read the mode from the text.
+        // WorldTwoTextureBlend (specs/cs_source/shaders_two_texture_blend.md):
+        // mode 3 lerps the detail over the base, mode 4 is the "2x grime
+        // mask" (`$detail_alpha_mask_base_texture 1`, every stock aztec wall).
         let detail_mode = match stand_in {
-            Some(StandIn::TwoTextureBlend) => 2,
+            Some(StandIn::TwoTextureBlend) => {
+                if material_key::<u32>(&text, "$detail_alpha_mask_base_texture") == Some(1) {
+                    4
+                } else {
+                    3
+                }
+            }
             _ => detail_blend_mode(&text),
         };
         let detail_source = match &material {
@@ -215,11 +224,11 @@ impl<'a> MaterialLoader<'a> {
             _ => None,
         };
         let detail = detail_source
-            .filter(|_| detail_mode <= 2)
+            .filter(|_| detail_mode <= 4)
             .and_then(|(name, scale, factor)| {
-                // Mod2x uses the texel as stored; additive and translucent
-                // decode sRGB.
-                let texture = self.texture(&name, detail_mode != 0)?;
+                // Mod2x and WorldTwoTextureBlend use the texel as stored;
+                // additive and translucent decode sRGB.
+                let texture = self.texture(&name, matches!(detail_mode, 1 | 2))?;
                 Some(crate::map::MapDetail {
                     texture,
                     scale,

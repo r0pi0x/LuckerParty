@@ -55,9 +55,13 @@ not bugs).
 
 ## Next
 
-- Reference captures for de_aztec, cs_office, de_nuke at the views above
-  (needs the shared reference game), to confirm WorldTwoTextureBlend's
-  look and overall brightness.
+- Reference captures done 2026-10-06 (refcmp `all`): after implementing
+  WorldTwoTextureBlend from its spec, de_aztec's 13 views match in
+  brightness to within 0.01 (mean abs diff 0.025-0.064; before: luma up to
+  +0.09, diff up to 0.18). cs_office: diff 0.010-0.041 except cam0
+  (0.093; ours a little darker, 0.584 -> 0.522), ours generally ~3%
+  darker. de_nuke: 0.007-0.036 except cam6/cam7/cam13 (~0.05). Next: look
+  at office cam0 and nuke cam6/7/13 side by side.
 - Other stock maps' views (de_train, de_inferno, cs_italy, de_dust, ...).
 - Brush entity render modes other than normal and 10 (translucent
   func_brush via renderamt).

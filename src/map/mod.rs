@@ -249,7 +249,9 @@ pub struct MapDetail {
     pub scale: [f32; 2],
     pub factor: f32,
     /// 0: multiply by 2 x detail ("mod2x"); 1: add; 2: blend the detail
-    /// over the base by its alpha.
+    /// over the base by its alpha; 3 and 4: WorldTwoTextureBlend (detail
+    /// over base, and the 2x grime mask), which also light the surface
+    /// their own way (specs/cs_source/shaders_two_texture_blend.md).
     pub mode: u8,
 }
 
