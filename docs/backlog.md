@@ -113,6 +113,13 @@ docs/plans/active/sound.md.
 
 - The player physics shadow for `prop_physics` (dust2 has none).
 - Impact damage, breakable props.
+- The "use" key (CS:S `+use`, E): trace from the eye to usable
+  entities; doors on de_nuke (and elsewhere) open and close with it
+  (`func_door`, `func_door_rotating`, `prop_door_rotating`: movement,
+  speed, wait/return, blocking, sounds). Shares the moving-brush work
+  with the minigame plan.
+- Breakable vents on de_nuke (`func_breakable` with health and material
+  gibs): take damage, break into gibs, open the vent.
 - Breakable glass as in cs_office (`func_breakable_surf`): windows that
   take a hole per bullet, crack around it, shatter in pieces when hit
   hard or damaged enough, and let bullets and players through once
