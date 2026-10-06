@@ -2464,7 +2464,7 @@ struct GlowSprite {
 fn glow_visibility(
     query: SpatialQuery,
     cameras: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<SkyboxCamera>, Without<ViewModelCamera>)>,
-    ignored: Query<Entity, Or<(With<crate::core::Intent>, With<MapPropCollider>)>>,
+    ignored: Query<Entity, With<crate::core::Intent>>,
     mut glows: Query<(
         &GlobalTransform,
         &GlowSprite,
