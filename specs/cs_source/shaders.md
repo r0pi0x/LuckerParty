@@ -161,6 +161,7 @@ Status: draft
 - T_vert and B_vert are per-vertex tangent-S and tangent-T vectors supplied by the engine. The public displacement builder sets T = normalized S-axis direction and B = normalized T-axis direction, both orthogonalised against the vertex normal, with S's sign following the S axis. The same is assumed for flat brushes (Open questions).
 
 **$detail.**
+- WorldTwoTextureBlend (de_aztec's walls) is a separate shader with its own detail rules, lightmap scale and colour spaces: see [shaders_two_texture_blend.md](shaders_two_texture_blend.md). Do not model it as one of the modes below.
 - uv_detail = $detailscale × ($basetexturetransform applied to the vertex uv). Default scale 4.
 - d = sample($detail).
   - sRGB-decoded only when $detailblendmode = 1.
