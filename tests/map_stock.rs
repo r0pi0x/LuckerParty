@@ -87,6 +87,13 @@ fn aztec_walls_blend_two_textures() {
     let detail = wall.detail.expect("the stonework as the detail layer");
     assert_eq!(detail.mode, 2);
     assert_eq!(detail.scale, [4.0, 4.0]);
+    // The canals (Water, no base texture) draw their fog colour and
+    // reflect the baked cubemap.
+    let water: Vec<_> = map.meshes.iter().filter(|m| m.material.contains("aztecwater")).collect();
+    assert!(!water.is_empty());
+    for m in water {
+        assert!(m.texture.is_some() && m.envmap.is_some(), "{}", m.material);
+    }
 }
 
 /// Older maps (BSP v19 like de_aztec and cs_office; early v20 like de_nuke)

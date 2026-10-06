@@ -176,7 +176,14 @@ impl<'a> MaterialLoader<'a> {
             vmt_parser::material::Material::Water(m) => (m.base_texture.as_deref(), m.normal_map.as_deref()),
             m => (m.base_texture(), m.bump_map()),
         };
-        let texture = base.and_then(|t| self.texture(t, true));
+        let mut texture = base.and_then(|t| self.texture(t, true));
+        // Water without a base texture (de_aztec's canals) shows what's
+        // below through its fog in the game; without a Water shader, draw
+        // its fog colour (plus `$envmap` reflections below) instead of a
+        // debug colour.
+        if let (None, vmt_parser::material::Material::Water(w)) = (texture, &material) {
+            texture = Some(self.solid(w.fog_color.0));
+        }
         let normal_map = bump.and_then(|t| self.texture(t, false));
         let decal_scale = match &material {
             vmt_parser::material::Material::LightMappedGeneric(m) if m.decal => Some(m.decal_scale),
@@ -420,6 +427,26 @@ impl<'a> MaterialLoader<'a> {
             }
         };
         self.cube_by_path.insert(path, index);
+        index
+    }
+
+    /// A 1x1 texture of a colour (0-1, gamma space).
+    fn solid(&mut self, rgb: [f32; 3]) -> usize {
+        let px = rgb.map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8);
+        let key = format!("solid:{px:?}");
+        if let Some(Some(i)) = self.by_path.get(&key) {
+            return *i;
+        }
+        self.textures.push(MapTexture {
+            name: key.clone(),
+            srgb: true,
+            mips: Vec::new(),
+            width: 1,
+            height: 1,
+            rgba8: vec![px[0], px[1], px[2], 255],
+        });
+        let index = self.textures.len() - 1;
+        self.by_path.insert(key, Some(index));
         index
     }
 
