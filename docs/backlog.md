@@ -34,6 +34,8 @@ Each group is one agent's worktree; merged into main as they finish.
 
 Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
 
+- A test map with every supported entity (`mashup_logic_test`, generated
+  `.vmf`, compiled with Valve's tools; plan section "Test map").
 - Find custom maps: mount the install's `download/` and `custom/` maps and
   a mashup cache (never write the Steam folder); `map <name>`, `maps`,
   `import <file.bsp|.bsp.bz2>` with a content hash.
@@ -96,7 +98,18 @@ docs/plans/active/sound.md.
 - Fog on ropes; detail blend modes other than 0 and 1;
   `$basetexturetransform` (unused on dust2).
 
-## 9. Long tail
+## 9. Performance
+
+- Visibility culling for maps: use the BSP's own visibility data (PVS from
+  the vis lump, leaves and clusters) to skip world faces, props and
+  entities the camera's leaf can't see; areaportals; frustum culling per
+  leaf group instead of per material mesh (today world meshes are merged
+  per material, so Bevy's frustum culling rarely skips anything).
+- Prop fade distances (`fademindist`/`fademaxdist`) and LOD models.
+- Profile frame time on dust2 (CPU systems, draw calls) and set a budget;
+  measure on the Windows PC too.
+
+## 10. Long tail
 
 Counts are from de_dust2's entity lump and static prop lump.
 

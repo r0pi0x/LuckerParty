@@ -13,3 +13,6 @@
 
 # Local overrides (e.g. game install paths).
 /mashup.local.toml
+
+# Agent worktrees (Claude Code).
+/.claude/worktrees/

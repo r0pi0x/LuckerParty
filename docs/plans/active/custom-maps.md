@@ -69,22 +69,58 @@ first (specs/README.md), then a game-independent implementation:
   placed in the map, `point_servercommand` (a safe subset), round restart.
 - **Out of scope:** maps that need SourceMod server plugins.
 
+## Test map: mashup_logic_test
+
+Every entity class we support gets an example in one map we generate
+ourselves, so each can be checked in mashup and measured in real CS:S.
+
+- **Two layers.** (1) Fixtures in Rust tests: entity key values and box
+  brush models handed straight to the logic layer, no compiler needed;
+  fast and deterministic, one per behaviour. (2) A real map: a script
+  (`tools/testmap/`) writes a Hammer `.vmf` (text; our own geometry,
+  stock CS:S texture names only), Valve's compilers (vbsp, vvis, vrad)
+  build the `.bsp` into the mashup cache. The `.vmf` and script are
+  committed; the `.bsp` never is (.gitignore).
+- **Compilers.** The Linux CS:S install has none; the Windows install
+  ships them in `bin/` (check), so `scripts/compile_testmap.ps1` builds it
+  there. Linux would need Wine (the user's call) or the Windows build
+  copied over.
+- **Reference.** The compiled map runs on the local CS:S probe server, so
+  door speeds, push strength, teleport and hurt timing, counter and relay
+  ordering are measured from the real game (like the movement and weapon
+  probes), then compared with mashup on the same map.
+- **Rooms** (each with a visible result: a light, a toggled `func_brush`
+  or a `game_text`, so a screenshot or a probe can read it):
+  1. I/O: `logic_auto` → `logic_relay` chain with delays, `logic_timer`,
+     `math_counter` (add to max fires `OnHitMax`), `logic_case`,
+     `logic_branch`, `filter_activator_name` on a trigger.
+  2. Triggers: `trigger_once`, `trigger_multiple` (wait), `trigger_teleport`
+     to an `info_teleport_destination`, `trigger_push` (up and sideways),
+     `trigger_hurt` (damage per second).
+  3. Moving brushes: `func_door` (sliding, wait/return), `func_door_rotating`,
+     `func_button` opening a door, `func_movelinear`, `func_rotating`,
+     `func_tracktrain` on `path_track`s, `func_breakable` (glass and wood).
+  4. Equipment and rounds: `game_player_equip`, placed `weapon_*`,
+     `game_text`, a round restart from a trigger.
+
 ## Slices
 
 1. [ ] Mount the install's `download/` and `custom/` maps plus the mashup
    cache; `map <name>` finds custom maps; `maps` lists them; `import
    <file.bsp|.bsp.bz2>` copies into the cache with a hash. Test: a map in
    the cache loads by name (a tiny generated BSP, or skip without one).
-2. [ ] Spec entity I/O and triggers (specs/source/entity_io.md); the
+2. [ ] Test map generator (`tools/testmap/`) and fixtures; compile on
+   Windows; measure the reference behaviour on the probe server.
+3. [ ] Spec entity I/O and triggers (specs/source/entity_io.md); the
    `logic` layer; `trigger_teleport`, `trigger_push`, `trigger_hurt`,
    `trigger_multiple/once`, `logic_*`, `math_counter`. Pick two real
    minigame maps from the user's downloads as targets.
-3. [ ] Spec and build moving brush entities (doors, buttons, platforms,
+4. [ ] Spec and build moving brush entities (doors, buttons, platforms,
    breakables) with movement support for moving solids.
-4. [ ] Gameplay entities (`game_player_equip`, `game_text`, map weapons,
+5. [ ] Gameplay entities (`game_player_equip`, `game_text`, map weapons,
    rounds) until the two target maps play through.
-5. [ ] Networking, then server-sent map download (hash check, bz2).
-6. [ ] Per-map extra mounts; a mashup package format.
+6. [ ] Networking, then server-sent map download (hash check, bz2).
+7. [ ] Per-map extra mounts; a mashup package format.
 
 ## Decision log
 
