@@ -29,6 +29,11 @@ vtf = "0.4"
 # `cargo run --features dev`. Never enable for release builds.
 dev = ["bevy/dynamic_linking", "bevy/bevy_remote"]
 
+# CPU profile: every system and render step as a span in a Chrome trace
+# (trace-<time>.json, open in https://ui.perfetto.dev). See
+# docs/performance.md. Slower; only for measuring.
+profile = ["bevy/trace_chrome"]
+
 # Our own code: a little optimization so the game is playable in debug.
 [profile.dev]
 opt-level = 1

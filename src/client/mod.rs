@@ -10,6 +10,7 @@ pub mod game_hud;
 pub mod scoreboard;
 pub mod hud;
 pub mod input;
+pub mod perf;
 pub mod view;
 
 use std::path::PathBuf;
@@ -44,6 +45,8 @@ pub struct Args {
     /// Capture these views (JSON, see `capture::View`), one PNG each.
     pub views: Option<PathBuf>,
     pub capture_dir: Option<PathBuf>,
+    /// With `views`: time each view instead of capturing it.
+    pub bench: bool,
     /// Console variables to set (`name=value`), in order, after any
     /// `exec` files.
     pub cvars: Vec<(String, String)>,
@@ -74,6 +77,8 @@ usage: mashup [options]
   --views <file.json>       capture each view (name, position, yaw, pitch; engine space)
                             off-screen at 1280x720, then exit (use with --movement mashup:noclip)
   --capture-dir <dir>       where --views writes <name>.png (default: current directory)
+  --bench                   with --views: time frames at each view (no vsync) and print
+                            avg/p95/max frame ms and drawn meshes instead of capturing
   --console                 start with the console open (~ toggles it)
   +<command> [args...]      run a console command at startup, Source style
                             (e.g. +sv_airaccelerate 150 +cl_showpos 1 +bind f noclip;
@@ -122,6 +127,10 @@ impl Args {
                 println!("{USAGE}");
                 std::process::exit(0);
             }
+            if flag == "--bench" {
+                out.bench = true;
+                continue;
+            }
             if flag == "--lightmap-only" {
                 out.lightmap_only = true;
                 continue;
@@ -165,6 +174,7 @@ impl Plugin for ClientPlugin {
                 input::LocalInputPlugin,
                 debug::DebugPlugin,
                 capture::CapturePlugin,
+                perf::PerfPlugin,
                 console::ConsoleUiPlugin,
                 hud::HudPlugin,
                 game_hud::GameHudPlugin,

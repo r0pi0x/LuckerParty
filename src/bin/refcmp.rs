@@ -24,7 +24,7 @@ use mashup::{
 use serde::Deserialize;
 
 const USAGE: &str = "\
-usage: refcmp [all|capture-ref|capture-ours|report|fit|skyconv] [--views <file>] [--only <name>] [--keep-running]
+usage: refcmp [all|capture-ref|capture-ours|report|fit|skyconv|bench|vischeck] [--views <file>] [--only <name>] [--keep-running] [-- <mashup args>]
   all            capture both, then report (default)
   capture-ref    capture views in CS:S (Steam must be logged in on this machine)
   capture-ours   capture views in mashup
@@ -33,6 +33,12 @@ usage: refcmp [all|capture-ref|capture-ours|report|fit|skyconv] [--views <file>]
                  CS:S combines texture and light, per pixel, against the reference
   skyconv        measure the engine's cubemap convention with an encoded debug
                  sky, then fit each face's texture and orientation to the reference
+  bench          time mashup's frames at each view (no CS:S): avg/p95/max frame
+                 ms, drawn meshes and triangles per view (docs/performance.md)
+  vischeck       render each view, plus views from the map's spawns and nav
+                 areas, with visibility culling on and off (no CS:S); every
+                 pair must be identical
+  -- <args>      bench, vischeck: pass the rest to mashup (e.g. +r_novis 1)
   --views <file> views file (default: tools/refcmp/de_dust2.toml)
   --only <name>  only views whose name contains <name>
   --keep-running leave CS:S running after capturing (faster next time)";
@@ -60,6 +66,8 @@ struct Args {
     views: PathBuf,
     only: Option<String>,
     keep_running: bool,
+    /// Extra mashup arguments (after `--`).
+    extra: Vec<String>,
 }
 
 fn main() -> ExitCode {
@@ -68,11 +76,15 @@ fn main() -> ExitCode {
         views: Path::new(env!("CARGO_MANIFEST_DIR")).join("tools/refcmp/de_dust2.toml"),
         only: None,
         keep_running: false,
+        extra: Vec::new(),
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
-            "all" | "capture-ref" | "capture-ours" | "report" | "fit" | "skyconv" => args.command = a,
+            "all" | "capture-ref" | "capture-ours" | "report" | "fit" | "skyconv" | "bench" | "vischeck" => {
+                args.command = a
+            }
+            "--" => args.extra.extend(it.by_ref()),
             "--views" => args.views = it.next().map(PathBuf::from).unwrap_or_default(),
             "--only" => args.only = it.next(),
             "--keep-running" => args.keep_running = true,
@@ -103,6 +115,13 @@ fn run(args: &Args) -> Result<(), String> {
     let (ref_dir, ours_dir, report_dir) = (out.join("ref"), out.join("ours"), out.join("report"));
     for d in [&ref_dir, &ours_dir, &report_dir] {
         std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
+    }
+    let extra: Vec<&str> = args.extra.iter().map(String::as_str).collect();
+    if args.command == "bench" {
+        return bench(&file, &out.join("bench"), &extra);
+    }
+    if args.command == "vischeck" {
+        return vischeck(&mut file, &out.join("vischeck"), &extra);
     }
     let all = args.command == "all";
     if all || args.command == "capture-ref" {
@@ -271,7 +290,112 @@ fn capture_ours(file: &ViewsFile, out: &Path, extra: &[&str]) -> Result<(), Stri
     capture_ours_env(file, out, extra, &[])
 }
 
+/// Time mashup at each view (`--bench`): settles, times 200 frames per view
+/// with vsync off, prints the table mashup writes.
+fn bench(file: &ViewsFile, out: &Path, extra: &[&str]) -> Result<(), String> {
+    std::fs::create_dir_all(out).map_err(|e| e.to_string())?;
+    let mut args = vec!["--bench"];
+    args.extend_from_slice(extra);
+    println!("benchmarking {} views of {} ({})", file.view.len(), file.map, build_profile());
+    capture_ours_io(file, out, &args, &[], true)
+}
+
+/// Which build this binary (and so the mashup next to it) is.
+fn build_profile() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent()?.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_default()
+}
+
+/// Pixels a vischeck view may differ by (see `vischeck`): 0.5% of a
+/// 1280x720 capture.
+const VISCHECK_ALLOWED_PIXELS: usize = 4608;
+
+/// Render views with visibility culling off and on and compare them pixel
+/// for pixel. Besides the file's views: from every spawn and from nav area
+/// centres (about 10 and 60), at eye height, looking four ways.
+fn vischeck(file: &mut ViewsFile, out: &Path, extra: &[&str]) -> Result<(), String> {
+    let map = mashup::games::load_map(&format!("cs_source:{}", file.map))?;
+    let eye = 64.0 * 0.0254;
+    let mut eyes: Vec<(String, [f32; 3])> = map
+        .spawns
+        .iter()
+        .enumerate()
+        .step_by((map.spawns.len() / 10).max(1))
+        .map(|(i, (p, _))| (format!("spawn{i}"), (*p + bevy::math::Vec3::Y * eye).to_array()))
+        .collect();
+    if let Some(nav) = &map.nav {
+        let step = (nav.areas.len() / 60).max(1);
+        for a in nav.areas.iter().step_by(step) {
+            let c = (a.min + a.max) / 2.0;
+            eyes.push((format!("nav{}", a.id), [c.x, a.height_at(c.x, c.y) + eye, c.y]));
+        }
+    }
+    // Back to Source space and angles for the shared views writer.
+    for (name, p) in eyes {
+        let source = [p[0], -p[2], p[1]].map(|v| v / 0.0254);
+        for yaw in [0.0, 90.0, 180.0, 270.0] {
+            file.view.push(SourceView {
+                name: format!("{name}_{yaw}"),
+                position: source,
+                angles: [0.0, yaw],
+            });
+        }
+    }
+    let (off, on) = (out.join("novis"), out.join("vis"));
+    for d in [&off, &on] {
+        let _ = std::fs::remove_dir_all(d);
+        std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
+    }
+    // Game time frozen, so dust motes and physics props are the same in
+    // both runs.
+    let mut a: Vec<&str> = vec!["+host_timescale", "0", "+r_novis", "1"];
+    a.extend_from_slice(extra);
+    capture_ours(file, &off, &a)?;
+    let mut b: Vec<&str> = vec!["+host_timescale", "0", "+r_novis", "0"];
+    b.extend_from_slice(extra);
+    capture_ours(file, &on, &b)?;
+    let mut worst: Vec<(usize, String)> = Vec::new();
+    for v in &file.view {
+        let name = format!("{}.png", v.name);
+        let (Ok(x), Ok(y)) = (image::open(off.join(&name)), image::open(on.join(&name))) else {
+            return Err(format!("missing capture {name}"));
+        };
+        let (x, y) = (x.to_rgb8(), y.to_rgb8());
+        let differing = x.pixels().zip(y.pixels()).filter(|(p, q)| p != q).count();
+        worst.push((differing, v.name.clone()));
+    }
+    worst.sort_by(|a, b| b.cmp(a));
+    let differ: Vec<_> = worst.iter().filter(|(n, _)| *n > 0).collect();
+    println!("{} views compared; {} differ", worst.len(), differ.len());
+    for (n, name) in differ.iter().take(20) {
+        println!("  {name}: {n} pixels differ");
+    }
+    println!("captures in {} and {}", off.display(), on.display());
+    // Small differences are expected where culling is closer to the game
+    // than drawing everything: geometry seen through sky brushes (the game
+    // draws them as sky, hiding what's behind; we don't draw them) and
+    // through sub-pixel cracks between faces; inspect the listed views. A
+    // missing wall or prop shows as a large difference: that fails.
+    if differ.iter().all(|(n, _)| *n <= VISCHECK_ALLOWED_PIXELS) {
+        Ok(())
+    } else {
+        Err("culling changed what is drawn".into())
+    }
+}
+
 fn capture_ours_env(file: &ViewsFile, out: &Path, extra: &[&str], env: &[(&str, String)]) -> Result<(), String> {
+    capture_ours_io(file, out, extra, env, false)
+}
+
+fn capture_ours_io(
+    file: &ViewsFile,
+    out: &Path,
+    extra: &[&str],
+    env: &[(&str, String)],
+    show_stdout: bool,
+) -> Result<(), String> {
     // Source eye position and [pitch, yaw] to engine space and our angles:
     // our yaw 0 looks down -Z (Source +Y), so yaw = source yaw - 90; our
     // positive pitch looks up.
@@ -312,7 +436,11 @@ fn capture_ours_env(file: &ViewsFile, out: &Path, extra: &[&str], env: &[(&str, 
         .args(["+r_drawviewmodel", "0"])
         .args(extra)
         .envs(env.iter().map(|(k, v)| (*k, v.as_str())))
-        .stdout(std::process::Stdio::null())
+        .stdout(if show_stdout {
+            std::process::Stdio::inherit()
+        } else {
+            std::process::Stdio::null()
+        })
         // The game's warnings and errors are worth seeing.
         .stderr(std::process::Stdio::inherit())
         .env("RUST_LOG", std::env::var("RUST_LOG").unwrap_or_else(|_| "warn".into()))

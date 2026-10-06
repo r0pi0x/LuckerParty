@@ -505,6 +505,9 @@ struct PropPlacement {
     spawnflags: u32,
     massscale: f32,
     physicsmode: i32,
+    /// Fade distances (`fademindist`, `fademaxdist`), units; None when the
+    /// prop never fades (max 0 or less).
+    fade: Option<(f32, f32)>,
 }
 
 pub fn add_static_props(
@@ -540,6 +543,7 @@ pub fn add_static_props(
             spawnflags: 0,
             massscale: 0.0,
             physicsmode: 0,
+            fade: (prop.fade_max_distance > 0.0).then_some((prop.fade_min_distance, prop.fade_max_distance)),
         });
     }
     placements.extend(entity_props(bsp));
@@ -581,6 +585,12 @@ fn entity_props(bsp: &Bsp) -> Vec<PropPlacement> {
                 spawnflags: e.prop("spawnflags").and_then(|v| v.trim().parse().ok()).unwrap_or(0),
                 massscale: e.prop("massscale").and_then(|v| v.trim().parse().ok()).unwrap_or(0.0),
                 physicsmode: e.prop("physicsmode").and_then(|v| v.trim().parse().ok()).unwrap_or(0),
+                fade: {
+                    let key = |k: &'static str| e.prop(k).and_then(|v| v.trim().parse::<f32>().ok());
+                    key("fademaxdist")
+                        .filter(|max| *max > 0.0)
+                        .map(|max| (key("fademindist").unwrap_or(0.0), max))
+                },
             })
         })
         .collect()
@@ -668,6 +678,7 @@ fn place_props(
             solid,
             casts_shadow: prop.class.is_some(),
             physics,
+            fade: prop.fade.map(|(a, b)| (a * METERS_PER_UNIT, b * METERS_PER_UNIT)),
         });
     }
     failed.sort();

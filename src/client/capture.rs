@@ -25,6 +25,11 @@ const DEFAULT_FRAMES: u32 = 60;
 pub const VIEW_SIZE: UVec2 = UVec2::new(1280, 720);
 /// Frames to let a view settle (interpolation, streaming) before capture.
 const SETTLE_FRAMES: u32 = 30;
+/// The first view settles longer: shader pipelines compile in the
+/// background during the first frames, and meshes wait for them.
+const FIRST_SETTLE_FRAMES: u32 = 150;
+/// Frames timed per view by `--bench`, after settling.
+const BENCH_FRAMES: u32 = 200;
 
 /// One camera view, in engine space: eye position (meters) and look angles
 /// in degrees (yaw 0 = -Z, positive pitch looks up).
@@ -44,6 +49,23 @@ struct ViewRun {
     index: usize,
     frame: u32,
     waiting: bool,
+    /// `--bench`: this view's frame times (seconds) and the results so far.
+    times: Vec<f32>,
+    /// Process CPU time when this view's timing started.
+    cpu_start: Option<f64>,
+    results: Vec<BenchRow>,
+}
+
+struct BenchRow {
+    name: String,
+    avg: f32,
+    p95: f32,
+    max: f32,
+    meshes: (usize, usize, usize),
+    parts: (usize, usize),
+    /// Process CPU (all threads) and GPU ms per frame, when known.
+    cpu: Option<f32>,
+    gpu: Option<f32>,
 }
 
 #[derive(Component)]
@@ -89,6 +111,7 @@ fn start_views(
     camera: Option<Single<Entity, With<FirstPersonCamera>>>,
     mut images: ResMut<Assets<Image>>,
     mut exit: MessageWriter<AppExit>,
+    mut windows: Query<&mut Window>,
 ) {
     let (Some(path), None, Some(camera)) = (&args.0.views, run, camera) else {
         return;
@@ -119,7 +142,15 @@ fn start_views(
     commands
         .entity(*camera)
         .insert(RenderTarget::Image(target.clone().into()));
-    info!("capturing {} views into {}", views.len(), dir.display());
+    if args.0.bench {
+        // Time what the GPU can do, not the display's refresh.
+        for mut w in &mut windows {
+            w.present_mode = bevy::window::PresentMode::AutoNoVsync;
+        }
+        info!("timing {} views", views.len());
+    } else {
+        info!("capturing {} views into {}", views.len(), dir.display());
+    }
     commands.insert_resource(ViewRun {
         views,
         dir,
@@ -127,21 +158,35 @@ fn start_views(
         index: 0,
         frame: 0,
         waiting: false,
+        times: Vec::new(),
+        cpu_start: None,
+        results: Vec::new(),
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_views(
     mut commands: Commands,
+    args: Res<ClientArgs>,
     run: Option<ResMut<ViewRun>>,
     mut player: Query<(&mut Transform, &mut Intent, &mut Velocity), With<LocalPlayer>>,
     mut exit: MessageWriter<AppExit>,
+    time: Res<Time<Real>>,
+    meshes: Query<(&Mesh3d, &ViewVisibility), With<bevy::camera::primitives::Aabb>>,
+    assets: Res<super::perf::MeshTriangles>,
+    vis: Res<crate::map::vis::VisStats>,
+    diagnostics: Res<bevy::diagnostic::DiagnosticsStore>,
 ) {
     let Some(mut run) = run else { return };
     if run.waiting {
         return;
     }
     let Some(view) = run.views.get(run.index).cloned() else {
-        info!("all views captured");
+        if args.0.bench {
+            print_bench(&run.results);
+        } else {
+            info!("all views captured");
+        }
         exit.write(AppExit::Success);
         return;
     };
@@ -155,7 +200,39 @@ fn run_views(
     intent.move_axis = Vec2::ZERO;
     velocity.0 = Vec3::ZERO;
     run.frame += 1;
-    if run.frame < SETTLE_FRAMES {
+    let settle = if run.index == 0 { FIRST_SETTLE_FRAMES } else { SETTLE_FRAMES };
+    if run.frame < settle {
+        return;
+    }
+    if args.0.bench {
+        // Frame times as seen at this point of each frame: the time since
+        // the previous frame started.
+        if run.times.is_empty() {
+            run.cpu_start = super::perf::process_cpu_seconds();
+        }
+        run.times.push(time.delta_secs());
+        if run.frame < settle + BENCH_FRAMES {
+            return;
+        }
+        let mut t = std::mem::take(&mut run.times);
+        t.sort_by(f32::total_cmp);
+        let avg = t.iter().sum::<f32>() / t.len() as f32;
+        let row = BenchRow {
+            name: view.name.clone(),
+            avg: avg * 1e3,
+            p95: t[(t.len() * 95 / 100).min(t.len() - 1)] * 1e3,
+            max: t[t.len() - 1] * 1e3,
+            meshes: super::perf::mesh_counts(&meshes, &assets),
+            parts: (vis.visible_parts, vis.parts),
+            cpu: run
+                .cpu_start
+                .zip(super::perf::process_cpu_seconds())
+                .map(|(a, b)| ((b - a) * 1e3 / t.len() as f64) as f32),
+            gpu: super::perf::gpu_ms(&diagnostics).map(|g| g as f32),
+        };
+        run.results.push(row);
+        run.index += 1;
+        run.frame = 0;
         return;
     }
     run.waiting = true;
@@ -168,4 +245,45 @@ fn run_views(
             run.frame = 0;
             run.waiting = false;
         });
+}
+
+/// Print `--bench` results: one row per view, then the averages. Frame
+/// times follow machine load; process CPU per frame (all threads) and GPU
+/// time much less.
+fn print_bench(rows: &[BenchRow]) {
+    let opt = |v: Option<f32>| v.map_or("n/a".to_string(), |v| format!("{v:.2}"));
+    println!(
+        "{:<24} {:>8} {:>8} {:>8} {:>8} {:>8} {:>10} {:>9} {:>11}",
+        "view", "avg ms", "p95 ms", "max ms", "cpu ms", "gpu ms", "meshes", "tris (k)", "vis parts"
+    );
+    for r in rows {
+        println!(
+            "{:<24} {:>8.2} {:>8.2} {:>8.2} {:>8} {:>8} {:>10} {:>9} {:>11}",
+            r.name,
+            r.avg,
+            r.p95,
+            r.max,
+            opt(r.cpu),
+            opt(r.gpu),
+            format!("{}/{}", r.meshes.1, r.meshes.0),
+            r.meshes.2 / 1000,
+            format!("{}/{}", r.parts.0, r.parts.1),
+        );
+    }
+    let n = rows.len().max(1) as f32;
+    let mean = |f: &dyn Fn(&BenchRow) -> f32| rows.iter().map(f).sum::<f32>() / n;
+    let mean_opt = |f: &dyn Fn(&BenchRow) -> Option<f32>| {
+        rows.iter().map(f).collect::<Option<Vec<f32>>>().map(|v| v.iter().sum::<f32>() / n)
+    };
+    println!(
+        "{:<24} {:>8.2} {:>8.2} {:>8} {:>8} {:>8} {:>10.0} {:>9.0}",
+        "MEAN",
+        mean(&|r| r.avg),
+        mean(&|r| r.p95),
+        "",
+        opt(mean_opt(&|r| r.cpu)),
+        opt(mean_opt(&|r| r.gpu)),
+        mean(&|r| r.meshes.1 as f32),
+        mean(&|r| r.meshes.2 as f32) / 1000.0,
+    );
 }

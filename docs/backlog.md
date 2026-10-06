@@ -140,14 +140,13 @@ docs/plans/active/sound.md.
 
 ## 9. Performance
 
-- Visibility culling for maps: use the BSP's own visibility data (PVS from
-  the vis lump, leaves and clusters) to skip world faces, props and
-  entities the camera's leaf can't see; areaportals; frustum culling per
-  leaf group instead of per material mesh (today world meshes are merged
-  per material, so Bevy's frustum culling rarely skips anything).
-- Prop fade distances (`fademindist`/`fademaxdist`) and LOD models.
-- Profile frame time on dust2 (CPU systems, draw calls) and set a budget;
-  measure on the Windows PC too.
+Measured and culled (docs/performance.md): `mashup_perf`, `refcmp bench`,
+PVS culling by world chunk, prop fade distances. Left:
+- Areaportals (closed doors and windows hide what's behind them) and
+  `func_occluder`.
+- Prop fade bands (alpha between `fademindist` and `fademaxdist`) and
+  LOD models.
+- Measure on the Windows PC (`refcmp bench` there) and set a budget.
 
 ## 10. Long tail
 
