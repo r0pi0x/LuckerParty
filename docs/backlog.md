@@ -30,7 +30,20 @@ Each group is one agent's worktree; merged into main as they finish.
   errors (de_aztec logs missing textures/materials), and fix them; add
   refcmp views where the reference game shows a difference.
 
-## 2. Weapons, remaining
+## 2. Custom maps and minigames
+
+Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
+
+- Find custom maps: mount the install's `download/` and `custom/` maps and
+  a mashup cache (never write the Steam folder); `map <name>`, `maps`,
+  `import <file.bsp|.bsp.bz2>` with a content hash.
+- Entity I/O and triggers (spec first): outputs/inputs with delays,
+  `logic_*`, `math_counter`, `trigger_teleport`/`push`/`hurt`/`multiple`/
+  `once`; then moving brush entities (doors, buttons, platforms,
+  breakables) with movement on moving solids. Target: two real minigame
+  maps from the user's downloads.
+
+## 3. Weapons, remaining
 
 In progress: [plans/active/weapons.md](plans/active/weapons.md). The
 framework, knife, AK-47, HUD, deathmatch and a first bot are in.
@@ -42,12 +55,12 @@ framework, knife, AK-47, HUD, deathmatch and a first bot are in.
 - Reload, grenade and death animations (world models are held by bodies).
 - Impact decals, tracers, muzzle flash; explosion impulses.
 
-## 3. Bots
+## 4. Bots
 
 - CS:S bot path costs and route variety (nav spec open questions 2–4),
   checking corners, teamwork.
 
-## 4. Console, remaining
+## 5. Console, remaining
 
 The console and overlays are in (src/console.rs, src/client/console.rs).
 
@@ -55,7 +68,7 @@ The console and overlays are in (src/console.rs, src/client/console.rs).
 - Select-and-copy in the output (clipboard); `con_dump` writes it to a
   file meanwhile.
 
-## 5. Sound, remaining
+## 6. Sound, remaining
 
 docs/plans/active/sound.md.
 
@@ -66,12 +79,12 @@ docs/plans/active/sound.md.
 - Measure on the probe server: the distance curves (replace the H1/H2
   guesses), CS:S footstep silence rules, the jump sound, wave choice.
 
-## 6. Physics props, remaining
+## 7. Physics props, remaining
 
 - The player physics shadow for `prop_physics` (dust2 has none).
 - Impact damage, breakable props.
 
-## 7. Visual fidelity
+## 8. Visual fidelity
 
 - **Water surfaces**: swimming works (`MapWater`), but water faces draw as
   plain textured surfaces, without the Water shader's refraction,
@@ -83,7 +96,7 @@ docs/plans/active/sound.md.
 - Fog on ropes; detail blend modes other than 0 and 1;
   `$basetexturetransform` (unused on dust2).
 
-## 8. Long tail
+## 9. Long tail
 
 Counts are from de_dust2's entity lump and static prop lump.
 
