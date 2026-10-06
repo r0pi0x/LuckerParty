@@ -216,7 +216,9 @@ fn spawn_local_player(
         None => loadout.movement,
     };
 
-    let player = spawn_character(&mut commands, at, Team(0), movement);
+    // Counter-terrorists by default (CS:S would ask; `jointeam 2` switches
+    // to the terrorists).
+    let player = spawn_character(&mut commands, at, Team(2), movement);
     let look = args.look.unwrap_or(Vec2::new(spawn_yaw, 0.0));
     commands
         .entity(player)

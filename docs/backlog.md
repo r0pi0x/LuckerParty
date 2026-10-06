@@ -40,8 +40,8 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
 
 - CS:S HUD: health/armour/ammo panels, death notices and the Tab
   scoreboard are in (`client/game_hud.rs`, `client/scoreboard.rs`). Left:
-  joining a team (`jointeam`, the team menu; the local player has no team
-  today, so every bot is an enemy), ping on the scoreboard, round timer and money panels once
+  the team menu (`jointeam 2|3` exists; you start as CT), ping on the
+  scoreboard, round timer and money panels once
   rounds and money exist, the ammo-type icon (a `640hud1` sprite), the
   damage direction indicators (`pain_*` sprites), weapon selection,
   hint text, radar.
