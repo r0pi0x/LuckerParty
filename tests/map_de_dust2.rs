@@ -1541,3 +1541,91 @@ fn shots_use_model_hitboxes() {
     let hits = shoot(&mut sim, gap);
     assert!(hits.iter().all(|(e, _)| *e != target), "grazing shot hit {hits:?}");
 }
+
+/// Characters' animation follows their movement (specs/cs_source/
+/// animation.md §12): idle, run, walk and crouch-walk lower bodies, the
+/// held weapon's upper body, and feet that lag the view.
+#[test]
+fn bodies_animate_with_movement() {
+    use mashup::{
+        games::cs_source::{
+            movement::{self, SourceMovementPlugin},
+            player_anim::{PlayerAnim, PlayerAnimPlugin},
+            weapons::CsWeaponsPlugin,
+        },
+        map::anim::Animator,
+    };
+    let Some(map) = dust2() else { return };
+    let set = map.characters[0].animations.clone().expect("player animations");
+    let mut sim = Sim::new((
+        MapPlugin::new(map.clone()),
+        SourceMovementPlugin,
+        CsWeaponsPlugin,
+        PlayerAnimPlugin,
+    ));
+    sim.set_tick_interval(mashup::games::cs_source::TICK_INTERVAL);
+    sim.app
+        .insert_resource(mashup::slots::Loadout { movement: movement::ID });
+    // The T spawn runway, facing west along it.
+    let spawn = movement::to_engine(Vec3::new(-1024.0, -784.0, 140.0));
+    let c = sim.spawn_character(spawn + Vec3::Y * (36.0 * 0.0254 + 0.2), movement::ID);
+    sim.intent(c).yaw = 90f32.to_radians();
+    sim.app.world_mut().entity_mut(c).insert(Animator::new(set.clone()));
+    sim.seconds(0.5);
+    let main = |sim: &Sim| {
+        let a = sim.app.world().get::<Animator>(c).unwrap();
+        set.sequences[a.main.expect("a main sequence")].name.clone()
+    };
+    let layer = |sim: &Sim, k: usize| {
+        let a = sim.app.world().get::<Animator>(c).unwrap();
+        a.layers.get(k).copied().flatten().map(|l| (set.sequences[l.sequence].name.clone(), l.weight))
+    };
+    assert_eq!(main(&sim), "Idle_lower");
+    // The drawn AK-47 picks the AK upper body at full weight.
+    assert_eq!(layer(&sim, 0), Some(("Idle_Upper_AK".into(), 1.0)));
+
+    sim.intent(c).move_axis = Vec2::Y;
+    sim.seconds(1.0);
+    let speed = sim.velocity(c).length() / 0.0254;
+    assert!(speed > 175.0, "running at {speed} u/s");
+    assert_eq!(main(&sim), "Run_lower");
+    let (name, w) = layer(&sim, 2).expect("moving upper body");
+    assert_eq!(name, "Run_Upper_AK");
+    assert!(w > 0.8, "run upper weight {w}");
+    // Running straight ahead: move_x ~1 (stored ~1), move_y 0 (stored 0.5).
+    let a = sim.app.world().get::<Animator>(c).unwrap();
+    let (mx, my) = (set.param("move_x").unwrap(), set.param("move_y").unwrap());
+    assert!(a.params[mx] > 0.9 && (a.params[my] - 0.5).abs() < 0.02, "{:?}", a.params);
+
+    sim.intent(c).walk = true;
+    sim.seconds(1.0);
+    assert_eq!(main(&sim), "walk_lower");
+    sim.intent(c).walk = false;
+    sim.intent(c).crouch = true;
+    sim.seconds(1.0);
+    assert_eq!(main(&sim), "Crouch_walk_lower");
+    sim.intent(c).move_axis = Vec2::ZERO;
+    sim.seconds(1.0);
+    assert_eq!(main(&sim), "Crouch_Idle_Lower");
+    sim.intent(c).crouch = false;
+    sim.seconds(1.0);
+
+    // Long after the last feet turn, a turn in place brings the feet
+    // along; within 3 s of it a 60 degree turn only twists the torso.
+    let yaw = sim.intent(c).yaw + 30f32.to_radians();
+    sim.intent(c).yaw = yaw;
+    sim.seconds(0.5);
+    let feet = sim.app.world().get::<PlayerAnim>(c).unwrap().feet_yaw;
+    assert!((feet - 120.0).abs() < 0.01, "feet at {feet}");
+    sim.intent(c).yaw = yaw + 60f32.to_radians();
+    sim.seconds(0.2);
+    let state = sim.app.world().get::<PlayerAnim>(c).unwrap();
+    assert!((state.feet_yaw - feet).abs() < 0.01, "feet turned {} -> {}", feet, state.feet_yaw);
+    let a = sim.app.world().get::<Animator>(c).unwrap();
+    let body_yaw = set.param("body_yaw").unwrap();
+    assert!((a.params[body_yaw] - set.params[body_yaw].encode(60.0)).abs() < 0.01);
+    // After 3 s standing still they face the eyes again.
+    sim.seconds(3.5);
+    let state = sim.app.world().get::<PlayerAnim>(c).unwrap();
+    assert!((state.feet_yaw - (feet + 60.0)).abs() < 0.5, "feet at {}", state.feet_yaw);
+}

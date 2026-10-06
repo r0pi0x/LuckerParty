@@ -12,6 +12,7 @@ pub mod mount;
 pub mod movement;
 pub mod nav;
 pub mod overlays;
+pub mod player_anim;
 pub mod phy;
 pub mod props;
 pub mod pushaway;

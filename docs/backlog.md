@@ -27,8 +27,8 @@ framework, knife, AK-47, HUD, deathmatch and a first bot are in.
   questions 2–4), checking corners, teamwork.
 - Collaterals (bullets through players) and wall penetration: being
   measured (M13).
-- Character animation (run, crouch, aim) for bodies and hitboxes; view
-  and world models.
+- Hitboxes that follow the animated bodies; jump/reload/death animations;
+  view and world weapon models.
 - Impact decals, tracers, muzzle flash; explosion impulses.
 
 ## 3. Sound, remaining
