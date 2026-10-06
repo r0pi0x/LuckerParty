@@ -294,17 +294,25 @@ pub fn convert(bsp: &Bsp, bytes: &[u8], name: &str) -> (MapData, LightmapLayout)
     // func_brush) follow, placed by their origin and angles.
     let world = bsp.models().next().expect("BSP has no world model");
     let entities = brush_entities(bsp);
+    // Movers (doors, buttons, platforms) keep their faces local to their
+    // own node (`MapMesh::entity`), so the logic layer can move them.
     let faces = world
         .faces()
-        .map(|f| (f, None))
+        .map(|f| (f, None, None))
         .chain(entities.iter().filter(|e| e.drawn).flat_map(|e| {
             bsp.models()
                 .nth(e.model)
                 .into_iter()
                 .flat_map(|m| m.faces().collect::<Vec<_>>())
-                .map(|f| (f, Some(e.transform)))
+                .map(|f| {
+                    if e.mover {
+                        (f, Some((Quat::IDENTITY, Vec3::ZERO)), Some(e.entity))
+                    } else {
+                        (f, Some(e.transform), None)
+                    }
+                })
         }));
-    for (face, transform) in faces {
+    for (face, transform, mover) in faces {
         let in_world = transform.is_none();
         // Source-space position of a face vertex (brush entity models are
         // stored around their origin).
@@ -327,7 +335,7 @@ pub fn convert(bsp: &Bsp, bytes: &[u8], name: &str) -> (MapData, LightmapLayout)
                 z: pts.iter().map(|p| p.z).sum::<f32>() / n,
             }
         };
-        let skybox = bounds.as_ref().is_some_and(|b| !b.contains(centre));
+        let skybox = mover.is_none() && bounds.as_ref().is_some_and(|b| !b.contains(centre));
         let tex = face.texture();
         let flags = tex.flags;
         if flags.intersects(NOT_DRAWN) && flags.intersects(NOT_SOLID) {
@@ -377,16 +385,18 @@ pub fn convert(bsp: &Bsp, bytes: &[u8], name: &str) -> (MapData, LightmapLayout)
             *face_slots.last_mut().unwrap() = slot;
         }
         let material = tex.name().to_lowercase();
-        // Meshes are per material and per part (world or 3D skybox).
-        let key = if skybox {
-            format!("{material}\u{1}skybox")
-        } else {
-            material.clone()
+        // Meshes are per material and per part (world, 3D skybox, or a
+        // mover entity).
+        let key = match mover {
+            Some(i) => format!("{material}\u{2}{i:06}"),
+            None if skybox => format!("{material}\u{1}skybox"),
+            None => material.clone(),
         };
         let mesh = by_material.entry(key.clone()).or_insert_with(|| MapMesh {
             material: material.clone(),
             skybox,
             color: tex.debug_color(),
+            entity: mover,
             ..default()
         });
         let lm = pending_lm.entry(key).or_default();
@@ -413,7 +423,8 @@ pub fn convert(bsp: &Bsp, bytes: &[u8], name: &str) -> (MapData, LightmapLayout)
     data.collision_hulls = brush_hulls(bsp, &leaves);
     data.collision_brushes = collision_brushes(bsp, &leaves);
     data.water = water_volumes(bsp, &leaves);
-    data.hurt = hurt_volumes(bsp, &leaves);
+    data.entities = map_entities(bsp, &leaves);
+    data.entity_scale = METERS_PER_UNIT;
 
     let (lightmap, placements, white) = atlas.build();
     for (material, mesh) in by_material.iter_mut() {
@@ -471,7 +482,23 @@ pub struct BrushEntity {
     /// Players collide with it (doors and breakables as they spawn: closed,
     /// unbroken).
     pub solid: bool,
+    /// Index in the entity lump.
+    pub entity: usize,
+    /// Moves or toggles (`MOVERS`): drawn and solid through its own node,
+    /// not baked into the world.
+    pub mover: bool,
 }
+
+/// Brush entity classes the logic layer moves or toggles.
+pub const MOVERS: &[&str] = &[
+    "func_door",
+    "func_door_rotating",
+    "func_button",
+    "func_movelinear",
+    "func_rotating",
+    "func_tracktrain",
+    "func_brush",
+];
 
 /// Brush entities that render or collide. Volumes (triggers, buy zones,
 /// bomb sites, area portals, occluders, precipitation, dust) do neither.
@@ -497,8 +524,18 @@ pub fn brush_entities(bsp: &Bsp) -> Vec<BrushEntity> {
     ];
     // Never solid to players.
     const NOT_SOLID: &[&str] = &["func_illusionary", "func_lod"];
+    // Names of entities that move, for brushes parented to them.
+    let moving_names: std::collections::BTreeSet<String> = bsp
+        .entities
+        .iter()
+        .filter(|e| {
+            e.prop("classname").is_some_and(|c| MOVERS.contains(&c))
+                && e.prop("parentname").is_none_or(|p| p.is_empty())
+        })
+        .filter_map(|e| e.prop("targetname").map(|n| n.to_ascii_lowercase()))
+        .collect();
     let mut out = Vec::new();
-    for ent in bsp.entities.iter() {
+    for (index, ent) in bsp.entities.iter().enumerate() {
         let Some(class) = ent.prop("classname") else { continue };
         let Some(model) = ent
             .prop("model")
@@ -525,7 +562,16 @@ pub fn brush_entities(bsp: &Bsp) -> Vec<BrushEntity> {
             * Quat::from_rotation_x(angles.z.to_radians());
         let render_mode = num("rendermode").unwrap_or(0.0) as i32;
         let start_disabled = num("StartDisabled").unwrap_or(0.0) != 0.0;
-        let drawn = render_mode != 10 && !(class == "func_brush" && start_disabled);
+        // Movers, and brushes parented to one (they follow it: de_nuke's
+        // door windows). Movers parented to anything else stay put for now.
+        let parent = ent.prop("parentname").filter(|p| !p.is_empty());
+        let mover = match parent {
+            None => MOVERS.contains(&class),
+            Some(p) => moving_names.contains(&p.to_ascii_lowercase()),
+        };
+        // A disabled func_brush that can toggle is drawn through its node
+        // (the logic layer hides it).
+        let drawn = render_mode != 10 && !(class == "func_brush" && start_disabled && !mover);
         let solid = !NOT_SOLID.contains(&class)
             // func_brush "Solidity": 0 toggle (with the brush), 1 never, 2 always.
             && !(class == "func_brush" && (num("Solidity") == Some(1.0) || (start_disabled && num("Solidity") != Some(2.0))))
@@ -536,6 +582,8 @@ pub fn brush_entities(bsp: &Bsp) -> Vec<BrushEntity> {
             transform: (rotation, origin),
             drawn,
             solid,
+            entity: index,
+            mover,
         });
     }
     out
@@ -805,7 +853,7 @@ pub fn collision_brushes(bsp: &Bsp, leaves: &[RawLeaf]) -> Vec<crate::map::MapBr
 pub fn entity_hulls(bsp: &Bsp, leaves: &[RawLeaf]) -> Vec<(usize, Vec<[f32; 3]>, Vec<(Vec3, f32)>)> {
     brush_entities(bsp)
         .into_iter()
-        .filter(|e| e.solid)
+        .filter(|e| e.solid && !e.mover)
         .flat_map(|e| {
             brush_volumes_in(
                 bsp,
@@ -887,6 +935,88 @@ fn brush_volumes_in(
     transform: Option<(Quat, Vec3)>,
     triggers: bool,
 ) -> Vec<(usize, Vec<[f32; 3]>, Vec<(Vec3, f32)>)> {
+    brush_volumes_source(bsp, mask, brushes, transform, triggers)
+        .into_iter()
+        .map(|(index, points, planes)| {
+            // Source plane n.p = d becomes n'.p' = d * meters-per-unit,
+            // with n' the same rotation of n as positions get.
+            let engine_planes = planes
+                .iter()
+                .map(|(n, d)| {
+                    (
+                        to_engine_dir(vbsp::Vector { x: n.x, y: n.y, z: n.z }),
+                        d * METERS_PER_UNIT,
+                    )
+                })
+                .collect();
+            (
+                index,
+                points
+                    .iter()
+                    .map(|p| to_engine(vbsp::Vector { x: p.x, y: p.y, z: p.z }).to_array())
+                    .collect(),
+                engine_planes,
+            )
+        })
+        .collect()
+}
+
+/// The map's entities for the logic layer (`MapData::entities`): every
+/// entity's keyvalues in lump order, with the brush volumes of brush
+/// entities in entity space (Source units), local to the entity: trigger
+/// volumes for triggers, player-solid brushes for movers.
+pub fn map_entities(bsp: &Bsp, leaves: &[RawLeaf]) -> Vec<crate::map::MapEntity> {
+    let movers: std::collections::BTreeSet<usize> =
+        brush_entities(bsp).into_iter().filter(|e| e.mover).map(|e| e.entity).collect();
+    bsp.entities
+        .iter()
+        .enumerate()
+        .map(|(index, ent)| {
+            let keyvalues: Vec<(String, String)> =
+                ent.properties().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            let class = ent.prop("classname").unwrap_or("");
+            let model = ent
+                .prop("model")
+                .and_then(|m| m.strip_prefix('*'))
+                .and_then(|m| m.parse::<usize>().ok())
+                .filter(|m| *m > 0);
+            let trigger = class.starts_with("trigger_");
+            let mover = movers.contains(&index);
+            let hulls = match model {
+                Some(model) if trigger || mover => brush_volumes_source(
+                    bsp,
+                    if trigger {
+                        BrushFlags::all()
+                    } else {
+                        PLAYER_SOLID.union(BrushFlags::LADDER)
+                    },
+                    model_brushes(bsp, leaves, model),
+                    Some((Quat::IDENTITY, Vec3::ZERO)),
+                    trigger,
+                )
+                .into_iter()
+                .map(|(_, points, planes)| crate::map::MapHull { planes, points })
+                .collect(),
+                _ => Vec::new(),
+            };
+            crate::map::MapEntity {
+                keyvalues,
+                hulls,
+                mover,
+            }
+        })
+        .collect()
+}
+
+/// `brush_volumes_in` in Source space (units, Z up): corner points and
+/// planes.
+fn brush_volumes_source(
+    bsp: &Bsp,
+    mask: BrushFlags,
+    brushes: std::collections::BTreeSet<usize>,
+    transform: Option<(Quat, Vec3)>,
+    triggers: bool,
+) -> Vec<(usize, Vec<Vec3>, Vec<(Vec3, f32)>)> {
     const EPS: f32 = 0.01;
     // Plane index (either side) -> corners of displacement base faces on it.
     let mut disp_bases: std::collections::HashMap<u16, Vec<Vec<Vec3>>> = Default::default();
@@ -974,84 +1104,7 @@ fn brush_volumes_in(
             }
         }
         if points.len() >= 4 {
-            // Source plane n.p = d becomes n'.p' = d * meters-per-unit,
-            // with n' the same rotation of n as positions get.
-            let engine_planes = planes
-                .iter()
-                .map(|(n, d)| {
-                    (
-                        to_engine_dir(vbsp::Vector { x: n.x, y: n.y, z: n.z }),
-                        d * METERS_PER_UNIT,
-                    )
-                })
-                .collect();
-            out.push((
-                index,
-                points
-                    .iter()
-                    .map(|p| to_engine(vbsp::Vector { x: p.x, y: p.y, z: p.z }).to_array())
-                    .collect(),
-                engine_planes,
-            ));
-        }
-    }
-    out
-}
-
-/// `trigger_hurt` entities (specs/cs_source/fall_damage.md, "trigger_hurt"):
-/// their brush model's brushes where the entity places them, and damage per
-/// second. Disabled ones (StartDisabled 1, which only map logic enables)
-/// and ones that don't hurt players (spawnflags without "clients", when
-/// not 0) are left out.
-pub fn hurt_volumes(bsp: &Bsp, leaves: &[RawLeaf]) -> Vec<crate::map::MapHurtVolume> {
-    let mut out = Vec::new();
-    for ent in bsp.entities.iter() {
-        if ent.prop("classname") != Some("trigger_hurt") {
-            continue;
-        }
-        let num = |k: &'static str| ent.prop(k).and_then(|v| v.trim().parse::<f32>().ok());
-        let flags = num("spawnflags").unwrap_or(0.0) as u32;
-        if num("StartDisabled").unwrap_or(0.0) != 0.0 || (flags != 0 && flags & 1 == 0) {
-            continue;
-        }
-        let Some(model) = ent
-            .prop("model")
-            .and_then(|m| m.strip_prefix('*'))
-            .and_then(|m| m.parse::<usize>().ok())
-        else {
-            continue;
-        };
-        let damage_model = num("damagemodel").unwrap_or(0.0);
-        if damage_model != 0.0 {
-            warn!("trigger_hurt with damagemodel {damage_model} (doubling) hurts at a constant rate here");
-        }
-        // Placed like other brush entity models: relative to the origin.
-        let origin = ent
-            .prop("origin")
-            .and_then(parse_vector)
-            .map_or(Vec3::ZERO, |o| Vec3::new(o.x, o.y, o.z));
-        let angles = ent
-            .prop("angles")
-            .and_then(parse_vector)
-            .map_or(Vec3::ZERO, |a| Vec3::new(a.x, a.y, a.z));
-        let rotation = Quat::from_rotation_z(angles.y.to_radians())
-            * Quat::from_rotation_y(angles.x.to_radians())
-            * Quat::from_rotation_x(angles.z.to_radians());
-        let brushes: Vec<crate::map::MapBrush> = brush_volumes_in(
-            bsp,
-            BrushFlags::all(),
-            model_brushes(bsp, leaves, model),
-            Some((rotation, origin)),
-            true,
-        )
-        .into_iter()
-        .map(|(_, points, planes)| map_brush(points, planes, false))
-        .collect();
-        if !brushes.is_empty() {
-            out.push(crate::map::MapHurtVolume {
-                brushes,
-                damage_per_second: num("damage").unwrap_or(10.0),
-            });
+            out.push((index, points, planes));
         }
     }
     out

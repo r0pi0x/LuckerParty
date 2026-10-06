@@ -189,7 +189,7 @@ impl Receivers {
         for m in data
             .meshes
             .iter()
-            .filter(|m| !m.skybox && !m.material.starts_with("decal:"))
+            .filter(|m| !m.skybox && m.entity.is_none() && !m.material.starts_with("decal:"))
         {
             for t in m.indices.as_chunks::<3>().0 {
                 tris.push(t.map(|i| Vec3::from(m.positions[i as usize])));

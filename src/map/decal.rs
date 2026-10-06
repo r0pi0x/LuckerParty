@@ -129,7 +129,9 @@ impl TriSet {
     pub(super) fn new(meshes: &[MapMesh]) -> Self {
         let mut out = Self::default();
         for m in meshes {
+            // Mover meshes are local to their entity (not world space).
             if m.skybox
+                || m.entity.is_some()
                 || m.unlit
                 || m.material.starts_with("decal:")
                 || matches!(m.alpha, super::MapAlpha::Blend | super::MapAlpha::Add)

@@ -129,29 +129,42 @@ fn old_maps_light_props_with_ambient_cubes() {
 
 /// Brush entities draw and collide where they stand: cs_office's first
 /// window (func_breakable_surf, model *1, Source x -628..-508 at y -344..-340,
-/// z -148..-52) and its sliding door (func_door *7, stored around its origin
-/// 584 -1872 -252).
+/// z -148..-52), baked into the world; its sliding door (func_door *7,
+/// stored around its origin 584 -1872 -252) is a mover: drawn and solid
+/// through its own node, so its meshes and volumes are local to it.
 #[test]
 fn brush_entities_draw_and_collide() {
     use bevy::math::Vec3;
     let Some(map) = load("cs_office") else { return };
     let src = |x: f32, y: f32, z: f32| Vec3::new(x, z, -y) * 0.0254;
-    for (what, at) in [
-        ("window", src(-568.0, -342.0, -100.0)),
-        ("door", src(584.0, -1872.0, -252.0)),
-    ] {
-        let drawn = map
-            .meshes
-            .iter()
-            .flat_map(|m| m.positions.iter())
-            .any(|p| Vec3::from(*p).distance(at) < 100.0 * 0.0254);
-        assert!(drawn, "{what} not drawn");
-        let solid = map
-            .collision_brushes
-            .iter()
-            .any(|b| (b.min - Vec3::splat(0.05)).cmple(at).all() && (b.max + Vec3::splat(0.05)).cmpge(at).all());
-        assert!(solid, "{what} not solid");
-    }
+    let at = src(-568.0, -342.0, -100.0);
+    let drawn = map
+        .meshes
+        .iter()
+        .filter(|m| m.entity.is_none())
+        .flat_map(|m| m.positions.iter())
+        .any(|p| Vec3::from(*p).distance(at) < 100.0 * 0.0254);
+    assert!(drawn, "window not drawn");
+    let solid = map
+        .collision_brushes
+        .iter()
+        .any(|b| (b.min - Vec3::splat(0.05)).cmple(at).all() && (b.max + Vec3::splat(0.05)).cmpge(at).all());
+    assert!(solid, "window not solid");
+
+    let (index, door) = map
+        .entities
+        .iter()
+        .enumerate()
+        .find(|(_, e)| e.get("model") == Some("*7"))
+        .expect("cs_office's door");
+    assert_eq!(door.classname(), "func_door");
+    assert!(door.mover, "the door moves");
+    assert_eq!(door.origin(), Vec3::new(584.0, -1872.0, -252.0));
+    assert!(!door.hulls.is_empty(), "door has volumes");
+    // Local: around the origin, within the door's size.
+    let far = door.hulls.iter().flat_map(|h| &h.points).map(|p| p.length()).fold(0.0, f32::max);
+    assert!(far < 200.0, "door volume reaches {far} units from its origin");
+    assert!(map.meshes.iter().any(|m| m.entity == Some(index)), "door drawn on its node");
 }
 
 /// `$additive` materials (de_nuke's light glows) add to what's behind them

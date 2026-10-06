@@ -18,13 +18,13 @@ use crate::core::{SpawnPoint, Team};
 pub use crate::core::{
     MapBrush, MapBrushCollider, MapBrushes, MapTerrain, MapTerrainCollider, MapWater, MapWaterVolume, PropSurface,
 };
-pub use hurt::{MapHurt, MapHurtVolume};
 
 pub mod anim;
 pub mod decal;
+pub mod entities;
+pub use entities::{MapBrushEntity, MapEntities, MapEntity, MapHull};
 mod dust;
 pub mod hud;
-mod hurt;
 pub mod loose;
 pub mod nav;
 pub mod particles;
@@ -205,6 +205,10 @@ pub struct MapMesh {
     pub surface: Option<String>,
     /// Reflection of a baked cubemap (Source `$envmap`).
     pub envmap: Option<MapEnvmap>,
+    /// Part of a mover brush entity (index into `MapData::entities`):
+    /// positions are relative to that entity's origin and unrotated
+    /// (engine axes), drawn under its `MapBrushEntity` node.
+    pub entity: Option<usize>,
     /// Colour multiplier (linear) on the texture (Source `$color`/`$color2`).
     pub tint: Option<[f32; 3]>,
 }
@@ -836,8 +840,12 @@ pub struct MapData {
     pub sky_vis: Option<MapSkyVis>,
     /// Water and slime volumes.
     pub water: Vec<MapWaterVolume>,
-    /// Volumes that hurt characters inside them (Source `trigger_hurt`).
-    pub hurt: Vec<MapHurtVolume>,
+    /// The map's entities (keyvalues, brush volumes) for the logic layer,
+    /// in the map's own order.
+    pub entities: Vec<MapEntity>,
+    /// Meters per entity-space unit (`entities` module docs); 0 when the
+    /// map has no entities.
+    pub entity_scale: f32,
     /// Dynamic prop shadows, when the game draws them.
     pub shadows: Option<MapShadows>,
     /// Gravity for physics bodies, m/s^2 (downward), when the game sets it.
@@ -1297,7 +1305,6 @@ impl Plugin for MapPlugin {
                     .before(crate::core::SimSet::Movement),
             )
             .add_systems(FixedUpdate, fall_out_of_map.after(crate::core::SimSet::Movement))
-            .add_systems(FixedUpdate, hurt::hurt_characters.after(crate::core::SimSet::Movement))
             .add_systems(
                 Update,
                 (
@@ -1429,6 +1436,49 @@ fn spawn_map(
             Collider::compound(hulls),
             Transform::default(),
         ));
+    }
+
+    // Mover brush entities: a node each (placed by origin and angles), with
+    // a kinematic collider; their meshes are spawned under it below.
+    let entity_nodes: Vec<Option<Entity>> = data
+        .entities
+        .iter()
+        .enumerate()
+        .map(|(i, e)| {
+            if !e.mover {
+                return None;
+            }
+            let scale = data.entity_scale;
+            let rotation = entities::entity_rotation(e.angles());
+            let hulls: Vec<_> = e
+                .hulls
+                .iter()
+                .filter_map(|h| {
+                    Collider::convex_hull(h.points.iter().map(|p| entities::entity_to_engine(*p, scale)).collect())
+                })
+                .map(|c| (Vec3::ZERO, Quat::IDENTITY, c))
+                .collect();
+            let mut node = commands.spawn((
+                Name::new(format!("Brush entity {i} ({})", e.classname())),
+                MapPart,
+                MapBrushEntity(i),
+                Transform::from_translation(entities::entity_to_engine(e.origin(), scale))
+                    .with_rotation(entities::rotation_to_engine(rotation)),
+                Visibility::default(),
+                ChildOf(root),
+            ));
+            if !hulls.is_empty() {
+                node.insert((MapBrushCollider, RigidBody::Kinematic, Collider::compound(hulls)));
+            }
+            Some(node.id())
+        })
+        .collect();
+    let parent_of = |m: &MapMesh| m.entity.and_then(|i| entity_nodes.get(i).copied().flatten()).unwrap_or(root);
+    if !data.entities.is_empty() {
+        commands.insert_resource(MapEntities {
+            entities: Arc::new(data.entities.clone()),
+            scale: data.entity_scale,
+        });
     }
 
     // Prop models: one collider per model (shared by its placements), and
@@ -1690,7 +1740,7 @@ fn spawn_map(
                     })),
                     MeshMaterial3d(world_materials.add(material)),
                     Transform::default(),
-                    ChildOf(root),
+                    ChildOf(parent_of(m)),
                 ));
                 continue;
             }
@@ -1701,7 +1751,7 @@ fn spawn_map(
                 Mesh3d(meshes.add(build_mesh(m, lit.is_some()))),
                 MeshMaterial3d(materials.add(build_material(m, &textures, view, data.look.light_scale))),
                 Transform::default(),
-                ChildOf(root),
+                ChildOf(parent_of(m)),
             ));
             if let Some(image) = lit {
                 part.insert(bevy::pbr::Lightmap {
@@ -2111,7 +2161,6 @@ fn spawn_map(
         }
         commands.insert_resource(MapWater(data.water.clone()));
     }
-    commands.insert_resource(MapHurt::new(data.hurt.clone()));
 
     commands.spawn((
         Name::new("Sun"),
@@ -2199,7 +2248,7 @@ pub fn unload_map(world: &mut World) {
     world.remove_resource::<MapBrushes>();
     world.remove_resource::<KillHeight>();
     world.remove_resource::<MapWater>();
-    world.remove_resource::<MapHurt>();
+    world.remove_resource::<MapEntities>();
     world.remove_resource::<MapTerrain>();
     world.insert_resource(Gravity::default());
     soundscape::reset(world);

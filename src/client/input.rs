@@ -236,6 +236,8 @@ fn write_local_intent(
     intent.secondary = mouse.pressed(MouseButton::Right);
     intent.reload = keys.pressed(KeyCode::KeyR);
     intent.last_weapon = keys.pressed(KeyCode::KeyQ);
+    // CS:S binds E to +use.
+    intent.use_key = keys.pressed(KeyCode::KeyE);
     const SLOTS: [KeyCode; 5] = [
         KeyCode::Digit1,
         KeyCode::Digit2,
@@ -262,6 +264,7 @@ fn apply_held(intent: &mut Intent, wheel: &mut WheelJump, h: &super::console::He
     intent.fire |= h.attack;
     intent.secondary |= h.attack2;
     intent.reload |= h.reload;
+    intent.use_key |= h.use_key;
 }
 
 #[cfg(test)]

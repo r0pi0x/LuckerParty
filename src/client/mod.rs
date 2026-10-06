@@ -12,6 +12,7 @@ pub mod hud_sprites;
 pub mod hud;
 pub mod input;
 pub mod radar;
+pub mod game_text;
 pub mod scoreboard;
 pub mod view;
 
@@ -174,6 +175,7 @@ impl Plugin for ClientPlugin {
                 game_hud::GameHudPlugin,
                 hud_sprites::HudSpritesPlugin,
                 scoreboard::ScoreboardPlugin,
+                game_text::GameTextPlugin,
                 radar::RadarPlugin,
                 effects::ShotEffectsPlugin,
                 view::ViewPlugin,
