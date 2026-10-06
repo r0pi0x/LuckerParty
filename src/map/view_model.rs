@@ -127,6 +127,7 @@ pub(super) fn draw_view_models(
         (With<ViewModelAnchor>, Without<ViewModelCamera>),
     >,
     owners: Query<&ViewAnimator>,
+    third_person: Option<Res<super::ShowLocalBody>>,
     mut cameras: Query<(Entity, &mut Camera, &mut Projection, Option<&Children>), With<ViewModelCamera>>,
     bodies: Query<&ViewModelBody>,
     mut joints: Query<&mut Transform, With<BodyJoint>>,
@@ -135,7 +136,10 @@ pub(super) fn draw_view_models(
     let now = time.elapsed_secs_f64();
     for (anchor, parent, anchor_camera, children, tonemapping) in &anchors {
         let state = owners.get(parent.parent()).ok();
+        // In third person the own body holds the weapon; no view model.
+        let hidden = third_person.as_ref().is_some_and(|t| t.0);
         let shown = state
+            .filter(|_| !hidden)
             .and_then(|s| s.key.as_deref())
             .and_then(|k| assets.0.get(k).map(|a| (k, a)));
         let camera = children.into_iter().flatten().find(|c| cameras.contains(**c)).copied();

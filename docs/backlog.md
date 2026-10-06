@@ -8,8 +8,7 @@ plan when work starts; delete them when done.
 
 ## 1. Playtest essentials
 
-A (settings, health bars, third person) is done. C is in progress in an
-agent worktree. B, D and E were paused on 2026-10-06 to free the machine;
+A (settings, health bars, third person) and C (view models) are done. B, D and E were paused on 2026-10-06 to free the machine;
 their partial work is in uncommitted agent worktrees under
 `.claude/worktrees/` (B: agent-abc7f16e740c6aafe, D: agent-a052e118eeb8d4c8d).
 
