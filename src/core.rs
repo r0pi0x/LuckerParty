@@ -108,6 +108,45 @@ pub struct Damage {
     pub hitgroup: Hitgroup,
 }
 
+/// An oriented box on a character's body that shots test (Source
+/// hitboxes), in the character's local space: feet at the origin, Y up,
+/// facing -Z (yaw 0), meters.
+#[derive(Clone, Copy, Debug, PartialEq, Reflect)]
+pub struct Hitbox {
+    pub center: Vec3,
+    pub half: Vec3,
+    pub rotation: Quat,
+    pub group: Hitgroup,
+}
+
+impl Hitbox {
+    /// Where a ray (local space) enters the box, as a distance along `dir`
+    /// (unit), if it does.
+    pub fn ray_entry(&self, origin: Vec3, dir: Vec3) -> Option<f32> {
+        let inv = self.rotation.inverse();
+        let o = inv * (origin - self.center);
+        let d = inv * dir;
+        let (mut enter, mut leave) = (f32::MIN, f32::MAX);
+        for i in 0..3 {
+            if d[i].abs() < 1e-9 {
+                if o[i].abs() > self.half[i] {
+                    return None;
+                }
+                continue;
+            }
+            let (a, b) = ((-self.half[i] - o[i]) / d[i], (self.half[i] - o[i]) / d[i]);
+            enter = enter.max(a.min(b));
+            leave = leave.min(a.max(b));
+        }
+        (enter <= leave && leave >= 0.0).then_some(enter.max(0.0))
+    }
+}
+
+/// A character's hitboxes (see `Hitbox`).
+#[derive(Component, Clone, Debug, Default, Reflect)]
+#[reflect(Component)]
+pub struct Hitboxes(pub Vec<Hitbox>);
+
 /// Takes no damage (the `god` command).
 #[derive(Component, Reflect, Default, Clone, Copy, Debug)]
 #[reflect(Component)]
@@ -184,6 +223,7 @@ impl Plugin for CorePlugin {
             .register_type::<Health>()
             .register_type::<Team>()
             .register_type::<MaxSpeed>()
+            .register_type::<Hitboxes>()
             .add_message::<Damage>()
             .add_message::<Died>()
             .add_systems(FixedUpdate, apply_damage.after(SimSet::Weapons))

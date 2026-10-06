@@ -7,7 +7,7 @@ use bevy::prelude::*;
 
 use super::{Armor, DamageEffect, Hitscan, SpreadShape, Swing, WeaponEvent, WeaponEventKind};
 use crate::{
-    core::{Damage, Health, Hitgroup, Intent},
+    core::{Damage, Health, Hitboxes, Hitgroup, Intent},
     map::PlaySound,
 };
 
@@ -18,6 +18,7 @@ pub(super) struct Target {
     aabb: Option<&'static ColliderAabb>,
     health: Option<&'static Health>,
     intent: Option<&'static Intent>,
+    hitboxes: Option<&'static Hitboxes>,
 }
 
 /// The world access deliveries need.
@@ -50,6 +51,8 @@ struct Hit {
     dir: Vec3,
     distance: f32,
     normal: Vec3,
+    /// The hitbox's group, when the target has hitboxes.
+    group: Option<Hitgroup>,
 }
 
 impl Shot<'_, '_, '_> {
@@ -62,15 +65,60 @@ impl Shot<'_, '_, '_> {
         self.w.colliders.get(collider).map_or(collider, |c| c.body)
     }
 
+    /// The first thing along the ray. Characters with hitboxes are hit
+    /// only where a hitbox is (shots pass through the rest of their hull,
+    /// and hitboxes poking out of it still count, as in Source); the
+    /// nearest box entered decides the hitgroup.
     fn trace(&self, dir: Dir3, range: f32) -> Option<Hit> {
-        let hit = self.w.spatial.cast_ray(self.eye, dir, range, true, &self.filter())?;
-        Some(Hit {
-            entity: self.body(hit.entity),
-            point: self.eye + *dir * hit.distance,
-            dir: *dir,
-            distance: hit.distance,
-            normal: hit.normal,
-        })
+        let boxed: Vec<Entity> = self
+            .w
+            .targets
+            .iter()
+            .filter(|t| t.hitboxes.is_some() && t.entity != self.owner)
+            .map(|t| t.entity)
+            .collect();
+        let filter =
+            SpatialQueryFilter::from_excluded_entities(std::iter::once(self.owner).chain(boxed.iter().copied()));
+        let mut best = self
+            .w
+            .spatial
+            .cast_ray(self.eye, dir, range, true, &filter)
+            .map(|hit| Hit {
+                entity: self.body(hit.entity),
+                point: self.eye + *dir * hit.distance,
+                dir: *dir,
+                distance: hit.distance,
+                normal: hit.normal,
+                group: None,
+            });
+        for e in boxed {
+            let Ok(t) = self.w.targets.get(e) else { continue };
+            let Some(boxes) = t.hitboxes else { continue };
+            // Into the character's frame: feet at the origin, facing -Z.
+            let feet = t
+                .aabb
+                .map_or(t.transform.translation, |b| t.transform.translation.with_y(b.min.y));
+            let turn = t.intent.map_or(Quat::IDENTITY, |i| i.yaw_rotation()).inverse();
+            let (o, d) = (turn * (self.eye - feet), turn * *dir);
+            let limit = best.as_ref().map_or(range, |b| b.distance);
+            let nearest = boxes
+                .0
+                .iter()
+                .filter_map(|b| Some((b.ray_entry(o, d)?, b.group)))
+                .filter(|(t, _)| *t < limit)
+                .min_by(|a, b| a.0.total_cmp(&b.0));
+            if let Some((distance, group)) = nearest {
+                best = Some(Hit {
+                    entity: e,
+                    point: self.eye + *dir * distance,
+                    dir: *dir,
+                    distance,
+                    normal: -*dir,
+                    group: Some(group),
+                });
+            }
+        }
+        best
     }
 
     /// Fire every pellet of one shot.
@@ -112,7 +160,9 @@ impl Shot<'_, '_, '_> {
             if t.health.is_none() {
                 continue;
             }
-            let group = t.aabb.map_or(Hitgroup::Generic, |b| hitgroup_at(b, hit.point));
+            let group = hit
+                .group
+                .unwrap_or_else(|| t.aabb.map_or(Hitgroup::Generic, |b| hitgroup_at(b, hit.point)));
             let amount = effect.amount
                 * falloff(effect.falloff, effect.falloff_step, hit.distance)
                 * effect.hitgroups.get(group);
@@ -214,6 +264,7 @@ impl Shot<'_, '_, '_> {
                         dir: forward,
                         distance: h.distance,
                         normal: -h.normal1,
+                        group: None,
                     });
                 }
             }

@@ -42,6 +42,76 @@ fn load_model(
     Ok((vmdl::Model::from_parts(mdl, vtx, vvd), prop_data))
 }
 
+/// A player model as a character body (specs/cs_source/weapons.md 5): its
+/// meshes and first hitbox set in the reference pose, in the character's
+/// local space (feet at the origin, facing -Z, meters).
+pub fn load_character(
+    materials: &mut MaterialLoader,
+    path: &str,
+    team: Option<crate::core::Team>,
+) -> Result<crate::map::MapCharacterModel, String> {
+    use crate::core::{Hitbox, Hitgroup};
+    let (model, _) = load_model(materials, path)?;
+    let bytes = materials.read(path).ok_or_else(|| format!("{path}: not found"))?;
+    let mdl = vmdl::mdl::Mdl::read(&bytes).map_err(|e| format!("{path}: {e}"))?;
+    // Source models face +X; characters face -Z at yaw 0.
+    let face = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+    let mut body = convert_model_in(&model, 0, materials, false);
+    for mesh in &mut body.meshes {
+        for p in &mut mesh.positions {
+            *p = (face * Vec3::from(*p)).to_array();
+        }
+        for n in &mut mesh.normals {
+            *n = (face * Vec3::from(*n)).to_array();
+        }
+    }
+    // Bones' reference pose in model space (Source units, Z up).
+    let mut pose: Vec<(Quat, Vec3)> = Vec::with_capacity(mdl.bones.len());
+    for b in &mdl.bones {
+        let q = Quat::from_xyzw(b.quaternion.x, b.quaternion.y, b.quaternion.z, b.quaternion.w);
+        let p = Vec3::new(b.pos.x, b.pos.y, b.pos.z);
+        pose.push(match pose.get(b.parent.max(0) as usize).filter(|_| b.parent >= 0) {
+            Some((pq, pp)) => (*pq * q, *pp + *pq * p),
+            None => (q, p),
+        });
+    }
+    // Source axes to ours (x, z, -y): -90 degrees about X.
+    let axes = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+    let set = mdl.hit_boxes.first().ok_or_else(|| format!("{path}: no hitbox set"))?;
+    let hitboxes = set
+        .boxes
+        .iter()
+        .filter_map(|b| {
+            let (q, p) = *pose.get(b.bone.max(0) as usize)?;
+            let (lo, hi) = (
+                Vec3::new(b.min.x, b.min.y, b.min.z),
+                Vec3::new(b.max.x, b.max.y, b.max.z),
+            );
+            let centre = p + q * ((lo + hi) / 2.0);
+            Some(Hitbox {
+                center: face * axes * centre * METERS_PER_UNIT,
+                half: (hi - lo) / 2.0 * METERS_PER_UNIT,
+                rotation: face * axes * q,
+                group: match b.group {
+                    1 => Hitgroup::Head,
+                    2 => Hitgroup::Chest,
+                    3 => Hitgroup::Stomach,
+                    4 => Hitgroup::LeftArm,
+                    5 => Hitgroup::RightArm,
+                    6 => Hitgroup::LeftLeg,
+                    7 => Hitgroup::RightLeg,
+                    _ => Hitgroup::Generic,
+                },
+            })
+        })
+        .collect();
+    Ok(crate::map::MapCharacterModel {
+        team,
+        model: body,
+        hitboxes,
+    })
+}
+
 /// The `prop_data` block of a model's key values (spec 2.2), lower-case
 /// keys.
 fn prop_data(text: &str) -> Option<HashMap<String, String>> {
@@ -72,6 +142,12 @@ fn v(p: vmdl::Vector) -> vbsp::Vector {
 
 /// Convert one model with one skin into engine-space meshes (meters).
 fn convert_model(model: &vmdl::Model, skin: i32, materials: &mut MaterialLoader) -> MapModel {
+    convert_model_in(model, skin, materials, true)
+}
+
+/// `convert_model`, optionally without vmdl's root/idle transform (player
+/// models' vertices are already in their reference pose's model space).
+fn convert_model_in(model: &vmdl::Model, skin: i32, materials: &mut MaterialLoader, root: bool) -> MapModel {
     let skins: Vec<_> = model.skin_tables().collect();
     let table = skins.get(skin.max(0) as usize).or(skins.first());
     let dirs = model.texture_directories().to_vec();
@@ -97,7 +173,13 @@ fn convert_model(model: &vmdl::Model, skin: i32, materials: &mut MaterialLoader)
         for tri in verts.as_chunks::<3>().0 {
             let p: Vec<Vec3> = tri
                 .iter()
-                .map(|t| to_engine(v(model.apply_root_transform(t.position))))
+                .map(|t| {
+                    to_engine(v(if root {
+                        model.apply_root_transform(t.position)
+                    } else {
+                        t.position
+                    }))
+                })
                 .collect();
             let n: Vec<Vec3> = tri.iter().map(|t| to_engine(v(t.normal)).normalize_or_zero()).collect();
             // Wind counter-clockwise against the vertex normals.

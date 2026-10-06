@@ -48,7 +48,10 @@ Started 2026-10-05, from specs/cs_source/weapons.md. MVP plan items 4–5.
      (repath every second), walk through portal crossing points, jump
      where the next point is above step height.
    - Tests: the spec's dust2 parse, height, area-at and A* cases.
-4. [ ] Hitboxes from the player models instead of height bands; character
-   models.
+4. [x] Hitboxes from the player models (reference pose; shots test every
+   character's boxes along the ray, so boxes outside the hull count and
+   hull-only grazes pass) and the models drawn for other characters
+   (t_phoenix for team 1, ct_urban otherwise). Not yet: animation (bodies
+   and hitboxes stay in the reference pose), crouch, per-player skins.
 5. [ ] View models and world models; impact decals and effects; tracers.
 6. [ ] The other CS:S weapons from the script tables.

@@ -248,6 +248,124 @@ pub struct MapModel {
     pub surfaceprop: Option<String>,
 }
 
+/// A character body from the game: meshes in the character's local space
+/// (feet at the origin, facing -Z) and its hitboxes in the same space.
+#[derive(Clone, Debug)]
+pub struct MapCharacterModel {
+    /// The team it's for; None: anyone without a better match.
+    pub team: Option<Team>,
+    pub model: MapModel,
+    pub hitboxes: Vec<crate::core::Hitbox>,
+}
+
+/// The loaded map's character models (see `MapCharacterModel`).
+#[derive(Resource, Clone)]
+pub struct CharacterModels(pub Arc<Vec<MapCharacterModel>>);
+
+impl CharacterModels {
+    /// The model for `team`: its own, else one without a team, else any.
+    pub fn for_team(&self, team: Option<Team>) -> Option<(usize, &MapCharacterModel)> {
+        let all = self.0.iter().enumerate();
+        all.clone()
+            .find(|(_, m)| team.is_some() && m.team == team)
+            .or_else(|| all.clone().find(|(_, m)| m.team.is_none()))
+            .or_else(|| self.0.iter().enumerate().next())
+    }
+}
+
+/// Meshes and materials of each character model (index as in
+/// `CharacterModels`).
+#[derive(Resource)]
+struct CharacterBodies(Vec<Vec<(Handle<Mesh>, Handle<StandardMaterial>)>>);
+
+/// A character's drawn body: which model, at its feet.
+#[derive(Component)]
+pub struct CharacterBody {
+    model: usize,
+}
+
+/// Give characters other than the local player their team's body (a child
+/// at the feet), and turn bodies with their character's yaw.
+#[allow(clippy::type_complexity)]
+fn attach_bodies(
+    models: Option<Res<CharacterModels>>,
+    bodies: Option<Res<CharacterBodies>>,
+    characters: Query<
+        (
+            Entity,
+            Option<&Team>,
+            &ColliderAabb,
+            &GlobalTransform,
+            Option<&Children>,
+        ),
+        (With<crate::core::Intent>, Without<crate::core::LocalPlayer>),
+    >,
+    existing: Query<&CharacterBody>,
+    mut commands: Commands,
+) {
+    let (Some(models), Some(bodies)) = (models, bodies) else {
+        return;
+    };
+    for (e, team, aabb, at, children) in &characters {
+        let Some((index, _)) = models.for_team(team.copied()) else {
+            continue;
+        };
+        let current = children
+            .into_iter()
+            .flatten()
+            .find_map(|c| existing.get(*c).ok().map(|b| (*c, b.model)));
+        match current {
+            Some((_, m)) if m == index => continue,
+            Some((old, _)) => commands.entity(old).despawn(),
+            None => {}
+        }
+        let feet = aabb.min.y - at.translation().y;
+        commands.entity(e).with_children(|c| {
+            c.spawn((
+                Name::new("Body"),
+                CharacterBody { model: index },
+                Transform::from_xyz(0.0, feet, 0.0),
+                Visibility::Inherited,
+            ))
+            .with_children(|b| {
+                for (mesh, material) in &bodies.0[index] {
+                    b.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone())));
+                }
+            });
+        });
+    }
+}
+
+fn turn_bodies(
+    characters: Query<(&crate::core::Intent, &Children)>,
+    mut bodies: Query<&mut Transform, With<CharacterBody>>,
+) {
+    for (intent, children) in &characters {
+        for c in children {
+            if let Ok(mut t) = bodies.get_mut(*c) {
+                t.rotation = intent.yaw_rotation();
+            }
+        }
+    }
+}
+
+/// Characters get their team's hitboxes from the loaded character models.
+fn attach_hitboxes(
+    models: Option<Res<CharacterModels>>,
+    characters: Query<(Entity, Option<&Team>, Option<&crate::core::Hitboxes>), With<crate::core::Intent>>,
+    mut commands: Commands,
+) {
+    let Some(models) = models else { return };
+    for (e, team, current) in &characters {
+        let Some((_, m)) = models.for_team(team.copied()) else {
+            continue;
+        };
+        if current.is_none_or(|h| h.0 != m.hitboxes) {
+            commands.entity(e).insert(crate::core::Hitboxes(m.hitboxes.clone()));
+        }
+    }
+}
+
 /// A model's collision: convex pieces in model space, and the physics
 /// parameters that came with them.
 #[derive(Clone, Debug, Default)]
@@ -411,6 +529,8 @@ pub struct MapData {
     pub sounds: Arc<MapSounds>,
     /// The bots' navigation mesh, if the game ships one for the map.
     pub nav: Option<Arc<nav::NavMesh>>,
+    /// How characters look and where they can be hit, per team.
+    pub characters: Vec<MapCharacterModel>,
 }
 
 /// What the BSP leaf around a point can see of the sky.
@@ -716,9 +836,16 @@ impl Plugin for MapPlugin {
                 ..default()
             })
             .add_systems(Startup, spawn_map.run_if(resource_exists::<PendingMap>))
+            .add_systems(FixedUpdate, attach_hitboxes.before(crate::core::SimSet::Movement))
             .add_systems(
                 Update,
-                (attach_sky, glow_visibility, dust::update_dust, show_skybox_in_place),
+                (
+                    attach_sky,
+                    glow_visibility,
+                    dust::update_dust,
+                    show_skybox_in_place,
+                    (attach_bodies, turn_bodies).run_if(resource_exists::<CharacterBodies>),
+                ),
             )
             .add_systems(
                 PostUpdate,
@@ -820,6 +947,26 @@ fn spawn_map(
             .map(|t| images.add(to_image(t, &data.look)))
             .collect();
         let cubemaps: Vec<Handle<Image>> = data.cubemaps.iter().map(|c| images.add(cube_image(c))).collect();
+        // Character bodies, drawn by `attach_bodies`.
+        {
+            let bodies = data
+                .characters
+                .iter()
+                .map(|c| {
+                    c.model
+                        .meshes
+                        .iter()
+                        .map(|m| {
+                            (
+                                meshes.add(build_mesh(m, false)),
+                                materials.add(build_material(m, &textures, view, data.look.light_scale)),
+                            )
+                        })
+                        .collect()
+                })
+                .collect();
+            commands.insert_resource(CharacterBodies(bodies));
+        }
         let lightmap = data
             .lightmap
             .as_ref()
@@ -1369,6 +1516,9 @@ fn spawn_map(
     }
 
     commands.insert_resource(sound::SoundBank(data.sounds.clone()));
+    if !data.characters.is_empty() {
+        commands.insert_resource(CharacterModels(Arc::new(data.characters.clone())));
+    }
     if let Some(nav) = &data.nav {
         commands.insert_resource((**nav).clone());
     }
@@ -1429,6 +1579,15 @@ pub fn unload_map(world: &mut World) {
     world.remove_resource::<SkyVis>();
     world.remove_resource::<ShadowState>();
     world.remove_resource::<sound::SoundBank>();
+    world.remove_resource::<CharacterModels>();
+    world.remove_resource::<CharacterBodies>();
+    let bodies: Vec<Entity> = world
+        .query_filtered::<Entity, With<CharacterBody>>()
+        .iter(world)
+        .collect();
+    for b in bodies {
+        world.entity_mut(b).despawn();
+    }
     world.remove_resource::<nav::NavMesh>();
     world.remove_resource::<sound::SurfaceGrid>();
     world.remove_resource::<MapBrushes>();

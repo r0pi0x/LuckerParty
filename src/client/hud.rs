@@ -306,10 +306,15 @@ fn killfeed(
 /// A capsule for every character that isn't the local player.
 fn character_bodies(
     new: Query<(Entity, &Team), (Added<Intent>, Without<LocalPlayer>)>,
+    models: Option<Res<crate::map::CharacterModels>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut commands: Commands,
 ) {
+    // Maps with character models draw those instead (map::attach_bodies).
+    if models.is_some() {
+        return;
+    }
     for (e, team) in &new {
         let color = match team.0 {
             0 => Color::srgb(0.35, 0.5, 0.9),
@@ -328,7 +333,7 @@ fn character_bodies(
 }
 
 /// The dead aren't drawn.
-fn show_bodies(mut bodies: Query<(&mut Visibility, Has<Dead>), (With<Mesh3d>, With<Intent>, Without<LocalPlayer>)>) {
+fn show_bodies(mut bodies: Query<(&mut Visibility, Has<Dead>), (With<Intent>, Without<LocalPlayer>)>) {
     for (mut vis, dead) in &mut bodies {
         let want = if dead {
             Visibility::Hidden

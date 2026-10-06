@@ -76,6 +76,17 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
     super::sprites::add_sprites(&bsp, &mut materials, &mut data);
     super::dust::add_dust(&bsp, &mut materials, &mut data);
     let surfaces = super::surfaceprops::SurfaceProps::load(&mut materials);
+    // Character bodies: a terrorist and a counter-terrorist model (CS:S
+    // teams 2 and 3; ours are 1 and 2), the CT one for anyone else.
+    for (path, team) in [
+        ("models/player/t_phoenix.mdl", Some(crate::core::Team(1))),
+        ("models/player/ct_urban.mdl", None),
+    ] {
+        match super::props::load_character(&mut materials, path, team) {
+            Ok(c) => data.characters.push(c),
+            Err(e) => data.warnings.push(e),
+        }
+    }
     let mut sounds = super::sound::load(&mut materials, name, &surfaces);
     super::soundscape::load(&mut materials, &bsp, name, &mut sounds);
     data.sounds = std::sync::Arc::new(sounds);

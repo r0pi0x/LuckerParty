@@ -1400,3 +1400,115 @@ fn maps_change_in_place() {
         "player at {at} after the change ({parts} map parts)"
     );
 }
+
+/// Character models (specs/cs_source/weapons.md 5.2, T23): the player
+/// models' 19 hitboxes in the reference pose, standing upright.
+#[test]
+fn character_models_and_hitboxes() {
+    use mashup::core::Hitgroup;
+    let Some(map) = dust2() else { return };
+    assert_eq!(map.characters.len(), 2);
+    for c in &map.characters {
+        assert!(!c.model.meshes.is_empty());
+        assert_eq!(c.hitboxes.len(), 19);
+        let count = |g: Hitgroup| c.hitboxes.iter().filter(|h| h.group == g).count();
+        assert_eq!(count(Hitgroup::Head), 2, "head and neck");
+        assert_eq!(count(Hitgroup::Chest), 1);
+        assert_eq!(count(Hitgroup::Stomach), 2, "pelvis and spine1");
+        assert_eq!(count(Hitgroup::LeftLeg), 4);
+        assert_eq!(count(Hitgroup::RightArm), 3);
+        // Upright, feet at 0: heads up near 1.6-1.85 m, legs low.
+        let top = |g| {
+            c.hitboxes
+                .iter()
+                .filter(|h| h.group == g)
+                .map(|h| h.center.y)
+                .fold(f32::MIN, f32::max)
+        };
+        let low = c.hitboxes.iter().map(|h| h.center.y).fold(f32::MAX, f32::min);
+        assert!(
+            top(Hitgroup::Head) > 1.5 && top(Hitgroup::Head) < 1.9,
+            "head at {}",
+            top(Hitgroup::Head)
+        );
+        assert!(low < 0.2, "lowest box at {low}");
+        // Model vertices span the same height.
+        let ys: Vec<f32> = c
+            .model
+            .meshes
+            .iter()
+            .flat_map(|m| m.positions.iter().map(|p| p[1]))
+            .collect();
+        let (lo, hi) = (
+            ys.iter().cloned().fold(f32::MAX, f32::min),
+            ys.iter().cloned().fold(f32::MIN, f32::max),
+        );
+        assert!(lo > -0.1 && lo < 0.1 && hi > 1.6 && hi < 2.0, "mesh height {lo}..{hi}");
+    }
+}
+
+/// Shots test the character model's hitboxes: a head shot is a head shot,
+/// and a shot that only grazes the collision hull passes through.
+#[test]
+fn shots_use_model_hitboxes() {
+    use mashup::{
+        core::{Hitboxes, Hitgroup},
+        games::cs_source::{TICK_INTERVAL, weapons::CsWeaponsPlugin},
+        weapon::{WeaponEvent, WeaponEventKind},
+    };
+    #[derive(Resource, Default)]
+    struct Hits(Vec<(Entity, Hitgroup)>);
+    fn record(mut e: MessageReader<WeaponEvent>, mut hits: ResMut<Hits>) {
+        for e in e.read() {
+            if let WeaponEventKind::Hit { target, hitgroup, .. } = e.kind {
+                hits.0.push((target, hitgroup));
+            }
+        }
+    }
+    let Some(map) = dust2() else { return };
+    let mut sim = Sim::new((MapPlugin::new(map.clone()), CsWeaponsPlugin));
+    sim.set_tick_interval(TICK_INTERVAL);
+    sim.app.init_resource::<Hits>().add_systems(Last, record);
+    // CT spawns 0 and 2: same height, 4.9 m apart in the open.
+    let at = |i: usize| map.spawns[i].0 + Vec3::Y * 0.9;
+    let shooter = sim.spawn_character(at(2), mashup::movement::placeholder::ID);
+    let target = sim.spawn_character(at(0), mashup::movement::placeholder::ID);
+    sim.app.world_mut().entity_mut(target).insert(mashup::core::God);
+    sim.seconds(1.5);
+    let boxes = sim
+        .app
+        .world()
+        .get::<Hitboxes>(target)
+        .expect("hitboxes attached")
+        .0
+        .clone();
+    let feet = sim.position(target) - Vec3::Y * 0.9;
+    let shoot = |sim: &mut Sim, at: Vec3| -> Vec<(Entity, Hitgroup)> {
+        let eye = sim.position(shooter) + sim.state(shooter).eye_offset;
+        let d = at - eye;
+        {
+            let mut i = sim.intent(shooter);
+            i.yaw = (-d.x).atan2(-d.z);
+            i.pitch = d.y.atan2(d.xz().length());
+        }
+        sim.app.world_mut().resource_mut::<Hits>().0.clear();
+        sim.intent(shooter).fire = true;
+        sim.ticks(1);
+        sim.intent(shooter).fire = false;
+        sim.seconds(0.6);
+        std::mem::take(&mut sim.app.world_mut().resource_mut::<Hits>().0)
+    };
+    // The target faces -Z (yaw 0): box centres are in its frame as-is.
+    let head = boxes
+        .iter()
+        .filter(|b| b.group == Hitgroup::Head)
+        .max_by(|a, b| a.center.y.total_cmp(&b.center.y))
+        .unwrap();
+    assert_eq!(shoot(&mut sim, feet + head.center), [(target, Hitgroup::Head)]);
+    let chest = boxes.iter().find(|b| b.group == Hitgroup::Chest).unwrap();
+    assert_eq!(shoot(&mut sim, feet + chest.center), [(target, Hitgroup::Chest)]);
+    // Just inside the hull's edge at knee height, outside every box.
+    let gap = feet + Vec3::new(0.0, 0.45, 0.36);
+    let hits = shoot(&mut sim, gap);
+    assert!(hits.iter().all(|(e, _)| *e != target), "grazing shot hit {hits:?}");
+}

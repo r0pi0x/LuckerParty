@@ -26,7 +26,10 @@ framework, knife, AK-47, HUD, deathmatch and a first bot are in.
   script tables (zoom M15, burst/silencer M16 are measured).
 - Bot behaviour: awareness (sound, memory), CS:S bot path costs and
   route variety (nav spec open questions 2–4).
-- Hitboxes from player models; character, view and world models.
+- Collaterals (bullets through players) and wall penetration: being
+  measured (M13).
+- Character animation (run, crouch, aim) for bodies and hitboxes; view
+  and world models.
 - Impact decals, tracers, muzzle flash; explosion impulses.
 
 ## 3. Sound, remaining
