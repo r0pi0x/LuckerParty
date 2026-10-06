@@ -7,7 +7,7 @@ use bevy::prelude::*;
 use bevy::window::CursorOptions;
 
 use crate::{
-    console::{Console, ConsoleAppExt},
+    console::ConsoleAppExt,
     core::{LocalPlayer, Team},
     weapon::{
         Armor, Inventory, Weapon, WeaponRegistry,
@@ -20,7 +20,8 @@ pub struct BuyMenuPlugin;
 impl Plugin for BuyMenuPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<BuyMenu>()
-            .add_systems(Update, (keys, draw).chain());
+            .init_resource::<BuyNotice>()
+            .add_systems(Update, ((keys, draw).chain(), notice));
         app.console_command(
             "buymenu",
             "Open or close the buy menu (B); buymenu <n> opens category n (1 pistols, 2 rifles, 3 equipment).",
@@ -112,10 +113,10 @@ fn keys(
     keys: Res<ButtonInput<KeyCode>>,
     cursor: Single<&CursorOptions>,
     mut menu: ResMut<BuyMenu>,
-    mut console: ResMut<Console>,
     prices: Res<Prices>,
     registry: Res<WeaponRegistry>,
     mut slots: Local<Option<Vec<(&'static str, u8)>>>,
+    mut commands: Commands,
 ) {
     if !super::input::cursor_grabbed(&cursor) {
         return;
@@ -137,7 +138,18 @@ fn keys(
         (None, n) if n <= CATEGORIES.len() => menu.category = Some(n - 1),
         (Some(c), n) => {
             if let Some(item) = items(c, &prices, slots).get(n - 1) {
-                console.submit(format!("buy {}", item.buy));
+                // Bought, or why not, across the screen (as CS:S says
+                // "You have insufficient funds!").
+                let what = item.buy.clone();
+                commands.queue(move |w: &mut World| {
+                    let Some(player) = w.query_filtered::<Entity, With<LocalPlayer>>().iter(w).next() else {
+                        return;
+                    };
+                    if let Err(why) = crate::weapon::economy::buy(w, player, &what) {
+                        let now = w.resource::<Time>().elapsed_secs();
+                        *w.resource_mut::<BuyNotice>() = BuyNotice(Some((why, now + 2.5)));
+                    }
+                });
                 *menu = BuyMenu::default();
             }
         }
@@ -147,6 +159,57 @@ fn keys(
 
 #[derive(Component)]
 struct MenuText;
+
+/// Why the last buy failed, until a time (seconds).
+#[derive(Resource, Default)]
+struct BuyNotice(Option<(String, f32)>);
+
+#[derive(Component)]
+struct NoticeText;
+
+fn notice(
+    mut notice: ResMut<BuyNotice>,
+    time: Res<Time>,
+    shown: Query<(Entity, &Text), With<NoticeText>>,
+    windows: Query<&Window>,
+    mut commands: Commands,
+) {
+    let now = time.elapsed_secs();
+    if notice.0.as_ref().is_some_and(|(_, until)| now > *until) {
+        notice.0 = None;
+    }
+    let want = notice.0.as_ref().map(|(m, _)| m.clone());
+    let current = shown.iter().next();
+    if current.map(|(_, t)| t.0.clone()) == want {
+        return;
+    }
+    for (e, _) in &shown {
+        commands.entity(e).despawn();
+    }
+    let Some(text) = want else { return };
+    let scale = windows.iter().next().map_or(1.0, |w| w.height() / 480.0);
+    let mut chars = text.chars();
+    let text: String = chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default();
+    commands.spawn((
+        NoticeText,
+        Text::new(format!("{text}!")),
+        TextFont {
+            font_size: FontSize::Px(12.0 * scale),
+            ..default()
+        },
+        TextColor(Color::WHITE),
+        TextShadow::default(),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Percent(62.0),
+            width: Val::Percent(100.0),
+            justify_content: JustifyContent::Center,
+            ..default()
+        },
+        TextLayout::justify(Justify::Center),
+        GlobalZIndex(45),
+    ));
+}
 
 #[allow(clippy::too_many_arguments)]
 fn draw(
