@@ -30,7 +30,9 @@ pose; this makes them move.
    (9-way move grid, idle/walk/run/crouch/jump, feet yaw lagging the eyes,
    upper-body weapon layers with aim, fire layer). Scenario test
    `bodies_animate_with_movement`.
-4. [ ] Hitboxes follow the animated bones (sim side).
+4. [x] Hitboxes follow the animated bones (sim side): `map::pose_hitboxes`
+   each tick from the character's `Animator` (now attached with the
+   hitboxes, so the local player has one too); `mashup_drawhitboxes 1`.
 5. [x] Spec the CS:S player animation state: specs/cs_source/animation.md.
 6. [ ] Reload, grenade and death layers; check the template's numbers
    against CS:S (spec open questions).

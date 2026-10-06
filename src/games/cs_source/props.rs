@@ -78,7 +78,7 @@ pub fn load_character(
     // Source axes to ours (x, z, -y): -90 degrees about X.
     let axes = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
     let set = mdl.hit_boxes.first().ok_or_else(|| format!("{path}: no hitbox set"))?;
-    let hitboxes = set
+    let hitboxes: Vec<Hitbox> = set
         .boxes
         .iter()
         .filter_map(|b| {
@@ -105,6 +105,24 @@ pub fn load_character(
             })
         })
         .collect();
+    let boxes = set
+        .boxes
+        .iter()
+        .zip(&hitboxes)
+        .filter(|(b, _)| b.bone >= 0 && (b.bone as usize) < mdl.bones.len())
+        .map(|(b, h)| {
+            let (lo, hi) = (
+                Vec3::new(b.min.x, b.min.y, b.min.z),
+                Vec3::new(b.max.x, b.max.y, b.max.z),
+            );
+            crate::map::BoneBox {
+                bone: b.bone as usize,
+                center: (lo + hi) / 2.0,
+                half: (hi - lo) / 2.0,
+                group: h.group,
+            }
+        })
+        .collect();
     let bones = mdl
         .bones
         .iter()
@@ -125,6 +143,7 @@ pub fn load_character(
     Ok(crate::map::MapCharacterModel {
         team,
         animations,
+        boxes,
         model: body,
         hitboxes,
         bones,

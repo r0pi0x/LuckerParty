@@ -20,8 +20,52 @@ impl Plugin for DebugPlugin {
             WorldInspectorPlugin::default().run_if(input_toggle_active(false, KeyCode::F1)),
             PhysicsDebugPlugin,
         ))
+        .init_resource::<DrawHitboxes>()
         .add_systems(Startup, (spawn_hud, hide_physics_gizmos))
-        .add_systems(Update, (keys, update_hud));
+        .add_systems(Update, (keys, update_hud, draw_hitboxes));
+        crate::console::resource_cvar::<DrawHitboxes, u8>(
+            app,
+            "mashup_drawhitboxes",
+            "1: outline characters' hitboxes (head red, chest yellow, stomach green, arms blue, legs cyan).",
+            |d| &mut d.0,
+        );
+    }
+}
+
+#[derive(Resource, Default)]
+struct DrawHitboxes(u8);
+
+/// Outline every character's hitboxes where the trace sees them (its
+/// collider's bottom, turned by the look yaw).
+fn draw_hitboxes(
+    on: Res<DrawHitboxes>,
+    characters: Query<
+        (&crate::core::Hitboxes, &GlobalTransform, &ColliderAabb, Option<&crate::core::Intent>),
+        Without<LocalPlayer>,
+    >,
+    mut gizmos: Gizmos,
+) {
+    use crate::core::Hitgroup;
+    if on.0 == 0 {
+        return;
+    }
+    for (boxes, at, aabb, intent) in &characters {
+        let feet = at.translation().with_y(aabb.min.y);
+        let yaw = intent.map_or(Quat::IDENTITY, |i| i.yaw_rotation());
+        for h in &boxes.0 {
+            let color = match h.group {
+                Hitgroup::Head => Color::srgb(1.0, 0.2, 0.2),
+                Hitgroup::Chest => Color::srgb(1.0, 1.0, 0.2),
+                Hitgroup::Stomach => Color::srgb(0.2, 1.0, 0.2),
+                Hitgroup::LeftArm | Hitgroup::RightArm => Color::srgb(0.3, 0.5, 1.0),
+                Hitgroup::LeftLeg | Hitgroup::RightLeg => Color::srgb(0.2, 1.0, 1.0),
+                _ => Color::WHITE,
+            };
+            let t = Transform::from_translation(feet + yaw * h.center)
+                .with_rotation(yaw * h.rotation)
+                .with_scale(h.half * 2.0);
+            gizmos.cube(t, color);
+        }
     }
 }
 

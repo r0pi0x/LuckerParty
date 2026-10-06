@@ -270,8 +270,23 @@ pub struct MapCharacterModel {
     pub root: Transform,
     /// What the skeleton can play (None: it stays in the reference pose).
     pub animations: Option<Arc<anim::AnimSet>>,
+    /// The hitboxes on their bones (same order as `hitboxes`), to follow
+    /// the animated skeleton.
+    pub boxes: Vec<BoneBox>,
 }
 
+/// A hitbox in its bone's frame (the source game's axes and units).
+#[derive(Clone, Debug)]
+pub struct BoneBox {
+    pub bone: usize,
+    pub center: Vec3,
+    pub half: Vec3,
+    pub group: crate::core::Hitgroup,
+}
+
+/// Which character model a character uses (index in `CharacterModels`).
+#[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
+pub struct BodyModel(pub usize);
 /// One bone of a character skeleton, in its reference pose relative to
 /// its parent (the source game's axes and units).
 #[derive(Clone, Debug)]
@@ -304,7 +319,6 @@ struct CharacterBodies(Vec<BodyAssets>);
 
 struct BodyAssets {
     parts: Vec<(Handle<Mesh>, Handle<StandardMaterial>)>,
-    animations: Option<Arc<anim::AnimSet>>,
     bindposes: Handle<bevy::mesh::skinning::SkinnedMeshInverseBindposes>,
     bones: Vec<MapBone>,
     root: Transform,
@@ -387,10 +401,6 @@ fn attach_bodies(
             model: index,
             joints: joints.clone(),
         });
-        match &assets.animations {
-            Some(set) => commands.entity(e).insert(anim::Animator::new(set.clone())),
-            None => commands.entity(e).remove::<anim::Animator>(),
-        };
         for (mesh, material) in &assets.parts {
             commands.spawn((
                 Mesh3d(mesh.clone()),
@@ -450,18 +460,61 @@ fn pose_bodies(
 }
 
 /// Characters get their team's hitboxes from the loaded character models.
+/// Characters also get the model's animations (an `Animator`, driven by
+/// the game).
 fn attach_hitboxes(
     models: Option<Res<CharacterModels>>,
-    characters: Query<(Entity, Option<&Team>, Option<&crate::core::Hitboxes>), With<crate::core::Intent>>,
+    characters: Query<(Entity, Option<&Team>, Option<&BodyModel>), With<crate::core::Intent>>,
     mut commands: Commands,
 ) {
     let Some(models) = models else { return };
     for (e, team, current) in &characters {
-        let Some((_, m)) = models.for_team(team.copied()) else {
+        let Some((index, m)) = models.for_team(team.copied()) else {
             continue;
         };
-        if current.is_none_or(|h| h.0 != m.hitboxes) {
-            commands.entity(e).insert(crate::core::Hitboxes(m.hitboxes.clone()));
+        if current == Some(&BodyModel(index)) {
+            continue;
+        }
+        let mut c = commands.entity(e);
+        c.insert((BodyModel(index), crate::core::Hitboxes(m.hitboxes.clone())));
+        match &m.animations {
+            Some(set) => c.insert(anim::Animator::new(set.clone())),
+            None => c.remove::<anim::Animator>(),
+        };
+    }
+}
+
+/// Hitboxes follow the animated skeleton (as the server places them).
+fn pose_hitboxes(
+    time: Res<Time>,
+    models: Option<Res<CharacterModels>>,
+    mut characters: Query<(&anim::Animator, &BodyModel, &crate::core::Intent, &mut crate::core::Hitboxes)>,
+) {
+    let Some(models) = models else { return };
+    let now = time.elapsed_secs_f64();
+    for (animator, model, intent, mut hitboxes) in &mut characters {
+        let Some(m) = models.0.get(model.0) else { continue };
+        if animator.main.is_none() || m.boxes.len() != hitboxes.0.len() {
+            continue;
+        }
+        let pose = animator.pose(now);
+        // Bones in the skeleton's space, then to the character's frame
+        // (which the trace turns by the look yaw; the body turns by its
+        // own yaw).
+        let mut global: Vec<(Quat, Vec3)> = Vec::with_capacity(pose.len());
+        for (b, (q, p)) in m.bones.iter().zip(&pose) {
+            global.push(match b.parent.and_then(|i| global.get(i)) {
+                Some((pq, pp)) => (*pq * *q, *pp + *pq * *p),
+                None => (*q, *p),
+            });
+        }
+        let turn = Quat::from_rotation_y(animator.yaw.unwrap_or(intent.yaw) - intent.yaw) * m.root.rotation;
+        let scale = m.root.scale.x;
+        for (h, b) in hitboxes.0.iter_mut().zip(&m.boxes) {
+            let Some((q, p)) = global.get(b.bone) else { continue };
+            h.center = turn * (*p + *q * b.center) * scale;
+            h.half = b.half * scale;
+            h.rotation = turn * *q;
         }
     }
 }
@@ -939,7 +992,12 @@ impl Plugin for MapPlugin {
                 ..default()
             })
             .add_systems(Startup, spawn_map.run_if(resource_exists::<PendingMap>))
-            .add_systems(FixedUpdate, attach_hitboxes.before(crate::core::SimSet::Movement))
+            .add_systems(
+                FixedUpdate,
+                (attach_hitboxes, pose_hitboxes)
+                    .chain()
+                    .before(crate::core::SimSet::Movement),
+            )
             .add_systems(
                 Update,
                 (
@@ -1099,7 +1157,6 @@ fn spawn_map(
                     let inverse: Vec<Mat4> = global.iter().map(|m| m.inverse()).collect();
                     BodyAssets {
                         parts,
-                        animations: c.animations.clone(),
                         bindposes: bindposes.add(bevy::mesh::skinning::SkinnedMeshInverseBindposes::from(inverse)),
                         bones: c.bones.clone(),
                         root: c.root,
@@ -1769,6 +1826,10 @@ pub fn unload_map(world: &mut World) {
         .collect();
     for e in animated {
         world.entity_mut(e).remove::<anim::Animator>();
+    }
+    let modelled: Vec<Entity> = world.query_filtered::<Entity, With<BodyModel>>().iter(world).collect();
+    for e in modelled {
+        world.entity_mut(e).remove::<(BodyModel, crate::core::Hitboxes)>();
     }
     world.remove_resource::<nav::NavMesh>();
     world.remove_resource::<sound::SurfaceGrid>();

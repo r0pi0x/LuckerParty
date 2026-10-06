@@ -1556,7 +1556,7 @@ fn bodies_animate_with_movement() {
         map::anim::Animator,
     };
     let Some(map) = dust2() else { return };
-    let set = map.characters[0].animations.clone().expect("player animations");
+    assert!(map.characters[0].animations.is_some(), "player animations");
     let mut sim = Sim::new((
         MapPlugin::new(map.clone()),
         SourceMovementPlugin,
@@ -1570,8 +1570,18 @@ fn bodies_animate_with_movement() {
     let spawn = movement::to_engine(Vec3::new(-1024.0, -784.0, 140.0));
     let c = sim.spawn_character(spawn + Vec3::Y * (36.0 * 0.0254 + 0.2), movement::ID);
     sim.intent(c).yaw = 90f32.to_radians();
-    sim.app.world_mut().entity_mut(c).insert(Animator::new(set.clone()));
+    // Characters get the map's character animations.
     sim.seconds(0.5);
+    let set = sim.app.world().get::<Animator>(c).expect("an animator").set.clone();
+    let head = |sim: &Sim| {
+        let boxes = &sim.app.world().get::<mashup::core::Hitboxes>(c).unwrap().0;
+        boxes
+            .iter()
+            .filter(|h| h.group == mashup::core::Hitgroup::Head)
+            .map(|h| h.center.y)
+            .fold(f32::MIN, f32::max)
+    };
+    let standing = head(&sim);
     let main = |sim: &Sim| {
         let a = sim.app.world().get::<Animator>(c).unwrap();
         set.sequences[a.main.expect("a main sequence")].name.clone()
@@ -1607,6 +1617,12 @@ fn bodies_animate_with_movement() {
     sim.intent(c).move_axis = Vec2::ZERO;
     sim.seconds(1.0);
     assert_eq!(main(&sim), "Crouch_Idle_Lower");
+    // Hitboxes follow the pose: the head drops when crouching.
+    let crouched = head(&sim);
+    assert!(
+        standing > 1.5 && crouched < standing - 0.3,
+        "head at {standing} standing, {crouched} crouched"
+    );
     sim.intent(c).crouch = false;
     sim.seconds(1.0);
 

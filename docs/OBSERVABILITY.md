@@ -69,6 +69,10 @@ Only `Reflect`-registered types are visible; register new core components in
   action from the start, e.g. to fire in a `--screenshot` run; held
   console actions work without mouse capture. Automated runs never write
   config.cfg, and only archived cvars are saved there.
+- `mashup_drawhitboxes 1` outlines other characters' hitboxes, coloured
+  by hitgroup, where shots test them (e.g. `+bot_stop 1 +bot_add 2
+  +mashup_drawhitboxes 1` with `--screenshot` to check they follow the
+  animated body).
 - Remote: `curl -s localhost:15702 -d '{"jsonrpc":"2.0","id":1,
   "method":"mashup/console","params":{"line":"getpos; cvarlist sv_"}}'`
   runs a line now and returns the lines it printed.
