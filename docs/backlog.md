@@ -130,7 +130,8 @@ docs/plans/active/sound.md.
 Counts are from de_dust2's entity lump and static prop lump.
 
 - **Remaining decals**: 6 of dust2's 135 sit on props or brush entities
-  rather than world faces; decals on displacements (none on dust2).
+  rather than world faces. Other maps: assault 45, nuke and train 21
+  each (not on brush entities; see plans/active/other-maps.md).
 - **Verify inferred Source rules** with the comparison tool, using a local
   copy of a map with test entities added where dust2 has no example: floor
   and ceiling decal orientation, decal reach, overall brightness/tonemapping.

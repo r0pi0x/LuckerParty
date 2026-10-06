@@ -1,8 +1,9 @@
 //! Map decals (`infodecal`): applied once at load onto the world faces they
 //! touch, like the game does. Each decal is a texture-sized rectangle
 //! (texture size x `$decalscale`, in map units) centred on its origin and
-//! upright on walls; every nearby face polygon is clipped to it. Decals
-//! reuse the face's lightmap, so they sit in the same light as the surface.
+//! upright on walls; every nearby face polygon (or displacement triangle)
+//! is clipped to it. Decals reuse the face's lightmap, so they sit in the
+//! same light as the surface.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -42,10 +43,10 @@ pub fn basis(n: Vec3) -> (Vec3, Vec3) {
     (right, down)
 }
 
-/// Clip a polygon (position, uv) to 0 <= u, v <= 1.
-fn clip(mut poly: Vec<(Vec3, Vec2)>) -> Vec<(Vec3, Vec2)> {
+/// Clip a polygon (position, uv, lightmap luxel) to 0 <= u, v <= 1.
+fn clip(mut poly: Vec<(Vec3, Vec2, Vec2)>) -> Vec<(Vec3, Vec2, Vec2)> {
     for (axis, keep_above) in [(0, true), (0, false), (1, true), (1, false)] {
-        let inside = |p: &(Vec3, Vec2)| if keep_above { p.1[axis] >= 0.0 } else { p.1[axis] <= 1.0 };
+        let inside = |p: &(Vec3, Vec2, Vec2)| if keep_above { p.1[axis] >= 0.0 } else { p.1[axis] <= 1.0 };
         let edge = if keep_above { 0.0 } else { 1.0 };
         let mut out = Vec::with_capacity(poly.len() + 4);
         for i in 0..poly.len() {
@@ -56,7 +57,7 @@ fn clip(mut poly: Vec<(Vec3, Vec2)>) -> Vec<(Vec3, Vec2)> {
             }
             if inside(&a) != inside(&b) {
                 let t = (edge - a.1[axis]) / (b.1[axis] - a.1[axis]);
-                out.push((a.0.lerp(b.0, t), a.1.lerp(b.1, t)));
+                out.push((a.0.lerp(b.0, t), a.1.lerp(b.1, t), a.2.lerp(b.2, t)));
             }
         }
         poly = out;
@@ -101,74 +102,94 @@ pub fn add_decals(bsp: &Bsp, layout: &LightmapLayout, materials: &mut MaterialLo
         let mut placed = false;
         for (fi, face) in faces.iter().enumerate() {
             let texinfo = face.texture();
-            if face.displacement().is_some()
-                || texinfo
-                    .flags
-                    .intersects(TextureFlags::NODRAW | TextureFlags::SKY | TextureFlags::SKY2D | TextureFlags::TRIGGER)
+            if texinfo
+                .flags
+                .intersects(TextureFlags::NODRAW | TextureFlags::SKY | TextureFlags::SKY2D | TextureFlags::TRIGGER)
             {
                 continue;
             }
             let Some(plane) = bsp.plane(face.plane_num as usize) else {
                 continue;
             };
-            let n = v3(plane.normal);
-            // The decal must be in front of the face (not behind a thin wall).
-            let distance = n.dot(origin) - plane.dist;
-            if !(-1.0..=max_distance).contains(&distance) {
-                continue;
-            }
-            let poly: Vec<Vec3> = face.vertices().map(|v| v3(v.position)).collect();
-            if poly.iter().all(|p| p.distance(origin) > reach * 4.0) {
-                continue;
-            }
-            let (right, down) = basis(n);
-            let projected = poly
-                .iter()
-                .map(|p| {
-                    let d = *p - origin;
-                    (*p, Vec2::new(d.dot(right) / size.x + 0.5, d.dot(down) / size.y + 0.5))
-                })
-                .collect();
-            let clipped = clip(projected);
-            if clipped.len() < 3 {
-                continue;
-            }
-            placed = true;
-            let slot = layout.face_slots.get(fi).copied().flatten().unwrap_or(layout.white);
-            let mesh = meshes.entry((name.to_string(), skybox)).or_insert_with(|| MapMesh {
-                material: format!("decal:{name}"),
-                skybox,
-                color: [255, 255, 255],
-                texture: Some(tex),
-                alpha: r.alpha,
-                double_sided: false,
-                ..default()
-            });
-            let normal = to_engine(vb(n)).normalize_or_zero();
-            let base = mesh.positions.len() as u32;
-            for (p, uv) in &clipped {
-                mesh.positions.push(to_engine(vb(*p + n * OFFSET)).to_array());
-                mesh.normals.push(normal.to_array());
-                mesh.uvs.push(uv.to_array());
-                let luxel = if layout.face_slots.get(fi).copied().flatten().is_some() {
-                    lightmap::luxel_coords(&texinfo, face, vb(*p))
-                } else {
-                    Vec2::splat(0.5)
-                };
-                mesh.lightmap_uvs
-                    .push(lightmap::atlas_uv(&atlas, layout.placements[slot], luxel));
-            }
-            // Fan, wound counter-clockwise as seen from the front: the
-            // conversion to engine space is a rotation, so check there.
-            for i in 1..clipped.len() as u32 - 1 {
-                let [a, b, c] = [base, base + i, base + i + 1];
-                let pa = Vec3::from(mesh.positions[a as usize]);
-                let pb = Vec3::from(mesh.positions[b as usize]);
-                let pc = Vec3::from(mesh.positions[c as usize]);
-                if (pb - pa).cross(pc - pa).dot(normal) < 0.0 {
-                    mesh.indices.extend([a, c, b]);
-                } else {
-                    mesh.indices.extend([a, b, c]);
+            let lit = layout.face_slots.get(fi).copied().flatten().is_some();
+            // Polygons with their plane normal: the face itself, or a
+            // displacement's triangles (terrain; luxels follow its grid).
+            let polys: Vec<(Vec3, Vec<(Vec3, Vec2)>)> = if face.displacement().is_some() {
+                let up = v3(plane.normal);
+                super::bsp::face_triangles(face)
+                    .into_iter()
+                    .filter_map(|t| {
+                        let p = t.map(|(v, l)| (v3(v), l));
+                        let n = (p[1].0 - p[0].0).cross(p[2].0 - p[0].0).normalize_or_zero();
+                        let n = if n.dot(up) < 0.0 { -n } else { n };
+                        (n != Vec3::ZERO).then(|| (n, p.to_vec()))
+                    })
+                    .collect()
+            } else {
+                let poly = face
+                    .vertices()
+                    .map(|v| (v3(v.position), lightmap::luxel_coords(&texinfo, face, v.position)))
+                    .collect();
+                vec![(v3(plane.normal), poly)]
+            };
+            for (n, poly) in polys {
+                // The decal must be in front of the face (not behind a thin wall).
+                let distance = n.dot(origin - poly[0].0);
+                if !(-1.0..=max_distance).contains(&distance) {
+                    continue;
+                }
+                if poly.iter().all(|(p, _)| p.distance(origin) > reach * 4.0) {
+                    continue;
+                }
+                let (right, down) = basis(n);
+                let projected = poly
+                    .iter()
+                    .map(|&(p, luxel)| {
+                        let d = p - origin;
+                        (
+                            p,
+                            Vec2::new(d.dot(right) / size.x + 0.5, d.dot(down) / size.y + 0.5),
+                            luxel,
+                        )
+                    })
+                    .collect();
+                let clipped = clip(projected);
+                if clipped.len() < 3 {
+                    continue;
+                }
+                placed = true;
+                let slot = layout.face_slots.get(fi).copied().flatten().unwrap_or(layout.white);
+                let mesh = meshes.entry((name.to_string(), skybox)).or_insert_with(|| MapMesh {
+                    material: format!("decal:{name}"),
+                    skybox,
+                    color: [255, 255, 255],
+                    texture: Some(tex),
+                    alpha: r.alpha,
+                    double_sided: false,
+                    ..default()
+                });
+                let normal = to_engine(vb(n)).normalize_or_zero();
+                let base = mesh.positions.len() as u32;
+                for (p, uv, luxel) in &clipped {
+                    mesh.positions.push(to_engine(vb(*p + n * OFFSET)).to_array());
+                    mesh.normals.push(normal.to_array());
+                    mesh.uvs.push(uv.to_array());
+                    let luxel = if lit { *luxel } else { Vec2::splat(0.5) };
+                    mesh.lightmap_uvs
+                        .push(lightmap::atlas_uv(&atlas, layout.placements[slot], luxel));
+                }
+                // Fan, wound counter-clockwise as seen from the front: the
+                // conversion to engine space is a rotation, so check there.
+                for i in 1..clipped.len() as u32 - 1 {
+                    let [a, b, c] = [base, base + i, base + i + 1];
+                    let pa = Vec3::from(mesh.positions[a as usize]);
+                    let pb = Vec3::from(mesh.positions[b as usize]);
+                    let pc = Vec3::from(mesh.positions[c as usize]);
+                    if (pb - pa).cross(pc - pa).dot(normal) < 0.0 {
+                        mesh.indices.extend([a, c, b]);
+                    } else {
+                        mesh.indices.extend([a, b, c]);
+                    }
                 }
             }
         }
@@ -237,4 +258,3 @@ pub fn impact_decals(materials: &mut MaterialLoader) -> crate::map::decal::MapDe
     }
     out
 }
-

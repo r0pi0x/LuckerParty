@@ -54,7 +54,9 @@ const STOCK: &[&str] = &[
 fn load_warnings(map: &MapData) -> Vec<&String> {
     map.warnings
         .iter()
-        .filter(|w| !w.ends_with("decals found no surface to project onto") && !w.ends_with("overlays produced no geometry"))
+        .filter(|w| {
+            !w.ends_with("decals found no surface to project onto") && !w.ends_with("overlays produced no geometry")
+        })
         .collect()
 }
 
@@ -120,7 +122,10 @@ fn brush_entities_draw_and_collide() {
     use bevy::math::Vec3;
     let Some(map) = load("cs_office") else { return };
     let src = |x: f32, y: f32, z: f32| Vec3::new(x, z, -y) * 0.0254;
-    for (what, at) in [("window", src(-568.0, -342.0, -100.0)), ("door", src(584.0, -1872.0, -252.0))] {
+    for (what, at) in [
+        ("window", src(-568.0, -342.0, -100.0)),
+        ("door", src(584.0, -1872.0, -252.0)),
+    ] {
         let drawn = map
             .meshes
             .iter()
@@ -148,6 +153,21 @@ fn additive_materials_add() {
     );
 }
 
+/// Infodecals land on displacement terrain too (cs_compound: 4 of its 6
+/// previously unplaced decals; de_port 5 of 8).
+#[test]
+fn decals_project_onto_displacements() {
+    for (name, most) in [("cs_compound", 2), ("de_port", 3)] {
+        let Some(map) = load(name) else { return };
+        let unplaced: usize = map
+            .warnings
+            .iter()
+            .find_map(|w| w.strip_suffix(" decals found no surface to project onto")?.parse().ok())
+            .unwrap_or(0);
+        assert!(unplaced <= most, "{name}: {unplaced} decals unplaced");
+    }
+}
+
 /// Switchable lights that start on (cs_office's projector: style 32, no
 /// "starts dark" flag) add their own lightmap style to the faces they light.
 #[test]
@@ -170,15 +190,25 @@ fn switchable_lights_that_start_on_are_baked_in() {
         let bumped = face.texture().flags.contains(vbsp::TextureFlags::BUMPLIGHT);
         let total = |s: &lightmap::FaceSamples| s.rgb.iter().map(|c| c[0] + c[1] + c[2]).sum::<f32>();
         let base = lightmap::face_samples(lump, &face).map_or(0.0, |s| total(&s));
-        let on = lightmap::face_samples_lit(lump, &face, bumped, &|_| false).0.map_or(0.0, |s| total(&s));
-        let off = lightmap::face_samples_lit(lump, &face, bumped, &|_| true).0.map_or(0.0, |s| total(&s));
-        assert!((off - base).abs() <= 1e-3 * base.max(1.0), "style 0 alone when the light is off");
+        let on = lightmap::face_samples_lit(lump, &face, bumped, &|_| false)
+            .0
+            .map_or(0.0, |s| total(&s));
+        let off = lightmap::face_samples_lit(lump, &face, bumped, &|_| true)
+            .0
+            .map_or(0.0, |s| total(&s));
+        assert!(
+            (off - base).abs() <= 1e-3 * base.max(1.0),
+            "style 0 alone when the light is off"
+        );
         if on > base * 1.01 {
             brighter += 1;
         }
     }
     assert!(faces > 0, "the projector lights some faces");
-    assert!(brighter * 2 > faces, "{brighter} of {faces} faces brighter with the projector on");
+    assert!(
+        brighter * 2 > faces,
+        "{brighter} of {faces} faces brighter with the projector on"
+    );
 }
 
 /// Debug aid: `MAP=cs_office cargo test ... --ignored dark_textures --
@@ -197,14 +227,24 @@ fn dark_textures() {
             continue;
         };
         let n = (t.rgba8.len() / 4).max(1) as f32;
-        let mean = t.rgba8.chunks(4).map(|p| p[0] as f32 + p[1] as f32 + p[2] as f32).sum::<f32>() / (3.0 * 255.0 * n);
+        let mean = t
+            .rgba8
+            .chunks(4)
+            .map(|p| p[0] as f32 + p[1] as f32 + p[2] as f32)
+            .sum::<f32>()
+            / (3.0 * 255.0 * n);
         if mean < 0.05 {
             println!("{} {} {mean:.3} {}x{}", m.material, t.name, t.width, t.height);
         }
         if let Some(d) = m.detail {
             let t = &map.textures[d.texture];
             let n = (t.rgba8.len() / 4).max(1) as f32;
-            let dm = t.rgba8.chunks(4).map(|p| p[0] as f32 + p[1] as f32 + p[2] as f32).sum::<f32>() / (3.0 * 255.0 * n);
+            let dm = t
+                .rgba8
+                .chunks(4)
+                .map(|p| p[0] as f32 + p[1] as f32 + p[2] as f32)
+                .sum::<f32>()
+                / (3.0 * 255.0 * n);
             if d.mode == 0 && dm < 0.3 {
                 println!("{} detail {} mod2x mean {dm:.3}", m.material, t.name);
             }
@@ -214,7 +254,10 @@ fn dark_textures() {
     // turn black).
     let mean = |px: &[u8]| {
         let n = (px.len() / 4).max(1) as f32;
-        px.chunks(4).map(|p| p[0] as f32 + p[1] as f32 + p[2] as f32).sum::<f32>() / (3.0 * 255.0 * n)
+        px.chunks(4)
+            .map(|p| p[0] as f32 + p[1] as f32 + p[2] as f32)
+            .sum::<f32>()
+            / (3.0 * 255.0 * n)
     };
     for t in &map.textures {
         let full = mean(&t.rgba8);
@@ -269,7 +312,13 @@ fn pick() {
             let v = dir.dot(q) / det;
             let t = e2.dot(q) / det;
             if u >= 0.0 && v >= 0.0 && u + v <= 1.0 && t > 0.0 {
-                hits.push((t, m.material.clone(), m.skybox, m.alpha, m.texture.map(|i| map.textures[i].name.clone())));
+                hits.push((
+                    t,
+                    m.material.clone(),
+                    m.skybox,
+                    m.alpha,
+                    m.texture.map(|i| map.textures[i].name.clone()),
+                ));
             }
         }
     }

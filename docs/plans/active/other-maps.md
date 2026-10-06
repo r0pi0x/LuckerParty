@@ -34,7 +34,7 @@ How to check:
 | 8 | Self-lit porthole decals failed to parse | de_nuke | | DecalBaseTimesLightmapAlphaBlendSelfIllum unknown to the parser | Fixed as a translucent lit decal; self-illumination not modelled |
 | 9 | "Decoding Uv88 images is not supported" | aztec, inferno, militia, chateau, piranesi, port | water | Water's `$bumpmap` is a DuDv map | Fixed: water uses `$normalmap` |
 | 10 | Water surfaces black | de_aztec canals, others | aztec cam1 | No Water shader (no base texture; refraction/reflection/fog missing) | Open: backlog 7 "Water surfaces" |
-| 11 | Decals that find no surface (assault 46, nuke 21, train 21, others ≤ 8) and overlays without geometry (train 8, assault 5) | many | | Probably on brush entities (now drawn) or displacements, which decals and overlays don't project onto | Open |
+| 11 | Decals that find no surface (assault 45, nuke 21, train 21, others ≤ 8) and overlays without geometry (train 8, assault 5) | many | | Displacements: now projected onto (compound 6→2, port 8→3, tides 5→3). The rest aren't inside any brush entity (checked against model bounds); likely on props or farther from a surface than the inferred reach | Partly fixed |
 | 12 | Black blocks over building walls | cs_office (street, garage), de_nuke | office cam0, left | Additive security-light decals (`decals/offseclight`) drawn opaque | Fixed with 5 |
 | 13 | View model drawn in `--views` captures | all | | No `r_drawviewmodel` equivalent; capture hides nothing | Open (client) |
 | 15 | Switchable lights that start on missing (office projector, assault red lights) | cs_office, cs_assault | office h1 room | Only lightmap style 0 was read | Fixed: styles lit at map start are summed |

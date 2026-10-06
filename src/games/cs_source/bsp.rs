@@ -246,7 +246,13 @@ pub fn convert(bsp: &Bsp, bytes: &[u8], name: &str) -> (MapData, LightmapLayout)
         .entities
         .iter()
         .filter(|e| e.prop("classname").is_some_and(|c| c.starts_with("light")))
-        .filter(|e| e.prop("spawnflags").and_then(|f| f.trim().parse::<i32>().ok()).unwrap_or(0) & 1 != 0)
+        .filter(|e| {
+            e.prop("spawnflags")
+                .and_then(|f| f.trim().parse::<i32>().ok())
+                .unwrap_or(0)
+                & 1
+                != 0
+        })
         .filter_map(|e| e.prop("style").and_then(|s| s.trim().parse::<u8>().ok()))
         .filter(|s| *s >= 32)
         .collect();
@@ -341,12 +347,10 @@ pub fn convert(bsp: &Bsp, bytes: &[u8], name: &str) -> (MapData, LightmapLayout)
             continue;
         }
 
-        let (flat, bumped) = lightmap::face_samples_lit(
-            lighting,
-            &face,
-            flags.contains(TextureFlags::BUMPLIGHT),
-            &|style| dark_styles.contains(&style),
-        );
+        let (flat, bumped) =
+            lightmap::face_samples_lit(lighting, &face, flags.contains(TextureFlags::BUMPLIGHT), &|style| {
+                dark_styles.contains(&style)
+            });
         let slot = flat.map(|s| atlas.add_bumped(s, bumped));
         if in_world {
             *face_slots.last_mut().unwrap() = slot;
@@ -846,11 +850,7 @@ fn map_brush(points: Vec<[f32; 3]>, planes: Vec<(Vec3, f32)>, ladder: bool) -> c
 }
 
 /// World brushes with any of `mask`'s contents, as hulls and planes.
-fn brush_volumes(
-    bsp: &Bsp,
-    leaves: &[RawLeaf],
-    mask: BrushFlags,
-) -> Vec<(usize, Vec<[f32; 3]>, Vec<(Vec3, f32)>)> {
+fn brush_volumes(bsp: &Bsp, leaves: &[RawLeaf], mask: BrushFlags) -> Vec<(usize, Vec<[f32; 3]>, Vec<(Vec3, f32)>)> {
     brush_volumes_in(bsp, mask, world_brushes(bsp, leaves), None)
 }
 
