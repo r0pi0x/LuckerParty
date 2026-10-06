@@ -148,7 +148,13 @@ fn spawn_hud(mut commands: Commands) {
     }
 }
 
-type Local<'a> = (&'a Health, Option<&'a Inventory>, Option<&'a Score>, Option<&'a Dead>);
+type Local<'a> = (
+    &'a Health,
+    Option<&'a crate::weapon::Armor>,
+    Option<&'a Inventory>,
+    Option<&'a Score>,
+    Option<&'a Dead>,
+);
 
 fn draw_hud(
     player: Option<Single<Local, With<LocalPlayer>>>,
@@ -158,10 +164,18 @@ fn draw_hud(
     mut center: Single<&mut Text, (With<CenterText>, Without<HealthText>, Without<AmmoText>)>,
 ) {
     let Some(p) = player else { return };
-    let (health, inv, score, dead) = *p;
+    let (health, armor, inv, score, dead) = *p;
     let score = score.copied().unwrap_or_default();
+    let armor = match armor.filter(|a| a.amount > 0.0) {
+        Some(a) => format!(
+            "    {} {:.0}",
+            if a.helmet { "[H]" } else { "[ ]" },
+            (a.amount * 100.0).round()
+        ),
+        None => String::new(),
+    };
     health_text.0 = format!(
-        "+ {:.0}    K {}  D {}",
+        "+ {:.0}{armor}    K {}  D {}",
         (health.current * 100.0).ceil(),
         score.kills,
         score.deaths

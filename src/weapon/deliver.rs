@@ -5,7 +5,7 @@
 use avian3d::prelude::*;
 use bevy::prelude::*;
 
-use super::{DamageEffect, Hitscan, SpreadShape, Swing, WeaponEvent, WeaponEventKind};
+use super::{Armor, DamageEffect, Hitscan, SpreadShape, Swing, WeaponEvent, WeaponEventKind};
 use crate::{
     core::{Damage, Health, Hitgroup, Intent},
     map::PlaySound,
@@ -28,6 +28,7 @@ pub(super) struct World<'w, 's> {
     colliders: Query<'w, 's, &'static ColliderOf>,
     bodies: Query<'w, 's, (&'static RigidBody, Forces)>,
     damage: MessageWriter<'w, Damage>,
+    armor: Query<'w, 's, &'static mut Armor>,
     pub events: MessageWriter<'w, WeaponEvent>,
     pub play: MessageWriter<'w, PlaySound>,
 }
@@ -125,11 +126,34 @@ impl Shot<'_, '_, '_> {
             }
         }
         for (target, amount, hitgroup, point, dir) in total {
-            self.apply(target, quantize(amount, effect.quantum), hitgroup, point, dir);
+            self.apply(target, amount, effect.armor_ratio, effect.quantum, hitgroup, point, dir);
         }
     }
 
-    fn apply(&mut self, target: Entity, amount: f32, hitgroup: Hitgroup, point: Vec3, dir: Vec3) {
+    /// Deal `raw` damage: armour (if the weapon's ratio applies and it
+    /// covers the hitgroup) takes its share, then both are truncated.
+    #[allow(clippy::too_many_arguments)]
+    fn apply(
+        &mut self,
+        target: Entity,
+        raw: f32,
+        armor_ratio: Option<f32>,
+        quantum: f32,
+        hitgroup: Hitgroup,
+        point: Vec3,
+        dir: Vec3,
+    ) {
+        let mut amount = quantize(raw, quantum);
+        if let Some(ratio) = armor_ratio
+            && let Ok(mut armor) = self.w.armor.get_mut(target)
+            && armor.covers(hitgroup)
+        {
+            let to_health = raw * ratio * 0.5;
+            let to_armor = quantize((raw - to_health) * 0.5, quantum);
+            amount = quantize(to_health, quantum);
+            // Armour running out mid-hit isn't measured: clamped.
+            armor.amount = (armor.amount - to_armor).max(0.0);
+        }
         self.w.damage.write(Damage {
             target,
             attacker: Some(self.owner),
@@ -241,7 +265,15 @@ impl Shot<'_, '_, '_> {
                 Some(b) => hitgroup_at(&b, hit.point),
                 None => Hitgroup::Generic,
             };
-            self.apply(hit.entity, amount, group, hit.point, hit.dir);
+            self.apply(
+                hit.entity,
+                amount,
+                swing.armor_ratio,
+                swing.quantum,
+                group,
+                hit.point,
+                hit.dir,
+            );
         }
         true
     }

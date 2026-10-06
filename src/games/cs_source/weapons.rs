@@ -82,6 +82,9 @@ fn knife(e: &mut EntityWorldMut) {
         miss_refire_other: 0.0,
         // SDK melee push: 300 kg·in/s per hit point.
         force: 300.0 * UNIT / HP,
+        // WeaponArmorRatio 1.7 (M7: knife hits are generic, always covered).
+        armor_ratio: Some(1.7),
+        quantum: HP,
         sound_hit: Some("Weapon_Knife.Hit".into()),
         sound_hit_world: Some("Weapon_Knife.HitWall".into()),
         sound_miss: Some("Weapon_Knife.Slash".into()),
@@ -176,6 +179,7 @@ fn ak47(e: &mut EntityWorldMut) {
             impulse: 2400.0 * UNIT,
             // Damage is truncated to whole hit points (M5).
             quantum: HP,
+            armor_ratio: Some(1.55),
         },
         accuracy,
         Recoil {

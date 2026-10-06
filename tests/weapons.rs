@@ -344,3 +344,53 @@ fn empty_clip_held_dry_fires_once_then_reloads_on_release() {
     sim.seconds(2.6);
     assert_eq!(magazine(&sim, p).clip, 30);
 }
+
+#[test]
+fn armour_takes_its_share() {
+    use mashup::weapon::Armor;
+    // Measured M7/M11: a 20-damage slash on 100 armour: 17 health, 1 armour.
+    let mut sim = sim();
+    let p = sim.spawn_character(greybox::SPAWNS[0], placeholder::ID);
+    let target = sim.spawn_character(greybox::SPAWNS[0] - Vec3::Z * 0.9, placeholder::ID);
+    sim.app.world_mut().entity_mut(target).insert(Armor {
+        amount: 1.0,
+        helmet: false,
+    });
+    sim.ticks(1);
+    sim.intent(p).select = Some(2);
+    sim.ticks(1);
+    sim.intent(p).select = None;
+    sim.seconds(1.1);
+    let chest = sim.position(target) + Vec3::Y * 0.3;
+    aim_at(&mut sim, p, chest);
+    sim.intent(target).yaw = std::f32::consts::PI;
+    sim.intent(p).fire = true;
+    sim.ticks(1);
+    sim.intent(p).fire = false;
+    sim.ticks(1);
+    let lost = ((1.0 - health(&sim, target)) * 100.0).round() as i32;
+    let armor = (sim.app.world().get::<Armor>(target).unwrap().amount * 100.0).round() as i32;
+    assert_eq!((lost, armor), (17, 99));
+}
+
+#[test]
+fn armour_without_helmet_leaves_headshots_alone() {
+    use mashup::weapon::Armor;
+    let mut sim = sim();
+    let shooter = sim.spawn_character(greybox::SPAWNS[0], placeholder::ID);
+    let target = sim.spawn_character(greybox::SPAWNS[0] - Vec3::Z * 5.0, placeholder::ID);
+    sim.app.world_mut().entity_mut(target).insert(Armor {
+        amount: 1.0,
+        helmet: false,
+    });
+    sim.seconds(1.1);
+    let head = sim.position(target) + Vec3::Y * (1.8 * 0.92 - 0.9);
+    aim_at(&mut sim, shooter, head);
+    sim.intent(shooter).fire = true;
+    sim.ticks(1);
+    sim.intent(shooter).fire = false;
+    sim.ticks(1);
+    // 36 x 4 at ~200 units kills; the armour is untouched.
+    assert_eq!(health(&sim, target), 0.0);
+    assert_eq!(sim.app.world().get::<Armor>(target).unwrap().amount, 1.0);
+}

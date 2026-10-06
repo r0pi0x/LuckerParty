@@ -30,7 +30,7 @@ Started 2026-10-05, from specs/cs_source/weapons.md. MVP plan items 4–5.
    hitgroups and falloff, the knife (follow-up slash, bearing-based
    backstab, generic hits, miss refires, box reach), AK-47 inaccuracy
    (`Inaccuracy`) and recoil (`Recoil`, view punch, shots along view + 2 x
-   punch). Not yet: armour (players have none), penetration (unmeasured),
+   punch). Armour (`Armor`, M7's split; `buy vest`/`vesthelm`) followed. Not yet: penetration (unmeasured),
    the landing rule and airborne/moving recoil sets (unmeasured), zoom
    and fire modes (no weapons using them yet).
 3. [x] Bot navigation from specs/cs_source/nav.md. (CS:S bots' own path

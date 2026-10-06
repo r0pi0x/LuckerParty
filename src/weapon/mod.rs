@@ -101,7 +101,7 @@ impl Plugin for WeaponPlugin {
         })
         .console_command(
             "impulse",
-            "impulse 101: every weapon, full clips and reserves.",
+            "impulse 101: every weapon, full clips and reserves, kevlar and helmet.",
             |w, a| {
                 if a.first().map(String::as_str) != Some("101") {
                     return Err("only impulse 101 (all weapons and ammo) exists".into());
@@ -112,6 +112,10 @@ impl Plugin for WeaponPlugin {
                 for id in all.into_iter().filter(|id| !held.contains(id)) {
                     give(w, player, id);
                 }
+                w.entity_mut(player).insert(Armor {
+                    amount: 1.0,
+                    helmet: true,
+                });
                 let weapons = w
                     .get::<Inventory>(player)
                     .map(|i| i.weapons.clone())
@@ -125,22 +129,32 @@ impl Plugin for WeaponPlugin {
                 Ok(None)
             },
         )
-        .console_command("buy", "buy <weapon>, e.g. buy ak47 (no money yet).", |w, a| {
-            let name = a.first().ok_or("buy <weapon>")?.to_lowercase();
-            let name = if name.starts_with("weapon_") {
-                name
-            } else {
-                format!("weapon_{name}")
-            };
-            let player = local_player(w)?;
-            let id = w
-                .resource::<WeaponRegistry>()
-                .find(&name)
-                .map(|d| d.id)
-                .ok_or_else(|| format!("no weapon {name}"))?;
-            give(w, player, id);
-            Ok(None)
-        });
+        .console_command(
+            "buy",
+            "buy <weapon>|vest|vesthelm, e.g. buy ak47 (no money yet).",
+            |w, a| {
+                let name = a.first().ok_or("buy <weapon>")?.to_lowercase();
+                if name == "vest" || name == "vesthelm" {
+                    let player = local_player(w)?;
+                    let helmet = name == "vesthelm" || w.get::<Armor>(player).is_some_and(|a| a.helmet);
+                    w.entity_mut(player).insert(Armor { amount: 1.0, helmet });
+                    return Ok(None);
+                }
+                let name = if name.starts_with("weapon_") {
+                    name
+                } else {
+                    format!("weapon_{name}")
+                };
+                let player = local_player(w)?;
+                let id = w
+                    .resource::<WeaponRegistry>()
+                    .find(&name)
+                    .map(|d| d.id)
+                    .ok_or_else(|| format!("no weapon {name}"))?;
+                give(w, player, id);
+                Ok(None)
+            },
+        );
     }
 }
 
@@ -406,6 +420,9 @@ pub struct Swing {
     pub miss_refire_other: f32,
     /// Impulse per unit of damage, kg·m/s.
     pub force: f32,
+    /// As `DamageEffect::armor_ratio`; damage truncation as its `quantum`.
+    pub armor_ratio: Option<f32>,
+    pub quantum: f32,
     pub sound_hit: Option<String>,
     pub sound_hit_world: Option<String>,
     pub sound_miss: Option<String>,
@@ -424,6 +441,30 @@ pub struct DamageEffect {
     /// Damage dealt is truncated to whole multiples of this (CS:S: one hit
     /// point, 0.01); 0 keeps fractions.
     pub quantum: f32,
+    /// How much of a hit armour lets through to health (`Armor`); None:
+    /// armour doesn't apply.
+    pub armor_ratio: Option<f32>,
+}
+
+/// Body armour (CS:S kevlar and helmet), normalized like `Health`
+/// (1.0 = 100). Hits it covers (CS:S, measured M7: chest, stomach, arms,
+/// generic, and the head only with a helmet) take `damage x ratio x 0.5`
+/// from health and half the rest from armour, both truncated.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
+pub struct Armor {
+    pub amount: f32,
+    pub helmet: bool,
+}
+
+impl Armor {
+    pub fn covers(&self, group: Hitgroup) -> bool {
+        self.amount > 0.0
+            && match group {
+                Hitgroup::Head => self.helmet,
+                Hitgroup::LeftLeg | Hitgroup::RightLeg => false,
+                _ => true,
+            }
+    }
 }
 
 /// Damage multiplier per hitgroup.

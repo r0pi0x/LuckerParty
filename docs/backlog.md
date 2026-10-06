@@ -21,8 +21,8 @@ Left for later:
 In progress: [plans/active/weapons.md](plans/active/weapons.md). The
 framework, knife, AK-47, HUD, deathmatch and a first bot are in.
 
-- Armour (kevlar/helmet, M7's formula) and buying it; penetration
-  (measure M13 on a thin wall first); the other CS:S weapons from the
+- Money and a buy menu (`buy` gives for free); penetration (measure
+  M13 on a thin wall first); the other CS:S weapons from the
   script tables (zoom M15, burst/silencer M16 are measured).
 - Bot behaviour: awareness (sound, memory), CS:S bot path costs and
   route variety (nav spec open questions 2–4).
