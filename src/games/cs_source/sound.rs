@@ -173,7 +173,7 @@ pub fn load(materials: &mut MaterialLoader, map: &str, surfaces: &SurfaceProps) 
     let mut out = MapSounds::default();
     let mut wanted: HashSet<String> = ALWAYS
         .iter()
-        .chain(super::weapons::SOUNDS)
+        .chain(super::weapons::sounds().iter())
         .map(|s| s.to_lowercase())
         .collect();
     for name in surfaces.names() {

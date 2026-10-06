@@ -1,5 +1,6 @@
-//! The local player's HUD (crosshair, health, ammo, hit marker, killfeed)
-//! and bodies for other characters until character models exist.
+//! The local player's HUD (crosshair, health, ammo, hit marker, killfeed,
+//! sniper scope) and bodies for other characters until character models
+//! exist.
 
 use bevy::prelude::*;
 
@@ -7,7 +8,7 @@ use super::FirstPersonCamera;
 use crate::{
     core::{Died, Health, Intent, LocalPlayer, Team},
     rules::{Dead, Score},
-    weapon::{Hitscan, Inventory, Magazine, Weapon, WeaponEvent, WeaponEventKind},
+    weapon::{Hitscan, Inventory, Magazine, Weapon, WeaponEvent, WeaponEventKind, Zoomed},
 };
 
 pub struct HudPlugin;
@@ -22,7 +23,7 @@ impl Plugin for HudPlugin {
                 (
                     character_bodies,
                     show_bodies,
-                    (hit_marker, killfeed, draw_hud, draw_crosshair).chain(),
+                    (hit_marker, killfeed, draw_hud, draw_crosshair, draw_scope).chain(),
                 ),
             );
     }
@@ -38,6 +39,9 @@ struct HitMarkerText;
 struct KillfeedText;
 #[derive(Component)]
 struct CenterText;
+/// The sniper scope overlay (shown while the local player is scoped).
+#[derive(Component)]
+struct ScopeOverlay;
 /// One of the four crosshair lines: its direction from the centre.
 #[derive(Component)]
 struct CrosshairLine(Vec2);
@@ -59,7 +63,81 @@ const MIN_GAP: f32 = 3.0;
 const MARKER_SECONDS: f32 = 0.2;
 const FEED_SECONDS: f32 = 6.0;
 
-fn spawn_hud(mut commands: Commands) {
+/// Our stand-in for CS:S's scope: black outside a circle filling the
+/// screen's height, thin black cross hairs through it, black bars beside it.
+fn scope_image() -> Image {
+    use bevy::{
+        asset::RenderAssetUsages,
+        render::render_resource::{Extent3d, TextureDimension, TextureFormat},
+    };
+    const N: u32 = 512;
+    let mut data = Vec::with_capacity((N * N * 4) as usize);
+    let c = (N as f32 - 1.0) / 2.0;
+    for y in 0..N {
+        for x in 0..N {
+            let (dx, dy) = (x as f32 - c, y as f32 - c);
+            let r = (dx * dx + dy * dy).sqrt() / c;
+            // Soft edge over about a pixel; the cross hairs one pixel wide.
+            let outside = ((r - 0.99) * c).clamp(0.0, 1.0);
+            let line = if dx.abs() < 0.75 || dy.abs() < 0.75 { 1.0 } else { 0.0 };
+            let alpha = outside.max(line);
+            data.extend_from_slice(&[0, 0, 0, (alpha * 255.0) as u8]);
+        }
+    }
+    Image::new(
+        Extent3d {
+            width: N,
+            height: N,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    )
+}
+
+fn spawn_scope(commands: &mut Commands, images: &mut Assets<Image>) {
+    let image = images.add(scope_image());
+    let bar = || {
+        (
+            Node {
+                flex_grow: 1.0,
+                height: percent(100.0),
+                ..default()
+            },
+            BackgroundColor(Color::BLACK),
+        )
+    };
+    commands.spawn((
+        ScopeOverlay,
+        Node {
+            position_type: PositionType::Absolute,
+            width: percent(100.0),
+            height: percent(100.0),
+            flex_direction: FlexDirection::Row,
+            ..default()
+        },
+        GlobalZIndex(39),
+        Visibility::Hidden,
+        children![
+            bar(),
+            (
+                Node {
+                    height: percent(100.0),
+                    aspect_ratio: Some(1.0),
+                    flex_shrink: 0.0,
+                    ..default()
+                },
+                ImageNode::new(image),
+            ),
+            bar(),
+        ],
+    ));
+}
+
+fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
+    spawn_scope(&mut commands, &mut images);
     let font = |size: f32| TextFont {
         font_size: FontSize::Px(size),
         ..default()
@@ -182,17 +260,21 @@ fn draw_hud(
         String::new()
     } else {
         format!(
-        "+ {:.0}{armor}    K {}  D {}",
-        (health.current * 100.0).ceil(),
-        score.kills,
-        score.deaths
-    )
+            "+ {:.0}{armor}    K {}  D {}",
+            (health.current * 100.0).ceil(),
+            score.kills,
+            score.deaths
+        )
     };
-    ammo_text.0 = if !plain { String::new() } else { match inv.and_then(|i| i.active).and_then(|w| weapons.get(w).ok()) {
-        Some((w, Some(m))) => format!("{}\n{} | {}", short(w.id), m.clip, m.reserve),
-        Some((w, None)) => short(w.id).to_string(),
-        None => String::new(),
-    } };
+    ammo_text.0 = if !plain {
+        String::new()
+    } else {
+        match inv.and_then(|i| i.active).and_then(|w| weapons.get(w).ok()) {
+            Some((w, Some(m))) => format!("{}\n{} | {}", short(w.id), m.clip, m.reserve),
+            Some((w, None)) => short(w.id).to_string(),
+            None => String::new(),
+        }
+    };
     center.0 = if dead.is_some() {
         "You died. Respawning...".into()
     } else {
@@ -209,7 +291,7 @@ fn short(id: &str) -> &str {
 /// Crosshair gap from the held weapon's spread at the camera's field of
 /// view.
 fn draw_crosshair(
-    player: Option<Single<(&Inventory, Option<&Dead>), With<LocalPlayer>>>,
+    player: Option<Single<(&Inventory, Option<&Dead>, Option<&Zoomed>), With<LocalPlayer>>>,
     scans: Query<&Hitscan>,
     camera: Query<(&Camera, &Projection), With<FirstPersonCamera>>,
     mut lines: Query<(&CrosshairLine, &mut Node, &mut Visibility)>,
@@ -220,8 +302,12 @@ fn draw_crosshair(
     let Some(size) = cam.logical_viewport_size() else {
         return;
     };
-    let (inv, dead) = player.map(|p| *p).unzip();
-    let visible = inv.is_some() && dead.flatten().is_none();
+    let (inv, dead, zoomed) = match player.map(|p| *p) {
+        Some((i, d, z)) => (Some(i), d, z),
+        None => (None, None, None),
+    };
+    // A scope draws its own cross hairs.
+    let visible = inv.is_some() && dead.is_none() && !zoomed.is_some_and(|z| z.scope);
     let spread = inv
         .and_then(|i| i.active)
         .and_then(|w| scans.get(w).ok())
@@ -254,6 +340,24 @@ fn draw_crosshair(
         node.top = px(c.y - h / 2.0);
         node.width = px(w);
         node.height = px(h);
+    }
+}
+
+/// The scope overlay while the local player looks through a sniper scope.
+fn draw_scope(
+    player: Option<Single<Option<&Zoomed>, With<LocalPlayer>>>,
+    mut overlay: Query<&mut Visibility, With<ScopeOverlay>>,
+) {
+    let scoped = player.is_some_and(|z| z.is_some_and(|z| z.scope));
+    let want = if scoped {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+    for mut v in &mut overlay {
+        if *v != want {
+            *v = want;
+        }
     }
 }
 

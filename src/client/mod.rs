@@ -173,7 +173,7 @@ impl Plugin for ClientPlugin {
                 view::ViewPlugin,
             ))
             .add_systems(PostStartup, spawn_local_player)
-            .add_systems(Update, follow_eye);
+            .add_systems(Update, (follow_eye, zoom_camera));
 
         // Bevy Remote Protocol: query and edit the live ECS over HTTP
         // (JSON-RPC on localhost:15702). See docs/OBSERVABILITY.md.
@@ -272,6 +272,26 @@ fn spawn_local_player(
                 ));
             }
         });
+    }
+}
+
+/// The first-person camera's field of view: Source's 90 (horizontal at
+/// 4:3), or the zoom the local player looks through (`weapon::Zoomed`).
+/// Kept vertically, so it is the same on every screen shape; the view
+/// model and sky cameras follow it.
+fn zoom_camera(
+    player: Option<Single<Option<&crate::weapon::Zoomed>, With<LocalPlayer>>>,
+    mut cameras: Query<&mut Projection, With<FirstPersonCamera>>,
+) {
+    let fov_43 = player.and_then(|z| z.map(|z| z.fov)).unwrap_or(90.0);
+    let fov = crate::map::view_model::vertical_fov(fov_43).to_radians();
+    for mut projection in &mut cameras {
+        if let Projection::Perspective(p) = projection.as_ref()
+            && (p.fov - fov).abs() > 1e-6
+            && let Projection::Perspective(p) = projection.as_mut()
+        {
+            p.fov = fov;
+        }
     }
 }
 

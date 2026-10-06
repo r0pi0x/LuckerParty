@@ -7,7 +7,7 @@ use bevy::prelude::*;
 
 use crate::{
     console::resource_cvar,
-    core::{Died, Health, Intent, SimSet, SpawnPoint, Velocity},
+    core::{Died, Health, Intent, SimSet, SpawnPoint, Team, Velocity},
     weapon::{Inventory, StartingWeapons, give},
 };
 
@@ -120,7 +120,7 @@ fn respawn(world: &mut World) {
         .iter(world)
         .copied()
         .collect();
-    let starting = world.resource::<StartingWeapons>().0.clone();
+    let starting = world.resource::<StartingWeapons>().clone();
     for e in ready {
         let at = if spawns.is_empty() {
             None
@@ -158,7 +158,8 @@ fn respawn(world: &mut World) {
                 i.pitch = 0.0;
             }
         }
-        for id in &starting {
+        let team = world.get::<Team>(e).map(|t| t.0);
+        for id in starting.for_team(team) {
             give(world, e, id);
         }
     }

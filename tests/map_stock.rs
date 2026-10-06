@@ -50,12 +50,15 @@ const STOCK: &[&str] = &[
 ];
 
 /// Warnings other than the decal/overlay placement counts (tracked in
-/// docs/plans/active/other-maps.md).
+/// docs/plans/active/other-maps.md) and the AWP view model (MDL v48, not
+/// read yet: docs/backlog.md section 3).
 fn load_warnings(map: &MapData) -> Vec<&String> {
     map.warnings
         .iter()
         .filter(|w| {
-            !w.ends_with("decals found no surface to project onto") && !w.ends_with("overlays produced no geometry")
+            !w.ends_with("decals found no surface to project onto")
+                && !w.ends_with("overlays produced no geometry")
+                && !w.starts_with("models/weapons/v_snip_awp.mdl")
         })
         .collect()
 }
@@ -89,7 +92,11 @@ fn aztec_walls_blend_two_textures() {
     assert_eq!(detail.scale, [4.0, 4.0]);
     // The canals (Water, no base texture) draw their fog colour and
     // reflect the baked cubemap.
-    let water: Vec<_> = map.meshes.iter().filter(|m| m.material.contains("aztecwater")).collect();
+    let water: Vec<_> = map
+        .meshes
+        .iter()
+        .filter(|m| m.material.contains("aztecwater"))
+        .collect();
     assert!(!water.is_empty());
     for m in water {
         assert!(m.texture.is_some() && m.envmap.is_some(), "{}", m.material);

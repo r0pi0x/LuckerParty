@@ -5,15 +5,21 @@
 //! `Inaccuracy` (the accuracy penalty) and `Recoil` (view punch per shot).
 //! Bullet penetration is the shared `Penetration` part with CS:S's numbers
 //! (`PASS_MATERIALS`, measured M13).
+//!
+//! Guns are rows of script values (`Gun`, one const per weapon; each field
+//! names its script key) built by `gun`. The scripts are encrypted; the
+//! values are the spec's tables, which were read from the user's install.
+//! Sound entries and model paths are the install's own names (its sound
+//! scripts and model files), checked by `tests/map_de_dust2.rs`.
 
 use bevy::prelude::*;
 
 use crate::{
     core::{Intent, MovementState, SimSet, Velocity},
     weapon::{
-        CharacterPass, DamageEffect, FireTiming, HitgroupScale, Hitscan, Inventory, Magazine, Melee, PassMaterial,
-        PassMaterials, Penetration, RegisterWeapons, SpreadShape, StartingWeapons, Swing, Trigger, ViewPunch, Weapon,
-        WeaponEvent, WeaponEventKind, WeaponFrame, WeaponSounds,
+        AltModes, Burst, CharacterPass, DamageEffect, FireTiming, HitgroupScale, Hitscan, Inventory, Magazine, Melee,
+        PassMaterial, PassMaterials, Penetration, RegisterWeapons, SpreadShape, StartingWeapons, Swing, Trigger,
+        ViewPunch, Weapon, WeaponEvent, WeaponEventKind, WeaponFrame, WeaponSounds, Zoom,
     },
 };
 
@@ -23,11 +29,21 @@ pub(super) const HP: f32 = 0.01;
 
 pub const KNIFE: &str = "cs_source:weapon_knife";
 pub const AK47: &str = "cs_source:weapon_ak47";
+pub const M4A1: &str = "cs_source:weapon_m4a1";
+pub const AWP: &str = "cs_source:weapon_awp";
+pub const USP: &str = "cs_source:weapon_usp";
+pub const GLOCK: &str = "cs_source:weapon_glock";
+pub const DEAGLE: &str = "cs_source:weapon_deagle";
 
 /// World models (the script's `playermodel`), held by characters.
 pub const WORLD_MODELS: &[(&str, &str)] = &[
     (KNIFE, "models/weapons/w_knife_ct.mdl"),
     (AK47, "models/weapons/w_rif_ak47.mdl"),
+    (M4A1, "models/weapons/w_rif_m4a1.mdl"),
+    (AWP, "models/weapons/w_snip_awp.mdl"),
+    (USP, "models/weapons/w_pist_usp.mdl"),
+    (GLOCK, "models/weapons/w_pist_glock18.mdl"),
+    (DEAGLE, "models/weapons/w_pist_deagle.mdl"),
 ];
 
 /// View models (the script's `viewmodel`), seen by the local player, and
@@ -41,19 +57,39 @@ pub const WORLD_MODELS: &[(&str, &str)] = &[
 pub const VIEW_MODELS: &[(&str, &str, bool)] = &[
     (KNIFE, "models/weapons/v_knife_t.mdl", true),
     (AK47, "models/weapons/v_rif_ak47.mdl", false),
+    (M4A1, "models/weapons/v_rif_m4a1.mdl", false),
+    (AWP, "models/weapons/v_snip_awp.mdl", false),
+    (USP, "models/weapons/v_pist_usp.mdl", false),
+    (GLOCK, "models/weapons/v_pist_glock18.mdl", false),
+    (DEAGLE, "models/weapons/v_pist_deagle.mdl", false),
 ];
 
-/// Sound entries the weapons use, for precaching with the map's sounds.
+/// Sound entries the weapons use, for precaching with the map's sounds:
+/// `SOUNDS` and every gun's.
+pub fn sounds() -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = SOUNDS.to_vec();
+    for g in GUNS {
+        for s in [g.fire, g.empty]
+            .into_iter()
+            .chain(g.fire_alt)
+            .chain(g.model_sounds.entries())
+        {
+            if !out.contains(&s) {
+                out.push(s);
+            }
+        }
+    }
+    out
+}
+
+/// Sound entries other than the guns' own.
 pub const SOUNDS: &[&str] = &[
     "Weapon_Knife.Deploy",
     "Weapon_Knife.Hit",
     "Weapon_Knife.HitWall",
     "Weapon_Knife.Slash",
     "Weapon_Knife.Stab",
-    "Weapon_AK47.Single",
-    "Weapon_AK47.Clipout",
-    "Weapon_AK47.Clipin",
-    "Default.ClipEmpty_Rifle",
+    "Default.Zoom",
     "Bounce.PistolShell",
     "Bounce.RifleShell",
     "Bounce.ShotgunShell",
@@ -75,17 +111,44 @@ pub fn pass_materials() -> PassMaterials {
     PassMaterials {
         by_class: vec![
             // Wood: scale and damage measured.
-            ('W', PassMaterial { scale: 2.0, damage: 0.6 }),
+            (
+                'W',
+                PassMaterial {
+                    scale: 2.0,
+                    damage: 0.6,
+                },
+            ),
             // Metal, sand (dirt): scales measured; damage factors are not
             // (UNMEASURED: halfway between wood and concrete, as players).
-            ('M', PassMaterial { scale: 1.0, damage: 0.5 }),
-            ('D', PassMaterial { scale: 0.5, damage: 0.5 }),
+            (
+                'M',
+                PassMaterial {
+                    scale: 1.0,
+                    damage: 0.5,
+                },
+            ),
+            (
+                'D',
+                PassMaterial {
+                    scale: 0.5,
+                    damage: 0.5,
+                },
+            ),
             // Concrete: both measured.
-            ('C', PassMaterial { scale: 0.4, damage: 0.25 }),
+            (
+                'C',
+                PassMaterial {
+                    scale: 0.4,
+                    damage: 0.25,
+                },
+            ),
         ],
         // UNMEASURED (tile, grate, glass, plastic, ...): metal's scale and a
         // halved damage.
-        default: PassMaterial { scale: 1.0, damage: 0.5 },
+        default: PassMaterial {
+            scale: 1.0,
+            damage: 0.5,
+        },
         character: CharacterPass {
             // A fit to the measured stop cases (21-22 units per player).
             cost: 21.5 * UNIT,
@@ -101,18 +164,31 @@ pub struct CsWeaponsPlugin;
 impl Plugin for CsWeaponsPlugin {
     fn build(&self, app: &mut App) {
         app.register_weapon(KNIFE, knife)
-            .register_weapon(AK47, ak47)
+            .register_weapon(AK47, |e| gun(e, &AK47_GUN))
+            .register_weapon(M4A1, |e| gun(e, &M4A1_GUN))
+            .register_weapon(AWP, |e| gun(e, &AWP_GUN))
+            .register_weapon(USP, |e| gun(e, &USP_GUN))
+            .register_weapon(GLOCK, |e| gun(e, &GLOCK_GUN))
+            .register_weapon(DEAGLE, |e| gun(e, &DEAGLE_GUN))
             .add_message::<WeaponEvent>()
             .add_systems(
                 FixedUpdate,
                 (before_shots.before(WeaponFrame), after_shots.after(WeaponFrame)).in_set(SimSet::Weapons),
             )
-            .add_plugins((super::impacts::ImpactSoundsPlugin, super::impact_effects::ImpactEffectsPlugin))
+            .add_plugins((
+                super::impacts::ImpactSoundsPlugin,
+                super::impact_effects::ImpactEffectsPlugin,
+            ))
             .insert_resource(pass_materials());
         let mut start = app.world_mut().get_resource_or_init::<StartingWeapons>();
-        if start.0.is_empty() {
-            // The best weapon is drawn: given last.
-            start.0 = vec![KNIFE, AK47];
+        if start.is_empty() {
+            // CS:S's spawn kit: the knife and the team's pistol (Terrorists,
+            // team 1, the Glock; everyone else the USP). Deathmatch adds the
+            // AK-47 for all; the best weapon is drawn: given last.
+            *start = StartingWeapons {
+                team: vec![(Some(1), vec![KNIFE, GLOCK]), (None, vec![KNIFE, USP])],
+                all: vec![AK47],
+            };
         }
     }
 }
@@ -177,92 +253,538 @@ fn knife(e: &mut EntityWorldMut) {
     ));
 }
 
-fn ak47(e: &mut EntityWorldMut) {
-    let accuracy = Inaccuracy {
-        spread: 0.0006,
-        stand: 0.00916,
-        crouch: 0.00687,
-        jump: 0.43044,
-        land: 0.08609,
-        fire: 0.01158,
-        movement: 0.09222,
-        recovery_stand: 0.48815,
-        recovery_crouch: 0.34868,
-        value: 0.00916,
-        on_ground: true,
-        fall_speed: 0.0,
+/// An ammo type: penetration power and reach (measured M13), most rounds
+/// carried (`ammo_<type>_max`, M17).
+#[derive(Clone, Copy, Debug)]
+pub struct Ammo {
+    /// Units of a scale-1 material.
+    pub power: f32,
+    /// Objects this far (units) or farther aren't passed.
+    pub max_distance: f32,
+    pub max: u32,
+}
+
+/// 762MM: power 39 (M13); it still passes at 4000 units, no farther limit
+/// was found.
+pub const AMMO_762MM: Ammo = Ammo {
+    power: 39.0,
+    max_distance: f32::INFINITY,
+    max: 90,
+};
+/// 338MAG: power 45, still passes at 4000 (M13).
+pub const AMMO_338MAG: Ammo = Ammo {
+    power: 45.0,
+    max_distance: f32::INFINITY,
+    max: 30,
+};
+/// 50AE: power 30, passes a player at 1006 units, not at 1015 (M13).
+pub const AMMO_50AE: Ammo = Ammo {
+    power: 30.0,
+    max_distance: 1010.0,
+    max: 35,
+};
+/// 45ACP: power 15 (M13). UNMEASURED distance: the community value 500
+/// (the USP passed doors at 100).
+pub const AMMO_45ACP: Ammo = Ammo {
+    power: 15.0,
+    max_distance: 500.0,
+    max: 100,
+};
+/// 556MM: UNMEASURED power and distance: the community values 35 / 4000
+/// (the same table's 45ACP, 50AE, 762MM and 338MAG powers match M13).
+pub const AMMO_556MM: Ammo = Ammo {
+    power: 35.0,
+    max_distance: 4000.0,
+    max: 90,
+};
+/// 9MM: UNMEASURED power and distance: the community values 21 / 800.
+pub const AMMO_9MM: Ammo = Ammo {
+    power: 21.0,
+    max_distance: 800.0,
+    max: 120,
+};
+
+/// The script's accuracy keys for one mode (`Spread`, `Inaccuracy*`; the
+/// alternate mode's are the `*Alt` keys), tangent units.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AccuracyKeys {
+    pub spread: f32,
+    pub crouch: f32,
+    pub stand: f32,
+    pub jump: f32,
+    pub land: f32,
+    pub fire: f32,
+    pub movement: f32,
+}
+
+impl AccuracyKeys {
+    /// In the spec table's column order: Spread, InaccuracyCrouch,
+    /// InaccuracyStand, InaccuracyJump, InaccuracyLand, InaccuracyFire,
+    /// InaccuracyMove (InaccuracyLadder is not used yet).
+    pub const fn new(v: [f32; 7]) -> Self {
+        Self {
+            spread: v[0],
+            crouch: v[1],
+            stand: v[2],
+            jump: v[3],
+            land: v[4],
+            fire: v[5],
+            movement: v[6],
+        }
+    }
+}
+
+/// What attack2 does on a gun.
+#[derive(Clone, Copy, Debug)]
+pub enum Alt {
+    None,
+    /// Scope levels (FOV per level) and the zoomed max speed (M15); a shot
+    /// unzooms until the next one may fire.
+    Scope {
+        fov: &'static [f32],
+        speed: f32,
+    },
+    /// Screw the silencer on or off; both attacks wait `time` (M16).
+    Silencer {
+        time: f32,
+    },
+    /// Toggle 3-round bursts, rounds `interval` apart (M16).
+    Burst {
+        interval: f32,
+        refire: f32,
+    },
+}
+
+/// One CS:S gun: its script values (key names in the comments), its
+/// view-model durations (spec table "View-model sequence durations") and
+/// the measured recoil.
+pub struct Gun {
+    pub id: &'static str,
+    /// `bucket`.
+    pub slot: u8,
+    /// The view model's draw duration, s.
+    pub draw: f32,
+    /// `MaxPlayerSpeed`, units/s.
+    pub max_speed: f32,
+    /// `FullAuto`.
+    pub automatic: bool,
+    /// `CycleTime`, s.
+    pub cycle: f32,
+    /// `clip_size`.
+    pub clip: u32,
+    /// `primary_ammo`.
+    pub ammo: Ammo,
+    /// The view model's reload duration, s.
+    pub reload: f32,
+    /// `Damage`, hit points.
+    pub damage: f32,
+    /// `Range`, units.
+    pub range: f32,
+    /// `RangeModifier` (per 500 units, M5).
+    pub range_modifier: f32,
+    /// `Penetration`: objects passed.
+    pub penetration: u32,
+    /// `WeaponArmorRatio`.
+    pub armor_ratio: f32,
+    pub accuracy: AccuracyKeys,
+    /// The `*Alt` keys, used in the alternate mode.
+    pub accuracy_alt: Option<AccuracyKeys>,
+    /// `RecoveryTimeCrouch`, `RecoveryTimeStand`, s.
+    pub recovery: (f32, f32),
+    /// Standing, crouched, moving, airborne kick sets (M3); None: no punch.
+    pub recoil: Option<[Kick; 4]>,
+    pub alt: Alt,
+    /// `SoundData`: `single_shot`, the alternate mode's, `empty`.
+    pub fire: &'static str,
+    pub fire_alt: Option<&'static str>,
+    pub empty: &'static str,
+    /// Sounds the view model's sequences play.
+    pub model_sounds: ModelSounds,
+}
+
+/// Sounds a view model's sequences play, in seconds from the sequence's
+/// start: its animation events (event 5004, at cycle x duration), read
+/// from the install's model (`dump cs_source --sequences`).
+pub struct ModelSounds {
+    pub reload: &'static [(f32, &'static str)],
+    pub draw: &'static [(f32, &'static str)],
+    /// The silencer going on (mode 1) and off (mode 0).
+    pub modes: &'static [(u8, f32, &'static str)],
+}
+
+impl ModelSounds {
+    const NONE: Self = Self {
+        reload: &[],
+        draw: &[],
+        modes: &[],
     };
+
+    fn entries(&self) -> impl Iterator<Item = &'static str> {
+        let reload = self.reload.iter().map(|(_, s)| *s);
+        let draw = self.draw.iter().map(|(_, s)| *s);
+        reload.chain(draw).chain(self.modes.iter().map(|(_, _, s)| *s))
+    }
+}
+
+/// No cap on the punch was seen for the semi-automatics (UNMEASURED).
+const NO_CAP: f32 = 90.0;
+
+/// Semi-automatics (USP, Deagle, AWP unscoped; M3): every shot kicks
+/// straight up 2 degrees. Moving, airborne, silenced and scoped shots were
+/// not measured (UNMEASURED: the same).
+const SEMI_AUTO_KICK: [Kick; 4] = [Kick::new((2.0, 0.0), (0.0, 0.0), (NO_CAP, NO_CAP)); 4];
+
+pub const AK47_GUN: Gun = Gun {
+    id: AK47,
+    slot: 0,
+    draw: 1.0,
+    max_speed: 221.0,
+    automatic: true,
+    cycle: 0.1,
+    clip: 30,
+    ammo: AMMO_762MM,
+    reload: 2.4324,
+    damage: 36.0,
+    range: 8192.0,
+    range_modifier: 0.98,
+    penetration: 2,
+    armor_ratio: 1.55,
+    accuracy: AccuracyKeys::new([0.0006, 0.00687, 0.00916, 0.43044, 0.08609, 0.01158, 0.09222]),
+    accuracy_alt: None,
+    recovery: (0.34868, 0.48815),
+    recoil: Some([
+        Kick::new((1.0, 0.175), (0.375, 0.0375), (5.75, 1.75)),
+        // Caps not reached when measured: the standing ones.
+        Kick::new((0.9, 0.15), (0.35, 0.025), (5.75, 1.75)),
+        Kick::new((1.5, 0.225), (0.45, 0.05), (6.5, 2.5)),
+        Kick::new((2.0, 0.5), (1.0, 0.35), (9.0, 6.0)),
+    ]),
+    alt: Alt::None,
+    fire: "Weapon_AK47.Single",
+    fire_alt: None,
+    empty: "Default.ClipEmpty_Rifle",
+    model_sounds: ModelSounds {
+        reload: &[(0.35, "Weapon_AK47.Clipout"), (1.54, "Weapon_AK47.Clipin")],
+        draw: &[(0.3667, "Weapon_AK47.BoltPull")],
+        modes: &[],
+    },
+};
+
+pub const M4A1_GUN: Gun = Gun {
+    id: M4A1,
+    slot: 0,
+    draw: 0.975,
+    max_speed: 230.0,
+    automatic: true,
+    cycle: 0.09,
+    clip: 30,
+    ammo: AMMO_556MM,
+    reload: 3.0541,
+    damage: 33.0,
+    range: 8192.0,
+    range_modifier: 0.97,
+    penetration: 2,
+    armor_ratio: 1.4,
+    accuracy: AccuracyKeys::new([0.0006, 0.00525, 0.007, 0.34151, 0.0683, 0.01266, 0.06872]),
+    accuracy_alt: Some(AccuracyKeys::new([
+        0.00054, 0.00525, 0.007, 0.34846, 0.06969, 0.01165, 0.07039,
+    ])),
+    recovery: (0.26973, 0.37762),
+    recoil: Some([
+        Kick::new((0.65, 0.25), (0.35, 0.015), (3.5, 2.25)),
+        Kick::new((0.6, 0.2), (0.3, 0.0125), (3.25, 2.0)),
+        // UNMEASURED: moving and airborne as standing.
+        Kick::new((0.65, 0.25), (0.35, 0.015), (3.5, 2.25)),
+        Kick::new((0.65, 0.25), (0.35, 0.015), (3.5, 2.25)),
+    ]),
+    alt: Alt::Silencer { time: 2.0 },
+    fire: "Weapon_M4A1.Single",
+    fire_alt: Some("Weapon_M4A1.Silenced"),
+    empty: "Default.ClipEmpty_Rifle",
+    model_sounds: M4A1_SOUNDS,
+};
+
+pub const AWP_GUN: Gun = Gun {
+    id: AWP,
+    slot: 0,
+    draw: 1.0,
+    max_speed: 210.0,
+    automatic: false,
+    cycle: 1.5,
+    clip: 10,
+    ammo: AMMO_338MAG,
+    reload: 3.6667,
+    damage: 115.0,
+    range: 8192.0,
+    range_modifier: 0.99,
+    penetration: 3,
+    armor_ratio: 1.95,
+    accuracy: AccuracyKeys::new([0.0002, 0.0606, 0.0808, 0.546, 0.0546, 0.14, 0.273]),
+    accuracy_alt: Some(AccuracyKeys::new([0.0002, 0.0015, 0.002, 0.546, 0.0546, 0.14, 0.273])),
+    recovery: (0.24671, 0.34539),
+    recoil: Some(SEMI_AUTO_KICK),
+    alt: Alt::Scope {
+        fov: &[40.0, 10.0],
+        speed: 150.0,
+    },
+    fire: "Weapon_AWP.Single",
+    fire_alt: None,
+    empty: "Default.ClipEmpty_Rifle",
+    // v_snip_awp.mdl is version 48, which `dump` doesn't read yet.
+    model_sounds: ModelSounds::NONE,
+};
+
+pub const USP_GUN: Gun = Gun {
+    id: USP,
+    slot: 1,
+    draw: 1.0,
+    max_speed: 250.0,
+    automatic: false,
+    cycle: 0.15,
+    clip: 12,
+    ammo: AMMO_45ACP,
+    reload: 2.6757,
+    damage: 34.0,
+    range: 4096.0,
+    range_modifier: 0.79,
+    penetration: 1,
+    armor_ratio: 1.0,
+    accuracy: AccuracyKeys::new([0.004, 0.006, 0.008, 0.28725, 0.05745, 0.03495, 0.01724]),
+    accuracy_alt: Some(AccuracyKeys::new([
+        0.003, 0.006, 0.008, 0.29625, 0.05925, 0.02504, 0.01778,
+    ])),
+    recovery: (0.23371, 0.28045),
+    recoil: Some(SEMI_AUTO_KICK),
+    alt: Alt::Silencer { time: 3.0 },
+    fire: "Weapon_USP.Single",
+    fire_alt: Some("Weapon_USP.SilencedShot"),
+    empty: "Default.ClipEmpty_Pistol",
+    model_sounds: USP_SOUNDS,
+};
+
+pub const GLOCK_GUN: Gun = Gun {
+    id: GLOCK,
+    slot: 1,
+    draw: 1.0667,
+    max_speed: 250.0,
+    automatic: false,
+    cycle: 0.15,
+    clip: 20,
+    ammo: AMMO_9MM,
+    reload: 2.1429,
+    damage: 25.0,
+    range: 4096.0,
+    range_modifier: 0.75,
+    penetration: 1,
+    armor_ratio: 1.05,
+    accuracy: AccuracyKeys::new([0.004, 0.0075, 0.01, 0.2775, 0.0555, 0.03167, 0.01665]),
+    accuracy_alt: Some(AccuracyKeys::new([
+        0.004, 0.0075, 0.01, 0.2775, 0.0555, 0.02217, 0.01665,
+    ])),
+    recovery: (0.21875, 0.26249),
+    // Measured M3: the Glock doesn't punch the view at all.
+    recoil: None,
+    // Measured M16: rounds on ticks 0, 4 and 8. UNMEASURED: the next pull
+    // 0.5 s after the first round.
+    alt: Alt::Burst {
+        interval: 0.06,
+        refire: 0.5,
+    },
+    fire: "Weapon_Glock.Single",
+    fire_alt: None,
+    empty: "Default.ClipEmpty_Pistol",
+    model_sounds: GLOCK_SOUNDS,
+};
+
+pub const DEAGLE_GUN: Gun = Gun {
+    id: DEAGLE,
+    slot: 1,
+    draw: 1.0,
+    max_speed: 250.0,
+    automatic: false,
+    cycle: 0.225,
+    clip: 7,
+    ammo: AMMO_50AE,
+    reload: 2.1667,
+    damage: 54.0,
+    range: 4096.0,
+    range_modifier: 0.81,
+    penetration: 2,
+    armor_ratio: 1.5,
+    accuracy: AccuracyKeys::new([0.004, 0.00975, 0.013, 0.345, 0.069, 0.055, 0.0207]),
+    accuracy_alt: None,
+    recovery: (0.32236, 0.38683),
+    recoil: Some(SEMI_AUTO_KICK),
+    alt: Alt::None,
+    fire: "Weapon_DEagle.Single",
+    fire_alt: None,
+    empty: "Default.ClipEmpty_Pistol",
+    model_sounds: DEAGLE_SOUNDS,
+};
+
+// The silenced and unsilenced sequences play the same sounds.
+const M4A1_SOUNDS: ModelSounds = ModelSounds {
+    reload: &[
+        (0.6756, "Weapon_M4A1.Clipout"),
+        (1.4324, "Weapon_M4A1.Clipin"),
+        (2.3785, "Weapon_M4A1.Boltpull"),
+    ],
+    draw: &[(0.025, "Weapon_M4A1.Deploy"), (0.425, "Weapon_M4A1.Boltpull")],
+    modes: &[
+        (1, 0.9333, "Weapon_M4A1.Silencer_On"),
+        (0, 0.7, "Weapon_M4A1.Silencer_Off"),
+    ],
+};
+const USP_SOUNDS: ModelSounds = ModelSounds {
+    reload: &[
+        (0.0, "Weapon_USP.Slideback2"),
+        (0.4594, "Weapon_USP.Clipout"),
+        (1.081, "Weapon_USP.Clipin"),
+        (2.2163, "Weapon_USP.Sliderelease"),
+    ],
+    draw: &[(0.5417, "Weapon_USP.Slideback")],
+    modes: &[
+        (1, 1.027, "Weapon_USP.AttachSilencer"),
+        (0, 0.7838, "Weapon_USP.DetachSilencer"),
+    ],
+};
+const GLOCK_SOUNDS: ModelSounds = ModelSounds {
+    reload: &[
+        (0.0, "Weapon_Glock.Slideback"),
+        (0.4001, "Weapon_Glock.Clipout"),
+        (1.0858, "Weapon_Glock.Clipin"),
+        (1.8285, "Weapon_Glock.Sliderelease"),
+    ],
+    draw: &[(0.3778, "Weapon_Glock.Sliderelease")],
+    modes: &[],
+};
+const DEAGLE_SOUNDS: ModelSounds = ModelSounds {
+    reload: &[
+        (0.0, "Weapon_DEagle.Slideback"),
+        (0.4667, "Weapon_DEagle.Clipout"),
+        (1.1334, "Weapon_DEagle.Clipin"),
+    ],
+    draw: &[(0.0333, "Weapon_DEagle.Deploy")],
+    modes: &[],
+};
+
+/// Every gun, for tables and tests.
+pub const GUNS: &[&Gun] = &[&AK47_GUN, &M4A1_GUN, &AWP_GUN, &USP_GUN, &GLOCK_GUN, &DEAGLE_GUN];
+
+fn timed(sounds: &[(f32, &str)]) -> Vec<(f32, String)> {
+    sounds.iter().map(|(t, s)| (*t, s.to_string())).collect()
+}
+
+/// Build a gun's parts on `e`.
+pub fn gun(e: &mut EntityWorldMut, g: &Gun) {
+    let accuracy = Inaccuracy::new(g.accuracy, g.accuracy_alt, g.recovery);
     e.insert((
         Weapon {
-            id: AK47,
-            slot: 0,
+            id: g.id,
+            slot: g.slot,
             owner: None,
-            draw_time: 1.0,
-            max_speed: Some(221.0 * UNIT),
+            draw_time: g.draw,
+            max_speed: Some(g.max_speed * UNIT),
         },
         Trigger {
-            automatic: true,
-            cycle: 0.1,
+            automatic: g.automatic,
+            cycle: g.cycle,
+            // Held: next = previous next + cycle; a fresh press: now + cycle
+            // (M4), semi-automatics alike.
             timing: FireTiming::CarryOver,
         },
         Magazine {
-            clip: 30,
-            size: 30,
-            // Max carry: ammo_762mm_max (M17).
-            reserve: 90,
-            reserve_max: 90,
-            reload_time: 2.4324,
+            clip: g.clip,
+            size: g.clip,
+            // Deathmatch: the reserve starts full.
+            reserve: g.ammo.max,
+            reserve_max: g.ammo.max,
+            reload_time: g.reload,
             reload_while_held: false,
         },
         Hitscan {
-            range: 8192.0 * UNIT,
+            range: g.range * UNIT,
             pellets: 1,
             spread: SpreadShape::Disc {
                 inaccuracy: accuracy.value,
-                spread: accuracy.spread,
+                spread: g.accuracy.spread,
             },
             // Bullets go along view + 2 x punch (M3).
             punch_scale: 2.0,
         },
         DamageEffect {
-            amount: 36.0 * HP,
-            // RangeModifier per 500 units (M5).
-            falloff: 0.98,
+            amount: g.damage * HP,
+            falloff: g.range_modifier,
             falloff_step: 500.0 * UNIT,
             hitgroups: HITGROUPS,
             // UNMEASURED (Q8): the template's .50 AE impulse, kg·in/s.
             impulse: 2400.0 * UNIT,
             // Damage is truncated to whole hit points (M5).
             quantum: HP,
-            armor_ratio: Some(1.55),
+            armor_ratio: Some(g.armor_ratio),
         },
         Penetration {
-            // 762MM: power 39 units, two objects (M13). It still passes at
-            // 4000 units; no farther limit was found.
-            power: 39.0 * UNIT,
-            objects: 2,
-            max_distance: f32::INFINITY,
+            power: g.ammo.power * UNIT,
+            objects: g.penetration,
+            max_distance: g.ammo.max_distance * UNIT,
         },
         accuracy,
-        Recoil {
-            standing: Kick::new((1.0, 0.175), (0.375, 0.0375), (5.75, 1.75)),
-            // Caps not reached when measured: the standing ones.
-            crouched: Kick::new((0.9, 0.15), (0.35, 0.025), (5.75, 1.75)),
-            moving: Kick::new((1.5, 0.225), (0.45, 0.05), (6.5, 2.5)),
-            airborne: Kick::new((2.0, 0.5), (1.0, 0.35), (9.0, 6.0)),
-            ..default()
-        },
         WeaponSounds {
-            fire: Some("Weapon_AK47.Single".into()),
-            empty: Some("Default.ClipEmpty_Rifle".into()),
+            fire: Some(g.fire.into()),
+            fire_alt: g.fire_alt.map(Into::into),
+            empty: Some(g.empty.into()),
             deploy: None,
-            // View-model animation events (spec 3.8).
-            reload: vec![
-                (0.35, "Weapon_AK47.Clipout".into()),
-                (1.54, "Weapon_AK47.Clipin".into()),
-            ],
+            reload: timed(g.model_sounds.reload),
+            draw: timed(g.model_sounds.draw),
+            modes: g
+                .model_sounds
+                .modes
+                .iter()
+                .map(|(m, t, s)| (*m, *t, s.to_string()))
+                .collect(),
         },
     ));
+    if let Some([standing, crouched, moving, airborne]) = g.recoil {
+        e.insert(Recoil {
+            standing,
+            crouched,
+            moving,
+            airborne,
+            ..default()
+        });
+    }
+    match g.alt {
+        Alt::None => {}
+        Alt::Scope { fov, speed } => {
+            // Each step: next secondary in 0.3 s (M15).
+            let mut modes = AltModes::new(fov.len() as u8 + 1, 0.3, false);
+            modes.sound = Some("Default.Zoom".into());
+            e.insert((
+                modes,
+                Zoom {
+                    fov: fov.to_vec(),
+                    max_speed: Some(speed * UNIT),
+                    unzoom_after_shot: true,
+                    scope: true,
+                },
+            ));
+        }
+        Alt::Silencer { time } => {
+            e.insert(AltModes::new(2, time, true));
+        }
+        Alt::Burst { interval, refire } => {
+            // 0.3 s secondary delay (M16).
+            e.insert((
+                AltModes::new(2, 0.3, false),
+                Burst {
+                    mode: 1,
+                    count: 3,
+                    interval,
+                    refire,
+                },
+            ));
+        }
+    }
 }
 
 /// CS:S's accuracy penalty (measured M1/M2; values are the weapon script's
@@ -270,16 +792,13 @@ fn ak47(e: &mut EntityWorldMut) {
 /// at `stand` (`crouch` when ducked); the excess falls to 10 % in the
 /// recovery time; a shot adds `fire`, a jump `jump`, a landing `land` x
 /// the fall speed / 301.99 u/s. Moving adds `movement` x
-/// clamp((v - vmax/3) / (2 vmax/3)) at shot time.
+/// clamp((v - vmax/3) / (2 vmax/3)) at shot time. In an alternate mode
+/// (`AltModes`: silenced, burst, scoped) the `*Alt` keys apply, with the
+/// same recovery times (the scripts have no Alt ones).
 #[derive(Component, Clone, Debug)]
 pub struct Inaccuracy {
-    pub spread: f32,
-    pub stand: f32,
-    pub crouch: f32,
-    pub jump: f32,
-    pub land: f32,
-    pub fire: f32,
-    pub movement: f32,
+    pub keys: AccuracyKeys,
+    pub alt: Option<AccuracyKeys>,
     pub recovery_stand: f32,
     pub recovery_crouch: f32,
     /// The current penalty.
@@ -287,6 +806,30 @@ pub struct Inaccuracy {
     on_ground: bool,
     /// Vertical speed on the previous tick, u/s (for landings).
     fall_speed: f32,
+}
+
+impl Inaccuracy {
+    /// From the keys and (`RecoveryTimeCrouch`, `RecoveryTimeStand`); starts
+    /// at rest standing.
+    pub fn new(keys: AccuracyKeys, alt: Option<AccuracyKeys>, recovery: (f32, f32)) -> Self {
+        Self {
+            keys,
+            alt,
+            recovery_crouch: recovery.0,
+            recovery_stand: recovery.1,
+            value: keys.stand,
+            on_ground: true,
+            fall_speed: 0.0,
+        }
+    }
+
+    /// The keys for `mode` (0 = normal).
+    pub fn keys(&self, mode: u8) -> AccuracyKeys {
+        match (mode, self.alt) {
+            (1.., Some(alt)) => alt,
+            _ => self.keys,
+        }
+    }
 }
 
 /// Airborne decay of the penalty's excess per 0.015 s tick (measured M1:
@@ -362,7 +905,7 @@ fn decay_punch(p: Vec2, dt: f32) -> Vec2 {
 /// active weapon's spread is set from the penalty and the movement term.
 fn before_shots(
     mut owners: Query<(&Inventory, &MovementState, &Velocity, &Intent, Option<&mut ViewPunch>)>,
-    mut weapons: Query<(&Weapon, &mut Inaccuracy, &mut Hitscan)>,
+    mut weapons: Query<(&Weapon, &mut Inaccuracy, &mut Hitscan, Option<&AltModes>)>,
     time: Res<Time>,
 ) {
     let dt = time.delta_secs();
@@ -374,25 +917,26 @@ fn before_shots(
             }
         }
         let Some(active) = inv.active else { continue };
-        let Ok((weapon, mut acc, mut scan)) = weapons.get_mut(active) else {
+        let Ok((weapon, mut acc, mut scan, modes)) = weapons.get_mut(active) else {
             continue;
         };
-        let rest = if state.crouching { acc.crouch } else { acc.stand };
+        let keys = acc.keys(modes.map_or(0, |m| m.current));
+        let rest = if state.crouching { keys.crouch } else { keys.stand };
         let recovery = if state.crouching {
             acc.recovery_crouch
         } else {
             acc.recovery_stand
         };
         if acc.on_ground && !state.on_ground && vel.0.y > 0.0 {
-            acc.value += acc.jump;
+            acc.value += keys.jump;
         } else if !acc.on_ground && state.on_ground {
             // Scaled by the vertical speed on the tick before (M1).
-            acc.value += acc.land * acc.fall_speed.abs() / LAND_SPEED;
+            acc.value += keys.land * acc.fall_speed.abs() / LAND_SPEED;
         }
         acc.on_ground = state.on_ground;
         acc.fall_speed = vel.0.y / UNIT;
         acc.value = if !state.on_ground {
-            let target = acc.crouch;
+            let target = keys.crouch;
             (target + (acc.value - target) * AIR_DECAY_PER_TICK.powf(dt / 0.015)).max(rest.min(acc.value))
         } else if acc.value > rest {
             rest + (acc.value - rest) * 0.1f32.powf(dt / recovery)
@@ -401,10 +945,10 @@ fn before_shots(
         };
         let speed = vel.0.xz().length() / UNIT;
         let vmax = weapon.max_speed.unwrap_or(250.0 * UNIT) / UNIT;
-        let moving = ((speed - vmax / 3.0) / (vmax * 2.0 / 3.0)).clamp(0.0, 1.0) * acc.movement;
+        let moving = ((speed - vmax / 3.0) / (vmax * 2.0 / 3.0)).clamp(0.0, 1.0) * keys.movement;
         scan.spread = SpreadShape::Disc {
             inaccuracy: acc.value + moving,
-            spread: acc.spread,
+            spread: keys.spread,
         };
     }
 }
@@ -413,7 +957,7 @@ fn before_shots(
 /// view.
 fn after_shots(
     mut events: MessageReader<WeaponEvent>,
-    mut weapons: Query<(Option<&mut Inaccuracy>, Option<&mut Recoil>)>,
+    mut weapons: Query<(Option<&mut Inaccuracy>, Option<&mut Recoil>, Option<&AltModes>)>,
     mut owners: Query<(&MovementState, &Velocity, Option<&mut ViewPunch>)>,
     mut commands: Commands,
     time: Res<Time>,
@@ -423,11 +967,13 @@ fn after_shots(
         if !matches!(e.kind, WeaponEventKind::Shot { .. }) {
             continue;
         }
-        let Ok((acc, recoil)) = weapons.get_mut(e.weapon) else {
+        let Ok((acc, recoil, modes)) = weapons.get_mut(e.weapon) else {
             continue;
         };
         if let Some(mut acc) = acc {
-            acc.value += acc.fire;
+            // (A sniper shot has already unzoomed: the AWP's fire key is
+            // the same in both modes.)
+            acc.value += acc.keys(modes.map_or(0, |m| m.current)).fire;
         }
         let Some(mut r) = recoil else { continue };
         let Ok((state, vel, punch)) = owners.get_mut(e.owner) else {

@@ -18,7 +18,7 @@ pub use deliver::{falloff, hitgroup_at, spread_dir};
 
 use crate::{
     console::{Command, Console, ConsoleAppExt},
-    core::{Health, Hitgroup, Intent, LocalPlayer, MaxSpeed, MovementState, SimSet},
+    core::{Health, Hitgroup, Intent, LocalPlayer, MaxSpeed, MovementState, SimSet, Team},
     map::PlaySound,
 };
 
@@ -45,7 +45,7 @@ impl Plugin for WeaponPlugin {
                 FixedUpdate,
                 (
                     (give_starting_weapons, select_weapons).chain().before(SimSet::Movement),
-                    (weapon_frame.in_set(WeaponFrame), timed_sounds)
+                    (weapon_frame.in_set(WeaponFrame), timed_sounds, apply_zoom)
                         .chain()
                         .in_set(SimSet::Weapons),
                 ),
@@ -238,10 +238,34 @@ impl RegisterWeapons for App {
     }
 }
 
-/// Weapons every new character gets, first one drawn last (Source draws
-/// the best weapon).
+/// Weapons every new character gets, the last one given drawn (Source
+/// draws the best weapon): its team's list (`team`: the entry for its
+/// team, else the one with no team), then `all`.
 #[derive(Resource, Default, Clone)]
-pub struct StartingWeapons(pub Vec<&'static str>);
+pub struct StartingWeapons {
+    pub team: Vec<(Option<u8>, Vec<&'static str>)>,
+    pub all: Vec<&'static str>,
+}
+
+impl StartingWeapons {
+    /// What a character of `team` starts with, in giving order.
+    pub fn for_team(&self, team: Option<u8>) -> Vec<&'static str> {
+        let own = self
+            .team
+            .iter()
+            .find(|(t, _)| t.is_some() && *t == team)
+            .or_else(|| self.team.iter().find(|(t, _)| t.is_none()));
+        own.map(|(_, ids)| ids.clone())
+            .unwrap_or_default()
+            .into_iter()
+            .chain(self.all.iter().copied())
+            .collect()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.all.is_empty() && self.team.iter().all(|(_, ids)| ids.is_empty())
+    }
+}
 
 /// Give `owner` the weapon `id`; draws it if they hold nothing. Returns the
 /// weapon entity.
@@ -267,17 +291,18 @@ pub fn give(world: &mut World, owner: Entity, id: &str) -> Option<Entity> {
 }
 
 fn give_starting_weapons(world: &mut World) {
-    let new: Vec<Entity> = world
-        .query_filtered::<Entity, (With<Intent>, With<Health>, Without<Inventory>)>()
+    let new: Vec<(Entity, Option<u8>)> = world
+        .query_filtered::<(Entity, Option<&Team>), (With<Intent>, With<Health>, Without<Inventory>)>()
         .iter(world)
+        .map(|(e, t)| (e, t.map(|t| t.0)))
         .collect();
     if new.is_empty() {
         return;
     }
-    let ids = world.resource::<StartingWeapons>().0.clone();
-    for owner in new {
+    let start = world.resource::<StartingWeapons>().clone();
+    for (owner, team) in new {
         world.entity_mut(owner).insert(Inventory::default());
-        for id in &ids {
+        for id in start.for_team(team) {
             give(world, owner, id);
         }
     }
@@ -402,7 +427,10 @@ impl Default for PassMaterials {
     fn default() -> Self {
         Self {
             by_class: Vec::new(),
-            default: PassMaterial { scale: 1.0, damage: 0.5 },
+            default: PassMaterial {
+                scale: 1.0,
+                damage: 0.5,
+            },
             character: CharacterPass {
                 cost: f32::INFINITY,
                 damage: 0.5,
@@ -456,6 +484,68 @@ pub enum SpreadShape {
 /// recoil add and decay it.
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
 pub struct ViewPunch(pub Vec2);
+
+/// Secondary attack: step through the weapon's modes (0 = normal; scope
+/// levels, silencer on, burst). Other parts read `current`: `Zoom`,
+/// `Burst`, `WeaponSounds::fire_alt`, games' accuracy. Holding the button
+/// steps again every `toggle_time`.
+#[derive(Component, Clone, Debug)]
+pub struct AltModes {
+    /// Modes including the normal one.
+    pub count: u8,
+    pub current: u8,
+    /// Seconds until the secondary attack again (and the primary too when
+    /// `blocks_primary`, e.g. while a silencer is screwed on).
+    pub toggle_time: f32,
+    pub blocks_primary: bool,
+    /// Played on every step.
+    pub sound: Option<String>,
+}
+
+impl AltModes {
+    pub fn new(count: u8, toggle_time: f32, blocks_primary: bool) -> Self {
+        Self {
+            count,
+            current: 0,
+            toggle_time,
+            blocks_primary,
+            sound: None,
+        }
+    }
+}
+
+/// Modes 1.. of `AltModes` look through a scope: the owner's view narrows
+/// to `fov[mode - 1]` (horizontal degrees at 4:3, like Source's `fov`) and
+/// it moves at most `max_speed`. Switching away and reloading unzoom.
+#[derive(Component, Clone, Debug)]
+pub struct Zoom {
+    pub fov: Vec<f32>,
+    pub max_speed: Option<f32>,
+    /// A shot unzooms; the zoom comes back when the weapon can fire again
+    /// (CS:S's AWP and scout).
+    pub unzoom_after_shot: bool,
+    /// Drawn as a sniper scope (overlay, no view model).
+    pub scope: bool,
+}
+
+/// While the weapon is in mode `mode`, one trigger pull fires `count`
+/// rounds `interval` seconds apart, and the next pull may come `refire`
+/// seconds after the first round.
+#[derive(Component, Clone, Debug)]
+pub struct Burst {
+    pub mode: u8,
+    pub count: u32,
+    pub interval: f32,
+    pub refire: f32,
+}
+
+/// On a character looking through a zoomed weapon: its field of view
+/// (horizontal degrees at 4:3) and whether that is a sniper scope.
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+pub struct Zoomed {
+    pub fov: f32,
+    pub scope: bool,
+}
 
 /// Delivery: melee swings, one per attack button.
 #[derive(Component, Clone, Debug)]
@@ -579,10 +669,17 @@ impl HitgroupScale {
 #[derive(Component, Clone, Debug, Default)]
 pub struct WeaponSounds {
     pub fire: Option<String>,
+    /// Instead of `fire` in any alternate mode (`AltModes`), e.g. silenced.
+    pub fire_alt: Option<String>,
     pub empty: Option<String>,
     pub deploy: Option<String>,
     /// Entries at times after a reload starts (view-model animation events).
     pub reload: Vec<(f32, String)>,
+    /// Entries at times after the weapon is drawn.
+    pub draw: Vec<(f32, String)>,
+    /// (mode, time, entry): played that long after stepping to that
+    /// `AltModes` mode with attack2 (e.g. the silencer going on or off).
+    pub modes: Vec<(u8, f32, String)>,
 }
 
 /// Source's per-weapon timers and flags.
@@ -602,6 +699,11 @@ pub struct WeaponState {
     pub last_swing: [Option<f64>; 2],
     /// Sounds waiting for their time (reload parts).
     pending: Vec<(f64, String)>,
+    /// Rounds of the current burst still to fire, and when the next goes.
+    pub burst_left: u32,
+    pub next_burst_round: f64,
+    /// The zoom mode to return to once the weapon can fire again.
+    pub rezoom: Option<u8>,
 }
 
 /// What weapons did this tick, for HUDs, effects and tests.
@@ -645,6 +747,11 @@ pub enum WeaponEventKind {
         at: Option<(Vec3, Vec3, Entity)>,
     },
     DryFire,
+    /// The weapon stepped to this `AltModes` mode (attack2, or a sniper
+    /// shot unzooming and re-zooming).
+    ModeChanged {
+        mode: u8,
+    },
     ReloadStarted,
     Reloaded,
 }
@@ -654,7 +761,13 @@ pub enum WeaponEventKind {
 
 fn select_weapons(
     mut owners: Query<(Entity, &Intent, &mut Inventory, &Transform)>,
-    mut weapons: Query<(&Weapon, &mut WeaponState, Option<&WeaponSounds>)>,
+    mut weapons: Query<(
+        &Weapon,
+        &mut WeaponState,
+        Option<&WeaponSounds>,
+        Option<&mut AltModes>,
+        Option<&Zoom>,
+    )>,
     mut commands: Commands,
     mut events: MessageWriter<WeaponEvent>,
     mut play: MessageWriter<PlaySound>,
@@ -697,15 +810,21 @@ fn select_weapons(
         if inv.active == Some(want) {
             continue;
         }
-        // Holster: cancels a reload; CS:S models have no holster animation.
+        // Holster: cancels a reload, a burst and the zoom; CS:S models have
+        // no holster animation.
         if let Some(old) = inv.active
-            && let Ok((_, mut st, _)) = weapons.get_mut(old)
+            && let Ok((_, mut st, _, modes, zoom)) = weapons.get_mut(old)
         {
             st.reload_end = None;
             st.pending.clear();
             st.fire_duration = 0.0;
+            st.burst_left = 0;
+            st.rezoom = None;
+            if let (Some(mut modes), Some(_)) = (modes, zoom) {
+                modes.current = 0;
+            }
         }
-        let Ok((w, mut st, sounds)) = weapons.get_mut(want) else {
+        let Ok((w, mut st, sounds, ..)) = weapons.get_mut(want) else {
             continue;
         };
         // Deploy (spec 3.3).
@@ -722,6 +841,9 @@ fn select_weapons(
         };
         if let Some(s) = sounds.and_then(|s| s.deploy.clone()) {
             play.write(owner_sound(s, owner, at.translation, CHAN_ITEM));
+        }
+        if let Some(s) = sounds {
+            st.pending = s.draw.iter().map(|(t, e)| (now + *t as f64, e.clone())).collect();
         }
         events.write(WeaponEvent {
             owner,
@@ -758,10 +880,67 @@ struct WeaponParts {
     effect: Option<&'static DamageEffect>,
     penetration: Option<&'static Penetration>,
     sounds: Option<&'static WeaponSounds>,
+    modes: Option<&'static mut AltModes>,
+    zoom: Option<&'static Zoom>,
+    burst: Option<&'static Burst>,
+}
+
+impl WeaponPartsItem<'_, '_> {
+    fn mode(&self) -> u8 {
+        self.modes.as_ref().map_or(0, |m| m.current)
+    }
+
+    /// Change mode, telling the HUD and view model.
+    fn set_mode(&mut self, mode: u8, owner: Entity, events: &mut MessageWriter<WeaponEvent>) {
+        let Some(m) = self.modes.as_mut() else { return };
+        if m.current == mode {
+            return;
+        }
+        m.current = mode;
+        events.write(WeaponEvent {
+            owner,
+            weapon: self.entity,
+            kind: WeaponEventKind::ModeChanged { mode },
+        });
+    }
+
+    /// Fire up to `rounds` from the clip: traces, sounds; returns how many.
+    fn fire_rounds(&mut self, ctx: &mut deliver::Shot, rounds: u32) -> u32 {
+        let mut shots = rounds;
+        if let Some(mag) = self.magazine.as_mut() {
+            shots = shots.min(mag.clip);
+            mag.clip -= shots;
+        }
+        let alt = self.mode() > 0;
+        for i in 0..shots {
+            if let (Some(scan), Some(effect)) = (self.hitscan, self.effect) {
+                ctx.seed = ctx.seed.wrapping_add(i);
+                ctx.fire(scan, effect, self.penetration);
+            }
+            let sound = self.sounds.and_then(|s| {
+                if alt && s.fire_alt.is_some() {
+                    s.fire_alt.clone()
+                } else {
+                    s.fire.clone()
+                }
+            });
+            if let Some(s) = sound {
+                ctx.w.play.write(owner_sound(s, ctx.owner, ctx.eye, CHAN_WEAPON));
+            }
+        }
+        self.state.burst += shots;
+        shots
+    }
 }
 
 /// Seconds between dry-fire clicks (spec: empty_sound_interval).
 const EMPTY_SOUND_INTERVAL: f64 = 0.5;
+
+/// Timers that come due exactly on a tick fire on that tick: CS:S does
+/// (measured M4/M8: the M4A1's 0.975 s draw takes 65 ticks, its 0.09 s
+/// cycle 6, the pistols' 0.15 s 10), while our f32 durations widened to
+/// f64 land a hair past the tick. Times are compared with this slack.
+const TIME_SLACK: f64 = 1e-5;
 
 #[allow(clippy::too_many_arguments)]
 fn weapon_frame(
@@ -779,6 +958,8 @@ fn weapon_frame(
     time: Res<Time>,
 ) {
     let now = time.elapsed_secs_f64();
+    // Compare timers against this; record new ones from `now`.
+    let due = now + TIME_SLACK;
     let dt = time.delta_secs();
     for (owner, intent, mut inv, transform, state, health, punch) in &mut owners {
         if health.is_some_and(|h| h.current <= 0.0) {
@@ -794,8 +975,16 @@ fn weapon_frame(
         if !intent.fire {
             w.state.burst = 0;
         }
+        // A sniper shot's zoom comes back when the weapon can fire again
+        // (measured M15).
+        if let Some(mode) = w.state.rezoom
+            && due >= w.state.next_primary
+        {
+            w.state.rezoom = None;
+            w.set_mode(mode, owner, &mut world.events);
+        }
         // Busy (drawing, reloading): only the timers run.
-        if now < inv.next_attack {
+        if due < inv.next_attack {
             continue;
         }
         let eye = transform.translation + state.eye_offset;
@@ -816,7 +1005,7 @@ fn weapon_frame(
 
         // 2. Reload completion.
         if let Some(end) = w.state.reload_end
-            && now >= end
+            && due >= end
         {
             if let Some(mag) = w.magazine.as_mut() {
                 let n = (mag.size - mag.clip).min(mag.reserve);
@@ -833,11 +1022,20 @@ fn weapon_frame(
             });
         }
 
-        // 3. Secondary attack has priority (melee only for now).
+        // The rest of a burst fires on its own, button or not (M16).
+        if w.state.burst_left > 0 && due >= w.state.next_burst_round {
+            w.state.burst_left -= 1;
+            w.state.next_burst_round += w.burst.map_or(0.0, |b| b.interval) as f64;
+            if w.fire_rounds(&mut ctx, 1) == 0 {
+                w.state.burst_left = 0;
+            }
+        }
+
+        // 3. Secondary attack has priority: a melee swing or the next mode.
         let mut blocked = false;
         if intent.secondary
             && let Some(swing) = w.melee.and_then(|m| m.secondary.clone())
-            && w.state.next_secondary <= now
+            && w.state.next_secondary <= due
         {
             let swing = follow_up(&swing, w.state.last_swing[1], now);
             let hit = ctx.swing(&swing, true);
@@ -845,10 +1043,31 @@ fn weapon_frame(
             w.state.next_secondary = own;
             w.state.next_primary = other;
             blocked = true;
+        } else if intent.secondary
+            && let Some(modes) = w.modes.as_ref().map(|m| (**m).clone())
+            && w.state.next_secondary <= due
+        {
+            // Each step sets only the secondary timer (measured M15), but a
+            // silencer blocks both (M16).
+            w.state.rezoom = None;
+            w.state.next_secondary = now + modes.toggle_time as f64;
+            if modes.blocks_primary {
+                w.state.next_primary = w.state.next_secondary;
+            }
+            if let Some(s) = modes.sound {
+                ctx.w.play.write(owner_sound(s, owner, eye, CHAN_ITEM));
+            }
+            let next = (modes.current + 1) % modes.count.max(1);
+            if let Some(s) = w.sounds {
+                let timed = s.modes.iter().filter(|(m, ..)| *m == next);
+                w.state.pending = timed.map(|(_, t, e)| (now + *t as f64, e.clone())).collect();
+            }
+            w.set_mode(next, owner, &mut ctx.w.events);
+            blocked = true;
         }
 
         // 4. Primary attack.
-        if intent.fire && !blocked && w.state.next_primary <= now {
+        if intent.fire && !blocked && w.state.next_primary <= due {
             let automatic = w.trigger.is_none_or(|t| t.automatic);
             if !automatic && w.state.burst > 0 {
                 // Semi-automatic: wait for a fresh press.
@@ -885,6 +1104,14 @@ fn weapon_frame(
                     w.state.next_primary = own;
                     w.state.next_secondary = other;
                     w.state.burst += 1;
+                } else if let Some(burst) = w.burst.filter(|b| b.mode == w.mode() && b.count > 0).cloned() {
+                    // A burst: the first round now, the rest on their own.
+                    if w.fire_rounds(&mut ctx, 1) > 0 {
+                        w.state.burst_left = burst.count - 1;
+                        w.state.next_burst_round = now + burst.interval as f64;
+                    }
+                    w.state.next_primary = now + burst.refire as f64;
+                    w.state.next_secondary = w.state.next_primary;
                 } else if let Some(trigger) = w.trigger.cloned() {
                     let mut shots = 0;
                     match trigger.timing {
@@ -894,7 +1121,7 @@ fn weapon_frame(
                             w.state.next_secondary = w.state.next_primary;
                         }
                         FireTiming::Accumulate => {
-                            while w.state.next_primary <= now {
+                            while w.state.next_primary <= due {
                                 shots += 1;
                                 w.state.next_primary += trigger.cycle as f64;
                             }
@@ -906,26 +1133,19 @@ fn weapon_frame(
                             w.state.next_secondary = w.state.next_primary;
                         }
                     }
-                    if let Some(mag) = w.magazine.as_mut() {
-                        shots = shots.min(mag.clip);
-                        mag.clip -= shots;
+                    let fired = w.fire_rounds(&mut ctx, shots);
+                    // A sniper shot unzooms until it can fire again (M15).
+                    let mode = w.mode();
+                    if fired > 0 && mode > 0 && w.zoom.is_some_and(|z| z.unzoom_after_shot) {
+                        w.state.rezoom = Some(mode);
+                        w.set_mode(0, owner, &mut ctx.w.events);
                     }
-                    for i in 0..shots {
-                        if let (Some(scan), Some(effect)) = (w.hitscan, w.effect) {
-                            ctx.seed = ctx.seed.wrapping_add(i);
-                            ctx.fire(scan, effect, w.penetration);
-                        }
-                        if let Some(s) = w.sounds.and_then(|s| s.fire.clone()) {
-                            ctx.w.play.write(owner_sound(s, owner, eye, CHAN_WEAPON));
-                        }
-                    }
-                    w.state.burst += shots;
                 }
             }
         }
 
         // 5. Reload key.
-        if intent.reload && w.state.next_primary <= now && w.state.reload_end.is_none() {
+        if intent.reload && w.state.next_primary <= due && w.state.reload_end.is_none() {
             try_reload(&mut w, &mut inv, now, owner, &mut ctx.w.events);
             w.state.fire_duration = 0.0;
         }
@@ -934,8 +1154,8 @@ fn weapon_frame(
         if !intent.fire && !intent.secondary && !intent.reload {
             w.state.fired_on_empty = false;
             if w.magazine.as_ref().is_some_and(|m| m.clip == 0)
-                && w.state.next_primary <= now
-                && w.state.next_secondary <= now
+                && w.state.next_primary <= due
+                && w.state.next_secondary <= due
                 && w.state.reload_end.is_none()
             {
                 try_reload(&mut w, &mut inv, now, owner, &mut ctx.w.events);
@@ -979,6 +1199,12 @@ fn try_reload(
         return;
     }
     let end = now + mag.reload_time as f64;
+    // Reloading lowers the scope (UNMEASURED: CS:S's snipers do).
+    if w.zoom.is_some() {
+        w.state.rezoom = None;
+        w.set_mode(0, owner, events);
+    }
+    w.state.burst_left = 0;
     inv.next_attack = end;
     w.state.next_primary = end;
     w.state.next_secondary = end;
@@ -992,6 +1218,47 @@ fn try_reload(
         weapon: w.entity,
         kind: WeaponEventKind::ReloadStarted,
     });
+}
+
+/// Characters look through their active weapon's zoom (`Zoomed`) and move
+/// at its zoomed speed.
+#[allow(clippy::type_complexity)]
+fn apply_zoom(
+    owners: Query<(Entity, &Inventory, Option<&Zoomed>, Option<&MaxSpeed>)>,
+    weapons: Query<(&Weapon, Option<&AltModes>, Option<&Zoom>)>,
+    mut commands: Commands,
+) {
+    for (owner, inv, zoomed, speed) in &owners {
+        let Some((weapon, modes, zoom)) = inv.active.and_then(|a| weapons.get(a).ok()) else {
+            if zoomed.is_some() {
+                commands.entity(owner).remove::<Zoomed>();
+            }
+            continue;
+        };
+        let mode = modes.map_or(0, |m| m.current) as usize;
+        let now = zoom.filter(|_| mode > 0).and_then(|z| {
+            Some((
+                Zoomed {
+                    fov: *z.fov.get(mode - 1)?,
+                    scope: z.scope,
+                },
+                z.max_speed.or(weapon.max_speed),
+            ))
+        });
+        let want_speed = now.map_or(weapon.max_speed, |(_, s)| s);
+        if zoomed != now.as_ref().map(|(z, _)| z) {
+            match now {
+                Some((z, _)) => commands.entity(owner).insert(z),
+                None => commands.entity(owner).remove::<Zoomed>(),
+            };
+        }
+        if speed.map(|s| s.0) != want_speed {
+            match want_speed {
+                Some(s) => commands.entity(owner).insert(MaxSpeed(s)),
+                None => commands.entity(owner).remove::<MaxSpeed>(),
+            };
+        }
+    }
 }
 
 /// Play sounds whose time has come (reload parts), from the owner.

@@ -174,7 +174,8 @@ pub fn load_view_model(
         }
     }
     let read = |p: &str| materials.read(p);
-    let bones = super::anim::bones(&read, path)?
+    let bones = super::anim::bones(&read, path)
+        .map_err(|e| format!("{path}: {e}"))?
         .into_iter()
         .map(|(name, parent, rotation, position)| crate::map::MapBone {
             name,
@@ -183,7 +184,9 @@ pub fn load_view_model(
             rotation,
         })
         .collect();
-    let animations = super::anim::load(&read, path).map(std::sync::Arc::new)?;
+    let animations = super::anim::load(&read, path)
+        .map(std::sync::Arc::new)
+        .map_err(|e| format!("{path}: {e}"))?;
     let (attachments, light_origin) = super::anim::attachments(&read, path)?;
     // Source axes to ours (x, z, -y): -90 degrees about X.
     let axes = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);

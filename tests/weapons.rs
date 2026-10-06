@@ -64,12 +64,12 @@ fn ticks_until_shot(sim: &mut Sim, p: Entity, limit: u32) -> Option<u32> {
 }
 
 #[test]
-fn characters_start_with_knife_and_ak47_drawn() {
+fn characters_start_with_knife_pistol_and_ak47_drawn() {
     let mut sim = sim();
     let p = sim.spawn_character(greybox::SPAWNS[0], placeholder::ID);
     sim.ticks(2);
     let inv = sim.app.world().get::<Inventory>(p).unwrap();
-    assert_eq!(inv.weapons.len(), 2);
+    assert_eq!(inv.weapons.len(), 3, "knife, USP (no team: CT), AK-47");
     assert_eq!(active_id(&sim, p), AK47);
     // The AK-47's MaxPlayerSpeed, 221 units/s.
     let speed = sim.app.world().get::<MaxSpeed>(p).unwrap().0;
@@ -86,9 +86,12 @@ fn deploy_then_fire_every_seven_ticks() {
     let first = ticks_until_shot(&mut sim, p, 200).expect("never fired");
     assert_eq!(first, 67, "first shot after the draw");
     // Held: next = previous next + 0.1 s, one shot a tick at most, so the
-    // AK-47 fires 7, 7, 7, 6 ticks apart (measured M4: exactly 600 rpm).
+    // AK-47 fires 7, 7, 6 ticks apart (measured M4: exactly 600 rpm). The
+    // draw ends 1.0 s after it, so every third shot lands exactly on a tick
+    // and fires on it (`TIME_SLACK`); which of the three is the 6 depends
+    // on CS:S's float rounding (M4 logged 7, 7, 7, 6 from a fresh press).
     let gaps: Vec<u32> = (0..6).map(|_| ticks_until_shot(&mut sim, p, 20).unwrap()).collect();
-    assert_eq!(gaps, [7, 7, 6, 7, 7, 6]);
+    assert_eq!(gaps, [7, 6, 7, 7, 6, 7]);
     assert_eq!(magazine(&sim, p).clip, 23);
 }
 
@@ -249,7 +252,7 @@ fn the_dead_respawn_with_fresh_weapons_and_scores_count() {
     assert_eq!(health(&sim, target), 1.0);
     assert!(sim.app.world().get::<mashup::rules::Dead>(target).is_none());
     assert_eq!(active_id(&sim, target), AK47);
-    assert_eq!(sim.app.world().get::<Inventory>(target).unwrap().weapons.len(), 2);
+    assert_eq!(sim.app.world().get::<Inventory>(target).unwrap().weapons.len(), 3);
 }
 
 #[test]
