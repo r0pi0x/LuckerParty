@@ -50,6 +50,7 @@ A module may use only the modules below it. Enforced by
 | `src/client/debug_views.rs` | Gizmo debug overlays: `mashup_drawnav` (nav areas by place, links) and `mashup_drawbots` (bot target, lead, route, roam goal) |
 | `src/client/game_text.rs` | Map HUD messages (`game_text` via `logic::HudMessages`): one per channel, faded or scanned out, placed by the message's x/y |
 | `src/client/weapon_select.rs` | The game HUD's weapon selection (`HudWeaponSelection` sizes from the layout): on a switch, a box per held slot, the drawn one large with its kill icon and name, fading out |
+| `src/client/team_menu.rs` | The team menu (M or `chooseteam`): terrorists, counter-terrorists or auto-assign through `jointeam` |
 | `src/client/buy_menu.rs` | The buy menu (B or `buymenu [n]`): categories and items with prices from `weapon::economy::Prices`, picked with number keys (weapon slots are off while it's open), bought through `buy` |
 | `src/client/scoreboard.rs` | The scoreboard (Tab or `+showscores`): Terrorists and Counter-Terrorists columns with kills, deaths and dead status, the local player highlighted |
 | `src/client/console.rs` | The in-game console UI (`~`): completion, fuzzy suggestions, history with Ctrl+R, scrollback/filter/timestamps, binds with `+`/`-` actions, log mirroring, overlays (cl_showpos, cl_showfps, snd_show, watch), client commands (noclip, god, getpos/setpos/setang, kill, map (in place, `map::change_map`), quit), `developer 1` notify lines, the `mashup/console` remote method |

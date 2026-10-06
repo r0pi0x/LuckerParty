@@ -44,8 +44,8 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   and the Tab scoreboard are in (`client/game_hud.rs`,
   `client/scoreboard.rs`), and the weapon selection
   (`client/weapon_select.rs`, kill icons standing in for the scripts'
-  selection icons). Left: the team menu (`jointeam 2|3` exists; you
-  start as CT), ping on the scoreboard, hint text. The radar is in (`client/radar.rs`: the map overview turning
+  selection icons). The team menu is in (M; you start as CT). Left:
+  ping on the scoreboard, hint text, the game's own VGUI menu looks. The radar is in (`client/radar.rs`: the map overview turning
   with you, team dots, your place name); its range (2200 units) is a guess.
 - Debug overlays: `mashup_drawhitboxes`, `mashup_healthbars`,
   `mashup_drawnav`, `mashup_drawbots` exist; add more as features need
