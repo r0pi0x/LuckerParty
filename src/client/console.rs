@@ -1170,10 +1170,15 @@ fn run_binds(
 // ------------------------------------------------------------- commands
 
 /// Maps in the CS:S install (for `map` completion), found once.
+/// Map names found by `map_names`, until an import changes them.
+static MAP_NAMES: Mutex<Option<Vec<String>>> = Mutex::new(None);
+
+/// Every map the game can load: the install's, its downloads and
+/// mashup's cache (cached; `import` refreshes it).
 fn map_names() -> Vec<String> {
-    static NAMES: OnceLock<Vec<String>> = OnceLock::new();
-    NAMES
-        .get_or_init(|| {
+    let mut cached = MAP_NAMES.lock().unwrap_or_else(|e| e.into_inner());
+    cached
+        .get_or_insert_with(|| {
             let Some(path) = crate::mount::config::LocalConfig::load()
                 .ok()
                 .and_then(|c| c.game_path(crate::games::cs_source::GAME))
@@ -1199,6 +1204,23 @@ fn map_names() -> Vec<String> {
             names
         })
         .clone()
+}
+
+/// Where a map comes from: the game's own content, its download folder, or
+/// mashup's cache.
+fn map_source(name: &str) -> &'static str {
+    let file = format!("maps/{name}.bsp");
+    let in_dir = |dir: Option<std::path::PathBuf>| dir.is_some_and(|d| d.join(&file).is_file());
+    let install = crate::mount::config::LocalConfig::load()
+        .ok()
+        .and_then(|c| c.game_path(crate::games::cs_source::GAME));
+    if in_dir(crate::mount::config::content_dir(crate::games::cs_source::GAME)) {
+        "imported"
+    } else if in_dir(install.map(|p| p.join("cstrike/download"))) {
+        "downloaded"
+    } else {
+        "game"
+    }
 }
 
 /// A map loading in the background for the `map` command.
@@ -1375,6 +1397,39 @@ fn client_commands(app: &mut App) {
         let _ = w.get::<MovementState>(p);
         Ok(None)
     })
+    .console_command(
+        "maps",
+        "maps [filter]: list the maps that can be loaded (the game's, its downloads, imported).",
+        |_, a| {
+            let filter = a.first().map(|f| f.to_lowercase()).unwrap_or_default();
+            let lines: Vec<String> = map_names()
+                .into_iter()
+                .filter(|m| m.contains(&filter))
+                .map(|m| {
+                    let from = map_source(&m);
+                    format!("{m}{}", if from == "game" { String::new() } else { format!("  ({from})") })
+                })
+                .collect();
+            Ok(Some(if lines.is_empty() {
+                "no maps match".into()
+            } else {
+                format!("{}\n{} maps", lines.join("\n"), lines.len())
+            }))
+        },
+    )
+    .console_command(
+        "import",
+        "import <file.bsp|file.bsp.bz2>: copy a map into mashup's content cache (never the game folder).",
+        |_, a| {
+            let path = a.join(" ");
+            if path.is_empty() {
+                return Err("import <file.bsp|file.bsp.bz2>".into());
+            }
+            let name = crate::games::cs_source::mount::import_map(std::path::Path::new(&path))?;
+            *MAP_NAMES.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            Ok(Some(format!("imported {name}; load it with: map {name}")))
+        },
+    )
     .console_command(
         "map",
         "map <name>: load a CS:S map (Tab lists the install's maps).",

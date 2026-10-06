@@ -105,10 +105,13 @@ ourselves, so each can be checked in mashup and measured in real CS:S.
 
 ## Slices
 
-1. [ ] Mount the install's `download/` and `custom/` maps plus the mashup
+1. [x] Mount the install's `download/` and `custom/` maps plus the mashup
    cache; `map <name>` finds custom maps; `maps` lists them; `import
    <file.bsp|.bsp.bz2>` copies into the cache with a hash. Test: a map in
    the cache loads by name (a tiny generated BSP, or skip without one).
+   Done 2026-10-06: `games/cs_source/mount.rs` (layers and
+   `import_map`), console `maps`/`import`; the index records an FNV-1a
+   64 hash for now (SHA-256 when networking needs it).
 2. [ ] Test map generator (`tools/testmap/`) and fixtures; compile on
    Windows; measure the reference behaviour on the probe server.
 3. [ ] Spec entity I/O and triggers (specs/source/entity_io.md); the

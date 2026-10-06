@@ -308,6 +308,8 @@ fn capture_ours_env(file: &ViewsFile, out: &Path, extra: &[&str], env: &[(&str, 
         .arg(&views_path)
         .arg("--capture-dir")
         .arg(out)
+        // The reference captures hide the view model too.
+        .args(["+r_drawviewmodel", "0"])
         .args(extra)
         .envs(env.iter().map(|(k, v)| (*k, v.as_str())))
         .stdout(std::process::Stdio::null())

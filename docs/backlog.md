@@ -36,9 +36,6 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
 
 - A test map with every supported entity (`mashup_logic_test`, generated
   `.vmf`, compiled with Valve's tools; plan section "Test map").
-- Find custom maps: mount the install's `download/` and `custom/` maps and
-  a mashup cache (never write the Steam folder); `map <name>`, `maps`,
-  `import <file.bsp|.bsp.bz2>` with a content hash.
 - Entity I/O and triggers (spec first): outputs/inputs with delays,
   `logic_*`, `math_counter`, `trigger_teleport`/`push`/`hurt`/`multiple`/
   `once`; then moving brush entities (doors, buttons, platforms,
