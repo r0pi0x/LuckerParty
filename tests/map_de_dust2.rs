@@ -1607,7 +1607,8 @@ fn bodies_animate_with_movement() {
         Some(Some(mashup::games::cs_source::weapons::AK47.to_string()))
     );
     let keys: Vec<&str> = map.held.iter().map(|h| h.key.as_str()).collect();
-    let all = mashup::games::cs_source::weapons::WORLD_MODELS.len();
+    let all = mashup::games::cs_source::weapons::WORLD_MODELS.len()
+        + mashup::games::cs_source::weapons::SILENCED_WORLD_MODELS.len();
     assert_eq!(keys.len(), all, "held models {keys:?}");
     // The drawn AK-47 picks the AK upper body at full weight.
     assert_eq!(layer(&sim, 0), Some(("Idle_Upper_AK".into(), 1.0)));
