@@ -2050,7 +2050,12 @@ fn spawn_map(
         ));
     }
     if let Some(h) = &data.hud {
-        commands.insert_resource(hud::ActiveHud(h.clone()));
+        let images = h
+            .sprites
+            .values()
+            .filter_map(|s| Some((s.texture, texture_handles.get(s.texture)?.clone())))
+            .collect();
+        commands.insert_resource(hud::ActiveHud(h.clone(), images));
     }
     if let Some(o) = &data.overview
         && let Some(image) = texture_handles.get(o.texture)

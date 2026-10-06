@@ -7,6 +7,7 @@ pub mod console;
 pub mod debug;
 pub mod effects;
 pub mod game_hud;
+pub mod hud_sprites;
 pub mod hud;
 pub mod input;
 pub mod radar;
@@ -169,6 +170,7 @@ impl Plugin for ClientPlugin {
                 console::ConsoleUiPlugin,
                 hud::HudPlugin,
                 game_hud::GameHudPlugin,
+                hud_sprites::HudSpritesPlugin,
                 scoreboard::ScoreboardPlugin,
                 radar::RadarPlugin,
                 effects::ShotEffectsPlugin,
