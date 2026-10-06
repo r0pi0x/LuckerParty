@@ -23,6 +23,8 @@ pub mod anim;
 pub mod decal;
 pub mod entities;
 pub use entities::{MapBrushEntity, MapEntities, MapEntity, MapHull};
+pub mod breakables;
+pub use breakables::{BrushPanes, GlassShatter, SpawnGibs};
 mod dust;
 pub mod hud;
 pub mod loose;
@@ -881,6 +883,9 @@ pub struct MapData {
     /// Spent shell types and how they fly.
     pub shells: Vec<shells::MapShell>,
     pub shell_physics: Option<shells::MapShellPhysics>,
+    /// Gib lists for breaking brushes, and how gibs move.
+    pub gibs: Vec<breakables::MapGibSet>,
+    pub gib_physics: Option<breakables::MapGibPhysics>,
 }
 
 /// A muzzle flash: view-facing additive sprites strung out along the
@@ -1210,6 +1215,7 @@ fn fall_out_of_map(
                         point: at.translation,
                         dir: Vec3::NEG_Y,
                         hitgroup: crate::core::Hitgroup::Generic,
+                        kind: crate::core::DamageKind::Generic,
                     });
                 }
             }
@@ -1293,6 +1299,8 @@ impl Plugin for MapPlugin {
             .init_resource::<ShowLocalBody>()
             .add_message::<decal::PlaceDecal>()
             .add_message::<ViewModelEvent>()
+            .add_message::<SpawnGibs>()
+            .add_message::<GlassShatter>()
             .init_resource::<particles::Particles>()
             .insert_resource(GlobalAmbientLight {
                 brightness: 600.0,
@@ -1308,6 +1316,8 @@ impl Plugin for MapPlugin {
                     .before(crate::core::SimSet::Movement),
             )
             .add_systems(FixedUpdate, fall_out_of_map.after(crate::core::SimSet::Movement))
+            .add_systems(FixedPostUpdate, breakables::update_panes)
+            .add_systems(Update, (breakables::spawn_gibs, breakables::fly_gibs).chain())
             .add_systems(
                 Update,
                 (
@@ -1570,6 +1580,11 @@ fn spawn_map(
                 && let Some(shells) = shells::build_assets(data, &textures, view, meshes, prop_materials)
             {
                 commands.insert_resource(shells);
+            }
+            if let Some(prop_materials) = prop_materials.as_mut()
+                && let Some(gibs) = breakables::build_assets(data, &textures, view, meshes, prop_materials)
+            {
+                commands.insert_resource(gibs);
             }
         }
         let lightmap = data
@@ -2239,6 +2254,7 @@ pub fn unload_map(world: &mut World) {
     }
     view_model::unload(world);
     shells::unload(world);
+    breakables::unload(world);
     let bodies: Vec<Entity> = world
         .query_filtered::<Entity, With<CharacterBody>>()
         .iter(world)

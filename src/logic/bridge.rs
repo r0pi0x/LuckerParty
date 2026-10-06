@@ -3,18 +3,19 @@
 //! (entity_io.md "Per-tick order"): thinks, movers and +use before
 //! movement; trigger touches, untouch, the event queue and removals after.
 
-use avian3d::prelude::ColliderAabb;
-use bevy::prelude::*;
+use avian3d::prelude::{ColliderAabb, ColliderDisabled};
+use bevy::{ecs::message::MessageCursor, prelude::*};
 
 use super::hud::HudMessages;
 use super::world::{Collision, Effect, EntId, LogicWorld, Player, SOLID_SKIN, SWEEP_EPS};
 use crate::console::Console;
 use crate::core::{
-    BaseVelocity, Damage, EntityGravity, Health, Hitgroup, Intent, LocalPlayer, MapBrush, MapBrushes, MapTerrain,
-    MovementState, MovingSolid, SimSet, Team, Velocity,
+    BaseVelocity, Damage, DamageKind, Damageable, EntityGravity, Health, Hitgroup, Intent, LocalPlayer, MapBrush,
+    MapBrushes, MapTerrain, MovementState, MovingSolid, SimSet, Team, Velocity,
 };
+use crate::map::breakables::{GibPiece, GlassShatter, SpawnGibs};
 use crate::map::entities::{engine_to_entity, entity_rotation, entity_to_engine, rotation_to_engine};
-use crate::map::{MapBrushEntity, MapEntities, PlaySound};
+use crate::map::{BrushPanes, MapBrushEntity, MapEntities, PlaySound};
 
 /// The running logic world of the loaded map.
 #[derive(Resource)]
@@ -38,6 +39,8 @@ pub enum LogicSet {
     Pre,
     /// Touches, untouch, the event queue (after movement).
     Post,
+    /// Damage dealt to breakables this tick (after weapons).
+    Damage,
 }
 
 pub struct LogicPlugin;
@@ -46,15 +49,19 @@ impl Plugin for LogicPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<HudMessages>()
             .add_message::<PlaySound>()
+            .add_message::<SpawnGibs>()
+            .add_message::<GlassShatter>()
             .configure_sets(
                 FixedUpdate,
                 (
                     LogicSet::Pre.before(SimSet::Movement),
                     LogicSet::Post.after(SimSet::Movement).before(SimSet::Weapons),
+                    LogicSet::Damage.after(SimSet::Weapons),
                 ),
             )
             .add_systems(FixedUpdate, (load, pre).chain().in_set(LogicSet::Pre))
-            .add_systems(FixedUpdate, post.in_set(LogicSet::Post));
+            .add_systems(FixedUpdate, post.in_set(LogicSet::Post))
+            .add_systems(FixedUpdate, damage.in_set(LogicSet::Damage));
     }
 }
 
@@ -85,6 +92,15 @@ fn load(world: &mut World) {
                 .iter(world)
                 .filter_map(|(e, n)| ids.get(n.0).map(|id| (*id, e)))
                 .collect();
+            // Breakables take damage from weapons.
+            for (id, node) in &nodes {
+                if matches!(
+                    logic.get(*id).map(|e| &e.class),
+                    Some(super::classes::Class::Breakable(_))
+                ) {
+                    world.entity_mut(*node).insert(Damageable);
+                }
+            }
             world.insert_resource(Logic {
                 world: logic,
                 scale: m.scale,
@@ -271,10 +287,41 @@ fn write_back(world: &mut World, scale: f32, before: &[Player], after: &[Player]
     }
 }
 
-/// Mover nodes follow their logic entity.
-fn sync_movers(world: &mut World, logic: &Logic) {
+/// Mover nodes follow their logic entity; nodes of removed entities
+/// (killed, broken) go.
+fn sync_movers(world: &mut World, logic: &mut Logic) {
+    logic.nodes.retain(|(id, node)| {
+        let alive = logic.world.get(*id).is_some();
+        if !alive && let Ok(e) = world.get_entity_mut(*node) {
+            e.despawn();
+        }
+        alive
+    });
+    let logic = &*logic;
     for (id, origin, angles, velocity, visible, solid) in logic.world.mover_poses() {
         let Some((_, node)) = logic.nodes.iter().find(|(m, _)| *m == id) else { continue };
+        let shootable = logic.world.shootable(id);
+        let panes = logic.world.window(id).filter(|w| w.window_broken).map(|w| {
+            let e = logic.world.get(id).unwrap();
+            let s = logic.scale;
+            let n = w.normal;
+            let depth = e
+                .hulls
+                .iter()
+                .flat_map(|h| &h.points)
+                .map(|p| (*p - w.corner).dot(n))
+                .fold((f32::MAX, f32::MIN), |(lo, hi), d| (lo.min(d), hi.max(d)));
+            let depth = if depth.0 > depth.1 { (0.0, 0.0) } else { (depth.0 * s, depth.1 * s) };
+            BrushPanes {
+                corner: entity_to_engine(w.corner, s),
+                u: entity_to_engine(w.u, s),
+                v: entity_to_engine(w.v, s),
+                depth,
+                cols: w.cols,
+                rows: w.rows,
+                broken: w.broken.clone(),
+            }
+        });
         let brushes: Vec<MapBrush> = logic
             .world
             .mover_solid(id)
@@ -299,6 +346,19 @@ fn sync_movers(world: &mut World, logic: &Logic) {
             velocity: entity_to_engine(velocity, logic.scale),
             solid,
         });
+        // Shots and physics pass what is not there (a broken breakable,
+        // a disabled func_brush); a broken window keeps its panes.
+        if let Some(p) = panes {
+            if e.get::<BrushPanes>() != Some(&p) {
+                e.insert(p);
+            }
+        } else if shootable == e.contains::<ColliderDisabled>() {
+            if shootable {
+                e.remove::<ColliderDisabled>();
+            } else {
+                e.insert(ColliderDisabled);
+            }
+        }
     }
 }
 
@@ -310,7 +370,7 @@ fn apply_effects(world: &mut World, effects: Vec<Effect>, scale: f32) {
         .next();
     for effect in effects {
         match effect {
-            Effect::Damage { target, amount, .. } => {
+            Effect::Damage { target, amount, crush } => {
                 let point = world.get::<Transform>(target).map_or(Vec3::ZERO, |t| t.translation);
                 world.write_message(Damage {
                     target,
@@ -319,6 +379,34 @@ fn apply_effects(world: &mut World, effects: Vec<Effect>, scale: f32) {
                     point,
                     dir: Vec3::NEG_Y,
                     hitgroup: Hitgroup::Generic,
+                    kind: if crush { DamageKind::Crush } else { DamageKind::Generic },
+                });
+            }
+            Effect::Gibs { set, glass, pieces } => {
+                let pieces = pieces
+                    .into_iter()
+                    .map(|g| GibPiece {
+                        position: entity_to_engine(g.position, scale),
+                        velocity: entity_to_engine(g.velocity, scale),
+                        spin: entity_to_engine(g.spin * std::f32::consts::PI / 180.0, 1.0),
+                        life: g.life,
+                    })
+                    .collect();
+                world.write_message(SpawnGibs { set, glass, pieces });
+            }
+            Effect::PaneShatter {
+                at,
+                normal,
+                size,
+                velocity,
+                tile,
+            } => {
+                world.write_message(GlassShatter {
+                    at: entity_to_engine(at, scale),
+                    normal: entity_to_engine(normal, 1.0),
+                    size: size * scale,
+                    velocity: entity_to_engine(velocity, scale),
+                    tile,
                 });
             }
             Effect::Heal { target, amount } => {
@@ -391,7 +479,7 @@ fn run_phase(world: &mut World, phase: impl FnOnce(&mut LogicWorld, &dyn Collisi
     }
     let after = std::mem::take(&mut logic.world.players);
     write_back(world, logic.scale, &players, &after);
-    sync_movers(world, &logic);
+    sync_movers(world, &mut logic);
     let effects = std::mem::take(&mut logic.world.effects);
     for line in logic.world.log.drain(..) {
         if line.contains("refused") {
@@ -416,8 +504,48 @@ fn pre(world: &mut World) {
 fn post(world: &mut World) {
     run_phase(world, |w, col| {
         w.touch_triggers(col);
+        w.touch_breakables();
         w.untouch();
         w.service_queue();
         w.end_frame();
+    });
+}
+
+/// Damage dealt to mover nodes (breakables) this tick, into the logic.
+fn damage(world: &mut World, mut cursor: Local<MessageCursor<Damage>>) {
+    let hits: Vec<Damage> = match world.get_resource::<Messages<Damage>>() {
+        Some(m) => cursor.read(m).cloned().collect(),
+        None => return,
+    };
+    let Some(logic) = world.get_resource::<Logic>() else {
+        return;
+    };
+    let scale = logic.scale;
+    let targeted: Vec<(EntId, Damage)> = hits
+        .into_iter()
+        .filter_map(|d| {
+            let (id, _) = logic.nodes.iter().find(|(_, n)| *n == d.target)?;
+            Some((*id, d))
+        })
+        .collect();
+    if targeted.is_empty() {
+        return;
+    }
+    run_phase(world, |w, _| {
+        for (id, d) in targeted {
+            let attacker = d
+                .attacker
+                .filter(|a| w.player(*a).is_some())
+                .map(super::world::Who::Player);
+            let dir = Vec3::new(d.dir.x, -d.dir.z, d.dir.y);
+            w.damage(
+                id,
+                d.amount * 100.0,
+                d.kind,
+                attacker,
+                engine_to_entity(d.point, scale),
+                dir,
+            );
+        }
     });
 }

@@ -37,6 +37,8 @@ pub enum Class {
     Brush(Box<Toggle>),
     /// A brush entity parented to a mover: follows it.
     Attached(Box<movers::Attached>),
+    /// func_breakable, func_breakable_surf.
+    Breakable(Box<super::breakables::Breakable>),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -250,6 +252,9 @@ impl Class {
             "func_tracktrain" => Class::Train(Box::new(Train::spawn(w, id))),
             "path_track" => Class::PathTrack(PathTrack::spawn(w, id)),
             "func_brush" => Class::Brush(Box::new(Toggle::spawn_brush(w, id))),
+            "func_breakable" | "func_breakable_surf" => {
+                Class::Breakable(Box::new(super::breakables::Breakable::spawn(w, id)))
+            }
             _ if !e.hulls.is_empty() && e.kv("parentname").is_some_and(|p| !p.is_empty()) => {
                 Class::Attached(Box::new(movers::Attached::spawn(w, id)))
             }
@@ -340,6 +345,8 @@ pub(super) fn class_activate(w: &mut LogicWorld, id: EntId) {
         Class::Door(_) | Class::Button(_) | Class::MoveLinear(_) | Class::Rotating(_) | Class::Train(_) => {
             movers::activate(w, id)
         }
+        Class::Breakable(_) if e.kv("parentname").is_some_and(|p| !p.is_empty()) => movers::activate_attached(w, id),
+        Class::Breakable(_) => movers::activate(w, id),
         Class::PathTrack(_) => movers::activate_path(w, id),
         Class::Attached(_) => movers::activate_attached(w, id),
         _ => {}
@@ -786,6 +793,7 @@ pub(super) fn class_input(
         | Class::PathTrack(_)
         | Class::Brush(_) => return movers::input(w, id, input, value, activator, caller),
         Class::Attached(_) => return false,
+        Class::Breakable(_) => return super::breakables::input(w, id, input, value, activator),
         Class::None | Class::Auto => return false,
     }
     true

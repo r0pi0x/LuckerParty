@@ -31,7 +31,8 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
 - A test map with every supported entity (`mashup_logic_test`, generated
   `.vmf`, compiled with Valve's tools; plan section "Test map").
 - Entity I/O, triggers and moving brushes are in (`src/logic`, slices 3
-  and 4 of the plan). Left: breakables (specs/source/breakables.md),
+  and 4 of the plan), and breakables (func_breakable, func_breakable_surf;
+  src/logic/breakables.rs). Left: breakable follow-ups (section 7),
   `prop_door_rotating` (model doors: cs_assault, de_port), train facing/banking and
   player train control, `trigger_soundscape` through the general touch
   code, round restarts re-creating entities, env_global. Target: two
@@ -70,8 +71,9 @@ burst), HUD, deathmatch and a first bot are in.
 - Money and a buy menu (`buy` gives for free).
 - Reload, grenade and death animations (world models are held by bodies).
 - Impact effects, remaining (specs/cs_source/impact_effects.md; the
-  surface effects, blood and bullet splashes are in): glass shards
-  (need breakable glass, `func_breakable_surf`), slime splashes
+  surface effects, blood, bullet splashes and pane glass shards are in):
+  section 9's exact shard burst at the hit point (ours spreads shards
+  over each shattered pane), slime splashes
   (`.pcf` systems), the knife's water splash, the 30 % ricochet sound,
   ragdoll pushes; check the spec's open questions in the game. The muzzle
   flash's light on nearby walls is part of the view-model work (1C
@@ -120,7 +122,8 @@ The console and overlays are in (src/console.rs, src/client/console.rs).
 docs/plans/active/sound.md.
 
 - Scrapes (looping friction sounds): needs a stand-in for Source's
-  friction energy (spec open question 8); break sounds with breakables.
+  friction energy (spec open question 8); breakables' spec pitch/volume
+  rules (we play the entries as scripted) and gib bounce sounds.
 - `ambient_generic` (with entity inputs once maps need them), soundscape
   DSP presets (room reverb), env_soundscape visibility checks.
 - Measure on the probe server: the distance curves (replace the H1/H2
@@ -132,13 +135,15 @@ docs/plans/active/sound.md.
 - Impact damage, breakable props.
 - `prop_door_rotating` (model doors) with the use key; brush doors
   (`func_door`, `func_door_rotating`) and `+use` are done (src/logic).
-- Breakable vents on de_nuke (`func_breakable` with health and material
-  gibs): take damage, break into gibs, open the vent.
-- Breakable glass as in cs_office (`func_breakable_surf`): windows that
-  take a hole per bullet, crack around it, shatter in pieces when hit
-  hard or damaged enough, and let bullets and players through once
-  broken; the glass-break decal, shard and grit effects (impact effects
-  spec covers the shards) and break sounds. Needs a spec (public SDK) and
+- Breakables, remaining (vents and windows break: src/logic/breakables.rs,
+  tests/map_breakables.rs): the cracked look of a broken window's panes
+  (`$crackmaterial`, jagged edge pieces; spec open question 8), the
+  falling pane pieces (`models/brokenglass_piece.mdl`; collapsing panes
+  just shatter now), the GlassBreak/BulletProof decals, break-on-pressure
+  (flag 4), physics impact damage to breakables, explosions on break, the
+  window's flip to the attacked side, propdata templates, the spec's open
+  questions on the probe server (bullet/knife damage types, broken brush
+  visibility, shots after a window breaks). Needs a spec (public SDK) and
   brush entities, which the world loader skips today.
 
 ## 8. Visual fidelity
@@ -177,8 +182,7 @@ Counts are from de_dust2's entity lump and static prop lump.
   copy of a map with test entities added where dust2 has no example: floor
   and ceiling decal orientation, decal reach, overall brightness/tonemapping.
 - **Brush entities**: movers (doors, buttons, func_rotating, trains,
-  func_brush) move through the logic layer; breakables don't break, and
-  render modes other than normal and 10 (translucent func_brush) aren't
+  func_brush) move through the logic layer, breakables break; render modes other than normal and 10 (translucent func_brush) aren't
   applied.
 - **Fire** (`env_fire`, 16) and other effects, if they show in normal play.
 - **Lightmap styles**: switching lights and animated styles (lights lit at

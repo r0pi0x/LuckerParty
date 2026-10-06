@@ -175,6 +175,22 @@ pub enum Effect {
     ServerCommand(String),
     /// An allowed client command for one player (point_clientcommand).
     ClientCommand { player: Entity, command: String },
+    /// Gibs thrown by a breaking brush: a gib list name (propdata
+    /// "BreakableModels", or a model) and the pieces (entity space).
+    Gibs {
+        set: String,
+        glass: bool,
+        pieces: Vec<super::breakables::Gib>,
+    },
+    /// A window pane shattered: its centre and normal (entity space), its
+    /// size (units) and the shards' push (units/s).
+    PaneShatter {
+        at: Vec3,
+        normal: Vec3,
+        size: Vec2,
+        velocity: Vec3,
+        tile: bool,
+    },
 }
 
 /// Static collision the logic needs (the world without movers), entity
@@ -293,6 +309,10 @@ impl LogicEntity {
     }
     pub fn kv_i(&self, key: &str) -> i32 {
         self.kv(key).map_or(0, atoi)
+    }
+    /// "x y z" keyvalue as a vector (missing parts 0).
+    pub fn vector_kv(&self, key: &str) -> Vec3 {
+        self.kv(key).map_or(Vec3::ZERO, crate::map::entities::parse_vector)
     }
     pub fn has_flag(&self, flag: u32) -> bool {
         self.spawnflags & flag != 0
@@ -907,6 +927,7 @@ impl LogicWorld {
         self.step_movers(collision);
         self.player_uses(collision);
         self.touch_triggers(collision);
+        self.touch_breakables();
         self.untouch();
         self.service_queue();
         self.end_frame();
