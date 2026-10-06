@@ -25,6 +25,7 @@ pub mod decal;
 mod dust;
 pub mod hud;
 mod hurt;
+pub mod loose;
 pub mod nav;
 pub mod particles;
 pub mod prop_material;
@@ -1318,6 +1319,7 @@ impl Plugin for MapPlugin {
                         turn_bodies,
                         pose_bodies.after(DriveAnimation),
                         attach_held,
+                        loose::attach_loose,
                     )
                         .run_if(resource_exists::<CharacterBodies>),
                     view_model::draw_view_models
@@ -1468,7 +1470,7 @@ fn spawn_map(
                 .held
                 .iter()
                 .map(|h| {
-                    let parts = h
+                    let parts: Vec<(Handle<Mesh>, Handle<StandardMaterial>)> = h
                         .model
                         .meshes
                         .iter()
@@ -1481,7 +1483,19 @@ fn spawn_map(
                         .collect();
                     (h.key.clone(), (h.bone.clone(), parts, h.muzzle))
                 })
-                .collect();
+                .collect::<HashMap<_, _>>();
+            // Loose (dropped) forms, sized by the first character's scale.
+            if let Some(root) = data.characters.first().map(|c| c.root) {
+                let loose = data
+                    .held
+                    .iter()
+                    .filter_map(|h| {
+                        let parts = held.get(&h.key)?.1.clone();
+                        Some((h.key.clone(), loose::asset(h, root, parts)))
+                    })
+                    .collect();
+                commands.insert_resource(loose::LooseAssets(loose));
+            }
             commands.insert_resource(HeldAssets(held));
             if let Some(prop_materials) = prop_materials.as_mut() {
                 commands.insert_resource(view_model::build_assets(

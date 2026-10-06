@@ -9,6 +9,7 @@
 //! Units: meters, seconds, damage normalized like `Health`.
 
 mod deliver;
+pub mod drop;
 
 use std::sync::Arc;
 
@@ -44,7 +45,10 @@ impl Plugin for WeaponPlugin {
             .add_systems(
                 FixedUpdate,
                 (
-                    (give_starting_weapons, select_weapons).chain().before(SimSet::Movement),
+                    (give_starting_weapons, drop::pick_up, select_weapons)
+                        .chain()
+                        .before(SimSet::Movement),
+                    drop::drop_on_death.after(SimSet::Weapons),
                     (weapon_frame.in_set(WeaponFrame), timed_sounds, apply_zoom)
                         .chain()
                         .in_set(SimSet::Weapons),
@@ -97,6 +101,11 @@ impl Plugin for WeaponPlugin {
                 },
             );
         }
+        app.console_command("drop", "Drop the weapon you hold (G); walk over one to pick it up.", |w, _| {
+            let player = local_player(w)?;
+            drop::drop_weapon(w, player, true).ok_or("nothing to drop")?;
+            Ok(None)
+        });
         app.console_command("lastinv", "Switch to the previously held weapon.", |w, _| {
             select_local(w, |inv, _| inv.last)
         })

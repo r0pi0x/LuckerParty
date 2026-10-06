@@ -82,9 +82,10 @@ burst), HUD, deathmatch and a first bot are in.
   parts of the lid and rim don't draw (seen from above, faces missing).
   Suspect the model converter's winding fix-up (it winds triangles
   against the vertex normals) or back-face culling of a two-sided part.
-- Dropping weapons (`drop`, CS:S's G key): the world model falls as a
-  physics object, can be picked up by walking over it; dead players drop
-  theirs.
+- Dropping weapons, remaining (`drop`/G, pickup and death drops are in,
+  `weapon/drop.rs`): throw speed, the re-pick delay, pickup reach and
+  mass are guesses (measure on the probe server); bullets hit loose
+  weapons; the use key doesn't swap a weapon for the one you look at.
 - Ragdolls on death: the player model's ragdoll from its `.phy` (bones as
   rigid bodies with joint limits), seeded with the death pose and the
   killing hit's impulse.

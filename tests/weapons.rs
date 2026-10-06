@@ -622,3 +622,47 @@ fn landing_adds_inaccuracy_by_fall_speed() {
     }
     panic!("never landed");
 }
+
+#[test]
+fn dropped_weapons_lie_loose_and_are_picked_up_again() {
+    use mashup::weapon::drop::{Loose, drop_weapon};
+    let mut sim = sim();
+    let p = sim.spawn_character(greybox::SPAWNS[0], placeholder::ID);
+    sim.ticks(2);
+    let ak = active(&sim, p);
+    let loose = drop_weapon(sim.app.world_mut(), p, true).expect("dropped");
+    sim.ticks(2);
+    let inv = sim.app.world().get::<Inventory>(p).unwrap();
+    assert!(!inv.weapons.contains(&ak));
+    assert_ne!(inv.active, Some(ak), "draws another weapon");
+    assert_eq!(sim.app.world().get::<Loose>(loose).unwrap().weapon, ak);
+    assert_eq!(sim.app.world().get::<Weapon>(ak).unwrap().owner, None);
+    // The knife stays.
+    let knife = inv
+        .weapons
+        .iter()
+        .copied()
+        .find(|w| sim.app.world().get::<Weapon>(*w).unwrap().id == KNIFE)
+        .unwrap();
+    sim.app.world_mut().get_mut::<Inventory>(p).unwrap().wanted = Some(knife);
+    sim.ticks(2);
+    assert!(drop_weapon(sim.app.world_mut(), p, true).is_none(), "the knife can't be dropped");
+    // Lying at the dropper's feet: not taken back at once, then taken.
+    let at = sim.position(p);
+    let hold = |sim: &mut Sim| {
+        if let Some(mut t) = sim.app.world_mut().get_mut::<Transform>(loose) {
+            t.translation = at;
+        }
+    };
+    hold(&mut sim);
+    sim.ticks(10);
+    assert!(sim.app.world().get_entity(loose).is_ok(), "not re-picked within the delay");
+    for _ in 0..150 {
+        hold(&mut sim);
+        sim.ticks(1);
+    }
+    assert!(sim.app.world().get_entity(loose).is_err(), "picked up");
+    let inv = sim.app.world().get::<Inventory>(p).unwrap();
+    assert!(inv.weapons.contains(&ak));
+    assert_eq!(sim.app.world().get::<Weapon>(ak).unwrap().owner, Some(p));
+}

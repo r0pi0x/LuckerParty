@@ -51,7 +51,7 @@ impl Plugin for LocalInputPlugin {
             .init_resource::<WheelJump>()
             .init_resource::<FreeLook>()
             .register_type::<MouseSettings>()
-            .add_systems(Update, (grab_cursor, write_local_intent).chain())
+            .add_systems(Update, ((grab_cursor, write_local_intent).chain(), drop_key))
             .add_systems(FixedPreUpdate, apply_wheel_jump);
         mouse_cvars(app);
     }
@@ -114,6 +114,20 @@ fn grab_cursor(
         release_cursor(&mut cursor);
     } else if mouse.just_pressed(MouseButton::Left) && !cursor_grabbed(&cursor) {
         capture_cursor(&mut cursor);
+    }
+}
+
+/// G drops the held weapon (CS:S's default `bind g drop`).
+fn drop_key(
+    keys: Res<ButtonInput<KeyCode>>,
+    cursor: Single<&CursorOptions>,
+    console: Option<ResMut<crate::console::Console>>,
+) {
+    if keys.just_pressed(KeyCode::KeyG)
+        && cursor_grabbed(&cursor)
+        && let Some(mut console) = console
+    {
+        console.submit("drop");
     }
 }
 

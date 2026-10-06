@@ -194,6 +194,7 @@ impl Plugin for CsWeaponsPlugin {
 }
 
 fn knife(e: &mut EntityWorldMut) {
+    e.insert(crate::weapon::drop::Undroppable);
     // Measured (M11): slash 20, or 15 within 0.9 s of the last slash, no
     // backstab bonus; stab 65, 195 from behind. Hits are generic. Reach: a
     // +-16 box swept 48 (slash) / 32 (stab) units from the eye.
