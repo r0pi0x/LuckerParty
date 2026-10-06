@@ -32,8 +32,7 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   `.vmf`, compiled with Valve's tools; plan section "Test map").
 - Entity I/O, triggers and moving brushes are in (`src/logic`, slices 3
   and 4 of the plan). Left: breakables (specs/source/breakables.md),
-  `prop_door_rotating` (model doors: cs_assault, de_port), props parented
-  to movers (de_nuke's door knobs stay put), train facing/banking and
+  `prop_door_rotating` (model doors: cs_assault, de_port), train facing/banking and
   player train control, `trigger_soundscape` through the general touch
   code, round restarts re-creating entities, env_global. Target: two
   real minigame maps from the user's downloads.

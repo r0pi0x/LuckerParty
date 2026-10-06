@@ -757,6 +757,9 @@ pub struct MapProp {
     pub casts_shadow: bool,
     /// Simulated as a rigid body, when set.
     pub physics: Option<MapPhysics>,
+    /// The mover entity it's attached to (index into `MapData::entities`):
+    /// it rides that entity's node (de_nuke's door handles) and isn't solid.
+    pub parent: Option<usize>,
 }
 
 /// A physics prop's body (specs/cs_source/physics_props.md 3, 4).
@@ -1971,7 +1974,7 @@ fn spawn_map(
         };
         // Bodies that move are swept through physics queries, not as brushes.
         let dynamic = prop.physics.as_ref().filter(|_| !prop.skybox);
-        let prop_brush = (!prop.skybox && !no_prop_brushes && !pieces.is_empty() && dynamic.is_none()).then_some(());
+        let prop_brush = (prop.parent.is_none() && !prop.skybox && !no_prop_brushes && !pieces.is_empty() && dynamic.is_none()).then_some(());
         if prop_brush.is_some() {
             brushes.extend(
                 pieces
@@ -1979,15 +1982,26 @@ fn spawn_map(
                     .map(|planes| place_brush(planes, prop.translation, prop.rotation, model.surfaceprop.clone())),
             );
         }
+        let placed = Transform::from_translation(prop.translation).with_rotation(prop.rotation);
+        // Riding a mover: under its node, placed relative to it.
+        let rider = prop
+            .parent
+            .and_then(|p| Some((entity_nodes.get(p).copied().flatten()?, data.entities.get(p)?)))
+            .map(|(node, ent)| {
+                let at = Transform::from_translation(entities::entity_to_engine(ent.origin(), data.entity_scale))
+                    .with_rotation(entities::rotation_to_engine(entities::entity_rotation(ent.angles())));
+                (node, Transform::from_matrix(at.to_matrix().inverse() * placed.to_matrix()))
+            });
         let mut e = commands.spawn((
             Name::new(format!("Prop {i}")),
             PropIndex(i),
             MapPart,
-            Transform::from_translation(prop.translation).with_rotation(prop.rotation),
+            rider.map_or(placed, |r| r.1),
             Visibility::default(),
-            ChildOf(root),
+            ChildOf(rider.map_or(root, |r| r.0)),
         ));
-        match (prop.solid, &model_colliders[prop.model]) {
+        let solid = if rider.is_some() { PropSolid::None } else { prop.solid };
+        match (solid, &model_colliders[prop.model]) {
             (PropSolid::Mesh, Some(collider)) if dynamic.is_some() => {
                 let p = dynamic.unwrap();
                 e.insert((

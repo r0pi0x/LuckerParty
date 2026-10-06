@@ -510,6 +510,8 @@ struct PropPlacement {
     spawnflags: u32,
     massscale: f32,
     physicsmode: i32,
+    /// The entity it's parented to (`parentname`), by index.
+    parent: Option<usize>,
 }
 
 pub fn add_static_props(
@@ -545,6 +547,7 @@ pub fn add_static_props(
             spawnflags: 0,
             massscale: 0.0,
             physicsmode: 0,
+            parent: None,
         });
     }
     placements.extend(entity_props(bsp));
@@ -586,6 +589,11 @@ fn entity_props(bsp: &Bsp) -> Vec<PropPlacement> {
                 spawnflags: e.prop("spawnflags").and_then(|v| v.trim().parse().ok()).unwrap_or(0),
                 massscale: e.prop("massscale").and_then(|v| v.trim().parse().ok()).unwrap_or(0.0),
                 physicsmode: e.prop("physicsmode").and_then(|v| v.trim().parse().ok()).unwrap_or(0),
+                parent: e.prop("parentname").filter(|p| !p.is_empty()).and_then(|p| {
+                    bsp.entities
+                        .iter()
+                        .position(|o| o.prop("targetname").is_some_and(|n| n.eq_ignore_ascii_case(p)))
+                }),
             })
         })
         .collect()
@@ -682,7 +690,8 @@ fn place_props(
             lighting: Some(lighting),
             solid,
             casts_shadow: prop.class.is_some(),
-            physics,
+            physics: physics.filter(|_| prop.parent.is_none()),
+            parent: prop.parent,
         });
     }
     failed.sort();

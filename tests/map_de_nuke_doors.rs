@@ -78,6 +78,14 @@ fn doors_are_chained_rotating_pairs_that_open_on_use() {
         }
     }
 
+    // The handles (prop_dynamic parented to the doors) ride them.
+    let riders = map
+        .props
+        .iter()
+        .filter(|p| p.parent.is_some_and(|i| map.entities[i].mover))
+        .count();
+    assert!(riders >= 2 * pairs.len(), "{riders} props ride the {} door pairs", pairs.len());
+
     // Stand 40 units in front of the first pair's first door, at its
     // foot, looking at its middle; press +use once.
     let (a, b) = pairs[0];
