@@ -170,6 +170,7 @@ impl Plugin for CsWeaponsPlugin {
             .register_weapon(USP, |e| gun(e, &USP_GUN))
             .register_weapon(GLOCK, |e| gun(e, &GLOCK_GUN))
             .register_weapon(DEAGLE, |e| gun(e, &DEAGLE_GUN))
+            .insert_resource(prices())
             .add_message::<WeaponEvent>()
             .add_systems(
                 FixedUpdate,
@@ -191,6 +192,22 @@ impl Plugin for CsWeaponsPlugin {
             };
         }
     }
+}
+
+/// Prices (spec weapons.md, "Economy": the scripts' `WeaponPrice`; armour
+/// from the game's buy menu: kevlar 650, kevlar and helmet 1000, the
+/// helmet alone 350).
+fn prices() -> crate::weapon::economy::Prices {
+    let mut p = crate::weapon::economy::Prices {
+        vest: 650,
+        vest_helmet: 1000,
+        helmet: 350,
+        ..default()
+    };
+    for (id, price) in [(AK47, 2500), (M4A1, 3100), (AWP, 4750), (USP, 500), (GLOCK, 400), (DEAGLE, 650)] {
+        p.weapons.insert(id, price);
+    }
+    p
 }
 
 fn knife(e: &mut EntityWorldMut) {

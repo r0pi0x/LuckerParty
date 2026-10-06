@@ -182,8 +182,9 @@ fn buy_gives_each_gun_by_its_cs_name() {
     for (name, id, slot) in [
         ("m4a1", M4A1, 0),
         ("awp", AWP, 0),
-        ("usp", USP, 1),
+        // Characters start with a USP: the Glock replaces it first.
         ("glock", GLOCK, 1),
+        ("usp", USP, 1),
         ("deagle", DEAGLE, 1),
     ] {
         sim.app
