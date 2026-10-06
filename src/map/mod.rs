@@ -32,6 +32,8 @@ pub mod loose;
 pub mod nav;
 pub mod particles;
 pub mod prop_material;
+pub mod ragdoll;
+pub use ragdoll::{MapRagdoll, MapRagdollBody, MapRagdollJoint, Ragdoll, RagdollBody};
 pub mod rope_material;
 pub mod shadows;
 pub mod sound;
@@ -332,6 +334,9 @@ pub struct MapCharacterModel {
     /// The hitboxes on their bones (same order as `hitboxes`), to follow
     /// the animated skeleton.
     pub boxes: Vec<BoneBox>,
+    /// The body's physics when it dies (None: no ragdoll; the dead body
+    /// is just hidden).
+    pub ragdoll: Option<MapRagdoll>,
 }
 
 /// A hitbox in its bone's frame (the source game's axes and units).
@@ -441,7 +446,7 @@ fn attach_bodies(
             Option<&Children>,
             Has<crate::core::LocalPlayer>,
         ),
-        With<crate::core::Intent>,
+        (With<crate::core::Intent>, Without<ragdoll::Ragdolled>),
     >,
     existing: Query<&CharacterBody>,
     show_local: Res<ShowLocalBody>,
@@ -655,33 +660,26 @@ fn attach_hitboxes(
 
 /// Hitboxes follow the animated skeleton (as the server places them).
 fn pose_hitboxes(
-    time: Res<Time>,
     models: Option<Res<CharacterModels>>,
     mut characters: Query<(
         &anim::Animator,
         &BodyModel,
         &crate::core::Intent,
+        &ragdoll::SkeletonPose,
         &mut crate::core::Hitboxes,
     )>,
 ) {
     let Some(models) = models else { return };
-    let now = time.elapsed_secs_f64();
-    for (animator, model, intent, mut hitboxes) in &mut characters {
+    for (animator, model, intent, pose, mut hitboxes) in &mut characters {
         let Some(m) = models.0.get(model.0) else { continue };
         if animator.main.is_none() || m.boxes.len() != hitboxes.0.len() {
             continue;
         }
-        let pose = animator.pose(now);
-        // Bones in the skeleton's space, then to the character's frame
-        // (which the trace turns by the look yaw; the body turns by its
-        // own yaw).
-        let mut global: Vec<(Quat, Vec3)> = Vec::with_capacity(pose.len());
-        for (b, (q, p)) in m.bones.iter().zip(&pose) {
-            global.push(match b.parent.and_then(|i| global.get(i)) {
-                Some((pq, pp)) => (*pq * *q, *pp + *pq * *p),
-                None => (*q, *p),
-            });
-        }
+        // Bones in the skeleton's space (this tick's pose), then to the
+        // character's frame (which the trace turns by the look yaw; the
+        // body turns by its own yaw).
+        let Some(frame) = pose.frames.back() else { continue };
+        let global = &frame.bones;
         let turn = Quat::from_rotation_y(animator.yaw.unwrap_or(intent.yaw) - intent.yaw) * m.root.rotation;
         let scale = m.root.scale.x;
         for (h, b) in hitboxes.0.iter_mut().zip(&m.boxes) {
@@ -1318,6 +1316,7 @@ impl Plugin for MapPlugin {
             app.insert_resource(PendingMap(data.clone(), self.view))
                 .insert_resource(ActiveMapLook(data.look.clone()));
         }
+        ragdoll::plugin(app);
         app.add_plugins(sound::SoundPlugin)
             .init_resource::<ShowLocalBody>()
             .add_message::<decal::PlaceDecal>()
@@ -1334,7 +1333,7 @@ impl Plugin for MapPlugin {
             .add_systems(Startup, spawn_map.run_if(resource_exists::<PendingMap>))
             .add_systems(
                 FixedUpdate,
-                (attach_hitboxes, pose_hitboxes)
+                (attach_hitboxes, ragdoll::record_poses, pose_hitboxes)
                     .chain()
                     .before(crate::core::SimSet::Movement),
             )

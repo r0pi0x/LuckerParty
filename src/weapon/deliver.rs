@@ -10,7 +10,7 @@ use super::{
     Armor, DamageEffect, Hitscan, PassMaterials, Penetration, SpreadShape, Swing, WeaponEvent, WeaponEventKind,
 };
 use crate::{
-    core::{Damage, DamageKind, Damageable, Health, Hitboxes, Hitgroup, Intent},
+    core::{Damage, DamageKind, Damageable, Health, Hitboxes, Hitgroup, Intent, SOLID_LAYERS},
     map::{
         PlaySound, PropSurface,
         sound::{SoundBank, SurfaceGrid},
@@ -76,7 +76,7 @@ struct Hit {
 
 impl Shot<'_, '_, '_> {
     fn filter(&self) -> SpatialQueryFilter {
-        SpatialQueryFilter::from_excluded_entities([self.owner])
+        SpatialQueryFilter::from_excluded_entities([self.owner]).with_mask(SOLID_LAYERS)
     }
 
     /// The body a collider belongs to (props may have child colliders).
@@ -98,11 +98,25 @@ impl Shot<'_, '_, '_> {
             .filter(|t| t.hitboxes.is_some() && t.entity != self.owner)
             .map(|t| t.entity)
             .collect();
+        // The dead are left out entirely (their body is a ragdoll, which
+        // bullets pass through, or hidden).
+        let dead = self
+            .w
+            .targets
+            .iter()
+            .filter(|t| t.intent.is_some() && t.health.is_some_and(|h| h.current <= 0.0))
+            .map(|t| t.entity);
         let filter = SpatialQueryFilter::from_excluded_entities(
             std::iter::once(self.owner)
                 .chain(boxed.iter().copied())
+                .chain(dead)
                 .chain(skip.iter().copied()),
-        );
+        )
+        .with_mask(SOLID_LAYERS);
+        let boxed: Vec<Entity> = boxed
+            .into_iter()
+            .filter(|e| self.w.targets.get(*e).ok().and_then(|t| t.health).is_none_or(|h| h.current > 0.0))
+            .collect();
         let mut best = self
             .w
             .spatial
@@ -193,7 +207,7 @@ impl Shot<'_, '_, '_> {
     /// (the point just past the entry isn't inside a solid: open surfaces
     /// such as displacements).
     fn solid_exit(&self, dir: Dir3, entry: f32, limit: f32) -> Option<f32> {
-        let filter = SpatialQueryFilter::from_excluded_entities([self.owner]);
+        let filter = SpatialQueryFilter::from_excluded_entities([self.owner]).with_mask(SOLID_LAYERS);
         let mut t = entry;
         for _ in 0..64 {
             let p = self.eye + *dir * (t + STEP);

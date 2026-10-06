@@ -4,7 +4,7 @@
 //! command arguments; repeated Tab cycles), ranked fuzzy suggestions as
 //! you type, history (Up/Down, persisted, Ctrl+R reverse search), and the
 //! usual editing keys. Binds run when it's closed (`+action` while held).
-//! Also the CS:S-style overlays (cl_showpos, cl_showfps, snd_show, watch)
+//! Also the CS:S-style overlays (cl_showpos, cl_showfps, net_graph, snd_show, watch)
 //! and the client's commands (noclip, getpos/setpos, kill, map, quit, ...).
 
 use std::{
@@ -50,6 +50,7 @@ impl Plugin for ConsoleUiPlugin {
                     drain_log,
                     record_sounds,
                     draw_console,
+                    select_rows,
                     draw_overlays,
                     draw_notify,
                     finish_map_load,
@@ -83,6 +84,11 @@ pub struct ConsoleUi {
     scroll: usize,
     pub filter: String,
     pub timestamps: bool,
+    /// The output lines on screen, and a selection of them (first and
+    /// last row, in the order dragged) made with the mouse.
+    shown: Vec<String>,
+    selection: Option<(usize, usize)>,
+    dragging: bool,
 }
 
 const HISTORY_MAX: usize = 1000;
@@ -93,6 +99,9 @@ const SUGGESTIONS: usize = 8;
 struct ConsoleRoot;
 #[derive(Component)]
 struct ConsoleOutput;
+/// One row of the output on screen.
+#[derive(Component)]
+struct ConsoleRow(usize);
 #[derive(Component)]
 struct ConsoleInput;
 #[derive(Component)]
@@ -126,10 +135,9 @@ fn spawn_ui(mut commands: Commands) {
         .with_children(|c| {
             c.spawn((
                 ConsoleOutput,
-                Text::default(),
-                font(14.0),
                 Node {
                     overflow: Overflow::clip(),
+                    flex_direction: FlexDirection::Column,
                     ..default()
                 },
             ));
@@ -627,9 +635,12 @@ fn draw_console(
         ui.scroll = ui.scroll.min(max_scroll);
         let end = lines.len() - ui.scroll;
         let start = end.saturating_sub(VISIBLE_LINES);
+        ui.shown = lines[start..end].iter().map(|l| l.text.clone()).collect();
+        ui.selection = None;
+        ui.dragging = false;
         commands.entity(*output).despawn_related::<Children>();
         commands.entity(*output).with_children(|c| {
-            for l in &lines[start..end] {
+            for (row, l) in lines[start..end].iter().enumerate() {
                 let color = match l.level {
                     Level::Input => Color::srgb(0.6, 0.8, 1.0),
                     Level::Info => Color::srgb(0.85, 0.85, 0.85),
@@ -641,11 +652,25 @@ fn draw_console(
                 } else {
                     String::new()
                 };
-                c.spawn((TextSpan::new(format!("{stamp}{}\n", l.text)), TextColor(color)));
+                c.spawn((
+                    ConsoleRow(row),
+                    Text::new(format!("{stamp}{}", l.text)),
+                    TextFont {
+                        font_size: FontSize::Px(14.0),
+                        ..default()
+                    },
+                    TextColor(color),
+                    Interaction::default(),
+                    BackgroundColor(Color::NONE),
+                ));
             }
             if ui.scroll > 0 {
                 c.spawn((
-                    TextSpan::new(format!("-- {} more below (PageDown) --\n", ui.scroll)),
+                    Text::new(format!("-- {} more below (PageDown) --", ui.scroll)),
+                    TextFont {
+                        font_size: FontSize::Px(14.0),
+                        ..default()
+                    },
                     TextColor(Color::srgb(0.5, 0.5, 0.5)),
                 ));
             }
@@ -665,6 +690,54 @@ fn draw_console(
             format!("] {before}|{after}")
         }
     };
+}
+
+/// Rows from `a` to `b` in either order.
+fn row_range((a, b): (usize, usize)) -> std::ops::RangeInclusive<usize> {
+    a.min(b)..=a.max(b)
+}
+
+/// Drag over output rows to select them; on release they go to the
+/// clipboard (as terminals copy on select).
+fn select_rows(
+    mut ui: ResMut<ConsoleUi>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    mut rows: Query<(&ConsoleRow, &Interaction, &mut BackgroundColor)>,
+) {
+    if !ui.open {
+        return;
+    }
+    let hovered = rows
+        .iter()
+        .find(|(_, i, _)| matches!(i, Interaction::Hovered | Interaction::Pressed))
+        .map(|(r, ..)| r.0);
+    if mouse.just_pressed(MouseButton::Left) {
+        ui.selection = hovered.map(|r| (r, r));
+        ui.dragging = ui.selection.is_some();
+    } else if ui.dragging && mouse.pressed(MouseButton::Left) {
+        if let (Some(r), Some(sel)) = (hovered, ui.selection.as_mut()) {
+            sel.1 = r;
+        }
+    } else if ui.dragging && mouse.just_released(MouseButton::Left) {
+        ui.dragging = false;
+        if let Some(sel) = ui.selection {
+            let text: Vec<&str> = row_range(sel).filter_map(|r| ui.shown.get(r).map(String::as_str)).collect();
+            if let Err(e) = arboard::Clipboard::new().and_then(|mut c| c.set_text(text.join("\n"))) {
+                warn!("clipboard: {e}");
+            }
+        }
+    }
+    let selected = ui.selection.map(row_range);
+    for (row, _, mut bg) in &mut rows {
+        let want = if selected.as_ref().is_some_and(|s| s.contains(&row.0)) {
+            Color::srgba(0.3, 0.45, 0.8, 0.45)
+        } else {
+            Color::NONE
+        };
+        if bg.0 != want {
+            bg.0 = want;
+        }
+    }
 }
 
 /// Suggestions under the console as you type (needs the world to read
@@ -728,6 +801,9 @@ pub struct Overlays {
     pub showpos: u8,
     pub showfps: u8,
     pub snd_show: u8,
+    /// `net_graph`: frame rate, frame time, simulation tick rate and
+    /// entity count (no network yet, so no ping or traffic).
+    pub net_graph: u8,
     /// `developer`: 1 shows console output top left for a few seconds.
     pub developer: u8,
     /// Notify lines and seconds left, and console lines already taken.
@@ -743,6 +819,7 @@ impl Default for Overlays {
             showpos: 0,
             showfps: 0,
             snd_show: 0,
+            net_graph: 0,
             developer: 0,
             notify: VecDeque::new(),
             notify_seen: 0,
@@ -819,6 +896,12 @@ fn overlay_cvars(app: &mut App) {
     );
     resource_cvar::<Overlays, u8>(
         app,
+        "net_graph",
+        "1: fps, frame time, simulation tick rate and entity count (no network yet).",
+        |o| &mut o.net_graph,
+    );
+    resource_cvar::<Overlays, u8>(
+        app,
         "snd_show",
         "1: mark where sounds play, with their names, for a few seconds.",
         |o| &mut o.snd_show,
@@ -846,6 +929,8 @@ fn draw_overlays(
     player: Option<Single<(&Transform, &Velocity, &crate::core::Intent), With<LocalPlayer>>>,
     map: Option<Res<crate::map::ActiveMapLook>>,
     console: Res<Console>,
+    fixed: Res<Time<Fixed>>,
+    entities: Query<Entity>,
 ) {
     let _ = map;
     let dt = time.delta_secs();
@@ -854,6 +939,19 @@ fn draw_overlays(
         o.frames.pop_front();
     }
     let mut lines = Vec::new();
+    if o.net_graph > 0 {
+        let n = o.frames.len().max(1) as f32;
+        let avg = o.frames.iter().sum::<f32>() / n;
+        let max = o.frames.iter().cloned().fold(0.0f32, f32::max);
+        lines.push(format!(
+            "fps {:.0}  frame {:.1} ms (max {:.1})  tick {:.1}/s  entities {}  local",
+            1.0 / avg.max(1e-6),
+            avg * 1e3,
+            max * 1e3,
+            1.0 / fixed.timestep().as_secs_f64(),
+            entities.iter().count()
+        ));
+    }
     if o.showfps > 0 {
         let n = o.frames.len().max(1) as f32;
         let avg = o.frames.iter().sum::<f32>() / n;
@@ -1410,6 +1508,49 @@ fn client_commands(app: &mut App) {
         Ok(None)
     })
     .console_command(
+        "mashup_hurtme",
+        "mashup_hurtme <head|chest|stomach|leftarm|rightarm|leftleg|rightleg|generic> [amount=100] [from yaw, degrees: 0 = shot from the front]: a bullet hit on yourself at that hitbox (e.g. to see your ragdoll in thirdperson).",
+        |w, a| {
+            use crate::core::{Damage, DamageKind, Health, Hitboxes, Hitgroup, Intent};
+            let group = match a.first().map(|s| s.to_ascii_lowercase()).as_deref() {
+                Some("head") => Hitgroup::Head,
+                Some("chest") => Hitgroup::Chest,
+                Some("stomach") => Hitgroup::Stomach,
+                Some("leftarm") => Hitgroup::LeftArm,
+                Some("rightarm") => Hitgroup::RightArm,
+                Some("leftleg") => Hitgroup::LeftLeg,
+                Some("rightleg") => Hitgroup::RightLeg,
+                Some("generic") => Hitgroup::Generic,
+                _ => return Err("mashup_hurtme <hitgroup> [amount] [from yaw]".into()),
+            };
+            let amount = a.get(1).and_then(|v| v.parse::<f32>().ok()).unwrap_or(100.0) / 100.0;
+            let from = a.get(2).and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0).to_radians();
+            let p = local_player(w)?;
+            let t = *w.get::<Transform>(p).ok_or("no transform")?;
+            let yaw = w.get::<Intent>(p).ok_or("no intent")?.yaw_rotation();
+            let feet = w
+                .get::<avian3d::prelude::ColliderAabb>(p)
+                .map_or(t.translation, |b| t.translation.with_y(b.min.y));
+            let point = w
+                .get::<Hitboxes>(p)
+                .and_then(|h| h.0.iter().find(|b| b.group == group).map(|b| feet + yaw * b.center))
+                .unwrap_or(t.translation);
+            // Shot from `from` around the facing: travelling toward it.
+            let dir = yaw * Quat::from_rotation_y(from) * Vec3::Z;
+            let _ = w.get::<Health>(p).ok_or("no health")?;
+            w.write_message(Damage {
+                target: p,
+                attacker: None,
+                amount,
+                point,
+                dir,
+                hitgroup: group,
+                kind: DamageKind::Bullet,
+            });
+            Ok(None)
+        },
+    )
+    .console_command(
         "maps",
         "maps [filter]: list the maps that can be loaded (the game's, its downloads, imported).",
         |_, a| {
@@ -1597,6 +1738,22 @@ mod tests {
         assert!(score("sv_enablebunnyhopping", "bunny").unwrap() < score("sv_enablebunnyhopping", "sebh").unwrap());
         assert!(score("sv_enablebunnyhopping", "sebh").is_some(), "letters in order");
         assert!(score("cl_showpos", "xyz").is_none());
+    }
+
+    #[test]
+    fn selections_cover_rows_dragged_either_way() {
+        assert_eq!(row_range((5, 2)), 2..=5);
+        assert_eq!(row_range((3, 3)), 3..=3);
+    }
+
+    #[test]
+    fn net_graph_is_a_cvar() {
+        let mut app = App::new();
+        app.add_plugins(ConsolePlugin).init_resource::<Overlays>();
+        overlay_cvars(&mut app);
+        app.world_mut().resource_mut::<Console>().submit("net_graph 1");
+        app.update();
+        assert_eq!(app.world().resource::<Overlays>().net_graph, 1);
     }
 
     #[test]

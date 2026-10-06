@@ -1612,6 +1612,18 @@ fn bodies_animate_with_movement() {
     assert_eq!(keys.len(), all, "held models {keys:?}");
     // The drawn AK-47 picks the AK upper body at full weight.
     assert_eq!(layer(&sim, 0), Some(("Idle_Upper_AK".into(), 1.0)));
+    // A reload plays the AK's reload gesture over it, then ends.
+    let ak = sim.app.world().get::<mashup::weapon::Inventory>(c).unwrap().active.unwrap();
+    sim.app.world_mut().write_message(mashup::weapon::WeaponEvent {
+        owner: c,
+        weapon: ak,
+        kind: mashup::weapon::WeaponEventKind::ReloadStarted,
+    });
+    sim.ticks(2);
+    let reload = layer(&sim, 5).map(|(n, _)| n.to_lowercase());
+    assert_eq!(reload.as_deref(), Some("idle_reload_ak"));
+    sim.seconds(4.0);
+    assert_eq!(layer(&sim, 5), None, "the reload gesture ends");
 
     sim.intent(c).move_axis = Vec2::Y;
     sim.seconds(1.0);
@@ -2347,4 +2359,24 @@ fn buy_zones_cover_each_teams_spawns() {
     // Mid doors, nowhere near a spawn (Source -480, 420, 0).
     let mid = Vec3::new(-480.0, 0.0, -420.0) * map.entity_scale + Vec3::Y;
     assert!(!check(&mut w, mid, 1) && !check(&mut w, mid, 2));
+}
+
+/// Bots' objectives: dust2's two bomb sites, on the floor near the
+/// overview's A and B (nav places BombsiteA/BombsiteB).
+#[test]
+fn bot_objectives_are_the_bomb_sites() {
+    use mashup::{bot::objectives, map::MapEntities};
+    let Some(map) = dust2() else { return };
+    let goals = objectives(&MapEntities {
+        entities: std::sync::Arc::new(map.entities.clone()),
+        scale: map.entity_scale,
+    });
+    assert_eq!(goals.len(), 2, "{goals:?}");
+    let nav = map.nav.as_ref().expect("nav mesh");
+    let mut places: Vec<String> = goals
+        .iter()
+        .filter_map(|g| nav.area_at(*g + Vec3::Y * 0.5).and_then(|a| nav.places.get(nav.areas[a].place?).cloned()))
+        .collect();
+    places.sort();
+    assert_eq!(places, ["BombsiteA", "BombsiteB"], "{goals:?}");
 }

@@ -71,7 +71,9 @@ burst), HUD, deathmatch and a first bot are in.
 - Rounds, money and buying: slice 1 done (`mashup_rounds 1`,
   [plans/active/rounds.md](plans/active/rounds.md)); next: buy zones, a
   buy menu, ammo, round sounds, objectives.
-- Reload, grenade and death animations (world models are held by bodies).
+- Grenade and death animations on bodies (the reload gesture is in:
+  `<Move>_Reload_<weapon>` by activity, an assumption for the spec's
+  `reload_<suffix>`; shotgun start/loop/end reloads not yet).
 - Impact effects, remaining (specs/cs_source/impact_effects.md; the
   surface effects, blood, bullet splashes and pane glass shards are in):
   section 9's exact shard burst at the hit point (ours spreads shards
@@ -91,9 +93,11 @@ burst), HUD, deathmatch and a first bot are in.
   `weapon/drop.rs`): throw speed, the re-pick delay, pickup reach and
   mass are guesses (measure on the probe server); bullets hit loose
   weapons; the use key doesn't swap a weapon for the one you look at.
-- Ragdolls on death: the player model's ragdoll from its `.phy` (bones as
-  rigid bodies with joint limits), seeded with the death pose and the
-  killing hit's impulse.
+- Ragdolls, remaining (bodies, joints, impulse, bone velocities, settling
+  and removal are in, `map/ragdoll.rs`): death poses (spec 2.3), pushes
+  from later bullets (6.2), self-collision pairs (1.3), separation
+  repair (6.3); check the spec's open questions (force scale, bone_dt,
+  joint limit convention) in the game.
 - Held weapons don't stay in other players' hands (they float around the
   hands). Findings 2026-10-06: the world model's mesh follows the player's
   animated `weapon_bone` (child of the spine), which is right; the arms
@@ -110,15 +114,17 @@ burst), HUD, deathmatch and a first bot are in.
 ## 4. Bots
 
 - CS:S bot path costs and route variety (nav spec open questions 2–4),
-  checking corners, teamwork.
+  checking corners, teamwork, team roles (attackers to a site, defenders
+  holding one; today both roam toward the objectives 70 % of the time).
 
 ## 5. Console, remaining
 
 The console and overlays are in (src/console.rs, src/client/console.rs).
 
-- `net_graph` beyond cl_showfps 2; `cl_showpos 2`.
-- Select-and-copy with the mouse in the output; `con_copy [lines]` copies
-  to the clipboard and `con_dump` writes a file meanwhile.
+- `net_graph` shows local numbers only (fps, frame time, tick rate,
+  entities); ping and traffic once there is networking. `cl_showpos 2`.
+- Mouse selection copies whole lines (drag over the output); selecting
+  part of a line isn't possible.
 
 ## 6. Sound, remaining
 
