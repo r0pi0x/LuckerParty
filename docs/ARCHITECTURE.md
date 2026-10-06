@@ -93,7 +93,7 @@ A module may use only the modules below it. Enforced by
 | `src/bin/testmap.rs` | Dev tool: writes the entity test map `tools/testmap/mashup_logic_test.vmf` (compiled on Windows by `scripts/compile_testmap.ps1`) |
 | `src/bin/dump.rs` | Dev tool: summarize, list and extract a game install's files; `--sequences` lists a model's bones and sequences |
 | `src/harness.rs` | `Sim`: headless app stepped by exact fixed ticks, for tests |
-| `src/client/view.rs` | Third-person camera (`thirdperson`/`firstperson`, `cam_idealdist`, `cam_idealyaw` orbit, `mashup_freecam` detached camera, swept back from the eye against the world), master `volume` (Bevy `GlobalVolume`), `mashup_healthbars` |
+| `src/client/view.rs` | Third-person camera (`thirdperson`/`firstperson`, `cam_idealdist`, `cam_idealyaw` orbit, `mashup_freecam` detached camera, `mashup_watch` chase camera on a bot, swept back from the eye against the world), master `volume` (Bevy `GlobalVolume`), `mashup_healthbars` |
 | `src/client/` | Local input (mouse look as CS:S: `sensitivity` x `m_yaw`/`m_pitch` degrees per count; Left Alt / `+freelook` turns only the camera; E or `+use` sets `Intent::use_key`), first-person camera (FOV from `Zoomed`), debug UI, `--screenshot` and the `screenshot <file>` console command (`capture.rs`), remote protocol; `hud.rs`: crosshair (gap from spread), sniper scope overlay, health, ammo, hit marker, killfeed, capsule bodies for other characters |
 | `src/lib.rs` | `SimPlugins` (everything the simulation needs) |
 | `src/main.rs` | The game binary: `SimPlugins` + map + `ClientPlugin` |

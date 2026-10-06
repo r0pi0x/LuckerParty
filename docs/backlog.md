@@ -109,7 +109,8 @@ burst), HUD, deathmatch and a first bot are in.
   sequences' IK rules and locks (the animation spec's open question "IK"),
   and a reproduction of the floating. With `mashup_freecam 2` the AK
   sits in both hands standing, crouched and firing (2026-10-06); still to
-  check: pistols and the knife, running, jumping, and bots.
+  check: jumping and other weapons; a running bot (`mashup_watch 1`) holds
+  its AK with both hands too.
 
 ## 4. Bots
 

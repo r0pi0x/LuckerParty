@@ -75,6 +75,12 @@ impl FreeCam {
     }
 }
 
+/// Watch another character from behind (`mashup_watch <n>`: bot n, 0
+/// off), at `cam_idealdist` and `cam_idealyaw`, like a spectator's chase
+/// camera; your own player keeps its controls.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
+pub struct Watch(pub u32);
+
 #[derive(Resource, Default)]
 struct HealthBars(u8);
 
@@ -84,6 +90,7 @@ impl Plugin for ViewPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CameraMode>()
             .init_resource::<FreeCam>()
+            .init_resource::<Watch>()
             .init_resource::<HealthBars>()
             .init_resource::<ShowLocalBody>()
             .add_systems(Update, (show_local_body, draw_health_bars.after(super::follow_eye)));
@@ -126,6 +133,12 @@ fn view_console(app: &mut App) {
         "cam_idealdist",
         "Third-person camera distance behind the eye, in CS:S units.",
         |m| &mut m.ideal_dist,
+    );
+    resource_cvar::<Watch, u32>(
+        app,
+        "mashup_watch",
+        "Chase camera on bot n (\"Bot n\"), behind it at cam_idealdist/cam_idealyaw; 0 back to you.",
+        |w| &mut w.0,
     );
     resource_cvar::<FreeCam, u8>(
         app,
@@ -206,11 +219,12 @@ pub(super) fn camera_offset(
 fn show_local_body(
     mode: Res<CameraMode>,
     free: Res<FreeCam>,
+    watch: Res<Watch>,
     local: Option<Single<Has<Dead>, With<LocalPlayer>>>,
     mut show: ResMut<ShowLocalBody>,
 ) {
     let dead = local.is_some_and(|d| *d);
-    show.set_if_neq(ShowLocalBody((mode.third_person || free.mode != 0) && !dead));
+    show.set_if_neq(ShowLocalBody((mode.third_person || free.mode != 0 || watch.0 != 0) && !dead));
 }
 
 #[derive(Component)]
