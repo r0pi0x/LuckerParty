@@ -123,18 +123,28 @@ pub(super) fn draw_view_models(
             &Camera,
             Option<&Children>,
             Option<&bevy::core_pipeline::tonemapping::Tonemapping>,
+            Option<&bevy::camera::RenderTarget>,
         ),
         (With<ViewModelAnchor>, Without<ViewModelCamera>),
     >,
     owners: Query<&ViewAnimator>,
     third_person: Option<Res<super::ShowLocalBody>>,
-    mut cameras: Query<(Entity, &mut Camera, &mut Projection, Option<&Children>), With<ViewModelCamera>>,
+    mut cameras: Query<
+        (
+            Entity,
+            &mut Camera,
+            &mut Projection,
+            Option<&Children>,
+            Option<&bevy::camera::RenderTarget>,
+        ),
+        With<ViewModelCamera>,
+    >,
     bodies: Query<&ViewModelBody>,
     mut joints: Query<&mut Transform, With<BodyJoint>>,
     mut commands: Commands,
 ) {
     let now = time.elapsed_secs_f64();
-    for (anchor, parent, anchor_camera, children, tonemapping) in &anchors {
+    for (anchor, parent, anchor_camera, children, tonemapping, anchor_target) in &anchors {
         let state = owners.get(parent.parent()).ok();
         // In third person the own body holds the weapon; no view model.
         let hidden = third_person.as_ref().is_some_and(|t| t.0);
@@ -143,7 +153,9 @@ pub(super) fn draw_view_models(
             .and_then(|s| s.key.as_deref())
             .and_then(|k| assets.0.get(k).map(|a| (k, a)));
         let camera = children.into_iter().flatten().find(|c| cameras.contains(**c)).copied();
-        let Some((camera, mut cam, mut projection, cam_children)) = camera.and_then(|c| cameras.get_mut(c).ok()) else {
+        let Some((camera, mut cam, mut projection, cam_children, target)) =
+            camera.and_then(|c| cameras.get_mut(c).ok())
+        else {
             let mut e = commands.spawn((
                 Name::new("View model camera"),
                 ViewModelCamera,
@@ -173,6 +185,13 @@ pub(super) fn draw_view_models(
         }
         if let Some(t) = tonemapping {
             commands.entity(camera).insert(*t);
+        }
+        // Off-screen captures (`--views`) retarget the anchor camera; the
+        // view model must draw into the same image.
+        if let Some(t) = anchor_target
+            && target.and_then(|c| c.normalize(None)) != t.normalize(None)
+        {
+            commands.entity(camera).insert(t.clone());
         }
         let body = cam_children
             .into_iter()

@@ -126,8 +126,15 @@ cargo run --features dev --bin refcmp -- capture-ours --only a_sign
 ```
 
 - Views: `tools/refcmp/<map>.toml` (Source eye positions and angles; add
-  more as needed). Output: `~/.local/share/mashup/dump/refcmp/<map>/`
-  (game imagery; never in the repo).
+  more as needed; pass `--views tools/refcmp/<map>.toml` for maps other
+  than dust2). de_aztec, cs_office and de_nuke have views generated from
+  their own entities (intermission cameras, spawns, bomb/rescue zones).
+  `camera` names the map's `point_viewcontrol`; maps whose cameras have
+  no name (de_aztec) use the class name, which moves all of them.
+  Output: `~/.local/share/mashup/dump/refcmp/<map>/` (game imagery; never
+  in the repo). Our captures currently show the view model.
+- Load warnings of every stock map: `cargo test --features dev --test
+  map_stock -- --ignored --nocapture all_stock_maps_warnings`.
 - CS:S runs through the Steam client (logged in once on this machine) and
   is driven over RCON on 127.0.0.1:27015, so it works with the desktop
   locked: the tool waits for the map to load, repositions the map's

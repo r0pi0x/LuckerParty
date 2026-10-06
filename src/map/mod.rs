@@ -123,6 +123,30 @@ pub enum MapAlpha {
     /// Cut out below this alpha.
     Mask(f32),
     Blend,
+    /// Added to what's behind (Source `$additive`: light glows, beams).
+    Add,
+}
+
+impl MapAlpha {
+    /// The material shaders' `translucent` parameter: 0 opaque, 1 blend,
+    /// 2 additive.
+    pub fn shader_mode(self) -> f32 {
+        match self {
+            MapAlpha::Opaque | MapAlpha::Mask(_) => 0.0,
+            MapAlpha::Blend => 1.0,
+            MapAlpha::Add => 2.0,
+        }
+    }
+
+    /// Blend state for the material shaders (they output alpha 0 when
+    /// additive, so premultiplied blending adds).
+    pub fn shader_alpha_mode(self) -> AlphaMode {
+        match self {
+            MapAlpha::Opaque | MapAlpha::Mask(_) => AlphaMode::Opaque,
+            MapAlpha::Blend => AlphaMode::Blend,
+            MapAlpha::Add => AlphaMode::Add,
+        }
+    }
 }
 
 /// Triangles sharing one material.
@@ -213,11 +237,12 @@ pub struct MapEnvmap {
 /// and combined with the base color (specs/cs_source/shaders.md).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MapDetail {
-    /// Index into `MapData::textures` (linear for mode 0, sRGB for 1).
+    /// Index into `MapData::textures` (linear for mode 0, sRGB otherwise).
     pub texture: usize,
     pub scale: [f32; 2],
     pub factor: f32,
-    /// 0: multiply by 2 x detail ("mod2x"); 1: add.
+    /// 0: multiply by 2 x detail ("mod2x"); 1: add; 2: blend the detail
+    /// over the base by its alpha.
     pub mode: u8,
 }
 
@@ -1451,7 +1476,7 @@ fn spawn_map(
                         light_scale: data.look.light_scale,
                         lightmap_scale: if source_ldr { SOURCE_LIGHTMAP_SCALE } else { 1.0 },
                         bicubic: if data.look.bicubic_lightmaps { 1.0 } else { 0.0 },
-                        translucent: if m.alpha == MapAlpha::Blend { 1.0 } else { 0.0 },
+                        translucent: m.alpha.shader_mode(),
                         blend: if blended { 1.0 } else { 0.0 },
                         blend_masked: if blend.mask.is_some() { 1.0 } else { 0.0 },
                         blend_normal: if bumped && blend.normal_map.is_some() { 1.0 } else { 0.0 },
@@ -1516,10 +1541,7 @@ fn spawn_map(
                         .map(|i| textures[i].clone()),
                     blend_mask: blend.mask.filter(|_| blended).map(|i| textures[i].clone()),
                     detail: m.detail.map(|d| textures[d.texture].clone()),
-                    alpha_mode: match m.alpha {
-                        MapAlpha::Opaque | MapAlpha::Mask(_) => AlphaMode::Opaque,
-                        MapAlpha::Blend => AlphaMode::Blend,
-                    },
+                    alpha_mode: m.alpha.shader_alpha_mode(),
                     double_sided: m.double_sided,
                 };
                 commands.spawn((
@@ -1597,16 +1619,13 @@ fn spawn_map(
                                             data.fog.as_ref().filter(|_| view == MapDebugView::Normal && !skybox),
                                         ),
                                         fog_range: fog_range(data.fog.as_ref()),
-                                        translucent: if m.alpha == MapAlpha::Blend { 1.0 } else { 0.0 },
+                                        translucent: m.alpha.shader_mode(),
                                         ..default()
                                     },
                                     base: m.texture.filter(|_| !lighting_only).map(|i| textures[i].clone()),
                                     envmap: None,
                                     envmap_mask: None,
-                                    alpha_mode: match m.alpha {
-                                        MapAlpha::Opaque | MapAlpha::Mask(_) => AlphaMode::Opaque,
-                                        MapAlpha::Blend => AlphaMode::Blend,
-                                    },
+                                    alpha_mode: m.alpha.shader_alpha_mode(),
                                     double_sided: m.double_sided,
                                 })
                             })
@@ -2314,6 +2333,7 @@ fn build_material(m: &MapMesh, textures: &[Handle<Image>], view: MapDebugView, l
             MapAlpha::Opaque => AlphaMode::Opaque,
             MapAlpha::Mask(cutoff) => AlphaMode::Mask(cutoff),
             MapAlpha::Blend => AlphaMode::Blend,
+            MapAlpha::Add => AlphaMode::Add,
         },
         double_sided: m.double_sided,
         cull_mode: if m.double_sided {

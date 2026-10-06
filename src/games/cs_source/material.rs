@@ -138,6 +138,7 @@ impl<'a> MaterialLoader<'a> {
             self.missing.push(format!("{vmt_path}: not found"));
             return fallback;
         };
+        let (text, stand_in) = stand_in_shader(&text);
         let material = vmt_parser::from_str(&text).map_err(VmtError::from).and_then(|m| {
             m.resolve(|include: &str| self.read_text(include).ok_or(VmtError::Missing(include.to_string())))
         });
@@ -148,7 +149,12 @@ impl<'a> MaterialLoader<'a> {
                 return fallback;
             }
         };
-        let alpha = if material.translucent() {
+        // `$additive` (light glows and beams): the parser keeps it only for
+        // SpriteCard, so read it from the text (and patch materials' keys).
+        let additive = self.keys(&text, 0).get("$additive").is_some_and(|v| v.trim() != "0");
+        let alpha = if additive {
+            MapAlpha::Add
+        } else if material.translucent() {
             MapAlpha::Blend
         } else if material.alpha_test().is_some() {
             // The parser defaults an absent $alphatestreference to 1.0, which
@@ -159,12 +165,25 @@ impl<'a> MaterialLoader<'a> {
         } else {
             MapAlpha::Opaque
         };
-        // The parser's accessors skip some shaders' own fields (Cable).
+        // The parser's accessors skip some shaders' own fields (Cable, and
+        // Sky: the HDR-capable skies on de_train, de_nuke, de_dust and
+        // cs_militia, whose LDR texture is `$basetexture`).
         let (base, bump) = match &material {
             vmt_parser::material::Material::Cable(m) => (Some(m.base_texture.as_str()), m.bump_map.as_deref()),
+            vmt_parser::material::Material::Sky(m) => (Some(m.base_texture.as_str()), None),
+            // Water's `$bumpmap` is a DuDv refraction map (unsupported
+            // format, and not a normal map); `$normalmap` is the normal map.
+            vmt_parser::material::Material::Water(m) => (m.base_texture.as_deref(), m.normal_map.as_deref()),
             m => (m.base_texture(), m.bump_map()),
         };
-        let texture = base.and_then(|t| self.texture(t, true));
+        let mut texture = base.and_then(|t| self.texture(t, true));
+        // Water without a base texture (de_aztec's canals) shows what's
+        // below through its fog in the game; without a Water shader, draw
+        // its fog colour (plus `$envmap` reflections below) instead of a
+        // debug colour.
+        if let (None, vmt_parser::material::Material::Water(w)) = (texture, &material) {
+            texture = Some(self.solid(w.fog_color.0));
+        }
         let normal_map = bump.and_then(|t| self.texture(t, false));
         let decal_scale = match &material {
             vmt_parser::material::Material::LightMappedGeneric(m) if m.decal => Some(m.decal_scale),
@@ -180,7 +199,10 @@ impl<'a> MaterialLoader<'a> {
         };
         // The parser defaults a missing $detailblendmode to 1; the game's
         // default is 0 (mod2x), so read the mode from the text.
-        let detail_mode = detail_blend_mode(&text);
+        let detail_mode = match stand_in {
+            Some(StandIn::TwoTextureBlend) => 2,
+            _ => detail_blend_mode(&text),
+        };
         let detail_source = match &material {
             vmt_parser::material::Material::LightMappedGeneric(m) => m
                 .detail
@@ -193,10 +215,11 @@ impl<'a> MaterialLoader<'a> {
             _ => None,
         };
         let detail = detail_source
-            .filter(|_| detail_mode <= 1)
+            .filter(|_| detail_mode <= 2)
             .and_then(|(name, scale, factor)| {
-                // Mod2x uses the texel as stored; additive decodes sRGB.
-                let texture = self.texture(&name, detail_mode == 1)?;
+                // Mod2x uses the texel as stored; additive and translucent
+                // decode sRGB.
+                let texture = self.texture(&name, detail_mode != 0)?;
                 Some(crate::map::MapDetail {
                     texture,
                     scale,
@@ -407,6 +430,26 @@ impl<'a> MaterialLoader<'a> {
         index
     }
 
+    /// A 1x1 texture of a colour (0-1, gamma space).
+    fn solid(&mut self, rgb: [f32; 3]) -> usize {
+        let px = rgb.map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8);
+        let key = format!("solid:{px:?}");
+        if let Some(Some(i)) = self.by_path.get(&key) {
+            return *i;
+        }
+        self.textures.push(MapTexture {
+            name: key.clone(),
+            srgb: true,
+            mips: Vec::new(),
+            width: 1,
+            height: 1,
+            rgba8: vec![px[0], px[1], px[2], 255],
+        });
+        let index = self.textures.len() - 1;
+        self.by_path.insert(key, Some(index));
+        index
+    }
+
     fn texture(&mut self, name: &str, srgb: bool) -> Option<usize> {
         let path = format!("materials/{}.vtf", normalize(name).trim_end_matches(".vtf"));
         let key = if srgb { path.clone() } else { format!("{path}#linear") };
@@ -490,6 +533,51 @@ fn mip_levels(bytes: &[u8], header: &vtf::header::VTFHeader) -> Option<Vec<Vec<u
         out.push(img.decode(0).ok()?.to_rgba8().into_raw());
     }
     Some(out)
+}
+
+/// Shaders the VMT parser doesn't know, read as the closest one it does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum StandIn {
+    /// WorldTwoTextureBlend (de_aztec's walls): LightmappedGeneric whose
+    /// `$detail` is a second texture blended over the base by the detail's
+    /// alpha (detail blend mode 2). The aztec materials all set
+    /// `$detail_alpha_mask_base_texture 1`; its absence isn't modelled.
+    TwoTextureBlend,
+    /// Decal shaders with their own names
+    /// (DecalBaseTimesLightmapAlphaBlendSelfIllum on de_nuke): a translucent
+    /// LightmappedGeneric decal. Self-illumination isn't modelled.
+    Decal,
+}
+
+/// `text` with an unknown shader name replaced by its stand-in.
+fn stand_in_shader(text: &str) -> (std::borrow::Cow<'_, str>, Option<StandIn>) {
+    use std::borrow::Cow;
+    let trimmed = text.trim_start_matches(|c: char| c.is_whitespace() || c == '\u{feff}');
+    let start = text.len() - trimmed.len();
+    let quoted = trimmed.starts_with('"');
+    let body = if quoted { &trimmed[1..] } else { trimmed };
+    let len = body
+        .find(|c: char| c == '"' || c == '{' || c.is_whitespace())
+        .unwrap_or(body.len());
+    let shader = body[..len].to_ascii_lowercase();
+    let (stand_in, extra) = match shader.as_str() {
+        "worldtwotextureblend" => (StandIn::TwoTextureBlend, ""),
+        s if s.starts_with("decalbasetimeslightmap") => {
+            (StandIn::Decal, "\n\"$decal\" \"1\"\n\"$translucent\" \"1\"\n")
+        }
+        _ => return (Cow::Borrowed(text), None),
+    };
+    let rest = &text[start + usize::from(quoted) + len..];
+    // Extra keys go just inside the first block.
+    let rest = match rest.find('{') {
+        Some(i) if !extra.is_empty() => format!("{}{{{extra}{}", &rest[..i], &rest[i + 1..]),
+        _ => rest.to_string(),
+    };
+    let quote = if quoted { "\"" } else { "" };
+    (
+        Cow::Owned(format!("{}{quote}LightmappedGeneric{rest}", &text[..start])),
+        Some(stand_in),
+    )
 }
 
 /// `$detailblendmode` from a material's text (0 when absent).
@@ -590,5 +678,29 @@ fn vector(v: &str) -> Option<[f32; 3]> {
         [a] => Some([*a; 3]),
         [a, b, c, ..] => Some([*a, *b, *c]),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_shaders_parse_as_their_stand_in() {
+        let wttb = "\"WorldTwoTextureBlend\"\n{\n\t\"$basetexture\" \"a/base\"\n\t\"$detail\" \"a/detail\"\n}\n";
+        let (text, s) = stand_in_shader(wttb);
+        assert_eq!(s, Some(StandIn::TwoTextureBlend));
+        let m = vmt_parser::from_str(&text).expect("parses");
+        assert_eq!(m.base_texture(), Some("a/base"));
+
+        let decal = "DecalBaseTimesLightmapAlphaBlendSelfIllum { \"$basetexture\" \"d/x\" \"$decalscale\" 0.25 }";
+        let (text, s) = stand_in_shader(decal);
+        assert_eq!(s, Some(StandIn::Decal));
+        let m = vmt_parser::from_str(&text).expect("parses");
+        assert!(m.translucent());
+        assert!(matches!(m, vmt_parser::material::Material::LightMappedGeneric(ref g) if g.decal));
+
+        let known = "\"LightmappedGeneric\" { \"$basetexture\" \"x\" }";
+        assert!(matches!(stand_in_shader(known), (std::borrow::Cow::Borrowed(_), None)));
     }
 }

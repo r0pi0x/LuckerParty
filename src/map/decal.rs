@@ -129,7 +129,7 @@ impl TriSet {
     pub(super) fn new(meshes: &[MapMesh]) -> Self {
         let mut out = Self::default();
         for m in meshes {
-            if m.skybox || m.unlit || m.material.starts_with("decal:") || m.alpha == super::MapAlpha::Blend {
+            if m.skybox || m.unlit || m.material.starts_with("decal:") || matches!(m.alpha, super::MapAlpha::Blend | super::MapAlpha::Add) {
                 continue;
             }
             for t in m.indices.chunks_exact(3) {

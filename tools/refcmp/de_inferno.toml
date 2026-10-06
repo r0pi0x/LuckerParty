@@ -1,0 +1,152 @@
+# Views of de_inferno for spotting visual bugs (docs/plans/active/other-maps.md),
+# generated from its entities: intermission cameras, the first T and CT
+# spawns, and bomb/rescue zone centres looking four ways.
+# Source eye positions; angles are [pitch, yaw] in Source degrees.
+
+map = "de_inferno"
+camera = "cam1"
+
+[[view]]
+name = "cam0"
+position = [2483, -313, 396.235]
+angles = [10, 135]
+
+[[view]]
+name = "cam1"
+position = [832, 2592, 332.235]
+angles = [10, 163]
+
+[[view]]
+name = "cam2"
+position = [2512, 2208, 204.235]
+angles = [0, 146]
+
+[[view]]
+name = "cam3"
+position = [-1424, -112, 108.235]
+angles = [5, 123]
+
+[[view]]
+name = "cam4"
+position = [-784, -128, 28.2347]
+angles = [-10, 0]
+
+[[view]]
+name = "cam5"
+position = [48, 368, 252.235]
+angles = [0, 206]
+
+[[view]]
+name = "cam6"
+position = [432, 2128, 236.235]
+angles = [5, 251]
+
+[[view]]
+name = "cam7"
+position = [138, 2818, 374]
+angles = [10, 0]
+
+[[view]]
+name = "cam8"
+position = [1736, 1934, 236.235]
+angles = [0, 345]
+
+[[view]]
+name = "cam9"
+position = [1504, 448, 204.235]
+angles = [0, 170]
+
+[[view]]
+name = "cam10"
+position = [-160, -448, 252.235]
+angles = [0, 168]
+
+[[view]]
+name = "cam11"
+position = [1960, 2768, 228.235]
+angles = [5, 309]
+
+[[view]]
+name = "cam12"
+position = [2704, 1079.11, 228.235]
+angles = [5, 130]
+
+[[view]]
+name = "cam13"
+position = [2512, 2194, 204.235]
+angles = [0, 243]
+
+[[view]]
+name = "cam14"
+position = [1392, 1216, 284.235]
+angles = [0, 340]
+
+[[view]]
+name = "cam15"
+position = [145, 2890, 355]
+angles = [27.6, 329.3]
+
+[[view]]
+name = "cam16"
+position = [-1690, 875, 65]
+angles = [5, 282.5]
+
+[[view]]
+name = "cam17"
+position = [924, -121, 340]
+angles = [5, 162]
+
+[[view]]
+name = "cam18"
+position = [47, 737, 98.235]
+angles = [-5, 330]
+
+[[view]]
+name = "t_spawn"
+position = [-1692, 788, 8]
+angles = [0, 271]
+
+[[view]]
+name = "ct_spawn"
+position = [2424, 2100, 196]
+angles = [0, 180]
+
+[[view]]
+name = "zone0_0"
+position = [1984, 432, 225]
+angles = [10, 0]
+
+[[view]]
+name = "zone0_90"
+position = [1984, 432, 225]
+angles = [10, 90]
+
+[[view]]
+name = "zone0_180"
+position = [1984, 432, 225]
+angles = [10, 180]
+
+[[view]]
+name = "zone0_270"
+position = [1984, 432, 225]
+angles = [10, 270]
+
+[[view]]
+name = "zone1_0"
+position = [344, 2752, 224]
+angles = [10, 0]
+
+[[view]]
+name = "zone1_90"
+position = [344, 2752, 224]
+angles = [10, 90]
+
+[[view]]
+name = "zone1_180"
+position = [344, 2752, 224]
+angles = [10, 180]
+
+[[view]]
+name = "zone1_270"
+position = [344, 2752, 224]
+angles = [10, 270]

@@ -346,7 +346,7 @@ fn prop_lighting_model_predicts_lightmaps() {
     let source = vbsp::Bsp::read(&bytes).unwrap();
     let lighting = ambient::MapLighting::read(&bytes);
     let occluders = ambient::Occluders::new(
-        &bsp::shadow_hulls(&source),
+        &bsp::shadow_hulls(&source, &ambient::raw_leaves(&bytes)),
         (&map.collision_positions, &map.collision_indices),
     );
     let lm = map.lightmap.as_ref().unwrap();

@@ -29,7 +29,7 @@ struct WorldParams {
     blend: f32,
     blend_masked: f32,
     blend_normal: f32,
-    // Detail texture: 0 none, 1 mod2x, 2 additive.
+    // Detail texture: 0 none, 1 mod2x, 2 additive, 3 alpha blend.
     detail: f32,
     detail_factor: f32,
     detail_scale: vec2<f32>,
@@ -77,6 +77,10 @@ fn sample_lightmap(t: texture_2d<f32>, uv: vec2<f32>) -> vec3<f32> {
 // Source range fog: toward the fog color by f^2, f from view depth.
 // Opaque surfaces write alpha 1 (see `translucent`).
 fn out_alpha(a: f32) -> f32 {
+    // Additive (2): alpha 0 under premultiplied blending adds the colour.
+    if params.translucent > 1.5 {
+        return 0.0;
+    }
     return select(1.0, a, params.translucent > 0.5);
 }
 
@@ -178,13 +182,17 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         albedo = vec4<f32>(mix(albedo.rgb, second.rgb, b), albedo.a);
     }
     // $detail: mod2x multiplies by twice the raw texel (mid-grey = no
-    // change); additive adds the decoded texel.
+    // change); additive adds the decoded texel; translucent blends over.
     if params.detail > 0.5 {
         let d = textureSample(detail_texture, base_sampler, in.uv * params.detail_scale);
         if params.detail < 1.5 {
             albedo = vec4<f32>(albedo.rgb * mix(vec3<f32>(1.0), 2.0 * d.rgb, params.detail_factor), albedo.a);
-        } else {
+        } else if params.detail < 2.5 {
             albedo = vec4<f32>(albedo.rgb + params.detail_factor * d.rgb, albedo.a);
+        } else {
+            // Translucent detail (mode 2, WorldTwoTextureBlend): the
+            // decoded detail over the base by its own alpha.
+            albedo = vec4<f32>(mix(albedo.rgb, d.rgb, d.a * params.detail_factor), albedo.a);
         }
     }
     if params.alpha_cutoff > 0.0 && albedo.a < params.alpha_cutoff {
