@@ -1705,3 +1705,115 @@ fn falling_out_of_the_map() {
     let at = sim.position(god);
     assert!(at.y > lo.y && map.spawns.iter().any(|(feet, _)| feet.distance(at) < 3.0), "god mode at {at}");
 }
+
+/// Players are boxes to each other (as in Source): one can land and stand
+/// on another's head, walk around up there and step off, never stuck.
+#[test]
+fn standing_on_another_player() {
+    use mashup::games::cs_source::movement::{self, SourceMovementPlugin};
+    let Some(map) = dust2() else { return };
+    let mut sim = Sim::new((MapPlugin::new(map.clone()), SourceMovementPlugin));
+    sim.set_tick_interval(mashup::games::cs_source::TICK_INTERVAL);
+    sim.app
+        .insert_resource(mashup::slots::Loadout { movement: movement::ID });
+    let ground = movement::to_engine(Vec3::new(-1024.0, -784.0, 140.0));
+    let lift = Vec3::Y * (36.0 * 0.0254 + 0.2);
+    let below = sim.spawn_character(ground + lift, movement::ID);
+    sim.seconds(0.5);
+    let floor = sim.position(below).y;
+    // Dropped from above, slightly off centre.
+    let above = sim.spawn_character(sim.position(below) + Vec3::new(0.15, 2.5, 0.1), movement::ID);
+    sim.seconds(1.5);
+    let on_head = sim.position(above).y - floor;
+    assert!(sim.state(above).on_ground, "not standing on the head");
+    // Standing on a CS:S hull (62 units): origin 62 units higher.
+    assert!((on_head / 0.0254 - 62.0).abs() < 2.0, "standing {} units up", on_head / 0.0254);
+    // The one below walks and turns about; the rider stays up and free.
+    for (k, yaw) in [0.0f32, 120.0, 240.0, 30.0].into_iter().enumerate() {
+        sim.intent(below).yaw = yaw.to_radians();
+        sim.intent(below).move_axis = Vec2::Y;
+        sim.seconds(0.4);
+        sim.intent(below).move_axis = Vec2::ZERO;
+        sim.seconds(0.2);
+        let start = sim.position(above);
+        sim.intent(above).yaw = (yaw + 90.0).to_radians();
+        sim.intent(above).move_axis = Vec2::Y;
+        sim.seconds(0.05);
+        sim.intent(above).move_axis = Vec2::ZERO;
+        sim.seconds(0.1);
+        let moved = (sim.position(above) - start).with_y(0.0).length();
+        assert!(moved > 0.01, "stuck while the one below moved (step {k})");
+    }
+    // Walk about up there, then off the edge.
+    for (k, yaw) in [0.0f32, 90.0, 180.0, 270.0].into_iter().enumerate() {
+        let start = sim.position(above);
+        sim.intent(above).yaw = yaw.to_radians();
+        sim.intent(above).move_axis = Vec2::Y;
+        sim.seconds(0.05);
+        sim.intent(above).move_axis = Vec2::ZERO;
+        sim.seconds(0.3);
+        let moved = (sim.position(above) - start).with_y(0.0).length();
+        assert!(moved > 0.01, "stuck on the head (step {k})");
+    }
+    sim.intent(above).move_axis = Vec2::Y;
+    sim.seconds(1.0);
+    let off = sim.position(above);
+    assert!((off.y - floor).abs() < 0.05, "didn't get down: {} m up", off.y - floor);
+    assert!(off.with_y(0.0).distance(sim.position(below).with_y(0.0)) > 0.5);
+}
+
+/// Fuzz: riders dropped on a moving player at random offsets, steering
+/// randomly and jumping; holding a move key on the open runway must always
+/// move them.
+#[test]
+fn riding_players_never_sticks() {
+    use mashup::games::cs_source::movement::{self, SourceMovementPlugin};
+    let Some(map) = dust2() else { return };
+    let mut rng = 0x2545f4914f6cdd1du64;
+    let mut rand = move || {
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        (rng >> 11) as f32 / (1u64 << 53) as f32
+    };
+    let mut stuck = Vec::new();
+    for trial in 0..12 {
+        let mut sim = Sim::new((MapPlugin::new(map.clone()), SourceMovementPlugin));
+        sim.set_tick_interval(mashup::games::cs_source::TICK_INTERVAL);
+        sim.app
+            .insert_resource(mashup::slots::Loadout { movement: movement::ID });
+        let ground = movement::to_engine(Vec3::new(-1024.0, -784.0, 140.0));
+        let below = sim.spawn_character(ground + Vec3::Y * (36.0 * 0.0254 + 0.2), movement::ID);
+        sim.seconds(0.3);
+        let offset = Vec3::new(rand() - 0.5, 2.0 + rand(), rand() - 0.5) * Vec3::new(0.9, 1.0, 0.9);
+        let above = sim.spawn_character(sim.position(below) + offset, movement::ID);
+        for step in 0..30 {
+            sim.intent(below).yaw = rand() * 6.28;
+            sim.intent(below).move_axis = if rand() < 0.6 { Vec2::Y } else { Vec2::ZERO };
+            sim.intent(below).crouch = rand() < 0.2;
+            sim.intent(below).jump = rand() < 0.1;
+            sim.intent(above).yaw = rand() * 6.28;
+            sim.intent(above).jump = rand() < 0.3;
+            sim.intent(above).crouch = rand() < 0.2;
+            sim.intent(above).move_axis = Vec2::Y;
+            let start = sim.position(above);
+            sim.seconds(0.3);
+            // Away from the other player it may just be against a wall.
+            let near = (sim.position(above) - sim.position(below)).with_y(0.0).length() < 1.5;
+            if near && (sim.position(above) - start).with_y(0.0).length() < 0.02 {
+                let d = (sim.position(above) - sim.position(below)) / 0.0254;
+                eprintln!(
+                    "stuck trial {trial} step {step}: rider - other {d:?}, rider ground {} crouch {}, other crouch {}, rider yaw {:.0} other yaw {:.0} other moving {}",
+                    sim.state(above).on_ground,
+                    sim.state(above).crouching,
+                    sim.state(below).crouching,
+                    sim.intent(above).yaw.to_degrees(),
+                    sim.intent(below).yaw.to_degrees(),
+                    sim.intent(below).move_axis.length()
+                );
+                stuck.push((trial, step, offset));
+            }
+        }
+    }
+    assert!(stuck.is_empty(), "{} stuck moments: {:?}", stuck.len(), &stuck[..stuck.len().min(5)]);
+}

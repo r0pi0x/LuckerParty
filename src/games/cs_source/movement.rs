@@ -15,7 +15,7 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 
 use crate::{
-    core::{Intent, MaxSpeed, MovementState, SimSet, Velocity},
+    core::{Health, Intent, MapBrush, MaxSpeed, MovementState, SimSet, Velocity},
     map::{
         MapBrushCollider, MapBrushes, MapWater, PhysicsProp, PlaySound, PropSurface, PushAway,
         sound::{SoundBank, SurfaceGrid},
@@ -533,6 +533,9 @@ struct Tracer<'a, 'w, 's> {
     sounds: Option<&'a crate::map::MapSounds>,
     /// Standing and ducked box heights.
     heights: (f32, f32),
+    /// Other characters' boxes (engine space), swept exactly like brushes:
+    /// players are axis-aligned boxes to each other, as in Source.
+    others: &'a [MapBrush],
 }
 
 /// Brush sweep result, engine space.
@@ -567,12 +570,10 @@ impl Tracer<'_, '_, '_> {
             normal: Vec3::ZERO,
             start_solid: false,
         };
-        let Some(brushes) = self.brushes else {
-            return out;
-        };
+        let brushes = self.brushes.map_or(&[][..], |b| &b.0[..]);
         let lo = from.min(to) - half - Vec3::splat(eps);
         let hi = from.max(to) + half + Vec3::splat(eps);
-        'brush: for (i, b) in brushes.0.iter().enumerate() {
+        'brush: for (i, b) in brushes.iter().chain(self.others).enumerate() {
             if b.max.cmplt(lo).any() || b.min.cmpgt(hi).any() {
                 continue;
             }
@@ -627,14 +628,13 @@ impl Tracer<'_, '_, '_> {
     /// than the solid skin.
     fn in_brush(&self, half: Vec3, centre: Vec3) -> bool {
         let skin = SOLID_SKIN * METERS_PER_UNIT;
-        self.brushes.is_some_and(|brushes| {
-            brushes.0.iter().any(|b| {
-                b.max.cmpgt(centre - half).all()
-                    && b.min.cmplt(centre + half).all()
-                    && b.planes
-                        .iter()
-                        .all(|(n, d)| n.dot(centre) - (d + n.abs().dot(half)) < -skin)
-            })
+        let brushes = self.brushes.map_or(&[][..], |b| &b.0[..]);
+        brushes.iter().chain(self.others).any(|b| {
+            b.max.cmpgt(centre - half).all()
+                && b.min.cmplt(centre + half).all()
+                && b.planes
+                    .iter()
+                    .all(|(n, d)| n.dot(centre) - (d + n.abs().dot(half)) < -skin)
         })
     }
 
@@ -1722,13 +1722,41 @@ fn step(
     mut play: MessageWriter<PlaySound>,
     cfg: Res<SourceMovementConfig>,
     time: Res<Time>,
+    other_characters: Query<(Entity, &ColliderAabb, Option<&Health>), (With<Intent>, Without<SourceMovement>)>,
+    health: Query<&Health>,
 ) {
     let dt = time.delta_secs();
+    // Every living character's box: Source hulls for Source movers, else
+    // the collider's bounds.
+    let alive = |e: Entity| health.get(e).is_ok_and(|h| h.current > 0.0) || health.get(e).is_err();
+    let hull_box = |feet: Vec3, ducked: bool| {
+        let height = if ducked { cfg.duck_height } else { cfg.stand_height };
+        let (a, b) = (
+            to_engine(feet + Vec3::new(-HALF_WIDTH, -HALF_WIDTH, 0.0)),
+            to_engine(feet + Vec3::new(HALF_WIDTH, HALF_WIDTH, height)),
+        );
+        MapBrush::from_box(a.min(b), a.max(b))
+    };
+    let mut boxes: Vec<(Entity, MapBrush)> = q
+        .iter()
+        .filter(|(e, ..)| alive(*e))
+        .map(|(e, _, me, t, ..)| (e, hull_box(to_source(t.translation) - Vec3::Z * ORIGIN_ABOVE_FEET, me.ducked)))
+        .collect();
+    boxes.extend(
+        other_characters
+            .iter()
+            .filter(|(_, _, h)| h.is_none_or(|h| h.current > 0.0))
+            .map(|(e, aabb, _)| (e, MapBrush::from_box(aabb.min, aabb.max))),
+    );
+    // Characters (dead ones too) never block through physics casts.
+    let characters: Vec<Entity> = q.iter().map(|(e, ..)| e).chain(other_characters.iter().map(|(e, ..)| e)).collect();
     for (entity, intent, mut me, mut transform, mut vel, mut state, weapon_speed) in &mut q {
+        let others: Vec<MapBrush> = boxes.iter().filter(|(e, _)| *e != entity).map(|(_, b)| b.clone()).collect();
         // With brushes swept exactly, physics queries skip the same brushes.
         // Players pass through multiplayer physics props (their own
         // collision group); props that collide stay in.
         let excluded = std::iter::once(entity)
+            .chain(characters.iter().copied())
             .chain(brushes.as_ref().map(|_| brush_colliders.iter()).into_iter().flatten())
             .chain(
                 props
@@ -1753,6 +1781,7 @@ fn step(
             prop_surfaces: &prop_surface,
             sounds: bank.as_ref().map(|b| &*b.0),
             heights: (cfg.stand_height, cfg.duck_height),
+            others: &others,
         };
         let mut mover = Mover {
             cfg: &cfg,
@@ -1779,6 +1808,10 @@ fn step(
             });
         }
         transform.translation = to_engine(feet + Vec3::Z * ORIGIN_ABOVE_FEET);
+        // Later movers this tick see where this one went.
+        if let Some((_, b)) = boxes.iter_mut().find(|(e, _)| *e == entity) {
+            *b = hull_box(feet, me.ducked);
+        }
         vel.0 = to_engine(v);
         *state = MovementState {
             on_ground: me.on_ground,
