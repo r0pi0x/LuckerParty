@@ -1,5 +1,6 @@
 //! de_port from a real CS:S install, headless: its `trigger_hurt` (the sea
-//! under the map) hurts as measured (specs/cs_source/fall_damage.md).
+//! under the map) hurts as measured (specs/cs_source/fall_damage.md),
+//! through the logic layer's trigger_hurt (specs/source/triggers.md).
 //! Skipped without an install.
 
 use bevy::prelude::*;
@@ -29,15 +30,19 @@ fn port() -> Option<MapData> {
 #[test]
 fn trigger_hurt_bites_every_half_second() {
     let Some(map) = port() else { return };
-    assert_eq!(map.hurt.len(), 1, "de_port has one trigger_hurt");
-    let volume = &map.hurt[0];
-    assert_eq!(volume.damage_per_second, 50.0);
-    // Its brushes span the model's bounds placed at the entity's origin
+    let hurts: Vec<_> = map
+        .entities
+        .iter()
+        .filter(|e| e.classname() == "trigger_hurt")
+        .collect();
+    assert_eq!(hurts.len(), 1, "de_port has one trigger_hurt");
+    let hurt = hurts[0];
+    assert_eq!(hurt.get("damage"), Some("50"));
+    // Its volume spans the model's bounds placed at the entity's origin
     // (256, 2976, 128), Source units.
-    let lo = volume.brushes.iter().map(|b| b.min).fold(Vec3::MAX, Vec3::min);
-    let hi = volume.brushes.iter().map(|b| b.max).fold(Vec3::MIN, Vec3::max);
-    let (a, b) = (movement::to_source(lo), movement::to_source(hi));
-    let (lo, hi) = (a.min(b), a.max(b));
+    let origin = hurt.origin();
+    let lo = hurt.hulls.iter().flat_map(|h| &h.points).fold(Vec3::MAX, |a, p| a.min(*p)) + origin;
+    let hi = hurt.hulls.iter().flat_map(|h| &h.points).fold(Vec3::MIN, |a, p| a.max(*p)) + origin;
     assert!(
         lo.distance(Vec3::new(-7168.0, -3840.0, 0.0)) < 1.0 && hi.distance(Vec3::new(8192.0, 5120.0, 256.0)) < 1.0,
         "bounds {lo} .. {hi}"

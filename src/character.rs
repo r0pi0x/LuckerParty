@@ -4,7 +4,7 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 
 use crate::{
-    core::{Health, Intent, MovementState, Team, Velocity},
+    core::{BaseVelocity, EntityGravity, Health, Intent, MovementState, Team, Velocity},
     slots::set_movement,
 };
 
@@ -22,6 +22,7 @@ pub fn character_bundle(transform: Transform, team: Team) -> impl Bundle {
         MovementState::default(),
         Health::default(),
         team,
+        (BaseVelocity::default(), EntityGravity::default()),
         // A camera or model may be attached as a child; children need a
         // visible parent.
         Visibility::default(),
