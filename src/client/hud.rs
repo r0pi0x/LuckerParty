@@ -24,6 +24,7 @@ impl Plugin for HudPlugin {
                     character_bodies,
                     show_bodies,
                     (hit_marker, killfeed, draw_hud, draw_crosshair, draw_scope).chain(),
+                    game_scope.run_if(resource_exists_and_changed::<crate::map::hud::ActiveHud>),
                 ),
             );
     }
@@ -42,6 +43,9 @@ struct CenterText;
 /// The sniper scope overlay (shown while the local player is scoped).
 #[derive(Component)]
 struct ScopeOverlay;
+/// The scope's square middle (the ring, the lens and cross hairs).
+#[derive(Component)]
+struct ScopeSquare;
 /// One of the four crosshair lines: its direction from the centre.
 #[derive(Component)]
 struct CrosshairLine(Vec2);
@@ -123,6 +127,7 @@ fn spawn_scope(commands: &mut Commands, images: &mut Assets<Image>) {
         children![
             bar(),
             (
+                ScopeSquare,
                 Node {
                     height: percent(100.0),
                     aspect_ratio: Some(1.0),
@@ -344,6 +349,52 @@ fn draw_crosshair(
 }
 
 /// The scope overlay while the local player looks through a sniper scope.
+/// With the game's own scope textures (`scope_arc`, `scope_lens` HUD
+/// sprites), draw the ring from four mirrored quarters, the lens tint
+/// under it and thin black cross hairs, instead of our stand-in.
+fn game_scope(
+    hud: Res<crate::map::hud::ActiveHud>,
+    square: Single<Entity, With<ScopeSquare>>,
+    mut commands: Commands,
+) {
+    let sprite = |name: &str| {
+        let s = hud.0.sprites.get(name)?;
+        Some(hud.1.get(&s.texture)?.clone())
+    };
+    let Some(arc) = sprite("scope_arc") else { return };
+    let square = *square;
+    let mut e = commands.entity(square);
+    e.remove::<ImageNode>().despawn_related::<Children>();
+    let abs = |left: f32, top: f32, w: f32, h: f32| Node {
+        position_type: PositionType::Absolute,
+        left: percent(left),
+        top: percent(top),
+        width: percent(w),
+        height: percent(h),
+        ..default()
+    };
+    e.with_children(|c| {
+        if let Some(lens) = sprite("scope_lens") {
+            c.spawn((abs(0.0, 0.0, 100.0, 100.0), ImageNode::new(lens)));
+        }
+        // Stored as the bottom-right quarter.
+        for (left, top, flip_x, flip_y) in [(50.0, 50.0, false, false), (0.0, 50.0, true, false), (50.0, 0.0, false, true), (0.0, 0.0, true, true)] {
+            c.spawn((
+                abs(left, top, 50.0, 50.0),
+                ImageNode {
+                    image: arc.clone(),
+                    color: Color::BLACK,
+                    flip_x,
+                    flip_y,
+                    ..default()
+                },
+            ));
+        }
+        c.spawn((abs(0.0, 50.0, 100.0, 0.0), Outline::new(px(0.5), px(0.0), Color::BLACK)));
+        c.spawn((abs(50.0, 0.0, 0.0, 100.0), Outline::new(px(0.5), px(0.0), Color::BLACK)));
+    });
+}
+
 fn draw_scope(
     player: Option<Single<Option<&Zoomed>, With<LocalPlayer>>>,
     mut overlay: Query<&mut Visibility, With<ScopeOverlay>>,

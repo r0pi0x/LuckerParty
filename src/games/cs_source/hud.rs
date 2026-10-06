@@ -199,6 +199,19 @@ pub fn load(materials: &mut MaterialLoader) -> Option<GameHud> {
         }
     }
 
+    // The sniper scope: a quarter of the ring (transparent inside, black
+    // outside; the bottom-right quarter as stored) and the lens tint.
+    for (name, material) in [("scope_arc", "sprites/scope_arc"), ("scope_lens", "overlays/scope_lens")] {
+        if materials.read(&format!("materials/{material}.vmt")).is_none() {
+            continue;
+        }
+        if let Some(texture) = materials.resolve(material).texture {
+            let t = &materials.textures[texture];
+            let rect = [0.0, 0.0, t.width as f32, t.height as f32];
+            hud.sprites.insert(name.to_string(), crate::map::hud::HudSprite { texture, rect });
+        }
+    }
+
     // Panels.
     let num = |p: &Kv, k: &str| p.str(k).and_then(|v| v.trim().parse::<f32>().ok()).unwrap_or(0.0);
     for (name, p) in layout.items() {

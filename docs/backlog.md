@@ -66,7 +66,7 @@ burst), HUD, deathmatch and a first bot are in.
 - The AWP's view model is in (MDL v48 reads like v44,
   specs/cs_source/mdl_v48.md); compare its fire and reload against the
   game. HL2 v48 models with zero-frame data (streamed) aren't handled.
-- Zoom sensitivity is in (`zoom_sensitivity_ratio`; measure it). CS:S's own scope overlay
+- Zoom sensitivity is in (`zoom_sensitivity_ratio`; measure it). the scope overlay (the game's textures now; compare with CS:S)
   texture, the silenced world models (`w_*_silencer.mdl`).
 - Rounds, money and buying: slice 1 done (`mashup_rounds 1`,
   [plans/active/rounds.md](plans/active/rounds.md)); next: buy zones, a
