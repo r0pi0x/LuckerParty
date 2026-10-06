@@ -21,7 +21,11 @@ pose; this makes them move.
 
 1. [x] Skinned meshes: joints from the bones, inverse bind matrices from
    the reference pose, vertex weights from the VVD (looks unchanged).
-2. [ ] Sample animations from the shared model by bone name; play idle.
+2. [~] Sample animations from the shared model by bone name; play idle.
+   Done: our own `.mdl` animation decoder and include merge
+   (`games/cs_source/anim.rs`), the blending and layering math
+   (`map/anim.rs`), `Animator` on characters and `pose_bodies`; all spec
+   test values match (`tests/animation.rs`). Next: the CS:S driver (§12).
 3. [ ] Pick by movement: idle / run / walk / crouch, blending the two
    run directions nearest the movement direction relative to facing.
 4. [ ] Hitboxes follow the animated bones (sim side).

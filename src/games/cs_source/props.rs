@@ -115,8 +115,16 @@ pub fn load_character(
             rotation: Quat::from_xyzw(b.quaternion.x, b.quaternion.y, b.quaternion.z, b.quaternion.w),
         })
         .collect();
+    let animations = match super::anim::load(&|p| materials.read(p), path) {
+        Ok(set) => Some(std::sync::Arc::new(set)),
+        Err(e) => {
+            warn!("{path}: no animations: {e}");
+            None
+        }
+    };
     Ok(crate::map::MapCharacterModel {
         team,
+        animations,
         model: body,
         hitboxes,
         bones,

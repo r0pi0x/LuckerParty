@@ -17,6 +17,7 @@ use crate::core::{SpawnPoint, Team};
 // Collision-world types live in `core` (the greybox map uses them too).
 pub use crate::core::{MapBrush, MapBrushCollider, MapBrushes, MapWater, MapWaterVolume, PropSurface};
 
+pub mod anim;
 mod dust;
 pub mod nav;
 pub mod prop_material;
@@ -267,6 +268,8 @@ pub struct MapCharacterModel {
     /// From the skeleton's space (the source game's axes and units) to the
     /// character's local space.
     pub root: Transform,
+    /// What the skeleton can play (None: it stays in the reference pose).
+    pub animations: Option<Arc<anim::AnimSet>>,
 }
 
 /// One bone of a character skeleton, in its reference pose relative to
@@ -301,6 +304,7 @@ struct CharacterBodies(Vec<BodyAssets>);
 
 struct BodyAssets {
     parts: Vec<(Handle<Mesh>, Handle<StandardMaterial>)>,
+    animations: Option<Arc<anim::AnimSet>>,
     bindposes: Handle<bevy::mesh::skinning::SkinnedMeshInverseBindposes>,
     bones: Vec<MapBone>,
     root: Transform,
@@ -314,6 +318,8 @@ pub struct BodyJoint(pub usize);
 #[derive(Component)]
 pub struct CharacterBody {
     model: usize,
+    /// Joint entities by bone index.
+    joints: Vec<Entity>,
 }
 
 /// Give characters other than the local player their team's body (a child
@@ -356,7 +362,6 @@ fn attach_bodies(
         let body = commands
             .spawn((
                 Name::new("Body"),
-                CharacterBody { model: index },
                 Transform::from_xyz(0.0, feet, 0.0),
                 Visibility::Inherited,
                 ChildOf(e),
@@ -378,6 +383,14 @@ fn attach_bodies(
                     .id(),
             );
         }
+        commands.entity(body).insert(CharacterBody {
+            model: index,
+            joints: joints.clone(),
+        });
+        match &assets.animations {
+            Some(set) => commands.entity(e).insert(anim::Animator::new(set.clone())),
+            None => commands.entity(e).remove::<anim::Animator>(),
+        };
         for (mesh, material) in &assets.parts {
             commands.spawn((
                 Mesh3d(mesh.clone()),
@@ -393,13 +406,44 @@ fn attach_bodies(
 }
 
 fn turn_bodies(
-    characters: Query<(&crate::core::Intent, &Children)>,
+    characters: Query<(&crate::core::Intent, &Children, Option<&anim::Animator>)>,
     mut bodies: Query<&mut Transform, With<CharacterBody>>,
 ) {
-    for (intent, children) in &characters {
+    for (intent, children, animator) in &characters {
+        let yaw = animator.and_then(|a| a.yaw).unwrap_or(intent.yaw);
         for c in children {
             if let Ok(mut t) = bodies.get_mut(*c) {
-                t.rotation = intent.yaw_rotation();
+                t.rotation = Quat::from_rotation_y(yaw);
+            }
+        }
+    }
+}
+
+/// Game systems that decide what bodies play run in this set, before
+/// the joints are posed.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DriveAnimation;
+
+/// Pose each animated body's joints from its character's `Animator`.
+fn pose_bodies(
+    time: Res<Time>,
+    characters: Query<(&anim::Animator, &Children)>,
+    bodies: Query<&CharacterBody>,
+    mut joints: Query<&mut Transform, With<BodyJoint>>,
+) {
+    let now = time.elapsed_secs_f64();
+    for (animator, children) in &characters {
+        let Some(body) = children.iter().find_map(|c| bodies.get(c).ok()) else {
+            continue;
+        };
+        if animator.main.is_none() {
+            continue;
+        }
+        let pose = animator.pose(now);
+        for (joint, (q, p)) in body.joints.iter().zip(pose) {
+            if let Ok(mut t) = joints.get_mut(*joint) {
+                t.rotation = q;
+                t.translation = p;
             }
         }
     }
@@ -903,7 +947,8 @@ impl Plugin for MapPlugin {
                     glow_visibility,
                     dust::update_dust,
                     show_skybox_in_place,
-                    (attach_bodies, turn_bodies).run_if(resource_exists::<CharacterBodies>),
+                    (attach_bodies, turn_bodies, pose_bodies.after(DriveAnimation))
+                        .run_if(resource_exists::<CharacterBodies>),
                 ),
             )
             .add_systems(
@@ -1054,6 +1099,7 @@ fn spawn_map(
                     let inverse: Vec<Mat4> = global.iter().map(|m| m.inverse()).collect();
                     BodyAssets {
                         parts,
+                        animations: c.animations.clone(),
                         bindposes: bindposes.add(bevy::mesh::skinning::SkinnedMeshInverseBindposes::from(inverse)),
                         bones: c.bones.clone(),
                         root: c.root,
@@ -1716,6 +1762,13 @@ pub fn unload_map(world: &mut World) {
         .collect();
     for b in bodies {
         world.entity_mut(b).despawn();
+    }
+    let animated: Vec<Entity> = world
+        .query_filtered::<Entity, With<anim::Animator>>()
+        .iter(world)
+        .collect();
+    for e in animated {
+        world.entity_mut(e).remove::<anim::Animator>();
     }
     world.remove_resource::<nav::NavMesh>();
     world.remove_resource::<sound::SurfaceGrid>();
