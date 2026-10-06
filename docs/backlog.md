@@ -11,12 +11,10 @@ plan when work starts; delete them when done.
 The console and overlays are in (src/console.rs, src/client/console.rs).
 Left for later:
 
-- `god`, `impulse`, `buy`; `net_graph`
-  beyond cl_showfps 2; `cl_showpos 2`; `developer 1` notify lines on the
-  HUD.
+- `net_graph` beyond cl_showfps 2; `cl_showpos 2`; money for `buy`.
 - Select-and-copy in the output (clipboard); `con_dump` writes it to a
   file meanwhile.
-- `map` without restarting (maps load at startup; `map` relaunches).
+- `map` loads synchronously (about a second's hitch on dust2).
 
 ## 2. Weapons
 

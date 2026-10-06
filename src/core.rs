@@ -108,6 +108,11 @@ pub struct Damage {
     pub hitgroup: Hitgroup,
 }
 
+/// Takes no damage (the `god` command).
+#[derive(Component, Reflect, Default, Clone, Copy, Debug)]
+#[reflect(Component)]
+pub struct God;
+
 /// Something's health reached zero.
 #[derive(Message, Clone, Debug)]
 pub struct Died {
@@ -140,7 +145,11 @@ pub struct LocalPlayer;
 pub struct SimTick(pub u64);
 
 /// Subtract damage from health; announce deaths once.
-fn apply_damage(mut damage: MessageReader<Damage>, mut health: Query<&mut Health>, mut died: MessageWriter<Died>) {
+fn apply_damage(
+    mut damage: MessageReader<Damage>,
+    mut health: Query<&mut Health, Without<God>>,
+    mut died: MessageWriter<Died>,
+) {
     for d in damage.read() {
         let Ok(mut h) = health.get_mut(d.target) else { continue };
         if h.current <= 0.0 {

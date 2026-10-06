@@ -1367,3 +1367,36 @@ fn envmaps_load() {
     // Faces differ (not six copies of one image).
     assert_ne!(c.faces[4], c.faces[5]);
 }
+
+/// `map` loads in place (mashup::map::change_map): a second load replaces
+/// the first without leaving spawn points, brushes or nav data behind, and
+/// characters respawn at the new spawn points.
+#[test]
+fn maps_change_in_place() {
+    use mashup::{core::SpawnPoint, map::MapPart};
+    let Some(map) = dust2() else { return };
+    let mut sim = Sim::new(MapPlugin::empty());
+    let p = sim.spawn_character(Vec3::new(0.0, 100.0, 0.0), mashup::movement::placeholder::ID);
+    let count = |sim: &mut Sim| {
+        let w = sim.app.world_mut();
+        let spawns = w.query_filtered::<(), With<SpawnPoint>>().iter(w).count();
+        let parts = w.query_filtered::<(), With<MapPart>>().iter(w).count();
+        (spawns, parts)
+    };
+    for _ in 0..2 {
+        mashup::map::change_map(sim.app.world_mut(), map.clone(), mashup::map::MapDebugView::Normal);
+        mashup::rules::respawn_everyone(sim.app.world_mut());
+        sim.ticks(2);
+    }
+    let (spawns, parts) = count(&mut sim);
+    assert_eq!(spawns, map.spawns.len());
+    let w = sim.app.world();
+    assert!(w.get_resource::<mashup::map::MapBrushes>().is_some());
+    assert!(w.get_resource::<mashup::map::nav::NavMesh>().is_some());
+    // Respawned at a spawn point.
+    let at = sim.position(p);
+    assert!(
+        map.spawns.iter().any(|(feet, _)| feet.distance(at) < 2.0),
+        "player at {at} after the change ({parts} map parts)"
+    );
+}

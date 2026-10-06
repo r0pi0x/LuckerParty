@@ -75,6 +75,8 @@ pub struct Console {
     pub watches: Vec<String>,
     /// Bumped when something should be saved (binds, cvars changed).
     pub dirty: bool,
+    /// Lines printed since startup (the output keeps only the last ones).
+    pub printed: u64,
 }
 
 const MAX_OUTPUT: usize = 4000;
@@ -120,6 +122,7 @@ impl Console {
     pub fn print(&mut self, level: Level, text: impl Into<String>) {
         let time = self.output.last().map_or(0.0, |l| l.time);
         for t in text.into().lines() {
+            self.printed += 1;
             self.output.push(Line {
                 text: t.to_string(),
                 level,

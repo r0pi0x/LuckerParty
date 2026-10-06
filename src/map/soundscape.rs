@@ -59,6 +59,15 @@ impl ScapeState {
     }
 }
 
+/// Stop every soundscape sound and forget the selection (map change).
+pub fn reset(world: &mut World) {
+    let loops: Vec<Entity> = world.query_filtered::<Entity, With<ScapeLoop>>().iter(world).collect();
+    for e in loops {
+        world.entity_mut(e).despawn();
+    }
+    world.insert_resource(ScapeState::default());
+}
+
 /// A playing soundscape loop.
 #[derive(Component)]
 struct ScapeLoop {

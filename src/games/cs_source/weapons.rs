@@ -152,6 +152,7 @@ fn ak47(e: &mut EntityWorldMut) {
             size: 30,
             // Max carry: ammo_762mm_max (M17).
             reserve: 90,
+            reserve_max: 90,
             reload_time: 2.4324,
             reload_while_held: false,
         },

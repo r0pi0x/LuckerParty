@@ -45,7 +45,8 @@ fn main() {
             }
         },
         None => {
-            app.add_plugins(greybox::GreyboxMapPlugin);
+            // Map systems without a map, so `map <name>` can load one.
+            app.add_plugins((greybox::GreyboxMapPlugin, MapPlugin::empty()));
         }
     }
     app.add_plugins((

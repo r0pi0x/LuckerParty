@@ -98,8 +98,68 @@ impl Plugin for WeaponPlugin {
         }
         app.console_command("lastinv", "Switch to the previously held weapon.", |w, _| {
             select_local(w, |inv, _| inv.last)
+        })
+        .console_command(
+            "impulse",
+            "impulse 101: every weapon, full clips and reserves.",
+            |w, a| {
+                if a.first().map(String::as_str) != Some("101") {
+                    return Err("only impulse 101 (all weapons and ammo) exists".into());
+                }
+                let player = local_player(w)?;
+                let held: Vec<&'static str> = held_ids(w, player);
+                let all: Vec<&'static str> = w.resource::<WeaponRegistry>().0.iter().map(|d| d.id).collect();
+                for id in all.into_iter().filter(|id| !held.contains(id)) {
+                    give(w, player, id);
+                }
+                let weapons = w
+                    .get::<Inventory>(player)
+                    .map(|i| i.weapons.clone())
+                    .unwrap_or_default();
+                for e in weapons {
+                    if let Some(mut m) = w.get_mut::<Magazine>(e) {
+                        m.clip = m.size;
+                        m.reserve = m.reserve_max;
+                    }
+                }
+                Ok(None)
+            },
+        )
+        .console_command("buy", "buy <weapon>, e.g. buy ak47 (no money yet).", |w, a| {
+            let name = a.first().ok_or("buy <weapon>")?.to_lowercase();
+            let name = if name.starts_with("weapon_") {
+                name
+            } else {
+                format!("weapon_{name}")
+            };
+            let player = local_player(w)?;
+            let id = w
+                .resource::<WeaponRegistry>()
+                .find(&name)
+                .map(|d| d.id)
+                .ok_or_else(|| format!("no weapon {name}"))?;
+            give(w, player, id);
+            Ok(None)
         });
     }
+}
+
+fn local_player(w: &mut World) -> Result<Entity, String> {
+    w.query_filtered::<Entity, With<LocalPlayer>>()
+        .iter(w)
+        .next()
+        .ok_or_else(|| "no local player".to_string())
+}
+
+/// IDs of the weapons `owner` carries.
+fn held_ids(w: &World, owner: Entity) -> Vec<&'static str> {
+    let Some(inv) = w.get::<Inventory>(owner) else {
+        return Vec::new();
+    };
+    inv.weapons
+        .iter()
+        .filter_map(|e| w.get::<Weapon>(*e).map(|x| x.id))
+        .collect()
 }
 
 /// Queue a weapon switch for the local player.
@@ -273,6 +333,8 @@ pub struct Magazine {
     pub clip: u32,
     pub size: u32,
     pub reserve: u32,
+    /// Most rounds the reserve holds (CS:S: `ammo_<type>_max`).
+    pub reserve_max: u32,
     /// Seconds from starting a reload to the swap.
     pub reload_time: f32,
     /// Holding attack on an empty clip reloads as soon as allowed (the

@@ -58,6 +58,18 @@ pub struct Dead {
     pub since: f64,
 }
 
+/// Respawn every character on the next tick (after a map change), with
+/// fresh weapons, at the spawn points.
+pub fn respawn_everyone(world: &mut World) {
+    let all: Vec<Entity> = world
+        .query_filtered::<Entity, (With<Intent>, With<Health>)>()
+        .iter(world)
+        .collect();
+    for e in all {
+        world.entity_mut(e).insert(Dead { since: f64::MIN });
+    }
+}
+
 fn count_deaths(mut died: MessageReader<Died>, mut scores: Query<&mut Score>, mut commands: Commands, time: Res<Time>) {
     let now = time.elapsed_secs_f64();
     for d in died.read() {

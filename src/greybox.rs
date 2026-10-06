@@ -26,6 +26,25 @@ impl Plugin for GreyboxMapPlugin {
     }
 }
 
+/// Everything the greybox map spawned, so it can be removed.
+#[derive(Component)]
+pub struct GreyboxPart;
+
+/// Remove the greybox map (before loading another map).
+pub fn unload(world: &mut World) {
+    let parts: Vec<Entity> = world
+        .query_filtered::<Entity, With<GreyboxPart>>()
+        .iter(world)
+        .collect();
+    for e in parts {
+        if let Ok(e) = world.get_entity_mut(e) {
+            e.despawn();
+        }
+    }
+    world.remove_resource::<MapBrushes>();
+    world.remove_resource::<MapWater>();
+}
+
 struct Block {
     name: String,
     size: Vec3,
@@ -56,7 +75,7 @@ fn spawn(
             b.transform.translation - b.size / 2.0,
             b.transform.translation + b.size / 2.0,
         );
-        let mut e = commands.spawn((Name::new(b.name), b.transform));
+        let mut e = commands.spawn((Name::new(b.name), GreyboxPart, b.transform));
         match b.kind {
             Kind::Solid => {
                 e.insert((RigidBody::Static, Collider::cuboid(b.size.x, b.size.y, b.size.z)));
@@ -106,6 +125,7 @@ fn spawn(
 
     commands.spawn((
         Name::new("Sun"),
+        GreyboxPart,
         DirectionalLight {
             illuminance: 8000.0,
             shadow_maps_enabled: true,
@@ -117,6 +137,7 @@ fn spawn(
     for (i, pos) in SPAWNS.into_iter().enumerate() {
         commands.spawn((
             Name::new(format!("Spawn {i}")),
+            GreyboxPart,
             SpawnPoint::default(),
             Transform::from_translation(pos),
         ));

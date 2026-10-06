@@ -596,7 +596,9 @@ impl MapData {
 /// Spawns a loaded map: collision always, meshes only when rendering is
 /// present (same pattern as the greybox, so maps load in headless tests).
 pub struct MapPlugin {
-    pub data: Arc<MapData>,
+    /// The map to spawn at startup; None starts without one (another map
+    /// can be loaded later with `change_map`).
+    pub data: Option<Arc<MapData>>,
     pub view: MapDebugView,
 }
 
@@ -615,7 +617,15 @@ pub enum MapDebugView {
 impl MapPlugin {
     pub fn new(data: MapData) -> Self {
         Self {
-            data: Arc::new(data),
+            data: Some(Arc::new(data)),
+            view: MapDebugView::Normal,
+        }
+    }
+
+    /// The map systems and materials without a map loaded yet.
+    pub fn empty() -> Self {
+        Self {
+            data: None,
             view: MapDebugView::Normal,
         }
     }
@@ -694,16 +704,18 @@ pub struct MapPart;
 
 impl Plugin for MapPlugin {
     fn build(&self, app: &mut App) {
+        if let Some(data) = &self.data {
+            app.insert_resource(PendingMap(data.clone(), self.view))
+                .insert_resource(ActiveMapLook(data.look.clone()));
+        }
         app.add_plugins(sound::SoundPlugin)
-            .insert_resource(PendingMap(self.data.clone(), self.view))
-            .insert_resource(ActiveMapLook(self.data.look.clone()))
             .insert_resource(GlobalAmbientLight {
                 brightness: 600.0,
                 // Baked lighting already includes the map's ambient light.
                 affects_lightmapped_meshes: false,
                 ..default()
             })
-            .add_systems(Startup, spawn_map)
+            .add_systems(Startup, spawn_map.run_if(resource_exists::<PendingMap>))
             .add_systems(
                 Update,
                 (attach_sky, glow_visibility, dust::update_dust, show_skybox_in_place),
@@ -1390,6 +1402,49 @@ fn spawn_map(
             Transform::from_translation(*feet + Vec3::Y * SPAWN_LIFT)
                 .with_rotation(Quat::from_rotation_y(data.spawn_yaws.get(i).copied().unwrap_or(0.0))),
         ));
+    }
+}
+
+/// Remove the loaded map: its entities, its resources and the sky on
+/// cameras. Characters stay.
+pub fn unload_map(world: &mut World) {
+    let parts: Vec<Entity> = world.query_filtered::<Entity, With<MapPart>>().iter(world).collect();
+    for e in parts {
+        if let Ok(e) = world.get_entity_mut(e) {
+            e.despawn();
+        }
+    }
+    let cams: Vec<Entity> = world
+        .query_filtered::<Entity, With<bevy::light::Skybox>>()
+        .iter(world)
+        .collect();
+    for c in cams {
+        world.entity_mut(c).remove::<bevy::light::Skybox>();
+    }
+    world.remove_resource::<PendingMap>();
+    world.remove_resource::<MapSkybox>();
+    world.remove_resource::<PlayableArea>();
+    world.remove_resource::<SkyCameraInfo>();
+    world.remove_resource::<ActiveMapHas3dSky>();
+    world.remove_resource::<SkyVis>();
+    world.remove_resource::<ShadowState>();
+    world.remove_resource::<sound::SoundBank>();
+    world.remove_resource::<nav::NavMesh>();
+    world.remove_resource::<sound::SurfaceGrid>();
+    world.remove_resource::<MapBrushes>();
+    world.remove_resource::<MapWater>();
+    world.insert_resource(Gravity::default());
+    soundscape::reset(world);
+}
+
+/// Replace the loaded map with `data` (spawned now, as at startup).
+pub fn change_map(world: &mut World, data: MapData, view: MapDebugView) {
+    unload_map(world);
+    let data = Arc::new(data);
+    world.insert_resource(ActiveMapLook(data.look.clone()));
+    world.insert_resource(PendingMap(data, view));
+    if let Err(e) = world.run_system_cached(spawn_map) {
+        error!("spawning the map: {e}");
     }
 }
 

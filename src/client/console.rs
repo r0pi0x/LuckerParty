@@ -51,6 +51,7 @@ impl Plugin for ConsoleUiPlugin {
                     record_sounds,
                     draw_console,
                     draw_overlays,
+                    draw_notify,
                     draw_sound_marks,
                 )
                     .chain(),
@@ -155,6 +156,21 @@ fn spawn_ui(mut commands: Commands) {
         },
         BackgroundColor(Color::srgba(0.1, 0.1, 0.14, 0.95)),
         GlobalZIndex(101),
+        Visibility::Hidden,
+    ));
+    commands.spawn((
+        NotifyText,
+        Text::default(),
+        font(14.0),
+        TextColor(Color::srgb(0.95, 0.95, 0.85)),
+        Node {
+            position_type: PositionType::Absolute,
+            // Below the debug overlay's five lines.
+            top: px(125.0),
+            left: px(8.0),
+            ..default()
+        },
+        GlobalZIndex(50),
         Visibility::Hidden,
     ));
     commands.spawn((
@@ -707,6 +723,11 @@ pub struct Overlays {
     pub showpos: u8,
     pub showfps: u8,
     pub snd_show: u8,
+    /// `developer`: 1 shows console output top left for a few seconds.
+    pub developer: u8,
+    /// Notify lines and seconds left, and console lines already taken.
+    notify: VecDeque<(String, f32)>,
+    notify_seen: u64,
     watch_text: String,
     frames: VecDeque<f32>,
 }
@@ -717,13 +738,68 @@ impl Default for Overlays {
             showpos: 0,
             showfps: 0,
             snd_show: 0,
+            developer: 0,
+            notify: VecDeque::new(),
+            notify_seen: 0,
             watch_text: String::new(),
             frames: VecDeque::new(),
         }
     }
 }
 
+/// Source's con_notifytime and notify line count.
+const NOTIFY_SECONDS: f32 = 8.0;
+const NOTIFY_LINES: usize = 8;
+
+#[derive(Component)]
+struct NotifyText;
+
+/// `developer 1`: new console lines show top left for a few seconds.
+fn draw_notify(
+    time: Res<Time>,
+    console: Res<Console>,
+    ui: Res<ConsoleUi>,
+    mut o: ResMut<Overlays>,
+    mut text: Single<(&mut Text, &mut Visibility), With<NotifyText>>,
+) {
+    let new = console.printed.saturating_sub(o.notify_seen) as usize;
+    o.notify_seen = console.printed;
+    if o.developer > 0 {
+        let start = console.output.len().saturating_sub(new);
+        for line in &console.output[start..] {
+            if line.level != crate::console::Level::Input {
+                o.notify.push_back((line.text.clone(), NOTIFY_SECONDS));
+            }
+        }
+    }
+    let dt = time.delta_secs();
+    o.notify.retain_mut(|(_, left)| {
+        *left -= dt;
+        *left > 0.0
+    });
+    while o.notify.len() > NOTIFY_LINES {
+        o.notify.pop_front();
+    }
+    let (t, vis) = &mut *text;
+    // Hidden while the console itself is open, or when off.
+    let show = o.developer > 0 && !ui.open && !o.notify.is_empty();
+    **vis = if show {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+    if show {
+        t.0 = o.notify.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>().join("\n");
+    }
+}
+
 fn overlay_cvars(app: &mut App) {
+    resource_cvar::<Overlays, u8>(
+        app,
+        "developer",
+        "1: show console output at the top left for a few seconds.",
+        |o| &mut o.developer,
+    );
     resource_cvar::<Overlays, u8>(
         app,
         "cl_showpos",
@@ -1224,6 +1300,16 @@ fn client_commands(app: &mut App) {
             Ok(None)
         },
     )
+    .console_command("god", "Toggle taking no damage.", |w, _| {
+        let p = local_player(w)?;
+        let on = w.get::<crate::core::God>(p).is_none();
+        if on {
+            w.entity_mut(p).insert(crate::core::God);
+        } else {
+            w.entity_mut(p).remove::<crate::core::God>();
+        }
+        Ok(Some(format!("godmode {}", if on { "ON" } else { "OFF" })))
+    })
     .console_command("kill", "Respawn at a spawn point.", |w, _| {
         let p = local_player(w)?;
         let mut q = w.query_filtered::<&Transform, With<SpawnPoint>>();
@@ -1235,29 +1321,40 @@ fn client_commands(app: &mut App) {
     })
     .console_command(
         "map",
-        "map <name>: restart on a CS:S map (Tab lists the install's maps).",
+        "map <name>: load a CS:S map (Tab lists the install's maps).",
         |w, a| {
             let name = a.first().ok_or("map <name>")?;
             if !map_names().is_empty() && !map_names().iter().any(|m| m == name) {
                 return Err(format!("no map \"{name}\" in the install"));
             }
-            // Maps load at startup: start a new instance on the map, then quit.
-            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-            let mut args: Vec<String> = std::env::args().skip(1).collect();
-            if let Some(i) = args.iter().position(|a| a == "--map") {
-                args.drain(i..(i + 2).min(args.len()));
+            // Load in place: the map is swapped and everyone respawns at
+            // its spawn points on the next tick.
+            let id = format!("cs_source:{name}");
+            let data = crate::games::load_map(&id)?;
+            let summary = format!(
+                "loaded {id}: {} triangles, {} spawns",
+                data.triangle_count(),
+                data.spawns.len()
+            );
+            crate::greybox::unload(w);
+            crate::map::change_map(w, data, crate::map::MapDebugView::Normal);
+            w.insert_resource(Time::<Fixed>::from_seconds(crate::games::cs_source::TICK_INTERVAL));
+            // Follow the map's presentation (Source LDR: no tonemapping).
+            let tonemapping = w.resource::<crate::map::ActiveMapLook>().0.tonemapping;
+            let cams: Vec<Entity> = w
+                .query_filtered::<Entity, With<super::FirstPersonCamera>>()
+                .iter(w)
+                .collect();
+            for c in cams {
+                let t = if tonemapping {
+                    bevy::core_pipeline::tonemapping::Tonemapping::default()
+                } else {
+                    bevy::core_pipeline::tonemapping::Tonemapping::None
+                };
+                w.entity_mut(c).insert(t);
             }
-            args.retain(|a| !a.starts_with("--screenshot") && !a.starts_with("--frames"));
-            args.extend(["--map".to_string(), format!("cs_source:{name}")]);
-            if w.resource::<Console>().dirty {
-                crate::console::execute(w, &["host_writeconfig".to_string()], 0);
-            }
-            std::process::Command::new(exe)
-                .args(&args)
-                .spawn()
-                .map_err(|e| e.to_string())?;
-            w.write_message(AppExit::Success);
-            Ok(Some(format!("loading {name}...")))
+            crate::rules::respawn_everyone(w);
+            Ok(Some(summary))
         },
     )
     .console_command("quit", "Quit (binds and changed cvars are saved).", |w, _| {

@@ -743,7 +743,7 @@ fn run_ours(map: &Arc<MapData>, s: &Scenario, theirs: &[State]) -> Vec<State> {
     let start = &theirs[0];
     let mut sim = Sim::new((
         MapPlugin {
-            data: map.clone(),
+            data: Some(map.clone()),
             view: MapDebugView::Normal,
         },
         SourceMovementPlugin,
