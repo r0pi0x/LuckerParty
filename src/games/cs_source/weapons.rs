@@ -16,7 +16,7 @@ use crate::{
 
 const UNIT: f32 = 0.0254;
 /// Script damage is in hit points; ours is normalized (100 hp = 1.0).
-const HP: f32 = 0.01;
+pub(super) const HP: f32 = 0.01;
 
 pub const KNIFE: &str = "cs_source:weapon_knife";
 pub const AK47: &str = "cs_source:weapon_ak47";
@@ -67,7 +67,7 @@ impl Plugin for CsWeaponsPlugin {
                 FixedUpdate,
                 (before_shots.before(WeaponFrame), after_shots.after(WeaponFrame)).in_set(SimSet::Weapons),
             )
-            .add_plugins(super::impacts::ImpactSoundsPlugin);
+            .add_plugins((super::impacts::ImpactSoundsPlugin, super::impact_effects::ImpactEffectsPlugin));
         let mut start = app.world_mut().get_resource_or_init::<StartingWeapons>();
         if start.0.is_empty() {
             // The best weapon is drawn: given last.

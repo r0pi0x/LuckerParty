@@ -218,6 +218,41 @@ impl<'a> MaterialLoader<'a> {
         }
     }
 
+    /// A particle or effect material (specs/cs_source/impact_effects.md):
+    /// its base texture, blend (`$additive`), whether vertex colour and
+    /// alpha apply (`$vertexcolor`, `$vertexalpha`; SpriteCard always
+    /// takes both), `$ignorez`, and the texture's sprite sheet if it has one.
+    pub fn particle(&mut self, name: &str) -> Option<crate::map::particles::ParticleMaterial> {
+        use crate::map::particles::{ParticleBlend, ParticleMaterial};
+        let text = self.read_text(&format!("materials/{}.vmt", normalize(name).trim_end_matches(".vmt")))?;
+        let shader = super::surfaceprops::tokens(&text)
+            .first()
+            .map(|s| s.to_lowercase())
+            .unwrap_or_default();
+        let keys = self.keys(&text, 0);
+        let flag = |k: &str| keys.get(k).is_some_and(|v| v.trim() != "0");
+        let sprite_card = shader == "spritecard";
+        let base = keys.get("$basetexture").cloned()?;
+        let texture = self.texture(&base, true);
+        let sequences = self
+            .read(&format!("materials/{}.vtf", normalize(&base).trim_end_matches(".vtf")))
+            .and_then(|b| sheet(&b))
+            .unwrap_or_default();
+        Some(ParticleMaterial {
+            name: name.to_lowercase(),
+            texture,
+            blend: if flag("$additive") {
+                ParticleBlend::Additive
+            } else {
+                ParticleBlend::Alpha
+            },
+            vertex_color: sprite_card || flag("$vertexcolor"),
+            vertex_alpha: sprite_card || flag("$vertexalpha"),
+            no_depth: flag("$ignorez"),
+            sequences,
+        })
+    }
+
     /// A material's keys (lower-case), with "patch" materials merged over
     /// the material they include; nested blocks (proxies) are skipped.
     /// A decal material as runtime decals draw it: a `Subrect` of a decal
@@ -591,4 +626,47 @@ fn vector(v: &str) -> Option<[f32; 3]> {
         [a, b, c, ..] => Some([*a, *b, *c]),
         _ => None,
     }
+}
+
+/// A VTF's sprite sheet (resource tag 0x10): per sequence, its frames'
+/// texture rectangles (first image of each frame). None without one.
+pub fn sheet(bytes: &[u8]) -> Option<Vec<Vec<[f32; 4]>>> {
+    let u32_at = |o: usize| bytes.get(o..o + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    let f32_at = |o: usize| u32_at(o).map(f32::from_bits);
+    // Resources exist from version 7.3: count at 68, entries from 80.
+    if u32_at(4)? != 7 || u32_at(8)? < 3 {
+        return None;
+    }
+    let count = u32_at(68)? as usize;
+    let offset = (0..count.min(32)).find_map(|i| {
+        let e = 80 + i * 8;
+        let tag = bytes.get(e..e + 3)?;
+        if tag == [0x10, 0, 0] { u32_at(e + 4) } else { None }
+    })? as usize;
+    // A size, then the sheet: version, sequence count, then sequences.
+    let mut o = offset + 4;
+    let version = u32_at(o)?;
+    let images = if version == 0 { 1 } else { 4 };
+    let sequences = u32_at(o + 4)? as usize;
+    o += 8;
+    let mut out: Vec<Vec<[f32; 4]>> = Vec::new();
+    for _ in 0..sequences.min(64) {
+        let number = u32_at(o)? as usize;
+        let frames = u32_at(o + 8)? as usize;
+        o += 16;
+        let mut list = Vec::new();
+        for _ in 0..frames.min(512) {
+            // Duration, then the images' rectangles.
+            let r = o + 4;
+            list.push([f32_at(r)?, f32_at(r + 4)?, f32_at(r + 8)?, f32_at(r + 12)?]);
+            o += 4 + 16 * images;
+        }
+        if number < 64 {
+            if out.len() <= number {
+                out.resize(number + 1, Vec::new());
+            }
+            out[number] = list;
+        }
+    }
+    Some(out)
 }

@@ -21,6 +21,7 @@ pub mod anim;
 pub mod decal;
 mod dust;
 pub mod nav;
+pub mod particles;
 pub mod prop_material;
 pub mod rope_material;
 pub mod shadows;
@@ -28,6 +29,7 @@ pub mod sound;
 pub mod soundscape;
 pub use sound::{MapSoundClip, MapSoundEntry, MapSounds, MapSurface, PlaySound, SoundLevel};
 pub mod sprite_material;
+pub mod surface_color;
 pub mod view_model;
 pub mod world_material;
 pub use view_model::{MapViewModel, ViewAnimator, ViewModelAnchor, ViewModelCamera, ViewModels};
@@ -793,6 +795,8 @@ pub struct MapData {
     pub held: Vec<MapHeldModel>,
     /// Runtime decals (bullet holes, slashes) by group.
     pub decals: decal::MapDecals,
+    /// Materials for particle effects (impacts).
+    pub particles: particles::MapParticles,
     /// What characters see of what they hold (weapons' view models).
     pub view_models: Vec<MapViewModel>,
 }
@@ -1155,6 +1159,7 @@ impl Plugin for MapPlugin {
         app.add_plugins(sound::SoundPlugin)
             .init_resource::<ShowLocalBody>()
             .add_message::<decal::PlaceDecal>()
+            .init_resource::<particles::Particles>()
             .insert_resource(GlobalAmbientLight {
                 brightness: 600.0,
                 // Baked lighting already includes the map's ambient light.
@@ -1175,6 +1180,13 @@ impl Plugin for MapPlugin {
                     attach_sky,
                     glow_visibility,
                     dust::update_dust,
+                    (
+                        particles::step_particles,
+                        particles::draw_particles.run_if(
+                            resource_exists::<Assets<Mesh>>.and_then(resource_exists::<Assets<StandardMaterial>>),
+                        ),
+                    )
+                        .chain(),
                     show_skybox_in_place,
                     decal::place_decals,
                     (
@@ -1945,6 +1957,14 @@ fn spawn_map(
     }
 
     commands.insert_resource(decal::DecalSurfaces::new(&data));
+    commands.insert_resource(surface_color::SurfaceColors::new(data));
+    commands.insert_resource(particles::ParticleMaterials(data.particles.clone()));
+    if !texture_handles.is_empty() && !data.particles.materials.is_empty() {
+        commands.insert_resource(particles::ParticleAssets::new(
+            data.particles.clone(),
+            texture_handles.clone(),
+        ));
+    }
     if !texture_handles.is_empty() && !data.decals.groups.is_empty() {
         commands.insert_resource(decal::DecalAssets::new(data.decals.clone(), texture_handles.clone()));
         commands.insert_resource(decal::ImpactDecals);
@@ -2039,6 +2059,12 @@ pub fn unload_map(world: &mut World) {
     world.remove_resource::<decal::DecalSurfaces>();
     world.remove_resource::<decal::DecalAssets>();
     world.remove_resource::<decal::ImpactDecals>();
+    world.remove_resource::<surface_color::SurfaceColors>();
+    world.remove_resource::<particles::ParticleAssets>();
+    world.remove_resource::<particles::ParticleMaterials>();
+    if let Some(mut p) = world.get_resource_mut::<particles::Particles>() {
+        p.groups.clear();
+    }
     view_model::unload(world);
     let bodies: Vec<Entity> = world
         .query_filtered::<Entity, With<CharacterBody>>()
