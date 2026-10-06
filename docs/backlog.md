@@ -45,8 +45,9 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   rounds and money exist, weapon selection,
   hint text. The radar is in (`client/radar.rs`: the map overview turning
   with you, team dots, your place name); its range (2200 units) is a guess.
-- Debug overlays: `mashup_drawhitboxes` and `mashup_healthbars` exist;
-  add more as features need them (nav mesh, sound radii, bot state).
+- Debug overlays: `mashup_drawhitboxes`, `mashup_healthbars`,
+  `mashup_drawnav`, `mashup_drawbots` exist; add more as features need
+  them (sound radii, triggers).
 
 ## 3. Weapons, remaining
 
