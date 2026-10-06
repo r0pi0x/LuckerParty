@@ -6,6 +6,13 @@ Things to build, **in priority order** (top first; reprioritized
 [plans/active/](plans/active/mvp-combat-arms-slice.md). Move items into a
 plan when work starts; delete them when done.
 
+## 0. Player settings
+
+- Master volume: CS:S `volume` cvar (0-1, archived to config.cfg).
+- Mouse sensitivity: CS:S `sensitivity` cvar (with `m_yaw`/`m_pitch`
+  0.022, so the same number feels like CS:S), archived; maybe a small
+  options screen later.
+
 ## 1. Console, remaining
 
 The console and overlays are in (src/console.rs, src/client/console.rs).
