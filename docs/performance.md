@@ -43,6 +43,12 @@ potentially visible from anywhere inside it (PVS, run-length encoded).
   when it changes it shows the tagged parts whose clusters are potentially
   visible and hides the rest. In solid or outside the map (no cluster),
   or with `r_novis 1`, everything is drawn.
+- While the water's reflection camera draws (`map::water`), parts
+  potentially visible from its cluster are drawn too (it's a mirror
+  image under the surface; outside the map it draws everything). The
+  view-model and sky cameras draw only their own layers and are ignored.
+- Meshes of entities with their own node (movers, breakables) stay whole
+  and are never culled, nor props riding them.
 - Not culled: the 3D skybox (drawn by the sky camera only where the
   camera's leaf sees sky), physics props and their shadows (they move),
   characters, runtime decals, particles.
@@ -87,9 +93,26 @@ all threads (Bevy's worker threads included); GPU ms from timestamps.
 | chunks 1024 units + PVS | 9.2 (loaded) / 4.7 | 10.2 | 0.26 | 575 | 67k |
 | chunks 4096 units + PVS | 5.2 / 4.3 | 11.3 / 9.6 | 0.25 | 427 | 72k |
 
+After merging main (water with its reflection camera, movers), playtest
+build, each map's refcmp views (de_nuke 27, cs_office 23), runs taken
+under heavy machine load (load 8-27): read the ratios, not the absolute
+times.
+
+| map | build | frame ms avg | CPU ms | GPU ms | meshes drawn | triangles drawn |
+|---|---|---|---|---|---|---|
+| de_nuke | before (merged) | 58 / 101 | 77 / 107 | 3.0 / 6.9 | 1623 | 595k |
+| de_nuke | 512 + PVS | 32 / 42 | 49 / 63 | 1.9 / 3.4 | 1027 | 157k |
+| de_nuke | 4096 + PVS | 27 / 52 | 46 / 64 | 1.6 / 3.7 | 652 | 162k |
+| cs_office | before (merged) | 45 / 57 | 65 / 67 | 2.1 / 3.5 | 1075 | 303k |
+| cs_office | 512 + PVS | 28 / 47 | 45 / 55 | 1.1 / 2.4 | 835 | 150k |
+| cs_office | 4096 + PVS | 34 / 62 | 46 / 57 | 1.5 / 2.0 | 634 | 154k |
+
 The GPU does little (a 3080 draws dust2 in a quarter of a millisecond):
-frames are CPU bound, by per-entity work, so culling pays mostly by
-drawing fewer entities, and chunks that are too small add entities.
+frames are CPU bound, by per-entity work, so culling pays by drawing fewer
+entities as well as fewer triangles; chunks that are too small add
+entities. 512 and 4096 units measure about the same; 512 stays the
+default (finer culling, and what vischeck and the ray tests checked).
+`MASHUP_CHUNK_SIZE=<units>` overrides it for measurements.
 
 ## Cheap wins found
 
