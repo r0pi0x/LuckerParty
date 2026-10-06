@@ -51,7 +51,18 @@ framework, knife, AK-47, HUD, deathmatch and a first bot are in.
   burst/silencer M16 are measured too).
 - Money and a buy menu (`buy` gives for free).
 - Reload, grenade and death animations (world models are held by bodies).
-- Impact decals, tracers, muzzle flash; explosion impulses.
+- Bullet hole decals from the game (per surface material, e.g. the
+  concrete/wood/metal impact decals the surface properties name) and the
+  knife's slash marks; tracers; explosion impulses.
+- Dropping weapons (`drop`, CS:S's G key): the world model falls as a
+  physics object, can be picked up by walking over it; dead players drop
+  theirs.
+- Ragdolls on death: the player model's ragdoll from its `.phy` (bones as
+  rigid bodies with joint limits), seeded with the death pose and the
+  killing hit's impulse.
+- Held weapons don't stay in other players' hands (they float around the
+  hands): check the bone merge onto `weapon_bone` and the hand bones, and
+  the IK hand locks the animation spec leaves out (open question "IK").
 
 ## 4. Bots
 
