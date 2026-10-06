@@ -1487,6 +1487,23 @@ fn client_commands(app: &mut App) {
             std::fs::write(&path, text.join("\n")).map_err(|e| e.to_string())?;
             Ok(Some(format!("wrote {}", path.display())))
         },
+    )
+    .console_command(
+        "con_copy",
+        "con_copy [lines]: copy the console output (or its last lines) to the clipboard.",
+        |w, a| {
+            let output = &w.resource::<Console>().output;
+            let n = match a.first() {
+                Some(n) => n.parse::<usize>().map_err(|_| format!("bad line count \"{n}\""))?,
+                None => output.len(),
+            };
+            let text: Vec<String> = output.iter().skip(output.len().saturating_sub(n)).map(|l| l.text.clone()).collect();
+            let count = text.len();
+            arboard::Clipboard::new()
+                .and_then(|mut c| c.set_text(text.join("\n")))
+                .map_err(|e| format!("clipboard: {e}"))?;
+            Ok(Some(format!("copied {count} lines")))
+        },
     );
 }
 

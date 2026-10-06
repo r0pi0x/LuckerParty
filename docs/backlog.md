@@ -93,8 +93,8 @@ framework, knife, AK-47, HUD, deathmatch and a first bot are in.
 The console and overlays are in (src/console.rs, src/client/console.rs).
 
 - `net_graph` beyond cl_showfps 2; `cl_showpos 2`.
-- Select-and-copy in the output (clipboard); `con_dump` writes it to a
-  file meanwhile.
+- Select-and-copy with the mouse in the output; `con_copy [lines]` copies
+  to the clipboard and `con_dump` writes a file meanwhile.
 
 ## 6. Sound, remaining
 
