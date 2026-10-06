@@ -46,3 +46,33 @@ Notes:
 - The plugin switches the bot to its knife (max speed 250) before a run,
   and on placement resets its move type, remembered ladder and jump
   stamina. Its log adds the water level and ladder state per tick.
+
+## Weapon measurements
+
+`weapcmp.py` (driver, Python 3, no dependencies; `rcon.py` is a minimal
+Source RCON client) and `weapmeas.py` (one function per measurement) produce
+the numbers in specs/cs_source/weapons.md, "CS:S values (measured)":
+
+```
+python3 tools/css_probe/weapcmp.py knife knife_range
+python3 -c "import sys; sys.path.insert(0, 'tools/css_probe'); import weapmeas; weapmeas.timing('weapon_ak47')"
+```
+
+Plugin commands they use (all server commands, see the plugin header):
+`mashup_wrun` (a run that keeps the bot's weapon and logs a `W` row with the
+weapon state plus `E` rows for weapon events every tick; an optional sixth
+input column selects weapon slot n-1 that tick), `mashup_give <weapon> [clip]
+[reserve]`, `mashup_target x y z yaw health armor helmet hover` (the second
+player; it is held at that yaw and its health/armour are restored after every
+hit), `mashup_trace x y z pitch yaw [ignore_shooter]` (bullet-mask trace with
+hitgroup), `mashup_scan` (finds long clear sightlines) and `mashup_info`.
+
+Notes:
+- The bot AI sets the bot's view angles and weapon on its own; weapon runs
+  force `v_angle` to the input angles each command and block AI weapon
+  selection, but the AI still switches back to its best gun after a forced
+  switch to the knife and toggles silencers. Deploy timing is therefore
+  measured by giving the gun mid-run (`weapmeas.deploy`).
+- A bot that joins mid-round waits dead; `mashup_target` respawns it.
+- Afterwards restore the movement setup: `bot_kick`, `bot_join_team ct`,
+  `bot_quota 1`, `mp_friendlyfire 0`.

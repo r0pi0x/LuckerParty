@@ -720,6 +720,9 @@ attack → reload key → auto-reload/auto-switch/idle.
   every 7 ticks (0.105 s), M4A1 every 6 (sometimes 7), MP5/M249 every 6
   (0.09 s instead of 0.08), P90/TMP every 5 (0.075 s instead of 0.07). Keep
   whatever M4 measures; this is part of the feel.
+  *Measured (M4): held automatic fire accumulates, so the long-run rate is
+  exactly 1/CycleTime (AK-47 7,7,7,6 … ticks); the quantised intervals
+  apply only to tapping and semi-automatic weapons.*
 - **Neck hitbox is head**: neck shots get the head multiplier.
 - **`weapon_aug` uses 7.62 mm ammo** in the script (real AUG: 5.56); keep the
   data as is.
@@ -927,6 +930,9 @@ a holster sequence.
 
 ### Fire interval in ticks (if the "set" rule holds)
 
+(Measured: this applies to fresh presses only; held automatic fire
+accumulates, see "CS:S values (measured)", M4.)
+
 Simulated in 32-bit floats over 600 start tickbases (`next = curtime +
 CycleTime`, fire at the first tick with `curtime ≥ next`):
 
@@ -949,6 +955,230 @@ CycleTime`, fire at the first tick with `curtime ≥ next`):
 (Semi-automatic weapons also need the attack button released and pressed
 again, measurement M16.)
 
+## CS:S values (measured)
+
+Measured on a local CS:S dedicated server (2026-10, build 11003710, Linux,
+0.015 s tick) by observing the running game only: a bot shooter driven per
+tick through `tools/css_probe` (plugin `mashup_probe.sp`, driver
+`weapcmp.py` / `weapmeas.py`), a second bot as target (health reset to 1000
+and armour re-applied after every hit), logging the networked weapon state
+(`m_iClip1`, `m_flNextPrimaryAttack`, `m_flNextAttack`, `m_iShotsFired`,
+`m_vecPunchAngle`, `m_fAccuracyPenalty`, `m_iFOV`) every tick and the
+`weapon_fire`, `bullet_impact` and `player_hurt` events. "Ticks" count server
+ticks of 0.015 s. Each item says how it was measured; anything not listed
+here is still a hypothesis.
+
+### M11 Knife
+
+Method: target bot standing on flat ground in front of the attacker
+(dust2 CT spawn), view aimed at the target's chest, one attack per run after
+the knife was fully drawn; ranges by bisection on the target distance;
+facing by rotating the target.
+
+| attack | front | back (backstab) | armour 100 (health / armour) | refire on hit | refire on miss |
+|---|---|---|---|---|---|
+| slash (attack) | 20 first, 15 follow-up | same as front (20 / 15) | 20 → 17 / 1 | 0.5 s both timers (34 ticks held) | 0.4 s primary, 0.5 s secondary (27 ticks held) |
+| stab (attack2) | 65 | 195 | 65 → 55 / 4, 195 → 165 / 14 | 1.1 s both timers (74 ticks held) | 1.0 s both timers (67 ticks held) |
+
+- Slash damage: 20 if at least 0.9 s (60 ticks) passed since the previous
+  slash, else 15 (59 ticks → 15, 60 → 20). Holding attack on a target gives
+  20, 15, 15, 15, … every 34 ticks.
+- Knife hits report hitgroup 0 (generic): no hitgroup multiplier, armour
+  always applies (`WeaponArmorRatio` 1.7, formula in M7). The script's
+  `Damage` 50 is unused.
+- Backstab (stab only): taken when the angle between the target's facing yaw
+  and the horizontal direction from the attacker's origin to the target's
+  origin is ≤ 36°; 37° and more is a front stab (symmetric left/right). This
+  fits `dot ≥ 0.8` (36.87°). Verified to depend on the attacker→target
+  direction, not the attacker's view direction (target offset sideways by
+  12 units, view straight ahead: windows shift by the 16.7° bearing).
+- Reach (target facing the attacker, view horizontal through the target's
+  eye height, so no line hit on a hitbox): along a world axis the knife hits
+  up to an origin distance of 79.8 (slash) and 63.9 (stab), at 20° off-axis
+  81.0–82.0 and 65.1–66.0. Both fit a 32 × 32 × 32 box (±16) swept from the
+  eye for **48** (slash) / **32** (stab) units hitting the target's
+  axis-aligned ±16 collision hull: reach = range + 32 on-axis, range +
+  32/cos 20° off-axis. With the view aimed down at the chest the ray to the
+  hitbox at the reach limit is only 54.6 / 40.3, so the box sweep, not the
+  line, sets the reach. Some off-centre aims at 40 units missed depending
+  on the target's rotation (3 of 9), so hitboxes matter somewhere in the
+  test; not resolved.
+
+### M5, M6, M7 Damage, hitgroups, falloff, armour
+
+Method: target hovering (move type none) on a 4269-unit clear line, shooter
+crouched, single shots aimed at each hitgroup (aim points found with a
+server-side bullet-mask trace), 2–3 hits per group at 100, 500, 1000, 2000
+and 3000 units (AK-47, USP; no armour, armour 100 without and with helmet),
+200 and 1500 (Deagle, AWP, Glock; no armour and armour+helmet). 491 hits.
+`d` = distance from the shooter's eye to the `bullet_impact` point.
+
+- `damage = Damage × RangeModifier^(d / 500) × group`, with group = head 4,
+  chest 1, stomach 1.25, left/right arm 1, left/right leg 0.75 (knife:
+  generic, 1).
+- Armour protects when the victim has armour > 0 and the hit is chest,
+  stomach, an arm or generic, or the head **with** a helmet; legs never, the
+  head without a helmet not.
+- Protected: `health_damage = damage × WeaponArmorRatio × 0.5`,
+  `armour_damage = (damage − health_damage) × 0.5`; unprotected:
+  `health_damage = damage`, no armour damage.
+- Both are truncated to integers (35.86 → 35, 15.75 → 15).
+
+- 482 of 491 hits match exactly. The other 9 are all within one point, all on
+  the strongly falling pistols (USP, Deagle, Glock) right at an integer
+  boundary, and all need a slightly **shorter** distance (≈ 1 %: e.g. USP leg
+  at 995 units measured 16, formula 15.95). Using `0.99 d` fixes them but
+  breaks one AK-47 head hit at 2000 (needs ≥ 0.991 d). The game's internal
+  distance is therefore within about 1 % of eye → impact; its exact
+  definition is not resolved.
+- No random damage, no fraction carried between hits (the same shot repeated
+  gives the same number).
+- Examples (no armour): AK-47 at 96 units: head 143, chest 35, stomach 44,
+  arm 35, leg 26. USP at 1000: head 85, chest 21, stomach 26, leg 16.
+  AWP at 190 with armour+helmet: head 446 / 5, chest 111 / 1,
+  stomach 139 / 1, leg 85 / 0.
+- Armour ratio check: AK-47 1.55, USP 1.0, Deagle 1.5, AWP 1.95, Glock
+  1.05, knife 1.7 all follow the same formula. A victim with less armour
+  than `armour_damage` was not tested.
+
+### M4, M8, M10 Fire timing, deploy, reload, empty clip
+
+Method: per-tick `weapon_fire` ticks and weapon timers, attack held, or
+tapped (pressed every N ticks).
+
+- **Automatic weapons, attack held: "accumulate".** After each shot
+  `next_primary = previous next_primary + CycleTime` (not `curtime +
+  CycleTime`), at most one shot per tick. AK-47 (0.1): ticks between shots
+  7, 7, 7, 6, 7, 7, 6, … (mean 6.67, i.e. exactly 600 rounds/min);
+  M4A1 (0.09): 6 every time; M3 held (0.88): 59, 59, 58. The timer after a
+  shot reads 0.100, 0.095, 0.090, 0.085, 0.095, … for the AK-47.
+- **A fresh press** sets `next_primary = curtime + CycleTime` (AK-47 tapped
+  every 8 ticks: 8-tick spacing, timer exactly 0.1 after each shot).
+- **Semi-automatic** (pistols, AWP, scout): holding attack fires once; each
+  new press fires when `next_primary` has passed, `next_primary = curtime +
+  CycleTime`: Deagle 15 ticks (16 when float rounding lands just past),
+  USP and Glock 10, AWP 100.
+- **Deploy** = the view model's draw duration (section 3.8):
+  `next_attack = next_primary = curtime + draw`; first shot
+  `ceil(draw / tick)` ticks later: AK-47, AWP, Deagle, USP 1.0 s → 67 ticks,
+  M4A1 0.975 s → 65 ticks.
+- **Reload** = the view model's reload duration: AK-47 2.4324 s → clip
+  refilled 163 ticks after the start, and with attack held the first shot
+  fires on that same tick; M4A1 3.0541 s → 204 ticks. No ammo is lost
+  (clip 0 + reserve 90 → 30 / 60).
+- **Empty clip, attack held**: one extra `weapon_fire` without a bullet
+  (dry fire) one cycle after the last round, then nothing while attack stays
+  held; the automatic reload starts on the first tick with no buttons held.
+
+### M1, M2 Inaccuracy
+
+Method: `m_fAccuracyPenalty` per tick while standing, crouching, walking,
+running, jumping, landing and firing (AK-47); plus single AK-47 shots at a
+wall 415 units away, one every 40 ticks (punch back to 0, penalty logged at
+each shot), 250 shots each standing, crouched, running (221), walking
+(114.9) and 150 each at speeds 78.7, 150 and 190.
+
+- `m_fAccuracyPenalty` is the stored inaccuracy `I` (same scale as the script
+  keys). Standing still it equals `InaccuracyStand` (AK-47 0.009159),
+  crouched (`FL_DUCKING`) it settles at `InaccuracyCrouch` (0.006871).
+  Moving does **not** change it (the move term is added at shot time).
+- Recovery per tick (steady = Crouch when ducked, else Stand):
+  if `I > steady`: `I = steady + (I − steady) × 0.1^(tick / RT)`, with
+  `RT = RecoveryTimeCrouch` when ducked else `RecoveryTimeStand` (fitted
+  0.488 s vs. 0.48815 standing, 0.348 vs. 0.34868 crouched: "back to 10 %
+  of the excess in RecoveryTime"). If `I < steady` (standing up from a
+  crouch) `I` jumps to the steady value at once.
+- Firing: on the shot tick, after that tick's decay, `I += InaccuracyFire`
+  (exact to 1e-6: 0.00917 → 0.020749, then 0.016740 → 0.027802 seven ticks
+  later). No cap reached in 5 shots.
+- Jumping: on the jump tick `I += InaccuracyJump` (0.43044), and the same
+  tick already decays. While airborne `I` decays by a factor 0.96755 per
+  tick (≈ 10 % of the excess in 1.05 s), toward a value that could not be
+  pinned down (fits between 0.006 and 0.009).
+- Landing raised `I` from 0.0930 to 0.1633 in one tick (+0.0702 net) for
+  `InaccuracyLand` 0.08609; the exact landing rule (scaling, order) is not
+  resolved. Afterwards the standing recovery applies.
+- Movement term at shot time, AK-47 (max speed 221), from the spread of
+  shots: speed 78.7 → ≈ 0.003, 114.9 → ≈ 0.027, 150 → ≈ 0.050,
+  190 → ≈ 0.076–0.086, 221 → ≈ 0.090 (`InaccuracyMove` 0.09222). Fits
+  `InaccuracyMove × clamp((v − vmax/3) / (vmax − vmax/3), 0, 1)` within the
+  statistical error (about ±15 %).
+- Shot direction: offset in tangent units along the aim's right/up vectors
+  (`d = f + x·r + y·u`), isotropic (mean |x| = mean |y|), with radius
+  uniform: standing, offsets/(Spread + I) have quartiles 0.24 / 0.45 / 0.68
+  and max 0.92; mean radius 0.00491 for I = 0.00994 (uniform radius
+  predicts I/2 = 0.00497); crouched 0.00351 for I = 0.00712. Consistent
+  with `U(0,1)·I` at a uniform random angle plus `U(0,1)·Spread` at a second
+  random angle (the template/hypothesis shape). The random generator itself
+  (Q1) was not checked.
+
+### M3 Recoil (AK-47)
+
+Method: full-clip bursts (attack held) at the wall, 5 standing and 1
+crouched, per-tick punch angle and the per-shot bullet offset.
+
+- Punch velocity stays 0: CS:S does not use the SDK spring for weapon recoil.
+- Decay per tick, before the weapon fires: with `L = |punch|` (pitch, yaw),
+  `L ← max(L − (10 + 0.5 L) × 0.015, 0)`, direction unchanged (matches every
+  logged tick to 1e-5).
+- Kick per shot, standing (shot number n = `m_iShotsFired` after the shot):
+  up (pitch more negative) by `1.0` for n = 1, `1.0 + 0.175 n` after;
+  sideways by `0.375` for n = 1, `0.375 + 0.0375 n` after; pitch clamped at
+  −5.75, yaw at ±1.75. The sideways direction is random at the first shot
+  and flips with probability ≈ 1/8 per later shot (17 flips in 145 shots).
+- Crouched: up `0.9`, then `0.9 + 0.15 n`; sideways `0.35`, then
+  `0.35 + 0.025 n` (clamps not reached in the logged part).
+  Moving and airborne kick sets were not measured.
+- **Bullets go along view + 2 × punch**, using the punch after this tick's
+  decay and before this shot's kick: residuals after removing `2 × punch` are
+  all inside the inaccuracy cone; with `1 × punch` they are up to 5° outside.
+- `m_iShotsFired` keeps counting while attack is held; after the last shot it
+  stays for about 0.45 s, then falls to 0 within about 0.1 s (5 → 3 → 2 → 0
+  in 3-tick samples).
+
+### M15 Zoom
+
+Method: attack2 presses 100 ticks apart, `m_iFOV` per tick (0 = default
+90), then a shot while zoomed; top speed with forward held for 80 ticks.
+
+| weapon | zoom steps (FOV) | after a shot | zoomed max speed |
+|---|---|---|---|
+| weapon_awp | 40, 10, off | unzooms; re-zooms when `next_primary` passes (100 ticks) | 150 (unzoomed 210) |
+| weapon_scout | 40, 15, off | unzooms; re-zooms after 84 ticks | 220 (script max speed 260; unzoomed not re-measured) |
+| weapon_sg550, weapon_g3sg1 | 40, 15, off | stays zoomed | sg550 150 |
+| weapon_aug, weapon_sg552 | 55, off | stays | aug 221 (unchanged) |
+
+Each zoom toggle sets `next_secondary = curtime + 0.3`; it does not touch
+`next_primary`. The FOV value changes on the toggle tick.
+
+### M16 Fire modes and pellets
+
+- Glock burst (attack2 toggles, 0.3 s secondary delay): one trigger press
+  fires 3 bullets on ticks 0, 4 and 8 (0.06 s apart), with a single
+  `weapon_fire` event; 3 rounds used.
+- FAMAS burst: 3 bullets 5–6 ticks apart (≈ 0.08 s); with attack held a new
+  burst every 36–37 ticks (≈ 0.55 s).
+- Silencer toggle: USP blocks both attacks for 3.0 s, M4A1 for 2.0 s
+  (`next_primary = next_secondary = curtime + time`). Silenced damage and
+  range: not measured (the bot AI toggles the silencer back on its own).
+- Shotguns: one `bullet_impact` per pellet, 9 for the M3, 6 for the XM1014,
+  one `weapon_fire` per shot.
+
+### M17 Ammo cvars
+
+`cvarlist ammo_` (max carry, replicated server cvars): 338mag 30, 357sig 52,
+45acp 100, 50AE 35, 556mm_box 200, 556mm 90, 57mm 100, 762mm 90, 9mm 120,
+buckshot 32, flashbang 2, hegrenade 1, smokegrenade 1. Penetration power and
+impulse per ammo type are not exposed as cvars.
+
+### Not measured yet
+
+M2's dependency on shots fired beyond 5, M9 shotgun reload, M12 hitbox reach,
+M13 penetration (no thin wall of known material found quickly on dust2; the
+64-unit wall at the CT spawn stops everything), M14 drop/pickup, silenced
+damage, the landing rule, moving/airborne recoil sets, the knife's
+hitbox/hull interplay, and the RNG (Q1).
+
 ## Open questions
 
 - **Q1 Random generator.** The uniform generator body is not in the SDK
@@ -956,20 +1186,37 @@ again, measurement M16.)
   patterns need it bit-exact. Either implement the inferred `ran1` and
   verify by comparing predicted vs. logged `bullet_impact` points for known
   seeds (M2), or accept statistically equal spread.
-- **Q2 Inaccuracy formula** (section 7.1): measurement M1, M2.
+- **Q2 Inaccuracy formula** (section 7.1): measurement M1, M2. *Mostly
+  resolved: "CS:S values (measured)", M1/M2 (recovery, fire, jump, move
+  term, cone shape); landing rule and airborne target still open.*
 - **Q3 Recoil kick and decay**, and how much punch adds to the aim: M3.
-- **Q4 Fire timing rule** ("set" vs. "accumulate"): M4.
+  *Resolved for the AK-47 standing/crouched (measured section, M3): linear
+  decay rule, kick formula, aim = view + 2 × punch. Other weapons and
+  moving/airborne kick sets not measured.*
+- **Q4 Fire timing rule** ("set" vs. "accumulate"): M4. *Resolved (measured
+  section, M4): accumulate while held (one shot per tick max), set on a
+  fresh press; the tick table above applies to tapping only.*
 - **Q5 Damage rounding** (truncate, round, or accumulate fractions) and
   falloff formula: M5.
+  *Resolved (measured section, M5–M7): truncate, no carried fraction,
+  falloff `RangeModifier^(d/500)`; the exact distance is within ~1 % of
+  eye → impact.*
 - **Q6 Hitbox surrounding bounds**: are hits on arms/head outside the
   collision hull registered? M12.
 - **Q7 Penetration** model, per-ammo power/distance, material table: M13.
 - **Q8 Ammo impulses** for physics props (shared with physics_props.md Q11):
   shoot a known-mass prop and measure Δv.
 - **Q9 Knife** damages, ranges, refire, backstab: M11.
+  *Resolved (measured section, M11): 20/15 slash, 65/195 stab, refire, reach
+  48/32 box sweep, backstab at ≤ 36° (dot ≥ 0.8).*
 - **Q10 Hitgroup multipliers and armour**: M6, M7.
+  *Resolved (measured section, M6, M7): head 4, chest 1, stomach 1.25, arm 1,
+  leg 0.75; armour formula as hypothesised, helmet needed for the head.*
 - **Q11 Deploy/reload exceptions** (e.g. faster deploy, reload start delay,
   fire allowed before the reload animation ends): M8.
+  *Partly resolved (measured section, M8): deploy and reload equal the
+  view-model durations, firing allowed on the completion tick; shotgun
+  reload (M9) open.*
 - **Q12 Shotgun pellets**: line vs. box traces, pattern, per-pellet damage
   event or summed: M4.
 - **Q13 Drop / pickup** CS rules: drop velocity, which weapon is dropped on
@@ -977,6 +1224,8 @@ again, measurement M16.)
   M14.
 - **Q14 Zoom** levels (FOV), zoomed speed, unzoom after a sniper shot and
   re-zoom timing: M15.
+  *Resolved for FOV, toggle delay, unzoom/re-zoom and zoomed speed
+  (measured section, M15).*
 - **Q15** `sv_legacy_grenade_damage` exists on current CS:S servers ("replicate
   grenade damage behaviour of the original game"): grenade damage changed in
   an update; measure both settings when grenades are specced.
