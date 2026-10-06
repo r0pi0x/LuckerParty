@@ -83,6 +83,11 @@ fn rounds_freeze_then_play_and_eliminations_pay() {
     sim.seconds(5.2);
     assert!(matches!(phase(&sim), Phase::Freeze { .. }), "{:?}", phase(&sim));
     assert_eq!(sim.app.world().resource::<RoundState>().number, 2);
+    assert_eq!(
+        sim.app.world().resource::<mashup::core::RoundRestarts>().0,
+        2,
+        "each round start restarts the map's entities"
+    );
     assert!(sim.app.world().get::<mashup::rules::Dead>(ct).is_none());
 }
 

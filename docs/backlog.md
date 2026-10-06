@@ -35,7 +35,7 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   src/logic/breakables.rs). Left: breakable follow-ups (section 7),
   `prop_door_rotating` (model doors: cs_assault, de_port), train facing/banking and
   player train control, `trigger_soundscape` through the general touch
-  code, round restarts re-creating entities, env_global. Target: two
+  code, env_global. (Round restarts re-create entities: rounds plan.) Target: two
   real minigame maps from the user's downloads.
 
 ## 2b. HUD and debug views

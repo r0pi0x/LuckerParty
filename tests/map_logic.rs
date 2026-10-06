@@ -5,12 +5,13 @@
 
 use bevy::prelude::*;
 use mashup::{
-    core::{Intent, MovingSolid},
+    core::{Damage, DamageKind, Damageable, Hitgroup, Intent, MovingSolid, RoundRestarts},
     games::cs_source::{
         self,
         movement::{self, SourceMovementPlugin, to_engine, to_source},
     },
     harness::Sim,
+    logic::{HudMessages, Logic},
     map::{MapBrush, MapBrushEntity, MapData, MapEntity, MapHull, MapPlugin},
 };
 
@@ -192,4 +193,93 @@ fn trigger_push_is_a_conveyor_then_momentum() {
     }
     assert!(feet(&sim, p).x > 216.0, "left the push: {}", feet(&sim, p));
     assert!(peak > 250.0 && peak < 303.0, "momentum peak {peak}");
+}
+
+fn node(sim: &mut Sim, index: usize) -> Entity {
+    let world = sim.app.world_mut();
+    let mut q = world.query::<(Entity, &MapBrushEntity)>();
+    q.iter(world).find(|(_, n)| n.0 == index).expect("mover node").0
+}
+
+/// Whether map entity `index` exists in the logic.
+fn exists(sim: &Sim, index: usize) -> bool {
+    let logic = sim.app.world().resource::<Logic>();
+    logic
+        .world
+        .ids()
+        .into_iter()
+        .any(|id| logic.world.get(id).unwrap().map_index == Some(index))
+}
+
+#[test]
+fn round_restart_puts_the_map_back() {
+    use avian3d::prelude::ColliderDisabled;
+    let entities = vec![
+        // 0: a door the trigger opens and that stays open.
+        entity(
+            &[("classname", "func_door"), ("targetname", "door"), ("origin", "100 0 64"), ("lip", "4"), ("speed", "200"), ("wait", "-1")],
+            vec![hull(Vec3::new(-32.0, -4.0, -64.0), Vec3::new(32.0, 4.0, 64.0))],
+            true,
+        ),
+        // 1: a trigger_once around the player's start.
+        entity(
+            &[("classname", "trigger_once"), ("spawnflags", "1"), ("OnTrigger", "door,Open,,0,-1")],
+            vec![hull(Vec3::new(-64.0, -64.0, 0.0), Vec3::new(64.0, 64.0, 72.0))],
+            false,
+        ),
+        // 2: a metal vent, health 1.
+        entity(
+            &[("classname", "func_breakable"), ("material", "2"), ("health", "1"), ("origin", "0 300 32")],
+            vec![hull(Vec3::new(-32.0, -4.0, -16.0), Vec3::new(32.0, 4.0, 16.0))],
+            true,
+        ),
+        // 3, 4: a HUD message at every round start.
+        entity(&[("classname", "game_text"), ("targetname", "msg"), ("message", "go"), ("holdtime", "100"), ("spawnflags", "1")], Vec::new(), false),
+        entity(&[("classname", "logic_auto"), ("OnMapSpawn", "msg,Display,,0,-1")], Vec::new(), false),
+    ];
+    let (mut sim, p) = sim(entities, Vec3::ZERO, 0.0);
+    sim.ticks(40);
+    let hud = |sim: &Sim| sim.app.world().resource::<HudMessages>().channels.iter().flatten().count();
+    assert_eq!(hud(&sim), 1, "logic_auto showed the message");
+    assert!(!exists(&sim, 1), "the trigger fired and went");
+    let open = mover_origin(&mut sim, 0);
+    assert!((open.x - 158.0).abs() < 0.01, "door open: {open}");
+
+    // Break the vent.
+    let vent = node(&mut sim, 2);
+    assert!(sim.app.world().get::<Damageable>(vent).is_some());
+    sim.app.world_mut().write_message(Damage {
+        target: vent,
+        attacker: None,
+        amount: 0.5,
+        point: to_engine(Vec3::new(0.0, 296.0, 32.0)),
+        dir: Vec3::NEG_Z,
+        hitgroup: Hitgroup::Generic,
+        kind: DamageKind::Bullet,
+    });
+    sim.ticks(10);
+    assert!(!exists(&sim, 2), "broken and removed");
+    let world = sim.app.world();
+    assert_eq!(world.get::<Visibility>(vent), Some(&Visibility::Hidden), "hidden, not despawned");
+    assert!(world.get::<ColliderDisabled>(vent).is_some());
+    assert!(!world.get::<MovingSolid>(vent).unwrap().solid);
+    assert!(world.get::<Damageable>(vent).is_none());
+
+    // Out of the trigger, then a new round.
+    sim.app.world_mut().get_mut::<Transform>(p).unwrap().translation = to_engine(Vec3::new(-300.0, 0.0, 37.0));
+    sim.ticks(5);
+    sim.app.world_mut().resource_mut::<RoundRestarts>().0 += 1;
+    sim.ticks(1);
+    assert_eq!(hud(&sim), 0, "the last round's HUD message is cleared");
+    assert!(exists(&sim, 1) && exists(&sim, 2), "trigger and vent re-created");
+    assert_eq!(mover_origin(&mut sim, 0), Vec3::new(100.0, 0.0, 64.0), "door back closed");
+    assert_eq!(node(&mut sim, 2), vent, "the same node");
+    let world = sim.app.world();
+    assert_eq!(world.get::<Visibility>(vent), Some(&Visibility::Inherited));
+    assert!(world.get::<ColliderDisabled>(vent).is_none());
+    assert!(world.get::<MovingSolid>(vent).unwrap().solid);
+    assert!(world.get::<Damageable>(vent).is_some());
+    sim.ticks(14);
+    assert_eq!(hud(&sim), 1, "logic_auto fired again");
+    assert!(exists(&sim, 1), "the player is out of the trigger: still armed");
 }

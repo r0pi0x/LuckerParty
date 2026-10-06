@@ -289,6 +289,8 @@ fn start_round(world: &mut World, s: &RoundSettings, now: f64, fresh: bool) {
             until: now + s.freeze_time as f64,
         };
     }
+    // The map's entities as they spawned (logic and map layers).
+    world.get_resource_or_init::<crate::core::RoundRestarts>().0 += 1;
     // Everyone back at their spawns: the dead (or everyone, at the start
     // of a game) with fresh weapons, survivors with theirs.
     let all: Vec<(Entity, bool)> = world

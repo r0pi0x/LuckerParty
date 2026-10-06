@@ -22,7 +22,7 @@ impl Plugin for DeathmatchPlugin {
             (
                 (rounds::run_rounds, respawn, hold_the_dead, rounds::hold_frozen)
                     .chain()
-                    .before(SimSet::Movement),
+                    .in_set(SimSet::Rules),
                 (count_deaths, rounds::kill_rewards).after(SimSet::Weapons),
             ),
         );

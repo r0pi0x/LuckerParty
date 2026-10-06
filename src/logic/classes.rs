@@ -365,7 +365,9 @@ pub(super) fn class_think(w: &mut LogicWorld, id: EntId) {
             let remove = e.has_flag(1);
             w.fire_output(id, "OnNewGame", None, Value::Void);
             w.fire_output(id, "OnMapSpawn", None, Value::Void);
-            w.fire_output(id, "OnMultiNewMap", None, Value::Void);
+            // A round restart re-creates it (world.rs `round_restart`).
+            let output = if w.round > 0 { "OnMultiNewRound" } else { "OnMultiNewMap" };
+            w.fire_output(id, output, None, Value::Void);
             if remove {
                 w.kill(id);
             }
