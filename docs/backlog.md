@@ -10,11 +10,6 @@ plan when work starts; delete them when done.
 
 Each group is one agent's worktree; merged into main as they finish.
 
-- **A. Client: settings and debug views.** `volume` and `sensitivity`
-  cvars (archived; CS:S's m_yaw/m_pitch 0.022 scale); debug health bars
-  above characters (`mashup_healthbars 1`); third-person camera
-  (`thirdperson` / `firstperson`) showing the local player's animated
-  body.
 - **B. Weapons: penetration and collaterals.** Implement M13 from
   specs/cs_source/weapons.md (walls by material, through players x0.5,
   object counts, compounding falloff); the measured recoil sets (moving and
