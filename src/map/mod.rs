@@ -19,6 +19,7 @@ pub use crate::core::{MapBrush, MapBrushCollider, MapBrushes, MapWater, MapWater
 
 pub mod anim;
 pub mod decal;
+pub mod hud;
 mod dust;
 pub mod nav;
 pub mod prop_material;
@@ -818,6 +819,8 @@ pub struct MapData {
     pub held: Vec<MapHeldModel>,
     /// Runtime decals (bullet holes, slashes) by group.
     pub decals: decal::MapDecals,
+    /// The game's own HUD look, when it has one.
+    pub hud: Option<Arc<hud::GameHud>>,
     /// What characters see of what they hold (weapons' view models).
     pub view_models: Vec<MapViewModel>,
 }
@@ -1964,6 +1967,9 @@ fn spawn_map(
     }
 
     commands.insert_resource(decal::DecalSurfaces::new(&data));
+    if let Some(h) = &data.hud {
+        commands.insert_resource(hud::ActiveHud(h.clone()));
+    }
     if !texture_handles.is_empty() && !data.decals.groups.is_empty() {
         commands.insert_resource(decal::DecalAssets::new(data.decals.clone(), texture_handles.clone()));
         commands.insert_resource(decal::ImpactDecals);
@@ -2058,6 +2064,7 @@ pub fn unload_map(world: &mut World) {
     world.remove_resource::<decal::DecalSurfaces>();
     world.remove_resource::<decal::DecalAssets>();
     world.remove_resource::<decal::ImpactDecals>();
+    world.remove_resource::<hud::ActiveHud>();
     view_model::unload(world);
     let bodies: Vec<Entity> = world
         .query_filtered::<Entity, With<CharacterBody>>()

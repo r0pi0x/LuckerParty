@@ -6,6 +6,7 @@ pub mod capture;
 pub mod console;
 pub mod debug;
 pub mod effects;
+pub mod game_hud;
 pub mod hud;
 pub mod input;
 pub mod view;
@@ -165,6 +166,7 @@ impl Plugin for ClientPlugin {
                 capture::CapturePlugin,
                 console::ConsoleUiPlugin,
                 hud::HudPlugin,
+                game_hud::GameHudPlugin,
                 effects::ShotEffectsPlugin,
                 view::ViewPlugin,
             ))

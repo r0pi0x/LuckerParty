@@ -1862,3 +1862,21 @@ fn view_models_load_with_their_sequences() {
         assert!(set.sequence(name).is_some(), "{name}");
     }
 }
+
+/// CS:S's own HUD look loads from the install: panel layout, the HUD
+/// number and icon fonts, icon glyphs and the scheme's colours.
+#[test]
+fn game_hud_loads() {
+    use mashup::map::hud::HudCoord;
+    let Some(map) = dust2() else { return };
+    let hud = map.hud.as_ref().expect("a HUD");
+    let health = &hud.panels["HudHealth"];
+    assert_eq!((health.x, health.y), (HudCoord::Start(8.0), HudCoord::Start(446.0)));
+    assert_eq!(hud.panels["HudAmmo"].x, HudCoord::End(157.0));
+    for f in ["HudNumbers", "Icons", "CSTypeDeath"] {
+        assert!(hud.fonts.get(f).is_some_and(|f| f.data.len() > 1000), "font {f}");
+    }
+    assert_eq!(hud.icons["health_icon"], ("Icons".to_string(), 'b'));
+    assert_eq!(hud.icons["d_ak47"], ("CSTypeDeath".to_string(), 'b'));
+    assert_eq!(hud.colors["FgColor"], [255, 176, 0, 255]);
+}
