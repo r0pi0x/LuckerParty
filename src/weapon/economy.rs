@@ -100,6 +100,47 @@ pub fn buy(world: &mut World, owner: Entity, name: &str) -> Result<String, Strin
     Ok(format!("bought {id}"))
 }
 
+/// Each registered weapon's slot (built once on a scratch world).
+pub fn weapon_slots(registry: &WeaponRegistry) -> Vec<(&'static str, u8)> {
+    let mut scratch = World::new();
+    registry
+        .0
+        .iter()
+        .filter_map(|d| {
+            let mut e = scratch.spawn_empty();
+            (d.build)(&mut e);
+            e.get::<Weapon>().map(|w| (d.id, w.slot))
+        })
+        .collect()
+}
+
+/// What a computer player buys with its money: the dearest primary its
+/// team may buy and afford (if it has none), then armour with what's left.
+/// CS:S's own bots weigh preferences and difficulty; this is the simple
+/// version.
+pub fn autobuy(world: &mut World, owner: Entity) {
+    let prices = world.resource::<Prices>().clone();
+    let slots = weapon_slots(world.resource::<WeaponRegistry>());
+    let team = world.get::<crate::core::Team>(owner).map(|t| t.0);
+    let money = world.get::<Money>(owner).map_or(0, |m| m.0);
+    let held: Vec<u8> = world
+        .get::<Inventory>(owner)
+        .map(|i| i.weapons.iter().filter_map(|w| world.get::<Weapon>(*w)).map(|w| w.slot).collect())
+        .unwrap_or_default();
+    if !held.contains(&0) {
+        let best = slots
+            .iter()
+            .filter(|(_, slot)| *slot == 0)
+            .filter_map(|(id, _)| Some((*id, *prices.weapons.get(id)?)))
+            .filter(|(id, price)| *price <= money && prices.team_only.get(id).is_none_or(|t| Some(*t) == team))
+            .max_by_key(|(_, price)| *price);
+        if let Some((id, _)) = best {
+            let _ = buy(world, owner, id);
+        }
+    }
+    let _ = buy(world, owner, "vesthelm").or_else(|_| buy(world, owner, "vest"));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,6 +192,14 @@ mod tests {
         buy(&mut w, p, "vesthelm").unwrap();
         assert_eq!(w.get::<Money>(p), Some(&Money(1000)));
         assert_eq!(w.get::<Armor>(p).map(|a| a.helmet), Some(true));
+        // A bot with 2700: the rifle (2500), not armour (200 left).
+        w.entity_mut(p).insert(Money(2700));
+        let rifle = w.get::<Inventory>(p).unwrap().weapons.clone();
+        for r in rifle {
+            w.get_mut::<Inventory>(p).unwrap().weapons.retain(|x| *x != r);
+        }
+        autobuy(&mut w, p);
+        assert_eq!(w.get::<Money>(p), Some(&Money(200)));
         w.insert_resource(BuyWindow(Err("buy time is over".into())));
         assert_eq!(buy(&mut w, p, "vest").unwrap_err(), "buy time is over");
     }

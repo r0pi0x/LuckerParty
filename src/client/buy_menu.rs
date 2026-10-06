@@ -92,19 +92,7 @@ fn items(category: usize, prices: &Prices, slots: &[(&'static str, u8)]) -> Vec<
     out
 }
 
-/// Each registered weapon's slot (built once on a scratch world).
-fn weapon_slots(registry: &WeaponRegistry) -> Vec<(&'static str, u8)> {
-    let mut scratch = World::new();
-    registry
-        .0
-        .iter()
-        .filter_map(|d| {
-            let mut e = scratch.spawn_empty();
-            (d.build)(&mut e);
-            e.get::<Weapon>().map(|w| (d.id, w.slot))
-        })
-        .collect()
-}
+use crate::weapon::economy::weapon_slots;
 
 const DIGITS: [KeyCode; 10] = [
     KeyCode::Digit0,

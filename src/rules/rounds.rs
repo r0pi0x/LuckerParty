@@ -298,6 +298,15 @@ fn start_round(world: &mut World, s: &RoundSettings, now: f64, fresh: bool) {
     for (e, dead) in all {
         put_at_spawn(world, e, fresh || dead);
     }
+    // Computer players shop at once.
+    let bots: Vec<Entity> = world
+        .query_filtered::<Entity, (With<Intent>, With<Health>, Without<crate::core::LocalPlayer>)>()
+        .iter(world)
+        .collect();
+    world.insert_resource(BuyWindow::default());
+    for e in bots {
+        crate::weapon::economy::autobuy(world, e);
+    }
     // Loose weapons from the last round go.
     let loose: Vec<(Entity, Entity)> = world
         .query::<(Entity, &crate::weapon::drop::Loose)>()
