@@ -115,7 +115,8 @@ fn update(
         With<Intent>,
     >,
     windows: Query<&Window>,
-    mut last: Local<Option<Vec<(u8, String, u32, u32, bool, bool)>>>,
+    rounds: Option<Res<crate::rules::rounds::RoundState>>,
+    mut last: Local<Option<(Vec<(u8, String, u32, u32, bool, bool)>, Option<[u32; 2]>)>>,
     mut commands: Commands,
 ) {
     let typing = console.is_some_and(|c| c.open);
@@ -150,9 +151,15 @@ fn update(
             .then(a.3.cmp(&b.3))
             .then(a.1.cmp(&b.1))
     });
-    if last.as_ref() == Some(&rows) {
+    // Rounds won, while rounds are played.
+    let wins = rounds
+        .filter(|r| r.phase != crate::rules::rounds::Phase::Off)
+        .map(|r| r.wins);
+    let key = (rows, wins);
+    if last.as_ref() == Some(&key) {
         return;
     }
+    let rows = &key.0;
     let size = windows
         .iter()
         .next()
@@ -169,7 +176,10 @@ fn update(
             &mut commands,
             column,
             [
-                format!("{title}  ({})", members.len()),
+                match wins {
+                    Some(w) => format!("{title}  ({})   {}", members.len(), w[if *team == 1 { 0 } else { 1 }]),
+                    None => format!("{title}  ({})", members.len()),
+                },
                 "Score".into(),
                 "Deaths".into(),
                 String::new(),
@@ -190,5 +200,5 @@ fn update(
             );
         }
     }
-    *last = Some(rows);
+    *last = Some(key);
 }

@@ -91,7 +91,7 @@ impl<'a> MaterialLoader<'a> {
         self.mount.read(&path).ok()
     }
 
-    fn read_text(&self, path: &str) -> Option<String> {
+    pub(crate) fn read_text(&self, path: &str) -> Option<String> {
         self.read(path).map(|b| String::from_utf8_lossy(&b).into_owned())
     }
 
@@ -521,6 +521,42 @@ impl<'a> MaterialLoader<'a> {
         index
     }
 
+    /// Every frame of an animated texture (one, for a still one), each with
+    /// its own mip levels.
+    pub fn texture_frames(&mut self, name: &str, srgb: bool) -> Vec<usize> {
+        let path = format!("materials/{}.vtf", normalize(name).trim_end_matches(".vtf"));
+        let decoded = (|| -> Result<Vec<MapTexture>, String> {
+            let bytes = self.read(&path).ok_or("not found")?;
+            let vtf = vtf::from_bytes(&bytes).map_err(|e| e.to_string())?;
+            (0..vtf.header.frames.max(1) as u32)
+                .map(|f| {
+                    let image = vtf.highres_image.decode(f).map_err(|e| e.to_string())?.to_rgba8();
+                    Ok(MapTexture {
+                        name: format!("{path}#{f}"),
+                        srgb,
+                        mips: frame_mip_levels(&bytes, &vtf.header, f).unwrap_or_default(),
+                        width: image.width(),
+                        height: image.height(),
+                        rgba8: image.into_raw(),
+                    })
+                })
+                .collect()
+        })();
+        match decoded {
+            Ok(frames) => frames
+                .into_iter()
+                .map(|t| {
+                    self.textures.push(t);
+                    self.textures.len() - 1
+                })
+                .collect(),
+            Err(e) => {
+                self.missing.push(format!("{path}: {e}"));
+                Vec::new()
+            }
+        }
+    }
+
     fn decode(&self, path: &str) -> Result<MapTexture, String> {
         let bytes = self.read(path).ok_or("not found")?;
         let vtf = vtf::from_bytes(&bytes).map_err(|e| e.to_string())?;
@@ -541,9 +577,19 @@ impl<'a> MaterialLoader<'a> {
 /// levels smallest first, before the full-size image; this mirrors how the
 /// `vtf` crate locates the full-size data, then walks back.
 fn mip_levels(bytes: &[u8], header: &vtf::header::VTFHeader) -> Option<Vec<Vec<u8>>> {
+    if header.frames > 1 {
+        return None;
+    }
+    frame_mip_levels(bytes, header, 0)
+}
+
+/// `mip_levels` of one frame of an animated texture (each level holds
+/// every frame in turn).
+fn frame_mip_levels(bytes: &[u8], header: &vtf::header::VTFHeader, frame: u32) -> Option<Vec<Vec<u8>>> {
     use vtf::{image::VTFImage, resources::ResourceType};
 
-    if header.mipmap_count <= 1 || header.frames > 1 || header.depth > 1 {
+    let frames = header.frames.max(1) as usize;
+    if header.mipmap_count <= 1 || header.depth > 1 || frame as usize >= frames {
         return None;
     }
     let format = header.highres_image_format;
@@ -574,9 +620,10 @@ fn mip_levels(bytes: &[u8], header: &vtf::header::VTFHeader) -> Option<Vec<Vec<u
         // Offset of level m: all smaller levels come first.
         let mut offset = data_start;
         for smaller in (m + 1)..count {
-            offset += size(smaller)?.2;
+            offset += size(smaller)?.2 * frames;
         }
-        let (w, h, _) = size(m)?;
+        let (w, h, level_size) = size(m)?;
+        offset += frame as usize * level_size;
         let mut single = header.clone();
         single.mipmap_count = 1;
         let img = VTFImage::new(single, format, w as u16, h as u16, bytes, offset);

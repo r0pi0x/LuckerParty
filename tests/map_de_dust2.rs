@@ -1070,6 +1070,12 @@ fn sounds_load() {
         let e = s.entry(name).unwrap_or_else(|| panic!("no {name}"));
         assert!(!e.waves.is_empty(), "{name} has no waves");
     }
+    // The announcer's round sounds.
+    let r = &map.round_sounds;
+    for name in [&r.attackers_win, &r.defenders_win, &r.draw].into_iter().flatten().chain(&r.start) {
+        let e = s.entry(name).unwrap_or_else(|| panic!("no round sound {name}"));
+        assert!(!e.waves.is_empty(), "{name} has no waves");
+    }
     assert!(s.clips.len() > 40, "{} clips", s.clips.len());
     for c in &s.clips {
         assert!(c.rate >= 8000 && !c.samples.is_empty());

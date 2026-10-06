@@ -10,6 +10,7 @@
 
 mod deliver;
 pub mod drop;
+pub mod economy;
 
 use std::sync::Arc;
 
@@ -38,6 +39,9 @@ pub struct WeaponFrame;
 impl Plugin for WeaponPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<WeaponRegistry>()
+            .init_resource::<economy::Prices>()
+            .init_resource::<economy::BuyWindow>()
+            .register_type::<economy::Money>()
             .init_resource::<PassMaterials>()
             .init_resource::<StartingWeapons>()
             .add_message::<WeaponEvent>()
@@ -141,28 +145,11 @@ impl Plugin for WeaponPlugin {
         )
         .console_command(
             "buy",
-            "buy <weapon>|vest|vesthelm, e.g. buy ak47 (no money yet).",
+            "buy <weapon>|vest|vesthelm, e.g. buy ak47 (costs money when you have some).",
             |w, a| {
-                let name = a.first().ok_or("buy <weapon>")?.to_lowercase();
-                if name == "vest" || name == "vesthelm" {
-                    let player = local_player(w)?;
-                    let helmet = name == "vesthelm" || w.get::<Armor>(player).is_some_and(|a| a.helmet);
-                    w.entity_mut(player).insert(Armor { amount: 1.0, helmet });
-                    return Ok(None);
-                }
-                let name = if name.starts_with("weapon_") {
-                    name
-                } else {
-                    format!("weapon_{name}")
-                };
+                let name = a.first().ok_or("buy <weapon>")?.clone();
                 let player = local_player(w)?;
-                let id = w
-                    .resource::<WeaponRegistry>()
-                    .find(&name)
-                    .map(|d| d.id)
-                    .ok_or_else(|| format!("no weapon {name}"))?;
-                give(w, player, id);
-                Ok(None)
+                economy::buy(w, player, &name).map(Some)
             },
         );
     }

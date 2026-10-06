@@ -189,6 +189,9 @@ fn write_local_intent(
     mouse_settings: Res<MouseSettings>,
     held: Option<Res<super::console::HeldActions>>,
     mut free: ResMut<FreeLook>,
+    mut freecam: ResMut<super::view::FreeCam>,
+    time: Res<Time>,
+    menu: Option<Res<super::buy_menu::BuyMenu>>,
 ) {
     let freelook = keys.pressed(KeyCode::AltLeft) || held.as_ref().is_some_and(|h| h.freelook);
     if !freelook {
@@ -212,6 +215,23 @@ fn write_local_intent(
     }
 
     let axis = |pos: KeyCode, neg: KeyCode| keys.pressed(pos) as i8 as f32 - keys.pressed(neg) as i8 as f32;
+    // Flying the detached camera: the player stands still.
+    if freecam.mode == 1 {
+        let input = Vec3::new(
+            axis(KeyCode::KeyD, KeyCode::KeyA),
+            axis(KeyCode::KeyW, KeyCode::KeyS),
+            axis(KeyCode::Space, KeyCode::ControlLeft),
+        );
+        let speed = if keys.pressed(KeyCode::ShiftLeft) { 12.0 } else { 4.0 };
+        freecam.fly(input, mouse_settings.look_delta(motion.delta), speed, time.delta_secs());
+        let (yaw, pitch) = (intent.yaw, intent.pitch);
+        **intent = Intent {
+            yaw,
+            pitch,
+            ..default()
+        };
+        return;
+    }
     intent.move_axis = Vec2::new(axis(KeyCode::KeyD, KeyCode::KeyA), axis(KeyCode::KeyW, KeyCode::KeyS));
 
     let turn = mouse_settings.look_delta(motion.delta);
@@ -245,7 +265,12 @@ fn write_local_intent(
         KeyCode::Digit4,
         KeyCode::Digit5,
     ];
-    intent.select = SLOTS.iter().position(|k| keys.pressed(*k)).map(|i| i as u8);
+    // Number keys pick from the buy menu while it's open.
+    intent.select = if menu.is_some_and(|m| m.open) {
+        None
+    } else {
+        SLOTS.iter().position(|k| keys.pressed(*k)).map(|i| i as u8)
+    };
     // Bound actions (`bind f +duck`) add to the keys.
     if let Some(h) = held {
         apply_held(&mut intent, &mut wheel, &h);

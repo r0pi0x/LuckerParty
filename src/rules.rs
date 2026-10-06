@@ -2,6 +2,8 @@
 //! then respawn at a spawn point with full health and fresh starting
 //! weapons; kills and deaths are counted.
 
+pub mod rounds;
+
 use avian3d::prelude::*;
 use bevy::prelude::*;
 
@@ -18,10 +20,13 @@ impl Plugin for DeathmatchPlugin {
         app.init_resource::<Deathmatch>().add_message::<Died>().add_systems(
             FixedUpdate,
             (
-                (respawn, hold_the_dead).chain().before(SimSet::Movement),
-                count_deaths.after(SimSet::Weapons),
+                (rounds::run_rounds, respawn, hold_the_dead, rounds::hold_frozen)
+                    .chain()
+                    .before(SimSet::Movement),
+                (count_deaths, rounds::kill_rewards).after(SimSet::Weapons),
             ),
         );
+        rounds::plugin(app);
         resource_cvar::<Deathmatch, f32>(app, "mp_respawn_delay", "Seconds before the dead respawn.", |d| {
             &mut d.respawn_delay
         });
@@ -139,6 +144,10 @@ fn hold_the_dead(mut dead: Query<&mut Intent, With<Dead>>) {
 }
 
 fn respawn(world: &mut World) {
+    // Rounds respawn everyone at the round's start instead.
+    if world.get_resource::<rounds::RoundSettings>().is_some_and(|r| r.enabled != 0) {
+        return;
+    }
     let now = world.resource::<Time>().elapsed_secs_f64();
     let delay = world.resource::<Deathmatch>().respawn_delay as f64;
     let ready: Vec<Entity> = world
@@ -147,16 +156,22 @@ fn respawn(world: &mut World) {
         .filter(|(_, d)| now - d.since >= delay)
         .map(|(e, _)| e)
         .collect();
-    if ready.is_empty() {
-        return;
+    for e in ready {
+        put_at_spawn(world, e, true);
     }
+}
+
+/// Bring a character back at one of its team's spawn points (round robin)
+/// with full health and no velocity; with `fresh` weapons its old ones go
+/// and it gets the starting weapons, otherwise it keeps what it carries.
+pub(crate) fn put_at_spawn(world: &mut World, e: Entity, fresh: bool) {
     let spawns: Vec<(Transform, Option<Team>)> = world
         .query::<(&Transform, &SpawnPoint)>()
         .iter(world)
         .map(|(t, s)| (*t, s.team))
         .collect();
     let starting = world.resource::<StartingWeapons>().clone();
-    for e in ready {
+    {
         // The character's own team's spawns, else any.
         let team = world.get::<Team>(e).copied();
         let own: Vec<Transform> = spawns
@@ -178,13 +193,17 @@ fn respawn(world: &mut World) {
             Some(pool[i])
         };
         // Fresh weapons: drop the old ones.
-        let old = world.get::<Inventory>(e).map(|i| i.weapons.clone()).unwrap_or_default();
-        for w in old {
-            world.despawn(w);
+        if fresh {
+            let old = world.get::<Inventory>(e).map(|i| i.weapons.clone()).unwrap_or_default();
+            for w in old {
+                world.despawn(w);
+            }
         }
-        let Ok(mut ent) = world.get_entity_mut(e) else { continue };
+        let Ok(mut ent) = world.get_entity_mut(e) else { return };
         ent.remove::<Dead>();
-        ent.insert(Inventory::default());
+        if fresh {
+            ent.insert(Inventory::default());
+        }
         if let Some(mut h) = ent.get_mut::<Health>() {
             h.current = h.max;
         }
@@ -205,9 +224,18 @@ fn respawn(world: &mut World) {
                 i.pitch = 0.0;
             }
         }
-        let team = world.get::<Team>(e).map(|t| t.0);
-        for id in starting.for_team(team) {
-            give(world, e, id);
+        if fresh {
+            let team = world.get::<Team>(e).map(|t| t.0);
+            // Rounds start from the team's own kit (you buy the rest);
+            // deathmatch adds the extras everyone gets.
+            let rounds = world.get_resource::<rounds::RoundSettings>().is_some_and(|r| r.enabled != 0);
+            let mut kit = starting.for_team(team);
+            if rounds {
+                kit.retain(|id| !starting.all.contains(id));
+            }
+            for id in kit {
+                give(world, e, id);
+            }
         }
     }
 }

@@ -40,6 +40,11 @@ pub struct PropParams {
     /// and colour; unused ones are zero.
     pub probe_light_dir: [Vec4; 4],
     pub probe_light_color: [Vec4; 4],
+    /// Under water (map::water): the water's range fog, linear colour (w = 1
+    /// when on), for points below `water_fog_range.w` (the surface plus
+    /// the fudge); start, end (meters), max density in xyz.
+    pub water_fog_color: Vec4,
+    pub water_fog_range: Vec4,
 }
 
 impl PropParams {
@@ -84,8 +89,17 @@ impl Material for PropMaterial {
         "embedded://mashup/map/prop.wgsl".into()
     }
 
+    /// Alpha-tested surfaces count as masked, so the depth prepass (main
+    /// views with water) runs `prop_prepass.wgsl` and drops the same texels.
     fn alpha_mode(&self) -> AlphaMode {
+        if self.alpha_mode == AlphaMode::Opaque && self.params.alpha_cutoff > 0.0 {
+            return AlphaMode::Mask(self.params.alpha_cutoff);
+        }
         self.alpha_mode
+    }
+
+    fn prepass_fragment_shader() -> ShaderRef {
+        "embedded://mashup/map/prop_prepass.wgsl".into()
     }
 
     fn specialize(
@@ -124,6 +138,7 @@ pub struct PropMaterialPlugin;
 impl Plugin for PropMaterialPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "prop.wgsl");
+        embedded_asset!(app, "prop_prepass.wgsl");
         app.add_plugins(MaterialPlugin::<PropMaterial>::default());
     }
 }

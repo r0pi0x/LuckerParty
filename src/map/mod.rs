@@ -40,6 +40,7 @@ pub mod shells;
 pub mod sprite_material;
 pub mod surface_color;
 pub mod view_model;
+pub mod water;
 pub mod world_material;
 pub use view_model::{
     DynamicLight, EffectSettings, MapAttachment, MapViewModel, ViewAnimator, ViewModelAnchor, ViewModelCamera,
@@ -213,6 +214,9 @@ pub struct MapMesh {
     pub entity: Option<usize>,
     /// Colour multiplier (linear) on the texture (Source `$color`/`$color2`).
     pub tint: Option<[f32; 3]>,
+    /// A water surface: index into `MapData::water_materials` (drawn by
+    /// `water::WaterMaterial` instead).
+    pub water: Option<usize>,
 }
 
 /// A baked environment cubemap: six square RGBA8 sRGB faces in the
@@ -803,6 +807,16 @@ pub struct MapShadows {
     pub distance: f32,
 }
 
+/// Sound entries the announcer plays for rounds: a side's win, a draw,
+/// and one picked at random when a round goes live.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct RoundSounds {
+    pub attackers_win: Option<String>,
+    pub defenders_win: Option<String>,
+    pub draw: Option<String>,
+    pub start: Vec<String>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct MapData {
     pub name: String,
@@ -851,8 +865,12 @@ pub struct MapData {
     /// Meters per entity-space unit (`entities` module docs); 0 when the
     /// map has no entities.
     pub entity_scale: f32,
+    /// How water surfaces look (`MapMesh::water` indexes these).
+    pub water_materials: Vec<water::MapWaterMaterial>,
     /// Dynamic prop shadows, when the game draws them.
     pub shadows: Option<MapShadows>,
+    /// The announcer's round sounds (sound entries), when the game has them.
+    pub round_sounds: RoundSounds,
     /// Gravity for physics bodies, m/s^2 (downward), when the game sets it.
     pub gravity: Option<f32>,
     /// The playable area (engine space, min and max), when the map has a 3D
@@ -1246,7 +1264,7 @@ struct PlayableArea((Vec3, Vec3));
 #[allow(clippy::type_complexity)]
 fn show_skybox_in_place(
     area: Option<Res<PlayableArea>>,
-    cameras: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<SkyboxCamera>, Without<ViewModelCamera>)>,
+    cameras: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<SkyboxCamera>, Without<ViewModelCamera>, Without<water::WaterReflectionCamera>)>,
     mut parts: Query<&mut bevy::camera::visibility::RenderLayers, Without<Camera>>,
     mut outside_before: Local<Option<bool>>,
 ) {
@@ -1393,6 +1411,7 @@ fn spawn_map(
     mut sprite_materials: Option<ResMut<Assets<SpriteMaterial>>>,
     mut prop_materials: Option<ResMut<Assets<PropMaterial>>>,
     mut shadow_materials: Option<ResMut<Assets<shadows::ShadowMaterial>>>,
+    mut water_materials: Option<ResMut<Assets<water::WaterMaterial>>>,
     mut bindposes: Option<ResMut<Assets<bevy::mesh::skinning::SkinnedMeshInverseBindposes>>>,
 ) {
     let data = &pending.0;
@@ -1621,10 +1640,13 @@ fn spawn_map(
                 images.add(world_layer(&b[i], l.width, l.height))
             }))
         });
+        let mut sky_handle = None;
         if let Some(sky) = &data.sky
             && view == MapDebugView::Normal
         {
-            commands.insert_resource(MapSkybox(images.add(sky_image(sky, &data.textures))));
+            let handle = images.add(sky_image(sky, &data.textures));
+            sky_handle = Some(handle.clone());
+            commands.insert_resource(MapSkybox(handle));
         }
         if let Some(bounds) = data.playable {
             commands.insert_resource(PlayableArea(bounds));
@@ -1650,7 +1672,24 @@ fn spawn_map(
                 }));
             }
         }
+        // Water surfaces have their own material (map::water).
+        let water_drawn = water_materials.is_some() && view == MapDebugView::Normal;
+        if water_drawn && let Some(water_materials) = water_materials.as_mut() {
+            water::spawn_surfaces(
+                &mut commands,
+                data,
+                root,
+                meshes,
+                images,
+                water_materials,
+                &cubemaps,
+                sky_handle.as_ref(),
+            );
+        }
         for m in &data.meshes {
+            if water_drawn && m.water.is_some() {
+                continue;
+            }
             let lit = lightmap.as_ref().filter(|_| m.lightmap_uvs.len() == m.positions.len());
             // Lightmapped world surfaces: Source-style texture x baked light.
             if let (Some(_), Some(lm), Some(world_materials)) = (lit, world_lightmap.as_ref(), world_materials.as_mut())
@@ -1717,6 +1756,7 @@ fn spawn_map(
                         envmap_saturation: m.envmap.map_or(1.0, |e| e.saturation),
                         envmap_fresnel: m.envmap.map_or(1.0, |e| e.fresnel),
                         envmap_tint: m.envmap.map_or(Vec4::ONE, |e| Vec3::from_array(e.tint).extend(1.0)),
+                        ..default()
                     },
                     base: m.texture.map(|i| textures[i].clone()),
                     // Bound for radiosity bump lighting, and for reflections
@@ -1747,7 +1787,7 @@ fn spawn_map(
                 commands.spawn((
                     Name::new(m.material.clone()),
                     MapPart,
-                    layer_of(m.skybox),
+                    world_layer_of(m.skybox),
                     Mesh3d(meshes.add({
                         let mut mesh = build_mesh(m, true);
                         if blended {
@@ -1765,7 +1805,7 @@ fn spawn_map(
             let mut part = commands.spawn((
                 Name::new(m.material.clone()),
                 MapPart,
-                layer_of(m.skybox),
+                world_layer_of(m.skybox),
                 Mesh3d(meshes.add(build_mesh(m, lit.is_some()))),
                 MeshMaterial3d(materials.add(build_material(m, &textures, view, data.look.light_scale))),
                 Transform::default(),
@@ -2189,6 +2229,7 @@ fn spawn_map(
             commands.insert_resource(Gravity(Vec3::NEG_Y * g));
         }
         commands.insert_resource(MapWater(data.water.clone()));
+        commands.insert_resource(data.round_sounds.clone());
     }
 
     commands.spawn((
@@ -2278,7 +2319,10 @@ pub fn unload_map(world: &mut World) {
     world.remove_resource::<MapBrushes>();
     world.remove_resource::<KillHeight>();
     world.remove_resource::<MapWater>();
+    world.remove_resource::<RoundSounds>();
     world.remove_resource::<MapEntities>();
+    world.remove_resource::<water::MapWaterRender>();
+    world.remove_resource::<water::WaterView>();
     world.remove_resource::<MapTerrain>();
     world.insert_resource(Gravity::default());
     soundscape::reset(world);
@@ -2717,7 +2761,7 @@ struct GlowSprite {
 #[allow(clippy::type_complexity)]
 fn glow_visibility(
     query: SpatialQuery,
-    cameras: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<SkyboxCamera>, Without<ViewModelCamera>)>,
+    cameras: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<SkyboxCamera>, Without<ViewModelCamera>, Without<water::WaterReflectionCamera>)>,
     ignored: Query<Entity, With<crate::core::Intent>>,
     mut glows: Query<(
         &GlobalTransform,
@@ -3027,6 +3071,12 @@ fn sky_image(sky: &MapSky, textures: &[MapTexture]) -> Image {
     image
 }
 
+/// World brushes are also drawn by water reflections (props and characters
+/// only when the reflection shows entities).
+fn world_layer_of(skybox: bool) -> bevy::camera::visibility::RenderLayers {
+    if skybox { layer_of(true) } else { water::world_layers() }
+}
+
 fn layer_of(skybox: bool) -> bevy::camera::visibility::RenderLayers {
     bevy::camera::visibility::RenderLayers::layer(if skybox { SKYBOX_LAYER } else { 0 })
 }
@@ -3040,6 +3090,7 @@ fn follow_sky_camera(
     info: Option<Res<SkyCameraInfo>>,
     vis: Option<Res<SkyVis>>,
     has_3d_sky: Option<Res<ActiveMapHas3dSky>>,
+    water_view: Option<Res<water::WaterView>>,
     main: Query<
         (
             &GlobalTransform,
@@ -3049,7 +3100,7 @@ fn follow_sky_camera(
             Entity,
             &Camera,
         ),
-        (With<Camera3d>, Without<SkyboxCamera>, Without<ViewModelCamera>),
+        (With<Camera3d>, Without<SkyboxCamera>, Without<ViewModelCamera>, Without<water::WaterReflectionCamera>),
     >,
     mut sky: Query<
         (
@@ -3076,16 +3127,19 @@ fn follow_sky_camera(
     // the view clears to black (specs/cs_source/shadows_sky.md). Leaves
     // that see no sky show the previous frame in the game; black here.
     let leaf = vis.as_ref().map_or(LeafSky::Sky3d, |v| v.0.at(eye));
-    let sky_on = matches!(leaf, LeafSky::Sky2d | LeafSky::Sky3d);
+    // Under water the view clears to the water's fog colour and draws no
+    // sky (specs/cs_source/water.md section 9).
+    let under = water_view.as_ref().and_then(|w| w.clear);
+    let sky_on = matches!(leaf, LeafSky::Sky2d | LeafSky::Sky3d) && under.is_none();
     let layer = if leaf == LeafSky::Sky3d && has_3d_sky.is_some() {
         SKYBOX_LAYER
     } else {
         EMPTY_LAYER
     };
-    let clear = if sky_on {
-        ClearColorConfig::None
-    } else {
-        ClearColorConfig::Custom(Color::BLACK)
+    let clear = match (sky_on, under) {
+        (true, _) => ClearColorConfig::None,
+        (false, Some([r, g, b])) => ClearColorConfig::Custom(Color::srgb(r, g, b)),
+        (false, None) => ClearColorConfig::Custom(Color::BLACK),
     };
     let same = match (main_camera.clear_color, clear) {
         (ClearColorConfig::None, ClearColorConfig::None) => true,

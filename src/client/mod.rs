@@ -2,6 +2,7 @@
 //! debug tools and agent-facing tools (screenshots, remote inspection).
 //! Simulation code must never depend on this module.
 
+pub mod buy_menu;
 pub mod capture;
 pub mod console;
 pub mod debug;
@@ -179,6 +180,7 @@ impl Plugin for ClientPlugin {
                 radar::RadarPlugin,
                 effects::ShotEffectsPlugin,
                 view::ViewPlugin,
+                buy_menu::BuyMenuPlugin,
             ))
             .add_systems(PostStartup, spawn_local_player)
             .add_systems(Update, (follow_eye, zoom_camera));
@@ -322,6 +324,7 @@ fn follow_eye(
     mut cameras: Query<&mut Transform, With<FirstPersonCamera>>,
     mode: Res<view::CameraMode>,
     free: Res<input::FreeLook>,
+    mut freecam: ResMut<view::FreeCam>,
     spatial: avian3d::prelude::SpatialQuery,
     characters: Query<Entity, With<Intent>>,
 ) {
@@ -336,6 +339,20 @@ fn follow_eye(
         );
         let look = view::camera_look(&mode, look);
         let offset = view::camera_offset(&mode, at.translation, state.eye_offset, look, &spatial, &characters);
+        // Detached: starts where the camera is; placed in the world (the
+        // camera is the player's child, so undo the player's transform).
+        let (offset, look) = if freecam.mode == 0 {
+            freecam.bypass_change_detection().at = None;
+            (offset, look)
+        } else {
+            if freecam.at.is_none() {
+                let (yaw, pitch, _) = look.to_euler(EulerRot::YXZ);
+                freecam.at = Some((*at * offset, yaw, pitch));
+            }
+            let (p, q) = freecam.rotation().unwrap();
+            let inv = at.compute_affine().inverse();
+            (inv.transform_point3(p), at.rotation.inverse() * q)
+        };
         let mut cams = cameras.iter_many_mut(children);
         while let Some(mut cam) = cams.fetch_next() {
             cam.translation = offset;

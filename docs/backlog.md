@@ -40,12 +40,11 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
 
 ## 2b. HUD and debug views
 
-- CS:S HUD: health/armour/ammo panels, death notices and the Tab
-  scoreboard are in (`client/game_hud.rs`, `client/scoreboard.rs`). Left:
-  the team menu (`jointeam 2|3` exists; you start as CT), ping on the
-  scoreboard, round timer and money panels once
-  rounds and money exist, weapon selection,
-  hint text. The radar is in (`client/radar.rs`: the map overview turning
+- CS:S HUD: health/armour/ammo/money/round-timer panels, death notices
+  and the Tab scoreboard are in (`client/game_hud.rs`,
+  `client/scoreboard.rs`). Left: the team menu (`jointeam 2|3` exists;
+  you start as CT), ping and team scores on the scoreboard, weapon
+  selection, hint text. The radar is in (`client/radar.rs`: the map overview turning
   with you, team dots, your place name); its range (2200 units) is a guess.
 - Debug overlays: `mashup_drawhitboxes`, `mashup_healthbars`,
   `mashup_drawnav`, `mashup_drawbots` exist; add more as features need
@@ -68,7 +67,9 @@ burst), HUD, deathmatch and a first bot are in.
   sounds from the model events.
 - Zoom sensitivity (`zoom_sensitivity_ratio`), CS:S's own scope overlay
   texture, the silenced world models (`w_*_silencer.mdl`).
-- Money and a buy menu (`buy` gives for free).
+- Rounds, money and buying: slice 1 done (`mashup_rounds 1`,
+  [plans/active/rounds.md](plans/active/rounds.md)); next: buy zones, a
+  buy menu, ammo, round sounds, objectives.
 - Reload, grenade and death animations (world models are held by bodies).
 - Impact effects, remaining (specs/cs_source/impact_effects.md; the
   surface effects, blood, bullet splashes and pane glass shards are in):
@@ -101,8 +102,9 @@ burst), HUD, deathmatch and a first bot are in.
   of `_RHand` and pulled the left hand onto the grip, so those bones
   aren't plain hand targets. Needs a spec of Source's IK chains, the
   sequences' IK rules and locks (the animation spec's open question "IK"),
-  and a reproduction of the floating (which pose: running, crouching,
-  firing, bots' pitch).
+  and a reproduction of the floating. With `mashup_freecam 2` the AK
+  sits in both hands standing, crouched and firing (2026-10-06); still to
+  check: pistols and the knife, running, jumping, and bots.
 
 ## 4. Bots
 
@@ -148,11 +150,15 @@ docs/plans/active/sound.md.
 
 ## 8. Visual fidelity
 
-- **Water surfaces**: swimming works (`MapWater`), but water faces draw as
-  plain textured surfaces (or, without a base texture, their opaque fog
-  colour with cubemap reflections), without the Water shader's
-  refraction, reflection or fog: clear water looks murky. Water currents
-  (base velocity) aren't applied.
+- **Water surfaces** (specs/cs_source/water.md, `map::water`): refraction,
+  planar reflection, the cheap cubemap pass, under-water fog and bottom
+  materials are in. Left: `$underwateroverlay` (de_port's `water_warp01`
+  screen warp), the intersection view when the near plane crosses the
+  surface, `$blurrefract`/`$refracttint` and the `$basetexture` variant,
+  the water cvars (`r_waterforceexpensive`, `r_waterforcereflectentities`,
+  `mat_drawwater`, ...), under-water fog on decals, ropes and particles,
+  and a refcmp comparison of de_port/de_chateau water (no reference
+  captures yet). Water currents (base velocity) aren't applied.
 - **HDR parity**: CS:S defaults to mat_hdr_level 2 on dust2 (HDR lightmaps,
   tonemapping, bloom); the reference install runs LDR. Compare and match
   both if players use HDR. Tonemap (`env_tonemap_controller`).

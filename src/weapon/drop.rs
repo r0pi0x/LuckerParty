@@ -57,6 +57,11 @@ fn droppable(world: &World, owner: Entity, active_only: bool) -> Option<Entity> 
 /// along its view. Returns the loose entity.
 pub fn drop_weapon(world: &mut World, owner: Entity, thrown: bool) -> Option<Entity> {
     let weapon = droppable(world, owner, thrown)?;
+    drop_this(world, owner, weapon, thrown)
+}
+
+/// Drop one weapon `owner` carries (thrown along the view, or let fall).
+pub fn drop_this(world: &mut World, owner: Entity, weapon: Entity, thrown: bool) -> Option<Entity> {
     let now = world.resource::<Time>().elapsed_secs_f64();
     let at = world.get::<Transform>(owner)?.translation;
     let look = world.get::<Intent>(owner).map_or(Quat::IDENTITY, Intent::look_rotation);
@@ -78,7 +83,10 @@ pub fn drop_weapon(world: &mut World, owner: Entity, thrown: bool) -> Option<Ent
         }
         if inv.active == Some(weapon) {
             inv.active = None;
-            inv.wanted = next;
+            // Unless a switch is already pending (a bought replacement).
+            if inv.wanted.is_none_or(|w| w == weapon) {
+                inv.wanted = next;
+            }
         }
     }
     world.entity_mut(owner).remove::<Zoomed>();

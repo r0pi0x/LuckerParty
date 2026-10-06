@@ -186,6 +186,14 @@ impl PlaySound {
             channel: None,
         }
     }
+
+    /// Unspatialized (announcer, interface).
+    pub fn ui(entry: impl Into<String>) -> Self {
+        Self {
+            at: None,
+            ..Self::at(entry, Vec3::ZERO)
+        }
+    }
 }
 
 /// The loaded map's sounds.

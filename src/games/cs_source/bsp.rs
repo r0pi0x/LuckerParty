@@ -66,6 +66,38 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
         mesh.surface = r.surfaceprop;
         mesh.envmap = r.envmap;
     }
+    // Water surfaces (specs/cs_source/water.md), with the map's cheap
+    // distances for their WaterLOD proxies.
+    let lod_keys = bsp
+        .entities
+        .iter()
+        .find(|e| e.prop("classname") == Some("water_lod_control"))
+        .map(|e| {
+            let key = |k: &'static str| e.prop(k).map(str::to_string);
+            (key("cheapwaterstartdistance"), key("cheapwaterenddistance"))
+        });
+    let lod = super::water::lod_distances(lod_keys.as_ref().map(|(a, b)| (a.as_deref(), b.as_deref())));
+    for mesh in data.meshes.iter_mut() {
+        if let Some(w) = super::water::load(&mut materials, &mesh.material, lod) {
+            data.water_materials.push(w);
+            mesh.water = Some(data.water_materials.len() - 1);
+        }
+    }
+    // The map's downward water faces carry whatever bottom texture the
+    // brush had; the engine draws them with the top material's
+    // `$bottommaterial` (de_port: dev_waterbeneath2 faces, coast01_beneath
+    // drawn). With one bottom material among the map's tops, use it.
+    let mut bottoms: Vec<crate::map::water::MapWaterMaterial> = Vec::new();
+    for b in data.water_materials.iter().filter_map(|m| m.bottom.as_deref()) {
+        if !bottoms.iter().any(|x| x.name == b.name) {
+            bottoms.push(b.clone());
+        }
+    }
+    if let [bottom] = bottoms.as_slice() {
+        for m in data.water_materials.iter_mut().filter(|m| !m.above_water) {
+            *m = bottom.clone();
+        }
+    }
     data.sky_vis = Some(sky_vis(&bsp, &bytes));
     let lighting = super::ambient::MapLighting::read(&bytes);
     let occluders = super::ambient::Occluders::new(
@@ -96,6 +128,7 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
     }
     data.decals = super::decals::impact_decals(&mut materials);
     data.hud = super::hud::load(&mut materials).map(std::sync::Arc::new);
+    data.round_sounds = super::sound::round_sounds();
     data.overview = super::hud::overview(&mut materials, name);
     data.particles = super::impact_effects::load_materials(&mut materials);
     // What characters hold: the weapons' world models.
