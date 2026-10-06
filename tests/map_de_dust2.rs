@@ -1652,3 +1652,29 @@ fn bodies_animate_with_movement() {
     let state = sim.app.world().get::<PlayerAnim>(c).unwrap();
     assert!((state.feet_yaw - (feet + 60.0)).abs() < 0.5, "feet at {}", state.feet_yaw);
 }
+
+/// The walls below T spawn by top of mid stand on floor displacements that
+/// share their bottom plane; they must still be solid (a displacement's own
+/// brush collides only as its surface).
+#[test]
+fn walls_on_displacements_are_solid() {
+    use mashup::games::cs_source::movement::{self, SourceMovementPlugin};
+    let Some(map) = dust2() else { return };
+    let mut sim = Sim::new((MapPlugin::new(map.clone()), SourceMovementPlugin));
+    sim.set_tick_interval(mashup::games::cs_source::TICK_INTERVAL);
+    sim.app
+        .insert_resource(mashup::slots::Loadout { movement: movement::ID });
+    // Between the two walls (x -512 .. -384), clear of the junk props.
+    let start = movement::to_engine(Vec3::new(-430.0, -120.0, 40.0));
+    let p = sim.spawn_character(start + Vec3::Y * (36.0 * 0.0254 + 0.2), movement::ID);
+    sim.seconds(0.5);
+    let x = |sim: &Sim| sim.position(p).x / 0.0254;
+    // Intent yaw 0 is Source yaw 90; east is Source yaw 0.
+    sim.intent(p).yaw = (-90f32).to_radians();
+    sim.intent(p).move_axis = Vec2::Y;
+    sim.seconds(1.5);
+    assert!(x(&sim) < -384.0 - 15.0, "walked into the east wall to x {}", x(&sim));
+    sim.intent(p).yaw = 90f32.to_radians();
+    sim.seconds(1.5);
+    assert!(x(&sim) > -512.0 + 15.0, "walked into the west wall to x {}", x(&sim));
+}

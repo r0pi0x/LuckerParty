@@ -679,8 +679,8 @@ fn map_brush(points: Vec<[f32; 3]>, planes: Vec<(Vec3, f32)>, ladder: bool) -> c
 /// World brushes with any of `mask`'s contents, as hulls and planes.
 fn brush_volumes(bsp: &Bsp, mask: BrushFlags) -> Vec<(usize, Vec<[f32; 3]>, Vec<(Vec3, f32)>)> {
     const EPS: f32 = 0.01;
-    // Plane index (either side) -> centres of displacement base faces on it.
-    let mut disp_bases: std::collections::HashMap<u16, Vec<Vec3>> = Default::default();
+    // Plane index (either side) -> corners of displacement base faces on it.
+    let mut disp_bases: std::collections::HashMap<u16, Vec<Vec<Vec3>>> = Default::default();
     let Some(world) = bsp.models().next() else {
         return Vec::new();
     };
@@ -692,8 +692,7 @@ fn brush_volumes(bsp: &Bsp, mask: BrushFlags) -> Vec<(usize, Vec<[f32; 3]>, Vec<
             .vertices()
             .map(|v| Vec3::new(v.position.x, v.position.y, v.position.z))
             .collect();
-        let centre = corners.iter().sum::<Vec3>() / corners.len().max(1) as f32;
-        disp_bases.entry(face.plane_num & !1).or_default().push(centre);
+        disp_bases.entry(face.plane_num & !1).or_default().push(corners);
     }
     let mut out = Vec::new();
     for index in world_brushes(bsp) {
@@ -722,11 +721,16 @@ fn brush_volumes(bsp: &Bsp, mask: BrushFlags) -> Vec<(usize, Vec<[f32; 3]>, Vec<
         // A brush carrying a displacement collides as the displacement
         // surface (added as triangles), not as its original volume. Compiled
         // maps don't record which brush that was (the brush side field is
-        // always 0), so match a side's plane and the displacement's centre.
+        // always 0), so match a side's plane and the displacement's base
+        // face, all of whose corners lie on that side. (Only its centre is
+        // not enough: dust2's walls stand on floor displacements that share
+        // their bottom plane and reach under them.)
         let carries_displacement = sides.iter().any(|side| {
-            disp_bases
-                .get(&(side.plane & !1))
-                .is_some_and(|centres| centres.iter().any(|c| planes.iter().all(|(n, d)| n.dot(*c) <= d + 1.0)))
+            disp_bases.get(&(side.plane & !1)).is_some_and(|faces| {
+                faces
+                    .iter()
+                    .any(|corners| corners.iter().all(|c| planes.iter().all(|(n, d)| n.dot(*c) <= d + 1.0)))
+            })
         });
         if carries_displacement {
             continue;
