@@ -10,6 +10,7 @@
 //! movement) and applies its effects (damage, HUD text, sounds, allowed
 //! commands). Games feed it through `MapData::entities`.
 
+pub mod ambient;
 pub mod breakables;
 mod bridge;
 pub mod classes;

@@ -169,7 +169,7 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
     data.shell_physics = Some(super::view_anim::shell_physics());
     data.gibs = super::breakables::load_gibs(&mut materials, &data.entities, &mut data.warnings);
     data.gib_physics = Some(super::breakables::gib_physics());
-    let mut sounds = super::sound::load(&mut materials, name, &surfaces);
+    let mut sounds = super::sound::load(&mut materials, name, &surfaces, &data.entities);
     super::soundscape::load(&mut materials, &bsp, name, &mut sounds);
     data.sounds = std::sync::Arc::new(sounds);
     if let Some(bytes) = materials.read(&format!("maps/{}.nav", name.to_lowercase())) {

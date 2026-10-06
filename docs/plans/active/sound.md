@@ -44,8 +44,20 @@ Started 2026-10-05, from specs/cs_source/sounds.md.
    overrides), trigger_soundscape zones (most recent wins) and
    env_soundscape points (range only), 3 s loop crossfades with reuse,
    random one-shots (fixed, positioned or random positions). Not yet:
-   ambient_generic (dust2's two start silent, waiting on env_fire), DSP,
-   env_soundscape visibility, live panning of positioned loops.
+   DSP, env_soundscape visibility, live panning of positioned loops.
+6. [x] ambient_generic (`logic/ambient.rs` on `map/live_sound.rs`):
+   the logic keeps the entity's state (spawn keys, inputs, ramps and LFO
+   at 5 Hz) and asks for long-lived sounds by entity (`Effect::Ambient*`
+   -> `map::SoundControl`); the map layer plays them with live gains and
+   pitch, looping from the wave's loop point after its intro, following
+   the source entity's mover or prop node. Raw waves are loaded with the
+   map as entries named by their path. Spec choices: script entries keep
+   their own level (open question 11), input starts use the entry's
+   volume/pitch (quirk kept), FadeIn/FadeOut 0 s fade in one step, LFO
+   adds to pitch/volume each step as written. Not yet: presets (no stock
+   map uses them), "!" sentences, the vo .wav -> .mp3 switch, what plays
+   from a stock map trigger we don't have (prop OnHealthChanged, bomb
+   explosion, env_fire).
 5. [x] Weapon sounds: fire, empty click, deploy, knife swings, reload parts at their animation times (sounds aren't yet tied to view-model events).
 
 Measurements to take (probe server): the distance curves, CS:S footstep

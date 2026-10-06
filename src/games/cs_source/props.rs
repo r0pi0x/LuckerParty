@@ -596,6 +596,8 @@ struct PropPlacement {
     fade: Option<(f32, f32)>,
     /// The entity it's parented to (`parentname`), by index.
     parent: Option<usize>,
+    /// The entity that placed it, by index (entity props).
+    entity: Option<usize>,
 }
 
 pub fn add_static_props(
@@ -633,6 +635,7 @@ pub fn add_static_props(
             physicsmode: 0,
             fade: (prop.fade_max_distance > 0.0).then_some((prop.fade_min_distance, prop.fade_max_distance)),
             parent: None,
+            entity: None,
         });
     }
     placements.extend(entity_props(bsp));
@@ -649,7 +652,8 @@ fn entity_props(bsp: &Bsp) -> Vec<PropPlacement> {
     };
     bsp.entities
         .iter()
-        .filter_map(|e| {
+        .enumerate()
+        .filter_map(|(index, e)| {
             let class = e.prop("classname")?;
             let physics = class.starts_with("prop_physics");
             if !physics && !class.starts_with("prop_dynamic") {
@@ -685,6 +689,7 @@ fn entity_props(bsp: &Bsp) -> Vec<PropPlacement> {
                         .iter()
                         .position(|o| o.prop("targetname").is_some_and(|n| n.eq_ignore_ascii_case(p)))
                 }),
+                entity: Some(index),
             })
         })
         .collect()
@@ -784,6 +789,7 @@ fn place_props(
             physics: physics.filter(|_| prop.parent.is_none()),
             parent: prop.parent,
             fade: prop.fade.map(|(a, b)| (a * METERS_PER_UNIT, b * METERS_PER_UNIT)),
+            entity: prop.entity,
         });
     }
     failed.sort();
