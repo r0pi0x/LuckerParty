@@ -95,6 +95,19 @@ fn a_hit_player_bleeds_unless_violence_hblood_is_0() {
     let shooter = sim.spawn_character(greybox::SPAWNS[0], placeholder::ID);
     let target = sim.spawn_character(greybox::SPAWNS[0] - Vec3::Z * 8.0, placeholder::ID);
     sim.ticks(2);
+    // Keep the bullet in the player (the AK-47 would pass it and mark the
+    // wall behind).
+    let rifle = sim
+        .app
+        .world()
+        .get::<mashup::weapon::Inventory>(shooter)
+        .unwrap()
+        .active
+        .unwrap();
+    sim.app
+        .world_mut()
+        .entity_mut(rifle)
+        .remove::<mashup::weapon::Penetration>();
     let chest = sim.position(target) + Vec3::Y * (1.8 * 0.72 - 0.9);
     let (capped, free) = shoot(&mut sim, shooter, chest);
     // The blood system only: no surface effect on players.

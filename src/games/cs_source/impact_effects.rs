@@ -1090,13 +1090,21 @@ fn impact_effects(
     let rng = &mut rng.0;
     for e in events.read() {
         let (from, point, normal, hit, bullet) = match &e.kind {
+            // Also where a bullet enters the next surface after passing
+            // something (penetration).
             WeaponEventKind::Shot {
                 from,
                 to,
                 hit: Some(hit),
                 normal: Some(normal),
+            }
+            | WeaponEventKind::ShotContinued {
+                from,
+                to,
+                hit: Some(hit),
+                normal: Some(normal),
             } => (*from, *to, *normal, *hit, true),
-            WeaponEventKind::Shot { from, to, .. } => {
+            WeaponEventKind::Shot { from, to, .. } | WeaponEventKind::ShotContinued { from, to, .. } => {
                 // Misses can still end in water.
                 if let Some(w) = &water
                     && let WaterShot::Entered { at, slime: false } = water_shot(*from, *to, &w.0)

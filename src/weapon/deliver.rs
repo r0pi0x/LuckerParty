@@ -1,15 +1,26 @@
 //! Deliveries: hitscan shots (spec 4) and melee swings (spec 6.1), and the
 //! damage they deal. Damage to one target within one firing call is summed
-//! and applied once (spec 4.5).
+//! and applied once (spec 4.5). Bullets of weapons with `Penetration` go on
+//! through walls and characters (measured M13).
 
 use avian3d::prelude::*;
 use bevy::prelude::*;
 
-use super::{Armor, DamageEffect, Hitscan, SpreadShape, Swing, WeaponEvent, WeaponEventKind};
+use super::{
+    Armor, DamageEffect, Hitscan, PassMaterials, Penetration, SpreadShape, Swing, WeaponEvent, WeaponEventKind,
+};
 use crate::{
     core::{Damage, Health, Hitboxes, Hitgroup, Intent},
-    map::PlaySound,
+    map::{
+        PlaySound, PropSurface,
+        sound::{SoundBank, SurfaceGrid},
+    },
 };
+
+/// How far past a boundary a bullet steps before looking again, m.
+const STEP: f32 = 1e-3;
+/// How far from a hit point a world triangle may be to give its surface, m.
+const SURFACE_REACH: f32 = 0.3;
 
 #[derive(bevy::ecs::query::QueryData)]
 pub(super) struct Target {
@@ -30,6 +41,10 @@ pub(super) struct World<'w, 's> {
     bodies: Query<'w, 's, (&'static RigidBody, Forces)>,
     damage: MessageWriter<'w, Damage>,
     armor: Query<'w, 's, &'static mut Armor>,
+    props: Query<'w, 's, &'static PropSurface>,
+    bank: Option<Res<'w, SoundBank>>,
+    grid: Option<Res<'w, SurfaceGrid>>,
+    materials: Res<'w, PassMaterials>,
     pub events: MessageWriter<'w, WeaponEvent>,
     pub play: MessageWriter<'w, PlaySound>,
 }
@@ -46,9 +61,12 @@ pub(super) struct Shot<'a, 'w, 's> {
 
 /// One hit to apply.
 struct Hit {
+    /// The body hit, and its collider (props may have child colliders).
     entity: Entity,
+    collider: Entity,
     point: Vec3,
     dir: Vec3,
+    /// From the eye.
     distance: f32,
     normal: Vec3,
     /// The hitbox's group, when the target has hitboxes.
@@ -65,11 +83,13 @@ impl Shot<'_, '_, '_> {
         self.w.colliders.get(collider).map_or(collider, |c| c.body)
     }
 
-    /// The first thing along the ray. Characters with hitboxes are hit
-    /// only where a hitbox is (shots pass through the rest of their hull,
-    /// and hitboxes poking out of it still count, as in Source); the
-    /// nearest box entered decides the hitgroup.
-    fn trace(&self, dir: Dir3, range: f32) -> Option<Hit> {
+    /// The first thing along the ray between `start` and `end` meters from
+    /// the eye, leaving out `skip`. Characters with hitboxes are hit only
+    /// where a hitbox is (shots pass through the rest of their hull, and
+    /// hitboxes poking out of it still count, as in Source); the nearest
+    /// box entered decides the hitgroup.
+    fn trace(&self, dir: Dir3, start: f32, end: f32, skip: &[Entity]) -> Option<Hit> {
+        let from = self.eye + *dir * start;
         let boxed: Vec<Entity> = self
             .w
             .targets
@@ -77,30 +97,30 @@ impl Shot<'_, '_, '_> {
             .filter(|t| t.hitboxes.is_some() && t.entity != self.owner)
             .map(|t| t.entity)
             .collect();
-        let filter =
-            SpatialQueryFilter::from_excluded_entities(std::iter::once(self.owner).chain(boxed.iter().copied()));
+        let filter = SpatialQueryFilter::from_excluded_entities(
+            std::iter::once(self.owner)
+                .chain(boxed.iter().copied())
+                .chain(skip.iter().copied()),
+        );
         let mut best = self
             .w
             .spatial
-            .cast_ray(self.eye, dir, range, true, &filter)
+            .cast_ray(from, dir, end - start, true, &filter)
             .map(|hit| Hit {
                 entity: self.body(hit.entity),
-                point: self.eye + *dir * hit.distance,
+                collider: hit.entity,
+                point: from + *dir * hit.distance,
                 dir: *dir,
-                distance: hit.distance,
+                distance: start + hit.distance,
                 normal: hit.normal,
                 group: None,
             });
-        for e in boxed {
-            let Ok(t) = self.w.targets.get(e) else { continue };
-            let Some(boxes) = t.hitboxes else { continue };
-            // Into the character's frame: feet at the origin, facing -Z.
-            let feet = t
-                .aabb
-                .map_or(t.transform.translation, |b| t.transform.translation.with_y(b.min.y));
-            let turn = t.intent.map_or(Quat::IDENTITY, |i| i.yaw_rotation()).inverse();
-            let (o, d) = (turn * (self.eye - feet), turn * *dir);
-            let limit = best.as_ref().map_or(range, |b| b.distance);
+        for e in boxed.into_iter().filter(|e| !skip.contains(e)) {
+            let Some((o, d)) = self.local_ray(e, from, dir) else { continue };
+            let Some(boxes) = self.w.targets.get(e).ok().and_then(|t| t.hitboxes) else {
+                continue;
+            };
+            let limit = best.as_ref().map_or(end, |b| b.distance) - start;
             let nearest = boxes
                 .0
                 .iter()
@@ -110,9 +130,10 @@ impl Shot<'_, '_, '_> {
             if let Some((distance, group)) = nearest {
                 best = Some(Hit {
                     entity: e,
-                    point: self.eye + *dir * distance,
+                    collider: e,
+                    point: from + *dir * distance,
                     dir: *dir,
-                    distance,
+                    distance: start + distance,
                     normal: -*dir,
                     group: Some(group),
                 });
@@ -121,8 +142,92 @@ impl Shot<'_, '_, '_> {
         best
     }
 
+    /// A ray in a character's hitbox frame: feet at the origin, facing -Z.
+    fn local_ray(&self, character: Entity, origin: Vec3, dir: Dir3) -> Option<(Vec3, Vec3)> {
+        let t = self.w.targets.get(character).ok()?;
+        let feet = t
+            .aabb
+            .map_or(t.transform.translation, |b| t.transform.translation.with_y(b.min.y));
+        let turn = t.intent.map_or(Quat::IDENTITY, |i| i.yaw_rotation()).inverse();
+        Some((turn * (origin - feet), turn * *dir))
+    }
+
+    /// Whether what was hit is a character (bullets pass those by
+    /// `PassMaterials::character`).
+    fn is_character(&self, body: Entity) -> bool {
+        self.w
+            .targets
+            .get(body)
+            .is_ok_and(|t| t.intent.is_some() || t.hitboxes.is_some())
+    }
+
+    /// Where the bullet leaves a character it hit, as a distance from the
+    /// eye: past its last hitbox along the ray, or out of its collider.
+    fn character_exit(&self, hit: &Hit) -> Option<f32> {
+        let dir = Dir3::new(hit.dir).ok()?;
+        if let Some(boxes) = self.w.targets.get(hit.entity).ok().and_then(|t| t.hitboxes) {
+            let (o, d) = self.local_ray(hit.entity, self.eye, dir)?;
+            return boxes.0.iter().filter_map(|b| b.ray_span(o, d)).map(|(_, out)| out).reduce(f32::max);
+        }
+        let from = hit.point + *dir * STEP;
+        self.w
+            .spatial
+            .cast_ray_predicate(from, dir, 10.0, false, &SpatialQueryFilter::default(), &|e| {
+                self.body(e) == hit.entity
+            })
+            .map(|h| hit.distance + STEP + h.distance)
+    }
+
+    /// Where a bullet that entered something solid `entry` meters from the
+    /// eye comes out of it, if that's within `limit` meters: it steps from
+    /// boundary to boundary while inside any solid collider (adjacent
+    /// brushes count as one wall). None also when there is nothing to pass
+    /// (the point just past the entry isn't inside a solid: open surfaces
+    /// such as displacements).
+    fn solid_exit(&self, dir: Dir3, entry: f32, limit: f32) -> Option<f32> {
+        let filter = SpatialQueryFilter::from_excluded_entities([self.owner]);
+        let mut t = entry;
+        for _ in 0..64 {
+            let p = self.eye + *dir * (t + STEP);
+            let mut inside = Vec::new();
+            self.w.spatial.point_intersections_callback(p, &filter, |e| {
+                if !self.is_character(self.body(e)) {
+                    inside.push(e);
+                }
+                true
+            });
+            if inside.is_empty() {
+                return (t > entry).then_some(t);
+            }
+            let left = entry + limit - t - STEP;
+            if left <= 0.0 {
+                return None;
+            }
+            let hit = self
+                .w
+                .spatial
+                .cast_ray_predicate(p, dir, left, false, &filter, &|e| inside.contains(&e))?;
+            t += STEP + hit.distance;
+        }
+        None
+    }
+
+    /// The material class of the surface hit (`MapSurface::game_material`):
+    /// a prop's own surface property, else the nearest world triangle's.
+    fn material_class(&self, hit: &Hit) -> Option<char> {
+        let name = match self.w.props.get(hit.collider).or_else(|_| self.w.props.get(hit.entity)) {
+            Ok(s) => s.0.clone(),
+            Err(_) => self.w.grid.as_ref()?.nearest(hit.point, SURFACE_REACH)?.to_string(),
+        };
+        let sounds = &self.w.bank.as_ref()?.0;
+        sounds
+            .surface(&name)
+            .or_else(|| sounds.surface("default"))
+            .map(|s| s.game_material)
+    }
+
     /// Fire every pellet of one shot.
-    pub fn fire(&mut self, scan: &Hitscan, effect: &DamageEffect) {
+    pub fn fire(&mut self, scan: &Hitscan, effect: &DamageEffect, pen: Option<&Penetration>) {
         let mut total: Vec<(Entity, f32, Hitgroup, Vec3, Vec3)> = Vec::new();
         for pellet in 0..scan.pellets.max(1) {
             let mut rng = Rng::new(self.seed.wrapping_add(1 + pellet));
@@ -141,38 +246,95 @@ impl Shot<'_, '_, '_> {
                     spread_dir(self.aim, 1.0, offset.x, offset.y)
                 }
             };
-            let hit = self.trace(dir, scan.range);
-            self.w.events.write(WeaponEvent {
-                owner: self.owner,
-                weapon: self.weapon,
-                kind: WeaponEventKind::Shot {
-                    from: self.eye,
-                    to: hit.as_ref().map_or(self.eye + *dir * scan.range, |h| h.point),
-                    hit: hit.as_ref().map(|h| h.entity),
-                    normal: hit.as_ref().map(|h| h.normal),
-                },
-            });
-            let Some(hit) = hit else { continue };
-            self.push(hit.entity, hit.point, hit.dir * effect.impulse);
-            let Ok(t) = self.w.targets.get(hit.entity) else {
-                continue;
-            };
-            if t.health.is_none() {
-                continue;
-            }
-            let group = hit
-                .group
-                .unwrap_or_else(|| t.aabb.map_or(Hitgroup::Generic, |b| hitgroup_at(b, hit.point)));
-            let amount = effect.amount
-                * falloff(effect.falloff, effect.falloff_step, hit.distance)
-                * effect.hitgroups.get(group);
-            match total.iter_mut().find(|t| t.0 == hit.entity) {
-                Some(t) => {
-                    t.1 += amount;
-                    t.2 = group;
-                    t.3 = hit.point;
+            // The bullet's damage so far (before hitgroups), where the
+            // current segment starts and how far it may go, and what it
+            // passed.
+            let mut carried = effect.amount;
+            let (mut start, mut end) = (0.0, scan.range);
+            let mut skip: Vec<Entity> = Vec::new();
+            let mut passed = 0;
+            let mut budget = pen.map_or(0.0, |p| p.power);
+            loop {
+                let hit = self.trace(dir, start, end, &skip);
+                let (from, to) = (
+                    self.eye + *dir * start,
+                    hit.as_ref().map_or(self.eye + *dir * end, |h| h.point),
+                );
+                let (entity, normal) = (hit.as_ref().map(|h| h.entity), hit.as_ref().map(|h| h.normal));
+                let kind = if passed == 0 {
+                    WeaponEventKind::Shot {
+                        from,
+                        to,
+                        hit: entity,
+                        normal,
+                    }
+                } else {
+                    WeaponEventKind::ShotContinued {
+                        from,
+                        to,
+                        hit: entity,
+                        normal,
+                    }
+                };
+                self.w.events.write(WeaponEvent {
+                    owner: self.owner,
+                    weapon: self.weapon,
+                    kind,
+                });
+                let Some(hit) = hit else { break };
+                self.push(hit.entity, hit.point, hit.dir * effect.impulse);
+                // Falloff again at every hit, by the distance from the eye.
+                carried *= falloff(effect.falloff, effect.falloff_step, hit.distance);
+                if let Ok(t) = self.w.targets.get(hit.entity)
+                    && t.health.is_some()
+                {
+                    let group = hit
+                        .group
+                        .unwrap_or_else(|| t.aabb.map_or(Hitgroup::Generic, |b| hitgroup_at(b, hit.point)));
+                    let amount = carried * effect.hitgroups.get(group);
+                    match total.iter_mut().find(|t| t.0 == hit.entity) {
+                        Some(t) => {
+                            t.1 += amount;
+                            t.2 = group;
+                            t.3 = hit.point;
+                        }
+                        None => total.push((hit.entity, amount, group, hit.point, hit.dir)),
+                    }
                 }
-                None => total.push((hit.entity, amount, group, hit.point, hit.dir)),
+                // Through it?
+                let Some(pen) = pen else { break };
+                if passed >= pen.objects || hit.distance >= pen.max_distance {
+                    break;
+                }
+                let character = self.is_character(hit.entity);
+                let (exit, cost, factor) = if character {
+                    let pass = self.w.materials.character;
+                    let Some(exit) = self.character_exit(&hit) else { break };
+                    (exit, pass.cost, pass.damage)
+                } else {
+                    let m = self.w.materials.get(self.material_class(&hit));
+                    if m.scale <= 0.0 {
+                        break;
+                    }
+                    let Some(exit) = self.solid_exit(dir, hit.distance, budget * m.scale) else {
+                        break;
+                    };
+                    (exit, (exit - hit.distance) / m.scale, m.damage)
+                };
+                if cost > budget {
+                    break;
+                }
+                budget -= cost;
+                carried *= factor;
+                passed += 1;
+                if character {
+                    skip.push(hit.entity);
+                    end = exit + (end - exit) * self.w.materials.character.range_scale;
+                }
+                start = exit.max(hit.distance) + STEP;
+                if start >= end {
+                    break;
+                }
             }
         }
         for (target, amount, hitgroup, point, dir) in total {
@@ -240,7 +402,7 @@ impl Shot<'_, '_, '_> {
     pub fn swing(&mut self, swing: &Swing, secondary: bool) -> bool {
         let forward = self.aim * Vec3::NEG_Z;
         let dir = Dir3::new(forward).unwrap_or(Dir3::NEG_Z);
-        let mut hit = self.trace(dir, swing.range);
+        let mut hit = self.trace(dir, 0.0, swing.range, &[]);
         if hit.is_none()
             && let Some(half) = swing.hull
         {
@@ -260,6 +422,7 @@ impl Shot<'_, '_, '_> {
                 if to.dot(forward) >= swing.facing_cos {
                     hit = Some(Hit {
                         entity,
+                        collider: h.entity,
                         point: h.point1,
                         dir: forward,
                         distance: h.distance,

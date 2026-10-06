@@ -123,6 +123,12 @@ impl Hitbox {
     /// Where a ray (local space) enters the box, as a distance along `dir`
     /// (unit), if it does.
     pub fn ray_entry(&self, origin: Vec3, dir: Vec3) -> Option<f32> {
+        self.ray_span(origin, dir).map(|(enter, _)| enter)
+    }
+
+    /// Where a ray (local space) enters and leaves the box, as distances
+    /// along `dir` (unit; the entry clamped at 0), if it crosses it.
+    pub fn ray_span(&self, origin: Vec3, dir: Vec3) -> Option<(f32, f32)> {
         let inv = self.rotation.inverse();
         let o = inv * (origin - self.center);
         let d = inv * dir;
@@ -138,7 +144,7 @@ impl Hitbox {
             enter = enter.max(a.min(b));
             leave = leave.min(a.max(b));
         }
-        (enter <= leave && leave >= 0.0).then_some(enter.max(0.0))
+        (enter <= leave && leave >= 0.0).then_some((enter.max(0.0), leave))
     }
 }
 

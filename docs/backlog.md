@@ -8,14 +8,11 @@ plan when work starts; delete them when done.
 
 ## 1. Playtest essentials
 
-A (settings, health bars, third person) and C (view models) are done. B, D and E were paused on 2026-10-06 to free the machine;
-their partial work is in uncommitted agent worktrees under
-`.claude/worktrees/` (B: agent-abc7f16e740c6aafe, D: agent-a052e118eeb8d4c8d).
+A (settings, health bars, third person), B (penetration and collaterals,
+docs/plans/active/weapons.md slice 5) and C (view models) are done. D and
+E were paused on 2026-10-06 to free the machine; their partial work is in
+agent worktrees under `.claude/worktrees/` (D: agent-a052e118eeb8d4c8d).
 
-- **B. Weapons: penetration and collaterals.** Implement M13 from
-  specs/cs_source/weapons.md (walls by material, through players x0.5,
-  object counts, compounding falloff); the measured recoil sets (moving and
-  airborne AK-47).
 - **C. First-person view models**: done (docs/plans/active/view-models.md);
   remaining: check its open questions against CS:S (flash look, shell
   direction, near plane), view-model sound events, brass for other

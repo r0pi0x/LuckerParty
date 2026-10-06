@@ -3,14 +3,17 @@
 //! data") and the rules measured on the game ("CS:S values (measured)").
 //! CS:S's feel that doesn't decompose into parts lives here as components:
 //! `Inaccuracy` (the accuracy penalty) and `Recoil` (view punch per shot).
+//! Bullet penetration is the shared `Penetration` part with CS:S's numbers
+//! (`PASS_MATERIALS`, measured M13).
 
 use bevy::prelude::*;
 
 use crate::{
     core::{Intent, MovementState, SimSet, Velocity},
     weapon::{
-        DamageEffect, FireTiming, HitgroupScale, Hitscan, Inventory, Magazine, Melee, RegisterWeapons, SpreadShape,
-        StartingWeapons, Swing, Trigger, ViewPunch, Weapon, WeaponEvent, WeaponEventKind, WeaponFrame, WeaponSounds,
+        CharacterPass, DamageEffect, FireTiming, HitgroupScale, Hitscan, Inventory, Magazine, Melee, PassMaterial,
+        PassMaterials, Penetration, RegisterWeapons, SpreadShape, StartingWeapons, Swing, Trigger, ViewPunch, Weapon,
+        WeaponEvent, WeaponEventKind, WeaponFrame, WeaponSounds,
     },
 };
 
@@ -65,6 +68,34 @@ const HITGROUPS: HitgroupScale = HitgroupScale {
     leg: 0.75,
 };
 
+/// How bullets pass things (measured M13). A wall passes when its
+/// thickness along the path is at most the ammo's power x the material's
+/// scale; each object passed scales the damage carried on.
+pub fn pass_materials() -> PassMaterials {
+    PassMaterials {
+        by_class: vec![
+            // Wood: scale and damage measured.
+            ('W', PassMaterial { scale: 2.0, damage: 0.6 }),
+            // Metal, sand (dirt): scales measured; damage factors are not
+            // (UNMEASURED: halfway between wood and concrete, as players).
+            ('M', PassMaterial { scale: 1.0, damage: 0.5 }),
+            ('D', PassMaterial { scale: 0.5, damage: 0.5 }),
+            // Concrete: both measured.
+            ('C', PassMaterial { scale: 0.4, damage: 0.25 }),
+        ],
+        // UNMEASURED (tile, grate, glass, plastic, ...): metal's scale and a
+        // halved damage.
+        default: PassMaterial { scale: 1.0, damage: 0.5 },
+        character: CharacterPass {
+            // A fit to the measured stop cases (21-22 units per player).
+            cost: 21.5 * UNIT,
+            damage: 0.5,
+            // The range left beyond a player's exit is halved.
+            range_scale: 0.5,
+        },
+    }
+}
+
 pub struct CsWeaponsPlugin;
 
 impl Plugin for CsWeaponsPlugin {
@@ -76,7 +107,8 @@ impl Plugin for CsWeaponsPlugin {
                 FixedUpdate,
                 (before_shots.before(WeaponFrame), after_shots.after(WeaponFrame)).in_set(SimSet::Weapons),
             )
-            .add_plugins((super::impacts::ImpactSoundsPlugin, super::impact_effects::ImpactEffectsPlugin));
+            .add_plugins((super::impacts::ImpactSoundsPlugin, super::impact_effects::ImpactEffectsPlugin))
+            .insert_resource(pass_materials());
         let mut start = app.world_mut().get_resource_or_init::<StartingWeapons>();
         if start.0.is_empty() {
             // The best weapon is drawn: given last.
@@ -158,6 +190,7 @@ fn ak47(e: &mut EntityWorldMut) {
         recovery_crouch: 0.34868,
         value: 0.00916,
         on_ground: true,
+        fall_speed: 0.0,
     };
     e.insert((
         Weapon {
@@ -203,12 +236,20 @@ fn ak47(e: &mut EntityWorldMut) {
             quantum: HP,
             armor_ratio: Some(1.55),
         },
+        Penetration {
+            // 762MM: power 39 units, two objects (M13). It still passes at
+            // 4000 units; no farther limit was found.
+            power: 39.0 * UNIT,
+            objects: 2,
+            max_distance: f32::INFINITY,
+        },
         accuracy,
         Recoil {
-            up: (1.0, 0.175, 5.75),
-            side: (0.375, 0.0375, 1.75),
-            crouch_up: (0.9, 0.15),
-            crouch_side: (0.35, 0.025),
+            standing: Kick::new((1.0, 0.175), (0.375, 0.0375), (5.75, 1.75)),
+            // Caps not reached when measured: the standing ones.
+            crouched: Kick::new((0.9, 0.15), (0.35, 0.025), (5.75, 1.75)),
+            moving: Kick::new((1.5, 0.225), (0.45, 0.05), (6.5, 2.5)),
+            airborne: Kick::new((2.0, 0.5), (1.0, 0.35), (9.0, 6.0)),
             ..default()
         },
         WeaponSounds {
@@ -227,8 +268,9 @@ fn ak47(e: &mut EntityWorldMut) {
 /// CS:S's accuracy penalty (measured M1/M2; values are the weapon script's
 /// `Inaccuracy*`, `RecoveryTime*` and `Spread`, in tangent units). Rests
 /// at `stand` (`crouch` when ducked); the excess falls to 10 % in the
-/// recovery time; a shot adds `fire`, a jump `jump`, a landing `land`.
-/// Moving adds `movement` x clamp((v - vmax/3) / (2 vmax/3)) at shot time.
+/// recovery time; a shot adds `fire`, a jump `jump`, a landing `land` x
+/// the fall speed / 301.99 u/s. Moving adds `movement` x
+/// clamp((v - vmax/3) / (2 vmax/3)) at shot time.
 #[derive(Component, Clone, Debug)]
 pub struct Inaccuracy {
     pub spread: f32,
@@ -243,28 +285,64 @@ pub struct Inaccuracy {
     /// The current penalty.
     pub value: f32,
     on_ground: bool,
+    /// Vertical speed on the previous tick, u/s (for landings).
+    fall_speed: f32,
 }
 
-/// Airborne decay of the penalty's excess per 0.015 s tick (measured: about
-/// 10 % left after 1.05 s; the value it decays toward isn't pinned down,
-/// the standing rest is used).
-const AIR_DECAY_PER_TICK: f32 = 0.96755;
+/// Airborne decay of the penalty's excess per 0.015 s tick (measured M1:
+/// toward the crouched rest after a jump, 10 % left after 1.05 s; a fall
+/// without a jump stays at the standing rest, so the rest is a floor).
+const AIR_DECAY_PER_TICK: f32 = 0.96752;
 
-/// CS:S's recoil (measured M3, AK-47): degrees of view punch per shot,
-/// growing with the shot count n: (base, step, cap) applied as base for
-/// the first shot and base + step·n after. The sideways kick starts in a
-/// random direction and flips with a 1/8 chance per shot.
+/// A landing adds `land` x |fall speed| / this (u/s; measured M1, about the
+/// jump speed).
+const LAND_SPEED: f32 = 301.99;
+
+/// One recoil kick set (measured M3), degrees: up `up` for the first shot
+/// and `up + up_step·n` after (n = shots so far), sideways likewise; the
+/// punch is clamped at `up_cap` (pitch) and `side_cap` (yaw).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Kick {
+    pub up: f32,
+    pub up_step: f32,
+    pub side: f32,
+    pub side_step: f32,
+    pub up_cap: f32,
+    pub side_cap: f32,
+}
+
+impl Kick {
+    pub const fn new(up: (f32, f32), side: (f32, f32), caps: (f32, f32)) -> Self {
+        Self {
+            up: up.0,
+            up_step: up.1,
+            side: side.0,
+            side_step: side.1,
+            up_cap: caps.0,
+            side_cap: caps.1,
+        }
+    }
+}
+
+/// CS:S's recoil (measured M3): view punch per shot from the kick set for
+/// the shooter's state on the shot tick: airborne, else moving (any
+/// horizontal speed), else crouched, else standing. The sideways kick
+/// starts in a random direction and flips with a 1/8 chance per shot.
 #[derive(Component, Clone, Debug, Default)]
 pub struct Recoil {
-    pub up: (f32, f32, f32),
-    pub side: (f32, f32, f32),
-    pub crouch_up: (f32, f32),
-    pub crouch_side: (f32, f32),
+    pub standing: Kick,
+    pub crouched: Kick,
+    pub moving: Kick,
+    pub airborne: Kick,
     shots: u32,
     last_shot: f64,
     direction: f32,
     rng: u64,
 }
+
+/// Faster than this (u/s) counts as moving for recoil (measured: 5 u/s
+/// moves; this only keeps float noise at rest out).
+const MOVING_SPEED: f32 = 0.1;
 
 /// The shot count resets after this long without a shot (measured: it
 /// holds about 0.45 s, then falls within 0.1 s).
@@ -308,11 +386,14 @@ fn before_shots(
         if acc.on_ground && !state.on_ground && vel.0.y > 0.0 {
             acc.value += acc.jump;
         } else if !acc.on_ground && state.on_ground {
-            acc.value += acc.land;
+            // Scaled by the vertical speed on the tick before (M1).
+            acc.value += acc.land * acc.fall_speed.abs() / LAND_SPEED;
         }
         acc.on_ground = state.on_ground;
+        acc.fall_speed = vel.0.y / UNIT;
         acc.value = if !state.on_ground {
-            rest + (acc.value - rest) * AIR_DECAY_PER_TICK.powf(dt / 0.015)
+            let target = acc.crouch;
+            (target + (acc.value - target) * AIR_DECAY_PER_TICK.powf(dt / 0.015)).max(rest.min(acc.value))
         } else if acc.value > rest {
             rest + (acc.value - rest) * 0.1f32.powf(dt / recovery)
         } else {
@@ -333,7 +414,7 @@ fn before_shots(
 fn after_shots(
     mut events: MessageReader<WeaponEvent>,
     mut weapons: Query<(Option<&mut Inaccuracy>, Option<&mut Recoil>)>,
-    mut owners: Query<(&MovementState, Option<&mut ViewPunch>)>,
+    mut owners: Query<(&MovementState, &Velocity, Option<&mut ViewPunch>)>,
     mut commands: Commands,
     time: Res<Time>,
 ) {
@@ -349,7 +430,7 @@ fn after_shots(
             acc.value += acc.fire;
         }
         let Some(mut r) = recoil else { continue };
-        let Ok((state, punch)) = owners.get_mut(e.owner) else {
+        let Ok((state, vel, punch)) = owners.get_mut(e.owner) else {
             continue;
         };
         if now - r.last_shot > SHOTS_RESET {
@@ -369,15 +450,21 @@ fn after_shots(
             r.direction = -r.direction;
         }
         let n = if r.shots == 1 { 0.0 } else { r.shots as f32 };
-        let (up, side) = if state.crouching {
-            (r.crouch_up.0 + r.crouch_up.1 * n, r.crouch_side.0 + r.crouch_side.1 * n)
+        let kick = if !state.on_ground {
+            r.airborne
+        } else if vel.0.xz().length() / UNIT > MOVING_SPEED {
+            // Crouched and moving isn't measured: the moving set.
+            r.moving
+        } else if state.crouching {
+            r.crouched
         } else {
-            (r.up.0 + r.up.1 * n, r.side.0 + r.side.1 * n)
+            r.standing
         };
+        let (up, side) = (kick.up + kick.up_step * n, kick.side + kick.side_step * n);
         let old = punch.as_ref().map_or(Vec2::ZERO, |p| p.0);
         let kicked = Vec2::new(
-            (old.x + up.to_radians()).min(r.up.2.to_radians()),
-            (old.y + side.to_radians() * r.direction).clamp(-r.side.2.to_radians(), r.side.2.to_radians()),
+            (old.x + up.to_radians()).min(kick.up_cap.to_radians()),
+            (old.y + side.to_radians() * r.direction).clamp(-kick.side_cap.to_radians(), kick.side_cap.to_radians()),
         );
         match punch {
             Some(mut p) => p.0 = kicked,

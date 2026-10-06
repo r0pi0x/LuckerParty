@@ -30,9 +30,9 @@ Started 2026-10-05, from specs/cs_source/weapons.md. MVP plan items 4–5.
    hitgroups and falloff, the knife (follow-up slash, bearing-based
    backstab, generic hits, miss refires, box reach), AK-47 inaccuracy
    (`Inaccuracy`) and recoil (`Recoil`, view punch, shots along view + 2 x
-   punch). Armour (`Armor`, M7's split; `buy vest`/`vesthelm`) followed. Not yet: penetration (unmeasured),
-   the landing rule and airborne/moving recoil sets (unmeasured), zoom
-   and fire modes (no weapons using them yet).
+   punch). Armour (`Armor`, M7's split; `buy vest`/`vesthelm`) followed. Not yet: zoom and fire modes (no
+   weapons using them yet); penetration and the remaining recoil sets
+   came in slice 5.
 3. [x] Bot navigation from specs/cs_source/nav.md. (CS:S bots' own path
    cost and follower aren't in the SDK; ours use the stock cost and a
    simple follower: crossing points, jump up ledges and when stuck.)
@@ -53,5 +53,15 @@ Started 2026-10-05, from specs/cs_source/weapons.md. MVP plan items 4–5.
    hull-only grazes pass) and the models drawn for other characters
    (t_phoenix for team 1, ct_urban otherwise). Not yet: animation (bodies
    and hitboxes stay in the reference pose), crouch, per-player skins.
-5. [ ] View models and world models; impact decals and effects; tracers.
-6. [ ] The other CS:S weapons from the script tables.
+5. [x] Penetration and collaterals (M13): `Penetration` part (budget,
+   object count, distance limit) and the `PassMaterials` resource (per
+   material class scale and damage factor, characters' fixed cost, damage
+   x 0.5 and range halving) in the weapon layer; CS:S's numbers in
+   `games/cs_source/weapons.rs`. Wall thickness is stepped through the
+   physics colliders (adjacent solids count as one wall); the material
+   class comes from the prop's or nearest world triangle's surface
+   property. Falloff applies again at every hit. Also the AK-47's moving
+   and airborne kick sets (M3) and the landing rule scaled by fall speed
+   (M1). Fits and guesses are in docs/tech-debt.md.
+6. [ ] View models and world models; impact decals and effects; tracers.
+7. [ ] The other CS:S weapons from the script tables.

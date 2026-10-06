@@ -114,7 +114,10 @@ fn bullet_impacts(
     // Played this tick per shooter: (entry, position), for pellet grouping.
     let mut played: Vec<(Entity, String, Vec3)> = Vec::new();
     for e in events.read() {
-        let WeaponEventKind::Shot { from, to, hit, .. } = &e.kind else {
+        // Every surface a bullet reaches, also after passing something.
+        let (WeaponEventKind::Shot { from, to, hit, .. } | WeaponEventKind::ShotContinued { from, to, hit, .. }) =
+            &e.kind
+        else {
             continue;
         };
         if hit.is_none() || in_water(*from, *to, water.as_deref()) {
@@ -162,7 +165,16 @@ fn impact_decals(
     let marked = |e: Entity| !characters.contains(e);
     for e in events.read() {
         match &e.kind {
+            // Every surface a bullet enters, also after passing something
+            // (M13 logs an impact per surface reached; exits are not
+            // logged, so they get no mark).
             WeaponEventKind::Shot {
+                from,
+                to,
+                hit: Some(hit),
+                normal: Some(normal),
+            }
+            | WeaponEventKind::ShotContinued {
                 from,
                 to,
                 hit: Some(hit),
