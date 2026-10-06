@@ -2713,8 +2713,12 @@ fn sky_image(sky: &MapSky, textures: &[MapTexture]) -> Image {
                 if turns >= 4 {
                     u = size - 1 - u;
                 }
-                let sx = (u as u64 * t.width as u64 / size as u64) as u32;
-                let sy = (v as u64 * t.height as u64 / size as u64) as u32;
+                // Skip each face's outermost texel row and column: sky
+                // textures leave them as borders (dust2's side faces end in
+                // a black row) that the game never shows, while a cube map
+                // blends them in at every seam.
+                let inner = |p: u32, n: u32| 1 + (p as u64 * n.saturating_sub(2) as u64 / size as u64) as u32;
+                let (sx, sy) = (inner(u, t.width).min(t.width - 1), inner(v, t.height).min(t.height - 1));
                 let i = ((sy * t.width + sx) * 4) as usize;
                 data.extend_from_slice(&t.rgba8[i..i + 4]);
             }
