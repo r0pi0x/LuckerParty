@@ -1,4 +1,5 @@
-//! Player model animations from `.mdl` files (version 44): bones,
+//! Player model animations from `.mdl` files (version 44, and 48 as the
+//! AWP's view model is: specs/cs_source/mdl_v48.md): bones,
 //! animations, sequences, pose parameters and include models, merged into
 //! one `AnimSet` for a target model (specs/cs_source/animation.md §1–§3,
 //! §8). Read from raw bytes.
@@ -95,8 +96,11 @@ struct Model {
 fn parse(bytes: Vec<u8>) -> Result<Model, String> {
     let b = Bytes(&bytes);
     let version = b.i32(4)?;
-    if version != 44 {
-        return Err(format!("model version {version}, want 44"));
+    // Version 48 reads like 44 for everything used here (spec
+    // mdl_v48.md: the extra header block is found by its offset; zero-frame
+    // data only in streamed HL2 models, ignored).
+    if version != 44 && version != 48 {
+        return Err(format!("model version {version}, want 44 or 48"));
     }
     let count =
         |at| -> Result<(usize, usize), String> { Ok((b.i32(at)?.max(0) as usize, b.i32(at + 4)?.max(0) as usize)) };

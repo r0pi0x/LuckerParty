@@ -238,3 +238,31 @@ fn layers_accumulate() {
     );
     rot(pose[b("ValveBiped.Bip01_R_Hand")].0, [-0.5164, -0.0840, 0.4447, 0.7270]);
 }
+
+/// The AWP's view model is MDL version 48 (specs/cs_source/mdl_v48.md):
+/// it reads like 44. Values from the spec's test cases.
+#[test]
+fn awp_view_model_version_48() {
+    let Some(set) = load("models/weapons/v_snip_awp.mdl") else { return };
+    let frames: Vec<(&str, usize)> = set.animations.iter().map(|a| (a.name.as_str(), a.frames)).collect();
+    for (name, n) in [("@awm_idle", 11), ("@awm_fire", 42), ("@awm_draw", 31), ("@awm_reload", 111)] {
+        assert!(frames.contains(&(name, n)), "{name} {n} in {frames:?}");
+    }
+    assert_eq!(set.sequences.len(), 4);
+    let fire = set.animations.iter().find(|a| a.name == "@awm_fire").unwrap();
+    let track = |bone: usize| fire.tracks.iter().find(|t| t.bone == bone).expect("track");
+    let q = |bone: usize, f: usize| {
+        let r = track(bone).rotation.as_ref().unwrap();
+        r[f.min(r.len() - 1)]
+    };
+    let p = |bone: usize, f: usize| {
+        let v = track(bone).position.as_ref().unwrap();
+        v[f.min(v.len() - 1)]
+    };
+    rot(q(0, 0), [0.5, 0.5, 0.5, 0.5]);
+    assert!(p(0, 0).distance(Vec3::new(9.1839, 5.5584, -7.0011)) < 2e-3, "{}", p(0, 0));
+    rot(q(0, 10), [0.5181, 0.4958, 0.5081, 0.4771]);
+    assert!(p(0, 10).distance(Vec3::new(11.2582, 5.8709, -7.3214)) < 2e-3);
+    rot(q(37, 10), [-0.0409, -0.4096, 0.0667, 0.9089]);
+    rot(q(34, 0), [0.1122, 0.7034, -0.6770, -0.1851]);
+}

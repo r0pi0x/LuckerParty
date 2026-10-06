@@ -62,9 +62,9 @@ burst), HUD, deathmatch and a first bot are in.
   p228/fiveseven/elite; their recoil isn't measured (probe M3 first), nor
   the 556MM/9MM/57MM/357SIG penetration. Shotguns (m3, xm1014) need
   pellets plus the shell-by-shell reload (M9).
-- The AWP's view model: `v_snip_awp.mdl` is MDL version 48 and `anim.rs`
-  reads 44 (spec the v48 header differences first); then its reload
-  sounds from the model events.
+- The AWP's view model is in (MDL v48 reads like v44,
+  specs/cs_source/mdl_v48.md); compare its fire and reload against the
+  game. HL2 v48 models with zero-frame data (streamed) aren't handled.
 - Zoom sensitivity (`zoom_sensitivity_ratio`), CS:S's own scope overlay
   texture, the silenced world models (`w_*_silencer.mdl`).
 - Rounds, money and buying: slice 1 done (`mashup_rounds 1`,
