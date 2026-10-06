@@ -296,6 +296,9 @@ pub struct MapModel {
     pub collision: Option<MapCollision>,
     /// Surface property name (footsteps on the prop), lower-case.
     pub surfaceprop: Option<String>,
+    /// Where the model is lit from, in model space (Source
+    /// `$illumposition`), when the game gives one.
+    pub illum: Option<Vec3>,
 }
 
 /// A character body from the game: meshes in the character's local space
