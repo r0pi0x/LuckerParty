@@ -23,9 +23,10 @@ their partial work is in uncommitted agent worktrees under
   probe server); `trigger_hurt` volumes.
 - **E. Other maps.** In progress:
   [plans/active/other-maps.md](plans/active/other-maps.md) (catalog).
-  aztec's walls, props' ambient light on older maps, brush entities,
-  additive glows, HDR skies are fixed; left: reference views for aztec,
-  office and nuke, the other stock maps' views, unplaced decals.
+  Fixed: aztec's walls, props' ambient light on older maps, brush
+  entities, additive glows, HDR skies, start-on switchable lights, murky
+  water, decals on terrain. Left: reference views for aztec, office and
+  nuke (needs the shared game), unplaced decals, a real Water shader.
 
 ## 2. Custom maps and minigames
 
