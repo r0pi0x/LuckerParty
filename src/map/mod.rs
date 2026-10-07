@@ -25,6 +25,7 @@ pub mod entities;
 pub mod fog;
 pub use entities::{MapBrushEntity, MapEntities, MapEntity, MapHull};
 pub mod breakables;
+pub mod contact_filter;
 pub use breakables::{BreakProp, BrushPanes, GlassShatter, MapBreak, MapBreakPiece, SpawnGibs};
 mod dust;
 pub mod hud;
@@ -1773,7 +1774,7 @@ fn spawn_map(
                 ChildOf(root),
             ));
             if let Some(collider) = collider {
-                node.insert((MapBrushCollider, RigidBody::Kinematic, collider));
+                node.insert((MapBrushCollider, RigidBody::Kinematic, collider, contact_filter::hooks()));
             }
             Some(node.id())
         })
@@ -3950,6 +3951,8 @@ fn follow_sky_camera(
             &mut Projection,
             &mut Camera,
             &mut bevy::camera::visibility::RenderLayers,
+            Option<&bevy::camera::RenderTarget>,
+            Option<&bevy::core_pipeline::tonemapping::Tonemapping>,
         ),
         With<SkyboxCamera>,
     >,
@@ -3993,7 +3996,7 @@ fn follow_sky_camera(
         });
     }
     match sky.single_mut() {
-        Ok((entity, mut tf, mut global, mut proj, mut camera, mut layers)) => {
+        Ok((entity, mut tf, mut global, mut proj, mut camera, mut layers, sky_target, sky_tonemapping)) => {
             if camera.is_active != sky_on {
                 camera.is_active = sky_on;
             }
@@ -4004,15 +4007,24 @@ fn follow_sky_camera(
             tf.rotation = rotation;
             // Propagation has run: set the global transform too (no parent).
             *global = GlobalTransform::from(*tf);
-            if let (Projection::Perspective(p), Projection::Perspective(main_p)) = (&mut *proj, projection) {
+            // Only real changes: a changed projection, target or tonemapping
+            // makes Bevy redo the camera's setup.
+            if let (Projection::Perspective(p), Projection::Perspective(main_p)) = (&*proj, projection)
+                && (p.fov != main_p.fov || p.aspect_ratio != main_p.aspect_ratio)
+                && let Projection::Perspective(p) = &mut *proj
+            {
                 p.fov = main_p.fov;
                 p.aspect_ratio = main_p.aspect_ratio;
             }
             let mut e = commands.entity(entity);
-            if let Some(t) = target {
+            if let Some(t) = target
+                && sky_target.and_then(|c| c.normalize(None)) != t.normalize(None)
+            {
                 e.insert(t.clone());
             }
-            if let Some(t) = tonemapping {
+            if let Some(t) = tonemapping
+                && sky_tonemapping != Some(t)
+            {
                 e.insert(*t);
             }
         }

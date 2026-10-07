@@ -229,6 +229,11 @@ PVS culling by world chunk, prop fade distances. Left:
 - Prop fade bands (alpha between `fademindist` and `fademaxdist`) and
   LOD models.
 - Measure on the Windows PC (`refcmp bench` there) and set a budget.
+- Frame-time follow-ups (performance.md, "Cheap wins found"): take
+  before/after numbers on a quiet machine; props as hierarchies of their
+  own (cheaper collider propagation) without changing how physics props
+  settle; skip posing bodies nobody sees (hidden local body, culled bots)
+  if hitboxes and muzzles don't read the joints.
 
 ## 10. Long tail
 

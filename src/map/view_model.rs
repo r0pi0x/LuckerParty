@@ -441,6 +441,7 @@ pub(super) fn draw_view_models(
             &mut Projection,
             Option<&Children>,
             Option<&bevy::camera::RenderTarget>,
+            Option<&bevy::core_pipeline::tonemapping::Tonemapping>,
         ),
         With<ViewModelCamera>,
     >,
@@ -462,7 +463,7 @@ pub(super) fn draw_view_models(
             .and_then(|(s, _)| s.key.as_deref())
             .and_then(|k| Some((k, assets.models.get(k)?, models.as_ref()?.get(k)?)));
         let camera = children.into_iter().flatten().find(|c| cameras.contains(**c)).copied();
-        let Some((camera, mut cam, mut projection, cam_children, target)) =
+        let Some((camera, mut cam, mut projection, cam_children, target, cam_tonemapping)) =
             camera.and_then(|c| cameras.get_mut(c).ok())
         else {
             let mut e = commands.spawn((
@@ -489,7 +490,9 @@ pub(super) fn draw_view_models(
             cam.order = anchor_camera.order + 1;
             cam.is_active = anchor_camera.is_active;
         }
-        if let Some(t) = tonemapping {
+        if let Some(t) = tonemapping
+            && cam_tonemapping != Some(t)
+        {
             commands.entity(camera).insert(*t);
         }
         // Off-screen captures (`--views`) retarget the anchor camera; the
@@ -537,7 +540,7 @@ pub(super) fn draw_view_models(
             continue;
         };
         let offset = state.and_then(|(_, o)| o.copied()).unwrap_or_default();
-        *placed = placement(&offset, mirror);
+        placed.set_if_neq(placement(&offset, mirror));
         // Pose the shown model.
         if let Some(animator) = state
             .and_then(|(s, _)| s.animator.as_ref())

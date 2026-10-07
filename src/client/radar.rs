@@ -239,11 +239,16 @@ fn update(
     } else {
         intent.yaw
     };
+    // Only on a change: a mutable borrow alone re-prepares the material.
+    let (centre_uv, span) = (centre / o.size, Vec2::splat(side / k) / o.size);
     if let Ok(m) = map.single()
+        && materials
+            .get(&m.0)
+            .is_some_and(|m| (m.params.centre, m.params.span, m.params.angle) != (centre_uv, span, facing))
         && let Some(mut m) = materials.get_mut(&m.0)
     {
-        m.params.centre = centre / o.size;
-        m.params.span = Vec2::splat(side / k) / o.size;
+        m.params.centre = centre_uv;
+        m.params.span = span;
         m.params.angle = facing;
     }
     // Dot offsets turn with the map.
