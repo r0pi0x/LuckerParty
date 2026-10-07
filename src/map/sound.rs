@@ -8,8 +8,13 @@
 use std::{collections::HashMap, sync::Arc};
 
 use bevy::{
-    audio::{AudioPlayer, AudioSink, AudioSinkPlayback, AudioSource, PlaybackSettings, Volume},
+    audio::{AudioPlayer, AudioSink, AudioSinkPlayback, PlaybackSettings, Volume},
     prelude::*,
+};
+
+use super::{
+    hearing::Hearing,
+    live_sound::{Gains, LiveClip},
 };
 
 /// Decoded audio: interleaved 16-bit samples.
@@ -242,8 +247,12 @@ pub struct SoundPlugin;
 impl Plugin for SoundPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<PlaySound>()
-            .add_systems(PostUpdate, play_sounds.run_if(resource_exists::<Assets<AudioSource>>))
-            .add_plugins((super::soundscape::SoundscapePlugin, super::live_sound::LiveSoundPlugin));
+            .add_systems(PostUpdate, play_sounds.run_if(resource_exists::<Assets<LiveClip>>))
+            .add_plugins((
+                super::soundscape::SoundscapePlugin,
+                super::live_sound::LiveSoundPlugin,
+                super::hearing::HearingPlugin,
+            ));
     }
 }
 
@@ -254,7 +263,8 @@ fn play_sounds(
     bank: Option<Res<SoundBank>>,
     listeners: Query<&GlobalTransform, With<SoundListener>>,
     playing: Query<(Entity, &Playing, Option<&AudioSink>)>,
-    mut sources: ResMut<Assets<AudioSource>>,
+    mut sources: ResMut<Assets<LiveClip>>,
+    hearing: Res<Hearing>,
     mut seed: Local<u64>,
 ) {
     let Some(bank) = bank else {
@@ -304,8 +314,11 @@ fn play_sounds(
                 }
             }
         }
-        let bytes = stereo_wav(clip, left, right);
-        let handle = sources.add(AudioSource { bytes: bytes.into() });
+        let once = MapSoundClip {
+            loop_start: None,
+            ..clip.clone()
+        };
+        let handle = sources.add(LiveClip::new(once, Arc::new(Gains::new(left, right)), hearing.mix.clone()));
         commands.spawn((
             AudioPlayer(handle),
             PlaybackSettings::DESPAWN

@@ -26,6 +26,7 @@ use bevy::{
     reflect::TypePath,
 };
 
+use super::hearing::{Hearing, HearingMix, Muffle};
 use super::sound::{METERS_PER_UNIT, MapSoundClip, SoundBank, SoundLevel, SoundListener, distance_gain, pan};
 
 /// Who a long-lived sound belongs to (chosen by its owner).
@@ -98,6 +99,11 @@ pub struct Gains {
 }
 
 impl Gains {
+    pub fn new(left: f32, right: f32) -> Self {
+        let g = Self::default();
+        g.set(left, right);
+        g
+    }
     fn set(&self, left: f32, right: f32) {
         self.left.store(left.to_bits(), Ordering::Relaxed);
         self.right.store(right.to_bits(), Ordering::Relaxed);
@@ -110,11 +116,20 @@ impl Gains {
     }
 }
 
-/// A clip played with live gains, looping from its loop point.
+/// A clip played with live gains, looping from its loop point, through
+/// the listener's hearing (`hearing::HearingMix`). Every sound plays as
+/// one, so the hearing reaches them all.
 #[derive(Asset, TypePath)]
 pub struct LiveClip {
     clip: MapSoundClip,
     gains: Arc<Gains>,
+    hearing: Arc<HearingMix>,
+}
+
+impl LiveClip {
+    pub fn new(clip: MapSoundClip, gains: Arc<Gains>, hearing: Arc<HearingMix>) -> Self {
+        Self { clip, gains, hearing }
+    }
 }
 
 /// Stereo samples of a `LiveClip`.
@@ -127,6 +142,8 @@ pub struct LiveDecoder {
     right: Option<f32>,
     gains: Arc<Gains>,
     current: (f32, f32),
+    hearing: Arc<HearingMix>,
+    muffle: Muffle,
 }
 
 /// How fast the applied gains follow a change, per frame of audio
@@ -157,8 +174,14 @@ impl Iterator for LiveDecoder {
         let (tl, tr) = self.gains.get();
         self.current.0 += (tl - self.current.0) * GAIN_SMOOTHING;
         self.current.1 += (tr - self.current.1) * GAIN_SMOOTHING;
-        self.right = Some(r as f32 / 32768.0 * self.current.1);
-        Some(l as f32 / 32768.0 * self.current.0)
+        let (l, r) = self.muffle.frame(
+            &self.hearing,
+            self.rate.get() as f32,
+            l as f32 / 32768.0 * self.current.0,
+            r as f32 / 32768.0 * self.current.1,
+        );
+        self.right = Some(r);
+        Some(l)
     }
 }
 
@@ -191,6 +214,8 @@ impl Decodable for LiveClip {
             right: None,
             gains: self.gains.clone(),
             current: start,
+            hearing: self.hearing.clone(),
+            muffle: Muffle::default(),
         }
     }
 }
@@ -347,6 +372,7 @@ fn drive_audio(
     mut sinks: Query<&mut AudioSink>,
     mut clips: ResMut<Assets<LiveClip>>,
     global: Option<Res<bevy::audio::GlobalVolume>>,
+    hearing: Res<Hearing>,
     mut commands: Commands,
 ) {
     let Some(bank) = bank else { return };
@@ -379,12 +405,8 @@ fn drive_audio(
             }
             None => {
                 let Some(clip) = bank.0.clips.get(s.clip) else { continue };
-                let gains = Arc::new(Gains::default());
-                gains.set(left, right);
-                let handle = clips.add(LiveClip {
-                    clip: clip.clone(),
-                    gains: gains.clone(),
-                });
+                let gains = Arc::new(Gains::new(left, right));
+                let handle = clips.add(LiveClip::new(clip.clone(), gains.clone(), hearing.mix.clone()));
                 let e = commands
                     .spawn((AudioPlayer(handle), PlaybackSettings::DESPAWN.with_speed(speed)))
                     .id();
@@ -408,9 +430,7 @@ mod tests {
     }
 
     fn decoder(c: MapSoundClip) -> LiveDecoder {
-        let gains = Arc::new(Gains::default());
-        gains.set(1.0, 0.5);
-        LiveClip { clip: c, gains }.decoder()
+        LiveClip::new(c, Arc::new(Gains::new(1.0, 0.5)), Arc::default()).decoder()
     }
 
     #[test]

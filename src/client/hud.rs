@@ -142,16 +142,15 @@ fn spawn_scope(commands: &mut Commands, images: &mut Assets<Image>) {
     ));
 }
 
-/// Full-screen tints: grey inside smoke, then the flashbang's white over
-/// it (specs/cs_source/grenades.md 7.4 and 6.3), under the HUD.
+/// Full-screen tints: grey inside smoke (specs/cs_source/grenades.md
+/// 7.4), under the flash overlay (`senses`) and the HUD.
 #[derive(Component, Clone, Copy, PartialEq)]
 enum ScreenTint {
     Smoke,
-    Flash,
 }
 
 fn spawn_tints(commands: &mut Commands) {
-    for (tint, z) in [(ScreenTint::Smoke, 30), (ScreenTint::Flash, 31)] {
+    for (tint, z) in [(ScreenTint::Smoke, 30)] {
         commands.spawn((
             tint,
             Node {
@@ -168,24 +167,20 @@ fn spawn_tints(commands: &mut Commands) {
 }
 
 /// The smoke clouds' grey (colour 0.3, alpha from the camera's place in
-/// each cloud) and the local player's flash white. CS:S also adds a frozen,
-/// over-bright copy of the frame at the flash (not done: white only).
+/// each cloud).
 fn screen_tints(
     mut tints: Query<(&ScreenTint, &mut BackgroundColor)>,
     camera: Query<&GlobalTransform, With<FirstPersonCamera>>,
     clouds: Query<&crate::weapon::grenade::SmokeCloud>,
-    local: Query<Option<&crate::core::Blinded>, With<LocalPlayer>>,
     time: Res<Time>,
 ) {
     let now = time.elapsed_secs_f64();
     let smoke = camera.iter().next().map_or(0.0, |c| {
         crate::weapon::grenade::smoke_fog_at(c.translation(), now, clouds.iter())
     });
-    let flash = local.iter().next().flatten().map_or(0.0, |b| b.alpha_at(now));
     for (tint, mut color) in &mut tints {
         let want = match tint {
             ScreenTint::Smoke => Color::srgba(0.3, 0.3, 0.3, smoke),
-            ScreenTint::Flash => Color::srgba(1.0, 1.0, 1.0, flash),
         };
         if color.0 != want {
             color.0 = want;

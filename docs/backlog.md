@@ -102,9 +102,8 @@ a first bot are in.
 - Grenades, remaining (HE, flashbang and smoke are in: `weapon/grenade.rs`,
   `games/cs_source/grenades.rs`): measure the spec's open questions on the
   probe (fuse ticks, release timing, flash amounts and overlay curve, HE vs
-  armour, smoke vs bots) and replace the fits (tech-debt); the flash's
-  after-image and DSP ringing, bots throwing grenades, the `_thrown`
-  models.
+  armour, smoke vs bots, HE shake and hearing) and replace the fits
+  (tech-debt); bots throwing grenades, the `_thrown` models.
 - Death animations on bodies (the grenade gesture is in; the reload gesture is in:
   `<Move>_Reload_<weapon>` by activity, an assumption for the spec's
   `reload_<suffix>`, with the shotguns' `_start/_loop/_end`).

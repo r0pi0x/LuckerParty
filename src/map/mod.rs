@@ -30,6 +30,7 @@ pub mod contact_filter;
 pub use breakables::{BreakProp, BrushPanes, GlassShatter, MapBreak, MapBreakPiece, SpawnGibs};
 mod dust;
 pub mod hud;
+pub mod hearing;
 pub mod live_sound;
 pub mod loose;
 pub mod probe_lit;

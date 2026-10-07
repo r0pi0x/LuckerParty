@@ -142,6 +142,15 @@ Only `Reflect`-registered types are visible; register new core components in
   `Transform` on `mashup::core::Intent` entities, `setpos` near it, and
   tap `+attack`/`-attack` over the remote console between
   `screenshot`s.
+- Flashbang look (white plus the frozen after-image): run live on
+  de_dust2 with `+mp_freezetime 0 +god`, then over the remote console
+  `give cs_source:weapon_flashbang`, `setang 35 255 0`, `+attack`,
+  `-attack` a second later, and `screenshot`s from 1.7 s after the
+  release; a `setang` to another direction after the flash shows the
+  frozen frame over the new view. Hearing (muffle, ringing) can't be
+  photographed: `map::hearing::Hearing` and its tests
+  (`cargo test --lib hearing`) show the curves; `tests/cs_grenades.rs`
+  checks which effect each blast or flash gives.
 - `mashup_healthbars 1` draws a health bar over every other living
   character (green full, red nearly dead), e.g. to watch damage land in a
   `--screenshot` run with `+bot_add 2`.

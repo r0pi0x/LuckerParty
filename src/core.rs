@@ -334,6 +334,56 @@ pub struct SimTick(pub u64);
 #[derive(Resource, Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RoundRestarts(pub u32);
 
+/// What a blast or a flash does to a character's hearing for a while
+/// (Source: a player DSP preset): what they hear is mixed `mix` toward a
+/// muffled copy (low-passed at `cutoff` Hz, times `wet_gain`), and a
+/// ringing tone (`ring_hz`, amplitude `ring_gain` times the mix) plays.
+/// Full for `hold` seconds, then fading out over `fade` (linearly, or
+/// exponentially down to 1 % by its end).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct HearingEffect {
+    pub hold: f32,
+    pub fade: f32,
+    pub exponential: bool,
+    pub mix: f32,
+    pub cutoff: f32,
+    pub wet_gain: f32,
+    pub ring_hz: f32,
+    pub ring_gain: f32,
+}
+
+impl HearingEffect {
+    /// Strength (0-1) `t` seconds after it started.
+    pub fn level(&self, t: f32) -> f32 {
+        if t < 0.0 || t >= self.hold + self.fade {
+            0.0
+        } else if t <= self.hold {
+            1.0
+        } else {
+            let x = (t - self.hold) / self.fade;
+            if self.exponential {
+                // e^-4.6 = 1 %: then cut.
+                (-4.6 * x).exp()
+            } else {
+                1.0 - x
+            }
+        }
+    }
+
+    /// Seconds until it is over.
+    pub fn length(&self) -> f32 {
+        self.hold + self.fade
+    }
+}
+
+/// A character's hearing is hit (`HearingEffect`): clients apply it to
+/// what the local player hears.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct Deafened {
+    pub target: Entity,
+    pub effect: HearingEffect,
+}
+
 /// A character's blindness (a flashbang): the screen goes white at
 /// `alpha` (0-1), holds until `fade_start` (seconds, the simulation
 /// clock) and fades out linearly by `end`. Clients draw it; bots don't
@@ -477,6 +527,7 @@ impl Plugin for CorePlugin {
             .register_type::<Damageable>()
             .add_message::<Damage>()
             .add_message::<Explosion>()
+            .add_message::<Deafened>()
             .add_message::<Died>()
             .add_message::<Radio>()
             .init_resource::<FriendlyFire>()
