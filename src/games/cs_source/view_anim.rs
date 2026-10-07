@@ -151,6 +151,11 @@ pub const DETACH_SILENCER: &str = "ACT_VM_DETACH_SILENCER";
 /// (spec weapons.md, view-model durations).
 const SILENCED: &str = "_SILENCED";
 pub const HIT_CENTER: &str = "ACT_VM_HITCENTER";
+/// Grenades (spec grenades.md 2): the pin pull (the unused pull variants
+/// are the same sequence) and the throw.
+pub const PULL_PIN: &str = "ACT_VM_PULLPIN";
+pub const PULL_BACK: &str = "ACT_VM_PULLBACK_HIGH";
+pub const THROW: &str = "ACT_VM_THROW";
 pub const MISS_CENTER: &str = "ACT_VM_MISSCENTER";
 
 /// `v_knife_t.mdl` tags the stab and both slashes `ACT_VM_HITCENTER` and
@@ -303,7 +308,13 @@ fn drive(
         Option<&mut ViewModelPlay>,
         Option<&Zoomed>,
     )>,
-    weapons: Query<(&Weapon, Option<&AltModes>, Option<&Burst>, Option<&Magazine>)>,
+    weapons: Query<(
+        &Weapon,
+        Option<&AltModes>,
+        Option<&Burst>,
+        Option<&Magazine>,
+        Option<&crate::weapon::grenade::Throwable>,
+    )>,
     mut events: MessageReader<WeaponEvent>,
     mut effects: MessageWriter<ViewModelEvent>,
     mut commands: Commands,
@@ -329,8 +340,10 @@ fn drive(
         // none, so this falls back to the plain ones).
         let mode = parts.and_then(|(_, m, ..)| m).map_or(0, |m| m.current);
         let silenced = mode > 0;
-        let burst = parts.and_then(|(_, _, b, _)| b).filter(|b| b.mode == mode);
-        let empty = parts.and_then(|(.., m)| m).is_some_and(|m| m.clip == 0);
+        let burst = parts.and_then(|(_, _, b, ..)| b).filter(|b| b.mode == mode);
+        let empty = parts.and_then(|(_, _, _, m, _)| m).is_some_and(|m| m.clip == 0);
+        // A grenade with its pin out holds the end of the pull.
+        let primed = parts.and_then(|(.., t)| t).is_some_and(|t| t.pin);
         // Snipers hide the view model behind the scope (spec view_models.md,
         // "Zoomed weapons").
         view.hidden = zoomed.is_some_and(|z| z.scope);
@@ -389,6 +402,14 @@ fn drive(
                     restarted |= play_mode(&mut view, &mut dice, &[RELOAD], silenced, now);
                     dice.last_attack = now;
                 }
+                WeaponEventKind::PinPulled => {
+                    restarted |= play(&mut view, &mut dice, &[PULL_PIN, PULL_BACK], now);
+                    dice.last_attack = now;
+                }
+                WeaponEventKind::Thrown => {
+                    restarted |= play(&mut view, &mut dice, &[THROW], now);
+                    dice.last_attack = now;
+                }
                 _ => {}
             }
         }
@@ -408,7 +429,7 @@ fn drive(
         }
         // Idle once the sequence has played out (spec 3.7); a non-looping
         // idle (the knife's) starts over.
-        if animator.finished() && now - dice.last_attack >= time_to_idle(weapon) as f64 {
+        if animator.finished() && !primed && now - dice.last_attack >= time_to_idle(weapon) as f64 {
             play_mode(&mut view, &mut dice, &[IDLE], silenced, now);
         }
     }

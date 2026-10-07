@@ -38,7 +38,8 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   (src/logic/visuals.rs, lightmap styles relit at run time), env_global,
   trigger_soundscape through the touch code. Left: breakable follow-ups
   (section 7), `Wake`, physics outputs (`OnAwakened`, `OnMotionEnabled`),
-  prop `OnAnimationDone`/`SetPlaybackRate`, a prop damage spec, train
+  prop `OnAnimationBegun`/`OnAnimationDone`, prop damage per the new spec
+  (specs/source/prop_damage.md: gibs, impact damage, explosive props), train
   facing/banking and player train control. (Round restarts re-create
   entities: rounds plan.) Target: two
   real minigame maps from the user's downloads.
@@ -76,7 +77,13 @@ burst), HUD, deathmatch and a first bot are in.
 - Rounds, money and buying: slice 1 done (`mashup_rounds 1`,
   [plans/active/rounds.md](plans/active/rounds.md)); next: buy zones, a
   buy menu, ammo, round sounds, objectives.
-- Grenade and death animations on bodies (the reload gesture is in:
+- Grenades, remaining (HE, flashbang and smoke are in: `weapon/grenade.rs`,
+  `games/cs_source/grenades.rs`): measure the spec's open questions on the
+  probe (fuse ticks, release timing, flash amounts and overlay curve, HE vs
+  armour, smoke vs bots) and replace the fits (tech-debt); the flash's
+  after-image and DSP ringing, bots throwing grenades, the radio call,
+  the `_thrown` models.
+- Death animations on bodies (the grenade gesture is in; the reload gesture is in:
   `<Move>_Reload_<weapon>` by activity, an assumption for the spec's
   `reload_<suffix>`; shotgun start/loop/end reloads not yet).
 - Impact effects, remaining (specs/cs_source/impact_effects.md; the

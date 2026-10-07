@@ -395,9 +395,8 @@ impl Shot<'_, '_, '_> {
             && let Ok(mut armor) = self.w.armor.get_mut(target)
             && armor.covers(hitgroup)
         {
-            let to_health = raw * ratio * 0.5;
-            let to_armor = quantize((raw - to_health) * 0.5, quantum);
-            amount = quantize(to_health, quantum);
+            let (to_health, to_armor) = armor_split(raw, ratio, quantum);
+            amount = to_health;
             // Armour running out mid-hit isn't measured: clamped.
             armor.amount = (armor.amount - to_armor).max(0.0);
         }
@@ -409,6 +408,7 @@ impl Shot<'_, '_, '_> {
             dir,
             hitgroup,
             kind,
+            weapon: None,
         });
         self.w.events.write(WeaponEvent {
             owner: self.owner,
@@ -535,6 +535,14 @@ impl Shot<'_, '_, '_> {
 /// Backstab facing test: within 36.87° (CS:S measured: 36° backstab, 37°
 /// front).
 const BACKSTAB_COS: f32 = 0.8;
+
+/// A hit of `raw` damage on covering armour (CS:S, measured M7): health
+/// takes `raw x ratio x 0.5`, armour half the rest, both truncated to
+/// `quantum`. Returns (to health, to armour).
+pub fn armor_split(raw: f32, ratio: f32, quantum: f32) -> (f32, f32) {
+    let to_health = raw * ratio * 0.5;
+    (quantize(to_health, quantum), quantize((raw - to_health) * 0.5, quantum))
+}
 
 /// `amount` truncated to whole multiples of `quantum` (0: unchanged),
 /// tolerant of float error just below a whole step.

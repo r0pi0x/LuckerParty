@@ -6,6 +6,7 @@ pub mod breakables;
 pub mod bsp;
 pub mod decals;
 pub mod dust;
+pub mod grenades;
 pub mod hud;
 pub mod impact_effects;
 pub mod impacts;

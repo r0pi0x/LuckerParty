@@ -105,6 +105,36 @@ pub(super) fn attach_loose(
     }
 }
 
+/// An item drawn with a held model's meshes (its `MapHeldModel` key) and
+/// no physics body: something that moves itself (a thrown grenade).
+/// Spawners give it a `Transform`; the map adds the meshes.
+#[derive(Component, Clone, Debug, PartialEq)]
+pub struct ShownItem(pub String);
+
+/// Marks a `ShownItem` whose meshes were added.
+#[derive(Component)]
+pub(super) struct ShownItemDrawn;
+
+/// Give new shown items their meshes.
+pub(super) fn attach_shown(
+    items: Query<(Entity, &ShownItem), Without<ShownItemDrawn>>,
+    assets: Option<Res<LooseAssets>>,
+    mut commands: Commands,
+) {
+    let Some(assets) = assets else { return };
+    for (e, item) in &items {
+        let mut ent = commands.entity(e);
+        ent.insert((ShownItemDrawn, MapPart, Visibility::default()));
+        if let Some(a) = assets.0.get(&item.0) {
+            ent.with_children(|c| {
+                for (mesh, material) in &a.parts {
+                    c.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone()), a.frame));
+                }
+            });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

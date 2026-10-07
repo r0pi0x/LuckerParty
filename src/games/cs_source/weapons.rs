@@ -80,6 +80,7 @@ pub const VIEW_MODELS: &[(&str, &str, bool)] = &[
 /// `SOUNDS` and every gun's.
 pub fn sounds() -> Vec<&'static str> {
     let mut out: Vec<&'static str> = SOUNDS.to_vec();
+    out.extend(super::grenades::SOUNDS);
     for g in GUNS {
         for s in [g.fire, g.empty]
             .into_iter()
@@ -191,6 +192,7 @@ impl Plugin for CsWeaponsPlugin {
             .add_plugins((
                 super::impacts::ImpactSoundsPlugin,
                 super::impact_effects::ImpactEffectsPlugin,
+                super::grenades::GrenadesPlugin,
             ))
             .insert_resource(pass_materials());
         let mut start = app.world_mut().get_resource_or_init::<StartingWeapons>();
@@ -218,6 +220,9 @@ fn prices() -> crate::weapon::economy::Prices {
     };
     for (id, price) in [(AK47, 2500), (M4A1, 3100), (AWP, 4750), (USP, 500), (GLOCK, 400), (DEAGLE, 650)] {
         p.weapons.insert(id, price);
+    }
+    for (id, price, _) in super::grenades::GRENADES {
+        p.weapons.insert(id, *price);
     }
     // The scripts' team column (our team 1: terrorists, 2: CTs).
     p.team_only.insert(AK47, 1);

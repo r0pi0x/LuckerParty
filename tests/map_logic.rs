@@ -256,6 +256,7 @@ fn round_restart_puts_the_map_back() {
         dir: Vec3::NEG_Z,
         hitgroup: Hitgroup::Generic,
         kind: DamageKind::Bullet,
+        weapon: None,
     });
     sim.ticks(10);
     assert!(!exists(&sim, 2), "broken and removed");

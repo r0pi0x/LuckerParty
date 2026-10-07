@@ -1976,6 +1976,7 @@ fn step(
                 dir: Vec3::NEG_Y,
                 hitgroup: Hitgroup::Generic,
                 kind: crate::core::DamageKind::Fall,
+                weapon: None,
             });
         }
         for (entry, at, volume) in mover.sounds.drain(..) {

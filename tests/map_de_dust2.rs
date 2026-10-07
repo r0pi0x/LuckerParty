@@ -1608,7 +1608,8 @@ fn bodies_animate_with_movement() {
     );
     let keys: Vec<&str> = map.held.iter().map(|h| h.key.as_str()).collect();
     let all = mashup::games::cs_source::weapons::WORLD_MODELS.len()
-        + mashup::games::cs_source::weapons::SILENCED_WORLD_MODELS.len();
+        + mashup::games::cs_source::weapons::SILENCED_WORLD_MODELS.len()
+        + mashup::games::cs_source::grenades::WORLD_MODELS.len();
     assert_eq!(keys.len(), all, "held models {keys:?}");
     // The drawn AK-47 picks the AK upper body at full weight.
     assert_eq!(layer(&sim, 0), Some(("Idle_Upper_AK".into(), 1.0)));
@@ -2379,4 +2380,59 @@ fn bot_objectives_are_the_bomb_sites() {
         .collect();
     places.sort();
     assert_eq!(places, ["BombsiteA", "BombsiteB"], "{goals:?}");
+}
+
+/// The grenades' models, sequences and sounds from the install
+/// (specs/cs_source/grenades.md): world and view models load, the view
+/// models have the pin, throw and draw sequences with the spec's
+/// durations and the handedness `grenades::VIEW_MODELS` says, the HE kill
+/// icon exists, and the materials and sound entries the effects use.
+#[test]
+fn grenade_models_and_sequences() {
+    use mashup::games::cs_source::grenades::{
+        DRAW_TIME, GRENADES, MATERIALS, PIN_TIME, SOUNDS, THROW_TIME, VIEW_MODELS,
+    };
+    let Some(map) = dust2() else { return };
+    let hud = map.hud.as_ref().expect("a HUD");
+    assert!(hud.icons.contains_key("d_hegrenade"));
+    for (id, ..) in GRENADES {
+        assert!(map.held.iter().any(|h| h.key == *id), "{id} world model: {:?}", map.warnings);
+        let v = map
+            .view_models
+            .iter()
+            .find(|v| v.key == *id)
+            .unwrap_or_else(|| panic!("{id} view model: {:?}", map.warnings));
+        let set = v.animations.as_ref().expect("sequences");
+        let dur = |act: &str| set.duration(set.activity(act).expect(act));
+        assert!((dur("ACT_VM_PULLPIN") - PIN_TIME).abs() < 1e-3, "{id} pull pin {}", dur("ACT_VM_PULLPIN"));
+        assert!((dur("ACT_VM_THROW") - THROW_TIME).abs() < 1e-3, "{id} throw {}", dur("ACT_VM_THROW"));
+        assert!((dur("ACT_VM_DRAW") - DRAW_TIME).abs() < 1e-3, "{id} draw {}", dur("ACT_VM_DRAW"));
+        // Handedness at idle.
+        let mut pose = set.defaults.clone();
+        let params = set.default_params();
+        set.accumulate(&mut pose, set.activity("ACT_VM_IDLE").unwrap(), 0.5, 1.0, &params);
+        let mut global: Vec<(Quat, Vec3)> = Vec::new();
+        for (b, (q, p)) in v.bones.iter().zip(&pose) {
+            global.push(match b.parent.map(|i| global[i]) {
+                Some((pq, pp)) => (pq * *q, pp + pq * *p),
+                None => (*q, *p),
+            });
+        }
+        // The grenade (its `*_Parent` bone) sits right of the eye in a
+        // right-handed model (as the knife's), left in a left-handed one.
+        let grenade = v
+            .bones
+            .iter()
+            .position(|b| b.name.to_lowercase().ends_with("_parent") && !b.name.to_lowercase().contains("hands"))
+            .expect("a grenade parent bone");
+        let right_handed = VIEW_MODELS.iter().find(|m| m.0 == *id).unwrap().2;
+        eprintln!("{id}: grenade at {}", global[grenade].1);
+        assert_eq!(global[grenade].1.y < 0.0, right_handed, "{id} handedness");
+    }
+    for m in MATERIALS {
+        assert!(map.particles.find(m).is_some(), "particle material {m}");
+    }
+    for s in SOUNDS {
+        assert!(map.sounds.entry(s).is_some(), "sound {s}");
+    }
 }

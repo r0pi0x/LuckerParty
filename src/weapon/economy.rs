@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
-use super::{Armor, Inventory, Weapon, WeaponRegistry, give};
+use super::{Armor, Inventory, Weapon, WeaponRegistry, give, grenade::Throwable};
 
 /// A character's money.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq, Reflect)]
@@ -86,12 +86,38 @@ pub fn buy(world: &mut World, owner: Entity, name: &str) -> Result<String, Strin
     {
         return Err("your team can't buy that weapon".into());
     }
-    if held.iter().any(|w| world.get::<Weapon>(*w).is_some_and(|w| w.id == id)) {
-        return Err("you already have that weapon".into());
-    }
     let cost = prices.weapons.get(id).copied().unwrap_or(0);
+    if let Some(have) = held
+        .iter()
+        .copied()
+        .find(|w| world.get::<Weapon>(*w).is_some_and(|w| w.id == id))
+    {
+        // Grenades stack up to their carry limit (spec grenades.md 1).
+        let room = world.get::<Throwable>(have).is_some_and(|t| t.count < t.max);
+        if world.get::<Throwable>(have).is_some() && !room {
+            return Err("You cannot carry any more.".into());
+        }
+        if !room {
+            return Err("you already have that weapon".into());
+        }
+        pay(world, cost)?;
+        if let Some(mut t) = world.get_mut::<Throwable>(have) {
+            t.count += 1;
+        }
+        return Ok(format!("bought {id}"));
+    }
     pay(world, cost)?;
+    let active = world.get::<Inventory>(owner).and_then(|i| i.active);
     let new = give(world, owner, id).ok_or("can't carry it")?;
+    if world.get::<Throwable>(new).is_some() {
+        // Grenades share their slot and don't take the hand.
+        if active.is_some()
+            && let Some(mut inv) = world.get_mut::<Inventory>(owner)
+        {
+            inv.wanted = None;
+        }
+        return Ok(format!("bought {id}"));
+    }
     // One weapon per slot: the old one is dropped.
     let slot = world.get::<Weapon>(new).map(|w| w.slot);
     if let Some(old) = held

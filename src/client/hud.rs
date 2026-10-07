@@ -25,6 +25,7 @@ impl Plugin for HudPlugin {
                     show_bodies,
                     (hit_marker, killfeed, draw_hud, draw_crosshair, draw_scope).chain(),
                     game_scope.run_if(resource_exists_and_changed::<crate::map::hud::ActiveHud>),
+                    screen_tints,
                 ),
             );
     }
@@ -141,7 +142,59 @@ fn spawn_scope(commands: &mut Commands, images: &mut Assets<Image>) {
     ));
 }
 
+/// Full-screen tints: grey inside smoke, then the flashbang's white over
+/// it (specs/cs_source/grenades.md 7.4 and 6.3), under the HUD.
+#[derive(Component, Clone, Copy, PartialEq)]
+enum ScreenTint {
+    Smoke,
+    Flash,
+}
+
+fn spawn_tints(commands: &mut Commands) {
+    for (tint, z) in [(ScreenTint::Smoke, 30), (ScreenTint::Flash, 31)] {
+        commands.spawn((
+            tint,
+            Node {
+                position_type: PositionType::Absolute,
+                width: percent(100.0),
+                height: percent(100.0),
+                ..default()
+            },
+            BackgroundColor(Color::NONE),
+            Pickable::IGNORE,
+            GlobalZIndex(z),
+        ));
+    }
+}
+
+/// The smoke clouds' grey (colour 0.3, alpha from the camera's place in
+/// each cloud) and the local player's flash white. CS:S also adds a frozen,
+/// over-bright copy of the frame at the flash (not done: white only).
+fn screen_tints(
+    mut tints: Query<(&ScreenTint, &mut BackgroundColor)>,
+    camera: Query<&GlobalTransform, With<FirstPersonCamera>>,
+    clouds: Query<&crate::weapon::grenade::SmokeCloud>,
+    local: Query<Option<&crate::core::Blinded>, With<LocalPlayer>>,
+    time: Res<Time>,
+) {
+    let now = time.elapsed_secs_f64();
+    let smoke = camera.iter().next().map_or(0.0, |c| {
+        crate::weapon::grenade::smoke_fog_at(c.translation(), now, clouds.iter())
+    });
+    let flash = local.iter().next().flatten().map_or(0.0, |b| b.alpha_at(now));
+    for (tint, mut color) in &mut tints {
+        let want = match tint {
+            ScreenTint::Smoke => Color::srgba(0.3, 0.3, 0.3, smoke),
+            ScreenTint::Flash => Color::srgba(1.0, 1.0, 1.0, flash),
+        };
+        if color.0 != want {
+            color.0 = want;
+        }
+    }
+}
+
 fn spawn_hud(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
+    spawn_tints(&mut commands);
     spawn_scope(&mut commands, &mut images);
     let font = |size: f32| TextFont {
         font_size: FontSize::Px(size),

@@ -88,4 +88,19 @@ Started 2026-10-05, from specs/cs_source/weapons.md. MVP plan items 4–5.
      and silenced/burst recoil, the Glock's burst refire, the M4A1's
      moving/airborne kicks, pistol punch caps, whether reloading
      unzooms, 556MM/9MM penetration, 45ACP's distance limit.
+   - [x] Grenades (2026-10-06, specs/cs_source/grenades.md): HE,
+     flashbang and smoke as slot-3 weapons (`weapon::grenade::Throwable`:
+     count and carry limit 1/2/1, prices 300/200/300, buying stacks and
+     keeps the hand), pin on press, throw on release (+0.1 s), the
+     spec's pitch bend and speed, the projectile's box sweep, 0.4 gravity,
+     mirror bounce ×0.45 (×0.135 on players), stop under 30 units/s,
+     glass, water, fuse checked every 13 ticks; HE radius damage traced
+     against the world only, armour (H1), push, scorch, particles, kill
+     credit (`Damage::weapon`, `d_hegrenade`); flash blindness
+     (`core::Blinded`, a fitted model) and the white tint; smoke clouds
+     (64 churning sprites, grey tint, `core::SightBlocker` for bots);
+     view-model pin/throw/draw with the pin sound, the third-person
+     grenade layer, a primed grenade dropped live on death, all cleared
+     at a new round. Tests: `tests/cs_grenades.rs`, unit tests for the
+     spec's G cases, `map_de_dust2::grenade_models_and_sequences`.
    - [ ] The rest (backlog section 3).

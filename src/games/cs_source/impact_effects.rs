@@ -81,7 +81,11 @@ pub const MATERIALS: &[&str] = &[
 /// Load the effect materials (runtime, from the install).
 pub fn load_materials(loader: &mut super::material::MaterialLoader) -> MapParticles {
     MapParticles {
-        materials: MATERIALS.iter().filter_map(|m| loader.particle(m)).collect(),
+        materials: MATERIALS
+            .iter()
+            .chain(super::grenades::MATERIALS)
+            .filter_map(|m| loader.particle(m))
+            .collect(),
     }
 }
 

@@ -158,6 +158,9 @@ pub struct Damage {
     pub hitgroup: Hitgroup,
     /// How it was dealt (breakables scale damage by it).
     pub kind: DamageKind,
+    /// The weapon that dealt it when that isn't what the attacker holds
+    /// now (a thrown grenade), for kill notices; None: the held one.
+    pub weapon: Option<&'static str>,
 }
 
 /// How damage was dealt (Source damage types, as far as anything here
@@ -280,6 +283,81 @@ pub struct SimTick(pub u64);
 /// brushes whole and clears gibs (Counter-Strike's round restart).
 #[derive(Resource, Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RoundRestarts(pub u32);
+
+/// A character's blindness (a flashbang): the screen goes white at
+/// `alpha` (0-1), holds until `fade_start` (seconds, the simulation
+/// clock) and fades out linearly by `end`. Clients draw it; bots don't
+/// see while it is strong.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
+pub struct Blinded {
+    pub alpha: f32,
+    pub fade_start: f64,
+    pub end: f64,
+}
+
+impl Blinded {
+    /// Whiteness at `now`.
+    pub fn alpha_at(&self, now: f64) -> f32 {
+        if now >= self.end {
+            0.0
+        } else if now <= self.fade_start || self.end <= self.fade_start {
+            self.alpha
+        } else {
+            self.alpha * ((self.end - now) / (self.end - self.fade_start)) as f32
+        }
+    }
+
+    /// The stronger of this blindness and `other` (a new flash only
+    /// raises what is left of the current one).
+    pub fn raised(self, other: Blinded, now: f64) -> Blinded {
+        if self.alpha_at(now) >= other.alpha && self.end >= other.end {
+            self
+        } else if other.alpha >= self.alpha_at(now) && other.end >= self.end {
+            other
+        } else {
+            // One is whiter, the other lasts longer: keep both maxima.
+            Blinded {
+                alpha: self.alpha_at(now).max(other.alpha),
+                fade_start: self.fade_start.max(other.fade_start),
+                end: self.end.max(other.end),
+            }
+        }
+    }
+}
+
+/// Something sight doesn't pass (a smoke cloud): a sphere. A sight line
+/// is blocked when more than `radius` of it lies inside (Counter-Strike
+/// bots don't see through smoke; the exact rule isn't known, see
+/// specs/cs_source/grenades.md Q16).
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
+pub struct SightBlocker {
+    pub centre: Vec3,
+    pub radius: f32,
+}
+
+impl SightBlocker {
+    /// Length of the segment `from`-`to` inside the sphere.
+    pub fn chord(&self, from: Vec3, to: Vec3) -> f32 {
+        let d = to - from;
+        let len = d.length();
+        if len < 1e-6 || self.radius <= 0.0 {
+            return 0.0;
+        }
+        let dir = d / len;
+        let t = (self.centre - from).dot(dir);
+        let closest = from + dir * t;
+        let h2 = self.radius * self.radius - closest.distance_squared(self.centre);
+        if h2 <= 0.0 {
+            return 0.0;
+        }
+        let h = h2.sqrt();
+        ((t + h).min(len) - (t - h).max(0.0)).max(0.0)
+    }
+
+    pub fn blocks(&self, from: Vec3, to: Vec3) -> bool {
+        self.chord(from, to) > self.radius
+    }
+}
 
 /// Whether characters on the same team hurt each other (CS:S
 /// `mp_friendlyfire`, default 0). Team 0 (no team) is never friendly.

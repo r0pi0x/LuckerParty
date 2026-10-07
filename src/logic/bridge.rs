@@ -665,6 +665,7 @@ fn apply_effects(world: &mut World, effects: Vec<Effect>, scale: f32) {
                     dir: Vec3::NEG_Y,
                     hitgroup: Hitgroup::Generic,
                     kind: if crush { DamageKind::Crush } else { DamageKind::Generic },
+                    weapon: None,
                 });
             }
             Effect::Gibs { set, glass, pieces } => {
