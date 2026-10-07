@@ -42,6 +42,8 @@ struct WaterParams {
     cheap_mode: f32,
     fudge: f32,
     sky_env: f32,
+    prefog_plane: f32,
+    refract_fog_only: f32,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> params: WaterParams;
@@ -78,6 +80,9 @@ fn scene_depth(uv: vec2<f32>) -> f32 {
 // water fog by the height fog, and that fog factor (spec section 8). Where
 // nothing below the surface was drawn, the clear: fog colour, alpha 1.
 fn refraction(uv: vec2<f32>, surface: f32) -> vec4<f32> {
+    if params.refract_fog_only > 0.5 {
+        return vec4<f32>(params.fog_linear.rgb, 1.0);
+    }
     let c = textureSampleLevel(vb::view_transmission_texture, vb::view_transmission_sampler, uv, 0.0).rgb;
     if params.above_water < 0.5 {
         return vec4<f32>(c, 1.0);
@@ -99,6 +104,11 @@ fn refraction(uv: vec2<f32>, surface: f32) -> vec4<f32> {
     let path = view.world_position.y - p.y;
     let h = select(1.0, saturate((plane - p.y) / path), path > 0.0);
     let f = saturate(h * z * k);
+    // The near plane crosses this surface: what lies below was drawn with
+    // this same fog already (map::fog, the intersection view).
+    if abs(surface - params.prefog_plane) < 0.02 {
+        return vec4<f32>(c, f);
+    }
     return vec4<f32>(mix(c, params.fog_linear.rgb, f), f);
 }
 

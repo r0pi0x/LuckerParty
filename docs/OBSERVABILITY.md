@@ -133,6 +133,14 @@ Only `Reflect`-registered types are visible; register new core components in
   on de_dust2 with a few `--frames` values (a flash lasts 0.05 s, every
   0.1 s), against the same without `++attack`. `dump cs_source
   --sequences <model>` shows a model's animation events and attachments.
+- Water (CS:S cvars): `r_WaterDrawReflection 0` / `r_WaterDrawRefraction
+  0` turn the planar reflection / refraction off (to tell which one an
+  artefact comes from), `mat_drawwater 0` hides water surfaces,
+  `r_waterforcereflectentities 1` reflects models too. Under water the
+  material's screen warp shows (de_port: `+setpos 700 2700 235 +setang
+  -5 140 0` with `+noclip +god`); with the eye a few units above a surface
+  (`+setpos 700 2700 258 +setang 20 140 0`) the strip under the waterline
+  shows the water's height fog.
 - Remote: `curl -s localhost:15702 -d '{"jsonrpc":"2.0","id":1,
   "method":"mashup/console","params":{"line":"getpos; cvarlist sv_"}}'`
   runs a line now and returns the lines it printed.

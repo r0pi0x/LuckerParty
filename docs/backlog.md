@@ -180,19 +180,22 @@ docs/plans/active/sound.md.
 ## 8. Visual fidelity
 
 - **Water surfaces** (specs/cs_source/water.md, `map::water`): refraction,
-  planar reflection, the cheap cubemap pass, under-water fog and bottom
-  materials are in. Left: `$underwateroverlay` (de_port's `water_warp01`
-  screen warp), the intersection view when the near plane crosses the
-  surface, `$blurrefract`/`$refracttint` and the `$basetexture` variant,
-  the water cvars (`r_waterforceexpensive`, `r_waterforcereflectentities`,
-  `mat_drawwater`, ...), under-water fog on decals, ropes and particles,
-  and a refcmp comparison of de_port/de_chateau water (no reference
-  captures yet). Water currents (base velocity) aren't applied.
+  planar reflection, the cheap cubemap pass, under-water fog (world,
+  props, ropes, decals, particles), bottom materials, the
+  `$underwateroverlay` screen warp, the intersection view's height fog
+  and the water cvars are in. Left: a Refract shader spec (the warp's
+  strength and blur are guesses: de_port's `water_warp01` looks subtle),
+  `$blurrefract`/`$refracttint` and the `$basetexture` variant, and a
+  refcmp comparison of de_port/de_chateau water (no reference captures
+  yet; it would settle de_port's dark speckles: refraction lookups at
+  `$refractamount` 5 landing on barely submerged shore, which the spec's
+  shore fade leaves unreflected). Water currents: no stock map has
+  current contents (spec movement.md open question 15), so not applied.
 - **HDR parity**: CS:S defaults to mat_hdr_level 2 on dust2 (HDR lightmaps,
   tonemapping, bloom); the reference install runs LDR. Compare and match
   both if players use HDR. Tonemap (`env_tonemap_controller`).
 - **More refcmp views** across dust2 (mid, long, B, spawns) and other maps.
-- Fog on ropes; detail blend modes other than 0 and 1;
+- Detail blend modes other than 0 and 1;
   `$basetexturetransform` (unused on dust2).
 
 ## 9. Performance

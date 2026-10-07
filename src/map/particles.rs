@@ -13,7 +13,14 @@
 
 use std::collections::HashMap;
 
-use bevy::{mesh::Indices, prelude::*};
+use bevy::{
+    asset::embedded_asset,
+    mesh::Indices,
+    prelude::*,
+    reflect::TypePath,
+    render::render_resource::AsBindGroup,
+    shader::ShaderRef,
+};
 
 use super::{MapPart, SkyboxCamera, ViewModelCamera};
 
@@ -616,6 +623,83 @@ pub fn bounce(p: &mut Particle, f: f32, n: Vec3, dt: f32, b: &Bounce, keep: f32)
     }
 }
 
+/// How particles are drawn (particle.wgsl): texture x vertex colour,
+/// blended or added, with the scene's fog (`fog::SceneFog`): blended
+/// particles fog toward the fog colour, added ones toward black.
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+#[bind_group_data(ParticleDrawKey)]
+pub struct ParticleDrawMaterial {
+    #[texture(0)]
+    #[sampler(1)]
+    pub texture: Option<Handle<Image>>,
+    #[uniform(2)]
+    pub fog: super::fog::FogUniform,
+    pub blend: ParticleBlend,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ParticleDrawKey {
+    additive: bool,
+}
+
+impl From<&ParticleDrawMaterial> for ParticleDrawKey {
+    fn from(m: &ParticleDrawMaterial) -> Self {
+        Self {
+            additive: m.blend == ParticleBlend::Additive,
+        }
+    }
+}
+
+impl Material for ParticleDrawMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "embedded://mashup/map/particle.wgsl".into()
+    }
+
+    fn alpha_mode(&self) -> AlphaMode {
+        match self.blend {
+            ParticleBlend::Alpha => AlphaMode::Blend,
+            ParticleBlend::Additive => AlphaMode::Add,
+        }
+    }
+
+    fn specialize(
+        _pipeline: &bevy::pbr::MaterialPipeline,
+        descriptor: &mut bevy::render::render_resource::RenderPipelineDescriptor,
+        _layout: &bevy::mesh::MeshVertexBufferLayoutRef,
+        key: bevy::pbr::MaterialPipelineKey<Self>,
+    ) -> Result<(), bevy::render::render_resource::SpecializedMeshPipelineError> {
+        descriptor.primitive.cull_mode = None;
+        if key.bind_group_data.additive
+            && let Some(fragment) = descriptor.fragment.as_mut()
+        {
+            fragment.shader_defs.push("ADDITIVE".into());
+        }
+        Ok(())
+    }
+
+    fn enable_prepass() -> bool {
+        false
+    }
+
+    fn enable_shadows() -> bool {
+        false
+    }
+}
+
+/// Registers the particle material. Needs rendering.
+pub struct ParticleMaterialPlugin;
+
+impl Plugin for ParticleMaterialPlugin {
+    fn build(&self, app: &mut App) {
+        embedded_asset!(app, "particle.wgsl");
+        app.add_plugins((
+            super::fog::FogShaderPlugin,
+            MaterialPlugin::<ParticleDrawMaterial>::default(),
+        ));
+    }
+}
+
 /// The meshes particles are drawn with: one entity per material.
 #[derive(Resource)]
 pub(super) struct ParticleAssets {
@@ -673,7 +757,8 @@ pub(super) fn draw_particles(
     assets: Option<ResMut<ParticleAssets>>,
     cameras: Query<&GlobalTransform, (With<Camera3d>, Without<SkyboxCamera>, Without<ViewModelCamera>, Without<super::water::WaterReflectionCamera>)>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut materials: ResMut<Assets<ParticleDrawMaterial>>,
+    fog: Option<Res<super::fog::SceneFog>>,
     mut transforms: Query<&mut Transform>,
     mut commands: Commands,
 ) {
@@ -715,16 +800,10 @@ pub(super) fn draw_particles(
                         Name::new(format!("Particles {}", def.name)),
                         MapPart,
                         Mesh3d(handle.clone()),
-                        MeshMaterial3d(materials.add(StandardMaterial {
-                            base_color_texture: texture,
-                            unlit: true,
-                            alpha_mode: match def.blend {
-                                ParticleBlend::Alpha => AlphaMode::Blend,
-                                ParticleBlend::Additive => AlphaMode::Add,
-                            },
-                            double_sided: true,
-                            cull_mode: None,
-                            ..default()
+                        MeshMaterial3d(materials.add(ParticleDrawMaterial {
+                            texture,
+                            fog: fog.as_ref().map_or_else(Default::default, |f| f.0),
+                            blend: def.blend,
                         })),
                         // The mesh moves with its particles.
                         bevy::camera::visibility::NoFrustumCulling,

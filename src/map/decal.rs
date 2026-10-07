@@ -326,6 +326,7 @@ pub(super) fn place_decals(
     assets: Option<ResMut<DecalAssets>>,
     meshes: Option<ResMut<Assets<Mesh>>>,
     materials: Option<ResMut<Assets<DecalMaterial>>>,
+    fog: Option<Res<super::fog::SceneFog>>,
     mut commands: Commands,
 ) {
     let (Some(surfaces), Some(mut assets), Some(mut meshes), Some(mut materials)) =
@@ -388,6 +389,7 @@ pub(super) fn place_decals(
                         0.0,
                     ),
                     texture,
+                    fog: fog.as_ref().map_or_else(Default::default, |f| f.0),
                 });
                 assets.materials.insert(index, m.clone());
                 m
@@ -422,6 +424,10 @@ pub struct DecalMaterial {
     #[texture(1)]
     #[sampler(2)]
     pub texture: Handle<Image>,
+    /// World and water fog (`fog::SceneFog`): fogged decals fade to
+    /// neutral.
+    #[uniform(3)]
+    pub fog: super::fog::FogUniform,
 }
 
 impl Material for DecalMaterial {
@@ -477,7 +483,7 @@ pub struct DecalMaterialPlugin;
 impl Plugin for DecalMaterialPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "decal.wgsl");
-        app.add_plugins(MaterialPlugin::<DecalMaterial>::default());
+        app.add_plugins((super::fog::FogShaderPlugin, MaterialPlugin::<DecalMaterial>::default()));
     }
 }
 

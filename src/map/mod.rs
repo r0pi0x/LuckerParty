@@ -22,6 +22,7 @@ pub use crate::core::{
 pub mod anim;
 pub mod decal;
 pub mod entities;
+pub mod fog;
 pub use entities::{MapBrushEntity, MapEntities, MapEntity, MapHull};
 pub mod breakables;
 pub use breakables::{BrushPanes, GlassShatter, SpawnGibs};
@@ -1406,7 +1407,7 @@ impl Plugin for MapPlugin {
                         particles::draw_particles
                             .run_if(
                                 resource_exists::<Assets<Mesh>>
-                                    .and_then(resource_exists::<Assets<StandardMaterial>>),
+                                    .and_then(resource_exists::<Assets<particles::ParticleDrawMaterial>>),
                             )
                             .in_set(particles::ParticleSet::Draw),
                     )
@@ -2044,6 +2045,7 @@ fn spawn_map(
                                 back: if back { 1.0 } else { 0.0 },
                                 light_scale: data.look.light_scale,
                                 has_normal_map: if normal.is_some() { 1.0 } else { 0.0 },
+                                fog: fog::world_fog(data.fog.as_ref()),
                             },
                             base: texture.map(|t| textures[t].clone()),
                             normal: normal.map(|t| textures[t].clone()),
@@ -2383,6 +2385,7 @@ fn spawn_map(
             commands.insert_resource(Gravity(Vec3::NEG_Y * g));
         }
         commands.insert_resource(MapWater(data.water.clone()));
+        commands.insert_resource(fog::SceneFog(fog::world_fog(data.fog.as_ref())));
         commands.insert_resource(data.round_sounds.clone());
     }
 
@@ -2486,6 +2489,7 @@ pub fn unload_map(world: &mut World) {
     world.remove_resource::<MapEntities>();
     world.remove_resource::<water::MapWaterRender>();
     world.remove_resource::<water::WaterView>();
+    world.remove_resource::<fog::SceneFog>();
     world.remove_resource::<MapTerrain>();
     world.insert_resource(Gravity::default());
     soundscape::reset(world);

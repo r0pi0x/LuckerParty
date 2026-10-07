@@ -24,6 +24,8 @@ pub struct RopeParams {
     pub back: f32,
     pub light_scale: f32,
     pub has_normal_map: f32,
+    /// World and water fog (`fog::SceneFog`).
+    pub fog: super::fog::FogUniform,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
@@ -119,6 +121,6 @@ pub struct RopeMaterialPlugin;
 impl Plugin for RopeMaterialPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "rope.wgsl");
-        app.add_plugins(MaterialPlugin::<RopeMaterial>::default());
+        app.add_plugins((super::fog::FogShaderPlugin, MaterialPlugin::<RopeMaterial>::default()));
     }
 }
