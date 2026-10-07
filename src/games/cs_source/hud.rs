@@ -1,6 +1,7 @@
 //! CS:S's HUD look, read from the install: panel layout
 //! (`scripts/hudlayout.res`), fonts and colours (`resource/clientscheme.res`
-//! and the TTFs it lists), icon glyphs (`scripts/mod_textures.txt`).
+//! and the TTFs it lists), icon glyphs (`scripts/mod_textures.txt`); the
+//! VGUI menus come from `super::vgui`.
 
 use std::{collections::HashMap, sync::Arc};
 
@@ -112,8 +113,9 @@ fn family_name(ttf: &[u8]) -> Option<String> {
     best
 }
 
-/// The HUD look from the install, or None when its files are missing.
-pub fn load(materials: &mut MaterialLoader) -> Option<GameHud> {
+/// The HUD look from the install, or None when its files are missing; with
+/// the menus (`super::vgui`, `map`: the loaded map, for its description).
+pub fn load(materials: &mut MaterialLoader, map: &str) -> Option<GameHud> {
     let text = |m: &MaterialLoader, p: &str| m.read(p).map(|b| String::from_utf8_lossy(&b).into_owned());
     let scheme = parse(&text(materials, "resource/clientscheme.res")?);
     let scheme = scheme.items().first().map(|(_, v)| v.clone()).unwrap_or(scheme);
@@ -248,6 +250,7 @@ pub fn load(materials: &mut MaterialLoader) -> Option<GameHud> {
             },
         );
     }
+    hud.menus = super::vgui::load(materials, &scheme, &mut hud, map);
     (!hud.panels.is_empty()).then_some(hud)
 }
 

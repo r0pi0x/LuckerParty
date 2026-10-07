@@ -121,10 +121,13 @@ pub(super) fn grab_cursor(
     keys: Res<ButtonInput<KeyCode>>,
     mut focus: MessageReader<bevy::window::WindowFocused>,
     menu: Option<Res<super::game_menu::GameMenu>>,
+    vgui: Option<Res<super::vgui::VguiOpen>>,
 ) {
-    // The game menu owns the mouse while open (Esc opens and closes it),
-    // and the click that closes it isn't a click to grab.
-    let in_menu = menu.as_ref().is_some_and(|m| m.open || m.is_changed());
+    // The game menu and the game-look buy and team menus own the mouse
+    // while open (Esc opens and closes the game menu), and the click that
+    // closes one isn't a click to grab.
+    let in_menu =
+        menu.as_ref().is_some_and(|m| m.open || m.is_changed()) || vgui.as_ref().is_some_and(|v| v.any() || v.is_changed());
     // Losing focus (alt-tab) ends the grab: Windows drops the cursor clip
     // then, and a grab we still believed in would keep turning the view
     // while the real cursor wanders off and clicks other windows. Clicking

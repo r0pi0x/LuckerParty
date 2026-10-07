@@ -57,8 +57,11 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   backup), with a chat area and hint text (`client/chat.rs`) and a
   scoreboard latency column (0 until networking) and its BOMB / DEFUSER
   markers, the radio icon over a teammate's head (`sprites/radio`), and
-  text chat (Y / U, `say`, `say_team`). Left: the game's own VGUI menu
-  looks (buy, team), `ignorerad`, bots answering radio commands ("Roger that", following "Follow me"),
+  text chat (Y / U, `say`, `say_team`). The buy and team menus draw in the game's VGUI look from its `.res` files
+  (`client/vgui.rs`). Left: the class menu (`classmenu_*.res`, needs player
+  models per class), spectating from the team menu (no spectator team),
+  autobuy / rebuy / favourites, checking the widescreen placement against
+  the game, `ignorerad`, bots answering radio commands ("Roger that", following "Follow me"),
   other game messages in the chat (team joins; bomb pickups and drops
   are in). The radar is in (`client/radar.rs`: the map overview turning
   with you, team dots, your place name); its range (2200 units) is a guess.

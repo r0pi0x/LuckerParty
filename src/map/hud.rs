@@ -95,6 +95,8 @@ pub struct GameHud {
     pub colors: HashMap<String, [u8; 4]>,
     /// Icon name -> a rectangle of a texture (pixels).
     pub sprites: HashMap<String, HudSprite>,
+    /// The game's own menus, when it describes them (see `GameMenus`).
+    pub menus: Option<GameMenus>,
 }
 
 impl GameHud {
@@ -102,6 +104,217 @@ impl GameHud {
         self.colors
             .get(name)
             .map(|[r, g, b, a]| Color::srgba_u8(*r, *g, *b, *a))
+    }
+}
+
+/// What a panel control is (VGUI's `ControlName`, grouped by how it
+/// draws).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UiKind {
+    /// A full-screen or framing panel (`Frame`, `WizardSubPanel`, the
+    /// game's own menu classes): only a box.
+    Frame,
+    Label,
+    /// `Button`, `MouseOverPanelButton`: text in a bordered box that runs
+    /// `command` when pressed.
+    Button,
+    /// A picture (`image`: a key of `GameHud::sprites`) and/or a fill.
+    Image,
+    /// Wrapped text (the team menu's map description).
+    RichText,
+    /// A plain box (`Panel`): where something else goes (`ItemInfo`).
+    Panel,
+    /// A line box (`Divider`).
+    Divider,
+    /// Anything else, by its class name: not drawn.
+    Other(String),
+}
+
+/// How a label's text sits in its box (VGUI's `textAlignment`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UiAlign {
+    #[default]
+    West,
+    Center,
+    East,
+    NorthWest,
+    North,
+    NorthEast,
+    SouthWest,
+    South,
+    SouthEast,
+}
+
+impl UiAlign {
+    pub fn parse(s: &str) -> Self {
+        match s.trim().to_lowercase().as_str() {
+            "center" => UiAlign::Center,
+            "east" => UiAlign::East,
+            "north-west" => UiAlign::NorthWest,
+            "north" => UiAlign::North,
+            "north-east" => UiAlign::NorthEast,
+            "south-west" => UiAlign::SouthWest,
+            "south" => UiAlign::South,
+            "south-east" => UiAlign::SouthEast,
+            _ => UiAlign::West,
+        }
+    }
+}
+
+/// One control of a panel layout, positioned inside its parent in the
+/// virtual 480-line screen (`HudCoord`s resolve against the parent box).
+#[derive(Clone, Debug, PartialEq)]
+pub struct UiControl {
+    /// `fieldName` as written.
+    pub name: String,
+    pub kind: UiKind,
+    pub x: HudCoord,
+    pub y: HudCoord,
+    pub wide: f32,
+    pub tall: f32,
+    /// Draw order (`zpos`), higher on top.
+    pub z: i32,
+    pub visible: bool,
+    pub enabled: bool,
+    /// Localised text with the hotkey marker taken out.
+    pub text: String,
+    /// The key that presses it (`&1` in the text), lower case.
+    pub hotkey: Option<char>,
+    /// What pressing it does: a console line, or another layout's file.
+    pub command: Option<String>,
+    /// The scheme font's name (`font`), when not the default.
+    pub font: Option<String>,
+    pub align: UiAlign,
+    /// `fgcolor_override` / `bgcolor_override` (RGBA).
+    pub fg: Option<[u8; 4]>,
+    pub bg: Option<[u8; 4]>,
+    /// `fillColor` of an image panel.
+    pub fill: Option<[u8; 4]>,
+    /// The picture: a key of `GameHud::sprites`.
+    pub image: Option<String>,
+    /// `dulltext` / `brighttext`.
+    pub dull: bool,
+    pub bright: bool,
+    pub wrap: bool,
+    /// The layout shown while the pointer is over it (a buy item's
+    /// description panel): a key of `GameMenus::layouts`.
+    pub info: Option<String>,
+    /// Every key as written (lower-case keys), for control-specific values
+    /// (e.g. `cost`).
+    pub keys: HashMap<String, String>,
+}
+
+impl UiControl {
+    /// A plain control of `kind` at `(x, y)` sized `wide` x `tall` (tests,
+    /// and games building layouts by hand).
+    pub fn new(name: &str, kind: UiKind, x: f32, y: f32, wide: f32, tall: f32) -> Self {
+        Self {
+            name: name.to_string(),
+            kind,
+            x: HudCoord::Start(x),
+            y: HudCoord::Start(y),
+            wide,
+            tall,
+            z: 0,
+            visible: true,
+            enabled: true,
+            text: String::new(),
+            hotkey: None,
+            command: None,
+            font: None,
+            align: UiAlign::West,
+            fg: None,
+            bg: None,
+            fill: None,
+            image: None,
+            dull: false,
+            bright: false,
+            wrap: false,
+            info: None,
+            keys: HashMap::new(),
+        }
+    }
+
+    /// Its box in pixels inside a parent box (`parent`, pixels), at
+    /// `scale` pixels per virtual unit.
+    pub fn rect(&self, parent: Rect, scale: f32) -> Rect {
+        let min = parent.min
+            + Vec2::new(
+                self.x.resolve(parent.width(), scale),
+                self.y.resolve(parent.height(), scale),
+            );
+        Rect::from_corners(min, min + Vec2::new(self.wide, self.tall) * scale)
+    }
+}
+
+/// A panel layout: its controls in file order.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct UiLayout {
+    pub controls: Vec<UiControl>,
+}
+
+impl UiLayout {
+    /// A control by name (any case).
+    pub fn get(&self, name: &str) -> Option<&UiControl> {
+        self.controls.iter().find(|c| c.name.eq_ignore_ascii_case(name))
+    }
+}
+
+/// One size of a scheme font: its family, height (pixels at 480 lines,
+/// or, when `yres` names the screen heights it is for, pixels) and weight.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UiFontSize {
+    pub family: String,
+    pub tall: f32,
+    pub weight: u32,
+    /// Screen heights (inclusive) this size is for.
+    pub yres: Option<(u32, u32)>,
+}
+
+/// The text height (pixels) in a window `height` pixels tall: the size
+/// meant for that height, else the first without one scaled from 480
+/// lines (Source's proportional fonts), else the first, scaled.
+pub fn font_pixels(sizes: &[UiFontSize], height: f32) -> Option<f32> {
+    let h = height.round() as u32;
+    if let Some(s) = sizes
+        .iter()
+        .find(|s| s.yres.is_some_and(|(lo, hi)| (lo..=hi).contains(&h)))
+    {
+        return Some(s.tall);
+    }
+    let s = sizes.iter().find(|s| s.yres.is_none()).or(sizes.first())?;
+    Some(s.tall * height / 480.0)
+}
+
+/// A layout file's path as a `GameMenus::layouts` key: lower case, forward
+/// slashes.
+pub fn layout_key(path: &str) -> String {
+    path.trim().replace('\\', "/").to_lowercase()
+}
+
+/// A game's own menus (buy, team) as panel layouts, with the scheme's text
+/// fonts; without them the client draws plain menus.
+#[derive(Clone, Debug, Default)]
+pub struct GameMenus {
+    /// Layouts by `layout_key` of their file.
+    pub layouts: HashMap<String, UiLayout>,
+    /// The buy menu's first page per team (`core::Team` number).
+    pub buy: HashMap<u8, String>,
+    /// The team menu's layout.
+    pub team: Option<String>,
+    /// The scheme's text fonts by name (`Default`, `MenuTitle`): sizes in
+    /// order of preference.
+    pub fonts: HashMap<String, Vec<UiFontSize>>,
+    /// The loaded map's description (the team menu's `MapInfo`).
+    pub map_info: Option<String>,
+}
+
+impl GameMenus {
+    /// The buy menu's first page for `team` (any team's when it has none).
+    pub fn buy_page(&self, team: Option<u8>) -> Option<&String> {
+        team.and_then(|t| self.buy.get(&t))
+            .or_else(|| self.buy.get(&2))
+            .or_else(|| self.buy.values().next())
     }
 }
 
@@ -151,5 +364,44 @@ mod tests {
         assert_eq!(HudCoord::parse("r157").unwrap().resolve(1920.0, s), 1920.0 - 157.0 * s);
         assert_eq!(HudCoord::parse(" R 12 "), Some(HudCoord::End(12.0)));
         assert_eq!(HudCoord::parse("x"), None);
+    }
+
+    #[test]
+    fn controls_resolve_inside_their_parent() {
+        // 720 lines: 1.5 pixels per unit; a 640x480 area centred in 1280.
+        let s = 720.0 / 480.0;
+        let area = Rect::new(160.0, 0.0, 160.0 + 640.0 * s, 720.0);
+        let b = UiControl::new("pistols", UiKind::Button, 52.0, 116.0, 170.0, 20.0);
+        let r = b.rect(area, s);
+        assert_eq!(r.min, Vec2::new(160.0 + 78.0, 174.0));
+        assert_eq!(r.size(), Vec2::new(255.0, 30.0));
+        // Right- and centre-anchored, and a child inside a child.
+        let mut c = UiControl::new("x", UiKind::Label, 0.0, 0.0, 10.0, 10.0);
+        c.x = HudCoord::End(20.0);
+        c.y = HudCoord::Centre(-5.0);
+        let r = c.rect(Rect::new(0.0, 0.0, 300.0, 200.0), 2.0);
+        assert_eq!(r.min, Vec2::new(260.0, 90.0));
+        let info = UiControl::new("price", UiKind::Label, 140.0, 134.0, 150.0, 24.0);
+        assert_eq!(info.rect(r, 2.0).min, Vec2::new(260.0 + 280.0, 90.0 + 268.0));
+    }
+
+    #[test]
+    fn font_size_for_the_window() {
+        let size = |tall: f32, yres: Option<(u32, u32)>| UiFontSize {
+            family: "Verdana".into(),
+            tall,
+            weight: 900,
+            yres,
+        };
+        let sizes = [
+            size(12.0, Some((480, 599))),
+            size(20.0, Some((1024, 1199))),
+            size(9.0, None),
+        ];
+        assert_eq!(font_pixels(&sizes, 1080.0), Some(20.0));
+        assert_eq!(font_pixels(&sizes, 720.0), Some(13.5));
+        assert_eq!(font_pixels(&sizes[..1], 960.0), Some(24.0));
+        assert_eq!(font_pixels(&[], 960.0), None);
+        assert_eq!(layout_key(r"Resource\UI/BuyPistols_TER.res "), "resource/ui/buypistols_ter.res");
     }
 }
