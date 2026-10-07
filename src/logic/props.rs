@@ -139,6 +139,18 @@ pub struct Prop {
     pub visible: bool,
     /// Solid to players and shots (EnableCollision/DisableCollision).
     pub solid: bool,
+    /// The model's skin family (`skin`, the Skin input).
+    pub skin: i32,
+    /// The body number set by SetBodyGroup (the combined body index;
+    /// `SetBodyGroup` keyvalue at spawn); None: the model's own.
+    pub body_group: Option<i32>,
+    /// The sequence asked for last (SetAnimation) and how many times one
+    /// was asked for (each ask restarts it).
+    pub sequence: Option<String>,
+    pub sequence_serial: u32,
+    /// Played when a sequence ends and at spawn (`DefaultAnim`,
+    /// SetDefaultAnimation).
+    pub default_sequence: String,
 }
 
 impl Prop {
@@ -154,8 +166,30 @@ impl Prop {
             broken: false,
             visible: true,
             solid: true,
+            skin: e.kv_i("skin").max(0),
+            body_group: e.kv("SetBodyGroup").map(super::value::atoi),
+            sequence: None,
+            sequence_serial: 0,
+            default_sequence: e.kv("DefaultAnim").unwrap_or("").trim().to_string(),
         }
     }
+}
+
+/// What the map draws of a prop the logic keeps (`LogicWorld::prop_states`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PropState {
+    pub id: EntId,
+    /// Index in the map's entity list.
+    pub index: usize,
+    pub visible: bool,
+    pub solid: bool,
+    /// Takes damage from weapons (health, or damage outputs).
+    pub damageable: bool,
+    pub skin: i32,
+    pub body_group: Option<i32>,
+    /// The sequence to play and its serial (a new serial restarts it).
+    pub sequence: Option<(String, u32)>,
+    pub default_sequence: String,
 }
 
 /// Whether a class is a prop the logic keeps (not a door).
@@ -520,15 +554,36 @@ pub(super) fn prop_input(w: &mut LogicWorld, id: EntId, input: &str, value: &Val
         "disable" | "turnoff" => prop(w, id).unwrap().visible = false,
         "enablecollision" => prop(w, id).unwrap().solid = true,
         "disablecollision" => prop(w, id).unwrap().solid = false,
+        "skin" => {
+            let Some(n) = w.need_int(value, input) else { return true };
+            prop(w, id).unwrap().skin = n.max(0);
+        }
+        "setbodygroup" => {
+            let Some(n) = w.need_int(value, input) else { return true };
+            prop(w, id).unwrap().body_group = Some(n.max(0));
+        }
+        "setanimation" => {
+            let Some(name) = w.need_str(value, input) else {
+                return true;
+            };
+            let p = prop(w, id).unwrap();
+            p.sequence = Some(name.trim().to_string());
+            p.sequence_serial += 1;
+        }
+        "setdefaultanimation" => {
+            let Some(name) = w.need_str(value, input) else {
+                return true;
+            };
+            prop(w, id).unwrap().default_sequence = name.trim().to_string();
+        }
         _ => return false,
     }
     true
 }
 
 impl LogicWorld {
-    /// Map props the logic keeps, in entity order: (id, map index,
-    /// visible, solid, takes damage).
-    pub fn prop_states(&self) -> Vec<(EntId, usize, bool, bool, bool)> {
+    /// Map props the logic keeps, in entity order.
+    pub fn prop_states(&self) -> Vec<PropState> {
         self.ids()
             .into_iter()
             .filter_map(|id| {
@@ -538,7 +593,17 @@ impl LogicWorld {
                     || ["OnHealthChanged", "OnTakeDamage", "OnBreak"]
                         .iter()
                         .any(|o| e.has_output(o));
-                Some((id, e.map_index?, p.visible, p.solid && !p.broken, damageable))
+                Some(PropState {
+                    id,
+                    index: e.map_index?,
+                    visible: p.visible,
+                    solid: p.solid && !p.broken,
+                    damageable,
+                    skin: p.skin,
+                    body_group: p.body_group,
+                    sequence: p.sequence.clone().map(|s| (s, p.sequence_serial)),
+                    default_sequence: p.default_sequence.clone(),
+                })
             })
             .collect()
     }

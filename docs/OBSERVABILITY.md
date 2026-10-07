@@ -75,6 +75,11 @@ Only `Reflect`-registered types are visible; register new core components in
   action from the start, e.g. to fire in a `--screenshot` run; held
   console actions work without mouse capture. Automated runs never write
   config.cfg, and only archived cvars are saved there.
+- `ent_fire <target> <input> [value]` sends a map entity an input through
+  the logic layer (names, `*` wildcards, classnames; the local player is
+  the activator), e.g. `+wait 30 +ent_fire logic_timer Disable +ent_fire
+  computer0* Skin 2` in a `--screenshot` run on de_nuke (the `wait` lets
+  the map's logic load first). Logged at info level.
 - `mashup_drawnav 1` outlines the nav areas near you (2: all), coloured by
   place, with half-links toward their neighbours; `mashup_drawbots 1`
   shows each bot's look direction, target (red), last known enemy

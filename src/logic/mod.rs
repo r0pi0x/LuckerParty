@@ -19,6 +19,7 @@ pub mod movers;
 pub mod props;
 pub mod triggers;
 pub mod value;
+pub mod visuals;
 pub mod world;
 
 #[cfg(test)]

@@ -386,7 +386,7 @@ fn prop_visibility_and_collision_inputs() {
     let mut w = world();
     let p = spawn(&mut w, &[("classname", "prop_dynamic"), ("targetname", "screen")]);
     w.activate();
-    let shown = |w: &LogicWorld| w.prop_states().iter().find(|s| s.0 == p).map(|s| (s.2, s.3));
+    let shown = |w: &LogicWorld| w.prop_states().iter().find(|s| s.id == p).map(|s| (s.visible, s.solid));
     // Not a map entity: no map index, so not listed.
     assert_eq!(shown(&w), None);
     w.get_mut(p).unwrap().map_index = Some(0);

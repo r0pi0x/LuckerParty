@@ -33,14 +33,15 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
 - Entity I/O, triggers and moving brushes are in (`src/logic`, slices 3
   and 4 of the plan), and breakables (func_breakable, func_breakable_surf;
   src/logic/breakables.rs), model doors (`prop_door_rotating`) and
-  prop damage/outputs (src/logic/props.rs). Left: breakable follow-ups
-  (section 7), prop inputs `Skin` (de_nuke/de_prodigy computer screens),
-  `SetAnimation` (de_nuke's cars, de_inferno's elevator door),
-  `SetBodyGroup`, `Wake`, physics outputs (`OnAwakened`,
-  `OnMotionEnabled`), env_sprite/light/dust removal by Kill/TurnOff
-  (cs_office's projector glow), a prop damage spec, train facing/banking and
-  player train control, `trigger_soundscape` through the general touch
-  code, env_global. (Round restarts re-create entities: rounds plan.) Target: two
+  prop damage/outputs, skins, body groups and sequences
+  (src/logic/props.rs), sprites, dust and switchable lights
+  (src/logic/visuals.rs, lightmap styles relit at run time), env_global,
+  trigger_soundscape through the touch code. Left: breakable follow-ups
+  (section 7), `Wake`, physics outputs (`OnAwakened`, `OnMotionEnabled`),
+  prop `OnAnimationBegun`/`OnAnimationDone`, prop damage per the new spec
+  (specs/source/prop_damage.md: gibs, impact damage, explosive props), train
+  facing/banking and player train control. (Round restarts re-create
+  entities: rounds plan.) Target: two
   real minigame maps from the user's downloads.
 
 ## 2b. HUD and debug views
@@ -222,7 +223,7 @@ Counts are from de_dust2's entity lump and static prop lump.
   func_brush) move through the logic layer, breakables break; render modes other than normal and 10 (translucent func_brush) aren't
   applied.
 - **Fire** (`env_fire`, 16) and other effects, if they show in normal play.
-- **Lightmap styles**: switching lights and animated styles (lights lit at
-  map start are baked in).
+- **Lightmap styles**: animated styles (1-31) at their pattern (they're
+  baked at normal brightness); switchable ones (32+) switch.
 - **Baked per-vertex prop lighting (`.vhv`)** for maps that ship it (dust2
   doesn't; its props use the per-prop light probe, as in the game).

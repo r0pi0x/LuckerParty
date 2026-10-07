@@ -424,6 +424,20 @@ pub fn convert(bsp: &Bsp, bytes: &[u8], name: &str) -> (MapData, LightmapLayout)
                 dark_styles.contains(&style)
             });
         let slot = flat.map(|s| atlas.add_bumped(s, bumped));
+        // Switchable styles kept apart too, so lights can switch.
+        if let Some(slot) = slot {
+            let styles: Vec<_> =
+                lightmap::face_switchable_styles(lighting, &face, flags.contains(TextureFlags::BUMPLIGHT))
+                    .into_iter()
+                    .map(|s| {
+                        let on = !dark_styles.contains(&s.style);
+                        (s, on)
+                    })
+                    .collect();
+            if !styles.is_empty() {
+                atlas.set_styles(slot, styles);
+            }
+        }
         if in_world {
             *face_slots.last_mut().unwrap() = slot;
         }

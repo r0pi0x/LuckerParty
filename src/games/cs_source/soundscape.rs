@@ -298,7 +298,7 @@ pub fn load(materials: &mut MaterialLoader, bsp: &Bsp, map: &str, sounds: &mut M
         .collect();
     let mut zones = Vec::new();
     let mut emitters = Vec::new();
-    for ent in &entities {
+    for (index, ent) in entities.iter().enumerate() {
         match ent.prop("classname") {
             Some("trigger_soundscape") => {
                 let Some(target) = ent.prop("soundscape").and_then(|t| triggerables.get(&t.to_lowercase())) else {
@@ -324,6 +324,7 @@ pub fn load(materials: &mut MaterialLoader, bsp: &Bsp, map: &str, sounds: &mut M
                     max: a.max(b),
                     scape: s,
                     positions: positions(target),
+                    entity: Some(index),
                 });
             }
             Some("env_soundscape") if ent.prop("StartDisabled") != Some("1") => {

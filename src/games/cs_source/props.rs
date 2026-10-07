@@ -13,7 +13,8 @@ use super::{
     material::MaterialLoader,
 };
 use crate::map::{
-    LightProbe, MapCollision, MapConvex, MapData, MapMesh, MapModel, MapPhysics, MapProp, PropSolid, PushAway,
+    LightProbe, MapBone, MapCollision, MapConvex, MapData, MapMesh, MapMeshLook, MapModel, MapPhysics, MapProp, MapRig,
+    PropSolid, PushAway,
     entities::{DOOR_CLOSE_KEY, DOOR_MOVE_KEY, DOOR_OPEN_KEY, PROP_HEALTH_KEY},
 };
 
@@ -32,13 +33,23 @@ pub fn rotation(angles: vbsp::Angles) -> Quat {
 /// A model and its key values text (`$keyvalues`: `prop_data`,
 /// `door_options`...; None: the model has none).
 fn load_model(materials: &mut MaterialLoader, path: &str) -> Result<(vmdl::Model, Option<String>), String> {
+    load_model_with_layout(materials, path).map(|(m, kv, _)| (m, kv))
+}
+
+/// `load_model`, with the model's body layout (`body_layout`).
+#[allow(clippy::type_complexity)]
+fn load_model_with_layout(
+    materials: &mut MaterialLoader,
+    path: &str,
+) -> Result<(vmdl::Model, Option<String>, Vec<Vec<usize>>), String> {
     let read = |p: String| materials.read(&p).ok_or_else(|| format!("{p}: not found"));
     let mdl = vmdl::mdl::Mdl::read(&read(path.to_string())?).map_err(|e| format!("{path}: {e}"))?;
     let key_values = mdl.key_values.clone();
+    let layout = body_layout(&mdl);
     let stem = path.trim_end_matches(".mdl");
     let vtx = vmdl::vtx::Vtx::read(&read(format!("{stem}.dx90.vtx"))?).map_err(|e| format!("{stem}.dx90.vtx: {e}"))?;
     let vvd = vmdl::vvd::Vvd::read(&read(format!("{stem}.vvd"))?).map_err(|e| format!("{stem}.vvd: {e}"))?;
-    Ok((vmdl::Model::from_parts(mdl, vtx, vvd), key_values))
+    Ok((vmdl::Model::from_parts(mdl, vtx, vvd), key_values, layout))
 }
 
 /// A player model as a character body (specs/cs_source/weapons.md 5): its
@@ -56,7 +67,7 @@ pub fn load_character(
     let mdl = vmdl::mdl::Mdl::read(&bytes).map_err(|e| format!("{path}: {e}"))?;
     // Source models face +X; characters face -Z at yaw 0.
     let face = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
-    let mut body = convert_model_in(&model, 0, materials, false);
+    let mut body = convert_model_in(&model, 0, materials, false, &[]);
     for mesh in &mut body.meshes {
         for p in &mut mesh.positions {
             *p = (face * Vec3::from(*p)).to_array();
@@ -255,7 +266,7 @@ pub fn load_view_model(
     let (model, _) = load_model(materials, path)?;
     // Source models face +X; the eye looks along -Z.
     let face = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
-    let mut view = convert_model_in(&model, 0, materials, false);
+    let mut view = convert_model_in(&model, 0, materials, false, &[]);
     for mesh in &mut view.meshes {
         for p in &mut mesh.positions {
             *p = (face * Vec3::from(*p)).to_array();
@@ -301,7 +312,7 @@ pub fn load_view_model(
 /// meters).
 pub fn load_shell(materials: &mut MaterialLoader, path: &str) -> Result<crate::map::MapModel, String> {
     let (model, _) = load_model(materials, path)?;
-    Ok(convert_model(&model, 0, materials))
+    Ok(convert_model(&model, 0, materials, &[]))
 }
 
 /// A weapon's world model held by characters: its meshes in the frame of
@@ -335,7 +346,7 @@ pub fn load_held(
     let to_bone = Transform::from_rotation(q).with_translation(p).to_matrix().inverse();
     // Engine space (meters, x z -y) back to the model's units and axes.
     let source = |v: [f32; 3]| Vec3::new(v[0], -v[2], v[1]);
-    let mut held = convert_model_in(&model, 0, materials, false);
+    let mut held = convert_model_in(&model, 0, materials, false, &[]);
     for mesh in &mut held.meshes {
         for v in &mut mesh.positions {
             *v = to_bone.transform_point3(source(*v) / METERS_PER_UNIT).to_array();
@@ -395,35 +406,90 @@ fn v(p: vmdl::Vector) -> vbsp::Vector {
 }
 
 /// Convert one model with one skin into engine-space meshes (meters).
-fn convert_model(model: &vmdl::Model, skin: i32, materials: &mut MaterialLoader) -> MapModel {
-    convert_model_in(model, skin, materials, true)
+/// `layout`: mesh counts per choice per body part (`body_layout`).
+fn convert_model(model: &vmdl::Model, skin: i32, materials: &mut MaterialLoader, layout: &[Vec<usize>]) -> MapModel {
+    convert_model_in(model, skin, materials, true, layout)
+}
+
+/// Mesh counts per choice of each body part, in the order vmdl lists the
+/// meshes (part by part, choice by choice).
+fn body_layout(mdl: &vmdl::mdl::Mdl) -> Vec<Vec<usize>> {
+    mdl.body_parts
+        .iter()
+        .map(|p| p.models.iter().map(|m| m.meshes.len()).collect())
+        .collect()
+}
+
+/// How a model material looks: resolved through the model's texture
+/// directories.
+fn mesh_look(materials: &mut MaterialLoader, dirs: &[String], name: &str) -> MapMeshLook {
+    let candidates: Vec<String> = dirs.iter().map(|d| format!("{d}{name}")).collect();
+    let r = materials.resolve_any(&candidates);
+    MapMeshLook {
+        material: name.to_lowercase(),
+        texture: r.texture,
+        alpha: r.alpha,
+        double_sided: r.double_sided,
+        unlit: r.unlit,
+        envmap: r.envmap,
+        tint: r.tint,
+    }
 }
 
 /// `convert_model`, optionally without vmdl's root/idle transform (player
 /// models' vertices are already in their reference pose's model space).
-fn convert_model_in(model: &vmdl::Model, skin: i32, materials: &mut MaterialLoader, root: bool) -> MapModel {
+/// With a body `layout`, meshes of a body part that has several choices
+/// say which (`MapMesh::body`); without one every mesh is drawn. A model
+/// with several skin families keeps each one's look (`MapModel::skins`).
+fn convert_model_in(
+    model: &vmdl::Model,
+    skin: i32,
+    materials: &mut MaterialLoader,
+    root: bool,
+    layout: &[Vec<usize>],
+) -> MapModel {
     let skins: Vec<_> = model.skin_tables().collect();
     let table = skins.get(skin.max(0) as usize).or(skins.first());
+    let several = skins.len() > 1;
     let dirs = model.texture_directories().to_vec();
-    let mut by_material: HashMap<String, MapMesh> = HashMap::new();
-    for mesh in model.meshes() {
-        let Some(name) = table.and_then(|t| t.texture(mesh.material_index())) else {
+    // Each mesh's (part, choice), where its part has several choices.
+    let tags: Vec<Option<(u16, u16)>> = layout
+        .iter()
+        .enumerate()
+        .flat_map(|(p, choices)| {
+            let several = choices.len() > 1;
+            choices
+                .iter()
+                .enumerate()
+                .flat_map(move |(c, n)| std::iter::repeat_n(several.then_some((p as u16, c as u16)), *n))
+        })
+        .collect();
+    let body_parts: Vec<u16> = layout.iter().map(|c| c.len().max(1) as u16).collect();
+    // Meshes merge by material (by material slot when skins differ, so
+    // each can take its own skin), per body choice.
+    let mut by_material: HashMap<(Option<(u16, u16)>, String), (MapMesh, i32)> = HashMap::new();
+    for (k, mesh) in model.meshes().enumerate() {
+        let slot = mesh.material_index();
+        let Some(name) = table.and_then(|t| t.texture(slot)) else {
             continue;
         };
-        let entry = by_material.entry(name.to_lowercase()).or_insert_with(|| {
-            let candidates: Vec<String> = dirs.iter().map(|d| format!("{d}{name}")).collect();
-            let r = materials.resolve_any(&candidates);
-            MapMesh {
-                material: name.to_lowercase(),
+        let body = tags.get(k).copied().flatten();
+        let key = (
+            body,
+            if several {
+                format!("#{slot}")
+            } else {
+                name.to_lowercase()
+            },
+        );
+        let (entry, _) = by_material.entry(key).or_insert_with(|| {
+            let look = mesh_look(materials, &dirs, name);
+            let m = MapMesh {
                 color: [200, 200, 200],
-                texture: r.texture,
-                alpha: r.alpha,
-                double_sided: r.double_sided,
-                unlit: r.unlit,
-                envmap: r.envmap,
-                tint: r.tint,
+                body,
                 ..default()
-            }
+            };
+            (look.apply(&m), slot)
         });
         let verts: Vec<&vmdl::vvd::Vertex> = mesh.vertices().collect();
         for tri in verts.as_chunks::<3>().0 {
@@ -469,17 +535,55 @@ fn convert_model_in(model: &vmdl::Model, skin: i32, materials: &mut MaterialLoad
             }
         }
     }
-    let mut meshes: Vec<MapMesh> = by_material.into_values().filter(|m| !m.indices.is_empty()).collect();
-    meshes.sort_by(|a, b| a.material.cmp(&b.material));
+    let mut meshes: Vec<(MapMesh, i32)> = by_material
+        .into_values()
+        .filter(|(m, _)| !m.indices.is_empty())
+        .collect();
+    meshes.sort_by(|a, b| (&a.0.material, a.0.body, a.1).cmp(&(&b.0.material, b.0.body, b.1)));
+    // Every skin family's look per mesh.
+    let looks: Vec<Vec<MapMeshLook>> = if several {
+        skins
+            .iter()
+            .map(|t| {
+                meshes
+                    .iter()
+                    .map(|(m, slot)| match t.texture(*slot) {
+                        // Skin families nobody may use can name missing
+                        // materials: not a load warning.
+                        Some(name) => {
+                            let known = materials.missing.len();
+                            let look = mesh_look(materials, &dirs, name);
+                            materials.missing.truncate(known);
+                            look
+                        }
+                        None => MapMeshLook {
+                            material: m.material.clone(),
+                            texture: m.texture,
+                            alpha: m.alpha,
+                            double_sided: m.double_sided,
+                            unlit: m.unlit,
+                            envmap: m.envmap,
+                            tint: m.tint,
+                        },
+                    })
+                    .collect()
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     // Axis conversion is a rotation, so re-take min/max per engine axis.
     let (a, b) = model.bounding_box();
     let (a, b) = (to_engine(v(a)), to_engine(v(b)));
     MapModel {
-        meshes,
+        meshes: meshes.into_iter().map(|(m, _)| m).collect(),
         bounds: (a.min(b), a.max(b)),
         collision: None,
         surfaceprop: None,
         illum: None,
+        skins: looks,
+        body_parts,
+        rig: None,
     }
 }
 
@@ -608,6 +712,11 @@ struct PropPlacement {
     parent: Option<usize>,
     /// The entity that placed it, by index (entity props).
     entity: Option<usize>,
+    /// Its body number (`body` keyvalue).
+    body: i32,
+    /// Plays sequences (a prop_dynamic with a default animation, or one the
+    /// map tells to play one): loaded with its skeleton.
+    animated: bool,
 }
 
 pub fn add_static_props(
@@ -646,6 +755,8 @@ pub fn add_static_props(
             fade: (prop.fade_max_distance > 0.0).then_some((prop.fade_min_distance, prop.fade_max_distance)),
             parent: None,
             entity: None,
+            body: 0,
+            animated: false,
         });
     }
     placements.extend(entity_props(bsp));
@@ -660,6 +771,8 @@ fn entity_props(bsp: &Bsp) -> Vec<PropPlacement> {
         let mut it = v.split_whitespace().filter_map(|p| p.parse::<f32>().ok());
         Some([it.next()?, it.next()?, it.next()?])
     };
+    // Names some output tells to play a sequence.
+    let animated_names = animation_targets(bsp);
     bsp.entities
         .iter()
         .enumerate()
@@ -678,6 +791,11 @@ fn entity_props(bsp: &Bsp) -> Vec<PropPlacement> {
             } else {
                 PropSolid::None
             };
+            let dynamic = class.starts_with("prop_dynamic");
+            let animated = dynamic
+                && (e.prop("DefaultAnim").is_some_and(|a| !a.trim().is_empty())
+                    || e.prop("targetname")
+                        .is_some_and(|n| animated_names.contains(&n.to_ascii_lowercase())));
             Some(PropPlacement {
                 model: e.prop("model")?.to_lowercase(),
                 skin: e.prop("skin").and_then(|s| s.trim().parse().ok()).unwrap_or(0),
@@ -707,7 +825,24 @@ fn entity_props(bsp: &Bsp) -> Vec<PropPlacement> {
                     })
                 },
                 entity: Some(index),
+                body: e.prop("body").and_then(|v| v.trim().parse().ok()).unwrap_or(0),
+                animated,
             })
+        })
+        .collect()
+}
+
+/// Names (lower case) that outputs send SetAnimation or
+/// SetDefaultAnimation to.
+fn animation_targets(bsp: &Bsp) -> std::collections::HashSet<String> {
+    bsp.entities
+        .iter()
+        .flat_map(|e| e.properties().map(|(_, v)| v.to_string()).collect::<Vec<_>>())
+        .filter_map(|v| {
+            let mut it = v.split(['\u{1b}', ',']);
+            let target = it.next()?.trim().to_ascii_lowercase();
+            let input = it.next()?.trim().to_ascii_lowercase();
+            matches!(input.as_str(), "setanimation" | "setdefaultanimation").then_some(target)
         })
         .collect()
 }
@@ -720,7 +855,7 @@ fn place_props(
     data: &mut MapData,
     placements: Vec<PropPlacement>,
 ) {
-    let mut loaded: HashMap<(String, i32), Option<usize>> = HashMap::new();
+    let mut loaded: HashMap<(String, i32, bool), Option<usize>> = HashMap::new();
     let mut prop_datas: HashMap<usize, HashMap<String, String>> = HashMap::new();
     let mut key_values: HashMap<usize, String> = HashMap::new();
     let mut failed: Vec<String> = Vec::new();
@@ -730,12 +865,23 @@ fn place_props(
     // entity prop needs one.
     let mut templates: Option<super::hud::Kv> = None;
     for prop in placements {
-        let key = (prop.model.clone(), prop.skin);
+        let key = (prop.model.clone(), prop.skin, prop.animated);
         let model = *loaded
             .entry(key)
-            .or_insert_with(|| match load_model(materials, &prop.model) {
-                Ok((m, kv)) => {
-                    let mut model = convert_model(&m, prop.skin, materials);
+            .or_insert_with(|| match load_model_with_layout(materials, &prop.model) {
+                Ok((m, kv, layout)) => {
+                    let rig = if prop.animated {
+                        load_rig(materials, &prop.model)
+                    } else {
+                        None
+                    };
+                    let mut model = if rig.is_some() {
+                        // Skinned to its skeleton, in the skeleton's frame.
+                        convert_model_in(&m, prop.skin, materials, false, &layout)
+                    } else {
+                        convert_model(&m, prop.skin, materials, &layout)
+                    };
+                    model.rig = rig;
                     model.collision = load_collision(materials, &prop.model);
                     // What traces against the prop report: its collision
                     // model's surface, else the model's own $surfaceprop.
@@ -845,17 +991,51 @@ fn place_props(
             skybox,
             lighting: Some(lighting),
             solid,
-            // A model door's shadow would stay where it was baked.
-            casts_shadow: prop.class.is_some() && !door,
+            // A model door's shadow would stay where it was baked, and an
+            // animated prop's where it spawned.
+            casts_shadow: prop.class.is_some() && !door && data.models[model].rig.is_none(),
             physics: physics.filter(|_| prop.parent.is_none()),
             parent: prop.parent,
             fade: prop.fade.map(|(a, b)| (a * METERS_PER_UNIT, b * METERS_PER_UNIT)),
             entity: prop.entity,
+            skin: prop.skin,
+            body: prop.body,
         });
     }
     failed.sort();
     failed.dedup();
     data.warnings.extend(failed);
+}
+
+/// A model's skeleton and sequences (animated props), when it has any.
+fn load_rig(materials: &mut MaterialLoader, path: &str) -> Option<std::sync::Arc<MapRig>> {
+    let read = |p: &str| materials.read(p);
+    let bones = super::anim::bones(&read, path)
+        .inspect_err(|e| warn!("{path}: skeleton: {e}"))
+        .ok()?;
+    let animations = super::anim::load(&read, path)
+        .inspect_err(|e| warn!("{path}: animations: {e}"))
+        .ok()?;
+    if bones.is_empty() || animations.sequences.is_empty() {
+        return None;
+    }
+    let bones = bones
+        .into_iter()
+        .map(|(name, parent, rotation, position)| MapBone {
+            name,
+            parent,
+            position,
+            rotation,
+        })
+        .collect();
+    // Source axes to ours (x, z, -y): -90 degrees about X; units to meters.
+    let root = Transform::from_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
+        .with_scale(Vec3::splat(METERS_PER_UNIT));
+    Some(std::sync::Arc::new(MapRig {
+        bones,
+        root,
+        animations: std::sync::Arc::new(animations),
+    }))
 }
 
 /// Model doors (specs/source/doors_buttons.md, "prop_door_rotating"):

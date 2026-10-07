@@ -142,6 +142,10 @@ pub struct SoundscapeZone {
     pub max: Vec3,
     pub scape: usize,
     pub positions: Vec<Option<Vec3>>,
+    /// The trigger entity (index into `MapData::entities`): with the logic
+    /// layer, its touch code says when the listener is inside
+    /// (`SoundscapeTouches`), not the box.
+    pub entity: Option<usize>,
 }
 
 /// A point that selects a soundscape within its radius (env_soundscape).
