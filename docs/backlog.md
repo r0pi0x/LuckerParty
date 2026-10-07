@@ -110,7 +110,8 @@ burst), HUD, deathmatch and a first bot are in.
   sequences' IK rules and locks (the animation spec's open question "IK"),
   and a reproduction of the floating. With `mashup_freecam 2` the AK
   sits in both hands standing, crouched and firing (2026-10-06); still to
-  check: pistols and the knife, running, jumping, and bots.
+  check: jumping and other weapons; a running bot (`mashup_watch 1`) holds
+  its AK with both hands too.
 
 ## 4. Bots
 
@@ -134,8 +135,13 @@ docs/plans/active/sound.md.
 - Scrapes (looping friction sounds): needs a stand-in for Source's
   friction energy (spec open question 8); breakables' spec pitch/volume
   rules (we play the entries as scripted) and gib bounce sounds.
-- `ambient_generic` (with entity inputs once maps need them), soundscape
-  DSP presets (room reverb), env_soundscape visibility checks.
+- Soundscape DSP presets (room reverb), env_soundscape visibility
+  checks; soundscape loops onto `map::live_sound` (intro, live panning).
+- What still keeps stock ambient_generics silent: prop outputs
+  (de_nuke's steam on OnHealthChanged of the fire extinguishers,
+  cs_office's projector stop), the bomb (de_nuke's alarm, dust2's fires).
+- Measure ambient_generic's level for script entries vs raw waves (spec
+  open question 11).
 - Measure on the probe server: the distance curves (replace the H1/H2
   guesses), CS:S footstep silence rules, the jump sound, wave choice.
 

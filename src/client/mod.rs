@@ -343,7 +343,22 @@ fn follow_eye(
     mut freecam: ResMut<view::FreeCam>,
     spatial: avian3d::prelude::SpatialQuery,
     characters: Query<Entity, With<Intent>>,
+    watch: Res<view::Watch>,
+    others: Query<(&Name, &Transform, &Intent, &MovementState), (Without<LocalPlayer>, Without<FirstPersonCamera>)>,
 ) {
+    // The watched character, if any: a chase camera behind it (world space).
+    let watched = (watch.0 > 0)
+        .then(|| format!("Bot {}", watch.0))
+        .and_then(|name| others.iter().find(|(n, ..)| n.as_str() == name))
+        .map(|(_, t, i, s)| {
+            let chase = view::CameraMode {
+                third_person: true,
+                ..*mode
+            };
+            let look = view::camera_look(&chase, Quat::from_euler(EulerRot::YXZ, i.yaw, i.pitch, 0.0));
+            let offset = view::camera_offset(&chase, t.translation, s.eye_offset, look, &spatial, &characters);
+            (t.translation + offset, look)
+        });
     for (at, intent, state, children, punch) in &players {
         // Recoil kicks the view (pitch up, yaw left).
         let p = punch.map_or(Vec2::ZERO, |p| p.0);
@@ -357,7 +372,10 @@ fn follow_eye(
         let offset = view::camera_offset(&mode, at.translation, state.eye_offset, look, &spatial, &characters);
         // Detached: starts where the camera is; placed in the world (the
         // camera is the player's child, so undo the player's transform).
-        let (offset, look) = if freecam.mode == 0 {
+        let (offset, look) = if let Some((p, q)) = watched {
+            let inv = at.compute_affine().inverse();
+            (inv.transform_point3(p), at.rotation.inverse() * q)
+        } else if freecam.mode == 0 {
             freecam.bypass_change_detection().at = None;
             (offset, look)
         } else {

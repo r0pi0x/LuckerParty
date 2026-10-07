@@ -15,7 +15,9 @@ use crate::core::{
 };
 use crate::map::breakables::{GibPiece, GlassShatter, SpawnGibs};
 use crate::map::entities::{engine_to_entity, entity_rotation, entity_to_engine, rotation_to_engine};
-use crate::map::{BrushPanes, MapBrushEntity, MapEntities, PlaySound};
+use crate::map::{
+    BrushPanes, MapBrushEntity, MapEntities, PlaySound, PropEntity, SoundControl, SoundKey, SoundLevel, StartSound,
+};
 
 /// The running logic world of the loaded map.
 #[derive(Resource)]
@@ -51,6 +53,7 @@ impl Plugin for LogicPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<HudMessages>()
             .add_message::<PlaySound>()
+            .add_message::<SoundControl>()
             .add_message::<SpawnGibs>()
             .add_message::<GlassShatter>()
             .configure_sets(
@@ -76,10 +79,12 @@ fn load(world: &mut World) {
     match (current, built) {
         (None, Some(_)) => {
             restore_settings(world);
+            world.write_message(SoundControl::StopAll);
             world.remove_resource::<Logic>();
         }
         (Some(m), b) if b.as_ref().is_none_or(|b| !std::sync::Arc::ptr_eq(b, &m.entities)) => {
             restore_settings(world);
+            world.write_message(SoundControl::StopAll);
             let dt = world.resource::<Time<Fixed>>().timestep().as_secs_f32();
             let mut logic = LogicWorld::new(dt);
             let ids = logic.load_map(&m.entities);
@@ -97,6 +102,8 @@ fn load(world: &mut World) {
             let Some(mut logic) = world.remove_resource::<Logic>() else { return };
             if logic.restarts != restarts {
                 logic.restarts = restarts;
+                // The entities' sounds stop; re-created ones start again.
+                world.write_message(SoundControl::StopAll);
                 let source = logic.source.clone();
                 let ids = logic.world.round_restart(&source);
                 logic.nodes = attach_nodes(world, &logic.world, &ids);
@@ -468,6 +475,36 @@ fn apply_effects(world: &mut World, effects: Vec<Effect>, scale: f32) {
             Effect::Sound { entry, at } => {
                 world.write_message(PlaySound::at(entry, entity_to_engine(at, scale)));
             }
+            Effect::AmbientStart {
+                id,
+                entry,
+                at,
+                source,
+                volume,
+                pitch,
+                level,
+            } => {
+                let follow = source.and_then(|s| entity_node(world, s));
+                world.write_message(SoundControl::Start(StartSound {
+                    key: sound_key(id),
+                    entry,
+                    at: Some(entity_to_engine(at, scale)),
+                    follow,
+                    volume,
+                    pitch,
+                    level: level.map(SoundLevel::Db),
+                }));
+            }
+            Effect::AmbientChange { id, volume, pitch } => {
+                world.write_message(SoundControl::Change {
+                    key: sound_key(id),
+                    volume,
+                    pitch,
+                });
+            }
+            Effect::AmbientStop { id } => {
+                world.write_message(SoundControl::Stop(sound_key(id)));
+            }
             Effect::GameText { to, message } => {
                 if to.is_none() || to == local {
                     world.resource_mut::<HudMessages>().show(message, now);
@@ -483,6 +520,26 @@ fn apply_effects(world: &mut World, effects: Vec<Effect>, scale: f32) {
             }
         }
     }
+}
+
+/// The long-lived sound of a logic entity.
+fn sound_key(id: EntId) -> SoundKey {
+    SoundKey(1 << 63 | (id.generation as u64) << 32 | id.index as u64)
+}
+
+/// The ECS node standing for a logic entity, if it has one: a mover's
+/// node or a prop the entity placed.
+fn entity_node(world: &mut World, id: EntId) -> Option<Entity> {
+    let logic = world.get_resource::<Logic>()?;
+    if let Some((_, node)) = logic.nodes.iter().find(|(m, _)| *m == id) {
+        return Some(*node);
+    }
+    let index = logic.world.get(id)?.map_index?;
+    world
+        .query::<(Entity, &PropEntity)>()
+        .iter(world)
+        .find(|(_, p)| p.0 == index)
+        .map(|(e, _)| e)
 }
 
 /// An allowed server command: `say` prints; settings remember their old

@@ -239,7 +239,7 @@ impl Plugin for SoundPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<PlaySound>()
             .add_systems(PostUpdate, play_sounds.run_if(resource_exists::<Assets<AudioSource>>))
-            .add_plugins(super::soundscape::SoundscapePlugin);
+            .add_plugins((super::soundscape::SoundscapePlugin, super::live_sound::LiveSoundPlugin));
     }
 }
 

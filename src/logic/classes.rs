@@ -39,6 +39,8 @@ pub enum Class {
     Attached(Box<movers::Attached>),
     /// func_breakable, func_breakable_surf.
     Breakable(Box<super::breakables::Breakable>),
+    /// ambient_generic.
+    Ambient(Box<super::ambient::Ambient>),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -252,6 +254,7 @@ impl Class {
             "func_tracktrain" => Class::Train(Box::new(Train::spawn(w, id))),
             "path_track" => Class::PathTrack(PathTrack::spawn(w, id)),
             "func_brush" => Class::Brush(Box::new(Toggle::spawn_brush(w, id))),
+            "ambient_generic" => super::ambient::spawn(w, id).map_or(Class::None, |a| Class::Ambient(Box::new(a))),
             "func_breakable" | "func_breakable_surf" => {
                 Class::Breakable(Box::new(super::breakables::Breakable::spawn(w, id)))
             }
@@ -349,6 +352,7 @@ pub(super) fn class_activate(w: &mut LogicWorld, id: EntId) {
         Class::Breakable(_) => movers::activate(w, id),
         Class::PathTrack(_) => movers::activate_path(w, id),
         Class::Attached(_) => movers::activate_attached(w, id),
+        Class::Ambient(_) => super::ambient::activate(w, id),
         _ => {}
     }
 }
@@ -386,6 +390,7 @@ pub(super) fn class_think(w: &mut LogicWorld, id: EntId) {
             }
         }
         Class::Trigger(_) => triggers::think(w, id),
+        Class::Ambient(_) => super::ambient::think(w, id),
         _ => movers::think(w, id),
     }
 }
@@ -796,6 +801,7 @@ pub(super) fn class_input(
         | Class::Brush(_) => return movers::input(w, id, input, value, activator, caller),
         Class::Attached(_) => return false,
         Class::Breakable(_) => return super::breakables::input(w, id, input, value, activator),
+        Class::Ambient(_) => return super::ambient::input(w, id, input, value),
         Class::None | Class::Auto => return false,
     }
     true

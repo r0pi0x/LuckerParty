@@ -486,7 +486,8 @@ mod tests {
     #[test]
     fn committed_vmf_is_current() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/testmap/mashup_logic_test.vmf");
-        let committed = std::fs::read_to_string(path).unwrap_or_default();
+        // Git on Windows may check it out with CRLF line endings.
+        let committed = std::fs::read_to_string(path).unwrap_or_default().replace('\r', "");
         assert!(
             committed == vmf(),
             "tools/testmap/mashup_logic_test.vmf is out of date: run `cargo run --bin testmap`"
