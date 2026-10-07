@@ -81,6 +81,7 @@ struct ScapeLoop {
 
 fn select(
     bank: Option<Res<SoundBank>>,
+    touches: Option<Res<super::SoundscapeTouches>>,
     listener: Query<&GlobalTransform, With<SoundListener>>,
     mut state: ResMut<ScapeState>,
     mut loops: Query<(Entity, &mut ScapeLoop)>,
@@ -94,11 +95,17 @@ fn select(
     let sounds = &bank.0;
     let ear = ear.translation();
     // Zones: entering one makes it current; leaving all keeps the last.
+    // The logic's touch code says which triggers the listener touches
+    // (their exact volumes, enabled ones); without it, their boxes.
+    let touched = touches.as_ref().and_then(|t| t.0.as_ref());
     let containing: Vec<usize> = sounds
         .soundscape_zones
         .iter()
         .enumerate()
-        .filter(|(_, z)| ear.cmpge(z.min).all() && ear.cmple(z.max).all())
+        .filter(|(_, z)| match (touched, z.entity) {
+            (Some(list), Some(e)) => list.contains(&e),
+            _ => ear.cmpge(z.min).all() && ear.cmple(z.max).all(),
+        })
         .map(|(i, _)| i)
         .collect();
     state.inside.retain(|i| containing.contains(i));

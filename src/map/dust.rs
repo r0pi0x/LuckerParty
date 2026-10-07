@@ -71,7 +71,7 @@ pub(super) fn empty_mesh() -> Mesh {
 pub(super) fn update_dust(
     time: Res<Time>,
     cameras: Query<&GlobalTransform, (With<Camera3d>, Without<SkyboxCamera>, Without<super::ViewModelCamera>, Without<super::water::WaterReflectionCamera>)>,
-    mut emitters: Query<&mut DustEmitter>,
+    mut emitters: Query<(&mut DustEmitter, Option<&super::EntityPart>)>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     let dt = time.delta_secs();
@@ -82,10 +82,20 @@ pub(super) fn update_dust(
         eye.right().as_vec3(),
         eye.up().as_vec3(),
     );
-    let mut total: usize = emitters.iter().map(|e| e.motes.len()).sum();
-    for mut e in &mut emitters {
+    let mut total: usize = emitters.iter().map(|(e, _)| e.motes.len()).sum();
+    for (mut e, part) in &mut emitters {
+        // Turned off (TurnOff): no new motes, the others live out their
+        // life; removed (Kill): gone at once.
+        if part.is_some_and(|p| !p.exists) {
+            e.motes.clear();
+        }
+        let spawning = part.is_none_or(|p| p.on && p.exists);
         // Spawn (frame time for spawning is clamped to 0.1 s).
-        e.pending += e.dust.rate * dt.min(0.1);
+        if spawning {
+            e.pending += e.dust.rate * dt.min(0.1);
+        } else {
+            e.pending = 0.0;
+        }
         while e.pending >= 1.0 {
             e.pending -= 1.0;
             if total >= MAX_MOTES {

@@ -403,6 +403,19 @@ pub struct LogicWorld {
     pub(super) use_held: Vec<Entity>,
     /// Round restarts since the map loaded (0: the map's first round).
     pub round: u32,
+    /// Switchable light styles and whether each is lit (`visuals`).
+    pub(super) light_styles: Vec<(u8, bool)>,
+    /// Global states (env_global): name (lower case), state, counter.
+    /// They outlive round restarts.
+    pub globals: Vec<(String, GlobalState, i32)>,
+}
+
+/// An env_global state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GlobalState {
+    Off,
+    On,
+    Dead,
 }
 
 /// Classes a round restart keeps as they are instead of re-creating
@@ -450,6 +463,8 @@ impl LogicWorld {
             solids: Vec::new(),
             use_held: Vec::new(),
             round: 0,
+            light_styles: Vec::new(),
+            globals: Vec::new(),
         }
     }
 
@@ -488,6 +503,7 @@ impl LogicWorld {
         fresh.rng = self.rng;
         fresh.record = self.record;
         fresh.round = self.round + 1;
+        fresh.globals = std::mem::take(&mut self.globals);
         fresh.players = std::mem::take(&mut self.players);
         fresh.player_names = std::mem::take(&mut self.player_names);
         fresh.use_held = std::mem::take(&mut self.use_held);

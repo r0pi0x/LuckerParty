@@ -6,7 +6,7 @@ use super::hud::HudMessage;
 use super::movers::{self, Button, Door, MoveLinear, PathTrack, Rotating, Toggle, Train};
 use super::triggers::{self, Trigger};
 use super::value::{Value, atoi};
-use super::world::{Effect, EntId, LogicWorld, Who, name_matches};
+use super::world::{Effect, EntId, GlobalState, LogicWorld, Who, name_matches};
 
 /// Per-class state.
 #[derive(Clone, Debug, Default)]
@@ -43,8 +43,15 @@ pub enum Class {
     Ambient(Box<super::ambient::Ambient>),
     /// prop_door_rotating: a model door, turned like a rotating door.
     PropDoor(Box<super::props::PropDoor>),
-    /// prop_dynamic, prop_physics*: damage, outputs, visibility.
+    /// prop_dynamic, prop_physics*: damage, outputs, visibility, skin,
+    /// body group, animation.
     Prop(Box<super::props::Prop>),
+    /// env_sprite, func_dustmotes, func_dustcloud: drawn while on.
+    Part(super::visuals::Part),
+    /// light, light_spot: a switchable light style.
+    Light(super::visuals::Light),
+    /// env_global: names a global state.
+    Global(String),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -262,6 +269,14 @@ impl Class {
             "func_breakable" | "func_breakable_surf" => {
                 Class::Breakable(Box::new(super::breakables::Breakable::spawn(w, id)))
             }
+            "env_sprite" | "env_glow" => {
+                Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::Sprite))
+            }
+            "func_dustmotes" | "func_dustcloud" => {
+                Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::Dust))
+            }
+            "light" | "light_spot" => Class::Light(super::visuals::spawn_light(w, id)),
+            "env_global" => Class::Global(global_spawn(w, id)),
             "prop_door_rotating" => Class::PropDoor(Box::new(super::props::PropDoor::spawn(w, id))),
             c if super::props::is_prop_class(c) => Class::Prop(Box::new(super::props::Prop::spawn(w, id))),
             _ if !e.hulls.is_empty() && e.kv("parentname").is_some_and(|p| !p.is_empty()) => {
@@ -370,9 +385,10 @@ pub(super) fn class_think(w: &mut LogicWorld, id: EntId) {
     let Some(e) = w.get(id) else { return };
     match &e.class {
         Class::Auto => {
-            if e.kv("globalstate").is_some_and(|g| !g.is_empty()) {
-                // No env_global yet: an unset global is off.
-                w.log.push("logic_auto: global states are not supported (off)".into());
+            // Only while its global state is on (an unset one is off).
+            if let Some(g) = e.kv("globalstate").filter(|g| !g.trim().is_empty())
+                && w.global(g) != Some(GlobalState::On)
+            {
                 return;
             }
             let remove = e.has_flag(1);
@@ -813,6 +829,8 @@ pub(super) fn class_input(
         Class::Attached(_) => return false,
         Class::Breakable(_) => return super::breakables::input(w, id, input, value, activator),
         Class::Ambient(_) => return super::ambient::input(w, id, input, value),
+        Class::Part(_) | Class::Light(_) => return super::visuals::input(w, id, input, value),
+        Class::Global(name) => return global_input(w, id, &name, input, value, activator),
         Class::None | Class::Auto => return false,
     }
     true
@@ -860,5 +878,96 @@ pub(super) fn class_keyvalue(w: &mut LogicWorld, id: EntId, key: &str, _value: &
         }
         Class::Trigger(_) => triggers::keyvalue(w, id, key),
         _ => movers::keyvalue(w, id, key),
+    }
+}
+
+/// env_global "Set initial state" spawnflag.
+pub const SF_GLOBAL_SET_INITIAL: u32 = 1;
+
+/// An env_global spawning: with "Set initial state", a global not set yet
+/// takes `initialstate` (0 off, 1 on, 2 dead) and `counter`. Returns the
+/// global's name (lower case).
+fn global_spawn(w: &mut LogicWorld, id: EntId) -> String {
+    let e = w.get(id).unwrap();
+    let name = e.kv("globalstate").unwrap_or("").trim().to_ascii_lowercase();
+    let state = match e.kv_i("initialstate") {
+        1 => GlobalState::On,
+        2 => GlobalState::Dead,
+        _ => GlobalState::Off,
+    };
+    let counter = e.kv_i("counter");
+    if !name.is_empty() && e.has_flag(SF_GLOBAL_SET_INITIAL) && w.global(&name).is_none() {
+        w.globals.push((name.clone(), state, counter));
+    }
+    name
+}
+
+/// env_global inputs (TurnOn, TurnOff, Toggle, Remove: dead; SetCounter,
+/// AddToCounter, GetCounter: fires OutCounter).
+fn global_input(w: &mut LogicWorld, id: EntId, name: &str, input: &str, value: &Value, activator: Option<Who>) -> bool {
+    const INPUTS: &[&str] = &[
+        "turnon",
+        "turnoff",
+        "toggle",
+        "remove",
+        "setcounter",
+        "addtocounter",
+        "getcounter",
+    ];
+    if name.is_empty() {
+        return INPUTS.contains(&input);
+    }
+    let (state, counter) = w
+        .globals
+        .iter()
+        .find(|g| g.0 == name)
+        .map_or((GlobalState::Off, 0), |g| (g.1, g.2));
+    let (state, counter) = match input {
+        "turnon" => (GlobalState::On, counter),
+        "turnoff" => (GlobalState::Off, counter),
+        "toggle" if state == GlobalState::On => (GlobalState::Off, counter),
+        "toggle" => (GlobalState::On, counter),
+        "remove" => (GlobalState::Dead, counter),
+        "setcounter" => {
+            let Some(n) = w.need_int(value, input) else { return true };
+            (state, n)
+        }
+        "addtocounter" => {
+            let Some(n) = w.need_int(value, input) else { return true };
+            (state, counter + n)
+        }
+        "getcounter" => {
+            w.fire_output(id, "OutCounter", activator, Value::Int(counter));
+            return true;
+        }
+        _ => return false,
+    };
+    match w.globals.iter_mut().find(|g| g.0 == name) {
+        Some(g) => {
+            g.1 = state;
+            g.2 = counter;
+        }
+        None => w.globals.push((name.to_string(), state, counter)),
+    }
+    true
+}
+
+impl LogicWorld {
+    /// A global state (env_global), if set.
+    pub fn global(&self, name: &str) -> Option<GlobalState> {
+        let name = name.trim();
+        self.globals
+            .iter()
+            .find(|g| g.0.eq_ignore_ascii_case(name))
+            .map(|g| g.1)
+    }
+
+    /// A global's counter (0 when unset).
+    pub fn global_counter(&self, name: &str) -> i32 {
+        let name = name.trim();
+        self.globals
+            .iter()
+            .find(|g| g.0.eq_ignore_ascii_case(name))
+            .map_or(0, |g| g.2)
     }
 }

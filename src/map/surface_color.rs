@@ -77,6 +77,7 @@ impl SurfaceColors {
                     height: l.height,
                     rgb: l.rgb.clone(),
                     bumped: None,
+                    styles: Vec::new(),
                 })
             }),
             light_scale: data.look.light_scale,
@@ -242,6 +243,7 @@ mod tests {
             height: 1,
             rgb: vec![[0.25, 0.5, 1.0]],
             bumped: None,
+            styles: Vec::new(),
         });
         data.meshes.push(MapMesh {
             positions: vec![[-1.0, 0.0, -1.0], [-1.0, 0.0, 1.0], [1.0, 0.0, 1.0]],

@@ -13,7 +13,7 @@ use bevy::{
     render::render_resource::{Extent3d, PrimitiveTopology, TextureDimension, TextureFormat},
 };
 
-use crate::core::{SpawnPoint, Team};
+use crate::core::{MovingSolid, SpawnPoint, Team};
 // Collision-world types live in `core` (the greybox map uses them too).
 pub use crate::core::{
     MapBrush, MapBrushCollider, MapBrushes, MapTerrain, MapTerrainCollider, MapWater, MapWaterVolume, PropSurface,
@@ -224,6 +224,49 @@ pub struct MapMesh {
     /// A water surface: index into `MapData::water_materials` (drawn by
     /// `water::WaterMaterial` instead).
     pub water: Option<usize>,
+    /// A model mesh that belongs to one choice of a body part with
+    /// several (part, choice): drawn only while the prop's body picks it
+    /// (`MapModel::body_parts`).
+    pub body: Option<(u16, u16)>,
+}
+
+/// How a model mesh looks under one skin family: the material fields of
+/// `MapMesh` that a skin changes.
+#[derive(Clone, Debug, Default)]
+pub struct MapMeshLook {
+    pub material: String,
+    pub texture: Option<usize>,
+    pub alpha: MapAlpha,
+    pub double_sided: bool,
+    pub unlit: bool,
+    pub envmap: Option<MapEnvmap>,
+    pub tint: Option<[f32; 3]>,
+}
+
+impl MapMeshLook {
+    /// The mesh with this look.
+    pub fn apply(&self, m: &MapMesh) -> MapMesh {
+        MapMesh {
+            material: self.material.clone(),
+            texture: self.texture,
+            alpha: self.alpha,
+            double_sided: self.double_sided,
+            unlit: self.unlit,
+            envmap: self.envmap.clone(),
+            tint: self.tint,
+            ..m.clone()
+        }
+    }
+}
+
+/// A model's skeleton and what it can play (animated props).
+#[derive(Clone, Debug)]
+pub struct MapRig {
+    /// Parents before children, in the source game's axes and units.
+    pub bones: Vec<MapBone>,
+    /// From the skeleton's space to the model's (engine axes, meters).
+    pub root: Transform,
+    pub animations: Arc<anim::AnimSet>,
 }
 
 /// A baked environment cubemap: six square RGBA8 sRGB faces in the
@@ -302,6 +345,55 @@ pub struct MapLightmap {
     /// per basis direction of radiosity normal mapping. Surfaces without
     /// them repeat `rgb`.
     pub bumped: Option<[Vec<[f32; 3]>; 3]>,
+    /// Switchable light styles: what each adds where it lights, so they
+    /// can be turned on and off (`LightStyles`). `rgb` and `bumped` hold
+    /// the lighting at map start (styles with `on` included).
+    pub styles: Vec<MapLightStyle>,
+}
+
+/// One switchable light style's share of the lightmap atlas.
+#[derive(Clone, Debug, Default)]
+pub struct MapLightStyle {
+    pub style: u8,
+    /// Lit at map start.
+    pub on: bool,
+    /// Atlas texels (row-major index) it lights, and the light it adds
+    /// there (same units as `MapLightmap::rgb`).
+    pub texels: Vec<u32>,
+    pub rgb: Vec<[f32; 3]>,
+    /// What it adds to each directional page, per texel.
+    pub bumped: Option<[Vec<[f32; 3]>; 3]>,
+}
+
+impl MapLightmap {
+    /// The atlas (flat and directional pages) with each style lit as
+    /// `lit(style)` says.
+    #[allow(clippy::type_complexity)]
+    pub fn relit(&self, lit: &dyn Fn(u8) -> bool) -> (Vec<[f32; 3]>, Option<[Vec<[f32; 3]>; 3]>) {
+        let mut rgb = self.rgb.clone();
+        let mut bumped = self.bumped.clone();
+        for s in &self.styles {
+            let sign = match (s.on, lit(s.style)) {
+                (false, true) => 1.0,
+                (true, false) => -1.0,
+                _ => continue,
+            };
+            let add = |dst: &mut [f32; 3], v: [f32; 3]| {
+                for k in 0..3 {
+                    dst[k] = (dst[k] + sign * v[k]).max(0.0);
+                }
+            };
+            for (i, &t) in s.texels.iter().enumerate() {
+                add(&mut rgb[t as usize], s.rgb[i]);
+                if let (Some(pages), Some(src)) = (bumped.as_mut(), s.bumped.as_ref()) {
+                    for k in 0..3 {
+                        add(&mut pages[k][t as usize], src[k][i]);
+                    }
+                }
+            }
+        }
+        (rgb, bumped)
+    }
 }
 
 /// A reusable model (e.g. a window frame), in its own space: meters, Y up.
@@ -317,7 +409,37 @@ pub struct MapModel {
     /// Where the model is lit from, in model space (Source
     /// `$illumposition`), when the game gives one.
     pub illum: Option<Vec3>,
+    /// Each skin family's look per mesh (same order as `meshes`), when
+    /// the model has more than one; the meshes themselves show the skin
+    /// they were loaded with.
+    pub skins: Vec<Vec<MapMeshLook>>,
+    /// Choices per body part (Source body groups); a prop's body number
+    /// picks one per part (`body_choice`).
+    pub body_parts: Vec<u16>,
+    /// Skeleton and animations, for props that play sequences (meshes
+    /// skinned to it).
+    pub rig: Option<Arc<MapRig>>,
 }
+
+impl MapModel {
+    /// Which choice of body part `part` a body number shows.
+    pub fn body_choice(&self, body: i32, part: usize) -> u16 {
+        body_choice(&self.body_parts, body, part)
+    }
+}
+
+/// Which choice of body part `part` a body number shows, given each
+/// part's choice count (Source: the body number in the mixed radix of
+/// the parts' counts, the first part lowest).
+pub fn body_choice(parts: &[u16], body: i32, part: usize) -> u16 {
+    let base: i32 = parts[..part.min(parts.len())]
+        .iter()
+        .map(|n| (*n).max(1) as i32)
+        .product();
+    let n = parts.get(part).copied().unwrap_or(1).max(1) as i32;
+    ((body.max(0) / base.max(1)) % n) as u16
+}
+
 
 /// A character body from the game: meshes in the character's local space
 /// (feet at the origin, facing -Z) and its hitboxes in the same space.
@@ -805,6 +927,10 @@ pub struct MapProp {
     /// The entity it was placed by (index into `MapData::entities`); its
     /// node then carries `PropEntity`.
     pub entity: Option<usize>,
+    /// The skin family its meshes show (`MapModel::skins`).
+    pub skin: i32,
+    /// Its body number (`MapModel::body_choice`).
+    pub body: i32,
 }
 
 /// A physics prop's body (specs/cs_source/physics_props.md 3, 4).
@@ -1056,6 +1182,11 @@ pub struct MapDust {
     pub color: [f32; 4],
     /// Index into `MapData::textures`.
     pub texture: Option<usize>,
+    /// The entity it comes from (index into `MapData::entities`), which
+    /// the logic turns on and off (`EntityPart`).
+    pub entity: Option<usize>,
+    /// Spawning motes at map start.
+    pub start_on: bool,
 }
 
 /// A camera-facing sprite (lamp glows): a quad parallel to the view plane,
@@ -1076,7 +1207,57 @@ pub struct MapSprite {
     /// Glow occlusion proxy: half-diagonal of a square pulled this far
     /// toward the viewer, meters.
     pub proxy: f32,
+    /// The entity it comes from (index into `MapData::entities`), which
+    /// the logic shows and hides (`EntityPart`).
+    pub entity: Option<usize>,
+    /// Shown at map start.
+    pub start_on: bool,
 }
+
+/// A drawn part of a map entity the logic switches (sprites, dust
+/// volumes): `on` shows a sprite or lets dust spawn motes; `exists` false
+/// (killed) removes it from view at once. The logic layer writes it.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EntityPart {
+    /// Index into `MapData::entities`.
+    pub entity: usize,
+    pub on: bool,
+    pub exists: bool,
+}
+
+/// How a prop entity looks, as the logic says (skin family, and the body
+/// number SetBodyGroup set; `MapModel::skins`, `MapModel::body_choice`).
+/// The logic layer writes it; the map applies it.
+#[derive(Component, Clone, Debug, PartialEq, Eq)]
+pub struct PropLook {
+    pub skin: i32,
+    pub body_group: Option<i32>,
+}
+
+/// What an animated prop plays, as the logic says: a sequence by name
+/// with a serial (a new serial restarts it), the one played at spawn and
+/// after a sequence ends, and the round (a new round starts over).
+#[derive(Component, Clone, Debug, Default, PartialEq, Eq)]
+pub struct PropSequence {
+    pub play: Option<(String, u32)>,
+    pub default: String,
+    pub round: u32,
+}
+
+/// Switchable light styles that are off (Source styles 32+). The logic
+/// layer writes it; the map relights the lightmaps when it changes.
+#[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
+pub struct LightStyles {
+    /// Style numbers and whether each is lit; unlisted styles keep their
+    /// state at map start.
+    pub styles: Vec<(u8, bool)>,
+}
+
+/// Which soundscape volumes (by entity index, `SoundscapeZone::entity`)
+/// the listener touches, as the logic layer's touch code says; None: the
+/// map tests the zones' boxes itself.
+#[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
+pub struct SoundscapeTouches(pub Option<Vec<usize>>);
 
 /// A rope or cable: a line of points drawn as a strip that always faces the
 /// camera (the rope shader widens it per view). Source's Cable look:
@@ -1391,6 +1572,17 @@ impl Plugin for MapPlugin {
                     .before(crate::core::SimSet::Movement),
             )
             .add_systems(FixedPostUpdate, breakables::update_panes)
+            // What the logic switches: sprites and dust, lights, prop
+            // skins, bodies and sequences.
+            .add_systems(
+                Update,
+                (
+                    switch_parts.before(glow_visibility).before(dust::update_dust),
+                    relight,
+                    apply_prop_looks,
+                    animate_props,
+                ),
+            )
             .add_systems(Update, (breakables::spawn_gibs, breakables::fly_gibs).chain())
             .add_systems(
                 Update,
@@ -1577,10 +1769,13 @@ fn spawn_map(
     let mut model_parts: Vec<Vec<(Handle<Mesh>, Handle<StandardMaterial>)>> = Vec::new();
     // Per model mesh: [in the world (fogged), in the 3D skybox].
     let mut lit_model_materials: Vec<Vec<[Handle<PropMaterial>; 2]>> = Vec::new();
+    // Per model with several skins: each skin's materials per mesh.
+    let mut skin_model_materials: Vec<Vec<Vec<[Handle<PropMaterial>; 2]>>> = Vec::new();
     // Cubemap handles, and prop materials with the nearest one, made as
     // props need them: (model, mesh, sky layer, cubemap).
     let mut cubemap_handles: Vec<Handle<Image>> = Vec::new();
     let mut texture_handles: Vec<Handle<Image>> = Vec::new();
+    let mut rig_bindposes: HashMap<usize, Handle<bevy::mesh::skinning::SkinnedMeshInverseBindposes>> = HashMap::new();
     let mut envmap_variants: std::collections::HashMap<(usize, usize, bool, usize), Handle<PropMaterial>> =
         std::collections::HashMap::new();
 
@@ -1669,40 +1864,26 @@ fn spawn_map(
                 commands.insert_resource(gibs);
             }
         }
-        let lightmap = data
-            .lightmap
-            .as_ref()
-            .map(|l| images.add(lightmap_image(&l.rgb, l.width, l.height)));
-        // The world material's copies, in the game's own encoding if asked.
         let source_ldr = data.look.source_ldr_lightmaps;
-        let world_layer = |rgb: &[[f32; 3]], w: u32, h: u32| {
-            if source_ldr {
-                source_lightmap_image(rgb, w, h)
-            } else {
-                lightmap_image(rgb, w, h)
-            }
-        };
-        let world_lightmap = data
+        let built = data
             .lightmap
             .as_ref()
-            .map(|l| images.add(world_layer(&l.rgb, l.width, l.height)));
-        let bumped_lightmaps: Option<[Handle<Image>; 3]> = data.lightmap.as_ref().and_then(|l| {
-            let b = l.bumped.as_ref()?;
-            if source_ldr {
-                // The game encodes the three pages together, against the flat one.
-                let mut texels: [Vec<u8>; 3] = std::array::from_fn(|_| Vec::with_capacity(l.rgb.len() * 4));
-                for (i, flat) in l.rgb.iter().enumerate() {
-                    let pages = source_ldr_bump_texels(*flat, [b[0][i], b[1][i], b[2][i]]);
-                    for (t, [r, g, b]) in texels.iter_mut().zip(pages) {
-                        t.extend([r, g, b, 255]);
-                    }
-                }
-                return Some(texels.map(|t| images.add(srgb8_image(t, l.width, l.height))));
-            }
-            Some(std::array::from_fn(|i| {
-                images.add(world_layer(&b[i], l.width, l.height))
-            }))
-        });
+            .map(|l| LightmapLayers::build(&l.rgb, l.bumped.as_ref(), l.width, l.height, source_ldr));
+        let lightmap = built.as_ref().map(|b| images.add(b.plain.clone()));
+        let world_lightmap = built.as_ref().map(|b| images.add(b.world.clone()));
+        let bumped_lightmaps: Option<[Handle<Image>; 3]> =
+            built.and_then(|b| b.bumped).map(|pages| pages.map(|p| images.add(p)));
+        // Switchable light styles relight these images (`relight`).
+        if let Some(l) = data.lightmap.as_ref().filter(|l| !l.styles.is_empty()) {
+            commands.insert_resource(SwitchableLightmaps {
+                atlas: Arc::new(l.clone()),
+                source_ldr,
+                plain: lightmap.clone(),
+                world: world_lightmap.clone(),
+                bumped: bumped_lightmaps.clone(),
+                applied: l.styles.iter().map(|s| s.on).collect(),
+            });
+        }
         let mut sky_handle = None;
         if let Some(sky) = &data.sky
             && view == MapDebugView::Normal
@@ -1943,6 +2124,29 @@ fn spawn_map(
                         .collect()
                 })
                 .collect();
+            skin_model_materials = data
+                .models
+                .iter()
+                .map(|model| {
+                    model
+                        .skins
+                        .iter()
+                        .map(|looks| {
+                            model
+                                .meshes
+                                .iter()
+                                .zip(looks)
+                                .map(|(m, look)| {
+                                    let m = look.apply(m);
+                                    [false, true].map(|skybox| {
+                                        prop_materials.add(lit_prop_material(&m, &textures, data, view, skybox))
+                                    })
+                                })
+                                .collect()
+                        })
+                        .collect()
+                })
+                .collect();
         }
 
         if view == MapDebugView::Normal {
@@ -1969,6 +2173,13 @@ fn spawn_map(
                     ChildOf(root),
                 ));
                 tag(&mut e, clusters);
+                if let Some(entity) = dust.entity {
+                    e.insert(EntityPart {
+                        entity,
+                        on: dust.start_on,
+                        exists: true,
+                    });
+                }
             }
         }
         if let Some(sprite_materials) = sprite_materials.as_mut()
@@ -2005,6 +2216,16 @@ fn spawn_map(
                         color: sprite.color,
                         proxy: sprite.proxy,
                     });
+                }
+                if let Some(entity) = sprite.entity {
+                    e.insert(EntityPart {
+                        entity,
+                        on: sprite.start_on,
+                        exists: true,
+                    });
+                    if !sprite.start_on {
+                        e.insert((vis::LogicHidden, Visibility::Hidden));
+                    }
                 }
             }
         }
@@ -2146,12 +2367,23 @@ fn spawn_map(
         // Bodies that move are swept through physics queries, not as brushes.
         let dynamic = prop.physics.as_ref().filter(|_| !prop.skybox);
         let prop_brush = (prop.parent.is_none() && !prop.skybox && !no_prop_brushes && !pieces.is_empty() && dynamic.is_none()).then_some(());
-        if prop_brush.is_some() {
-            brushes.extend(
-                pieces
-                    .iter()
-                    .map(|planes| place_brush(planes, prop.translation, prop.rotation, model.surfaceprop.clone())),
-            );
+        // A prop entity's brushes go on its node (`MovingSolid`, still), so
+        // they stop blocking once the logic removes it; others join the map's.
+        let placed_brushes: Vec<MapBrush> = if prop_brush.is_some() {
+            pieces
+                .iter()
+                .map(|planes| place_brush(planes, prop.translation, prop.rotation, model.surfaceprop.clone()))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let own_solid = (prop.entity.is_some() && !placed_brushes.is_empty()).then(|| MovingSolid {
+            brushes: placed_brushes.clone(),
+            velocity: Vec3::ZERO,
+            solid: true,
+        });
+        if own_solid.is_none() {
+            brushes.extend(placed_brushes);
         }
         let placed = Transform::from_translation(prop.translation).with_rotation(prop.rotation);
         // Riding a mover: under its node, placed relative to it.
@@ -2171,9 +2403,12 @@ fn spawn_map(
             Visibility::default(),
             ChildOf(rider.map_or(root, |r| r.0)),
         ));
+        if let Some(solid) = own_solid {
+            e.insert(solid);
+        }
         // Props that stay put are hidden where the camera can't see them,
-        // and beyond their fade distance.
-        if !prop.skybox && dynamic.is_none() && rider.is_none() && !merged_world() {
+        // and beyond their fade distance (animated ones move anywhere).
+        if !prop.skybox && dynamic.is_none() && rider.is_none() && model.rig.is_none() && !merged_world() {
             let clusters = match data.visibility.as_deref() {
                 Some(v) => {
                     let (lo, hi) = model.bounds;
@@ -2266,11 +2501,44 @@ fn spawn_map(
                 1.0
             };
         let probe = prop.lighting.as_ref().filter(|_| view != MapDebugView::Albedo);
+        let model = &data.models[prop.model];
+        // An animated prop's skeleton: a root in the skeleton's space under
+        // the node, then each bone under its parent, in the reference pose.
+        let rig = model.rig.as_ref().filter(|_| meshes.is_some() && bindposes.is_some());
+        let mut joints: Vec<Entity> = Vec::new();
+        let mut inverse_bindposes = None;
+        if let (Some(rig), Some(bindposes)) = (rig, bindposes.as_mut()) {
+            let root = commands.spawn((rig.root, Visibility::Inherited, ChildOf(id))).id();
+            for b in &rig.bones {
+                let parent = b.parent.and_then(|p| joints.get(p).copied()).unwrap_or(root);
+                joints.push(
+                    commands
+                        .spawn((
+                            Transform::from_translation(b.position).with_rotation(b.rotation),
+                            Visibility::Inherited,
+                            ChildOf(parent),
+                        ))
+                        .id(),
+                );
+            }
+            inverse_bindposes = Some(
+                rig_bindposes
+                    .entry(prop.model)
+                    .or_insert_with(|| bindposes.add(rig_inverse_bindposes(rig)))
+                    .clone(),
+            );
+        }
+        // Body parts: only the meshes of the chosen choice are drawn.
+        let body_shown = |m: &MapMesh| {
+            m.body
+                .is_none_or(|(part, choice)| model.body_choice(prop.body, part as usize) == choice)
+        };
+        let mut spawned_materials: Vec<Handle<PropMaterial>> = Vec::new();
         match (probe, meshes.as_mut(), lit_model_materials.get(prop.model)) {
             // Baked: own mesh copy with per-vertex light, unlit material
             // (texture x light, like the lightmapped world).
             (Some(probe), Some(meshes), Some(mats)) => {
-                for (mesh_index, (m, material)) in data.models[prop.model].meshes.iter().zip(mats).enumerate() {
+                for (mesh_index, (m, material)) in model.meshes.iter().zip(mats).enumerate() {
                     let mut material = material[prop.skybox as usize].clone();
                     // `env_cubemap`: the cubemap baked nearest to the prop.
                     if let (Some(env), Some(prop_materials)) =
@@ -2291,6 +2559,7 @@ fn spawn_map(
                             })
                             .clone();
                     }
+                    spawned_materials.push(material.clone());
                     let layer = layer_of(prop.skybox);
                     let colors: Vec<[f32; 4]> = m
                         .normals
@@ -2305,20 +2574,88 @@ fn spawn_map(
                         .collect();
                     let mut mesh = build_mesh(m, false);
                     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
-                    commands.spawn((Mesh3d(meshes.add(mesh)), MeshMaterial3d(material), layer, ChildOf(id)));
+                    let skinned = inverse_bindposes.is_some() && m.joints.len() == m.positions.len();
+                    if skinned {
+                        mesh.insert_attribute(
+                            Mesh::ATTRIBUTE_JOINT_INDEX,
+                            bevy::mesh::VertexAttributeValues::Uint16x4(m.joints.clone()),
+                        );
+                        mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, m.joint_weights.clone());
+                    }
+                    let mut c = commands.spawn((
+                        Mesh3d(meshes.add(mesh)),
+                        MeshMaterial3d(material),
+                        layer,
+                        PropMeshSlot { mesh: mesh_index },
+                        if body_shown(m) {
+                            Visibility::Inherited
+                        } else {
+                            Visibility::Hidden
+                        },
+                        ChildOf(id),
+                    ));
+                    if let (true, Some(inverse)) = (skinned, inverse_bindposes.clone()) {
+                        c.insert((
+                            bevy::mesh::skinning::SkinnedMesh {
+                                inverse_bindposes: inverse,
+                                joints: joints.clone(),
+                            },
+                            // Bounds of the bind pose don't follow the bones.
+                            bevy::camera::visibility::NoFrustumCulling,
+                        ));
+                    }
                 }
             }
             _ => {
                 if let Some(parts) = model_parts.get(prop.model) {
-                    for (mesh, material) in parts {
+                    for (mesh_index, ((mesh, material), m)) in parts.iter().zip(&model.meshes).enumerate() {
                         commands.spawn((
                             Mesh3d(mesh.clone()),
                             MeshMaterial3d(material.clone()),
                             layer_of(prop.skybox),
+                            PropMeshSlot { mesh: mesh_index },
+                            if body_shown(m) {
+                                Visibility::Inherited
+                            } else {
+                                Visibility::Hidden
+                            },
                             ChildOf(id),
                         ));
                     }
                 }
+            }
+        }
+        // What the logic may change: skin and body (entity props), sequences
+        // (animated ones).
+        if prop.entity.is_some() {
+            let mut skins: Vec<Vec<Handle<PropMaterial>>> = skin_model_materials
+                .get(prop.model)
+                .map(|skins| {
+                    skins
+                        .iter()
+                        .map(|mats| mats.iter().map(|m| m[prop.skybox as usize].clone()).collect())
+                        .collect()
+                })
+                .unwrap_or_default();
+            if let Some(own) = skins.get_mut(prop.skin.max(0) as usize)
+                && own.len() == spawned_materials.len()
+            {
+                *own = spawned_materials;
+            }
+            commands.entity(id).insert(PropVariants {
+                skins,
+                body: prop.body,
+                parts: model.body_parts.clone(),
+                mesh_bodies: model.meshes.iter().map(|m| m.body).collect(),
+                shown: (prop.skin, prop.body),
+            });
+            if let Some(rig) = rig.filter(|_| !joints.is_empty()) {
+                commands.entity(id).insert(PropRig {
+                    animator: anim::Animator::new(rig.animations.clone()),
+                    joints,
+                    seen: None,
+                    default: None,
+                });
             }
         }
     }
@@ -2634,6 +2971,118 @@ fn srgb8_image(data: Vec<u8>, width: u32, height: u32) -> Image {
     image
 }
 
+/// The lightmap atlas as images: the plain copy (Bevy's `Lightmap` on
+/// StandardMaterial parts), the world material's copy (in the game's own
+/// encoding when `source_ldr`) and its directional pages.
+struct LightmapLayers {
+    plain: Image,
+    world: Image,
+    bumped: Option<[Image; 3]>,
+}
+
+impl LightmapLayers {
+    fn build(rgb: &[[f32; 3]], bumped: Option<&[Vec<[f32; 3]>; 3]>, width: u32, height: u32, source_ldr: bool) -> Self {
+        let world_layer = |rgb: &[[f32; 3]]| {
+            if source_ldr {
+                source_lightmap_image(rgb, width, height)
+            } else {
+                lightmap_image(rgb, width, height)
+            }
+        };
+        let pages = bumped.map(|b| {
+            if source_ldr {
+                // The game encodes the three pages together, against the flat one.
+                let mut texels: [Vec<u8>; 3] = std::array::from_fn(|_| Vec::with_capacity(rgb.len() * 4));
+                for (i, flat) in rgb.iter().enumerate() {
+                    let pages = source_ldr_bump_texels(*flat, [b[0][i], b[1][i], b[2][i]]);
+                    for (t, [r, g, b]) in texels.iter_mut().zip(pages) {
+                        t.extend([r, g, b, 255]);
+                    }
+                }
+                texels.map(|t| srgb8_image(t, width, height))
+            } else {
+                std::array::from_fn(|i| world_layer(&b[i]))
+            }
+        });
+        Self {
+            plain: lightmap_image(rgb, width, height),
+            world: world_layer(rgb),
+            bumped: pages,
+        }
+    }
+}
+
+/// The lightmap images of a map with switchable light styles, and the
+/// styles they show.
+#[derive(Resource)]
+struct SwitchableLightmaps {
+    atlas: Arc<MapLightmap>,
+    source_ldr: bool,
+    plain: Option<Handle<Image>>,
+    world: Option<Handle<Image>>,
+    bumped: Option<[Handle<Image>; 3]>,
+    /// Whether each of the atlas's styles is lit in the images now.
+    applied: Vec<bool>,
+}
+
+/// Rebuild the lightmap images when switchable light styles change
+/// (`LightStyles`): the atlas at map start, plus or minus each style
+/// switched since (Source lights' TurnOn/TurnOff).
+fn relight(
+    styles: Option<Res<LightStyles>>,
+    maps: Option<ResMut<SwitchableLightmaps>>,
+    images: Option<ResMut<Assets<Image>>>,
+    world_materials: Option<ResMut<Assets<world_material::WorldMaterial>>>,
+    standard: Option<ResMut<Assets<StandardMaterial>>>,
+) {
+    let (Some(styles), Some(mut maps), Some(mut images)) = (styles, maps, images) else {
+        return;
+    };
+    if !styles.is_changed() {
+        return;
+    }
+    let l = maps.atlas.clone();
+    let lit = |style: u8| {
+        styles.styles.iter().find(|(s, _)| *s == style).map_or_else(
+            || l.styles.iter().find(|s| s.style == style).is_some_and(|s| s.on),
+            |(_, on)| *on,
+        )
+    };
+    let want: Vec<bool> = l.styles.iter().map(|s| lit(s.style)).collect();
+    if maps.applied == want {
+        return;
+    }
+    maps.applied = want;
+    let (rgb, bumped) = l.relit(&lit);
+    let built = LightmapLayers::build(&rgb, bumped.as_ref(), l.width, l.height, maps.source_ldr);
+    let mut put = |handle: &Option<Handle<Image>>, image: Image| {
+        if let Some(h) = handle {
+            let _ = images.insert(h.id(), image);
+        }
+    };
+    put(&maps.plain, built.plain);
+    put(&maps.world, built.world);
+    if let (Some(handles), Some(pages)) = (&maps.bumped, built.bumped) {
+        for (h, p) in handles.iter().zip(pages) {
+            let _ = images.insert(h.id(), p);
+        }
+    }
+    // Materials bound to the old images are prepared again.
+    if let Some(mut m) = world_materials {
+        let ids: Vec<_> = m.ids().collect();
+        for id in ids {
+            let _ = m.get_mut(id);
+        }
+    }
+    if let Some(mut m) = standard {
+        let ids: Vec<_> = m.ids().collect();
+        for id in ids {
+            let _ = m.get_mut(id);
+        }
+    }
+    info!("lightmaps relit: {:?}", styles.styles);
+}
+
 fn lightmap_image(rgb: &[[f32; 3]], width: u32, height: u32) -> Image {
     let mut data = Vec::with_capacity(rgb.len() * 8);
     for [r, g, b] in rgb {
@@ -2908,6 +3357,193 @@ pub struct PropShadow {
     pub prop: usize,
 }
 
+/// A prop model's mesh (index into `MapModel::meshes`) drawn under the
+/// prop's node.
+#[derive(Component, Clone, Copy, Debug)]
+struct PropMeshSlot {
+    mesh: usize,
+}
+
+/// What a prop entity can switch to: its materials per skin family
+/// (empty with one family), its body layout, and what it shows (skin,
+/// body number).
+#[derive(Component)]
+struct PropVariants {
+    skins: Vec<Vec<Handle<PropMaterial>>>,
+    /// The body number it spawned with.
+    body: i32,
+    parts: Vec<u16>,
+    mesh_bodies: Vec<Option<(u16, u16)>>,
+    shown: (i32, i32),
+}
+
+/// An animated prop: what it plays, its joints by bone, the logic's last
+/// word and the sequence it falls back to.
+#[derive(Component)]
+struct PropRig {
+    animator: anim::Animator,
+    joints: Vec<Entity>,
+    seen: Option<PropSequence>,
+    default: Option<usize>,
+}
+
+/// Inverse bind poses of a rig's bones in the reference pose under its
+/// root.
+fn rig_inverse_bindposes(rig: &MapRig) -> bevy::mesh::skinning::SkinnedMeshInverseBindposes {
+    let mut global: Vec<Mat4> = Vec::with_capacity(rig.bones.len());
+    for b in &rig.bones {
+        let local = Mat4::from_rotation_translation(b.rotation, b.position);
+        let parent = b
+            .parent
+            .and_then(|p| global.get(p).copied())
+            .unwrap_or(rig.root.to_matrix());
+        global.push(parent * local);
+    }
+    let inverse: Vec<Mat4> = global.iter().map(|m| m.inverse()).collect();
+    bevy::mesh::skinning::SkinnedMeshInverseBindposes::from(inverse)
+}
+
+/// Prop entities show the skin and body group the logic gives them
+/// (`PropLook`). A skin the model doesn't have leaves it as it is.
+fn apply_prop_looks(
+    mut props: Query<(&PropLook, &mut PropVariants, &Children), Changed<PropLook>>,
+    mut slots: Query<(
+        &PropMeshSlot,
+        Option<&mut MeshMaterial3d<PropMaterial>>,
+        &mut Visibility,
+    )>,
+) {
+    for (look, mut v, children) in &mut props {
+        // SetBodyGroup sets the whole body number (specs/source/prop_damage.md 8).
+        let body = look.body_group.unwrap_or(v.body);
+        let skin = if (look.skin.max(0) as usize) < v.skins.len() {
+            look.skin
+        } else {
+            v.shown.0
+        };
+        if (skin, body) == v.shown {
+            continue;
+        }
+        v.shown = (skin, body);
+        for child in children {
+            let Ok((slot, material, mut visibility)) = slots.get_mut(*child) else {
+                continue;
+            };
+            if let (Some(mut material), Some(want)) =
+                (material, v.skins.get(skin as usize).and_then(|s| s.get(slot.mesh)))
+                && material.0 != *want
+            {
+                material.0 = want.clone();
+            }
+            let shown = v
+                .mesh_bodies
+                .get(slot.mesh)
+                .copied()
+                .flatten()
+                .is_none_or(|(part, choice)| body_choice(&v.parts, body, part as usize) == choice);
+            visibility.set_if_neq(if shown {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            });
+        }
+    }
+}
+
+/// Animated props play what the logic asks (`PropSequence`,
+/// specs/source/prop_damage.md 9): a new serial restarts the named
+/// sequence (sequence 0 when the model lacks it), switching at once; a
+/// new round starts the default one (else the first); a non-looping
+/// sequence that ends starts the default again, if there is one.
+fn animate_props(
+    time: Res<Time>,
+    mut props: Query<(&mut PropRig, Option<&PropSequence>)>,
+    mut joints: Query<&mut Transform>,
+) {
+    let (now, dt) = (time.elapsed_secs_f64(), time.delta_secs());
+    for (mut rig, seq) in &mut props {
+        let rig = &mut *rig;
+        if let Some(seq) = seq
+            && rig.seen.as_ref() != Some(seq)
+        {
+            let old = rig.seen.replace(seq.clone());
+            rig.default = Some(seq.default.as_str())
+                .filter(|d| !d.is_empty())
+                .and_then(|d| rig.animator.set.sequence(d));
+            let new_round = old.as_ref().is_none_or(|o| o.round != seq.round);
+            let old_serial = old.as_ref().and_then(|o| o.play.as_ref()).map(|p| p.1);
+            match &seq.play {
+                Some((name, serial)) if new_round || old_serial != Some(*serial) => {
+                    let s = rig.animator.set.sequence(name).unwrap_or_else(|| {
+                        warn!("prop: no sequence {name}");
+                        0
+                    });
+                    rig.animator.restart(s, now);
+                    rig.animator.fading.clear();
+                }
+                // No default: its first sequence (the model's idle).
+                None if new_round => {
+                    rig.animator.restart(rig.default.unwrap_or(0), now);
+                    rig.animator.fading.clear();
+                }
+                _ => {}
+            }
+        }
+        if rig.animator.main.is_none() {
+            continue;
+        }
+        rig.animator.advance(dt, now);
+        // A non-looping default restarts too, forever.
+        if rig.animator.finished()
+            && let Some(d) = rig.default
+        {
+            rig.animator.restart(d, now);
+            rig.animator.fading.clear();
+        }
+        let pose = rig.animator.pose(now);
+        for (joint, (q, p)) in rig.joints.iter().zip(pose) {
+            if let Ok(mut t) = joints.get_mut(*joint) {
+                t.rotation = q;
+                t.translation = p;
+            }
+        }
+    }
+}
+
+/// Sprites and dust volumes follow their entity (`EntityPart`): a sprite
+/// is drawn while on; a dust volume while it exists (off, it only stops
+/// spawning motes).
+#[allow(clippy::type_complexity)]
+fn switch_parts(
+    parts: Query<
+        (
+            Entity,
+            &EntityPart,
+            Option<&vis::VisClusters>,
+            Has<vis::LogicHidden>,
+            Has<dust::DustEmitter>,
+        ),
+        Changed<EntityPart>,
+    >,
+    mut commands: Commands,
+) {
+    for (e, part, clusters, hidden, dust) in &parts {
+        let shown = part.exists && (dust || part.on);
+        if shown != hidden {
+            continue;
+        }
+        if shown {
+            let mut c = commands.entity(e);
+            c.remove::<vis::LogicHidden>();
+            if clusters.is_none_or(|c| c.potentially_visible) {
+                c.insert(Visibility::Inherited);
+            }
+        } else {
+            commands.entity(e).insert((vis::LogicHidden, Visibility::Hidden));
+        }
+    }
+}
+
 /// A prop's physics collider (sprite glows see through static props, as
 /// the game's line test ignores them).
 #[derive(Component)]
@@ -2931,13 +3567,16 @@ fn glow_visibility(
     query: SpatialQuery,
     cameras: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<SkyboxCamera>, Without<ViewModelCamera>, Without<water::WaterReflectionCamera>)>,
     ignored: Query<Entity, With<crate::core::Intent>>,
-    mut glows: Query<(
-        &GlobalTransform,
-        &GlowSprite,
-        &MeshMaterial3d<SpriteMaterial>,
-        &mut Visibility,
-        Option<&vis::VisClusters>,
-    )>,
+    mut glows: Query<
+        (
+            &GlobalTransform,
+            &GlowSprite,
+            &MeshMaterial3d<SpriteMaterial>,
+            &mut Visibility,
+            Option<&vis::VisClusters>,
+        ),
+        Without<vis::LogicHidden>,
+    >,
     materials: Option<ResMut<Assets<SpriteMaterial>>>,
 ) {
     let (Some((eye, camera)), Some(mut materials)) = (cameras.iter().next(), materials) else {
@@ -3381,5 +4020,73 @@ fn follow_sky_camera(
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod switch_tests {
+    use super::*;
+
+    #[test]
+    fn body_numbers_pick_one_choice_per_part() {
+        // Parts with 1, 3 and 2 choices: body = c0 + 1 * c1 + 3 * c2.
+        let parts = [1, 3, 2];
+        assert_eq!(body_choice(&parts, 5, 1), 2);
+        assert_eq!(body_choice(&parts, 5, 2), 1);
+    }
+
+    #[test]
+    fn switched_parts_hide_and_show() {
+        let mut app = App::new();
+        app.add_systems(Update, switch_parts);
+        let sprite = app
+            .world_mut()
+            .spawn((
+                EntityPart {
+                    entity: 3,
+                    on: true,
+                    exists: true,
+                },
+                Visibility::Inherited,
+            ))
+            .id();
+        app.update();
+        assert!(!app.world().entity(sprite).contains::<vis::LogicHidden>());
+        app.world_mut().get_mut::<EntityPart>(sprite).unwrap().on = false;
+        app.update();
+        assert!(app.world().entity(sprite).contains::<vis::LogicHidden>());
+        assert_eq!(app.world().get::<Visibility>(sprite), Some(&Visibility::Hidden));
+        app.world_mut().get_mut::<EntityPart>(sprite).unwrap().on = true;
+        app.update();
+        assert!(!app.world().entity(sprite).contains::<vis::LogicHidden>());
+        assert_eq!(app.world().get::<Visibility>(sprite), Some(&Visibility::Inherited));
+    }
+
+    #[test]
+    fn light_styles_add_and_remove_their_share() {
+        let l = MapLightmap {
+            width: 2,
+            height: 1,
+            rgb: vec![[1.0; 3], [0.5; 3]],
+            bumped: None,
+            styles: vec![
+                MapLightStyle {
+                    style: 32,
+                    on: true,
+                    texels: vec![0],
+                    rgb: vec![[0.75; 3]],
+                    bumped: None,
+                },
+                MapLightStyle {
+                    style: 33,
+                    on: false,
+                    texels: vec![1],
+                    rgb: vec![[0.25; 3]],
+                    bumped: None,
+                },
+            ],
+        };
+        assert_eq!(l.relit(&|s| s == 32).0, l.rgb);
+        assert_eq!(l.relit(&|s| s == 33).0, vec![[0.25; 3], [0.75; 3]]);
     }
 }

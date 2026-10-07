@@ -24,10 +24,11 @@ pub fn quantize_scale(scale: f32) -> f32 {
 
 pub fn add_sprites(bsp: &Bsp, materials: &mut MaterialLoader, data: &mut MapData) {
     let mut skipped = 0;
-    for e in bsp
+    for (index, e) in bsp
         .entities
         .iter()
-        .filter(|e| e.prop("classname") == Some("env_sprite"))
+        .enumerate()
+        .filter(|(_, e)| e.prop("classname") == Some("env_sprite"))
     {
         let (Some(origin), Some(model)) = (e.prop("origin").and_then(parse3), e.prop("model")) else {
             continue;
@@ -39,11 +40,11 @@ pub fn add_sprites(bsp: &Bsp, materials: &mut MaterialLoader, data: &mut MapData
             skipped += 1;
             continue;
         }
-        // A named sprite without "Start on" starts hidden.
+        // A named sprite without "Start on" starts hidden (the logic can
+        // show it).
         let flags: u32 = e.prop("spawnflags").and_then(|v| v.trim().parse().ok()).unwrap_or(0);
-        if e.prop("targetname").is_some() && flags & 1 == 0 {
-            continue;
-        }
+        let named = e.prop("targetname").is_some_and(|n| !n.is_empty());
+        let start_on = !named || flags & 1 != 0;
         let path = model.to_lowercase().replace('\\', "/");
         let path = path
             .trim_start_matches("materials/")
@@ -91,6 +92,8 @@ pub fn add_sprites(bsp: &Bsp, materials: &mut MaterialLoader, data: &mut MapData
                 .round()
                 .clamp(1.0, 64.0)
                 * METERS_PER_UNIT,
+            entity: Some(index),
+            start_on,
         });
     }
     if skipped > 0 {

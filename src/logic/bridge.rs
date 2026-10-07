@@ -11,7 +11,7 @@ use bevy::{ecs::message::MessageCursor, prelude::*};
 
 use super::hud::HudMessages;
 use super::world::{Collision, Effect, EntId, LogicWorld, Player, SOLID_SKIN, SWEEP_EPS};
-use crate::console::Console;
+use crate::console::{Console, ConsoleAppExt};
 use crate::core::{
     BaseVelocity, Damage, DamageKind, Damageable, EntityGravity, Health, Hitgroup, Intent, LocalPlayer, MapBrush,
     MapBrushes, MapTerrain, MovementState, MovingSolid, RoundRestarts, SimSet, Team, Velocity,
@@ -20,8 +20,8 @@ use crate::map::breakables::{GibPiece, GlassShatter, SpawnGibs};
 use crate::map::entities::{engine_to_entity, entity_rotation, entity_to_engine, rotation_to_engine};
 use crate::map::vis::{LogicHidden, VisClusters};
 use crate::map::{
-    BrushPanes, MapBrushEntity, MapEntities, PlaySound, PropEntity, PropHome, SoundControl, SoundKey, SoundLevel,
-    StartSound,
+    BrushPanes, EntityPart, LightStyles, MapBrushEntity, MapEntities, PlaySound, PropEntity, PropHome, PropLook,
+    PropSequence, SoundControl, SoundKey, SoundLevel, SoundscapeTouches, StartSound,
 };
 
 /// The running logic world of the loaded map.
@@ -75,6 +75,29 @@ impl Plugin for LogicPlugin {
             .add_systems(FixedUpdate, (load, pre).chain().in_set(LogicSet::Pre))
             .add_systems(FixedUpdate, post.in_set(LogicSet::Post))
             .add_systems(FixedUpdate, damage.in_set(LogicSet::Damage));
+        app.console_command(
+            "ent_fire",
+            "ent_fire <target> <input> [value]: send a map entity an input (names, wildcards, classnames), \
+             the local player as activator.",
+            |w, a| {
+                let (Some(target), Some(input)) = (a.first(), a.get(1)) else {
+                    return Err("ent_fire <target> <input> [value]".into());
+                };
+                let value = match a.get(2..).filter(|v| !v.is_empty()) {
+                    Some(v) => super::Value::Str(v.join(" ")),
+                    None => super::Value::Void,
+                };
+                let local = w
+                    .query_filtered::<Entity, With<LocalPlayer>>()
+                    .iter(w)
+                    .next()
+                    .map(super::world::Who::Player);
+                let mut logic = w.get_resource_mut::<Logic>().ok_or("no map logic loaded")?;
+                logic.world.queue_input(target, input, value.clone(), 0.0, local);
+                info!("ent_fire {target} {input} {value:?}");
+                Ok(None)
+            },
+        );
     }
 }
 
@@ -89,6 +112,8 @@ fn load(world: &mut World) {
             restore_settings(world);
             world.write_message(SoundControl::StopAll);
             world.remove_resource::<Logic>();
+            world.remove_resource::<LightStyles>();
+            world.remove_resource::<SoundscapeTouches>();
         }
         (Some(m), b) if b.as_ref().is_none_or(|b| !std::sync::Arc::ptr_eq(b, &m.entities)) => {
             restore_settings(world);
@@ -188,9 +213,10 @@ fn attach_props(world: &mut World, logic: &LogicWorld, ids: &[EntId], restart: b
     let mut out = Vec::new();
     for (node, index, home) in all {
         let Some(id) = ids.get(index).copied() else { continue };
-        let Some(&(_, _, visible, solid, damageable)) = states.iter().find(|s| s.0 == id) else {
+        let Some(state) = states.iter().find(|s| s.id == id) else {
             continue;
         };
+        let (visible, solid, damageable) = (state.visible, state.solid, state.damageable);
         if restart
             && let Some(home) = home
             && let Ok(mut e) = world.get_entity_mut(node)
@@ -213,6 +239,7 @@ fn attach_props(world: &mut World, logic: &LogicWorld, ids: &[EntId], restart: b
             }
         }
         set_prop_shown(world, node, visible, solid, true);
+        set_prop_look(world, node, state, logic.round);
         if let Ok(mut e) = world.get_entity_mut(node) {
             if damageable {
                 e.insert(Damageable);
@@ -264,6 +291,12 @@ fn set_prop_shown(world: &mut World, node: Entity, visible: bool, solid: bool, e
         }
     }
     let mut e = world.entity_mut(node);
+    // A prop's own brushes (movement) follow its collision.
+    if let Some(mut m) = e.get_mut::<MovingSolid>()
+        && m.solid != solid
+    {
+        m.solid = solid;
+    }
     if e.contains::<RigidBody>() && exists == e.contains::<RigidBodyDisabled>() {
         if exists {
             e.remove::<RigidBodyDisabled>();
@@ -281,10 +314,87 @@ fn set_prop_shown(world: &mut World, node: Entity, visible: bool, solid: bool, e
 fn sync_props(world: &mut World, logic: &mut Logic) {
     let states = logic.world.prop_states();
     for (id, node) in logic.props.clone() {
-        match states.iter().find(|s| s.0 == id) {
-            Some(&(_, _, visible, solid, _)) => set_prop_shown(world, node, visible, solid, true),
+        match states.iter().find(|s| s.id == id) {
+            Some(state) => {
+                set_prop_shown(world, node, state.visible, state.solid, true);
+                set_prop_look(world, node, state, logic.world.round);
+            }
             None => set_prop_shown(world, node, false, false, false),
         }
+    }
+}
+
+/// A prop node shows the logic prop's skin, body group and sequence
+/// (`map::PropLook`, `map::PropSequence`; written only when they change).
+fn set_prop_look(world: &mut World, node: Entity, state: &super::props::PropState, round: u32) {
+    let Ok(mut e) = world.get_entity_mut(node) else { return };
+    let look = PropLook {
+        skin: state.skin,
+        body_group: state.body_group,
+    };
+    if e.get::<PropLook>() != Some(&look) {
+        e.insert(look);
+    }
+    let sequence = PropSequence {
+        play: state.sequence.clone(),
+        default: state.default_sequence.clone(),
+        round,
+    };
+    if e.get::<PropSequence>() != Some(&sequence) {
+        e.insert(sequence);
+    }
+}
+
+/// Sprites and dust volumes (`map::EntityPart`) follow their entity: on,
+/// off, or gone (killed) until a round restart; light styles follow the
+/// lights (`map::LightStyles`).
+fn sync_visuals(world: &mut World, logic: &Logic) {
+    let mut states = logic.world.part_states();
+    states.sort_by_key(|s| s.0);
+    let mut parts = world.query::<&mut EntityPart>();
+    for mut part in parts.iter_mut(world) {
+        let want = match states.binary_search_by_key(&part.entity, |s| s.0) {
+            Ok(i) => (states[i].2, true),
+            Err(_) => (false, false),
+        };
+        if (part.on, part.exists) != want {
+            part.on = want.0;
+            part.exists = want.1;
+        }
+    }
+    let styles = LightStyles {
+        styles: logic.world.light_styles().to_vec(),
+    };
+    if world.get_resource::<LightStyles>() != Some(&styles) {
+        world.insert_resource(styles);
+    }
+}
+
+/// The trigger_soundscape volumes the local player touches, for the
+/// soundscape selection (`map::SoundscapeTouches`).
+fn sync_soundscapes(world: &mut World, logic: &Logic) {
+    let local = world.query_filtered::<Entity, With<LocalPlayer>>().iter(world).next();
+    let touched: Vec<usize> = match local {
+        Some(p) => logic
+            .world
+            .ids()
+            .into_iter()
+            .filter_map(|id| {
+                let e = logic.world.get(id)?;
+                if !e.classname.eq_ignore_ascii_case("trigger_soundscape") {
+                    return None;
+                }
+                let super::classes::Class::Trigger(t) = &e.class else {
+                    return None;
+                };
+                (t.enabled && t.touching.contains(&super::world::Who::Player(p))).then_some(e.map_index?)
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+    let want = SoundscapeTouches(Some(touched));
+    if world.get_resource::<SoundscapeTouches>() != Some(&want) {
+        world.insert_resource(want);
     }
 }
 
@@ -706,6 +816,8 @@ fn run_phase(world: &mut World, phase: impl FnOnce(&mut LogicWorld, &dyn Collisi
     write_back(world, logic.scale, &players, &after);
     sync_movers(world, &mut logic);
     sync_props(world, &mut logic);
+    sync_visuals(world, &logic);
+    sync_soundscapes(world, &logic);
     let effects = std::mem::take(&mut logic.world.effects);
     for line in logic.world.log.drain(..) {
         if line.contains("refused") {

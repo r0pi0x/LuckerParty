@@ -20,14 +20,14 @@ fn key<'a>(e: &vbsp::RawEntity<'a>, name: &str) -> Option<&'a str> {
 pub fn add_dust(bsp: &Bsp, materials: &mut MaterialLoader, data: &mut MapData) {
     let models: Vec<_> = bsp.models().collect();
     let mut texture = None;
-    for e in bsp
+    for (index, e) in bsp
         .entities
         .iter()
-        .filter(|e| e.prop("classname") == Some("func_dustmotes"))
+        .enumerate()
+        .filter(|(_, e)| e.prop("classname") == Some("func_dustmotes"))
     {
-        if key(&e, "StartDisabled").is_some_and(|v| v.trim() == "1") {
-            continue;
-        }
+        // StartDisabled: the logic can turn it on later.
+        let start_on = !key(&e, "StartDisabled").is_some_and(|v| v.trim_start().starts_with('1'));
         let Some(model) = e
             .prop("model")
             .and_then(|m| m.strip_prefix('*'))
@@ -70,6 +70,8 @@ pub fn add_dust(bsp: &Bsp, materials: &mut MaterialLoader, data: &mut MapData) {
                 alpha / 255.0,
             ],
             texture,
+            entity: Some(index),
+            start_on,
         });
     }
 }

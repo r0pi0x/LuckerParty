@@ -1384,3 +1384,6 @@ mod restart;
 
 #[path = "prop_tests.rs"]
 mod prop_cases;
+
+#[path = "visual_tests.rs"]
+mod visual_cases;

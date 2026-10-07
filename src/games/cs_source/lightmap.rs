@@ -6,7 +6,7 @@
 
 use bevy::prelude::*;
 
-use crate::map::MapLightmap;
+use crate::map::{MapLightStyle, MapLightmap};
 
 const LUMP_LIGHTING: usize = 8;
 const LUMP_LIGHTING_HDR: usize = 53;
@@ -102,6 +102,39 @@ pub fn face_samples_lit(
     (flat, pages)
 }
 
+/// A face's switchable light styles (32+) apart: each style's flat block
+/// and, for bumped faces, its directional pages.
+pub fn face_switchable_styles(lump: &[u8], face: &vbsp::Face, bumped: bool) -> Vec<StyleSamples> {
+    let per_style = if bumped { 4 } else { 1 };
+    face.styles
+        .iter()
+        .enumerate()
+        .take_while(|(_, s)| **s != 255)
+        .filter(|(_, s)| **s >= 32)
+        .filter_map(|(k, &style)| {
+            let k = k as u32 * per_style;
+            let flat = block(lump, face, k)?;
+            let pages = if bumped {
+                Some([
+                    block(lump, face, k + 1)?,
+                    block(lump, face, k + 2)?,
+                    block(lump, face, k + 3)?,
+                ])
+            } else {
+                None
+            };
+            Some(StyleSamples { style, flat, pages })
+        })
+        .collect()
+}
+
+/// One switchable style's samples on one face.
+pub struct StyleSamples {
+    pub style: u8,
+    pub flat: FaceSamples,
+    pub pages: Option<[FaceSamples; 3]>,
+}
+
 fn block(lump: &[u8], face: &vbsp::Face, index: u32) -> Option<FaceSamples> {
     if face.light_offset < 0 || face.styles[0] == 255 {
         return None;
@@ -139,6 +172,8 @@ pub struct AtlasBuilder {
     blocks: Vec<FaceSamples>,
     /// Directional lightmaps per block, when bump-mapped.
     bumped: Vec<Option<[FaceSamples; 3]>>,
+    /// Switchable styles per block, and whether each is lit at start.
+    styles: Vec<Vec<(StyleSamples, bool)>>,
 }
 
 /// Where a block landed: top-left of its samples, in luxels.
@@ -157,7 +192,14 @@ impl AtlasBuilder {
     pub fn add_bumped(&mut self, samples: FaceSamples, bumped: Option<[FaceSamples; 3]>) -> usize {
         self.blocks.push(samples);
         self.bumped.push(bumped);
+        self.styles.push(Vec::new());
         self.blocks.len() - 1
+    }
+
+    /// A block's switchable styles (`face_switchable_styles`), lit at map
+    /// start or not.
+    pub fn set_styles(&mut self, slot: usize, styles: Vec<(StyleSamples, bool)>) {
+        self.styles[slot] = styles;
     }
 
     /// Pack everything. Also returns a slot holding a single white (1.0)
@@ -222,12 +264,52 @@ impl AtlasBuilder {
                 }
             }
         }
+        // Each switchable style's share, texel by texel (padding included).
+        let mut styles: Vec<MapLightStyle> = Vec::new();
+        for (i, list) in self.styles.iter().enumerate() {
+            let p = &placements[i];
+            for (st, on) in list {
+                let k = match styles.iter().position(|s| s.style == st.style) {
+                    Some(k) => k,
+                    None => {
+                        styles.push(MapLightStyle {
+                            style: st.style,
+                            on: *on,
+                            bumped: any_bumped.then(|| [Vec::new(), Vec::new(), Vec::new()]),
+                            ..default()
+                        });
+                        styles.len() - 1
+                    }
+                };
+                let s = &mut styles[k];
+                let b = &st.flat;
+                for py in 0..b.height + 2 * PAD {
+                    for px in 0..b.width + 2 * PAD {
+                        let sx = (px as i32 - PAD as i32).clamp(0, b.width as i32 - 1) as u32;
+                        let sy = (py as i32 - PAD as i32).clamp(0, b.height as i32 - 1) as u32;
+                        let src = (sy * b.width + sx) as usize;
+                        let ax = p.origin.x - PAD + px;
+                        let ay = p.origin.y - PAD + py;
+                        s.texels.push(ay * ATLAS_WIDTH + ax);
+                        s.rgb.push(b.rgb[src]);
+                        if let Some(pages) = s.bumped.as_mut() {
+                            for (k, page) in pages.iter_mut().enumerate() {
+                                // Unbumped faces show their flat lighting in every page.
+                                let v = st.pages.as_ref().map_or(b.rgb[src], |d| d[k].rgb[src]);
+                                page.push(v);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         (
             MapLightmap {
                 width: ATLAS_WIDTH,
                 height,
                 rgb,
                 bumped,
+                styles,
             },
             placements,
             white,
