@@ -278,7 +278,8 @@ pub fn autobuy(world: &mut World, owner: Entity) {
     let round = world
         .get_resource::<crate::core::RoundRestarts>()
         .map_or(0, |r| r.0 as u64);
-    let mut rng = owner.to_bits().wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ round.wrapping_mul(0xD1B5_4A32_D192_ED03) | 1;
+    let seed = crate::core::Seed::of(world.get::<crate::core::Seed>(owner), owner);
+    let mut rng = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ round.wrapping_mul(0xD1B5_4A32_D192_ED03) | 1;
     autobuy_rolling(world, owner, &mut || {
         rng ^= rng >> 12;
         rng ^= rng << 25;

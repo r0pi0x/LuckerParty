@@ -151,12 +151,17 @@ a first bot are in.
 
 ## 4. Bots
 
-- de_nuke's vent ladders up to A: bots now get on them (sidestepping off
-  the ladder's middle when pressing at its foot doesn't attach, since
-  clip faces flush beside it win ties on one side), but near the top they
-  turn to the next route point before clearing the lip and fall back.
-  Keep pressing into the ladder until the feet are above its top
-  (`tests/bot_nav.rs::nuke_vent_ladders_are_climbable`, ignored).
+- Ladders on other maps (`tests/bot_nav.rs::ladders_climb_both_ways`,
+  ignored; de_nuke's all pass, and 81 of 128 climbs on cs_office,
+  de_train, de_port, de_cbble, cs_militia, cs_assault, de_piranesi and
+  de_prodigy, up from 62): de_train's ladders on the train cars start
+  about 1.5 m above the floor and bots circle or pace under them without
+  getting on (33 of 70 climbs fail there); the rest (cs_militia 0 down,
+  2-3 up; de_cbble 0/4/5 down; cs_assault 0/5 down; de_prodigy 0/5 down;
+  de_port 0 down; cs_office 1 up; de_piranesi 0) mostly get stuck on
+  boxes or ledges beside the ladder's top, or the test's start spot is
+  awkward. Look at each with `MASHUP_BOT_CASE="ladder 3 up"` and the
+  trace.
 - A CS:S bot behaviour spec (nav spec open questions 2-4) to check our
   team play against: path costs, how bots pick sites, hold and rotate,
   what they say. Ours (`bot::tactics`) plants and defuses only through
@@ -178,10 +183,8 @@ a first bot are in.
   objective point), flashes thrown around corners so they pop out of the
   thrower's view without turning, not flashing teammates, running and
   jump throws (carried velocity in the plan), "Fire in the hole" radio.
-- Movement: gap jumps, avoiding teammates in doorways, de_nuke's vent
-  ladders (no character attaches to them yet; bots learn to avoid them:
-  `tests/bot_nav.rs` `nuke_vent_ladders_are_climbable`, ignored), the
-  door into A from Inside on de_nuke (bots now and then stall at it).
+- Movement: gap jumps, avoiding teammates in doorways, the door into A
+  from Inside on de_nuke (bots now and then stall at it).
 
 ## 5. Console, remaining
 

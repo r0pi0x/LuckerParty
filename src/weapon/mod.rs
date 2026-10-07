@@ -1021,6 +1021,7 @@ fn weapon_frame(
         &MovementState,
         Option<&Health>,
         Option<&ViewPunch>,
+        Option<&crate::core::Seed>,
     )>,
     mut weapons: Query<WeaponParts>,
     mut world: deliver::World,
@@ -1030,7 +1031,7 @@ fn weapon_frame(
     // Compare timers against this; record new ones from `now`.
     let due = now + TIME_SLACK;
     let dt = time.delta_secs();
-    for (owner, intent, mut inv, transform, state, health, punch) in &mut owners {
+    for (owner, intent, mut inv, transform, state, health, punch, seed) in &mut owners {
         if health.is_some_and(|h| h.current <= 0.0) {
             continue;
         }
@@ -1065,7 +1066,7 @@ fn weapon_frame(
             weapon: active,
             eye,
             aim,
-            seed: owner.to_bits() as u32 ^ inv.command.wrapping_mul(0x9E37_79B9),
+            seed: crate::core::Seed::of(seed, owner) as u32 ^ inv.command.wrapping_mul(0x9E37_79B9),
             now,
             w: &mut world,
         };

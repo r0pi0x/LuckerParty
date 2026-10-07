@@ -133,6 +133,22 @@ impl Default for Health {
 #[reflect(Component)]
 pub struct Team(pub u8);
 
+/// A character's own dice seed, for rolls that should repeat run to run
+/// (bots' route noise and choices, buying, bullet spread). Entity ids
+/// won't do: every spawn shifts them, resources included (Bevy 0.19
+/// resources are entities). Bots get one from their number and team
+/// (`bot::add_bot`); without one, systems fall back to the entity id.
+#[derive(Component, Reflect, Default, Clone, Copy, Debug, PartialEq, Eq)]
+#[reflect(Component)]
+pub struct Seed(pub u64);
+
+impl Seed {
+    /// The seed of `entity`, or one made from its id without a `Seed`.
+    pub fn of(seed: Option<&Seed>, entity: Entity) -> u64 {
+        seed.map_or(entity.to_bits(), |s| s.0)
+    }
+}
+
 /// Where on a body a hit landed (Source hitgroups).
 #[derive(Reflect, Default, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Hitgroup {
@@ -470,6 +486,7 @@ impl Plugin for CorePlugin {
             .register_type::<MovementState>()
             .register_type::<Health>()
             .register_type::<Team>()
+            .register_type::<Seed>()
             .register_type::<MaxSpeed>()
             .register_type::<BaseVelocity>()
             .register_type::<EntityGravity>()

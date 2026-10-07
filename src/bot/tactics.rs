@@ -638,8 +638,10 @@ pub(super) fn update(
 
     // A new round, or bots joined or left: new plans and orders.
     let round = restarts.map_or(0, |r| r.0);
-    let mut members: Vec<(Team, Entity)> = bots.iter().map(|(e, _, _, t, _)| (*t, e)).collect();
-    members.sort_by_key(|m| (m.0.0, m.1));
+    // In bot number order: entity ids shift with any spawn.
+    let mut numbered: Vec<(u8, u32, Entity)> = bots.iter().map(|(e, b, _, t, _)| (t.0, b.number, e)).collect();
+    numbered.sort_by_key(|m| (m.0, m.1));
+    let members: Vec<(Team, Entity)> = numbered.iter().map(|m| (Team(m.0), m.2)).collect();
     let known: Vec<(Team, Entity)> = tactics
         .teams
         .iter()
@@ -653,6 +655,9 @@ pub(super) fn update(
             if let Ok((_, mut bot, ..)) = bots.get_mut(e) {
                 let fresh = new_round || bot.orders != o;
                 bot.orders = o;
+                if new_round {
+                    bot.reseed(round);
+                }
                 if fresh {
                     bot.new_life();
                 }

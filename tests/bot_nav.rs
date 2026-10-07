@@ -1,6 +1,8 @@
 //! Bots walking real maps' navigation meshes: places where they used to
 //! get stuck (ladder tops, drops, crouch spots), each a start and a goal
-//! a lone bot must reach in time. Skipped without a CS:S install.
+//! a lone bot must reach in time, and every ladder on de_nuke up and
+//! down (`ladders_climb_both_ways`, ignored: any maps). Skipped without a
+//! CS:S install.
 //!
 //! `nav_near` (ignored) prints the nav areas, links and ladders around a
 //! point, for working out why a bot stops somewhere:
@@ -61,8 +63,9 @@ fn trace_every() -> u64 {
 }
 
 /// One bot from `from` to `to` (feet, engine meters): the seconds it took,
-/// or None if it didn't get there within `limit`.
-fn walk(sim: &mut Sim, from: Vec3, to: Vec3, limit: f64, trace: bool) -> Option<f64> {
+/// or None if it didn't get there (on the ground, within 1 m and `dy` m
+/// of its height) within `limit`.
+fn walk(sim: &mut Sim, from: Vec3, to: Vec3, limit: f64, dy: f32, trace: bool) -> Option<f64> {
     let bot = mashup::bot::add_bot(sim.app.world_mut(), Team(1)).expect("bot");
     sim.app.world_mut().resource_mut::<BotConfig>().grenades = 0;
     sim.ticks(1);
@@ -99,7 +102,7 @@ fn walk(sim: &mut Sim, from: Vec3, to: Vec3, limit: f64, trace: bool) -> Option<
                 st.on_ground,
             );
         }
-        if (at - to).xz().length() < 1.0 && (at.y - to.y).abs() < 0.3 && sim.state(bot).on_ground {
+        if (at - to).xz().length() < 1.0 && (at.y - to.y).abs() < dy && sim.state(bot).on_ground {
             sim.app.world_mut().despawn(bot);
             return Some(t);
         }
@@ -141,7 +144,7 @@ fn cases(map: &str, cases: &[Case]) {
         if only.as_ref().is_some_and(|o| !what.contains(o.as_str())) {
             continue;
         }
-        let took = walk(&mut sim, Vec3::from(*from), Vec3::from(*to), *limit, trace);
+        let took = walk(&mut sim, Vec3::from(*from), Vec3::from(*to), *limit, 0.3, trace);
         eprintln!("{map}, {what}: {took:?}");
         if took.is_none() {
             failed.push(*what);
@@ -155,22 +158,93 @@ fn nuke_stuck_spots_are_passable() {
     cases("de_nuke", NUKE);
 }
 
-/// The vents' ladders up to A (ending under breakable floor grilles):
-/// player clip flush with the ladder on both sides wins the ladder probe
-/// from the duct's centre line, as in CS:S; the ladders attach only from
-/// the duct's south half (box centre y < about -1438 Source units; see
-/// `map_de_nuke::vent_and_outside_ladders_climb`). Bots walk the centre
-/// line, so they don't get on; they learn to avoid the links
-/// (`Tactics::failed_links`) meanwhile.
+/// The vents' ladders up to A: player clip flush with the ladder on both
+/// sides wins the ladder probe from the duct's centre line, as in CS:S;
+/// the ladders attach only from the duct's south half (box centre y <
+/// about -1438 Source units; see
+/// `map_de_nuke::vent_and_outside_ladders_climb`), so bots sidestep at
+/// the foot. At the top a grille in the shaft's side (a breakable) closes
+/// the way out and the duct's ceiling stops the climb a little short of
+/// the mesh's ladder top: bots climb as far as it goes, hang there and
+/// shoot the grille, then step off.
 const NUKE_VENT_LADDERS: &[Case] = &[
     ("west vent up to A", [12.9, -15.24, 36.5], [11.7, -10.57, 32.0], 10.0),
     ("east vent up to A", [20.0, -15.24, 36.5], [21.0, -10.57, 30.0], 10.0),
 ];
 
 #[test]
-#[ignore]
 fn nuke_vent_ladders_are_climbable() {
     cases("de_nuke", NUKE_VENT_LADDERS);
+}
+
+/// Every ladder on a map's mesh, up and down: a bot from inside the area
+/// at one end to inside the area at the other. The ones that fail.
+fn every_ladder(map: &str) -> Vec<String> {
+    let mut sim = sim(map);
+    let trace = std::env::var("MASHUP_BOT_TRACE").is_ok();
+    let only = std::env::var("MASHUP_BOT_CASE").ok();
+    let nav = sim.app.world().resource::<NavMesh>().clone();
+    // A point inside `area` near `p` (off the edges, where walls are).
+    let inside = |area: usize, p: Vec3| {
+        let a = &nav.areas[area];
+        let c = a.closest_point(p);
+        let to = (a.center - c).with_y(0.0);
+        c + to.normalize_or_zero() * to.length().min(1.0)
+    };
+    let mut failed = Vec::new();
+    for (k, l) in nav.ladders.iter().enumerate() {
+        let link = nav.areas.iter().enumerate().find_map(|(i, a)| {
+            a.links
+                .iter()
+                .find(|(_, via)| matches!(via, Via::LadderUp(j) if *j == k))
+                .map(|(n, _)| (i, *n))
+        });
+        let Some((below, above)) = link else { continue };
+        // Clear of the ladder (a foot area can be narrower than a body).
+        let out = l.bottom + l.normal.with_y(0.0).normalize_or_zero() * 0.8;
+        let foot = nav.nearest_area(out).map_or_else(|| inside(below, out), |a| inside(a, out));
+        let top = inside(above, l.top);
+        for (what, from, to) in [("up", foot, top), ("down", top, foot)] {
+            let name = format!("ladder {k} {what}");
+            if only.as_ref().is_some_and(|o| name != *o) {
+                continue;
+            }
+            // (Mesh heights at a ladder's ends can be half a metre off.)
+            let took = walk(&mut sim, from, to, 12.0, 0.6, trace);
+            eprintln!("{map}, ladder {k} {what} ({from:.2} to {to:.2}): {took:?}");
+            if took.is_none() {
+                failed.push(name);
+            }
+        }
+    }
+    failed
+}
+
+/// Bots climb every ladder on de_nuke, up and down (vents, the ladder
+/// room, ...): off the top only once the feet clear the lip, shooting a
+/// grille in the way first.
+#[test]
+fn nuke_ladders_climb_both_ways() {
+    if !installed() {
+        return;
+    }
+    let failed = every_ladder("de_nuke");
+    assert!(failed.is_empty(), "de_nuke: {failed:?}");
+}
+
+/// `every_ladder` on `MASHUP_NAV_MAP` (or a few stock maps).
+#[test]
+#[ignore]
+fn ladders_climb_both_ways() {
+    if !installed() {
+        return;
+    }
+    let maps = std::env::var("MASHUP_NAV_MAP").unwrap_or_else(|_| "cs_office,de_train,de_aztec,de_port,cs_italy".into());
+    let mut failed = Vec::new();
+    for map in maps.split(',') {
+        failed.extend(every_ladder(map).into_iter().map(|f| format!("{map} {f}")));
+    }
+    assert!(failed.is_empty(), "{failed:?}");
 }
 
 #[test]
@@ -272,38 +346,50 @@ fn nav_near() {
 }
 
 /// Walks a plain character from `P_AT` (feet, engine meters) with
-/// `P_OPT` = yaw degrees, crouch, jump, seconds[, pitch degrees] and
-/// prints where it goes: for checking what a spot's geometry lets through.
+/// `P_OPT` = yaw degrees, crouch, jump, seconds[, pitch degrees[,
+/// forward[, side]]] and prints where it goes: for checking what a spot's
+/// geometry lets through. `P_OPT2`, `P_OPT3`: more phases after it, the
+/// same way (e.g. climb a ladder, then step off it at the top).
 #[test]
 #[ignore]
 fn probe_walk() {
     if !installed() {
         return;
     }
-    let v = |k: &str| -> Vec<f32> {
+    let v = |k: &str| -> Option<Vec<f32>> {
         std::env::var(k)
-            .unwrap()
-            .split(',')
-            .map(|x| x.trim().parse().unwrap())
-            .collect()
+            .ok()
+            .map(|s| s.split(',').map(|x| x.trim().parse().unwrap()).collect())
     };
-    let at = v("P_AT");
-    let opts = v("P_OPT");
+    let at = v("P_AT").expect("P_AT=x,y,z");
+    let phases: Vec<Vec<f32>> = ["P_OPT", "P_OPT2", "P_OPT3"].iter().filter_map(|k| v(k)).collect();
     let mut sim = sim(&std::env::var("MASHUP_NAV_MAP").unwrap_or_else(|_| "de_nuke".into()));
     let p = sim.spawn_character(Vec3::new(at[0], at[1] + HALF + 0.05, at[2]), movement::ID);
     sim.ticks(1);
     let mut t = 0.0;
-    while t < opts[3] as f64 {
-        {
-            let mut i = sim.intent(p);
-            i.yaw = opts[0].to_radians();
-            i.pitch = opts.get(4).copied().unwrap_or(0.0).to_radians();
-            i.move_axis = Vec2::Y * opts.get(5).copied().unwrap_or(1.0);
-            i.crouch = opts[1] > 0.0;
-            i.jump = opts[2] > 0.0 && t > 0.3;
+    for (k, opts) in phases.iter().enumerate() {
+        let mut tp = 0.0;
+        while tp < opts[3] as f64 {
+            {
+                let mut i = sim.intent(p);
+                i.yaw = opts[0].to_radians();
+                i.pitch = opts.get(4).copied().unwrap_or(0.0).to_radians();
+                i.move_axis = Vec2::new(opts.get(6).copied().unwrap_or(0.0), opts.get(5).copied().unwrap_or(1.0));
+                i.crouch = opts[1] > 0.0;
+                i.jump = opts[2] > 0.0 && (k > 0 || tp > 0.3);
+            }
+            sim.seconds(TICK_INTERVAL);
+            tp += TICK_INTERVAL;
+            t += TICK_INTERVAL;
+            if ((t / TICK_INTERVAL).round() as u64).is_multiple_of(7) {
+                eprintln!(
+                    "{t:5.2} {:.2} v {:.2} ladder {} ground {}",
+                    feet(&sim, p),
+                    sim.velocity(p),
+                    sim.state(p).on_ladder,
+                    sim.state(p).on_ground
+                );
+            }
         }
-        sim.seconds(0.1);
-        t += 0.1;
-        eprintln!("{t:4.1} {:.2} v {:.2} ladder {} ground {}", feet(&sim, p), sim.velocity(p), sim.state(p).on_ladder, sim.state(p).on_ground);
     }
 }

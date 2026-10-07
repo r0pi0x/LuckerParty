@@ -111,7 +111,15 @@ Only `Reflect`-registered types are visible; register new core components in
   to a goal, `MASHUP_BOT_CASE=<name>` to run one, `MASHUP_BOT_TRACE=0`
   for every tick of its intent, ladder and ground state), and try raw
   inputs with `probe_walk` (`P_AT=x,y,z P_OPT=yaw,crouch,jump,seconds,
-  pitch,forward`). In game, `bot_goto <x> <y> <z>` (CS:S units) sends
+  pitch,forward,side`; `P_OPT2`, `P_OPT3`: further phases, e.g. climb a
+  ladder, then step off its top). `nuke_ladders_climb_both_ways` sends a
+  bot up and down every ladder on de_nuke's mesh; the ignored
+  `ladders_climb_both_ways` does it on `MASHUP_NAV_MAP` (comma-separated
+  maps) and lists the ladders bots fail, one `MASHUP_BOT_CASE="ladder 3
+  up"` at a time. Bot dice come from bot numbers, never entity ids:
+  `MASHUP_TEST_PAD=<n>` spawns n entities and a resource in every `Sim`
+  first, and a test's outcome must not change with it (run the bot tests
+  with a few values after touching bot randomness). In game, `bot_goto <x> <y> <z>` (CS:S units) sends
   every bot somewhere; `bot_goto` alone lets them go back. `bot_grenades 2` makes bots throw whenever
   an arc works (`mashup_watch 1` to follow one). On the greybox map:
   `--spawn 0,1,-5 +bot_dont_shoot 1 +bot_stop 1 +bot_grenades 2 +bot_add 1
