@@ -1390,3 +1390,21 @@ mod visual_cases;
 
 #[path = "fire_tests.rs"]
 mod fire_cases;
+
+#[test]
+fn use_presses_say_whether_something_was_found() {
+    let (mut w, _) = door_world(&[]);
+    let me = w.players[0].entity;
+    w.players[0].use_key = true;
+    run_to(&mut w, 0);
+    assert_eq!(w.use_presses, vec![(me, true)]);
+    run_to(&mut w, 1);
+    assert!(w.use_presses.is_empty(), "held, not pressed again");
+    w.players[0].use_key = false;
+    run_to(&mut w, 2);
+    // Far from the door: a press that finds nothing.
+    w.players[0].origin = Vec3::new(-2000.0, 0.0, 0.0);
+    w.players[0].use_key = true;
+    run_to(&mut w, 3);
+    assert_eq!(w.use_presses, vec![(me, false)]);
+}

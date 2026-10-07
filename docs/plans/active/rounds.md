@@ -33,7 +33,11 @@ restarts.
 2. Buy zones: `func_buyzone` by team is in (`economy::in_buy_zone`; maps
    without zones let you buy anywhere, CS:S would make zones around the
    spawns), the buy menu doesn't yet say why a buy failed. Ammo buying
-   (`primammo`/`secammo`), bot buying preferences (ours: `economy::autobuy`, a primary for the team by `Prices::bot_weights` among the dearer half it can afford, then armour), the game's own VGUI buy-menu look
+   is in (`primammo`/`secammo` on the menu's 6 and 7, `buyammo1`/
+   `buyammo2`: boxes per ammo type up to the reserve maximum; bought
+   guns come with their clip only, the spawn pistols with two more
+   clips; bots buy their ammo before armour; prices unmeasured), bot
+   buying preferences (ours: `economy::autobuy`, a primary for the team by `Prices::bot_weights` among the dearer half it can afford, then armour), the game's own VGUI buy-menu look
    (ours: `client/buy_menu.rs`, B or `buymenu`, CS:S's category keys
    and order, each team its own guns; rounds start from the team pistol
    and knife).

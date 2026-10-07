@@ -426,6 +426,9 @@ pub struct LogicWorld {
     pub(super) solids: Vec<Option<Vec<MapBrush>>>,
     /// Players holding use last tick.
     pub(super) use_held: Vec<Entity>,
+    /// This tick's +use presses: who, and whether they found something
+    /// to use (nothing: the game plays its deny sound).
+    pub use_presses: Vec<(Entity, bool)>,
     /// Round restarts since the map loaded (0: the map's first round).
     pub round: u32,
     /// Switchable light styles and whether each is lit (`visuals`).
@@ -493,6 +496,7 @@ impl LogicWorld {
             fired: Vec::new(),
             solids: Vec::new(),
             use_held: Vec::new(),
+            use_presses: Vec::new(),
             round: 0,
             light_styles: Vec::new(),
             globals: Vec::new(),

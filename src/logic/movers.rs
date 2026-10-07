@@ -1595,6 +1595,7 @@ impl LogicWorld {
 
     /// +use for players who pressed it this tick.
     pub fn player_uses(&mut self, col: &dyn Collision) {
+        self.use_presses.clear();
         for i in 0..self.players.len() {
             let (e, held) = (self.players[i].entity, self.players[i].use_key);
             let was = self.use_held.iter().any(|x| *x == e);
@@ -1605,7 +1606,9 @@ impl LogicWorld {
             if !held || was || !self.players[i].alive {
                 continue;
             }
-            if let Some(target) = self.find_use(i, col) {
+            let found = self.find_use(i, col);
+            self.use_presses.push((e, found.is_some()));
+            if let Some(target) = found {
                 let who = Some(Who::Player(e));
                 use_entity(self, target, who, who);
             }

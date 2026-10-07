@@ -36,7 +36,9 @@ rendering. Write screenshots to a scratch directory, never into the repo.
 Needs a display: on the Linux dev box set `WAYLAND_DISPLAY=wayland-1` and
 `XDG_RUNTIME_DIR=/run/user/1000` if the shell lacks them. `--frames N`
 without `--screenshot` just runs N frames and exits (smoke test).
-`--help` lists all options.
+`--window 1920x1080` fixes the window's size in pixels (a fixed-size window
+floats under Hyprland instead of being tiled), for UI checked at a known
+resolution. `--help` lists all options.
 
 To photograph a live run step by step (e.g. before and after a round
 restart, where frame counts are too uncertain), run the game without
@@ -79,6 +81,12 @@ Only `Reflect`-registered types are visible; register new core components in
   on a page, for screenshots of it: `--screenshot menu.png +menu options`.
   Its logic is unit-tested in `client::game_menu` (keys and clicks in,
   console lines out).
+- `buymenu [n]` and `chooseteam` open the buy menu (on category n) and
+  the team menu, e.g. `--map cs_source:de_dust2 --screenshot buy.png
+  +wait 30 +buymenu 4` (the `wait` lets the map's HUD and menu layouts
+  load first, so the game-look pages are used). Their key and button
+  logic is tested headless in `client::buy_menu` and `client::team_menu`;
+  `tests/map_de_dust2.rs` checks the install's layouts load.
 - `ent_fire <target> <input> [value]` sends a map entity an input through
   the logic layer (names, `*` wildcards, classnames; the local player is
   the activator), e.g. `+wait 30 +ent_fire logic_timer Disable +ent_fire
@@ -115,7 +123,15 @@ Only `Reflect`-registered types are visible; register new core components in
   to a goal, `MASHUP_BOT_CASE=<name>` to run one, `MASHUP_BOT_TRACE=0`
   for every tick of its intent, ladder and ground state), and try raw
   inputs with `probe_walk` (`P_AT=x,y,z P_OPT=yaw,crouch,jump,seconds,
-  pitch,forward`). In game, `bot_goto <x> <y> <z>` (CS:S units) sends
+  pitch,forward,side`; `P_OPT2`, `P_OPT3`: further phases, e.g. climb a
+  ladder, then step off its top). `nuke_ladders_climb_both_ways` sends a
+  bot up and down every ladder on de_nuke's mesh; the ignored
+  `ladders_climb_both_ways` does it on `MASHUP_NAV_MAP` (comma-separated
+  maps) and lists the ladders bots fail, one `MASHUP_BOT_CASE="ladder 3
+  up"` at a time. Bot dice come from bot numbers, never entity ids:
+  `MASHUP_TEST_PAD=<n>` spawns n entities and a resource in every `Sim`
+  first, and a test's outcome must not change with it (run the bot tests
+  with a few values after touching bot randomness). In game, `bot_goto <x> <y> <z>` (CS:S units) sends
   every bot somewhere; `bot_goto` alone lets them go back. `bot_grenades 2` makes bots throw whenever
   an arc works (`mashup_watch 1` to follow one). On the greybox map:
   `--spawn 0,1,-5 +bot_dont_shoot 1 +bot_stop 1 +bot_grenades 2 +bot_add 1

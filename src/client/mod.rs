@@ -23,6 +23,7 @@ pub mod scoreboard;
 pub mod senses;
 pub mod spectate;
 pub mod team_menu;
+pub mod vgui;
 pub mod view;
 pub mod weapon_select;
 
@@ -69,6 +70,8 @@ pub struct Args {
     pub console: Vec<String>,
     /// Start with the console open.
     pub console_open: bool,
+    /// Window size in physical pixels (screenshots at a known size).
+    pub window: Option<UVec2>,
 }
 
 const USAGE: &str = "\
@@ -93,6 +96,8 @@ usage: mashup [options]
   --bench                   with --views: time frames at each view (no vsync) and print
                             avg/p95/max frame ms and drawn meshes instead of capturing
   --console                 start with the console open (~ toggles it)
+  --window <WxH>            window size in pixels, e.g. 1920x1080 (screenshots at a known size;
+                            a tiling window manager may still resize it)
   +<command> [args...]      run a console command at startup, Source style
                             (e.g. +sv_airaccelerate 150 +cl_showpos 1 +bind f noclip;
                             ++attack holds an action, e.g. to fire in a --screenshot run)";
@@ -166,6 +171,13 @@ impl Args {
                     out.cvars.push((name.to_string(), v.to_string()));
                 }
                 "--exec" => out.exec.push(value.into()),
+                "--window" => {
+                    let size = value
+                        .split_once(['x', 'X'])
+                        .and_then(|(w, h)| Some(UVec2::new(w.trim().parse().ok()?, h.trim().parse().ok()?)))
+                        .ok_or_else(|| format!("--window: expected WxH, got {value}"))?;
+                    out.window = Some(size);
+                }
                 _ => return Err(format!("unknown option {flag}")),
             }
         }
@@ -206,6 +218,7 @@ impl Plugin for ClientPlugin {
                 buy_menu::BuyMenuPlugin,
                 weapon_select::WeaponSelectPlugin,
                 team_menu::TeamMenuPlugin,
+                vgui::VguiPlugin,
                 chat::ChatPlugin,
                 radio::RadioPlugin,
                 objectives_hud::ObjectivesHudPlugin,

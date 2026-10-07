@@ -1008,13 +1008,15 @@ pub struct MapShadows {
 }
 
 /// Sound entries the announcer plays for rounds: a side's win, a draw,
-/// and one picked at random when a round goes live.
+/// and one picked at random when a round goes live; also the player's
+/// own deny sound (+use on nothing).
 #[derive(Resource, Clone, Debug, Default, PartialEq)]
 pub struct RoundSounds {
     pub attackers_win: Option<String>,
     pub defenders_win: Option<String>,
     pub draw: Option<String>,
     pub start: Vec<String>,
+    pub use_deny: Option<String>,
 }
 
 /// Indices into `core::MapBrushes` of brushes that stop players but not

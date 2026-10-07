@@ -10,6 +10,39 @@ use mashup::{
     movement::placeholder,
 };
 
+#[test]
+fn the_games_buy_and_team_menus_load() {
+    use mashup::map::hud::{UiKind, layout_key};
+    let Some(map) = dust2() else { return };
+    let hud = map.hud.as_ref().expect("CS:S has a HUD");
+    let menus = hud.menus.as_ref().expect("CS:S has its VGUI menus");
+    for team in [1, 2] {
+        let main = &menus.layouts[menus.buy_page(Some(team)).unwrap()];
+        let pistols = main.get("pistols").expect("a pistols button");
+        assert_eq!(pistols.hotkey, Some('1'));
+        assert!(pistols.text.contains("PISTOLS"), "{:?}", pistols.text);
+        // Every category page it opens loaded.
+        for c in main.controls.iter().filter(|c| c.kind == UiKind::Button) {
+            if let Some(page) = c.command.as_deref().filter(|p| p.to_lowercase().ends_with(".res")) {
+                assert!(menus.layouts.contains_key(&layout_key(page)), "page {page} missing");
+            }
+        }
+    }
+    // An item: its button's description panel, with the weapon's picture.
+    let rifles = &menus.layouts["resource/ui/buyrifles_ter.res"];
+    let ak = rifles.get("ak47").unwrap();
+    assert_eq!(ak.command.as_deref(), Some("buy ak47"));
+    let info = &menus.layouts[ak.info.as_ref().expect("ak47 has a description")];
+    let image = info.get("classimage").and_then(|c| c.image.as_ref()).expect("a picture");
+    assert!(hud.sprites.contains_key(image), "{image} not loaded");
+    assert!(info.get("price").is_some_and(|p| p.text.contains('$')));
+    // The team menu, with dust2's description.
+    let team = &menus.layouts[menus.team.as_ref().unwrap()];
+    assert_eq!(team.get("terbutton").unwrap().command.as_deref(), Some("jointeam 2"));
+    assert!(menus.map_info.as_ref().is_some_and(|t| !t.is_empty()));
+    assert!(menus.fonts.contains_key("Default") && menus.fonts.contains_key("MenuTitle"));
+}
+
 fn dust2() -> Option<MapData> {
     let installed = LocalConfig::load()
         .ok()?

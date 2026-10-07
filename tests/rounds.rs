@@ -123,3 +123,67 @@ fn the_dead_are_not_solid_until_the_next_round() {
     assert!(sim.app.world().get::<avian3d::prelude::ColliderDisabled>(ct).is_some());
     assert!(sim.app.world().get::<avian3d::prelude::ColliderDisabled>(t).is_none());
 }
+
+/// Ammo in rounds (CS:S): the spawn pistol carries two more clips, a
+/// bought gun only its clip, and ammo is bought by the box (`primammo`,
+/// `secammo` fill; `buyammo1` buys one) up to the type's maximum; bots buy
+/// theirs.
+#[test]
+fn rounds_ammo_is_bought_by_the_box() {
+    use mashup::{
+        core::LocalPlayer,
+        games::cs_source::{
+            TICK_INTERVAL,
+            weapons::{CsWeaponsPlugin, GLOCK, M4A1, USP},
+        },
+        greybox::GreyboxMapPlugin,
+        weapon::{Inventory, Magazine, Weapon, economy::buy},
+    };
+    let mut sim = Sim::new((GreyboxMapPlugin, CsWeaponsPlugin));
+    sim.set_tick_interval(TICK_INTERVAL);
+    let t = sim.spawn_character(Vec3::new(0.0, 1.0, 0.0), placeholder::ID);
+    let ct = sim.spawn_character(Vec3::new(4.0, 1.0, 0.0), placeholder::ID);
+    sim.app.world_mut().entity_mut(t).insert(Team(1));
+    // The CT is the player; the terrorist shops as a bot.
+    sim.app.world_mut().entity_mut(ct).insert((Team(2), LocalPlayer));
+    sim.app
+        .world_mut()
+        .resource_mut::<Console>()
+        .submit("mp_freezetime 5; mashup_rounds 1");
+    sim.ticks(3);
+    let gun = |sim: &Sim, e: Entity, id: &str| -> (u32, u32) {
+        let w = sim.app.world();
+        let inv = w.get::<Inventory>(e).unwrap();
+        let g = inv
+            .weapons
+            .iter()
+            .find(|g| w.get::<Weapon>(**g).is_some_and(|x| x.id == id))
+            .unwrap_or_else(|| panic!("no {id}"));
+        let m = w.get::<Magazine>(*g).unwrap();
+        (m.clip, m.reserve)
+    };
+    // The bot: Glock 20 + 40, then 9 mm ($20 a box of 30, at most 120)
+    // (3 boxes, the last partly: 60), kevlar for 650 of its 800.
+    assert_eq!(gun(&sim, t, GLOCK), (20, 120));
+    assert_eq!(money(&sim, t), 90);
+    // The player: USP 12 + 24.
+    assert_eq!(gun(&sim, ct, USP), (12, 24));
+    assert_eq!(money(&sim, ct), 800);
+    // The M4A1 (3100 of 16000): its clip, no reserve.
+    sim.app.world_mut().entity_mut(ct).insert(Money(16000));
+    buy(sim.app.world_mut(), ct, "m4a1").unwrap();
+    assert_eq!(gun(&sim, ct, M4A1), (30, 0));
+    // 5.56: $60 a box of 30, at most 90.
+    buy(sim.app.world_mut(), ct, "buyammo1").unwrap();
+    assert_eq!((gun(&sim, ct, M4A1).1, money(&sim, ct)), (30, 12840));
+    buy(sim.app.world_mut(), ct, "primammo").unwrap();
+    assert_eq!((gun(&sim, ct, M4A1).1, money(&sim, ct)), (90, 12720));
+    assert_eq!(
+        buy(sim.app.world_mut(), ct, "primammo").unwrap_err(),
+        "You cannot carry any more."
+    );
+    // .45 ACP: $25 a box of 12, at most 100: 24 + 7 boxes (the last
+    // partly).
+    buy(sim.app.world_mut(), ct, "secammo").unwrap();
+    assert_eq!((gun(&sim, ct, USP).1, money(&sim, ct)), (100, 12545));
+}

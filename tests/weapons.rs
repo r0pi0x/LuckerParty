@@ -265,8 +265,7 @@ fn a_bot_shoots_an_enemy_in_sight() {
     let player = sim.spawn_character(greybox::SPAWNS[1] + Vec3::X * 12.0, placeholder::ID);
     let bot = mashup::bot::add_bot(sim.app.world_mut(), mashup::core::Team(1)).expect("no bot");
     sim.app.world_mut().resource_mut::<mashup::bot::BotConfig>().stop = 1;
-    // No wobble: the wobble draws from a seed made of entity ids, so any
-    // new entity elsewhere could make this bot miss for seconds.
+    // No wobble: this is about reaction time and turning.
     sim.app.world_mut().resource_mut::<mashup::bot::BotConfig>().aim_error = 0.0;
     // Reaction time, turning and the draw: hit within 2 s.
     let mut hit_at = None;
@@ -282,6 +281,43 @@ fn a_bot_shoots_an_enemy_in_sight() {
         sim.app.world().get::<mashup::bot::Bot>(bot).unwrap().target,
         Some(player)
     );
+}
+
+/// Bots' dice come from their number and team (`core::Seed`), not from
+/// entity ids, which shift with anything spawned before them (resources
+/// too): a bot with aim wobble on hurts the player on the same tick and
+/// by the same amount however many entities came first.
+#[test]
+fn bot_dice_do_not_depend_on_entity_ids() {
+    let run = |pad: usize| {
+        let mut sim = sim();
+        sim.pad(pad);
+        sim.app.insert_resource(mashup::slots::Loadout {
+            movement: placeholder::ID,
+        });
+        let player = sim.spawn_character(greybox::SPAWNS[1] + Vec3::X * 12.0, placeholder::ID);
+        let bot = mashup::bot::add_bot(sim.app.world_mut(), mashup::core::Team(1)).expect("no bot");
+        let other = mashup::bot::add_bot(sim.app.world_mut(), mashup::core::Team(2)).expect("no bot");
+        sim.app.world_mut().despawn(other);
+        sim.app.world_mut().resource_mut::<mashup::bot::BotConfig>().stop = 1;
+        let mut hits = Vec::new();
+        let mut last = health(&sim, player);
+        for t in 0..(3.0 / TICK_INTERVAL) as u32 {
+            sim.ticks(1);
+            let h = health(&sim, player);
+            if h != last {
+                hits.push((t, h));
+                last = h;
+            }
+        }
+        let seed = *sim.app.world().get::<mashup::core::Seed>(bot).unwrap();
+        (seed, hits)
+    };
+    let (seed, hits) = run(0);
+    assert!(!hits.is_empty(), "bot never hit the player");
+    for pad in [1, 7, 50] {
+        assert_eq!(run(pad), (seed, hits.clone()), "padded by {pad}");
+    }
 }
 
 #[test]
