@@ -75,6 +75,10 @@ Only `Reflect`-registered types are visible; register new core components in
   action from the start, e.g. to fire in a `--screenshot` run; held
   console actions work without mouse capture. Automated runs never write
   config.cfg, and only archived cvars are saved there.
+- `menu [main|newgame|maps|bots|team|options]` opens the game menu (Esc)
+  on a page, for screenshots of it: `--screenshot menu.png +menu options`.
+  Its logic is unit-tested in `client::game_menu` (keys and clicks in,
+  console lines out).
 - `ent_fire <target> <input> [value]` sends a map entity an input through
   the logic layer (names, `*` wildcards, classnames; the local player is
   the activator), e.g. `+wait 30 +ent_fire logic_timer Disable +ent_fire
