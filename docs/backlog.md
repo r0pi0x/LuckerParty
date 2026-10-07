@@ -84,7 +84,8 @@ burst), HUD, deathmatch and a first bot are in.
   follow-up).
 - Decals, remaining: on characters (blood);
   check the knife's mark (`ManhackCut` is a guess) and lit decals (wood,
-  glass) against the game; tracers; explosion impulses.
+  glass) against the game; tracers are in (every 4th bullet, spec
+  tracers.md; check N and the look in play); explosion impulses.
 - dust2's woven basket physics props (`props_junk`/`wicker` style pots):
   parts of the lid and rim don't draw (seen from above, faces missing).
   Suspect the model converter's winding fix-up (it winds triangles

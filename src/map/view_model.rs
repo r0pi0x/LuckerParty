@@ -833,6 +833,11 @@ pub(super) fn muzzle_flashes(
         let Some((at, forward)) = first_person.or_else(world_model) else {
             continue;
         };
+        // Tracers start here (map::tracer).
+        let owner = ev.owner;
+        commands.queue(move |w: &mut World| {
+            w.resource_mut::<super::tracer::MuzzleCache>().0.insert(owner, (at, now));
+        });
         let data = &flash.data;
         if let Some(material) = &flash.material {
             let scale = dice.range(data.scale);

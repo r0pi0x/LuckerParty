@@ -31,6 +31,7 @@ pub mod live_sound;
 pub mod loose;
 pub mod nav;
 pub mod particles;
+pub mod tracer;
 pub mod prop_material;
 pub mod ragdoll;
 pub use ragdoll::{MapRagdoll, MapRagdollBody, MapRagdollJoint, Ragdoll, RagdollBody};
@@ -1334,6 +1335,9 @@ impl Plugin for MapPlugin {
             .add_message::<SpawnGibs>()
             .add_message::<GlassShatter>()
             .init_resource::<particles::Particles>()
+            .init_resource::<tracer::MuzzleCache>()
+            .init_resource::<tracer::PendingTracers>()
+            .add_message::<tracer::Tracer>()
             .insert_resource(GlobalAmbientLight {
                 brightness: 600.0,
                 // Baked lighting already includes the map's ambient light.
@@ -1363,6 +1367,7 @@ impl Plugin for MapPlugin {
                     glow_visibility,
                     dust::update_dust,
                     (
+                        tracer::draw_tracers,
                         particles::step_particles,
                         particles::draw_particles.run_if(
                             resource_exists::<Assets<Mesh>>.and_then(resource_exists::<Assets<StandardMaterial>>),
