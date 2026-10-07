@@ -213,8 +213,9 @@ docs/plans/active/sound.md.
 - Scrapes (looping friction sounds): needs a stand-in for Source's
   friction energy (spec open question 8); breakables' spec pitch/volume
   rules (we play the entries as scripted) and gib bounce sounds.
-- Soundscape DSP presets (room reverb), env_soundscape visibility
-  checks; soundscape loops onto `map::live_sound` (intro, live panning).
+- Room DSP by ear: tune `map::room::PRESETS` against CS:S (dust2's
+  tunnels, nuke's halls); soundscape `dsp_player`/`soundmixer`,
+  env_soundscape_proxy and env_soundscape Enable/Disable.
 - Stock ambient_generics the bomb starts (de_nuke's alarm, dust2's
   fires) now play when it explodes (`BombExplode`); check them by ear. (Prop outputs are in: de_nuke's steam, cs_office's
   projector.) de_nuke's env_steam jets themselves aren't drawn.

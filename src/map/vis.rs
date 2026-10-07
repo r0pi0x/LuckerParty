@@ -114,6 +114,42 @@ impl MapVisibility {
             .is_some_and(|w| w >> (to % 64) & 1 != 0)
     }
 
+    /// Whether the segment from `a` to `b` stays out of solid leaves
+    /// (Source's trace against world brushes; detail brushes and
+    /// displacements aren't in the tree). Without a tree: clear.
+    pub fn segment_clear(&self, a: Vec3, b: Vec3) -> bool {
+        if self.nodes.is_empty() {
+            return true;
+        }
+        // (node, from, to) left to walk.
+        let mut stack = vec![(0i32, a, b)];
+        while let Some((node, p, q)) = stack.pop() {
+            if node < 0 {
+                if self.leaf_clusters.get((-node - 1) as usize).is_none_or(|&c| c < 0) {
+                    return false;
+                }
+                continue;
+            }
+            let Some(&(plane, [front, back])) = self.nodes.get(node as usize) else {
+                return false;
+            };
+            let (n, d) = self.planes[plane];
+            let (dp, dq) = (n.dot(p) - d, n.dot(q) - d);
+            // Same side as `leaf_at` picks (>= 0 is the front).
+            match (dp >= 0.0, dq >= 0.0) {
+                (true, true) => stack.push((front, p, q)),
+                (false, false) => stack.push((back, p, q)),
+                (p_front, _) => {
+                    let m = p + (q - p) * (dp / (dp - dq));
+                    let (near, far) = if p_front { (front, back) } else { (back, front) };
+                    stack.push((far, m, q));
+                    stack.push((near, p, m));
+                }
+            }
+        }
+        true
+    }
+
     /// Whether any of `clusters` is potentially visible from `from` (no
     /// clusters: always).
     pub fn sees_any(&self, from: u32, clusters: &[u32]) -> bool {
@@ -739,6 +775,17 @@ mod tests {
         assert!(v.sees(0, 1) && !v.sees(1, 0));
         assert_eq!(box_clusters(&v, Vec3::splat(-1.0), Vec3::splat(1.0)), vec![0, 1]);
         assert_eq!(box_clusters(&v, Vec3::splat(0.5), Vec3::splat(1.0)), vec![0]);
+    }
+
+    #[test]
+    fn segments_stop_at_solid_leaves() {
+        let v = two_rooms();
+        let at = |x: f32| Vec3::new(x, 0.0, 0.0);
+        assert!(v.segment_clear(at(1.0), at(-5.0)));
+        assert!(v.segment_clear(at(-5.0), at(9.0)));
+        assert!(!v.segment_clear(at(1.0), at(12.0)));
+        assert!(!v.segment_clear(at(12.0), at(15.0)), "starts in solid");
+        assert!(MapVisibility::default().segment_clear(at(0.0), at(100.0)));
     }
 
     #[test]

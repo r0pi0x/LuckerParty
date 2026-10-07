@@ -15,6 +15,7 @@ use bevy::{
 use super::{
     hearing::Hearing,
     live_sound::{Gains, LiveClip},
+    room::{RoomDsp, distance_send},
 };
 
 /// Decoded audio: interleaved 16-bit samples.
@@ -63,6 +64,8 @@ pub struct MapSoundEntry {
     pub pitch: Interval,
     pub level: SoundLevel,
     pub channel: u8,
+    /// Bypasses the room DSP (Source: every wave marked `#`).
+    pub dry: bool,
 }
 
 /// Ground properties that sounds use (Source surface properties).
@@ -102,6 +105,9 @@ pub struct MapSounds {
 #[derive(Clone, Debug, Default)]
 pub struct Soundscape {
     pub name: String,
+    /// The room preset it sets (`room::PRESETS`, Source's "dsp"); None
+    /// leaves the room as it was.
+    pub dsp: Option<u16>,
     pub loops: Vec<ScapeLoop>,
     pub randoms: Vec<ScapeRandom>,
 }
@@ -118,6 +124,8 @@ pub struct ScapeLoop {
     /// Index into the applying zone's or emitter's positions; None plays
     /// everywhere, unspatialized.
     pub position: Option<usize>,
+    /// Bypasses the room DSP (a `#` wave).
+    pub dry: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -137,6 +145,8 @@ pub struct ScapeRandom {
     pub pitch: Interval,
     pub level: Interval,
     pub position: ScapePosition,
+    /// Bypasses the room DSP (every wave marked `#`).
+    pub dry: bool,
 }
 
 /// A box that selects a soundscape for a listener inside it (Source
@@ -252,6 +262,7 @@ impl Plugin for SoundPlugin {
                 super::soundscape::SoundscapePlugin,
                 super::live_sound::LiveSoundPlugin,
                 super::hearing::HearingPlugin,
+                super::room::RoomPlugin,
             ));
     }
 }
@@ -265,6 +276,7 @@ fn play_sounds(
     playing: Query<(Entity, &Playing, Option<&AudioSink>)>,
     mut sources: ResMut<Assets<LiveClip>>,
     hearing: Res<Hearing>,
+    room: Res<RoomDsp>,
     mut seed: Local<u64>,
 ) {
     let Some(bank) = bank else {
@@ -291,15 +303,18 @@ fn play_sounds(
             SoundLevel::Db(l) => SoundLevel::Db(l.round()),
             a => a,
         };
-        let (left, right) = match (m.at, listener) {
+        // Unspatialized sounds (interface, announcer) stay out of the room.
+        let (left, right, send) = match (m.at, listener) {
             (Some(at), Some(l)) => {
                 let to = at - l.translation();
-                let g = distance_gain(level, to.length() / METERS_PER_UNIT) * volume;
+                let units = to.length() / METERS_PER_UNIT;
+                let g = distance_gain(level, units) * volume;
                 let (pl, pr) = pan(to.normalize_or_zero(), l.right().as_vec3());
-                (g * pl, g * pr)
+                (g * pl, g * pr, distance_send(units))
             }
-            _ => (volume, volume),
+            _ => (volume, volume, 0.0),
         };
+        let send = if entry.dry { 0.0 } else { send };
         if left.max(right) < 1e-3 {
             continue;
         }
@@ -318,7 +333,8 @@ fn play_sounds(
             loop_start: None,
             ..clip.clone()
         };
-        let handle = sources.add(LiveClip::new(once, Arc::new(Gains::new(left, right)), hearing.mix.clone()));
+        let gains = Arc::new(Gains::new(left, right).with_send(send));
+        let handle = sources.add(LiveClip::new(once, gains, hearing.mix.clone()).with_room(&room));
         commands.spawn((
             AudioPlayer(handle),
             PlaybackSettings::DESPAWN

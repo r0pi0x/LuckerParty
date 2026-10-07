@@ -2578,3 +2578,111 @@ fn grenade_models_and_sequences() {
         assert!(map.sounds.entry(s).is_some(), "sound {s}");
     }
 }
+
+/// Soundscape selection and the room DSP (specs/cs_source/sounds.md 6):
+/// a listener moving from dust2's outdoors into an indoors (tunnel)
+/// trigger_soundscape switches the soundscape, its loops (live sounds)
+/// and the room preset its "dsp" names.
+#[test]
+fn walking_into_a_tunnel_switches_soundscape_and_room() {
+    use mashup::map::{
+        LiveSounds,
+        live_sound::SOUNDSCAPE_KEYS,
+        room::{RoomDsp, preset},
+        sound::{SoundListener, SoundscapeZone},
+        soundscape::ScapeState,
+    };
+    let Some(map) = dust2() else { return };
+    let s = map.sounds.clone();
+    let vis = map.visibility.clone().expect("dust2 has visibility");
+    let name = |z: &SoundscapeZone| s.soundscapes[z.scape].name.to_lowercase();
+    let inside = |z: &SoundscapeZone, p: Vec3| p.cmpge(z.min).all() && p.cmple(z.max).all();
+    let outdoors = |p: Vec3| {
+        let zones: Vec<_> = s.soundscape_zones.iter().filter(|z| inside(z, p)).collect();
+        !zones.is_empty() && zones.iter().all(|z| name(z) == "dust2.outdoors")
+    };
+    // A way in: from just outside an indoors box's side, in an outdoors
+    // zone, to inside it, through open space.
+    let mut route = None;
+    'zones: for z in s.soundscape_zones.iter().filter(|z| name(z) == "dust2.indoors") {
+        let c = (z.min + z.max) * 0.5;
+        let half = (z.max - z.min) * 0.5;
+        for dir in [Vec3::X, -Vec3::X, Vec3::Z, -Vec3::Z] {
+            let across = Vec3::new(dir.z, 0.0, dir.x);
+            for lift in [0.6, 1.0, 1.6, 2.5] {
+                for slide in [0.0f32, -0.3, 0.3, -0.6, 0.6] {
+                    let edge = Vec3::new(c.x, z.min.y + lift, c.z)
+                        + across * slide * half.dot(across.abs())
+                        + dir * half.dot(dir.abs());
+                    let (from, to) = (edge + dir * 3.0, edge - dir * 3.0);
+                    if outdoors(from)
+                        && inside(z, to)
+                        && vis.cluster_at(from).is_some()
+                        && vis.cluster_at(to).is_some()
+                        && vis.segment_clear(from, to)
+                    {
+                        route = Some((from, to, z.scape));
+                        break 'zones;
+                    }
+                }
+            }
+        }
+    }
+    let (from, to, indoors) = route.expect("a way into an indoors zone");
+    let out = s
+        .soundscapes
+        .iter()
+        .position(|x| x.name.eq_ignore_ascii_case("dust2.outdoors"))
+        .unwrap();
+    eprintln!(
+        "route {from} -> {to}; dsp outdoors {:?}, indoors {:?}",
+        s.soundscapes[out].dsp, s.soundscapes[indoors].dsp
+    );
+
+    let mut sim = Sim::new((MapPlugin::new(map), cs_source::movement::SourceMovementPlugin));
+    sim.set_tick_interval(cs_source::TICK_INTERVAL);
+    let p = sim.spawn_character(from, mashup::movement::noclip::ID);
+    sim.app.world_mut().entity_mut(p).insert(mashup::core::LocalPlayer);
+    sim.app.world_mut().spawn((SoundListener, Transform::default(), ChildOf(p)));
+    sim.seconds(0.5);
+    let scape = |sim: &Sim| sim.app.world().resource::<ScapeState>().current.map(|c| c.0);
+    let room = |sim: &Sim| sim.app.world().resource::<RoomDsp>().preset;
+    // Soundscape loops playing (keys under SOUNDSCAPE_KEYS).
+    let loops = |sim: &Sim| {
+        sim.app
+            .world()
+            .resource::<LiveSounds>()
+            .sounds
+            .keys()
+            .filter(|k| k.0 >> 62 == SOUNDSCAPE_KEYS >> 62)
+            .count()
+    };
+    assert_eq!(scape(&sim), Some(out));
+    let outdoor_loops = loops(&sim);
+    assert!(outdoor_loops > 0, "the outdoors loops play");
+    let before = room(&sim);
+    assert_eq!(before, s.soundscapes[out].dsp.unwrap_or(0));
+
+    // Walk in, 0.1 m a tick.
+    let steps = (from.distance(to) / 0.1).ceil() as usize;
+    for i in 1..=steps {
+        let at = from.lerp(to, i as f32 / steps as f32);
+        sim.app.world_mut().get_mut::<Transform>(p).unwrap().translation = at;
+        sim.ticks(1);
+    }
+    sim.seconds(0.2);
+    assert_eq!(scape(&sim), Some(indoors), "indoors once inside");
+    let after = room(&sim);
+    eprintln!("room {} -> {}", preset(before).name, preset(after).name);
+    assert_eq!(Some(after), s.soundscapes[indoors].dsp);
+    assert_ne!(before, after, "the tunnel sounds like another room");
+    // The outdoors loops fade out over 3 s and stop; the indoors ones
+    // (some reused) play on.
+    let crossing = loops(&sim);
+    eprintln!("loops: {outdoor_loops} outdoors, {crossing} while crossing");
+    assert!(crossing > 0);
+    sim.seconds(3.5);
+    let left = loops(&sim);
+    eprintln!("loops: {outdoor_loops} outdoors, {left} indoors");
+    assert!(left > 0 && left <= s.soundscapes[indoors].loops.len());
+}

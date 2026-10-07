@@ -11,7 +11,7 @@ use vbsp::Bsp;
 use super::{
     material::MaterialLoader,
     movement::to_engine,
-    sound::{interval, named_level, wave_file},
+    sound::{interval, named_level, wave_dry, wave_file},
     surfaceprops::tokens,
 };
 use crate::map::sound::{
@@ -140,11 +140,16 @@ impl Builder<'_, '_> {
         };
         let block = block.clone();
         for (key, node) in &block {
+            // "dsp" sets the room preset, at the top level only.
+            if let (0, "dsp", Node::Value(v)) = (depth, key.as_str(), node) {
+                out.dsp = Some(interval(v).start.max(0.0) as u16);
+            }
             let Node::Block(b) = node else { continue };
             match key.as_str() {
                 "playlooping" => {
                     let volume = scaled(value(b, "volume").map_or(Interval::fixed(0.0), interval), at.volume);
-                    let Some(clip) = value(b, "wave").and_then(|w| self.clip(w)) else {
+                    let wave = value(b, "wave");
+                    let Some(clip) = wave.and_then(|w| self.clip(w)) else {
                         continue;
                     };
                     if volume.start <= 0.0 && volume.range <= 0.0 {
@@ -160,6 +165,7 @@ impl Builder<'_, '_> {
                         pitch: value(b, "pitch").map_or(Interval::fixed(100.0), interval),
                         level: level_interval(b, 75.0).start,
                         position,
+                        dry: wave.is_some_and(wave_dry),
                     });
                 }
                 "playrandom" => {
@@ -184,6 +190,7 @@ impl Builder<'_, '_> {
                         pitch: value(b, "pitch").map_or(Interval::fixed(0.0), interval),
                         level: level_interval(b, 0.0),
                         position: self.position(b, at),
+                        dry: !waves.is_empty() && waves.iter().all(|w| wave_dry(w)),
                     });
                 }
                 "playsoundscape" => {
