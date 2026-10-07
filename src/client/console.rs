@@ -907,8 +907,17 @@ fn overlay_cvars(app: &mut App) {
     resource_cvar::<Overlays, u8>(
         app,
         "snd_show",
-        "1: mark where sounds play, with their names, for a few seconds.",
+        "1: mark where sounds play, with their names, for a few seconds; show the soundscape and room DSP preset.",
         |o| &mut o.snd_show,
+    );
+    // The room (map::room) may be added after the console.
+    app.init_resource::<crate::map::room::RoomDsp>();
+    resource_cvar::<crate::map::room::RoomDsp, u8>(app, "dsp_off", "1: no room reverb or echo.", |r| &mut r.off);
+    resource_cvar::<crate::map::room::RoomDsp, f32>(
+        app,
+        "dsp_volume",
+        "Level of the room reverb and echo (1 normal).",
+        |r| &mut r.volume,
     );
     app.console_cvar(
         "con_timestamps",
@@ -938,6 +947,10 @@ fn draw_overlays(
     console: Res<Console>,
     fixed: Res<Time<Fixed>>,
     entities: Query<Entity>,
+    sound: (
+        Option<Res<crate::map::soundscape::ScapeState>>,
+        Option<Res<crate::map::room::RoomDsp>>,
+    ),
 ) {
     let _ = map;
     let dt = time.delta_secs();
@@ -988,6 +1001,11 @@ fn draw_overlays(
             (i.yaw.to_degrees() + 90.0).rem_euclid(360.0)
         ));
         lines.push(format!("vel: {:.2} (xy {:.2})", vel.length(), vel.truncate().length()));
+    }
+    if o.snd_show > 0
+        && let (Some(scape), Some(room)) = &sound
+    {
+        lines.push(crate::map::soundscape::readout(scape, room));
     }
     if !o.watch_text.is_empty() {
         lines.push(o.watch_text.clone());

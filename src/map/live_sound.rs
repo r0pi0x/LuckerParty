@@ -1,7 +1,9 @@
 //! Long-lived sounds for any game (docs/plans/active/sound.md): started,
 //! changed (volume, pitch) and stopped by their owner through
 //! `SoundControl` messages, each under its own `SoundKey`. Map ambience
-//! (Source's ambient_generic, from the logic layer) uses them.
+//! (Source's ambient_generic, from the logic layer) and soundscape loops
+//! (`map::soundscape`) use them; every clip sends to the room
+//! (`map::room`).
 //!
 //! A clip with a loop point plays from its start, then loops from that
 //! point forever; any other clip plays once and ends. A sound sits at a
@@ -27,11 +29,22 @@ use bevy::{
 };
 
 use super::hearing::{Hearing, HearingMix, Muffle};
+use super::room::{AMBIENT_SEND, RoomBus, RoomDsp, RoomSend, distance_send};
 use super::sound::{METERS_PER_UNIT, MapSoundClip, SoundBank, SoundLevel, SoundListener, distance_gain, pan};
 
 /// Who a long-lived sound belongs to (chosen by its owner).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SoundKey(pub u64);
+
+/// Keys with this bit (and not bit 63, the logic's) belong to the
+/// soundscape's loops (`map::soundscape`), which `StopAll` leaves alone.
+pub const SOUNDSCAPE_KEYS: u64 = 1 << 62;
+
+impl SoundKey {
+    fn soundscape(self) -> bool {
+        self.0 >> 62 == 1
+    }
+}
 
 /// Start, change or stop a long-lived sound.
 #[derive(Message, Clone, Debug)]
@@ -45,12 +58,13 @@ pub enum SoundControl {
         pitch: Option<f32>,
     },
     Stop(SoundKey),
-    /// Every long-lived sound (map change, round restart).
+    /// Every long-lived sound but the soundscape's loops (map change,
+    /// round restart).
     StopAll,
 }
 
 /// A long-lived sound to start.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct StartSound {
     pub key: SoundKey,
     /// A sound entry of the map's `SoundBank` (games add raw files as
@@ -64,6 +78,12 @@ pub struct StartSound {
     pub volume: Option<f32>,
     pub pitch: Option<f32>,
     pub level: Option<SoundLevel>,
+    /// Play this clip of the bank (`entry` then only names it).
+    pub clip: Option<usize>,
+    /// Loop even without a loop point (from the start).
+    pub looping: bool,
+    /// Bypass the room (Source's `#` waves).
+    pub dry: bool,
 }
 
 /// A playing long-lived sound.
@@ -82,6 +102,8 @@ pub struct LiveSound {
     pub looping: bool,
     /// Seconds of the clip left to play at pitch 100 (one-shots).
     pub left: f32,
+    /// Bypasses the room.
+    pub dry: bool,
     audio: Option<(Entity, Arc<Gains>)>,
 }
 
@@ -91,11 +113,13 @@ pub struct LiveSounds {
     pub sounds: HashMap<SoundKey, LiveSound>,
 }
 
-/// Per-ear gains a playing clip reads (f32 bits), set each frame.
+/// Per-ear gains and the room send a playing clip reads (f32 bits), set
+/// each frame.
 #[derive(Debug, Default)]
 pub struct Gains {
     left: AtomicU32,
     right: AtomicU32,
+    send: AtomicU32,
 }
 
 impl Gains {
@@ -104,9 +128,20 @@ impl Gains {
         g.set(left, right);
         g
     }
+    /// With a share sent to the room (`room::distance_send`).
+    pub fn with_send(self, send: f32) -> Self {
+        self.set_send(send);
+        self
+    }
     fn set(&self, left: f32, right: f32) {
         self.left.store(left.to_bits(), Ordering::Relaxed);
         self.right.store(right.to_bits(), Ordering::Relaxed);
+    }
+    fn set_send(&self, send: f32) {
+        self.send.store(send.to_bits(), Ordering::Relaxed);
+    }
+    fn send(&self) -> f32 {
+        f32::from_bits(self.send.load(Ordering::Relaxed))
     }
     fn get(&self) -> (f32, f32) {
         (
@@ -117,18 +152,31 @@ impl Gains {
 }
 
 /// A clip played with live gains, looping from its loop point, through
-/// the listener's hearing (`hearing::HearingMix`). Every sound plays as
-/// one, so the hearing reaches them all.
+/// the listener's hearing (`hearing::HearingMix`), sending to the room
+/// (`room::RoomBus`). Every sound plays as one, so the hearing and the
+/// room reach them all.
 #[derive(Asset, TypePath)]
 pub struct LiveClip {
     clip: MapSoundClip,
     gains: Arc<Gains>,
     hearing: Arc<HearingMix>,
+    room: Option<Arc<RoomBus>>,
 }
 
 impl LiveClip {
     pub fn new(clip: MapSoundClip, gains: Arc<Gains>, hearing: Arc<HearingMix>) -> Self {
-        Self { clip, gains, hearing }
+        Self {
+            clip,
+            gains,
+            hearing,
+            room: None,
+        }
+    }
+
+    /// Send `Gains`' share of it to the room.
+    pub fn with_room(mut self, room: &RoomDsp) -> Self {
+        self.room = Some(room.bus.clone());
+        self
     }
 }
 
@@ -144,6 +192,7 @@ pub struct LiveDecoder {
     current: (f32, f32),
     hearing: Arc<HearingMix>,
     muffle: Muffle,
+    room: Option<RoomSend>,
 }
 
 /// How fast the applied gains follow a change, per frame of audio
@@ -174,12 +223,14 @@ impl Iterator for LiveDecoder {
         let (tl, tr) = self.gains.get();
         self.current.0 += (tl - self.current.0) * GAIN_SMOOTHING;
         self.current.1 += (tr - self.current.1) * GAIN_SMOOTHING;
-        let (l, r) = self.muffle.frame(
-            &self.hearing,
-            self.rate.get() as f32,
+        let (l, r) = (
             l as f32 / 32768.0 * self.current.0,
             r as f32 / 32768.0 * self.current.1,
         );
+        if let Some(room) = &mut self.room {
+            room.push((l + r) * 0.5 * self.gains.send());
+        }
+        let (l, r) = self.muffle.frame(&self.hearing, self.rate.get() as f32, l, r);
         self.right = Some(r);
         Some(l)
     }
@@ -216,6 +267,7 @@ impl Decodable for LiveClip {
             current: start,
             hearing: self.hearing.clone(),
             muffle: Muffle::default(),
+            room: self.room.clone().map(RoomSend::new),
         }
     }
 }
@@ -284,21 +336,37 @@ fn control(
                     stop(&mut commands, &sinks, old);
                 }
                 let Some(bank) = &bank else { continue };
-                let Some(entry) = bank.0.entry(&s.entry) else {
-                    debug!("sound: no entry '{}'", s.entry);
-                    continue;
+                let (clip_index, volume, pitch, level, dry) = match s.clip {
+                    Some(c) if c < bank.0.clips.len() => (
+                        c,
+                        s.volume.unwrap_or(1.0),
+                        s.pitch.unwrap_or(100.0),
+                        s.level.unwrap_or(SoundLevel::Db(75.0)),
+                        s.dry,
+                    ),
+                    Some(_) => continue,
+                    None => {
+                        let Some(entry) = bank.0.entry(&s.entry) else {
+                            debug!("sound: no entry '{}'", s.entry);
+                            continue;
+                        };
+                        if entry.waves.is_empty() {
+                            continue;
+                        }
+                        let n = entry.waves.len();
+                        (
+                            entry.waves[((unit() * n as f32) as usize).min(n - 1)],
+                            s.volume.unwrap_or_else(|| entry.volume.draw(unit())),
+                            s.pitch.unwrap_or_else(|| entry.pitch.draw(unit()).trunc()),
+                            s.level.unwrap_or(entry.level),
+                            s.dry || entry.dry,
+                        )
+                    }
                 };
-                if entry.waves.is_empty() {
-                    continue;
-                }
-                let n = entry.waves.len();
-                let clip_index = entry.waves[((unit() * n as f32) as usize).min(n - 1)];
+                let volume = volume.clamp(0.0, 1.0);
                 let clip = &bank.0.clips[clip_index];
-                let volume = s.volume.unwrap_or_else(|| entry.volume.draw(unit())).clamp(0.0, 1.0);
-                let pitch = s.pitch.unwrap_or_else(|| entry.pitch.draw(unit()).trunc());
-                let level = s.level.unwrap_or(entry.level);
                 let frames = clip.samples.len() / clip.channels.max(1) as usize;
-                let looping = clip.loop_start.is_some_and(|l| l < frames);
+                let looping = s.looping || clip.loop_start.is_some_and(|l| l < frames);
                 info!(
                     "sound: start '{}' volume {volume:.2} pitch {pitch} level {level:?}{}",
                     s.entry,
@@ -316,6 +384,7 @@ fn control(
                         level,
                         looping,
                         left: frames as f32 / clip.rate.max(1) as f32,
+                        dry,
                         audio: None,
                     },
                 );
@@ -336,8 +405,11 @@ fn control(
                 }
             }
             SoundControl::StopAll => {
-                for (_, old) in live.sounds.drain() {
-                    stop(&mut commands, &sinks, old);
+                let keys: Vec<SoundKey> = live.sounds.keys().filter(|k| !k.soundscape()).copied().collect();
+                for k in keys {
+                    if let Some(old) = live.sounds.remove(&k) {
+                        stop(&mut commands, &sinks, old);
+                    }
                 }
             }
         }
@@ -373,6 +445,7 @@ fn drive_audio(
     mut clips: ResMut<Assets<LiveClip>>,
     global: Option<Res<bevy::audio::GlobalVolume>>,
     hearing: Res<Hearing>,
+    room: Res<RoomDsp>,
     mut commands: Commands,
 ) {
     let Some(bank) = bank else { return };
@@ -381,19 +454,22 @@ fn drive_audio(
     let master = global.map_or(1.0, |g| g.volume.to_linear());
     let ear = listener.iter().next();
     for s in live.sounds.values_mut() {
-        let (left, right) = match (s.at, ear) {
+        let (left, right, send) = match (s.at, ear) {
             (Some(at), Some(ear)) if !matches!(s.level, SoundLevel::Db(l) if l <= 0.0) => {
                 let to = at - ear.translation();
-                let g = distance_gain(s.level, to.length() / METERS_PER_UNIT) * s.volume;
+                let units = to.length() / METERS_PER_UNIT;
+                let g = distance_gain(s.level, units) * s.volume;
                 let (pl, pr) = pan(to.normalize_or_zero(), ear.right().as_vec3());
-                (g * pl, g * pr)
+                (g * pl, g * pr, distance_send(units))
             }
-            _ => (s.volume, s.volume),
+            _ => (s.volume, s.volume, AMBIENT_SEND),
         };
+        let send = if s.dry { 0.0 } else { send };
         let speed = s.pitch.clamp(1.0, 255.0) / 100.0;
         match &s.audio {
             Some((e, gains)) => {
                 gains.set(left, right);
+                gains.set_send(send);
                 if let Ok(mut sink) = sinks.get_mut(*e) {
                     if (sink.speed() - speed).abs() > 1e-4 {
                         sink.set_speed(speed);
@@ -405,8 +481,13 @@ fn drive_audio(
             }
             None => {
                 let Some(clip) = bank.0.clips.get(s.clip) else { continue };
-                let gains = Arc::new(Gains::new(left, right));
-                let handle = clips.add(LiveClip::new(clip.clone(), gains.clone(), hearing.mix.clone()));
+                let mut clip = clip.clone();
+                let frames = clip.samples.len() / clip.channels.max(1) as usize;
+                if s.looping && clip.loop_start.is_none_or(|l| l >= frames) {
+                    clip.loop_start = Some(0);
+                }
+                let gains = Arc::new(Gains::new(left, right).with_send(send));
+                let handle = clips.add(LiveClip::new(clip, gains.clone(), hearing.mix.clone()).with_room(&room));
                 let e = commands
                     .spawn((AudioPlayer(handle), PlaybackSettings::DESPAWN.with_speed(speed)))
                     .id();

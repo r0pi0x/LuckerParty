@@ -42,9 +42,19 @@ Started 2026-10-05, from specs/cs_source/sounds.md.
    left: they need the engine's friction energy (spec open question 8).
 4. [x] Soundscapes: scripts flattened (nesting, volumes, position
    overrides), trigger_soundscape zones (most recent wins) and
-   env_soundscape points (range only), 3 s loop crossfades with reuse,
-   random one-shots (fixed, positioned or random positions). Not yet:
-   DSP, env_soundscape visibility, live panning of positioned loops.
+   env_soundscape points, 3 s loop crossfades with reuse, random
+   one-shots (fixed, positioned or random positions). env_soundscape
+   selection follows the spec: in range, potentially visible from the
+   ear's cluster and a clear line through the BSP's solid leaves; the
+   current one stays until another qualifies (closer, or the current one
+   out of range or sight). Loops are `live_sound` sounds (intro, then the
+   loop point; live panning). Room DSP (`map/room.rs`): the soundscape's
+   top-level "dsp" picks a preset from a 29-row table of our parameters
+   (Source's are engine-side), played by one shared reverb bus that every
+   clip sends into (more with distance; `#` waves and interface sounds
+   dry); `dsp_off`, `dsp_volume`; `snd_show 1` shows the soundscape and
+   preset. Not yet: dsp_player, soundmixer, the trace budget,
+   env_soundscape_proxy and Enable/Disable inputs.
 6. [x] ambient_generic (`logic/ambient.rs` on `map/live_sound.rs`):
    the logic keeps the entity's state (spawn keys, inputs, ramps and LFO
    at 5 Hz) and asks for long-lived sounds by entity (`Effect::Ambient*`

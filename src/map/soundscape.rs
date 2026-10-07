@@ -1,25 +1,34 @@
 //! Soundscape playback (specs/cs_source/sounds.md 6, "Soundscapes"): pick
 //! the soundscape for the listener, fade its loops in over 3 s while the
-//! previous one's fade out, and play its random one-shots. Runs only with
-//! audio.
+//! previous one's fade out, play its random one-shots and set the room
+//! DSP preset it names (`room::RoomDsp`).
+//!
+//! Selection and the loops run headless too: the loops are long-lived
+//! sounds (`live_sound`, keys under `live_sound::SOUNDSCAPE_KEYS`), which
+//! play their intro, loop from their loop point and pan live. The random
+//! one-shots play only with audio.
 
 use std::sync::Arc;
 
 use bevy::{
-    audio::{AudioPlayer, AudioSink, AudioSinkPlayback, PlaybackSettings, Volume},
+    audio::{AudioPlayer, PlaybackSettings},
     prelude::*,
 };
 
 use super::{
     hearing::Hearing,
-    live_sound::{Gains, LiveClip},
+    live_sound::{Gains, LiveClip, SOUNDSCAPE_KEYS, SoundControl, SoundKey, StartSound},
+    room::{AMBIENT_SEND, PRESETS, RoomDsp, distance_send},
     sound::{METERS_PER_UNIT, MapSoundClip, ScapePosition, SoundBank, SoundLevel, SoundListener, distance_gain, pan},
+    vis::ActiveVisibility,
 };
 
 /// Seconds for a loop's volume to move by 1.0 (soundscape_fadetime).
 const FADE_TIME: f32 = 3.0;
 /// Random sounds with "position random" play this far from the eye, units.
 const RANDOM_DISTANCE: f32 = 36.0;
+/// A new positional loop starts at this volume (soundscape_loop_start_vol).
+const LOOP_START_VOLUME: f32 = 0.05;
 
 pub struct SoundscapePlugin;
 
@@ -27,23 +36,30 @@ impl Plugin for SoundscapePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ScapeState>().add_systems(
             PostUpdate,
-            (select, fade_loops, play_randoms)
-                .chain()
-                .run_if(resource_exists::<Assets<LiveClip>>),
+            (
+                select,
+                fade_loops,
+                play_randoms.run_if(resource_exists::<Assets<LiveClip>>),
+            )
+                .chain(),
         );
     }
 }
 
-/// Which soundscape plays and the state of its random sounds.
+/// Which soundscape plays and the state of its sounds.
 #[derive(Resource, Default)]
 pub struct ScapeState {
-    /// (soundscape, positions) now playing, and what selected it.
+    /// (soundscape, what selected it) now playing.
     pub current: Option<(usize, Source)>,
+    /// The current soundscape's name (debug readouts).
+    pub name: Option<String>,
     /// Zones the listener is inside, most recently entered first.
     inside: Vec<usize>,
     generation: u32,
     randoms: Vec<(usize, f64)>,
     positions: Vec<Option<Vec3>>,
+    loops: Vec<LoopState>,
+    next_key: u64,
     seed: u64,
 }
 
@@ -63,35 +79,60 @@ impl ScapeState {
     }
 }
 
-/// Stop every soundscape sound and forget the selection (map change).
-pub fn reset(world: &mut World) {
-    let loops: Vec<Entity> = world.query_filtered::<Entity, With<ScapeLoop>>().iter(world).collect();
-    for e in loops {
-        world.entity_mut(e).despawn();
-    }
-    world.insert_resource(ScapeState::default());
-}
-
 /// A playing soundscape loop.
-#[derive(Component)]
-struct ScapeLoop {
+#[derive(Clone, Debug)]
+struct LoopState {
+    key: SoundKey,
     clip: usize,
     pitch: f32,
     at: Option<Vec3>,
-    level: f32,
     volume: f32,
     target: f32,
 }
 
+/// Forget the selection and the room (map change; `live_sound::reset`
+/// stops the loops).
+pub fn reset(world: &mut World) {
+    world.insert_resource(ScapeState::default());
+    if let Some(mut room) = world.get_resource_mut::<RoomDsp>() {
+        room.preset = 0;
+    }
+}
+
+/// Source's env_soundscape rule (sounds.md "Selection on the server"):
+/// the current soundscape stays current even out of range or sight; a
+/// candidate that `qualifies` (in range and visible) takes over when the
+/// current one doesn't qualify, or when it is closer. Candidates are
+/// visited in list order, each against the one chosen so far.
+pub fn choose_emitter(
+    current: Option<usize>,
+    count: usize,
+    qualifies: impl Fn(usize) -> bool,
+    distance: impl Fn(usize) -> f32,
+) -> Option<usize> {
+    let mut chosen = current;
+    let mut in_range = current.is_some_and(&qualifies);
+    for i in 0..count {
+        if Some(i) == chosen || !qualifies(i) {
+            continue;
+        }
+        if !in_range || chosen.is_some_and(|c| distance(i) < distance(c)) {
+            chosen = Some(i);
+            in_range = true;
+        }
+    }
+    chosen
+}
+
+#[allow(clippy::too_many_arguments)]
 fn select(
     bank: Option<Res<SoundBank>>,
     touches: Option<Res<super::SoundscapeTouches>>,
+    vis: Option<Res<ActiveVisibility>>,
     listener: Query<&GlobalTransform, With<SoundListener>>,
     mut state: ResMut<ScapeState>,
-    mut loops: Query<(Entity, &mut ScapeLoop)>,
-    mut sources: ResMut<Assets<LiveClip>>,
-    hearing: Res<Hearing>,
-    mut commands: Commands,
+    mut room: ResMut<RoomDsp>,
+    mut control: MessageWriter<SoundControl>,
     time: Res<Time>,
 ) {
     let (Some(bank), Some(ear)) = (bank, listener.iter().next()) else {
@@ -122,25 +163,31 @@ fn select(
     let wanted = if let Some(&z) = state.inside.first() {
         Some(Source::Zone(z))
     } else {
-        // Emitters: the current one stays until a closer one in range
-        // appears (visibility is not checked yet).
-        let in_range = |i: usize| {
-            let e = &sounds.soundscape_emitters[i];
-            e.radius.is_none_or(|r| e.at.distance(ear) < r)
+        // Emitters: in range (radius, or unlimited) and visible (the
+        // emitter's cluster potentially visible from the ear's, and a
+        // clear line through the world's solid leaves).
+        let vis = vis.as_ref().map(|v| &*v.0);
+        let ear_cluster = vis.and_then(|v| v.cluster_at(ear));
+        let emitters = &sounds.soundscape_emitters;
+        let qualifies = |i: usize| {
+            let e = &emitters[i];
+            if !e.radius.is_none_or(|r| e.at.distance(ear) < r) {
+                return false;
+            }
+            let Some(v) = vis else { return true };
+            let pvs = match (ear_cluster, v.cluster_at(e.at)) {
+                (Some(a), Some(b)) => v.sees(a, b),
+                _ => true,
+            };
+            pvs && v.segment_clear(e.at, ear)
         };
-        let dist = |i: usize| sounds.soundscape_emitters[i].at.distance(ear);
         let current = match state.current {
-            Some((_, Source::Emitter(i))) if in_range(i) => Some(i),
+            Some((_, Source::Emitter(i))) => Some(i),
             _ => None,
         };
-        let best = (0..sounds.soundscape_emitters.len())
-            .filter(|&i| in_range(i))
-            .min_by(|&a, &b| dist(a).total_cmp(&dist(b)));
-        match (current, best) {
-            (Some(c), Some(b)) if dist(b) < dist(c) => Some(Source::Emitter(b)),
-            (Some(c), _) => Some(Source::Emitter(c)),
-            (None, Some(b)) => Some(Source::Emitter(b)),
-            (None, None) => state.current.map(|c| c.1),
+        match choose_emitter(current, emitters.len(), qualifies, |i| emitters[i].at.distance(ear)) {
+            Some(i) => Some(Source::Emitter(i)),
+            None => state.current.map(|c| c.1),
         }
     };
     let Some(source) = wanted else { return };
@@ -162,16 +209,24 @@ fn select(
         state.current = Some((scape, source));
         return;
     }
-    info!("soundscape: {}", sounds.soundscapes[scape].name);
+    let def = &sounds.soundscapes[scape];
+    if let Some(dsp) = def.dsp {
+        room.preset = dsp;
+    }
+    info!(
+        "soundscape: {} (dsp {})",
+        def.name,
+        def.dsp
+            .map_or("unchanged".to_string(), |d| format!("{d}, {}", super::room::preset(d).name))
+    );
     state.current = Some((scape, source));
+    state.name = Some(def.name.clone());
     state.generation += 1;
     state.positions = positions.clone();
     let now = time.elapsed_secs_f64();
-    let def = &sounds.soundscapes[scape];
 
     // Old loops fade out unless the new soundscape reuses them.
-    let mut old: Vec<(Entity, Mut<ScapeLoop>)> = loops.iter_mut().collect();
-    for (_, l) in old.iter_mut() {
+    for l in state.loops.iter_mut() {
         l.target = 0.0;
     }
     for l in &def.loops {
@@ -187,7 +242,7 @@ fn select(
         if volume <= 0.0 {
             continue;
         }
-        let reuse = old.iter_mut().find(|(_, o)| {
+        let reuse = state.loops.iter_mut().find(|o| {
             o.clip == l.clip
                 && o.pitch == pitch
                 && match (o.at, at) {
@@ -196,32 +251,33 @@ fn select(
                     _ => false,
                 }
         });
-        if let Some((_, o)) = reuse {
+        if let Some(o) = reuse {
             o.target = volume;
             continue;
         }
-        // The clip loops itself (a loop played by Bevy would replay the
-        // first pass, muffle and all).
-        let clip = MapSoundClip {
-            loop_start: Some(0),
-            ..looped(&sounds.clips[l.clip])
-        };
-        let handle = sources.add(LiveClip::new(clip, Arc::new(Gains::new(1.0, 1.0)), hearing.mix.clone()));
-        let start = if at.is_some() { 0.05 } else { 0.0 };
-        commands.spawn((
-            AudioPlayer(handle),
-            PlaybackSettings::DESPAWN
-                .with_volume(Volume::Linear(0.0))
-                .with_speed(pitch / 100.0),
-            ScapeLoop {
-                clip: l.clip,
-                pitch,
-                at,
-                level: l.level,
-                volume: start,
-                target: volume,
-            },
-        ));
+        state.next_key += 1;
+        let key = SoundKey(SOUNDSCAPE_KEYS | state.next_key);
+        let start = if at.is_some() { LOOP_START_VOLUME } else { 0.0 };
+        control.write(SoundControl::Start(StartSound {
+            key,
+            entry: format!("{} loop", def.name),
+            at,
+            volume: Some(start),
+            pitch: Some(pitch),
+            level: Some(SoundLevel::Db(l.level)),
+            clip: Some(l.clip),
+            looping: true,
+            dry: l.dry,
+            ..default()
+        }));
+        state.loops.push(LoopState {
+            key,
+            clip: l.clip,
+            pitch,
+            at,
+            volume: start,
+            target: volume,
+        });
     }
     state.randoms.clear();
     for (i, r) in def.randoms.iter().enumerate() {
@@ -230,53 +286,35 @@ fn select(
     }
 }
 
-/// The part of a clip that loops: from its loop point to the end.
-fn looped(clip: &MapSoundClip) -> MapSoundClip {
-    let Some(start) = clip.loop_start else {
-        return clip.clone();
-    };
-    let from = (start * clip.channels as usize).min(clip.samples.len());
-    MapSoundClip {
-        samples: clip.samples[from..].into(),
-        loop_start: None,
-        ..clip.clone()
-    }
-}
-
-fn fade_loops(
-    mut loops: Query<(Entity, &mut ScapeLoop, Option<&mut AudioSink>)>,
-    listener: Query<&GlobalTransform, With<SoundListener>>,
-    time: Res<Time>,
-    global: Option<Res<bevy::audio::GlobalVolume>>,
-    mut commands: Commands,
-) {
-    let ear = listener.iter().next().map(|l| l.translation());
-    // Setting a sink's volume replaces the global factor Bevy applied when
-    // it started, so apply it here too (and follow changes to it).
-    let master = global.map_or(1.0, |g| g.volume.to_linear());
+/// Move each loop's volume toward its target; stop the faded ones.
+fn fade_loops(mut state: ResMut<ScapeState>, mut control: MessageWriter<SoundControl>, time: Res<Time>) {
     let step = time.delta_secs() / FADE_TIME;
-    for (e, mut l, sink) in &mut loops {
+    state.loops.retain_mut(|l| {
+        let before = l.volume;
         l.volume += (l.target - l.volume).clamp(-step, step);
         if l.target == 0.0 && l.volume <= 0.0 {
-            commands.entity(e).despawn();
-            continue;
+            control.write(SoundControl::Stop(l.key));
+            return false;
         }
-        let gain = match (l.at, ear) {
-            (Some(at), Some(ear)) => distance_gain(SoundLevel::Db(l.level), at.distance(ear) / METERS_PER_UNIT),
-            _ => 1.0,
-        };
-        if let Some(mut sink) = sink {
-            sink.set_volume(Volume::Linear(l.volume * gain * master));
+        if l.volume != before {
+            control.write(SoundControl::Change {
+                key: l.key,
+                volume: Some(l.volume),
+                pitch: None,
+            });
         }
-    }
+        true
+    });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn play_randoms(
     bank: Option<Res<SoundBank>>,
     listener: Query<&GlobalTransform, With<SoundListener>>,
     mut state: ResMut<ScapeState>,
     mut sources: ResMut<Assets<LiveClip>>,
     hearing: Res<Hearing>,
+    room: Res<RoomDsp>,
     mut commands: Commands,
     time: Res<Time>,
 ) {
@@ -313,14 +351,15 @@ fn play_randoms(
                 Some(ear.translation() + dir * RANDOM_DISTANCE * METERS_PER_UNIT)
             }
         };
-        let (left, right) = match at {
+        let (left, right, send) = match at {
             Some(at) => {
                 let to = at - ear.translation();
-                let g = distance_gain(SoundLevel::Db(level), to.length() / METERS_PER_UNIT) * volume;
+                let units = to.length() / METERS_PER_UNIT;
+                let g = distance_gain(SoundLevel::Db(level), units) * volume;
                 let (pl, pr) = pan(to.normalize_or_zero(), ear.right().as_vec3());
-                (g * pl, g * pr)
+                (g * pl, g * pr, distance_send(units))
             }
-            None => (volume, volume),
+            None => (volume, volume, AMBIENT_SEND),
         };
         if left.max(right) < 1e-3 {
             continue;
@@ -329,7 +368,43 @@ fn play_randoms(
             loop_start: None,
             ..bank.0.clips[r.clips[pick]].clone()
         };
-        let handle = sources.add(LiveClip::new(once, Arc::new(Gains::new(left, right)), hearing.mix.clone()));
+        let gains = Gains::new(left, right).with_send(if r.dry { 0.0 } else { send });
+        let handle = sources.add(LiveClip::new(once, Arc::new(gains), hearing.mix.clone()).with_room(&room));
         commands.spawn((AudioPlayer(handle), PlaybackSettings::DESPAWN.with_speed(pitch / 100.0)));
+    }
+}
+
+/// The room readout: "<soundscape>  dsp <n> <preset>".
+pub fn readout(state: &ScapeState, room: &RoomDsp) -> String {
+    let p = room.active();
+    let index = if room.off != 0 { 0 } else { room.preset };
+    format!(
+        "soundscape: {}  dsp {index} {}{}",
+        state.name.as_deref().unwrap_or("none"),
+        p.name,
+        if (index as usize) >= PRESETS.len() { " (unknown index)" } else { "" }
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn current_emitter_stays_until_another_qualifies() {
+        let dist = [5.0, 3.0, 8.0];
+        let d = |i: usize| dist[i];
+        // Nothing current: the first qualifying one, then closer ones.
+        assert_eq!(choose_emitter(None, 3, |_| true, d), Some(1));
+        assert_eq!(choose_emitter(None, 3, |i| i != 1, d), Some(0));
+        // The current one out of range or sight stays current while
+        // nothing else qualifies.
+        assert_eq!(choose_emitter(Some(2), 3, |_| false, d), Some(2));
+        // ...and is replaced by any qualifying one, even a farther one.
+        assert_eq!(choose_emitter(Some(1), 3, |i| i == 2, d), Some(2));
+        // A qualifying current one gives way only to a closer one.
+        assert_eq!(choose_emitter(Some(0), 3, |i| i != 1, d), Some(0));
+        assert_eq!(choose_emitter(Some(2), 3, |_| true, d), Some(1));
+        assert_eq!(choose_emitter(None, 0, |_| true, d), None);
     }
 }
