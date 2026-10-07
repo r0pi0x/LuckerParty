@@ -59,6 +59,10 @@ pub struct MapWaterMaterial {
     pub above_water: bool,
     /// Never refraction or reflection: only the cubemap, opaque.
     pub force_cheap: bool,
+    /// Planar reflection allowed whatever `WaterSettings::force_expensive`
+    /// says (Source's `$forceexpensive`, on unless the material turns it
+    /// off).
+    pub force_expensive: bool,
     /// Cubemap reflection (the cheap pass), when the surface has one.
     pub envmap: Option<WaterEnvmap>,
     /// The cheap pass's distance ramp, meters: refraction near, cubemap
@@ -70,6 +74,30 @@ pub struct MapWaterMaterial {
     /// What the surface looks like from below (the game puts it on the
     /// downward faces).
     pub bottom: Option<Box<MapWaterMaterial>>,
+    /// A full-screen warp drawn while the eye is in this water, after the
+    /// view models.
+    pub underwater_overlay: Option<MapScreenWarp>,
+}
+
+/// A full-screen refraction of the finished frame (Source's Refract shader
+/// as an overlay): the screen sampled at an offset from a scrolling normal
+/// map, tinted.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MapScreenWarp {
+    /// The game's material name.
+    pub name: String,
+    /// The normal map's frames (indices into `MapData::textures`, linear),
+    /// shown at `frame_rate` per second.
+    pub normal_frames: Vec<usize>,
+    pub frame_rate: f32,
+    /// Screen uv offset per unit of normal xy.
+    pub refract_amount: f32,
+    /// Multiplies the refracted colour (gamma 0..1).
+    pub tint: [f32; 3],
+    /// Normal-map repeats across the screen (u, v), and its scroll in
+    /// repeats per second.
+    pub scale: Vec2,
+    pub scroll: Vec2,
 }
 
 impl Default for MapWaterMaterial {
@@ -92,11 +120,13 @@ impl Default for MapWaterMaterial {
             fog_end: 0.0,
             above_water: true,
             force_cheap: false,
+            force_expensive: true,
             envmap: None,
             cheap_start: 0.0,
             cheap_end: 0.0,
             fixed_reflect_weight: None,
             bottom: None,
+            underwater_overlay: None,
         }
     }
 }
@@ -197,25 +227,94 @@ pub struct WaterMode {
     pub refract: bool,
 }
 
-/// The mode for a surface `distance` from the eye.
-pub fn water_mode(m: &MapWaterMaterial, distance: f32) -> WaterMode {
-    if m.force_cheap {
-        return WaterMode {
-            reflect: false,
-            refract: false,
-        };
+/// The water console settings (Source's cvars; games register them).
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct WaterSettings {
+    /// `r_waterforceexpensive`: planar reflection even for materials that
+    /// turn `$forceexpensive` off.
+    pub force_expensive: u8,
+    /// `r_waterforcereflectentities`: the reflection shows models too.
+    pub reflect_entities: u8,
+    /// `r_WaterDrawReflection`, `r_WaterDrawRefraction`: 0 turns the view
+    /// off.
+    pub draw_reflection: u8,
+    pub draw_refraction: u8,
+    /// `mat_drawwater`: 0 hides water surfaces.
+    pub draw_water: u8,
+}
+
+impl Default for WaterSettings {
+    /// CS:S's at DX9 ("Reflect world").
+    fn default() -> Self {
+        Self {
+            force_expensive: 1,
+            reflect_entities: 0,
+            draw_reflection: 1,
+            draw_refraction: 1,
+            draw_water: 1,
+        }
     }
-    let reflect = m.reflect;
+}
+
+/// The mode for a surface `distance` from the eye, at default settings.
+pub fn water_mode(m: &MapWaterMaterial, distance: f32) -> WaterMode {
+    surface_mode(m, &WaterSettings::default(), distance)
+}
+
+/// The mode for a surface `distance` from the eye (spec section 1).
+pub fn surface_mode(m: &MapWaterMaterial, settings: &WaterSettings, distance: f32) -> WaterMode {
+    let none = WaterMode {
+        reflect: false,
+        refract: false,
+    };
+    if m.force_cheap {
+        return none;
+    }
+    let expensive = settings.force_expensive != 0 || m.force_expensive;
+    let reflect = expensive && settings.draw_reflection != 0 && m.reflect;
     if distance >= m.cheap_end && !reflect {
-        return WaterMode {
-            reflect: false,
-            refract: false,
-        };
+        return none;
     }
     WaterMode {
         reflect,
-        refract: m.refract,
+        refract: settings.draw_refraction != 0 && m.refract,
     }
+}
+
+/// Whether the reflection shows models (props, characters) too.
+pub fn reflects_entities(m: &MapWaterMaterial, settings: &WaterSettings) -> bool {
+    settings.reflect_entities != 0 || m.reflect_entities
+}
+
+/// Margin of the near-plane-crosses-water test (Source's 7 units),
+/// meters.
+pub const INTERSECT_FUDGE: f32 = 7.0 * 0.0254;
+
+/// The camera's near-plane rectangle, world space.
+pub fn near_plane_corners(eye: &GlobalTransform, projection: &PerspectiveProjection) -> [Vec3; 4] {
+    let half_h = projection.near * (projection.fov / 2.0).tan();
+    let half_w = half_h * projection.aspect_ratio;
+    let centre = eye.translation() + eye.forward() * projection.near;
+    let (r, u) = (eye.right() * half_w, eye.up() * half_h);
+    [centre - r - u, centre - r + u, centre + r + u, centre + r - u]
+}
+
+/// Whether the near plane crosses the water surface at `height` of a
+/// volume spanning `min`..`max` (spec section 3, "Intersection view"):
+/// the rectangle comes within the fudge of the surface from above and
+/// below, and its box (grown by the fudge) touches the volume.
+pub fn near_plane_crosses(corners: &[Vec3; 4], height: f32, min: Vec3, max: Vec3) -> bool {
+    let lo = corners.iter().fold(Vec3::MAX, |a, c| a.min(*c));
+    let hi = corners.iter().fold(Vec3::MIN, |a, c| a.max(*c));
+    let f = INTERSECT_FUDGE;
+    hi.y >= height - f
+        && lo.y <= height + f
+        && hi.x + f >= min.x
+        && lo.x - f <= max.x
+        && hi.z + f >= min.z
+        && lo.z - f <= max.z
+        && lo.y - f <= max.y
+        && hi.y + f >= min.y
 }
 
 // --- Rendering ---
@@ -259,6 +358,13 @@ pub struct WaterParams {
     pub fudge: f32,
     /// 1: `envmap` is the sky (Bevy skybox axes), not a baked cubemap.
     pub sky_env: f32,
+    /// The height (meters) of the surface whose refraction reads what lies
+    /// below already fogged by the water's height fog (the near plane
+    /// crosses it); far below the map when none.
+    pub prefog_plane: f32,
+    /// 1: the refraction texture holds only its clear here (the fog
+    /// colour, fully fogged): water in the 3D skybox.
+    pub refract_fog_only: f32,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
@@ -309,17 +415,22 @@ pub struct WaterMaterialPlugin;
 impl Plugin for WaterMaterialPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "water.wgsl");
-        app.add_plugins(MaterialPlugin::<WaterMaterial>::default())
-            .add_systems(Update, prepare_main_cameras)
-            .add_systems(
-                PostUpdate,
-                // After propagation (this frame's eye), before cameras
-                // compute their projections and frusta.
-                (update_water, underwater_fog)
-                    .chain()
-                    .after(bevy::transform::TransformSystems::Propagate)
-                    .before(bevy::camera::CameraUpdateSystems),
-            );
+        embedded_asset!(app, "screen_warp.wgsl");
+        app.add_plugins((
+            MaterialPlugin::<WaterMaterial>::default(),
+            MaterialPlugin::<ScreenWarpMaterial>::default(),
+        ))
+        .init_resource::<WaterSettings>()
+        .add_systems(Update, (prepare_main_cameras, spawn_overlays))
+        .add_systems(
+            PostUpdate,
+            // After propagation (this frame's eye), before cameras
+            // compute their projections and frusta.
+            (update_water, underwater_fog, show_overlays)
+                .chain()
+                .after(bevy::transform::TransformSystems::Propagate)
+                .before(bevy::camera::CameraUpdateSystems),
+        );
     }
 }
 
@@ -349,6 +460,9 @@ pub struct MapWaterRender {
     /// The scene fog's linear colour and range as the surfaces were built
     /// (restored on leaving the water).
     pub scene_fog: (Vec4, Vec4, Vec4),
+    /// Screen warps still to spawn: the top material whose water shows
+    /// it, the warp and its normal-map frames.
+    pub overlays: Vec<(usize, MapScreenWarp, Handle<Image>)>,
 }
 
 /// The reflection's render target size (spec: 1024 x 1024, drawn at the
@@ -477,6 +591,8 @@ fn params(m: &MapWaterMaterial, frames: usize, fog: Option<&super::MapFog>) -> W
         cheap_mode: 0.0,
         fudge: 2.0 * 0.0254,
         sky_env: 0.0,
+        prefog_plane: NO_PREFOG,
+        refract_fog_only: 0.0,
     }
 }
 
@@ -567,7 +683,19 @@ pub(super) fn spawn_surfaces(
                 p.cheap_mode = 1.0;
                 p.cheap_start = 0.0;
                 p.cheap_end = 0.0;
-                if envmap.is_some() && !below {
+                if reflection.is_some() && w.reflect && !w.force_cheap && !below {
+                    // A planar reflection: the main view's (the sky
+                    // camera draws the same screen, so its screen-space
+                    // lookup lines up), over the refraction texture's
+                    // clear (no under-water geometry out there): the fog
+                    // colour, fully fogged. As the original's skybox water
+                    // samples the same render targets, and so it matches
+                    // the map's own water where they meet.
+                    p.reflect = 1.0;
+                    p.refract = 1.0;
+                    p.refract_fog_only = 1.0;
+                    p.cheap_pass = 0.0;
+                } else if envmap.is_some() && !below {
                     // Opaque: the fog colour, the reflection over it by Fresnel.
                     p.cheap_pass = 1.0;
                     p.force_cheap = 1.0;
@@ -612,7 +740,7 @@ pub(super) fn spawn_surfaces(
                 MeshMaterial3d(materials.add(WaterMaterial {
                     params: p,
                     normal,
-                    reflection: reflection.clone().filter(|_| w.reflect && !m.skybox),
+                    reflection: reflection.clone().filter(|_| w.reflect),
                     envmap,
                 })),
                 bevy::light::NotShadowCaster,
@@ -628,8 +756,29 @@ pub(super) fn spawn_surfaces(
     if let Some(target) = &reflection {
         commands.spawn((reflection_camera(target.clone(), -10, entities), super::MapPart));
     }
+    // Under-water screen warps, for the top materials that have one.
+    let mut overlays = Vec::new();
+    for (i, m) in data.water_materials.iter().enumerate().filter(|(_, m)| m.above_water) {
+        let Some(warp) = overlay_for(m) else { continue };
+        let layers: Vec<Image> = warp
+            .normal_frames
+            .iter()
+            .map(|&t| super::to_image(&data.textures[t], &data.look))
+            .collect();
+        if let Some(image) = frames_image(&layers) {
+            info!(
+                "water {}: under-water overlay {} (refract {}, {} frames)",
+                m.name,
+                warp.name,
+                warp.refract_amount,
+                layers.len()
+            );
+            overlays.push((i, warp.clone(), images.add(image)));
+        }
+    }
     commands.insert_resource(MapWaterRender {
         materials: data.water_materials.clone(),
+        overlays,
         reflection,
         scene_fog: (
             super::fog_color(data.fog.as_ref()),
@@ -652,6 +801,47 @@ pub struct WaterView {
     pub clear: Option<[f32; 3]>,
     /// Its surface height (meters).
     pub plane: Option<f32>,
+    /// With the eye above water, the surface the near plane crosses (spec
+    /// section 3, "Intersection view"): its material and height. What lies
+    /// below it is drawn with the water's height fog.
+    pub intersect: Option<(usize, f32)>,
+}
+
+impl WaterView {
+    /// The water fog that views use now: (material, surface height, mode
+    /// `fog::WATER_FOG_RANGE` or `fog::WATER_FOG_HEIGHT`).
+    pub fn fog(&self) -> Option<(usize, f32, f32)> {
+        match (self.under, self.plane, self.intersect) {
+            (Some(i), Some(plane), _) => Some((i, plane, super::fog::WATER_FOG_RANGE)),
+            (None, _, Some((i, plane))) => Some((i, plane, super::fog::WATER_FOG_HEIGHT)),
+            _ => None,
+        }
+    }
+}
+
+/// The water fog uniforms for `WaterView::fog`: linear colour (w = mode),
+/// and start, end, max density 1, fog plane (the surface plus the 2-unit
+/// fudge), meters.
+pub fn water_fog_uniforms(m: &MapWaterMaterial, plane: f32, mode: f32) -> (Vec4, Vec4) {
+    let lin = m.fog_color.map(gamma_to_linear);
+    (
+        Vec4::new(lin[0], lin[1], lin[2], mode),
+        Vec4::new(
+            m.fog_start,
+            m.fog_end.max(m.fog_start + 0.01),
+            1.0,
+            plane + 2.0 * 0.0254,
+        ),
+    )
+}
+
+/// The screen warp drawn while the eye is in water of material `m`: its
+/// own `underwater_overlay`, else its bottom material's (de_port's sea
+/// names it on the material seen from below; spec open question 7).
+pub fn overlay_for(m: &MapWaterMaterial) -> Option<&MapScreenWarp> {
+    m.underwater_overlay
+        .as_ref()
+        .or_else(|| m.bottom.as_ref().and_then(|b| b.underwater_overlay.as_ref()))
 }
 
 /// Distance from `p` to a box.
@@ -686,26 +876,36 @@ fn under_water(eye: Vec3, volumes: &[crate::core::MapWaterVolume], surfaces: &[W
         .find_map(|v| volume_surface(v, surfaces))
 }
 
+/// The surface the near plane crosses, with the eye out of the water.
+fn crossed_surface(
+    corners: &[Vec3; 4],
+    volumes: &[crate::core::MapWaterVolume],
+    surfaces: &[WaterSurface],
+) -> Option<(usize, f32)> {
+    volumes.iter().filter(|v| !v.slime).find_map(|v| {
+        let (m, h) = volume_surface(v, surfaces)?;
+        near_plane_crosses(corners, h, v.brush.min, v.brush.max).then_some((m, h))
+    })
+}
+
 /// The reflecting surface the reflection camera mirrors: the nearest
 /// water volume below the eye whose surface reflects (spec: one water
-/// volume's views per frame). Its height.
+/// volume's views per frame). Its height and material.
 fn reflection_plane(
     eye: Vec3,
     volumes: &[crate::core::MapWaterVolume],
     surfaces: &[WaterSurface],
-    materials: &[MapWaterMaterial],
-) -> Option<f32> {
+    reflects: &dyn Fn(usize) -> bool,
+) -> Option<(f32, usize)> {
     volumes
         .iter()
         .filter(|v| !v.slime && v.brush.max.y < eye.y)
         .filter_map(|v| {
             let (m, h) = volume_surface(v, surfaces)?;
-            materials[m]
-                .reflect
-                .then(|| (box_distance(eye, v.brush.min, v.brush.max), h))
+            reflects(m).then(|| (box_distance(eye, v.brush.min, v.brush.max), h, m))
         })
         .min_by(|a, b| a.0.total_cmp(&b.0))
-        .map(|(_, h)| h)
+        .map(|(_, h, m)| (h, m))
 }
 
 type MainCameraFilter = (
@@ -747,15 +947,17 @@ pub fn prepare_main_cameras(
     }
 }
 
-/// Per frame: whether the eye is under water, each surface's cheap mode,
-/// and the reflection camera mirrored across the nearest reflecting
-/// surface below the eye.
+/// Per frame: whether the eye is under water or the near plane crosses a
+/// surface, each surface's mode (the water cvars, its cheap distance), and
+/// the reflection camera mirrored across the nearest reflecting surface
+/// below the eye.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn update_water(
     mut commands: Commands,
     render: Option<Res<MapWaterRender>>,
     volumes: Option<Res<crate::core::MapWater>>,
     sky: Option<Res<super::MapSkybox>>,
+    settings: Option<Res<WaterSettings>>,
     main: Query<
         (
             &GlobalTransform,
@@ -774,64 +976,106 @@ pub fn update_water(
             &mut Camera,
             Has<bevy::light::Skybox>,
             Option<&bevy::core_pipeline::tonemapping::Tonemapping>,
+            &mut RenderLayers,
         ),
         With<WaterReflectionCamera>,
     >,
-    surfaces: Query<(&WaterSurface, &MeshMaterial3d<WaterMaterial>)>,
+    mut surfaces: Query<(&WaterSurface, &MeshMaterial3d<WaterMaterial>, &mut Visibility)>,
     mut materials: ResMut<Assets<WaterMaterial>>,
     view: Option<ResMut<WaterView>>,
 ) {
     let (Some(render), Some(mut view)) = (render, view) else {
         return;
     };
+    let settings = settings.map(|s| *s).unwrap_or_default();
     let Some((eye_tf, projection, main_camera, main_tonemapping)) = main.iter().find(|(_, _, c, _)| c.is_active) else {
         return;
     };
     let eye = eye_tf.translation();
     let list: Vec<WaterSurface> = surfaces
         .iter()
-        .filter(|(s, _)| !s.skybox)
-        .map(|(s, _)| s.clone())
+        .filter(|(s, _, _)| !s.skybox)
+        .map(|(s, _, _)| s.clone())
         .collect();
     let none: &[crate::core::MapWaterVolume] = &[];
     let volumes = volumes.as_ref().map_or(none, |v| &v.0);
     let under = under_water(eye, volumes, &list);
+    let intersect = match (under, projection) {
+        (None, Projection::Perspective(p)) => crossed_surface(&near_plane_corners(eye_tf, p), volumes, &list),
+        _ => None,
+    };
     let state = WaterView {
         under: under.map(|u| u.0),
         clear: under.map(|u| render.materials[u.0].fog_color),
         plane: under.map(|u| u.1),
+        intersect,
     };
     if *view != state {
         *view = state;
     }
-    // Cheap mode per surface (spec section 1): beyond the cheap distance,
-    // without a planar reflection, the original renders no refraction.
-    for (s, handle) in surfaces.iter().filter(|(s, _)| !s.skybox) {
-        let m = &render.materials[s.material];
-        let distance = box_distance(eye, s.min, s.max);
-        let cheap = if water_mode(m, distance).refract || m.force_cheap {
-            0.0
+    let flag = |b: bool| if b { 1.0 } else { 0.0 };
+    let draw = settings.draw_water != 0;
+    for (s, handle, mut visibility) in &mut surfaces {
+        let shown = if draw {
+            Visibility::Inherited
         } else {
-            1.0
+            Visibility::Hidden
         };
-        if materials.get(&handle.0).is_some_and(|w| w.params.cheap_mode != cheap)
+        if *visibility != shown {
+            *visibility = shown;
+        }
+        if s.skybox {
+            continue;
+        }
+        // The surface's passes (spec section 1): reflection and refraction
+        // by the settings; beyond the cheap distance, without a planar
+        // reflection, the original renders no refraction (cheap mode).
+        let m = &render.materials[s.material];
+        let near = surface_mode(m, &settings, 0.0);
+        let far = surface_mode(m, &settings, box_distance(eye, s.min, s.max));
+        let Some(w) = materials.get(&handle.0) else { continue };
+        let want = (
+            flag(near.refract),
+            flag(near.reflect),
+            flag(!near.reflect && w.envmap.is_some()),
+            flag(!far.refract),
+        );
+        let p = &w.params;
+        if (p.refract, p.reflect, p.cheap_pass, p.cheap_mode) != want
             && let Some(mut w) = materials.get_mut(&handle.0)
         {
-            w.params.cheap_mode = cheap;
+            (
+                w.params.refract,
+                w.params.reflect,
+                w.params.cheap_pass,
+                w.params.cheap_mode,
+            ) = want;
         }
     }
     // The reflection: the nearest reflecting top surface below the eye.
-    let plane = reflection_plane(eye, volumes, &list, &render.materials);
-    let Ok((entity, mut tf, mut global, mut proj, mut camera, has_sky, tonemapping)) = reflection.single_mut() else {
+    let reflects = |m: usize| surface_mode(&render.materials[m], &settings, 0.0).reflect;
+    let plane = reflection_plane(eye, volumes, &list, &reflects);
+    let Ok((entity, mut tf, mut global, mut proj, mut camera, has_sky, tonemapping, mut layers)) =
+        reflection.single_mut()
+    else {
         return;
     };
-    let active = plane.is_some() && under.is_none();
+    let active = plane.is_some() && under.is_none() && draw;
     if camera.is_active != active {
         camera.is_active = active;
     }
     let order = main_camera.order - 10;
     if camera.order != order {
         camera.order = order;
+    }
+    let entities = plane.is_some_and(|(_, m)| reflects_entities(&render.materials[m], &settings));
+    let want_layers = if entities {
+        world_layers()
+    } else {
+        RenderLayers::layer(REFLECT_LAYER)
+    };
+    if *layers != want_layers {
+        *layers = want_layers;
     }
     if !has_sky && let Some(sky) = &sky {
         commands.entity(entity).insert(bevy::light::Skybox {
@@ -845,7 +1089,7 @@ pub fn update_water(
     {
         commands.entity(entity).insert(*t);
     }
-    let (Some(height), Projection::Perspective(main_p)) = (plane, projection) else {
+    let (Some((height, _)), Projection::Perspective(main_p)) = (plane, projection) else {
         return;
     };
     *tf = reflection_transform(eye_tf, height);
@@ -862,48 +1106,72 @@ pub fn update_water(
     *proj = Projection::custom(ReflectionProjection(p));
 }
 
-/// Under water, what lies below the surface is range-fogged with the
-/// water's own fog (`$fogcolor`, `$fogstart`, `$fogend` of the top
-/// material: spec section 9 and open question 7), while the world above
-/// keeps its fog (the original sees it through the bottom material's
-/// refraction view, drawn with world fog). Sets the world, prop and water
-/// materials' water fog when the eye enters or leaves a water volume.
+/// No pre-fogged surface (`WaterParams::prefog_plane`).
+const NO_PREFOG: f32 = -1.0e9;
+
+/// The water's fog on everything drawn below its surface (spec sections 8
+/// and 9), when the eye enters or leaves a water volume or the near plane
+/// starts or stops crossing a surface:
+/// - Under water: range fog with the water's own fog (`$fogcolor`,
+///   `$fogstart`, `$fogend` of the top material: open question 7) below the
+///   surface, while the world above keeps its fog (the original sees it
+///   through the bottom material's refraction view, drawn with world fog).
+///   The surface seen from below takes it too.
+/// - Eye just above, near plane crossing (the intersection view): the
+///   water's height fog below the surface, so what is seen directly under
+///   the waterline matches what is seen through the surface; that
+///   surface's refraction then reads it already fogged.
+///
+/// Sets the world and prop materials (not the 3D skybox's), the water
+/// materials and `fog::SceneFog` (ropes, decals, particles).
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn underwater_fog(
     view: Option<Res<WaterView>>,
     render: Option<Res<MapWaterRender>>,
     world: Option<ResMut<Assets<super::WorldMaterial>>>,
     props: Option<ResMut<Assets<super::PropMaterial>>>,
     mut water: ResMut<Assets<WaterMaterial>>,
+    scene: Option<ResMut<super::fog::SceneFog>>,
     surfaces: Query<(&WaterSurface, &MeshMaterial3d<WaterMaterial>)>,
-    mut last: Local<Option<(Option<usize>, Option<f32>)>>,
+    sky_world: Query<(&MeshMaterial3d<super::WorldMaterial>, &RenderLayers)>,
+    sky_props: Query<(&MeshMaterial3d<super::PropMaterial>, &RenderLayers)>,
+    mut last: Local<Option<Option<(usize, f32, f32)>>>,
 ) {
     let (Some(view), Some(render)) = (view, render) else {
         *last = None;
         return;
     };
-    let state = (view.under, view.plane);
-    if *last == Some(state) || (last.is_none() && view.under.is_none()) {
+    let state = view.fog();
+    if *last == Some(state) || (last.is_none() && state.is_none()) {
         *last = Some(state);
         return;
     }
     *last = Some(state);
-    let fog = view.under.zip(view.plane).map(|(i, plane)| {
+    let fog = state.map(|(i, plane, mode)| {
         let m = &render.materials[i];
-        let lin = m.fog_color.map(gamma_to_linear);
+        let (color, range) = water_fog_uniforms(m, plane, mode);
         (
-            Vec4::new(lin[0], lin[1], lin[2], 1.0),
+            color,
             Vec4::new(m.fog_color[0], m.fog_color[1], m.fog_color[2], 1.0),
-            Vec4::new(
-                m.fog_start,
-                m.fog_end.max(m.fog_start + 0.01),
-                1.0,
-                plane + 2.0 * 0.0254,
-            ),
+            range,
+            mode,
+            plane,
         )
     });
-    let (color, range) = fog.map_or((Vec4::ZERO, Vec4::ZERO), |(c, _, r)| (c, r));
+    let (color, range) = fog.map_or((Vec4::ZERO, Vec4::ZERO), |(c, _, r, _, _)| (c, r));
+    let sky = RenderLayers::layer(super::SKYBOX_LAYER);
+    let sky_world: std::collections::HashSet<_> = sky_world
+        .iter()
+        .filter(|(_, l)| l.intersects(&sky))
+        .map(|(m, _)| m.0.id())
+        .collect();
+    let sky_props: std::collections::HashSet<_> = sky_props
+        .iter()
+        .filter(|(_, l)| l.intersects(&sky))
+        .map(|(m, _)| m.0.id())
+        .collect();
     if let Some(mut world) = world {
-        let ids: Vec<_> = world.ids().collect();
+        let ids: Vec<_> = world.ids().filter(|id| !sky_world.contains(id)).collect();
         for id in ids {
             if let Some(mut m) = world.get_mut(id) {
                 m.params.water_fog_color = color;
@@ -912,7 +1180,7 @@ pub fn underwater_fog(
         }
     }
     if let Some(mut props) = props {
-        let ids: Vec<_> = props.ids().collect();
+        let ids: Vec<_> = props.ids().filter(|id| !sky_props.contains(id)).collect();
         for id in ids {
             if let Some(mut m) = props.get_mut(id) {
                 m.params.water_fog_color = color;
@@ -920,13 +1188,180 @@ pub fn underwater_fog(
             }
         }
     }
-    // The surface itself (seen from below) is in the under-water view.
-    let (lin, gamma, range) = fog.map_or(render.scene_fog, |(c, g, r)| (c, g, r.truncate().extend(0.0)));
+    if let Some(mut scene) = scene {
+        scene.0.water_color = color;
+        scene.0.water_range = range;
+    }
+    // The surface itself: seen from below, it is in the under-water view;
+    // crossed by the near plane, it reads what lies below already fogged.
+    let (lin, gamma, range, prefog) = match fog {
+        Some((c, g, r, mode, _)) if mode == super::fog::WATER_FOG_RANGE => {
+            (c.truncate().extend(1.0), g, r.truncate().extend(0.0), NO_PREFOG)
+        }
+        Some((_, _, _, _, plane)) => (render.scene_fog.0, render.scene_fog.1, render.scene_fog.2, plane),
+        None => (render.scene_fog.0, render.scene_fog.1, render.scene_fog.2, NO_PREFOG),
+    };
     for (_, handle) in surfaces.iter().filter(|(s, _)| !s.skybox) {
         if let Some(mut m) = water.get_mut(&handle.0) {
             m.params.scene_fog_linear = lin;
             m.params.scene_fog_gamma = gamma;
             m.params.scene_fog_range = range;
+            m.params.prefog_plane = prefog;
+        }
+    }
+}
+
+/// Uniforms of a screen warp (screen_warp.wgsl).
+#[derive(Clone, Copy, Debug, Default, bevy::render::render_resource::ShaderType)]
+pub struct ScreenWarpParams {
+    /// Linear tint.
+    pub tint: Vec4,
+    /// Normal-map repeats across the screen (xy) and scroll per second
+    /// (zw).
+    pub scale_scroll: Vec4,
+    pub refract_amount: f32,
+    pub frame_rate: f32,
+    pub frame_count: f32,
+    pub _pad: f32,
+}
+
+/// The under-water screen warp: drawn by the view-model camera in its
+/// transmissive phase, so it refracts the finished frame (world and view
+/// models) after the view models, as the original draws it.
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+pub struct ScreenWarpMaterial {
+    #[uniform(0)]
+    pub params: ScreenWarpParams,
+    #[texture(1, dimension = "2d_array")]
+    #[sampler(2)]
+    pub normal: Option<Handle<Image>>,
+}
+
+impl Material for ScreenWarpMaterial {
+    fn vertex_shader() -> ShaderRef {
+        "embedded://mashup/map/screen_warp.wgsl".into()
+    }
+
+    fn fragment_shader() -> ShaderRef {
+        "embedded://mashup/map/screen_warp.wgsl".into()
+    }
+
+    fn alpha_mode(&self) -> AlphaMode {
+        AlphaMode::Opaque
+    }
+
+    fn reads_view_transmission_texture(&self) -> bool {
+        true
+    }
+
+    fn enable_prepass() -> bool {
+        false
+    }
+
+    fn enable_shadows() -> bool {
+        false
+    }
+
+    /// Full screen, over everything: no culling, no depth test or write.
+    fn specialize(
+        _pipeline: &bevy::pbr::MaterialPipeline,
+        descriptor: &mut bevy::render::render_resource::RenderPipelineDescriptor,
+        _layout: &bevy::mesh::MeshVertexBufferLayoutRef,
+        _key: bevy::pbr::MaterialPipelineKey<Self>,
+    ) -> Result<(), bevy::render::render_resource::SpecializedMeshPipelineError> {
+        descriptor.primitive.cull_mode = None;
+        if let Some(depth) = descriptor.depth_stencil.as_mut() {
+            depth.depth_write_enabled = Some(false);
+            depth.depth_compare = Some(bevy::render::render_resource::CompareFunction::Always);
+        }
+        Ok(())
+    }
+}
+
+/// The uniforms of a screen warp.
+pub fn screen_warp_params(w: &MapScreenWarp) -> ScreenWarpParams {
+    ScreenWarpParams {
+        tint: Vec4::new(
+            gamma_to_linear(w.tint[0]),
+            gamma_to_linear(w.tint[1]),
+            gamma_to_linear(w.tint[2]),
+            1.0,
+        ),
+        scale_scroll: Vec4::new(w.scale.x, w.scale.y, w.scroll.x, w.scroll.y),
+        refract_amount: w.refract_amount,
+        frame_rate: w.frame_rate,
+        frame_count: w.normal_frames.len().max(1) as f32,
+        _pad: 0.0,
+    }
+}
+
+/// A screen warp shown while the eye is in water of this material (index
+/// into the map's water materials).
+#[derive(Component, Clone, Copy, Debug)]
+pub struct UnderwaterOverlay {
+    pub material: usize,
+}
+
+/// One triangle covering the screen: positions in clip space, uv 0..1
+/// across the screen (v down).
+pub fn fullscreen_triangle() -> Mesh {
+    let mut mesh = Mesh::new(
+        bevy::mesh::PrimitiveTopology::TriangleList,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    mesh.insert_attribute(
+        Mesh::ATTRIBUTE_POSITION,
+        vec![[-1.0f32, -1.0, 0.0], [3.0, -1.0, 0.0], [-1.0, 3.0, 0.0]],
+    );
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, vec![[0.0f32, 1.0], [2.0, 1.0], [0.0, -1.0]]);
+    mesh
+}
+
+/// Spawn the map's under-water screen warps (hidden), drawn by the view
+/// model camera.
+pub fn spawn_overlays(
+    mut commands: Commands,
+    render: Option<ResMut<MapWaterRender>>,
+    meshes: Option<ResMut<Assets<Mesh>>>,
+    materials: Option<ResMut<Assets<ScreenWarpMaterial>>>,
+) {
+    let (Some(mut render), Some(mut meshes), Some(mut materials)) = (render, meshes, materials) else {
+        return;
+    };
+    if render.overlays.is_empty() {
+        return;
+    }
+    let mesh = meshes.add(fullscreen_triangle());
+    for (material, warp, normal) in std::mem::take(&mut render.overlays) {
+        commands.spawn((
+            Name::new(format!("Under-water overlay {}", warp.name)),
+            super::MapPart,
+            UnderwaterOverlay { material },
+            Mesh3d(mesh.clone()),
+            MeshMaterial3d(materials.add(ScreenWarpMaterial {
+                params: screen_warp_params(&warp),
+                normal: Some(normal),
+            })),
+            RenderLayers::layer(super::view_model::VIEW_MODEL_LAYER),
+            bevy::camera::visibility::NoFrustumCulling,
+            bevy::light::NotShadowCaster,
+            Transform::default(),
+            Visibility::Hidden,
+        ));
+    }
+}
+
+/// Show the warp of the water the eye is in (spec section 9).
+pub fn show_overlays(view: Option<Res<WaterView>>, mut overlays: Query<(&UnderwaterOverlay, &mut Visibility)>) {
+    let shown = view.as_deref().and_then(|v| v.under);
+    for (o, mut visibility) in &mut overlays {
+        let want = if shown == Some(o.material) {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+        if *visibility != want {
+            *visibility = want;
         }
     }
 }
@@ -1076,5 +1511,132 @@ mod tests {
             ..chateau
         };
         assert!(!water_mode(&cheap, 0.0).refract);
+    }
+
+    #[test]
+    fn cvars_change_modes() {
+        let port = MapWaterMaterial {
+            reflect: true,
+            cheap_end: 5000.0,
+            ..default()
+        };
+        let on = WaterSettings::default();
+        assert_eq!(
+            surface_mode(&port, &on, 0.0),
+            WaterMode {
+                reflect: true,
+                refract: true
+            }
+        );
+        // r_WaterDrawReflection 0: refraction only, and cheap far away.
+        let no_reflection = WaterSettings {
+            draw_reflection: 0,
+            ..on
+        };
+        assert!(!surface_mode(&port, &no_reflection, 0.0).reflect);
+        assert!(!surface_mode(&port, &no_reflection, 6000.0).refract);
+        // r_WaterDrawRefraction 0.
+        let no_refraction = WaterSettings {
+            draw_refraction: 0,
+            ..on
+        };
+        assert!(!surface_mode(&port, &no_refraction, 0.0).refract);
+        // $forceexpensive 0: reflection only with r_waterforceexpensive 1.
+        let cheap_material = MapWaterMaterial {
+            force_expensive: false,
+            ..port.clone()
+        };
+        assert!(surface_mode(&cheap_material, &on, 0.0).reflect);
+        let not_forced = WaterSettings {
+            force_expensive: 0,
+            ..on
+        };
+        assert!(!surface_mode(&cheap_material, &not_forced, 0.0).reflect);
+        assert!(surface_mode(&port, &not_forced, 0.0).reflect);
+        // Entities: the material or r_waterforcereflectentities.
+        assert!(!reflects_entities(&port, &on));
+        assert!(reflects_entities(
+            &port,
+            &WaterSettings {
+                reflect_entities: 1,
+                ..on
+            }
+        ));
+    }
+
+    #[test]
+    fn near_plane_crossing() {
+        let u = 0.0254;
+        let eye = |y: f32, pitch: f32| {
+            GlobalTransform::from(
+                Transform::from_xyz(0.0, y, 0.0).with_rotation(Quat::from_rotation_x(pitch.to_radians())),
+            )
+        };
+        let p = PerspectiveProjection {
+            near: 0.1,
+            fov: 2.0 * 0.75f32.atan(),
+            aspect_ratio: 4.0 / 3.0,
+            ..default()
+        };
+        let (min, max) = (Vec3::new(-10.0, -5.0, -10.0), Vec3::new(10.0, 0.0, 10.0));
+        let crosses = |y: f32, pitch: f32| near_plane_crosses(&near_plane_corners(&eye(y, pitch), &p), 0.0, min, max);
+        // Eye at the surface, a few units above or below: crosses.
+        assert!(crosses(0.0, 0.0));
+        assert!(crosses(4.0 * u, 0.0));
+        assert!(crosses(-4.0 * u, -30.0));
+        // Well above (the near rectangle is ~3 units tall, plus 7): not.
+        assert!(!crosses(20.0 * u, 0.0));
+        assert!(!crosses(-20.0 * u, 0.0));
+        // Beside the volume: not.
+        let far = GlobalTransform::from(Transform::from_xyz(50.0, 0.0, 0.0));
+        assert!(!near_plane_crosses(&near_plane_corners(&far, &p), 0.0, min, max));
+    }
+
+    #[test]
+    fn water_view_fog_and_overlay() {
+        let warp = MapScreenWarp {
+            name: "effects/water_warp01".into(),
+            normal_frames: vec![0],
+            frame_rate: 0.0,
+            refract_amount: 0.05,
+            tint: [1.0; 3],
+            scale: Vec2::ONE,
+            scroll: Vec2::ZERO,
+        };
+        // de_port: the top material has none, its bottom material has it.
+        let port = MapWaterMaterial {
+            fog_color: [21.0 / 255.0, 48.0 / 255.0, 52.0 / 255.0],
+            fog_start: 100.0 * 0.0254,
+            fog_end: 500.0 * 0.0254,
+            bottom: Some(Box::new(MapWaterMaterial {
+                above_water: false,
+                underwater_overlay: Some(warp.clone()),
+                ..default()
+            })),
+            ..default()
+        };
+        assert_eq!(overlay_for(&port), Some(&warp));
+        assert_eq!(overlay_for(&MapWaterMaterial::default()), None);
+        // Under water: range fog; at the surface from above: height fog.
+        let under = WaterView {
+            under: Some(0),
+            clear: Some(port.fog_color),
+            plane: Some(1.0),
+            intersect: None,
+        };
+        assert_eq!(under.fog(), Some((0, 1.0, crate::map::fog::WATER_FOG_RANGE)));
+        let at = WaterView {
+            intersect: Some((0, 1.0)),
+            ..default()
+        };
+        assert_eq!(at.fog(), Some((0, 1.0, crate::map::fog::WATER_FOG_HEIGHT)));
+        assert_eq!(WaterView::default().fog(), None);
+        let (c, r) = water_fog_uniforms(&port, 1.0, crate::map::fog::WATER_FOG_HEIGHT);
+        assert_eq!(c.w, 2.0);
+        assert!((c.x - gamma_to_linear(21.0 / 255.0)).abs() < 1e-6);
+        assert!((r.y - 500.0 * 0.0254).abs() < 1e-6 && (r.w - (1.0 + 2.0 * 0.0254)).abs() < 1e-6);
+        // The warp's uniforms: linear tint, frames.
+        let p = screen_warp_params(&warp);
+        assert_eq!((p.refract_amount, p.frame_count), (0.05, 1.0));
     }
 }

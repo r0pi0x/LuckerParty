@@ -13,12 +13,21 @@
     mesh_view_bindings::view,
     view_transformations::{position_world_to_clip, position_world_to_view},
 }
+#import mashup::fog::source_fog
+
+struct FogUniform {
+    color: vec4<f32>,
+    range: vec4<f32>,
+    water_color: vec4<f32>,
+    water_range: vec4<f32>,
+}
 
 struct RopeParams {
     width: f32,
     back: f32,
     light_scale: f32,
     has_normal_map: f32,
+    fog: FogUniform,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> params: RopeParams;
@@ -72,6 +81,11 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     if params.has_normal_map > 0.5 {
         b = textureSample(normal_texture, normal_sampler, in.uv).z;
     }
-    let rgb = base.rgb * b * b * in.color.rgb * params.light_scale;
+    var rgb = base.rgb * b * b * in.color.rgb * params.light_scale;
+    // Range fog, and the water's below its surface (Source fogs ropes as
+    // any other surface).
+    let f = params.fog;
+    let fog = source_fog(f.color, f.range, f.water_color, f.water_range, in.world_position.xyz);
+    rgb = mix(rgb, fog.rgb, fog.a);
     return vec4<f32>(rgb, base.a * in.color.a);
 }

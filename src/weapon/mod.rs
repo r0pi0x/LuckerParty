@@ -37,6 +37,11 @@ pub struct WeaponPlugin;
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct WeaponFrame;
 
+/// Weapon selection (`Inventory::wanted` applied, deploys): brains that
+/// pick weapons run before it.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SelectWeapons;
+
 impl Plugin for WeaponPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<WeaponRegistry>()
@@ -51,7 +56,11 @@ impl Plugin for WeaponPlugin {
             .add_systems(
                 FixedUpdate,
                 (
-                    (give_starting_weapons, drop::pick_up, select_weapons)
+                    (
+                        give_starting_weapons,
+                        drop::pick_up,
+                        select_weapons.in_set(SelectWeapons),
+                    )
                         .chain()
                         .before(SimSet::Movement),
                     drop::drop_on_death.after(SimSet::Weapons),
@@ -382,6 +391,30 @@ pub struct Magazine {
     pub reload_while_held: bool,
 }
 
+/// Magazine add-on: rounds go in one at a time (shotguns; spec 3.4,
+/// "reload one at a time", the CS-derived form). A reload first takes
+/// `start` (attacks wait for it), then each round `insert`, the next one
+/// starting a tick after the last went in, until the clip is full or the
+/// reserve empty. Firing with rounds in the clip stops it; switching away
+/// too. Reload sounds (`WeaponSounds::reload`) play from each insert.
+#[derive(Component, Clone, Debug)]
+pub struct ShellReload {
+    pub start: f32,
+    pub insert: f32,
+}
+
+/// Where a one-at-a-time reload is (`ShellReload`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ShellStage {
+    #[default]
+    Idle,
+    /// The start sequence (or the tick between two inserts) until
+    /// `WeaponState::shell_next`.
+    Starting,
+    /// A round going in, in at `shell_next`.
+    Inserting,
+}
+
 /// Delivery: instant traces from the eye.
 #[derive(Component, Clone, Debug)]
 pub struct Hitscan {
@@ -676,6 +709,11 @@ pub struct WeaponSounds {
     pub reload: Vec<(f32, String)>,
     /// Entries at times after the weapon is drawn.
     pub draw: Vec<(f32, String)>,
+    /// Entries at times after each shot (a bolt worked by the fire
+    /// animation).
+    pub shot: Vec<(f32, String)>,
+    /// Entries at times after a one-at-a-time reload (`ShellReload`) ends.
+    pub finish: Vec<(f32, String)>,
     /// (mode, time, entry): played that long after stepping to that
     /// `AltModes` mode with attack2 (e.g. the silencer going on or off).
     pub modes: Vec<(u8, f32, String)>,
@@ -703,6 +741,16 @@ pub struct WeaponState {
     pub next_burst_round: f64,
     /// The zoom mode to return to once the weapon can fire again.
     pub rezoom: Option<u8>,
+    /// A one-at-a-time reload (`ShellReload`) and when its stage ends.
+    pub shells: ShellStage,
+    pub shell_next: f64,
+}
+
+impl WeaponState {
+    /// A reload of either kind is in progress.
+    pub fn reloading(&self) -> bool {
+        self.reload_end.is_some() || self.shells != ShellStage::Idle
+    }
 }
 
 /// What weapons did this tick, for HUDs, effects and tests.
@@ -752,6 +800,9 @@ pub enum WeaponEventKind {
         mode: u8,
     },
     ReloadStarted,
+    /// One round started going in (`ShellReload`).
+    ShellInserting,
+    /// A reload finished (the magazine swapped, or the last round in).
     Reloaded,
     /// A grenade's pin came out (`grenade::Throwable`).
     PinPulled,
@@ -823,6 +874,7 @@ fn select_weapons(
             st.fire_duration = 0.0;
             st.burst_left = 0;
             st.rezoom = None;
+            st.shells = ShellStage::Idle;
             if let (Some(mut modes), Some(_)) = (modes, zoom) {
                 modes.current = 0;
             }
@@ -886,6 +938,7 @@ struct WeaponParts {
     modes: Option<&'static mut AltModes>,
     zoom: Option<&'static Zoom>,
     burst: Option<&'static Burst>,
+    shells: Option<&'static ShellReload>,
 }
 
 impl WeaponPartsItem<'_, '_> {
@@ -932,6 +985,12 @@ impl WeaponPartsItem<'_, '_> {
             }
         }
         self.state.burst += shots;
+        if shots > 0
+            && let Some(s) = self.sounds.filter(|s| !s.shot.is_empty())
+        {
+            let now = ctx.now;
+            self.state.pending = s.shot.iter().map(|(t, e)| (now + *t as f64, e.clone())).collect();
+        }
         shots
     }
 }
@@ -1000,6 +1059,7 @@ fn weapon_frame(
             eye,
             aim,
             seed: owner.to_bits() as u32 ^ inv.command.wrapping_mul(0x9E37_79B9),
+            now,
             w: &mut world,
         };
 
@@ -1023,6 +1083,57 @@ fn weapon_frame(
                 weapon: active,
                 kind: WeaponEventKind::Reloaded,
             });
+        }
+
+        // One-at-a-time reloads step on (spec 3.4; T25): the start, then a
+        // round per insert, the next insert a tick after.
+        if w.state.shells != ShellStage::Idle && due >= w.state.shell_next {
+            let insert = w.shells.map_or(0.0, |s| s.insert) as f64;
+            let room = w.magazine.as_ref().is_some_and(|m| m.clip < m.size && m.reserve > 0);
+            match w.state.shells {
+                ShellStage::Starting if room => {
+                    w.state.shells = ShellStage::Inserting;
+                    w.state.shell_next = now + insert;
+                    if let Some(s) = w.sounds {
+                        w.state.pending = s.reload.iter().map(|(t, e)| (now + *t as f64, e.clone())).collect();
+                    }
+                    ctx.w.events.write(WeaponEvent {
+                        owner,
+                        weapon: active,
+                        kind: WeaponEventKind::ShellInserting,
+                    });
+                }
+                ShellStage::Inserting => {
+                    if let Some(mag) = w.magazine.as_mut()
+                        && mag.reserve > 0
+                        && mag.clip < mag.size
+                    {
+                        mag.clip += 1;
+                        mag.reserve -= 1;
+                    }
+                    w.state.shells = ShellStage::Starting;
+                    w.state.shell_next = now;
+                    if !w.magazine.as_ref().is_some_and(|m| m.clip < m.size && m.reserve > 0) {
+                        w.state.shells = ShellStage::Idle;
+                        if let Some(s) = w.sounds {
+                            w.state.pending = s.finish.iter().map(|(t, e)| (now + *t as f64, e.clone())).collect();
+                        }
+                        ctx.w.events.write(WeaponEvent {
+                            owner,
+                            weapon: active,
+                            kind: WeaponEventKind::Reloaded,
+                        });
+                    }
+                }
+                _ => {
+                    w.state.shells = ShellStage::Idle;
+                    ctx.w.events.write(WeaponEvent {
+                        owner,
+                        weapon: active,
+                        kind: WeaponEventKind::Reloaded,
+                    });
+                }
+            }
         }
 
         // The rest of a burst fires on its own, button or not (M16).
@@ -1072,8 +1183,11 @@ fn weapon_frame(
         // 4. Primary attack.
         if intent.fire && !blocked && w.state.next_primary <= due {
             let automatic = w.trigger.is_none_or(|t| t.automatic);
+            let empty = w.magazine.as_ref().is_some_and(|m| m.clip == 0);
             if !automatic && w.state.burst > 0 {
                 // Semi-automatic: wait for a fresh press.
+            } else if w.state.shells != ShellStage::Idle && empty {
+                // Loading the first round: the reload goes on.
             } else if w.magazine.as_ref().is_some_and(|m| m.clip == 0) {
                 if w.state.fired_on_empty {
                     if w.magazine.as_ref().is_some_and(|m| m.reload_while_held) {
@@ -1100,6 +1214,8 @@ fn weapon_frame(
                     // A fresh press drops any accumulated lag (spec 3.2).
                     w.state.next_primary = now;
                 }
+                // A shot stops a one-at-a-time reload.
+                w.state.shells = ShellStage::Idle;
                 if let Some(swing) = w.melee.map(|m| m.primary.clone()) {
                     let swing = follow_up(&swing, w.state.last_swing[0], now);
                     let hit = ctx.swing(&swing, false);
@@ -1148,7 +1264,7 @@ fn weapon_frame(
         }
 
         // 5. Reload key.
-        if intent.reload && w.state.next_primary <= due && w.state.reload_end.is_none() {
+        if intent.reload && w.state.next_primary <= due && !w.state.reloading() {
             try_reload(&mut w, &mut inv, now, owner, &mut ctx.w.events);
             w.state.fire_duration = 0.0;
         }
@@ -1159,7 +1275,7 @@ fn weapon_frame(
             if w.magazine.as_ref().is_some_and(|m| m.clip == 0)
                 && w.state.next_primary <= due
                 && w.state.next_secondary <= due
-                && w.state.reload_end.is_none()
+                && !w.state.reloading()
             {
                 try_reload(&mut w, &mut inv, now, owner, &mut ctx.w.events);
             }
@@ -1201,18 +1317,33 @@ fn try_reload(
     if (mag.size - mag.clip).min(mag.reserve) == 0 {
         return;
     }
-    let end = now + mag.reload_time as f64;
+    let reload_time = mag.reload_time;
     // Reloading lowers the scope (UNMEASURED: CS:S's snipers do).
     if w.zoom.is_some() {
         w.state.rezoom = None;
         w.set_mode(0, owner, events);
     }
     w.state.burst_left = 0;
+    w.state.fired_on_empty = false;
+    if let Some(shells) = w.shells {
+        // One at a time: attacks wait for the start only (spec 3.4).
+        let end = now + shells.start as f64;
+        w.state.shells = ShellStage::Starting;
+        w.state.shell_next = end;
+        w.state.next_primary = end;
+        w.state.next_secondary = end;
+        events.write(WeaponEvent {
+            owner,
+            weapon: w.entity,
+            kind: WeaponEventKind::ReloadStarted,
+        });
+        return;
+    }
+    let end = now + reload_time as f64;
     inv.next_attack = end;
     w.state.next_primary = end;
     w.state.next_secondary = end;
     w.state.reload_end = Some(end);
-    w.state.fired_on_empty = false;
     if let Some(s) = w.sounds {
         w.state.pending = s.reload.iter().map(|(t, e)| (now + *t as f64, e.clone())).collect();
     }

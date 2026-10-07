@@ -4,6 +4,7 @@
 
 pub mod buy_menu;
 pub mod capture;
+pub mod chat;
 pub mod console;
 pub mod debug;
 pub mod debug_views;
@@ -14,6 +15,7 @@ pub mod hud;
 pub mod input;
 pub mod perf;
 pub mod radar;
+pub mod radio;
 pub mod game_text;
 pub mod scoreboard;
 pub mod team_menu;
@@ -197,6 +199,8 @@ impl Plugin for ClientPlugin {
                 buy_menu::BuyMenuPlugin,
                 weapon_select::WeaponSelectPlugin,
                 team_menu::TeamMenuPlugin,
+                chat::ChatPlugin,
+                radio::RadioPlugin,
             ))
             .add_systems(PostStartup, spawn_local_player)
             .add_systems(Update, (follow_eye, zoom_camera));

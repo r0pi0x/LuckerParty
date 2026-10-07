@@ -10,7 +10,7 @@ use mashup::{
     games::cs_source::{
         TICK_INTERVAL,
         view_anim::ViewAnimPlugin,
-        weapons::{AK47, AWP, CsWeaponsPlugin, GLOCK, KNIFE, M4A1},
+        weapons::{AK47, AUG, AWP, CsWeaponsPlugin, ELITE, GLOCK, KNIFE, M3, M4A1},
     },
     greybox::{self, GreyboxMapPlugin},
     harness::Sim,
@@ -155,6 +155,37 @@ fn sim() -> Sim {
             AWP,
             &[
                 ("idle", "ACT_VM_IDLE", 10, 30.0, false),
+                ("draw", "ACT_VM_DRAW", 31, 30.0, false),
+            ],
+        ),
+        // v_shot_m3super90, v_pist_elite and v_rif_aug as in the install.
+        view_model(
+            M3,
+            &[
+                ("idle", "ACT_VM_IDLE", 9, 12.0, false),
+                ("shoot1", "ACT_VM_PRIMARYATTACK", 37, 32.0, false),
+                ("insert", "ACT_VM_RELOAD", 28, 55.0, false),
+                ("after_reload", "ACT_SHOTGUN_RELOAD_FINISH", 36, 40.0, false),
+                ("start_reload", "ACT_SHOTGUN_RELOAD_START", 16, 40.0, false),
+                ("draw", "ACT_VM_DRAW", 31, 30.0, false),
+            ],
+        ),
+        view_model(
+            ELITE,
+            &[
+                ("idle", "ACT_VM_IDLE", 2, 16.0, false),
+                ("shoot_left1", "ACT_VM_PRIMARYATTACK", 16, 18.0, false),
+                ("shoot_leftlast", "ACT_VM_DRYFIRE_LEFT", 16, 18.0, false),
+                ("shoot_right1", "ACT_VM_SECONDARYATTACK", 16, 18.0, false),
+                ("shoot_rightlast", "ACT_VM_DRYFIRE", 16, 18.0, false),
+                ("reload", "ACT_VM_RELOAD", 95, 25.0, false),
+                ("draw", "ACT_VM_DRAW", 41, 30.0, false),
+            ],
+        ),
+        view_model(
+            AUG,
+            &[
+                ("idle", "ACT_VM_IDLE", 9, 30.0, false),
                 ("draw", "ACT_VM_DRAW", 31, 30.0, false),
             ],
         ),
@@ -403,4 +434,58 @@ fn the_awp_scope_hides_the_view_model() {
     press(&mut sim, p, true);
     sim.ticks(1);
     assert!(!hidden(&sim));
+}
+
+#[test]
+fn elites_fire_left_then_right_and_the_last_round_its_own() {
+    let mut sim = sim();
+    let p = holding(&mut sim, ELITE);
+    sim.seconds(0.3);
+    let mut played = Vec::new();
+    for _ in 0..3 {
+        press(&mut sim, p, false);
+        played.push(view(&sim, p).2.unwrap());
+        sim.seconds(0.2);
+    }
+    assert_eq!(played, ["shoot_left1", "shoot_right1", "shoot_left1"]);
+    // The clip's last round (from the right hand: 30 rounds alternate).
+    let w = active(&sim, p);
+    sim.app.world_mut().get_mut::<Magazine>(w).unwrap().clip = 1;
+    press(&mut sim, p, false);
+    assert_eq!(view(&sim, p).2.as_deref(), Some("shoot_rightlast"));
+}
+
+#[test]
+fn shotgun_reload_plays_start_a_shell_each_and_the_finish() {
+    let mut sim = sim();
+    let p = holding(&mut sim, M3);
+    let w = active(&sim, p);
+    sim.app.world_mut().get_mut::<Magazine>(w).unwrap().clip = 6;
+    sim.intent(p).reload = true;
+    sim.ticks(1);
+    sim.intent(p).reload = false;
+    sim.ticks(1);
+    assert_eq!(activity(&sim, p), "ACT_SHOTGUN_RELOAD_START");
+    // The start sequence (0.375 s) ends before the first shell (0.5 s):
+    // no idle in between.
+    sim.seconds(0.45);
+    assert_eq!(activity(&sim, p), "ACT_SHOTGUN_RELOAD_START");
+    sim.seconds(0.1);
+    assert_eq!(activity(&sim, p), "ACT_VM_RELOAD");
+    // Two shells; then the finish.
+    sim.seconds(0.9);
+    assert_eq!(activity(&sim, p), "ACT_SHOTGUN_RELOAD_FINISH");
+    assert_eq!(sim.app.world().get::<Magazine>(w).unwrap().clip, 8);
+    sim.seconds(1.0);
+    assert_eq!(activity(&sim, p), "ACT_VM_IDLE");
+}
+
+#[test]
+fn the_aug_zoom_keeps_the_view_model() {
+    let mut sim = sim();
+    let p = holding(&mut sim, AUG);
+    press(&mut sim, p, true);
+    sim.ticks(1);
+    let v = sim.app.world().get::<ViewAnimator>(p).unwrap();
+    assert!(!v.hidden, "the AUG has no scope overlay");
 }

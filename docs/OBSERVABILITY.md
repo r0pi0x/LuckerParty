@@ -83,7 +83,15 @@ Only `Reflect`-registered types are visible; register new core components in
 - `mashup_drawnav 1` outlines the nav areas near you (2: all), coloured by
   place, with half-links toward their neighbours; `mashup_drawbots 1`
   shows each bot's look direction, target (red), last known enemy
-  position (orange), route (cyan) and roaming goal (purple).
+  position (orange), route (cyan), roaming goal (purple), its planned
+  grenade arc (red HE, pale yellow flash, grey smoke) with the target
+  (green cross) and where it should go off (sphere), and a flash it is
+  looking away from (white). `bot_grenades 2` makes bots throw whenever
+  an arc works (`mashup_watch 1` to follow one). On the greybox map:
+  `--spawn 0,1,-5 +bot_dont_shoot 1 +bot_stop 1 +bot_grenades 2 +bot_add 1
+  +bot_give weapon_hegrenade +mashup_drawbots 1 +mashup_watch 1
+  +cam_idealdist 600 +cam_idealyaw 70 ++attack --frames 130` shows the bot
+  hearing you behind the long crate and lobbing an HE over it.
 - `mashup_drawhitboxes 1` outlines other characters' hitboxes, coloured
   by hitgroup, where shots test them (e.g. `+bot_stop 1 +bot_add 2
   +mashup_drawhitboxes 1` with `--screenshot` to check they follow the
@@ -138,6 +146,14 @@ Only `Reflect`-registered types are visible; register new core components in
   on de_dust2 with a few `--frames` values (a flash lasts 0.05 s, every
   0.1 s), against the same without `++attack`. `dump cs_source
   --sequences <model>` shows a model's animation events and attachments.
+- Water (CS:S cvars): `r_WaterDrawReflection 0` / `r_WaterDrawRefraction
+  0` turn the planar reflection / refraction off (to tell which one an
+  artefact comes from), `mat_drawwater 0` hides water surfaces,
+  `r_waterforcereflectentities 1` reflects models too. Under water the
+  material's screen warp shows (de_port: `+setpos 700 2700 235 +setang
+  -5 140 0` with `+noclip +god`); with the eye a few units above a surface
+  (`+setpos 700 2700 258 +setang 20 140 0`) the strip under the waterline
+  shows the water's height fog.
 - Remote: `curl -s localhost:15702 -d '{"jsonrpc":"2.0","id":1,
   "method":"mashup/console","params":{"line":"getpos; cvarlist sv_"}}'`
   runs a line now and returns the lines it printed.

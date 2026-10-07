@@ -51,8 +51,15 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   and the Tab scoreboard are in (`client/game_hud.rs`,
   `client/scoreboard.rs`), and the weapon selection
   (`client/weapon_select.rs`, kill icons standing in for the scripts'
-  selection icons). The team menu is in (M; you start as CT). Left:
-  ping on the scoreboard, hint text, the game's own VGUI menu looks. The radar is in (`client/radar.rs`: the map overview turning
+  selection icons). The team menu is in (M; you start as CT). The radio
+  is in (`client/radio.rs`: Z/X/C menus, the calls as console commands,
+  "Fire in the hole!" on throws, bots' enemy spotted/down and need
+  backup), with a chat area and hint text (`client/chat.rs`) and a
+  scoreboard latency column (0 until networking). Left: the game's own
+  VGUI menu looks (buy, team), the radio icon over a caller's head
+  (`sprites/radio`), `ignorerad`, player text chat (`say`), bots
+  answering radio commands ("Roger that", following "Follow me"),
+  other game messages in the chat (team joins, bomb pickups). The radar is in (`client/radar.rs`: the map overview turning
   with you, team dots, your place name); its range (2200 units) is a guess.
 - Debug overlays: `mashup_drawhitboxes`, `mashup_healthbars`,
   `mashup_drawnav`, `mashup_drawbots` exist; add more as features need
@@ -61,15 +68,14 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
 ## 3. Weapons, remaining
 
 In progress: [plans/active/weapons.md](plans/active/weapons.md). The
-framework, knife, AK-47, M4A1, AWP, USP, Glock, Deagle (zoom, silencers,
-burst), HUD, deathmatch and a first bot are in.
+framework, the knife, every CS:S gun (zoom, silencers, bursts, pellets,
+shell-by-shell reloads, the dual Elites), grenades, HUD, deathmatch and
+a first bot are in.
 
-- The other CS:S guns from the spec's script tables, as `Gun` rows in
-  `games/cs_source/weapons.rs`: rifles (aug, famas with its burst, galil,
-  sg552 and aug scopes), snipers (scout, sg550, g3sg1), SMGs, m249,
-  p228/fiveseven/elite; their recoil isn't measured (probe M3 first), nor
-  the 556MM/9MM/57MM/357SIG penetration. Shotguns (m3, xm1014) need
-  pellets plus the shell-by-shell reload (M9).
+- Probe the new guns' unmeasured rules (listed in the weapons plan):
+  recoil of most guns, the shotgun reload and pellets, the other ammo
+  types' penetration. Buying ammo (CS:S's menu keys 6 and 7) isn't in:
+  reserves start full.
 - The AWP's view model is in (MDL v48 reads like v44,
   specs/cs_source/mdl_v48.md); compare its fire and reload against the
   game. HL2 v48 models with zero-frame data (streamed) aren't handled.
@@ -82,11 +88,11 @@ burst), HUD, deathmatch and a first bot are in.
   `games/cs_source/grenades.rs`): measure the spec's open questions on the
   probe (fuse ticks, release timing, flash amounts and overlay curve, HE vs
   armour, smoke vs bots) and replace the fits (tech-debt); the flash's
-  after-image and DSP ringing, bots throwing grenades, the radio call,
-  the `_thrown` models.
+  after-image and DSP ringing, bots throwing grenades, the `_thrown`
+  models.
 - Death animations on bodies (the grenade gesture is in; the reload gesture is in:
   `<Move>_Reload_<weapon>` by activity, an assumption for the spec's
-  `reload_<suffix>`; shotgun start/loop/end reloads not yet).
+  `reload_<suffix>`, with the shotguns' `_start/_loop/_end`).
 - Impact effects, remaining (specs/cs_source/impact_effects.md; the
   surface effects, blood, bullet splashes and pane glass shards are in):
   section 9's exact shard burst at the hit point (ours spreads shards
@@ -132,6 +138,11 @@ burst), HUD, deathmatch and a first bot are in.
 - CS:S bot path costs and route variety (nav spec open questions 2–4),
   checking corners, teamwork, team roles (attackers to a site, defenders
   holding one; today both roam toward the objectives 70 % of the time).
+- Grenades, beyond the first pass: lineups from the nav mesh's hiding and
+  approach spots (smokes cutting sight lines rather than landing on the
+  objective point), flashes thrown around corners so they pop out of the
+  thrower's view without turning, not flashing teammates, running and
+  jump throws (carried velocity in the plan), "Fire in the hole" radio.
 
 ## 5. Console, remaining
 
@@ -186,19 +197,22 @@ docs/plans/active/sound.md.
 ## 8. Visual fidelity
 
 - **Water surfaces** (specs/cs_source/water.md, `map::water`): refraction,
-  planar reflection, the cheap cubemap pass, under-water fog and bottom
-  materials are in. Left: `$underwateroverlay` (de_port's `water_warp01`
-  screen warp), the intersection view when the near plane crosses the
-  surface, `$blurrefract`/`$refracttint` and the `$basetexture` variant,
-  the water cvars (`r_waterforceexpensive`, `r_waterforcereflectentities`,
-  `mat_drawwater`, ...), under-water fog on decals, ropes and particles,
-  and a refcmp comparison of de_port/de_chateau water (no reference
-  captures yet). Water currents (base velocity) aren't applied.
+  planar reflection, the cheap cubemap pass, under-water fog (world,
+  props, ropes, decals, particles), bottom materials, the
+  `$underwateroverlay` screen warp, the intersection view's height fog
+  and the water cvars are in. Left: a Refract shader spec (the warp's
+  strength and blur are guesses: de_port's `water_warp01` looks subtle),
+  `$blurrefract`/`$refracttint` and the `$basetexture` variant, and a
+  refcmp comparison of de_port/de_chateau water (no reference captures
+  yet; it would settle de_port's dark speckles: refraction lookups at
+  `$refractamount` 5 landing on barely submerged shore, which the spec's
+  shore fade leaves unreflected). Water currents: no stock map has
+  current contents (spec movement.md open question 15), so not applied.
 - **HDR parity**: CS:S defaults to mat_hdr_level 2 on dust2 (HDR lightmaps,
   tonemapping, bloom); the reference install runs LDR. Compare and match
   both if players use HDR. Tonemap (`env_tonemap_controller`).
 - **More refcmp views** across dust2 (mid, long, B, spawns) and other maps.
-- Fog on ropes; detail blend modes other than 0 and 1;
+- Detail blend modes other than 0 and 1;
   `$basetexturetransform` (unused on dust2).
 
 ## 9. Performance

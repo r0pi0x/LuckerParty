@@ -54,6 +54,40 @@ impl Plugin for PerfPlugin {
                 |v| &mut v.0,
             );
         }
+        water_cvars(app);
+    }
+}
+
+/// Source's water settings (specs/cs_source/water.md section 1) on
+/// `map::water::WaterSettings`.
+fn water_cvars(app: &mut App) {
+    use crate::map::water::WaterSettings;
+    app.init_resource::<WaterSettings>();
+    resource_cvar::<WaterSettings, u8>(
+        app,
+        "r_waterforceexpensive",
+        "1: planar water reflections even where a material turns $forceexpensive off.",
+        |s| &mut s.force_expensive,
+    );
+    resource_cvar::<WaterSettings, u8>(
+        app,
+        "r_waterforcereflectentities",
+        "1: water reflections show models (props, players) as well as the world.",
+        |s| &mut s.reflect_entities,
+    );
+    resource_cvar::<WaterSettings, u8>(app, "r_WaterDrawReflection", "0: no planar water reflections.", |s| {
+        &mut s.draw_reflection
+    });
+    resource_cvar::<WaterSettings, u8>(
+        app,
+        "r_WaterDrawRefraction",
+        "0: water shows nothing below its surface (cubemap only).",
+        |s| &mut s.draw_refraction,
+    );
+    resource_cvar::<WaterSettings, u8>(app, "mat_drawwater", "0: hide water surfaces.", |s| &mut s.draw_water);
+    let mut console = app.world_mut().resource_mut::<crate::console::Console>();
+    for name in ["r_waterforceexpensive", "r_waterforcereflectentities"] {
+        console.archive(name);
     }
 }
 

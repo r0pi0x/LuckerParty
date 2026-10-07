@@ -1,0 +1,213 @@
+//! Scenario tests for bots and grenades on the greybox map at CS:S's tick:
+//! a bot lobs an HE over a crate at an enemy it remembers but can't see,
+//! and it goes off near them; a bot throwing a flash turns away from it;
+//! bots buy grenades with money left after a gun and armour.
+
+use bevy::prelude::*;
+use mashup::{
+    bot::{Bot, BotConfig},
+    core::{Health, Team},
+    games::cs_source::{
+        TICK_INTERVAL,
+        grenades::{DRAW_TIME, FLASHBANG, HEGRENADE, SMOKEGRENADE},
+        weapons::{AK47, CsWeaponsPlugin},
+    },
+    greybox::GreyboxMapPlugin,
+    harness::Sim,
+    movement::placeholder,
+    weapon::{
+        Armor, Inventory, Weapon,
+        economy::{Money, autobuy_rolling},
+        give,
+        grenade::{Projectile, Throwable},
+    },
+};
+
+fn sim() -> Sim {
+    let mut sim = Sim::new((GreyboxMapPlugin, CsWeaponsPlugin));
+    sim.set_tick_interval(TICK_INTERVAL);
+    // No throws until a test says so (bots hear the enemy deploy its gun).
+    sim.app.world_mut().resource_mut::<BotConfig>().grenades = 0;
+    sim
+}
+
+fn active_id(sim: &Sim, p: Entity) -> Option<&'static str> {
+    let w = sim.app.world().get::<Inventory>(p)?.active?;
+    sim.app.world().get::<Weapon>(w).map(|w| w.id)
+}
+
+fn grenade_of(sim: &Sim, p: Entity, id: &str) -> Option<Entity> {
+    let inv = sim.app.world().get::<Inventory>(p)?;
+    inv.weapons
+        .iter()
+        .copied()
+        .find(|w| sim.app.world().get::<Weapon>(*w).is_some_and(|x| x.id == id))
+}
+
+/// A bot at `at` (team 1) holding an AK-47 and carrying `grenade`, and an
+/// enemy (team 2) at `enemy_at` it remembers seeing.
+fn setup(sim: &mut Sim, at: Vec3, enemy_at: Vec3, grenade: &str) -> (Entity, Entity) {
+    let bot = sim.spawn_character(at, placeholder::ID);
+    let enemy = sim.spawn_character(enemy_at, placeholder::ID);
+    sim.app.world_mut().entity_mut(bot).insert((Team(1), Bot::default()));
+    sim.app.world_mut().entity_mut(enemy).insert(Team(2));
+    sim.ticks(1);
+    give(sim.app.world_mut(), bot, AK47).unwrap();
+    sim.ticks(1);
+    give(sim.app.world_mut(), bot, grenade).unwrap();
+    // `give` draws what it gives: back to the rifle, as after a buy.
+    let ak = grenade_of(sim, bot, AK47).unwrap();
+    sim.app.world_mut().get_mut::<Inventory>(bot).unwrap().wanted = Some(ak);
+    sim.seconds(DRAW_TIME as f64 + 0.3);
+    assert_eq!(active_id(sim, bot), Some(AK47));
+    assert_eq!(sim.app.world().get::<Bot>(bot).unwrap().target, None, "hidden");
+    let now = sim.app.world().resource::<Time>().elapsed_secs_f64();
+    let feet = enemy_at - Vec3::Y * 0.9;
+    sim.app.world_mut().get_mut::<Bot>(bot).unwrap().lead = Some((feet, now));
+    // Whenever an arc works.
+    sim.app.world_mut().resource_mut::<BotConfig>().grenades = 2;
+    (bot, enemy)
+}
+
+#[test]
+fn a_bot_lobs_an_he_over_cover_at_a_remembered_enemy() {
+    let mut sim = sim();
+    // The long crate (x -3..3, z -20.5..-19.5, 3 m tall) hides the enemy
+    // 25 m away: an air burst over it.
+    let (bot, enemy) = setup(
+        &mut sim,
+        Vec3::new(1.0, 0.9, 1.0),
+        Vec3::new(0.0, 0.9, -24.0),
+        HEGRENADE,
+    );
+    let before = sim.app.world().get::<Health>(enemy).unwrap().current;
+    let mut planned = None;
+    let mut last: Option<(Entity, Vec3)> = None;
+    let mut popped = None;
+    for _ in 0..(6.0 / TICK_INTERVAL) as usize {
+        sim.ticks(1);
+        if planned.is_none() {
+            planned = sim.app.world().get::<Bot>(bot).unwrap().grenade_plan().cloned();
+        }
+        let w = sim.app.world_mut();
+        let now: Vec<(Entity, Vec3, Option<Entity>)> = w
+            .query::<(Entity, &Projectile, &Transform)>()
+            .iter(w)
+            .map(|(e, p, t)| (e, t.translation, p.thrower))
+            .collect();
+        if let Some((g, at)) = last
+            && !now.iter().any(|(e, ..)| *e == g)
+        {
+            popped = Some(at);
+            break;
+        }
+        if let Some((e, at, thrower)) = now.first() {
+            assert_eq!(*thrower, Some(bot));
+            last = Some((*e, *at));
+        }
+    }
+    let plan = planned.expect("the bot planned a throw");
+    assert!(plan.error < 2.0, "{plan:?}");
+    assert!(plan.points.iter().any(|p| p.y > 3.0), "over the crate");
+    let at = popped.expect("the grenade went off");
+    let body = Vec3::new(0.0, 0.9, -24.0);
+    assert!(
+        at.distance(body) < 2.5,
+        "went off at {at}, {} m away (planned {})",
+        at.distance(body),
+        plan.pop
+    );
+    let after = sim.app.world().get::<Health>(enemy).unwrap().current;
+    assert!(after < before - 0.3, "hurt: {before} -> {after}");
+    // The rifle back in hand, the spent grenade gone.
+    sim.seconds(1.5);
+    assert!(grenade_of(&sim, bot, HEGRENADE).is_none());
+    assert_eq!(active_id(&sim, bot), Some(AK47));
+    assert!(!sim.app.world().get::<Bot>(bot).unwrap().throwing());
+}
+
+#[test]
+fn a_bot_turns_away_from_its_own_flash() {
+    let mut sim = sim();
+    let (bot, _) = setup(
+        &mut sim,
+        Vec3::new(1.0, 0.9, 1.0),
+        Vec3::new(0.0, 0.9, -24.0),
+        FLASHBANG,
+    );
+    let mut averted = false;
+    for _ in 0..(4.0 / TICK_INTERVAL) as usize {
+        sim.ticks(1);
+        let b = sim.app.world().get::<Bot>(bot).unwrap();
+        if let Some(from) = b.averting() {
+            averted = true;
+            // Facing away after the turn (yaw 0 looks down -Z: at the flash).
+            let yaw = sim.intent(bot).yaw;
+            let look = Vec2::new(-yaw.sin(), -yaw.cos());
+            let to = (from - sim.position(bot)).xz().normalize();
+            if sim.app.world().get::<Bot>(bot).unwrap().throwing() {
+                continue;
+            }
+            sim.seconds(0.6);
+            if sim.app.world().get::<Bot>(bot).unwrap().averting().is_some() {
+                let yaw = sim.intent(bot).yaw;
+                let look2 = Vec2::new(-yaw.sin(), -yaw.cos());
+                assert!(look2.dot(to) < -0.5, "turned away: {look} -> {look2}, flash at {to}");
+            }
+            break;
+        }
+    }
+    assert!(averted, "looked away from the flash");
+}
+
+#[test]
+fn bots_buy_grenades_with_money_left() {
+    let mut sim = sim();
+    let p = sim.spawn_character(Vec3::new(0.0, 0.9, 12.0), placeholder::ID);
+    sim.ticks(1);
+    give(sim.app.world_mut(), p, AK47).unwrap();
+    sim.seconds(1.0);
+    let count =
+        |sim: &Sim, id| grenade_of(sim, p, id).map_or(0, |w| sim.app.world().get::<Throwable>(w).unwrap().count);
+    // Every roll a yes: armour, then an HE, two flashes and a smoke.
+    sim.app.world_mut().entity_mut(p).insert(Money(16000));
+    autobuy_rolling(sim.app.world_mut(), p, &mut || 0.0);
+    assert_eq!(sim.app.world().get::<Armor>(p).map(|a| a.helmet), Some(true));
+    assert_eq!(
+        [
+            count(&sim, HEGRENADE),
+            count(&sim, FLASHBANG),
+            count(&sim, SMOKEGRENADE)
+        ],
+        [1, 2, 1]
+    );
+    assert_eq!(
+        sim.app.world().get::<Money>(p),
+        Some(&Money(16000 - 1000 - 300 - 400 - 300))
+    );
+    sim.ticks(2);
+    assert_eq!(active_id(&sim, p), Some(AK47), "the rifle stays in hand");
+    // At the carry limits nothing more is bought.
+    autobuy_rolling(sim.app.world_mut(), p, &mut || 0.0);
+    assert_eq!(sim.app.world().get::<Money>(p), Some(&Money(14000)));
+
+    // Rolls of 0.55: an HE (0.6) but no flash (0.5) and so on; with only
+    // what armour leaves plus $350, the HE and no more.
+    let q = sim.spawn_character(Vec3::new(2.0, 0.9, 12.0), placeholder::ID);
+    sim.ticks(1);
+    give(sim.app.world_mut(), q, AK47).unwrap();
+    sim.app.world_mut().entity_mut(q).insert(Money(1350));
+    autobuy_rolling(sim.app.world_mut(), q, &mut || 0.55);
+    assert!(grenade_of(&sim, q, HEGRENADE).is_some());
+    assert!(grenade_of(&sim, q, FLASHBANG).is_none());
+    assert_eq!(sim.app.world().get::<Money>(q), Some(&Money(50)));
+    // Never a yes: nothing.
+    let r = sim.spawn_character(Vec3::new(4.0, 0.9, 12.0), placeholder::ID);
+    sim.ticks(1);
+    give(sim.app.world_mut(), r, AK47).unwrap();
+    sim.app.world_mut().entity_mut(r).insert(Money(5000));
+    autobuy_rolling(sim.app.world_mut(), r, &mut || 0.99);
+    for id in [HEGRENADE, FLASHBANG, SMOKEGRENADE] {
+        assert!(grenade_of(&sim, r, id).is_none());
+    }
+}

@@ -139,6 +139,6 @@ impl Plugin for PropMaterialPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "prop.wgsl");
         embedded_asset!(app, "prop_prepass.wgsl");
-        app.add_plugins(MaterialPlugin::<PropMaterial>::default());
+        app.add_plugins((super::fog::FogShaderPlugin, MaterialPlugin::<PropMaterial>::default()));
     }
 }

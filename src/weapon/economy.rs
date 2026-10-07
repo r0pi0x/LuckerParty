@@ -7,7 +7,10 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
-use super::{Armor, Inventory, Weapon, WeaponRegistry, give, grenade::Throwable};
+use super::{
+    Armor, Inventory, Weapon, WeaponRegistry, give,
+    grenade::{GrenadeKind, Throwable},
+};
 
 /// A character's money.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq, Reflect)]
@@ -25,7 +28,44 @@ pub struct Prices {
     pub vest: u32,
     pub vest_helmet: u32,
     pub helmet: u32,
+    /// The buy menu as the game lays it out (empty: pistols, primaries and
+    /// equipment by slot).
+    pub menu: Vec<BuyCategory>,
+    /// How much computer players like each primary when buying (unlisted:
+    /// 1; 0: never).
+    pub bot_weights: HashMap<&'static str, f32>,
 }
+
+/// One buy-menu category: the number key that opens it, its name and its
+/// items in order.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BuyCategory {
+    pub key: u8,
+    pub name: &'static str,
+    pub items: Vec<BuyItem>,
+}
+
+/// One buy-menu line: what `buy` gets (a weapon ID, `vest`, `vesthelm`)
+/// and its name.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BuyItem {
+    pub buy: &'static str,
+    pub label: &'static str,
+}
+
+impl Prices {
+    /// What `buy` (a weapon ID, `vest`, `vesthelm`) costs.
+    pub fn of(&self, buy: &str) -> Option<u32> {
+        match buy {
+            "vest" => Some(self.vest),
+            "vesthelm" => Some(self.vest_helmet),
+            id => self.weapons.get(id).copied(),
+        }
+    }
+}
+
+/// Why buying fails outside a buy zone (CS:S's words).
+pub const NOT_IN_BUY_ZONE: &str = "You are not in a buy zone.";
 
 /// Whether buying is open: Ok, or why not (shown to the player).
 #[derive(Resource, Clone, Debug)]
@@ -43,7 +83,7 @@ impl Default for BuyWindow {
 pub fn buy(world: &mut World, owner: Entity, name: &str) -> Result<String, String> {
     world.resource::<BuyWindow>().0.clone()?;
     if world.get::<Money>(owner).is_some() && !in_buy_zone(world, owner) {
-        return Err("you are not in a buy zone".into());
+        return Err(NOT_IN_BUY_ZONE.into());
     }
     let name = name.to_lowercase();
     let prices = world.resource::<Prices>().clone();
@@ -51,7 +91,7 @@ pub fn buy(world: &mut World, owner: Entity, name: &str) -> Result<String, Strin
     let pay = |world: &mut World, cost: u32| -> Result<(), String> {
         if let Some(have) = money {
             if have < cost {
-                return Err(format!("you have insufficient funds (${cost})"));
+                return Err("You have insufficient funds.".into());
             }
             world.entity_mut(owner).insert(Money(have - cost));
         }
@@ -61,7 +101,8 @@ pub fn buy(world: &mut World, owner: Entity, name: &str) -> Result<String, Strin
         let armor = world.get::<Armor>(owner).copied().unwrap_or_default();
         let full = armor.amount >= 1.0;
         let (cost, helmet) = match (name.as_str(), full, armor.helmet) {
-            ("vest", true, _) | ("vesthelm", true, true) => return Err("you already have armour".into()),
+            ("vest", true, _) => return Err("You already have Kevlar!".into()),
+            ("vesthelm", true, true) => return Err("You already have Kevlar and a helmet!".into()),
             ("vest", false, h) => (prices.vest, h),
             (_, true, false) => (prices.helmet, true),
             _ => (prices.vest_helmet, true),
@@ -84,7 +125,7 @@ pub fn buy(world: &mut World, owner: Entity, name: &str) -> Result<String, Strin
     if let Some(team) = prices.team_only.get(id)
         && world.get::<crate::core::Team>(owner).is_some_and(|t| t.0 != *team)
     {
-        return Err("your team can't buy that weapon".into());
+        return Err("Your team can't buy that weapon.".into());
     }
     let cost = prices.weapons.get(id).copied().unwrap_or(0);
     if let Some(have) = held
@@ -98,7 +139,7 @@ pub fn buy(world: &mut World, owner: Entity, name: &str) -> Result<String, Strin
             return Err("You cannot carry any more.".into());
         }
         if !room {
-            return Err("you already have that weapon".into());
+            return Err("You already own that weapon.".into());
         }
         pay(world, cost)?;
         if let Some(mut t) = world.get_mut::<Throwable>(have) {
@@ -178,11 +219,66 @@ pub fn weapon_slots(registry: &WeaponRegistry) -> Vec<(&'static str, u8)> {
         .collect()
 }
 
-/// What a computer player buys with its money: the dearest primary its
-/// team may buy and afford (if it has none), then armour with what's left.
-/// CS:S's own bots weigh preferences and difficulty; this is the simple
-/// version.
+/// Each registered grenade: (weapon ID, kind, carry limit).
+pub fn grenade_kinds(registry: &WeaponRegistry) -> Vec<(&'static str, GrenadeKind, u32)> {
+    let mut scratch = World::new();
+    registry
+        .0
+        .iter()
+        .filter_map(|d| {
+            let mut e = scratch.spawn_empty();
+            (d.build)(&mut e);
+            e.get::<Throwable>().map(|t| (d.id, t.effect.kind(), t.max))
+        })
+        .collect()
+}
+
+/// Chance a bot buys each grenade it can afford after its gun and armour
+/// (ours; CS:S's bot buying isn't public): an HE, a flash (a second one
+/// at half the chance), a smoke.
+pub const BOT_GRENADE_CHANCE: [(GrenadeKind, f32); 3] = [
+    (GrenadeKind::Blast, 0.6),
+    (GrenadeKind::Flash, 0.5),
+    (GrenadeKind::Smoke, 0.3),
+];
+
+/// What a computer player buys with its money: a primary its team may buy
+/// and afford (if it has none), picked at random by `Prices::bot_weights`
+/// among the dearer half of those, armour with what's left, then now and
+/// then grenades (`BOT_GRENADE_CHANCE`). CS:S's own bots weigh preferences
+/// and difficulty; this is the simple version.
 pub fn autobuy(world: &mut World, owner: Entity) {
+    // A roll per bot and round.
+    let round = world
+        .get_resource::<crate::core::RoundRestarts>()
+        .map_or(0, |r| r.0 as u64);
+    let mut rng = owner.to_bits().wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ round.wrapping_mul(0xD1B5_4A32_D192_ED03) | 1;
+    autobuy_rolling(world, owner, &mut || {
+        rng ^= rng >> 12;
+        rng ^= rng << 25;
+        rng ^= rng >> 27;
+        (rng.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 40) as f32 / (1u64 << 24) as f32
+    });
+}
+
+/// `autobuy` with the given dice (each roll in 0..1).
+pub fn autobuy_rolling(world: &mut World, owner: Entity, roll: &mut dyn FnMut() -> f32) {
+    autobuy_gun_and_armour(world, owner, roll);
+    let grenades = grenade_kinds(world.resource::<WeaponRegistry>());
+    for (kind, chance) in BOT_GRENADE_CHANCE {
+        let Some((id, _, max)) = grenades.iter().find(|g| g.1 == kind) else {
+            continue;
+        };
+        for n in 0..*max {
+            let chance = if n == 0 { chance } else { chance / 2.0 };
+            if roll() >= chance || buy(world, owner, id).is_err() {
+                break;
+            }
+        }
+    }
+}
+
+fn autobuy_gun_and_armour(world: &mut World, owner: Entity, roll: &mut dyn FnMut() -> f32) {
     let prices = world.resource::<Prices>().clone();
     let slots = weapon_slots(world.resource::<WeaponRegistry>());
     let team = world.get::<crate::core::Team>(owner).map(|t| t.0);
@@ -192,13 +288,26 @@ pub fn autobuy(world: &mut World, owner: Entity) {
         .map(|i| i.weapons.iter().filter_map(|w| world.get::<Weapon>(*w)).map(|w| w.slot).collect())
         .unwrap_or_default();
     if !held.contains(&0) {
-        let best = slots
+        let weight = |id: &str| prices.bot_weights.get(id).copied().unwrap_or(1.0);
+        let mut can: Vec<(&'static str, u32)> = slots
             .iter()
             .filter(|(_, slot)| *slot == 0)
             .filter_map(|(id, _)| Some((*id, *prices.weapons.get(id)?)))
-            .filter(|(id, price)| *price <= money && prices.team_only.get(id).is_none_or(|t| Some(*t) == team))
-            .max_by_key(|(_, price)| *price);
-        if let Some((id, _)) = best {
+            .filter(|(id, price)| {
+                *price <= money && prices.team_only.get(id).is_none_or(|t| Some(*t) == team) && weight(id) > 0.0
+            })
+            .collect();
+        // The dearer half (rounded up): spend the money, but not always on
+        // the single dearest thing.
+        can.sort_by_key(|(id, price)| (std::cmp::Reverse(*price), *id));
+        can.truncate(can.len().div_ceil(2));
+        let total: f32 = can.iter().map(|(id, _)| weight(id)).sum();
+        let mut pick = roll() * total;
+        let chosen = can.iter().find(|(id, _)| {
+            pick -= weight(id);
+            pick < 0.0
+        });
+        if let Some((id, _)) = chosen.or(can.last()) {
             let _ = buy(world, owner, id);
         }
     }

@@ -57,6 +57,8 @@ pub(super) struct Shot<'a, 'w, 's> {
     pub eye: Vec3,
     pub aim: Quat,
     pub seed: u32,
+    /// The time of the shot (game seconds).
+    pub now: f64,
     pub w: &'a mut World<'w, 's>,
 }
 
@@ -251,6 +253,10 @@ impl Shot<'_, '_, '_> {
     /// Fire every pellet of one shot.
     pub fn fire(&mut self, scan: &Hitscan, effect: &DamageEffect, pen: Option<&Penetration>) {
         let mut total: Vec<(Entity, f32, Hitgroup, Vec3, Vec3)> = Vec::new();
+        // The inaccuracy part of a `Disc` is drawn once per shot, shared by
+        // its pellets; each pellet draws its own spread part (a shotgun's
+        // pattern keeps its shape while the whole of it wanders).
+        let mut shared: Option<Vec2> = None;
         for pellet in 0..scan.pellets.max(1) {
             let mut rng = Rng::new(self.seed.wrapping_add(1 + pellet));
             let dir = match scan.spread {
@@ -260,11 +266,12 @@ impl Shot<'_, '_, '_> {
                     spread_dir(self.aim, s, x, y)
                 }
                 SpreadShape::Disc { inaccuracy, spread } => {
-                    let mut offset = Vec2::ZERO;
-                    for r in [inaccuracy, spread] {
+                    let mut disc = |r: f32| {
                         let angle = rng.range(0.0, std::f32::consts::TAU);
-                        offset += Vec2::from_angle(angle) * rng.range(0.0, 1.0) * r;
-                    }
+                        Vec2::from_angle(angle) * rng.range(0.0, 1.0) * r
+                    };
+                    let base = *shared.get_or_insert_with(|| disc(inaccuracy));
+                    let offset = base + disc(spread);
                     spread_dir(self.aim, 1.0, offset.x, offset.y)
                 }
             };

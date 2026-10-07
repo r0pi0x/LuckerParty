@@ -10,6 +10,7 @@
     clustered_forward as clustering,
     view_transformations::position_world_to_view,
 }
+#import mashup::fog::source_fog
 
 struct PropParams {
     base_color: vec4<f32>,
@@ -109,18 +110,10 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         spec = mix(vec3<f32>(dot(spec, LUMA)), spec, params.envmap_saturation);
         rgb = rgb + spec;
     }
-    // Under water, what is below the surface takes the water's fog.
-    var fog = params.fog_color;
-    var range = params.fog_range;
-    if params.water_fog_color.w > 0.5 && in.world_position.y < params.water_fog_range.w {
-        fog = params.water_fog_color;
-        range = params.water_fog_range;
-    }
-    if fog.w > 0.5 {
-        let depth = -position_world_to_view(in.world_position.xyz).z;
-        let f = clamp(min(range.z, (depth - range.x) / (range.y - range.x)), 0.0, 1.0);
-        rgb = mix(rgb, fog.rgb, f * f);
-    }
+    // Under (or, at the surface, just below) water, what is below the
+    // surface takes the water's fog.
+    let fog = source_fog(params.fog_color, params.fog_range, params.water_fog_color, params.water_fog_range, in.world_position.xyz);
+    rgb = mix(rgb, fog.rgb, fog.a);
     // Additive (translucent 2): alpha 0 under premultiplied blending adds.
     if params.translucent > 1.5 {
         return vec4<f32>(rgb, 0.0);

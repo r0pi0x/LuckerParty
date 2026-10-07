@@ -4,14 +4,15 @@
 //! the material they include (proxies kept, spec open question 8), the
 //! proxies that animate it (TextureScroll on `$bumptransform`,
 //! AnimatedTexture on `$normalmap`, WaterLOD), the map's
-//! `water_lod_control` distances, and the `$bottommaterial`.
+//! `water_lod_control` distances, the `$bottommaterial` and the
+//! `$underwateroverlay` (a Refract material drawn as a screen warp).
 
 use std::collections::HashMap;
 
 use bevy::math::Vec2;
 
 use super::{bsp::METERS_PER_UNIT, material::MaterialLoader, surfaceprops::tokens};
-use crate::map::water::{MapWaterMaterial, WaterEnvmap};
+use crate::map::water::{MapScreenWarp, MapWaterMaterial, WaterEnvmap};
 
 /// A KeyValues node: a value or a block of named children, in order.
 #[derive(Clone, Debug, PartialEq)]
@@ -180,6 +181,7 @@ pub struct WaterVmt {
     pub normal_map: String,
     pub envmap: Option<String>,
     pub bottom: Option<String>,
+    pub overlay: Option<String>,
 }
 
 /// Read a Water material's keys and proxies (spec sections 1, 2 and 4).
@@ -207,6 +209,9 @@ pub fn water_vmt(name: &str, body: &[(String, Node)], lod: (f32, f32)) -> WaterV
         fog_end: num("$fogend", 0.0) * METERS_PER_UNIT,
         above_water: get("$abovewater").is_none_or(|v| v != "0"),
         force_cheap: flag("$forcecheap"),
+        // On PC the shader turns it on unless the material sets it (spec
+        // section 1).
+        force_expensive: get("$forceexpensive").is_none_or(|v| v != "0"),
         cheap_start: num("$cheapwaterstartdistance", 500.0) * METERS_PER_UNIT,
         cheap_end: num("$cheapwaterenddistance", 1000.0) * METERS_PER_UNIT,
         fixed_reflect_weight: flag("$nofresnel").then(|| num("$reflectblendfactor", 1.0)),
@@ -238,7 +243,76 @@ pub fn water_vmt(name: &str, body: &[(String, Node)], lod: (f32, f32)) -> WaterV
         normal_map: texture("$normalmap").unwrap_or_else(|| "dev/water_normal".to_string()),
         envmap: texture("$envmap"),
         bottom: texture("$bottommaterial"),
+        overlay: texture("$underwateroverlay"),
     }
+}
+
+/// `$bumptransform`'s scale ("center u v scale su sv rotate r translate
+/// x y"); 1 when absent.
+fn transform_scale(v: &str) -> Vec2 {
+    let t: Vec<&str> = v.split_whitespace().collect();
+    t.iter()
+        .position(|w| w.eq_ignore_ascii_case("scale"))
+        .and_then(|i| Some(Vec2::new(t.get(i + 1)?.parse().ok()?, t.get(i + 2)?.parse().ok()?)))
+        .unwrap_or(Vec2::ONE)
+}
+
+/// A Refract material drawn full screen (the `$underwateroverlay`): its
+/// normal map, strength, tint, `$bumptransform` scale and the proxies that
+/// move it. There is no Refract spec yet: `$refractamount` is taken as the
+/// Water shader's (screen uv per unit of normal xy); `$bluramount` and
+/// `$refracttinttexture` are ignored.
+pub fn screen_warp_vmt(name: &str, body: &[(String, Node)]) -> (MapScreenWarp, String) {
+    let (keys, proxies) = keys_and_proxies(body);
+    let get = |k: &str| keys.get(k).map(|v| v.trim().to_string());
+    let mut w = MapScreenWarp {
+        name: name.to_string(),
+        normal_frames: Vec::new(),
+        frame_rate: 0.0,
+        refract_amount: get("$refractamount").and_then(|v| v.parse().ok()).unwrap_or(0.0),
+        tint: get("$refracttint").and_then(|v| colour(&v)).unwrap_or([1.0; 3]),
+        scale: get("$bumptransform").map_or(Vec2::ONE, |v| transform_scale(&v)),
+        scroll: Vec2::ZERO,
+    };
+    for (proxy, p) in &proxies {
+        let var = |k: &str| p.get(k).map(|v| v.trim().to_lowercase());
+        let pnum = |k: &str| p.get(k).and_then(|v| v.trim().parse::<f32>().ok());
+        match proxy.as_str() {
+            "texturescroll" if var("texturescrollvar").as_deref() == Some("$bumptransform") => {
+                let rate = pnum("texturescrollrate").unwrap_or(0.0);
+                let angle = pnum("texturescrollangle").unwrap_or(0.0).to_radians();
+                w.scroll = rate * Vec2::new(angle.cos(), angle.sin());
+            }
+            "animatedtexture" if var("animatedtexturevar").as_deref() == Some("$normalmap") => {
+                w.frame_rate = pnum("animatedtextureframerate").unwrap_or(15.0);
+            }
+            _ => {}
+        }
+    }
+    let normal = get("$normalmap")
+        .or_else(|| get("$bumpmap"))
+        .or_else(|| get("$dudvmap"))
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "dev/water_normal".to_string());
+    (w, normal)
+}
+
+/// The Refract material `name` as a screen warp, with its normal-map
+/// frames loaded. None when it isn't a Refract material.
+fn load_screen_warp(materials: &mut MaterialLoader, name: &str) -> Option<MapScreenWarp> {
+    let path = format!(
+        "materials/{}.vmt",
+        crate::mount::normalize(name).trim_end_matches(".vmt")
+    );
+    let text = materials.read_text(&path)?;
+    let read = |p: &str| materials.read_text(p);
+    let (shader, body) = resolve(&text, &read, 0)?;
+    if !shader.eq_ignore_ascii_case("refract") {
+        return None;
+    }
+    let (mut w, normal) = screen_warp_vmt(name, &body);
+    w.normal_frames = materials.texture_frames(&normal, false);
+    (!w.normal_frames.is_empty()).then_some(w)
 }
 
 /// The Water material `name` (as the BSP names it), with its normal-map
@@ -274,6 +348,7 @@ fn load_inner(materials: &mut MaterialLoader, name: &str, lod: (f32, f32), depth
     {
         m.bottom = load_inner(materials, &bottom, lod, depth + 1).map(Box::new);
     }
+    m.underwater_overlay = vmt.overlay.and_then(|o| load_screen_warp(materials, &o));
     Some(m)
 }
 
@@ -360,6 +435,50 @@ mod tests {
         assert_eq!(m.fixed_reflect_weight, Some(1.0));
         // No WaterLOD proxy: the material's own (default) distances.
         assert!((m.cheap_end - 1000.0 * METERS_PER_UNIT).abs() < 1e-6);
+    }
+
+    #[test]
+    fn force_expensive_and_overlay() {
+        let text = r#""Water" { "$abovewater" 0 $underwateroverlay "effects/warp" }"#;
+        let (_, body) = resolve(text, &|_| None, 0).unwrap();
+        let vmt = water_vmt("x", &body, (0.0, 0.1));
+        assert!(vmt.material.force_expensive);
+        assert_eq!(vmt.overlay.as_deref(), Some("effects/warp"));
+        let text = r#""Water" { "$forceexpensive" 0 }"#;
+        let (_, body) = resolve(text, &|_| None, 0).unwrap();
+        assert!(!water_vmt("x", &body, (0.0, 0.1)).material.force_expensive);
+    }
+
+    #[test]
+    fn screen_warp_keys_and_proxies() {
+        let text = r#"
+"Refract"
+{
+	"$normalmap" "effects/warp_normal"
+	"$refractamount" ".04"
+	"$refracttint" "{128 255 255}"
+	"$bumptransform" "center .5 .5 scale 2 3 rotate 0 translate 0 0"
+	"Proxies"
+	{
+		"AnimatedTexture" { "animatedtexturevar" "$normalmap" "animatedtextureframerate" 10 }
+		"TextureScroll" { "texturescrollvar" "$bumptransform" "texturescrollrate" .1 "texturescrollangle" 90 }
+	}
+}
+"#;
+        let (shader, body) = resolve(text, &|_| None, 0).unwrap();
+        assert_eq!(shader, "Refract");
+        let (w, normal) = screen_warp_vmt("effects/warp", &body);
+        assert_eq!(normal, "effects/warp_normal");
+        assert!((w.refract_amount - 0.04).abs() < 1e-6);
+        assert!((w.tint[0] - 128.0 / 255.0).abs() < 1e-6 && w.tint[1] == 1.0);
+        assert_eq!(w.scale, Vec2::new(2.0, 3.0));
+        assert_eq!(w.frame_rate, 10.0);
+        assert!((w.scroll - Vec2::new(0.0, 0.1)).length() < 1e-6);
+        // Defaults: no transform, no proxies.
+        let (_, body) = resolve(r#""Refract" { }"#, &|_| None, 0).unwrap();
+        let (w, normal) = screen_warp_vmt("x", &body);
+        assert_eq!((w.scale, w.scroll, w.refract_amount), (Vec2::ONE, Vec2::ZERO, 0.0));
+        assert_eq!(normal, "dev/water_normal");
     }
 
     #[test]

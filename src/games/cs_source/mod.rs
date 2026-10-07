@@ -21,6 +21,7 @@ pub mod player_anim;
 pub mod propdata;
 pub mod props;
 pub mod pushaway;
+pub mod radio;
 pub mod ropes;
 pub mod sky;
 pub mod sound;

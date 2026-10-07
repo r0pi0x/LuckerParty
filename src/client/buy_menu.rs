@@ -19,28 +19,34 @@ pub struct BuyMenuPlugin;
 
 impl Plugin for BuyMenuPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<BuyMenu>()
-            .init_resource::<BuyNotice>()
-            .add_systems(Update, ((keys, draw).chain(), notice));
+        app.init_resource::<BuyMenu>().add_systems(Update, (keys, draw).chain());
         app.console_command(
             "buymenu",
-            "Open or close the buy menu (B); buymenu <n> opens category n (1 pistols, 2 rifles, 3 equipment).",
+            "Open or close the buy menu (B); buymenu <n> opens the category on key n (CS:S: 1 pistols, 2 shotguns, 3 SMGs, 4 rifles, 5 machine guns, 8 equipment).",
             |w, a| {
-                let category = a.first().and_then(|n| n.parse::<usize>().ok()).filter(|n| (1..=CATEGORIES.len()).contains(n));
+                let slots = weapon_slots(w.resource::<WeaponRegistry>());
+                let menu = categories(w.resource::<Prices>(), &slots, None);
+                let category = a
+                    .first()
+                    .and_then(|n| n.parse::<u8>().ok())
+                    .filter(|n| menu.iter().any(|c| c.key == *n));
                 let mut m = w.resource_mut::<BuyMenu>();
                 m.open = category.is_some() || !m.open;
-                m.category = category.map(|n| n - 1);
+                m.category = category;
+                if m.open {
+                    close_others(w);
+                }
                 Ok(None)
             },
         );
     }
 }
 
-/// Whether the menu is open, and which category is shown.
+/// Whether the menu is open, and which category is shown (by its key).
 #[derive(Resource, Default, Debug, Clone, PartialEq)]
 pub struct BuyMenu {
     pub open: bool,
-    pub category: Option<usize>,
+    pub category: Option<u8>,
 }
 
 /// One line of the menu: what `buy` gets, its label and price.
@@ -52,7 +58,13 @@ struct Item {
     team: Option<u8>,
 }
 
-const CATEGORIES: [&str; 3] = ["Pistols", "Rifles", "Equipment"];
+/// One category: its number key and name, and its items.
+#[derive(Clone, Debug, PartialEq)]
+struct Category {
+    key: u8,
+    name: String,
+    items: Vec<Item>,
+}
 
 /// A weapon's display name from its ID: `cs_source:weapon_m4a1` -> M4A1.
 fn label(id: &str) -> String {
@@ -63,49 +75,67 @@ fn label(id: &str) -> String {
     }
 }
 
-/// The items of a category, cheapest first.
-fn items(category: usize, prices: &Prices, slots: &[(&'static str, u8)]) -> Vec<Item> {
-    let mut out: Vec<Item> = match category {
-        0 | 1 => slots
-            .iter()
-            .filter(|(_, slot)| *slot == if category == 0 { 1 } else { 0 })
-            .filter_map(|(id, _)| {
-                Some(Item {
-                    buy: id.to_string(),
-                    label: label(id),
-                    price: *prices.weapons.get(id)?,
-                    team: prices.team_only.get(id).copied(),
-                })
-            })
-            .collect(),
-        _ => {
-            let mut out = vec![
-                Item {
-                    buy: "vest".into(),
-                    label: "Kevlar".into(),
-                    price: prices.vest,
-                    team: None,
-                },
-                Item {
-                    buy: "vesthelm".into(),
-                    label: "Kevlar + Helmet".into(),
-                    price: prices.vest_helmet,
-                    team: None,
-                },
-            ];
-            // Grenades (slot 3) are equipment.
-            out.extend(slots.iter().filter(|(_, slot)| *slot == 3).filter_map(|(id, _)| {
-                Some(Item {
-                    buy: id.to_string(),
-                    label: label(id),
-                    price: *prices.weapons.get(id)?,
-                    team: prices.team_only.get(id).copied(),
-                })
-            }));
-            out
-        }
+/// The menu: the game's own layout (`Prices::menu`), else pistols,
+/// primaries (cheapest first) and equipment by slot. Items only another
+/// team may buy are left out when `team` is known (as CS:S shows each
+/// team its own list).
+fn categories(prices: &Prices, slots: &[(&'static str, u8)], team: Option<u8>) -> Vec<Category> {
+    let item = |buy: &str, label: String| -> Option<Item> {
+        Some(Item {
+            buy: buy.to_string(),
+            label,
+            price: prices.of(buy)?,
+            team: prices.team_only.get(buy).copied(),
+        })
     };
-    out.sort_by_key(|i| (i.price, i.label.clone()));
+    let mut out: Vec<Category> = if prices.menu.is_empty() {
+        let by_slot = |slot: u8| -> Vec<Item> {
+            let mut items: Vec<Item> = slots
+                .iter()
+                .filter(|(_, s)| *s == slot)
+                .filter_map(|(id, _)| item(id, label(id)))
+                .collect();
+            items.sort_by_key(|i| (i.price, i.label.clone()));
+            items
+        };
+        let mut equipment: Vec<Item> = [("vest", "Kevlar"), ("vesthelm", "Kevlar + Helmet")]
+            .into_iter()
+            .filter_map(|(b, l)| item(b, l.into()))
+            .collect();
+        // Grenades (slot 3) are equipment.
+        equipment.extend(by_slot(3));
+        equipment.sort_by_key(|i| (i.price, i.label.clone()));
+        vec![
+            Category {
+                key: 1,
+                name: "Pistols".into(),
+                items: by_slot(1),
+            },
+            Category {
+                key: 2,
+                name: "Rifles".into(),
+                items: by_slot(0),
+            },
+            Category {
+                key: 3,
+                name: "Equipment".into(),
+                items: equipment,
+            },
+        ]
+    } else {
+        prices
+            .menu
+            .iter()
+            .map(|c| Category {
+                key: c.key,
+                name: c.name.into(),
+                items: c.items.iter().filter_map(|i| item(i.buy, i.label.into())).collect(),
+            })
+            .collect()
+    };
+    for c in &mut out {
+        c.items.retain(|i| i.team.is_none() || team.is_none() || i.team == team);
+    }
     out
 }
 
@@ -124,6 +154,28 @@ const DIGITS: [KeyCode; 10] = [
     KeyCode::Digit9,
 ];
 
+/// Close the team and radio menus (the buy menu opened).
+fn close_others(w: &mut World) {
+    if let Some(mut t) = w.get_resource_mut::<super::team_menu::TeamMenu>() {
+        t.0 = false;
+    }
+    if let Some(mut r) = w.get_resource_mut::<super::radio::RadioMenu>() {
+        r.0 = None;
+    }
+}
+
+/// Why the local player can't buy now (out of the buy time or a buy
+/// zone), as the hint CS:S shows when the buy key is pressed.
+fn cannot_buy(w: &mut World) -> Option<String> {
+    let player = w.query_filtered::<Entity, With<LocalPlayer>>().iter(w).next()?;
+    // Without money, buying is free and anywhere.
+    w.get::<Money>(player)?;
+    if let Err(why) = &w.resource::<BuyWindow>().0 {
+        return Some(why.clone());
+    }
+    (!crate::weapon::economy::in_buy_zone(w, player)).then(|| crate::weapon::economy::NOT_IN_BUY_ZONE.to_string())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn keys(
     keys: Res<ButtonInput<KeyCode>>,
@@ -131,6 +183,7 @@ fn keys(
     mut menu: ResMut<BuyMenu>,
     prices: Res<Prices>,
     registry: Res<WeaponRegistry>,
+    team: Option<Single<&Team, With<LocalPlayer>>>,
     mut slots: Local<Option<Vec<(&'static str, u8)>>>,
     mut commands: Commands,
 ) {
@@ -138,8 +191,21 @@ fn keys(
         return;
     }
     if keys.just_pressed(KeyCode::KeyB) {
-        menu.open = !menu.open;
-        menu.category = None;
+        if menu.open {
+            *menu = BuyMenu::default();
+        } else {
+            commands.queue(|w: &mut World| {
+                if let Some(why) = cannot_buy(w) {
+                    w.write_message(super::chat::Hint(why));
+                    return;
+                }
+                *w.resource_mut::<BuyMenu>() = BuyMenu {
+                    open: true,
+                    category: None,
+                };
+                close_others(w);
+            });
+        }
         return;
     }
     if !menu.open {
@@ -149,83 +215,36 @@ fn keys(
         return;
     };
     let slots = slots.get_or_insert_with(|| weapon_slots(&registry));
+    let all = categories(&prices, slots, team.map(|t| t.0));
     match (menu.category, n) {
         (_, 0) => *menu = BuyMenu::default(),
-        (None, n) if n <= CATEGORIES.len() => menu.category = Some(n - 1),
+        (None, n) => {
+            if all.iter().any(|c| c.key as usize == n) {
+                menu.category = Some(n as u8);
+            }
+        }
         (Some(c), n) => {
-            if let Some(item) = items(c, &prices, slots).get(n - 1) {
-                // Bought, or why not, across the screen (as CS:S says
-                // "You have insufficient funds!").
+            let items = all.iter().find(|x| x.key == c).map(|x| x.items.as_slice()).unwrap_or_default();
+            if let Some(item) = items.get(n - 1) {
+                // Why not, as a hint (as CS:S says "You have
+                // insufficient funds.").
                 let what = item.buy.clone();
                 commands.queue(move |w: &mut World| {
                     let Some(player) = w.query_filtered::<Entity, With<LocalPlayer>>().iter(w).next() else {
                         return;
                     };
                     if let Err(why) = crate::weapon::economy::buy(w, player, &what) {
-                        let now = w.resource::<Time>().elapsed_secs();
-                        *w.resource_mut::<BuyNotice>() = BuyNotice(Some((why, now + 2.5)));
+                        w.write_message(super::chat::Hint(why));
                     }
                 });
                 *menu = BuyMenu::default();
             }
         }
-        _ => {}
     }
 }
 
 #[derive(Component)]
 struct MenuText;
-
-/// Why the last buy failed, until a time (seconds).
-#[derive(Resource, Default)]
-struct BuyNotice(Option<(String, f32)>);
-
-#[derive(Component)]
-struct NoticeText;
-
-fn notice(
-    mut notice: ResMut<BuyNotice>,
-    time: Res<Time>,
-    shown: Query<(Entity, &Text), With<NoticeText>>,
-    windows: Query<&Window>,
-    mut commands: Commands,
-) {
-    let now = time.elapsed_secs();
-    if notice.0.as_ref().is_some_and(|(_, until)| now > *until) {
-        notice.0 = None;
-    }
-    let want = notice.0.as_ref().map(|(m, _)| m.clone());
-    let current = shown.iter().next();
-    if current.map(|(_, t)| t.0.clone()) == want {
-        return;
-    }
-    for (e, _) in &shown {
-        commands.entity(e).despawn();
-    }
-    let Some(text) = want else { return };
-    let scale = windows.iter().next().map_or(1.0, |w| w.height() / 480.0);
-    let mut chars = text.chars();
-    let text: String = chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default();
-    commands.spawn((
-        NoticeText,
-        Text::new(format!("{text}!")),
-        TextFont {
-            font_size: FontSize::Px(12.0 * scale),
-            ..default()
-        },
-        TextColor(Color::WHITE),
-        TextShadow::default(),
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Percent(62.0),
-            width: Val::Percent(100.0),
-            justify_content: JustifyContent::Center,
-            ..default()
-        },
-        TextLayout::justify(Justify::Center),
-        GlobalZIndex(45),
-    ));
-}
 
 #[allow(clippy::too_many_arguments)]
 fn draw(
@@ -259,22 +278,20 @@ fn draw(
         lines.push(format!("({why})"));
     }
     lines.push(String::new());
-    match menu.category {
+    let all = categories(&prices, slots, team.map(|t| t.0));
+    match menu.category.and_then(|c| all.iter().find(|x| x.key == c)) {
         None => {
-            for (i, c) in CATEGORIES.iter().enumerate() {
-                lines.push(format!("{}  {c}", i + 1));
+            for c in &all {
+                lines.push(format!("{}  {}", c.key, c.name));
             }
         }
         Some(c) => {
-            lines.push(CATEGORIES[c].to_uppercase());
-            for (i, item) in items(c, &prices, slots).iter().enumerate() {
+            lines.push(c.name.to_uppercase());
+            for (i, item) in c.items.iter().enumerate() {
                 let have = held.contains(&item.buy.as_str())
                     || (item.buy == "vest" && armor.is_some_and(|a| a.amount >= 1.0));
-                let wrong_team = item.team.is_some_and(|t| team.is_some_and(|my| my.0 != t));
                 let broke = money.is_some_and(|m| m.0 < item.price);
-                let note = if wrong_team {
-                    "  (other team)"
-                } else if have {
+                let note = if have {
                     "  (owned)"
                 } else if broke {
                     "  (can't afford)"
@@ -344,18 +361,56 @@ mod tests {
         ];
         p.weapons.insert("cs_source:weapon_hegrenade", 300);
         p.weapons.insert("cs_source:weapon_flashbang", 200);
-        let pistols = items(0, &p, &slots);
+        let menu = categories(&p, &slots, None);
+        assert_eq!(menu.iter().map(|c| c.key).collect::<Vec<_>>(), [1, 2, 3]);
+        let labels = |c: &Category| c.items.iter().map(|i| i.label.clone()).collect::<Vec<_>>();
+        assert_eq!(labels(&menu[0]), ["GLOCK", "USP"]);
+        assert_eq!(menu[1].items[0].team, Some(1));
         assert_eq!(
-            pistols.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(),
-            ["GLOCK", "USP"]
-        );
-        let rifles = items(1, &p, &slots);
-        assert_eq!(rifles[0].team, Some(1));
-        let equipment = items(2, &p, &slots);
-        assert_eq!(
-            equipment.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(),
+            labels(&menu[2]),
             ["FLASHBANG", "HE GRENADE", "Kevlar", "Kevlar + Helmet"]
         );
-        assert_eq!(equipment[3].buy, "vesthelm");
+        assert_eq!(menu[2].items[3].buy, "vesthelm");
+        // A CT doesn't see the terrorists' rifle.
+        assert!(categories(&p, &slots, Some(2))[1].items.is_empty());
+    }
+
+    #[test]
+    fn a_games_own_layout_keeps_its_keys_and_order() {
+        use crate::weapon::economy::{BuyCategory, BuyItem};
+        let mut p = Prices {
+            vest: 650,
+            ..default()
+        };
+        p.weapons.insert("g:weapon_b", 100);
+        p.weapons.insert("g:weapon_a", 200);
+        p.menu = vec![
+            BuyCategory {
+                key: 4,
+                name: "Rifles",
+                items: vec![
+                    BuyItem {
+                        buy: "g:weapon_a",
+                        label: "A",
+                    },
+                    BuyItem {
+                        buy: "g:weapon_b",
+                        label: "B",
+                    },
+                ],
+            },
+            BuyCategory {
+                key: 8,
+                name: "Equipment",
+                items: vec![BuyItem {
+                    buy: "vest",
+                    label: "Kevlar",
+                }],
+            },
+        ];
+        let menu = categories(&p, &[], None);
+        assert_eq!((menu[0].key, menu[1].key), (4, 8));
+        assert_eq!((menu[0].items[0].price, menu[0].items[1].label.as_str()), (200, "B"));
+        assert_eq!(menu[1].items[0].price, 650);
     }
 }

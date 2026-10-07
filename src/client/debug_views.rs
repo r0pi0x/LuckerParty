@@ -1,7 +1,9 @@
 //! Debug overlays drawn with gizmos: the nav mesh around you
 //! (`mashup_drawnav 1`: areas coloured by place, links between them) and
 //! what each bot is doing (`mashup_drawbots 1`: its target, where it last
-//! saw or heard an enemy, the route it walks and where it roams) and
+//! saw or heard an enemy, the route it walks and where it roams, its
+//! planned grenade arc, target and burst point, a flash it looks away
+//! from) and
 //! ragdolls (`mashup_ragdoll_debug 1`: each body's bounds and axes, each
 //! joint from its parent body's anchor to the child body).
 
@@ -15,6 +17,7 @@ use crate::{
         nav::NavMesh,
         ragdoll::{RagdollBody, RagdollJoint, RagdollSettings},
     },
+    weapon::grenade::GrenadeKind,
 };
 
 pub struct DebugViewsPlugin;
@@ -50,7 +53,7 @@ impl Plugin for DebugViewsPlugin {
         resource_cvar::<DebugViews, u8>(
             app,
             "mashup_drawbots",
-            "1: each bot's target, last known enemy position, route and roaming goal.",
+            "1: each bot's target, last known enemy position, route, roaming goal, grenade arc and flash it avoids.",
             |d| &mut d.bots,
         );
     }
@@ -131,7 +134,31 @@ fn draw_bots(
         let ahead = route.iter().skip(next).map(|p| *p + Vec3::Y * 0.1);
         gizmos.linestrip(std::iter::once(at.translation()).chain(ahead), Color::srgb(0.3, 0.9, 1.0));
         if let Some(goal) = bot.roam_goal() {
-            gizmos.sphere(Isometry3d::from_translation(goal + Vec3::Y * 0.3), 0.25, Color::srgb(0.6, 0.4, 1.0));
+            gizmos.sphere(
+                Isometry3d::from_translation(goal + Vec3::Y * 0.3),
+                0.25,
+                Color::srgb(0.6, 0.4, 1.0),
+            );
+        }
+        if let Some(plan) = bot.grenade_plan() {
+            let color = match plan.kind {
+                GrenadeKind::Blast => Color::srgb(1.0, 0.25, 0.1),
+                GrenadeKind::Flash => Color::srgb(1.0, 1.0, 0.6),
+                GrenadeKind::Smoke => Color::srgb(0.7, 0.7, 0.7),
+            };
+            gizmos.linestrip(plan.points.iter().copied(), color);
+            // The target (a cross on the floor) and where it should go off.
+            let t = plan.target + Vec3::Y * LIFT;
+            gizmos.line(t - Vec3::X * 0.4, t + Vec3::X * 0.4, Color::srgb(0.2, 1.0, 0.3));
+            gizmos.line(t - Vec3::Z * 0.4, t + Vec3::Z * 0.4, Color::srgb(0.2, 1.0, 0.3));
+            gizmos.sphere(Isometry3d::from_translation(plan.pop), 0.2, color);
+            if bot.throwing() {
+                gizmos.line(eye, plan.start, color);
+            }
+        }
+        if let Some(from) = bot.averting() {
+            gizmos.line(eye, from, Color::srgba(1.0, 1.0, 1.0, 0.3));
+            gizmos.sphere(Isometry3d::from_translation(from), 0.15, Color::WHITE);
         }
     }
 }

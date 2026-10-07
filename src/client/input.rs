@@ -208,8 +208,11 @@ fn write_local_intent(
     mut free: ResMut<FreeLook>,
     mut freecam: ResMut<super::view::FreeCam>,
     time: Res<Time>,
-    menu: Option<Res<super::buy_menu::BuyMenu>>,
-    team_menu: Option<Res<super::team_menu::TeamMenu>>,
+    (menu, team_menu, radio_menu): (
+        Option<Res<super::buy_menu::BuyMenu>>,
+        Option<Res<super::team_menu::TeamMenu>>,
+        Option<Res<super::radio::RadioMenu>>,
+    ),
     zoomed: Query<&crate::weapon::Zoomed, With<LocalPlayer>>,
 ) {
     let freelook = keys.pressed(KeyCode::AltLeft) || held.as_ref().is_some_and(|h| h.freelook);
@@ -269,7 +272,8 @@ fn write_local_intent(
         MouseScrollUnit::Pixel => (scroll.delta.y.abs() / PIXELS_PER_NOTCH).ceil(),
     } as u32;
     wheel.pending = (wheel.pending + notches).min(MAX_WHEEL_JUMPS);
-    intent.crouch = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::KeyC);
+    // C is the radio responses menu, as in CS:S.
+    intent.crouch = keys.pressed(KeyCode::ControlLeft);
     intent.sprint = keys.pressed(KeyCode::ShiftLeft);
     intent.walk = keys.pressed(KeyCode::ShiftLeft);
     intent.fire = mouse.pressed(MouseButton::Left);
@@ -285,8 +289,11 @@ fn write_local_intent(
         KeyCode::Digit4,
         KeyCode::Digit5,
     ];
-    // Number keys pick from the buy menu while it's open.
-    intent.select = if menu.is_some_and(|m| m.open) || team_menu.is_some_and(|m| m.0) {
+    // Number keys pick from the buy, team or radio menu while one is open.
+    intent.select = if menu.is_some_and(|m| m.open)
+        || team_menu.is_some_and(|m| m.0)
+        || radio_menu.is_some_and(|m| m.0.is_some())
+    {
         None
     } else {
         SLOTS.iter().position(|k| keys.pressed(*k)).map(|i| i as u8)

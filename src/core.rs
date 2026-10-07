@@ -256,6 +256,16 @@ pub struct Hitboxes(pub Vec<Hitbox>);
 #[reflect(Component)]
 pub struct God;
 
+/// A character says a radio command to its team (Counter-Strike's radio):
+/// `command` is the game's console name for it (`coverme`, `enemyspot`,
+/// ...; `fireinhole` for a thrown grenade). The client resolves it through
+/// the map's `map::radio::RadioCommands` and plays it if it hears it.
+#[derive(Message, Clone, Debug, PartialEq)]
+pub struct Radio {
+    pub sender: Entity,
+    pub command: String,
+}
+
 /// Something's health reached zero.
 #[derive(Message, Clone, Debug)]
 pub struct Died {
@@ -448,6 +458,7 @@ impl Plugin for CorePlugin {
             .add_message::<Damage>()
             .add_message::<Explosion>()
             .add_message::<Died>()
+            .add_message::<Radio>()
             .init_resource::<FriendlyFire>()
             .add_systems(FixedUpdate, apply_damage.after(SimSet::Weapons))
             .register_type::<SpawnPoint>()

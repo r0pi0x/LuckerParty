@@ -150,6 +150,6 @@ impl Plugin for WorldMaterialPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "world.wgsl");
         embedded_asset!(app, "world_prepass.wgsl");
-        app.add_plugins(MaterialPlugin::<WorldMaterial>::default());
+        app.add_plugins((super::fog::FogShaderPlugin, MaterialPlugin::<WorldMaterial>::default()));
     }
 }

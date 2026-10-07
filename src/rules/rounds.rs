@@ -225,8 +225,9 @@ pub(super) fn run_rounds(world: &mut World) {
     let window = match world.resource::<RoundState>().phase {
         Phase::Freeze { .. } => Ok(()),
         Phase::Live { since, .. } if now - since <= settings.buy_time as f64 * 60.0 => Ok(()),
+        // CS:S's words.
         _ => Err(format!(
-            "the {:.0} second buy period has expired",
+            "{:.0} seconds have passed.\nYou can't buy anything now.",
             settings.buy_time * 60.0
         )),
     };
