@@ -33,6 +33,8 @@ pub fn gib_physics() -> MapGibPhysics {
         glass_bounce: GLASS_BOUNCE,
         glass_alpha: GLASS_ALPHA,
         fade: 1.0,
+        // Broken props' pieces are client physics props: full gravity.
+        prop_gravity: GRAVITY * UNIT,
     }
 }
 

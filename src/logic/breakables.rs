@@ -367,7 +367,15 @@ impl LogicWorld {
         dir: Vec3,
     ) -> bool {
         let Some(b) = breakable(self, id) else {
-            return super::props::prop_damage(self, id, amount, kind, attacker);
+            let hit = super::prop_damage::Hit {
+                amount,
+                kind,
+                attacker,
+                point,
+                dir,
+                force: 0.0,
+            };
+            return super::prop_damage::prop_damage(self, id, hit);
         };
         if b.broken && b.window.is_none() {
             return true;

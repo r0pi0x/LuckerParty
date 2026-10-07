@@ -377,6 +377,7 @@ pub(super) fn class_activate(w: &mut LogicWorld, id: EntId) {
         Class::PathTrack(_) => movers::activate_path(w, id),
         Class::Attached(_) => movers::activate_attached(w, id),
         Class::Ambient(_) => super::ambient::activate(w, id),
+        Class::Prop(_) => super::prop_damage::activate(w, id),
         _ => {}
     }
 }
@@ -416,6 +417,7 @@ pub(super) fn class_think(w: &mut LogicWorld, id: EntId) {
         }
         Class::Trigger(_) => triggers::think(w, id),
         Class::Ambient(_) => super::ambient::think(w, id),
+        Class::Prop(_) => super::prop_damage::think(w, id),
         _ => movers::think(w, id),
     }
 }

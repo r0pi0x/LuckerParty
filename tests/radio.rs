@@ -145,6 +145,7 @@ fn bots_call_enemy_spotted_once_and_enemy_down_after_a_kill() {
     assert_eq!(said(&heard, "enemyspot"), 0, "{heard:?}");
     // The bot kills the enemy: "Enemy down".
     sim.app.world_mut().write_message(mashup::core::Damage {
+        force: bevy::math::Vec3::ZERO,
         target: enemy,
         attacker: Some(bot),
         amount: 2.0,

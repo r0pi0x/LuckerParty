@@ -203,6 +203,19 @@ pub enum Effect {
         glass: bool,
         pieces: Vec<super::breakables::Gib>,
     },
+    /// A prop broke (spec prop_damage.md 7): the host plays its break
+    /// sound where it is, explodes it, throws its pieces.
+    PropBreak {
+        id: EntId,
+        sound: Option<String>,
+        explode: Option<super::prop_damage::PropExplosion>,
+    },
+    /// Something for a physics prop's body (enable/disable motion, wake,
+    /// sleep).
+    PropMotion {
+        id: EntId,
+        motion: super::prop_damage::Motion,
+    },
     /// A window pane shattered: its centre and normal (entity space), its
     /// size (units) and the shards' push (units/s).
     PaneShatter {
@@ -1086,6 +1099,7 @@ impl LogicWorld {
         self.player_uses(collision);
         self.touch_triggers(collision);
         self.touch_breakables();
+        self.pressure_props();
         self.untouch();
         self.service_queue();
         self.end_frame();

@@ -1539,6 +1539,7 @@ fn client_commands(app: &mut App) {
             let dir = yaw * Quat::from_rotation_y(from) * Vec3::Z;
             let _ = w.get::<Health>(p).ok_or("no health")?;
             w.write_message(Damage {
+                force: bevy::math::Vec3::ZERO,
                 target: p,
                 attacker: None,
                 amount,

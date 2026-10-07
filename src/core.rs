@@ -161,6 +161,26 @@ pub struct Damage {
     /// The weapon that dealt it when that isn't what the attacker holds
     /// now (a thrown grenade), for kill notices; None: the held one.
     pub weapon: Option<&'static str>,
+    /// The push that came with it (kg·m/s, engine space), already given
+    /// to a moving body; zero for none. Props read it (a frozen prop
+    /// that a strong enough push unfreezes).
+    pub force: Vec3,
+}
+
+/// An explosion to apply (radius damage and pushes, as a grenade's blast
+/// with this magnitude and radius): from map logic (exploding props).
+/// `damage` is normalized like `Damage::amount`, `radius` in meters.
+#[derive(Message, Clone, Debug)]
+pub struct Explosion {
+    pub origin: Vec3,
+    pub damage: f32,
+    pub radius: f32,
+    /// Who the damage counts for (kill notices, friendly fire).
+    pub attacker: Option<Entity>,
+    /// What exploded (it takes none of the damage).
+    pub inflictor: Option<Entity>,
+    /// A sound entry to play at the origin, if any.
+    pub sound: Option<String>,
 }
 
 /// How damage was dealt (Source damage types, as far as anything here
@@ -436,6 +456,7 @@ impl Plugin for CorePlugin {
             .register_type::<Hitboxes>()
             .register_type::<Damageable>()
             .add_message::<Damage>()
+            .add_message::<Explosion>()
             .add_message::<Died>()
             .add_message::<Radio>()
             .init_resource::<FriendlyFire>()

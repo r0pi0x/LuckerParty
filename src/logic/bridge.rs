@@ -4,24 +4,25 @@
 //! movement; trigger touches, untouch, the event queue and removals after.
 
 use avian3d::prelude::{
-    AngularVelocity, Collider, ColliderAabb, ColliderDisabled, LinearVelocity, Position, RigidBody, RigidBodyDisabled,
-    Rotation,
+    AngularVelocity, Collider, ColliderAabb, ColliderDisabled, CollisionStart, ComputedMass, LinearVelocity,
+    PhysicsSystems, Position, RigidBody, RigidBodyDisabled, Rotation,
 };
 use bevy::{ecs::message::MessageCursor, prelude::*};
 
 use super::hud::HudMessages;
-use super::world::{Collision, Effect, EntId, LogicWorld, Player, SOLID_SKIN, SWEEP_EPS};
+use super::prop_damage::{Hit, Motion, PropExplosion};
+use super::world::{Collision, Effect, EntId, LogicWorld, Player, SOLID_SKIN, SWEEP_EPS, Who};
 use crate::console::{Console, ConsoleAppExt};
 use crate::core::{
-    BaseVelocity, Damage, DamageKind, Damageable, EntityGravity, Health, Hitgroup, Intent, LocalPlayer, MapBrush,
-    MapBrushes, MapTerrain, MovementState, MovingSolid, RoundRestarts, SimSet, Team, Velocity,
+    BaseVelocity, Damage, DamageKind, Damageable, EntityGravity, Explosion, Health, Hitgroup, Intent, LocalPlayer,
+    MapBrush, MapBrushes, MapTerrain, MovementState, MovingSolid, RoundRestarts, SimSet, Team, Velocity,
 };
 use crate::map::breakables::{GibPiece, GlassShatter, SpawnGibs};
 use crate::map::entities::{engine_to_entity, entity_rotation, entity_to_engine, rotation_to_engine};
 use crate::map::vis::{LogicHidden, VisClusters};
 use crate::map::{
-    BrushPanes, EntityPart, LightStyles, MapBrushEntity, MapEntities, PlaySound, PropEntity, PropHome, PropLook,
-    PropSequence, SoundControl, SoundKey, SoundLevel, SoundscapeTouches, StartSound,
+    BreakProp, BrushPanes, EntityPart, LightStyles, MapBrushEntity, MapEntities, PlaySound, PropEntity, PropHome,
+    PropIndex, PropLook, PropSequence, SoundControl, SoundKey, SoundLevel, SoundscapeTouches, StartSound,
 };
 
 /// The running logic world of the loaded map.
@@ -74,7 +75,20 @@ impl Plugin for LogicPlugin {
             )
             .add_systems(FixedUpdate, (load, pre).chain().in_set(LogicSet::Pre))
             .add_systems(FixedUpdate, post.in_set(LogicSet::Post))
-            .add_systems(FixedUpdate, damage.in_set(LogicSet::Damage));
+            .add_systems(FixedUpdate, damage.in_set(LogicSet::Damage))
+            // Physics impacts on props and players (after the physics
+            // step; the damage lands next tick).
+            .add_message::<CollisionStart>()
+            .add_message::<BreakProp>()
+            .add_message::<Explosion>()
+            .add_message::<crate::map::prop_physics::PropAwakened>()
+            .init_resource::<PreStep>()
+            .init_resource::<Impacts>()
+            .add_systems(
+                FixedPostUpdate,
+                record_velocities.before(PhysicsSystems::StepSimulation),
+            )
+            .add_systems(FixedPostUpdate, impacts.after(PhysicsSystems::Writeback));
         app.console_command(
             "ent_fire",
             "ent_fire <target> <input> [value]: send a map entity an input (names, wildcards, classnames), \
@@ -134,7 +148,9 @@ fn load(world: &mut World) {
             });
         }
         _ => {
-            let Some(mut logic) = world.remove_resource::<Logic>() else { return };
+            let Some(mut logic) = world.remove_resource::<Logic>() else {
+                return;
+            };
             if logic.restarts != restarts {
                 logic.restarts = restarts;
                 // The entities' sounds stop; re-created ones start again.
@@ -196,7 +212,8 @@ fn hide_node(world: &mut World, node: Entity) {
         if !e.contains::<ColliderDisabled>() {
             e.insert(ColliderDisabled);
         }
-        e.insert((Visibility::Hidden, MovingSolid::default())).remove::<Damageable>();
+        e.insert((Visibility::Hidden, MovingSolid::default()))
+            .remove::<Damageable>();
     }
 }
 
@@ -238,6 +255,9 @@ fn attach_props(world: &mut World, logic: &LogicWorld, ids: &[EntId], restart: b
                 v.0 = Vec3::ZERO;
             }
         }
+        if restart {
+            crate::map::prop_physics::reset(world, node, state.asleep);
+        }
         set_prop_shown(world, node, visible, solid, true);
         set_prop_look(world, node, state, logic.round);
         if let Ok(mut e) = world.get_entity_mut(node) {
@@ -270,12 +290,7 @@ fn set_prop_shown(world: &mut World, node: Entity, visible: bool, solid: bool, e
         }
     }
     let colliders: Vec<Entity> = std::iter::once(node)
-        .chain(
-            world
-                .get::<Children>(node)
-                .map(|c| c.to_vec())
-                .unwrap_or_default(),
-        )
+        .chain(world.get::<Children>(node).map(|c| c.to_vec()).unwrap_or_default())
         .filter(|c| world.get::<Collider>(*c).is_some())
         .collect();
     for c in colliders {
@@ -399,7 +414,10 @@ fn sync_soundscapes(world: &mut World, logic: &Logic) {
 }
 
 fn restore_settings(world: &mut World) {
-    let Some(restore) = world.get_resource_mut::<Logic>().map(|mut l| std::mem::take(&mut l.restore)) else {
+    let Some(restore) = world
+        .get_resource_mut::<Logic>()
+        .map(|mut l| std::mem::take(&mut l.restore))
+    else {
         return;
     };
     if let Some(mut c) = world.get_resource_mut::<Console>() {
@@ -516,9 +534,14 @@ fn snapshot(world: &mut World, logic: &Logic) -> Vec<Player> {
                 p.base_touched = b.touched;
             }
             p.on_ground = state.on_ground;
-            p.ground = state
-                .ground
-                .and_then(|g| logic.nodes.iter().find(|(_, n)| *n == g).map(|(id, _)| *id));
+            p.ground = state.ground.and_then(|g| {
+                logic
+                    .nodes
+                    .iter()
+                    .chain(&logic.props)
+                    .find(|(_, n)| *n == g)
+                    .map(|(id, _)| *id)
+            });
             p.view = Vec3::new(-intent.pitch.to_degrees(), intent.yaw.to_degrees() + 90.0, 0.0);
             p.alive = health.is_none_or(|h| h.current > 0.0);
             // Our teams 1 and 2 are Source's 2 (T) and 3 (CT).
@@ -535,8 +558,12 @@ fn snapshot(world: &mut World, logic: &Logic) -> Vec<Player> {
 /// Write back what the logic changed on players.
 fn write_back(world: &mut World, scale: f32, before: &[Player], after: &[Player]) {
     for p in after {
-        let Some(old) = before.iter().find(|b| b.entity == p.entity) else { continue };
-        let Ok(mut e) = world.get_entity_mut(p.entity) else { continue };
+        let Some(old) = before.iter().find(|b| b.entity == p.entity) else {
+            continue;
+        };
+        let Ok(mut e) = world.get_entity_mut(p.entity) else {
+            continue;
+        };
         if p.moved || p.teleported {
             if let Some(mut t) = e.get_mut::<Transform>() {
                 t.translation = entity_to_engine(p.origin, scale);
@@ -553,11 +580,7 @@ fn write_back(world: &mut World, scale: f32, before: &[Player], after: &[Player]
             i.yaw = (p.view.y - 90.0).to_radians().rem_euclid(std::f32::consts::TAU);
             i.pitch = (-p.view.x).to_radians().clamp(-89f32.to_radians(), 89f32.to_radians());
         }
-        if p.base_velocity != old.base_velocity
-            || p.base_touched != old.base_touched
-            || p.unground
-            || p.teleported
-        {
+        if p.base_velocity != old.base_velocity || p.base_touched != old.base_touched || p.unground || p.teleported {
             let unground = p.unground || p.teleported;
             let base = BaseVelocity {
                 velocity: entity_to_engine(p.base_velocity, scale),
@@ -584,7 +607,9 @@ fn sync_movers(world: &mut World, logic: &mut Logic) {
     });
     let logic = &*logic;
     for (id, origin, angles, velocity, visible, solid) in logic.world.mover_poses() {
-        let Some((_, node)) = logic.nodes.iter().find(|(m, _)| *m == id) else { continue };
+        let Some((_, node)) = logic.nodes.iter().find(|(m, _)| *m == id) else {
+            continue;
+        };
         let shootable = logic.world.shootable(id);
         let panes = logic.world.window(id).filter(|w| w.window_broken).map(|w| {
             let e = logic.world.get(id).unwrap();
@@ -596,7 +621,11 @@ fn sync_movers(world: &mut World, logic: &mut Logic) {
                 .flat_map(|h| &h.points)
                 .map(|p| (*p - w.corner).dot(n))
                 .fold((f32::MAX, f32::MIN), |(lo, hi), d| (lo.min(d), hi.max(d)));
-            let depth = if depth.0 > depth.1 { (0.0, 0.0) } else { (depth.0 * s, depth.1 * s) };
+            let depth = if depth.0 > depth.1 {
+                (0.0, 0.0)
+            } else {
+                (depth.0 * s, depth.1 * s)
+            };
             BrushPanes {
                 corner: entity_to_engine(w.corner, s),
                 u: entity_to_engine(w.u, s),
@@ -612,7 +641,9 @@ fn sync_movers(world: &mut World, logic: &mut Logic) {
             .mover_solid(id)
             .map(|b| b.iter().map(|b| brush_to_engine(b, logic.scale)).collect())
             .unwrap_or_default();
-        let Ok(mut e) = world.get_entity_mut(*node) else { continue };
+        let Ok(mut e) = world.get_entity_mut(*node) else {
+            continue;
+        };
         let transform = Transform::from_translation(entity_to_engine(origin, logic.scale))
             .with_rotation(rotation_to_engine(entity_rotation(angles)));
         if let Some(mut t) = e.get_mut::<Transform>() {
@@ -621,7 +652,11 @@ fn sync_movers(world: &mut World, logic: &mut Logic) {
             }
         }
         if let Some(mut v) = e.get_mut::<Visibility>() {
-            let want = if visible { Visibility::Inherited } else { Visibility::Hidden };
+            let want = if visible {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            };
             if *v != want {
                 *v = want;
             }
@@ -649,15 +684,13 @@ fn sync_movers(world: &mut World, logic: &mut Logic) {
 
 fn apply_effects(world: &mut World, effects: Vec<Effect>, scale: f32) {
     let now = world.resource::<Time>().elapsed_secs_f64();
-    let local = world
-        .query_filtered::<Entity, With<LocalPlayer>>()
-        .iter(world)
-        .next();
+    let local = world.query_filtered::<Entity, With<LocalPlayer>>().iter(world).next();
     for effect in effects {
         match effect {
             Effect::Damage { target, amount, crush } => {
                 let point = world.get::<Transform>(target).map_or(Vec3::ZERO, |t| t.translation);
                 world.write_message(Damage {
+                    force: bevy::math::Vec3::ZERO,
                     target,
                     attacker: None,
                     amount: amount / 100.0,
@@ -671,14 +704,33 @@ fn apply_effects(world: &mut World, effects: Vec<Effect>, scale: f32) {
             Effect::Gibs { set, glass, pieces } => {
                 let pieces = pieces
                     .into_iter()
-                    .map(|g| GibPiece {
-                        position: entity_to_engine(g.position, scale),
-                        velocity: entity_to_engine(g.velocity, scale),
-                        spin: entity_to_engine(g.spin * std::f32::consts::PI / 180.0, 1.0),
-                        life: g.life,
+                    .map(|g| {
+                        GibPiece::thrown(
+                            entity_to_engine(g.position, scale),
+                            entity_to_engine(g.velocity, scale),
+                            entity_to_engine(g.spin * std::f32::consts::PI / 180.0, 1.0),
+                            g.life,
+                        )
                     })
                     .collect();
-                world.write_message(SpawnGibs { set, glass, pieces });
+                world.write_message(SpawnGibs {
+                    set,
+                    glass,
+                    prop: false,
+                    pieces,
+                });
+            }
+            Effect::PropBreak { id, sound, explode } => prop_broke(world, id, sound, explode, scale),
+            Effect::PropMotion { id, motion } => {
+                let Some(node) = prop_node(world, id) else { continue };
+                match motion {
+                    Motion::Enable => {
+                        crate::map::prop_physics::enable_motion(world, node);
+                    }
+                    Motion::Disable => crate::map::prop_physics::disable_motion(world, node),
+                    Motion::Wake => crate::map::prop_physics::wake(world, node),
+                    Motion::Sleep => crate::map::prop_physics::sleep(world, node),
+                }
             }
             Effect::PaneShatter {
                 at,
@@ -780,7 +832,9 @@ fn entity_node(world: &mut World, id: EntId) -> Option<Entity> {
 /// An allowed server command: `say` prints; settings remember their old
 /// value (put back at the next map) and run through the console.
 fn server_command(world: &mut World, line: &str) {
-    let Some(mut console) = world.get_resource_mut::<Console>() else { return };
+    let Some(mut console) = world.get_resource_mut::<Console>() else {
+        return;
+    };
     if let Some(text) = line.strip_prefix("say ") {
         console.info(format!("Console: {text}"));
         return;
@@ -800,7 +854,9 @@ fn server_command(world: &mut World, line: &str) {
 
 /// Run one logic phase with the players and the static world.
 fn run_phase(world: &mut World, phase: impl FnOnce(&mut LogicWorld, &dyn Collision)) {
-    let Some(mut logic) = world.remove_resource::<Logic>() else { return };
+    let Some(mut logic) = world.remove_resource::<Logic>() else {
+        return;
+    };
     // The tick can change after the map loads (a game sets its own).
     logic.world.dt = world.resource::<Time<Fixed>>().timestep().as_secs_f32();
     let players = snapshot(world, &logic);
@@ -840,10 +896,26 @@ fn pre(world: &mut World) {
     });
 }
 
-fn post(world: &mut World) {
+fn post(world: &mut World, mut awake: Local<MessageCursor<crate::map::prop_physics::PropAwakened>>) {
+    // Props that started asleep and woke (map::prop_physics).
+    let woke: Vec<Entity> = match world.get_resource::<Messages<crate::map::prop_physics::PropAwakened>>() {
+        Some(m) => awake.read(m).map(|a| a.0).collect(),
+        None => Vec::new(),
+    };
+    let woke: Vec<EntId> = match world.get_resource::<Logic>() {
+        Some(l) => woke
+            .into_iter()
+            .filter_map(|n| l.props.iter().find(|(_, p)| *p == n).map(|(id, _)| *id))
+            .collect(),
+        None => Vec::new(),
+    };
     run_phase(world, |w, col| {
+        for id in woke {
+            w.prop_awakened(id);
+        }
         w.touch_triggers(col);
         w.touch_breakables();
+        w.pressure_props();
         w.untouch();
         w.service_queue();
         w.end_frame();
@@ -851,7 +923,8 @@ fn post(world: &mut World) {
 }
 
 /// Damage dealt to mover nodes (breakables) and prop nodes this tick, into
-/// the logic.
+/// the logic (with the push that came with it, and its attacker: a
+/// player, or a prop that hit it).
 fn damage(world: &mut World, mut cursor: Local<MessageCursor<Damage>>) {
     let hits: Vec<Damage> = match world.get_resource::<Messages<Damage>>() {
         Some(m) => cursor.read(m).cloned().collect(),
@@ -861,35 +934,278 @@ fn damage(world: &mut World, mut cursor: Local<MessageCursor<Damage>>) {
         return;
     };
     let scale = logic.scale;
-    let targeted: Vec<(EntId, Damage)> = hits
+    let node_id = |e: Entity| {
+        logic
+            .nodes
+            .iter()
+            .chain(&logic.props)
+            .find(|(_, n)| *n == e)
+            .map(|(id, _)| *id)
+    };
+    let targeted: Vec<(EntId, Damage, Option<Who>)> = hits
         .into_iter()
         .filter_map(|d| {
-            let (id, _) = logic
-                .nodes
-                .iter()
-                .chain(&logic.props)
-                .find(|(_, n)| *n == d.target)?;
-            Some((*id, d))
+            let id = node_id(d.target)?;
+            let by = d.attacker.and_then(node_id).map(Who::Ent);
+            Some((id, d, by))
         })
         .collect();
     if targeted.is_empty() {
         return;
     }
     run_phase(world, |w, _| {
-        for (id, d) in targeted {
-            let attacker = d
-                .attacker
-                .filter(|a| w.player(*a).is_some())
-                .map(super::world::Who::Player);
+        for (id, d, by) in targeted {
+            let attacker = d.attacker.filter(|a| w.player(*a).is_some()).map(Who::Player).or(by);
             let dir = Vec3::new(d.dir.x, -d.dir.z, d.dir.y);
-            w.damage(
-                id,
-                d.amount * 100.0,
-                d.kind,
+            let point = engine_to_entity(d.point, scale);
+            let hit = Hit {
+                amount: d.amount * 100.0,
+                kind: d.kind,
                 attacker,
-                engine_to_entity(d.point, scale),
+                point,
                 dir,
-            );
+                force: d.force.length() / scale,
+            };
+            if !w.prop_hit(id, hit) {
+                w.damage(id, hit.amount, d.kind, attacker, point, dir);
+            }
         }
     });
+}
+
+/// The node of a logic prop.
+fn prop_node(world: &World, id: EntId) -> Option<Entity> {
+    let logic = world.get_resource::<Logic>()?;
+    logic.props.iter().find(|(p, _)| *p == id).map(|(_, n)| *n)
+}
+
+/// Where a prop node is (its body's pose when it has one) and the centre
+/// of its bounds.
+fn prop_pose(world: &World, node: Entity) -> (Vec3, Quat, Vec3) {
+    let (pos, rot) = match (world.get::<Position>(node), world.get::<Rotation>(node)) {
+        (Some(p), Some(r)) => (p.0, r.0),
+        _ => world
+            .get::<GlobalTransform>(node)
+            .map_or((Vec3::ZERO, Quat::IDENTITY), |g| {
+                let (_, r, t) = g.to_scale_rotation_translation();
+                (t, r)
+            }),
+    };
+    let centre = std::iter::once(node)
+        .chain(world.get::<Children>(node).map(|c| c.to_vec()).unwrap_or_default())
+        .find_map(|e| world.get::<ColliderAabb>(e))
+        .map_or(pos, |a| a.center());
+    (pos, rot, centre)
+}
+
+/// A prop broke: its break sound where it is, its explosion from its
+/// centre, its pieces from its pose and velocity.
+fn prop_broke(world: &mut World, id: EntId, sound: Option<String>, explode: Option<PropExplosion>, scale: f32) {
+    let Some(node) = prop_node(world, id) else { return };
+    let (pos, rot, centre) = prop_pose(world, node);
+    if let Some(s) = sound {
+        world.write_message(PlaySound::at(s, pos));
+    }
+    if let Some(x) = explode {
+        let attacker = match x.attacker {
+            Some(Who::Player(e)) => Some(e),
+            Some(Who::Ent(e)) => prop_node(world, e),
+            None => None,
+        };
+        world.write_message(Explosion {
+            origin: centre,
+            damage: x.damage / 100.0,
+            radius: x.radius * scale,
+            attacker,
+            inflictor: Some(node),
+            sound: x.sound,
+        });
+    }
+    if let Some(index) = world.get::<PropIndex>(node).map(|p| p.0) {
+        let velocity = world.get::<LinearVelocity>(node).map_or(Vec3::ZERO, |v| v.0);
+        world.write_message(BreakProp {
+            prop: index,
+            transform: Transform::from_translation(pos).with_rotation(rot),
+            velocity,
+        });
+    }
+}
+
+/// Each moving body's velocity before this physics step (impact damage
+/// needs the speed a collision took away).
+#[derive(Resource, Default)]
+struct PreStep(std::collections::HashMap<Entity, Vec3>);
+
+fn record_velocities(mut pre: ResMut<PreStep>, bodies: Query<(Entity, &RigidBody, &LinearVelocity)>) {
+    pre.0.clear();
+    pre.0.extend(
+        bodies
+            .iter()
+            .filter(|(_, rb, _)| rb.is_dynamic())
+            .map(|(e, _, v)| (e, v.0)),
+    );
+}
+
+/// A player's mass for impacts (kg; Source's player shadow).
+const PLAYER_MASS: f32 = 85.0;
+/// An impact is measured over this many physics steps from its first
+/// contact: avian's contacts are speculative and soft, so a body is
+/// stopped over a few steps where Source's stops it in one.
+const IMPACT_STEPS: u32 = 4;
+
+/// Who an impact damages.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Receiver {
+    /// A logic prop: its table, energy scale and mass.
+    Prop(super::prop_damage::ImpactTable, f32, f32),
+    Player,
+}
+
+/// An impact being measured: both bodies' velocities when it began and
+/// the slowest each has been since (engine space).
+#[derive(Clone, Debug)]
+struct Impact {
+    me: Entity,
+    other: Entity,
+    receiver: Receiver,
+    before: [Vec3; 2],
+    slowest: [Vec3; 2],
+    steps: u32,
+}
+
+#[derive(Resource, Default)]
+struct Impacts(Vec<Impact>);
+
+/// Physics impacts (prop_damage.md 5, 6): a new contact of a logic prop's
+/// body damages it by the speed the collision took away (its table and
+/// energy scale), and a moving prop hitting a player damages the player
+/// (the player table), as crush damage applied next tick.
+#[allow(clippy::too_many_arguments)]
+fn impacts(
+    mut started: MessageReader<CollisionStart>,
+    logic: Option<Res<Logic>>,
+    pre: Res<PreStep>,
+    mut pending: ResMut<Impacts>,
+    bodies: Query<(
+        &RigidBody,
+        &LinearVelocity,
+        Option<&ComputedMass>,
+        Has<crate::map::PhysicsProp>,
+    )>,
+    characters: Query<&MovementState, With<Intent>>,
+    positions: Query<&Position>,
+    mut damage: MessageWriter<Damage>,
+) {
+    let Some(logic) = logic else {
+        started.clear();
+        pending.0.clear();
+        return;
+    };
+    let scale = logic.scale;
+    let velocity = |e: Entity| match bodies.get(e) {
+        Ok((rb, v, ..)) if rb.is_dynamic() => v.0,
+        _ => Vec3::ZERO,
+    };
+    // New contacts start being measured.
+    for s in started.read() {
+        let (b1, b2) = (s.body1.unwrap_or(s.collider1), s.body2.unwrap_or(s.collider2));
+        if b1 == b2 {
+            continue;
+        }
+        for (me, other) in [(b1, b2), (b2, b1)] {
+            let receiver = if let Some((id, _)) = logic.props.iter().find(|(_, n)| *n == me)
+                && let Some((table, energy, mass)) = logic.world.prop_impact(*id)
+                // Players' contacts are left out (prop_damage.md Q13).
+                && !characters.contains(other)
+            {
+                Receiver::Prop(table, energy, mass.max(0.1))
+            } else if characters.get(me).is_ok_and(|s| s.ground != Some(other))
+                && bodies.get(other).is_ok_and(|(rb, _, _, prop)| rb.is_dynamic() && prop)
+            {
+                Receiver::Player
+            } else {
+                continue;
+            };
+            if pending.0.iter().any(|i| i.me == me && i.other == other) {
+                continue;
+            }
+            let before = [me, other].map(|e| pre.0.get(&e).copied().unwrap_or_else(|| velocity(e)));
+            pending.0.push(Impact {
+                me,
+                other,
+                receiver,
+                before,
+                slowest: before,
+                steps: 0,
+            });
+        }
+    }
+    // Measure; done ones deal their damage.
+    let mut done = Vec::new();
+    pending.0.retain_mut(|i| {
+        for (k, e) in [i.me, i.other].into_iter().enumerate() {
+            let v = velocity(e);
+            if v.length_squared() < i.slowest[k].length_squared() {
+                i.slowest[k] = v;
+            }
+        }
+        i.steps += 1;
+        if i.steps >= IMPACT_STEPS {
+            done.push(i.clone());
+            false
+        } else {
+            true
+        }
+    });
+    for i in done {
+        let fixed = |e: Entity| !bodies.get(e).is_ok_and(|(rb, ..)| rb.is_dynamic());
+        let mass = |e: Entity| {
+            bodies
+                .get(e)
+                .ok()
+                .and_then(|(_, _, m, _)| m.map(|m| m.value()))
+                .unwrap_or(1.0)
+        };
+        let side = |k: usize, e: Entity, m: f32| super::prop_damage::Impactor {
+            mass: m,
+            before: engine_to_entity(i.before[k], scale),
+            after: engine_to_entity(i.slowest[k], scale),
+            fixed: fixed(e),
+        };
+        let theirs = side(1, i.other, mass(i.other));
+        let point = positions.get(i.me).map_or(Vec3::ZERO, |p| p.0);
+        let (amount, force) = match i.receiver {
+            Receiver::Prop(table, energy, m) => {
+                let mine = super::prop_damage::Impactor {
+                    // A frozen prop still counts its own mass.
+                    fixed: false,
+                    ..side(0, i.me, m)
+                };
+                let amount = super::prop_damage::impact_damage(&table, energy, mine, theirs, false);
+                (amount, velocity(i.me) * m)
+            }
+            Receiver::Player => {
+                let player = super::prop_damage::Impactor {
+                    mass: PLAYER_MASS,
+                    ..default()
+                };
+                let amount =
+                    super::prop_damage::impact_damage(&super::prop_damage::PLAYER_TABLE, 1.0, player, theirs, true);
+                (amount, Vec3::ZERO)
+            }
+        };
+        if amount > 0.0 && bodies.contains(i.me) | characters.contains(i.me) {
+            damage.write(Damage {
+                target: i.me,
+                attacker: (!theirs.fixed).then_some(i.other),
+                amount: amount / 100.0,
+                point,
+                dir: i.before[1].normalize_or(Vec3::NEG_Y),
+                hitgroup: Hitgroup::Generic,
+                kind: DamageKind::Crush,
+                weapon: None,
+                force,
+            });
+        }
+    }
 }

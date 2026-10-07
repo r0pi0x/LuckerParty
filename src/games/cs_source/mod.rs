@@ -18,6 +18,7 @@ pub mod nav;
 pub mod overlays;
 pub mod phy;
 pub mod player_anim;
+pub mod propdata;
 pub mod props;
 pub mod pushaway;
 pub mod radio;

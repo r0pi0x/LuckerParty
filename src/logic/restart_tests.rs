@@ -159,6 +159,7 @@ fn round_restart_closes_model_doors_and_brings_props_back() {
                 ("classname", "prop_physics_multiplayer"),
                 ("targetname", "projector"),
                 (crate::map::entities::PROP_HEALTH_KEY, "20"),
+                (crate::map::entities::PROP_PIECES_KEY, "10"),
             ],
             vec![],
         ),
@@ -166,6 +167,7 @@ fn round_restart_closes_model_doors_and_brings_props_back() {
     let mut w = world();
     let ids = w.load_map(&entities);
     w.queue_input("door", "Open", Value::Void, 0.0, None);
+    run_to(&mut w, 1);
     w.damage(ids[1], 60.0, DamageKind::Bullet, None, Vec3::ZERO, Vec3::X);
     run_to(&mut w, 100);
     assert_eq!(angles_of(&w, ids[0]).y, -90.0);

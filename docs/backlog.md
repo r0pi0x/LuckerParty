@@ -36,10 +36,11 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   prop damage/outputs, skins, body groups and sequences
   (src/logic/props.rs), sprites, dust and switchable lights
   (src/logic/visuals.rs, lightmap styles relit at run time), env_global,
-  trigger_soundscape through the touch code. Left: breakable follow-ups
-  (section 7), `Wake`, physics outputs (`OnAwakened`, `OnMotionEnabled`),
-  prop `OnAnimationBegun`/`OnAnimationDone`, prop damage per the new spec
-  (specs/source/prop_damage.md: gibs, impact damage, explosive props), train
+  trigger_soundscape through the touch code. Prop damage follows
+  specs/source/prop_damage.md (src/logic/prop_damage.rs: prop data,
+  pieces, impact damage, explosive props, client props, Wake/Sleep/motion
+  inputs, OnAwakened/OnMotionEnabled, pressure). Left: breakable follow-ups
+  (section 7), prop `OnAnimationBegun`/`OnAnimationDone`, train
   facing/banking and player train control. (Round restarts re-create
   entities: rounds plan.) Target: two
   real minigame maps from the user's downloads.
@@ -177,8 +178,12 @@ docs/plans/active/sound.md.
 ## 7. Physics props, remaining
 
 - The player physics shadow for `prop_physics` (dust2 has none).
-- Impact damage; breaking props into their model's gibs (`.phy` "break"
-  block; broken props just vanish now).
+- Prop damage follow-ups (docs/tech-debt.md "Prop damage"): fire
+  (flammable props, the entity flame, burn damage), stress crush, the
+  velocity restore after an impact breaks a prop, pieces as real avian
+  bodies with their skin, the spec's open questions on the probe server
+  (Q1-Q14: damage types, gas-can ignition, player impact rules, client
+  break sounds, round restarts of client props).
 - Model doors: the hardware's latch/lock sounds and the spec's open
   question 8 (which entries the hardware and surface pick; we use the
   model's `door_options` move/open/close), swing-side checks against the

@@ -286,6 +286,26 @@ pub fn parse_ragdoll(bytes: &[u8]) -> Result<PhyRagdoll, String> {
     Ok(out)
 }
 
+/// The text section's `break` blocks (prop_damage.md 7.3: the pieces a
+/// prop breaks into), each as its keys in order (keys lower-case).
+pub fn break_blocks(bytes: &[u8]) -> Vec<Vec<(String, String)>> {
+    let (Some(header), Some(count)) = (i32_at(bytes, 0), i32_at(bytes, 8)) else {
+        return Vec::new();
+    };
+    let mut at = header.max(0) as usize;
+    for _ in 0..count.max(0) {
+        let Some(size) = i32_at(bytes, at) else { return Vec::new() };
+        at += 4 + size.max(0) as usize;
+    }
+    let text = bytes.get(at..).unwrap_or(&[]);
+    let text = String::from_utf8_lossy(&text[..text.iter().position(|&c| c == 0).unwrap_or(text.len())]);
+    blocks(&text)
+        .into_iter()
+        .filter(|(name, _)| name == "break")
+        .map(|(_, keys)| keys)
+        .collect()
+}
+
 /// The text section's blocks in order: name and `"key" "value"` pairs
 /// (keys lower-case; a key may repeat).
 fn blocks(text: &str) -> Vec<(String, Vec<(String, String)>)> {

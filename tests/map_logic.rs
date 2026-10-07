@@ -249,6 +249,7 @@ fn round_restart_puts_the_map_back() {
     let vent = node(&mut sim, 2);
     assert!(sim.app.world().get::<Damageable>(vent).is_some());
     sim.app.world_mut().write_message(Damage {
+        force: bevy::math::Vec3::ZERO,
         target: vent,
         attacker: None,
         amount: 0.5,

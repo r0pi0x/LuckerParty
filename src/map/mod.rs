@@ -25,7 +25,7 @@ pub mod entities;
 pub mod fog;
 pub use entities::{MapBrushEntity, MapEntities, MapEntity, MapHull};
 pub mod breakables;
-pub use breakables::{BrushPanes, GlassShatter, SpawnGibs};
+pub use breakables::{BreakProp, BrushPanes, GlassShatter, MapBreak, MapBreakPiece, SpawnGibs};
 mod dust;
 pub mod hud;
 pub mod live_sound;
@@ -36,6 +36,7 @@ pub mod nav;
 pub mod particles;
 pub mod tracer;
 pub mod prop_material;
+pub mod prop_physics;
 pub mod ragdoll;
 pub use ragdoll::{MapCollisionHooks, MapRagdoll, MapRagdollBody, MapRagdollJoint, Ragdoll, RagdollBody, RagdollShot};
 pub mod rope_material;
@@ -421,6 +422,8 @@ pub struct MapModel {
     /// Skeleton and animations, for props that play sequences (meshes
     /// skinned to it).
     pub rig: Option<Arc<MapRig>>,
+    /// What it breaks into, when it can break.
+    pub breaks: Option<breakables::MapBreak>,
 }
 
 impl MapModel {
@@ -945,6 +948,12 @@ pub struct MapPhysics {
     pub damping: f32,
     pub rotdamping: f32,
     pub push: PushAway,
+    /// Held in place (Source "motion disabled") until something enables
+    /// its motion: it stays put like a static prop until then.
+    pub frozen: bool,
+    /// Starts asleep (Source spawnflag 1): it doesn't move until woken
+    /// (`prop_physics::PropAwakened` then tells).
+    pub asleep: bool,
 }
 
 /// How a physics prop and players interact.
@@ -1456,6 +1465,7 @@ fn fall_out_of_map(
             Some(h) if !god => {
                 if h.current > 0.0 {
                     damage.write(crate::core::Damage {
+                        force: bevy::math::Vec3::ZERO,
                         target: e,
                         attacker: None,
                         amount: h.current.max(1.0) * 1000.0,
@@ -1551,6 +1561,8 @@ impl Plugin for MapPlugin {
             .add_message::<decal::PlaceDecal>()
             .add_message::<ViewModelEvent>()
             .add_message::<SpawnGibs>()
+            .add_message::<breakables::BreakProp>()
+            .add_message::<prop_physics::PropAwakened>()
             .add_message::<GlassShatter>()
             .init_resource::<particles::Particles>()
             .configure_sets(Update, particles::ParticleSet::Step.before(particles::ParticleSet::Draw))
@@ -1578,6 +1590,7 @@ impl Plugin for MapPlugin {
                     .before(crate::core::SimSet::Movement),
             )
             .add_systems(FixedPostUpdate, breakables::update_panes)
+            .add_systems(FixedPostUpdate, prop_physics::wake_on_contact.after(PhysicsSystems::Writeback))
             // What the logic switches: sprites and dust, lights, prop
             // skins, bodies and sequences.
             .add_systems(
@@ -1589,7 +1602,7 @@ impl Plugin for MapPlugin {
                     animate_props,
                 ),
             )
-            .add_systems(Update, (breakables::spawn_gibs, breakables::fly_gibs).chain())
+            .add_systems(Update, (breakables::break_props, breakables::spawn_gibs, breakables::fly_gibs).chain())
             .add_systems(
                 Update,
                 (
@@ -1772,6 +1785,7 @@ fn spawn_map(
             scale: data.entity_scale,
         });
     }
+    commands.insert_resource(breakables::prop_breaks(data));
 
     // Prop models: one collider per model (shared by its placements), and
     // render handles when rendering exists.
@@ -2376,7 +2390,9 @@ fn spawn_map(
             (PropSolid::None, _) => Vec::new(),
         };
         // Bodies that move are swept through physics queries, not as brushes.
-        let dynamic = prop.physics.as_ref().filter(|_| !prop.skybox);
+        // Frozen ones stay put like static props until enabled
+        // (`prop_physics::FrozenBody`).
+        let dynamic = prop.physics.as_ref().filter(|p| !prop.skybox && !p.frozen);
         let prop_brush = (prop.parent.is_none() && !prop.skybox && !no_prop_brushes && !pieces.is_empty() && dynamic.is_none()).then_some(());
         // A prop entity's brushes go on its node (`MovingSolid`, still), so
         // they stop blocking once the logic removes it; others join the map's.
@@ -2450,32 +2466,23 @@ fn spawn_map(
         match (solid, &model_colliders[prop.model]) {
             (PropSolid::Mesh, Some(collider)) if dynamic.is_some() => {
                 let p = dynamic.unwrap();
-                e.insert((
-                    RigidBody::Dynamic,
-                    collider.clone(),
-                    Mass(p.mass),
-                    Friction::new(p.friction),
-                    Restitution::new(p.elasticity),
-                    LinearDamping(p.damping),
-                    AngularDamping(p.rotdamping),
-                    // Source clamps every body to 2000 units/s and 3600 deg/s.
-                    MaxLinearSpeed(2000.0 * 0.0254),
-                    MaxAngularSpeed(3600f32.to_radians()),
-                    PhysicsProp {
-                        push: p.push,
-                        mass: p.mass,
-                        bounds: data.models[prop.model].bounds,
-                    },
-                    MapPropCollider,
-                    // Impact sounds listen for its contacts.
-                    CollisionEventsEnabled,
-                ));
+                e.insert((collider.clone(), prop_physics::dynamic_body(p, data.models[prop.model].bounds)));
+                if p.asleep && prop.entity.is_some() {
+                    e.insert((prop_physics::StartAsleep, RigidBody::Static));
+                }
                 if let Some(s) = &model.surfaceprop {
                     e.insert(PropSurface(s.clone()));
                 }
             }
             (PropSolid::Mesh, Some(collider)) => {
                 e.insert((RigidBody::Static, collider.clone(), MapPropCollider));
+                // A frozen physics prop can be set moving later.
+                if let Some(p) = prop.physics.as_ref().filter(|p| p.frozen && !prop.skybox && prop.entity.is_some()) {
+                    e.insert(prop_physics::FrozenBody {
+                        physics: p.clone(),
+                        bounds: data.models[prop.model].bounds,
+                    });
+                }
                 if let Some(s) = &model.surfaceprop {
                     e.insert(PropSurface(s.clone()));
                 }
@@ -2805,6 +2812,7 @@ pub fn unload_map(world: &mut World) {
     view_model::unload(world);
     shells::unload(world);
     breakables::unload(world);
+    world.remove_resource::<breakables::PropBreaks>();
     let bodies: Vec<Entity> = world
         .query_filtered::<Entity, With<CharacterBody>>()
         .iter(world)

@@ -21,7 +21,7 @@ use crate::{
     weapon::{
         RegisterWeapons, Weapon, WeaponSounds,
         grenade::{
-            Blast, Detonated, Flash, Flight, GrenadeEffect, GrenadeKind, Smoke, SmokeCloud, ThrowRule, Throwable,
+            Blast, Detonated, ExplosionRule, Flash, Flight, GrenadeEffect, GrenadeKind, Smoke, SmokeCloud, ThrowRule, Throwable,
         },
     },
 };
@@ -90,6 +90,9 @@ impl Plugin for GrenadesPlugin {
             .register_weapon(FLASHBANG, flashbang)
             .register_weapon(SMOKEGRENADE, smokegrenade)
             .add_message::<Detonated>()
+            // Exploding props blast like the HE grenade (prop_damage.md
+            // 7.5: the game's radius damage; spec Q3).
+            .insert_resource(ExplosionRule(he_blast()))
             .init_resource::<Particles>()
             .init_resource::<FxRng>()
             .add_systems(FixedUpdate, explosions.after(crate::core::SimSet::Weapons))

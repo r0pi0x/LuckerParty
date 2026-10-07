@@ -1969,6 +1969,7 @@ fn step(
             // Health is normalized: 1.0 = 100 points. No attacker, no
             // armour (measured: armour doesn't absorb it).
             damage.write(Damage {
+                force: bevy::math::Vec3::ZERO,
                 target: entity,
                 attacker: None,
                 amount: mover.fall_damage / 100.0,

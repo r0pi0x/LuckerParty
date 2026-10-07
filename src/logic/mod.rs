@@ -16,6 +16,7 @@ mod bridge;
 pub mod classes;
 pub mod hud;
 pub mod movers;
+pub mod prop_damage;
 pub mod props;
 pub mod triggers;
 pub mod value;

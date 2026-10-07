@@ -35,6 +35,8 @@ pub struct MapGibPhysics {
     pub glass_alpha: f32,
     /// Seconds a gib takes to fade out after its life.
     pub fade: f32,
+    /// Downward acceleration of a broken prop's pieces (m/s²).
+    pub prop_gravity: f32,
 }
 
 impl Default for MapGibPhysics {
@@ -45,6 +47,7 @@ impl Default for MapGibPhysics {
             glass_bounce: 0.3,
             glass_alpha: 0.5,
             fade: 1.0,
+            prop_gravity: 9.81,
         }
     }
 }
@@ -58,6 +61,28 @@ pub struct GibPiece {
     pub spin: Vec3,
     /// Seconds before fading.
     pub life: f32,
+    /// Which model of the list (None: one at random).
+    pub model: Option<usize>,
+    /// Its rotation (None: a random one). `position` is then where the
+    /// model's origin goes, not its centre.
+    pub rotation: Option<Quat>,
+    /// Stays where it is (a piece the prop holds in place).
+    pub frozen: bool,
+}
+
+impl GibPiece {
+    /// A piece thrown at a point, spinning, picked at random.
+    pub fn thrown(position: Vec3, velocity: Vec3, spin: Vec3, life: f32) -> Self {
+        Self {
+            position,
+            velocity,
+            spin,
+            life,
+            model: None,
+            rotation: None,
+            frozen: false,
+        }
+    }
 }
 
 /// Throw gibs from a gib list (a model is picked at random per piece).
@@ -66,7 +91,198 @@ pub struct SpawnGibs {
     pub set: String,
     /// Glass: translucent and less bouncy.
     pub glass: bool,
+    /// A broken prop's pieces: they fall at `MapGibPhysics::prop_gravity`.
+    pub prop: bool,
     pub pieces: Vec<GibPiece>,
+}
+
+/// The most gibs alive at once (Source `cl_phys_props_max`); more are not
+/// spawned.
+pub const MAX_GIBS: usize = 300;
+
+/// What a prop model breaks into (Source: the `.phy` break pieces, else
+/// chunks of a gib list).
+#[derive(Clone, Debug, PartialEq)]
+pub enum MapBreak {
+    /// One piece per entry, each a model of gib list `set`.
+    Pieces { set: String, pieces: Vec<MapBreakPiece> },
+    /// `count` chunks of gib list `set`, picked among its first
+    /// `size_limit + 1` models; each lives a time in `life`.
+    Chunks {
+        set: String,
+        count: usize,
+        size_limit: usize,
+        life: (f32, f32),
+        /// Each list model's bounds centre (its model space).
+        centres: Vec<Vec3>,
+    },
+}
+
+/// One break piece of a prop model.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MapBreakPiece {
+    /// Index in its gib list.
+    pub model: usize,
+    /// Where its origin sits in the prop's model space (meters).
+    pub offset: Vec3,
+    /// Its model's bounds centre (its model space).
+    pub centre: Vec3,
+    /// Seconds before it fades; infinite: never.
+    pub life: f32,
+    /// Outward speed added (m/s).
+    pub burst: f32,
+    pub frozen: bool,
+}
+
+/// A prop broke: throw what its model breaks into (`MapModel::breaks`)
+/// from where it was, moving as it moved.
+#[derive(Message, Clone, Debug)]
+pub struct BreakProp {
+    /// Index into `MapData::props` (`PropIndex`).
+    pub prop: usize,
+    pub transform: Transform,
+    pub velocity: Vec3,
+}
+
+/// Every prop's break pieces and bounds, from its model (also headless).
+#[derive(Resource, Default)]
+pub(super) struct PropBreaks(Vec<(Option<MapBreak>, (Vec3, Vec3))>);
+
+pub(super) fn prop_breaks(data: &MapData) -> PropBreaks {
+    PropBreaks(
+        data.props
+            .iter()
+            .map(|p| {
+                let m = &data.models[p.model];
+                (m.breaks.clone(), m.bounds)
+            })
+            .collect(),
+    )
+}
+
+/// Template chunks fly out at 100 units/s (in meters/s).
+const CHUNK_BURST: f32 = 100.0 * 0.0254;
+/// Model pieces' velocity is jittered by this fraction either way.
+const PIECE_JITTER: f32 = 0.025;
+
+/// The pieces a broken prop throws (prop_damage.md 7.3, the client
+/// branch): its model's break pieces at its pose, moving with it (±2.5 %)
+/// plus their burst outward, or chunks at random points of its box (the
+/// smallest axis at its middle) flying out at 100 units/s. `random` gives
+/// uniform numbers in [0, 1).
+pub fn break_pieces(
+    breaks: &MapBreak,
+    bounds: (Vec3, Vec3),
+    transform: &Transform,
+    velocity: Vec3,
+    random: &mut dyn FnMut() -> f32,
+) -> Vec<GibPiece> {
+    let origin = transform.translation;
+    let rot = transform.rotation;
+    match breaks {
+        MapBreak::Pieces { pieces, .. } => pieces
+            .iter()
+            .map(|p| {
+                let at = origin + rot * p.offset;
+                let mid = at + rot * p.centre;
+                let out = if at.distance_squared(origin) > 1e-8 {
+                    at - origin
+                } else {
+                    mid - origin
+                };
+                let jitter = 1.0 + (random() * 2.0 - 1.0) * PIECE_JITTER;
+                let v = if p.frozen {
+                    Vec3::ZERO
+                } else {
+                    velocity * jitter + out.normalize_or_zero() * p.burst
+                };
+                GibPiece {
+                    position: at,
+                    velocity: v,
+                    spin: Vec3::ZERO,
+                    life: p.life,
+                    model: Some(p.model),
+                    rotation: Some(rot),
+                    frozen: p.frozen,
+                }
+            })
+            .collect(),
+        MapBreak::Chunks {
+            count,
+            size_limit,
+            life,
+            centres,
+            ..
+        } => {
+            let (lo, hi) = bounds;
+            let size = hi - lo;
+            let smallest = if size.x <= size.y && size.x <= size.z {
+                0
+            } else if size.y <= size.z {
+                1
+            } else {
+                2
+            };
+            (0..*count)
+                .map(|_| {
+                    let mut local = Vec3::new(
+                        lo.x + size.x * random(),
+                        lo.y + size.y * random(),
+                        lo.z + size.z * random(),
+                    );
+                    local[smallest] = (lo[smallest] + hi[smallest]) / 2.0;
+                    let at = origin + rot * local;
+                    let pick = ((random() * (*size_limit + 1) as f32) as usize)
+                        .min(*size_limit)
+                        .min(centres.len().saturating_sub(1));
+                    GibPiece {
+                        // The chunk's centre goes there.
+                        position: at - rot * centres.get(pick).copied().unwrap_or_default(),
+                        velocity: velocity + (at - origin).normalize_or_zero() * CHUNK_BURST,
+                        spin: Vec3::ZERO,
+                        life: life.0 + (life.1 - life.0) * random(),
+                        model: Some(pick),
+                        rotation: Some(rot),
+                        frozen: false,
+                    }
+                })
+                .collect()
+        }
+    }
+}
+
+/// Turn `BreakProp`s into gibs.
+pub(super) fn break_props(
+    mut events: MessageReader<BreakProp>,
+    breaks: Option<Res<PropBreaks>>,
+    mut gibs: MessageWriter<SpawnGibs>,
+    mut dice: Local<u32>,
+) {
+    let Some(breaks) = breaks else {
+        events.clear();
+        return;
+    };
+    let mut random = || {
+        *dice = dice.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (*dice >> 8) as f32 / (1u32 << 24) as f32
+    };
+    for ev in events.read() {
+        let Some((Some(b), bounds)) = breaks.0.get(ev.prop) else {
+            continue;
+        };
+        let set = match b {
+            MapBreak::Pieces { set, .. } | MapBreak::Chunks { set, .. } => set.clone(),
+        };
+        let pieces = break_pieces(b, *bounds, &ev.transform, ev.velocity, &mut random);
+        if !pieces.is_empty() {
+            gibs.write(SpawnGibs {
+                set,
+                glass: false,
+                prop: true,
+                pieces,
+            });
+        }
+    }
 }
 
 /// A pane of glass (or tile) shattered: its centre and normal, its size
@@ -306,9 +522,17 @@ fn clip_triangle(pts: [Vec2; 3], lo: Vec2, hi: Vec2) -> Vec<Vec3> {
 /// Gib models ready to draw, and how they move.
 #[derive(Resource)]
 pub(super) struct GibAssets {
-    sets: Vec<(String, Vec<Vec<(Handle<Mesh>, Handle<PropMaterial>)>>)>,
+    sets: Vec<(String, Vec<GibModel>)>,
     physics: MapGibPhysics,
     light_scale: f32,
+}
+
+/// A gib model's meshes, its bounds' centre and its smallest half size
+/// (model space).
+struct GibModel {
+    parts: Vec<(Handle<Mesh>, Handle<PropMaterial>)>,
+    centre: Vec3,
+    radius: f32,
 }
 
 pub(super) fn build_assets(
@@ -329,7 +553,7 @@ pub(super) fn build_assets(
                 .models
                 .iter()
                 .map(|model| {
-                    model
+                    let parts = model
                         .meshes
                         .iter()
                         .map(|m| {
@@ -337,7 +561,13 @@ pub(super) fn build_assets(
                             material.params.dynamic = 0.0;
                             (meshes.add(super::build_mesh(m, false)), materials.add(material))
                         })
-                        .collect()
+                        .collect();
+                    let (lo, hi) = model.bounds;
+                    GibModel {
+                        parts,
+                        centre: (lo + hi) / 2.0,
+                        radius: ((hi - lo) / 2.0).min_element().max(0.0),
+                    }
                 })
                 .collect();
             (s.name.clone(), models)
@@ -356,6 +586,10 @@ pub(super) struct FlyingGib {
     state: GibState,
     life: f32,
     glass: bool,
+    /// Falls at the prop pieces' gravity.
+    prop: bool,
+    /// Kept this far off what it bounces on (its smallest half size).
+    radius: f32,
     materials: Vec<Handle<PropMaterial>>,
 }
 
@@ -406,13 +640,14 @@ pub fn gib_alpha(age: f32, life: f32, fade: f32) -> Option<f32> {
     (a > 0.0).then_some(a)
 }
 
-/// Spawn thrown gibs.
+/// Spawn thrown gibs (at most `MAX_GIBS` alive).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn spawn_gibs(
     mut events: MessageReader<SpawnGibs>,
     assets: Option<Res<GibAssets>>,
     light_field: Option<Res<LightField>>,
     mut materials: Option<ResMut<Assets<PropMaterial>>>,
+    alive: Query<(), With<FlyingGib>>,
     mut dice: Local<u32>,
     mut commands: Commands,
 ) {
@@ -420,6 +655,7 @@ pub(super) fn spawn_gibs(
         events.clear();
         return;
     };
+    let mut count = alive.iter().count();
     for ev in events.read() {
         let Some((_, models)) = assets.sets.iter().find(|(n, _)| n.eq_ignore_ascii_case(&ev.set)) else {
             continue;
@@ -428,11 +664,29 @@ pub(super) fn spawn_gibs(
             continue;
         }
         for piece in &ev.pieces {
+            if count >= MAX_GIBS {
+                break;
+            }
+            count += 1;
             *dice = dice.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            let parts = &models[(*dice >> 8) as usize % models.len()];
+            let model = &models[piece.model.map_or((*dice >> 8) as usize, |m| m.min(models.len() - 1)) % models.len()];
+            let parts = &model.parts;
+            // Where it's lit and starts: its centre.
+            let (rotation, centre) = match piece.rotation {
+                Some(r) => (r, piece.position + r * model.centre),
+                None => (
+                    Quat::from_rotation_y(*dice as f32 * 1e-3) * Quat::from_rotation_x(*dice as f32 * 7e-4),
+                    piece.position,
+                ),
+            };
+            let offset = if piece.rotation.is_some() {
+                -model.centre
+            } else {
+                Vec3::ZERO
+            };
             let mut own = Vec::with_capacity(parts.len());
             if let Some(materials) = materials.as_mut() {
-                let probe = light_field.as_ref().map(|f| (f.0.0)(piece.position));
+                let probe = light_field.as_ref().map(|f| (f.0.0)(centre));
                 for (_, m) in parts {
                     let Some(mut material) = materials.get(m).cloned() else {
                         continue;
@@ -448,14 +702,13 @@ pub(super) fn spawn_gibs(
                     own.push(materials.add(material));
                 }
             }
-            let rotation = Quat::from_rotation_y(*dice as f32 * 1e-3) * Quat::from_rotation_x(*dice as f32 * 7e-4);
             let state = GibState {
-                position: piece.position,
+                position: centre,
                 velocity: piece.velocity,
                 rotation,
                 spin: piece.spin,
                 age: 0.0,
-                resting: false,
+                resting: piece.frozen,
             };
             commands
                 .spawn((
@@ -465,9 +718,11 @@ pub(super) fn spawn_gibs(
                         state,
                         life: piece.life,
                         glass: ev.glass,
+                        prop: ev.prop,
+                        radius: if ev.prop { model.radius } else { 0.0 },
                         materials: own.clone(),
                     },
-                    Transform::from_translation(piece.position).with_rotation(rotation),
+                    Transform::from_translation(centre).with_rotation(rotation),
                     Visibility::default(),
                 ))
                 .with_children(|g| {
@@ -475,6 +730,7 @@ pub(super) fn spawn_gibs(
                         g.spawn((
                             Mesh3d(mesh.clone()),
                             MeshMaterial3d(material),
+                            Transform::from_translation(offset),
                             bevy::light::NotShadowCaster,
                         ));
                     }
@@ -499,18 +755,23 @@ pub(super) fn fly_gibs(
     let filter = SpatialQueryFilter::from_excluded_entities(characters.iter());
     for (e, mut gib, mut transform) in &mut gibs {
         let bounce = if gib.glass { p.glass_bounce } else { p.bounce };
+        let gravity = if gib.prop { p.prop_gravity } else { p.gravity };
         let s = gib.state;
+        let r = gib.radius;
         let travel = s.velocity * dt;
         let hit = if s.resting || dt <= 0.0 {
             None
         } else {
             Dir3::new(travel).ok().and_then(|dir| {
                 spatial
-                    .cast_ray(s.position, dir, travel.length(), true, &filter)
-                    .map(|h| (s.position + dir * h.distance + h.normal * 0.01, h.normal))
+                    .cast_ray(s.position, dir, travel.length() + r, true, &filter)
+                    .map(|h| {
+                        let back = (h.distance - r).max(0.0);
+                        (s.position + dir * back + h.normal * 0.01, h.normal)
+                    })
             })
         };
-        gib_step(&mut gib.state, dt, hit, p.gravity, bounce);
+        gib_step(&mut gib.state, dt, hit, gravity, bounce);
         let Some(alpha) = gib_alpha(gib.state.age, gib.life, p.fade) else {
             commands.entity(e).try_despawn();
             continue;
@@ -527,8 +788,10 @@ pub(super) fn fly_gibs(
                 }
             }
         }
-        transform.translation = gib.state.position;
-        transform.rotation = gib.state.rotation;
+        if transform.translation != gib.state.position || transform.rotation != gib.state.rotation {
+            transform.translation = gib.state.position;
+            transform.rotation = gib.state.rotation;
+        }
     }
 }
 
@@ -578,7 +841,10 @@ fn make_whole(world: &mut World, node: Entity, index: usize) {
             continue;
         };
         let old = world.get::<Mesh3d>(child).map(|m| m.0.clone());
-        world.entity_mut(child).insert(Mesh3d(source.clone())).remove::<PaneSource>();
+        world
+            .entity_mut(child)
+            .insert(Mesh3d(source.clone()))
+            .remove::<PaneSource>();
         if let (Some(old), Some(mut meshes)) = (old, world.get_resource_mut::<Assets<Mesh>>())
             && old != source
         {

@@ -265,6 +265,9 @@ fn a_bot_shoots_an_enemy_in_sight() {
     let player = sim.spawn_character(greybox::SPAWNS[1] + Vec3::X * 12.0, placeholder::ID);
     let bot = mashup::bot::add_bot(sim.app.world_mut(), mashup::core::Team(1)).expect("no bot");
     sim.app.world_mut().resource_mut::<mashup::bot::BotConfig>().stop = 1;
+    // No wobble: the wobble draws from a seed made of entity ids, so any
+    // new entity elsewhere could make this bot miss for seconds.
+    sim.app.world_mut().resource_mut::<mashup::bot::BotConfig>().aim_error = 0.0;
     // Reaction time, turning and the draw: hit within 2 s.
     let mut hit_at = None;
     for t in 0..(2.0 / TICK_INTERVAL) as u32 {
