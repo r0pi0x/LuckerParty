@@ -190,9 +190,15 @@ Details and baseline numbers: [performance.md](performance.md).
 - `mashup_perf 1` (2: every render pass) shows frame times (avg, p95,
   max), the main world's CPU time, GPU time per render pass, entity,
   mesh and triangle counts and visibility culling (camera cluster,
-  clusters and map parts potentially visible).
+  clusters and map parts potentially visible), and what changes each
+  frame (transforms written, under the map's root, mesh and material
+  assets modified). `mashup_perf 3` also logs each second which entities
+  (by name) write transforms: anything writing every frame for nothing
+  costs transform propagation and GPU re-preparation.
 - `refcmp bench --views tools/refcmp/<map>.toml` times 200 frames at each
-  view (vsync off) and prints a table; `-- <args>` passes options to
+  view (vsync off) and prints a table (frame, main-world CPU, process CPU
+  and GPU ms; with pipelined rendering a frame takes the longer of the
+  main world and the render world); `-- <args>` passes options to
   mashup (e.g. `-- +r_novis 1`). Build first; it runs the mashup next to
   it (`--profile playtest` for optimized numbers).
 - `r_novis 1` draws every map part (no visibility culling);

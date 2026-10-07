@@ -119,5 +119,33 @@ default (finer culling, and what vischeck and the ray tests checked).
 - Glow sprites: the occlusion test borrowed the sprite material mutably
   every frame, which re-prepares it for the GPU even when nothing changed;
   now only when the colour changes. Culled glows skip their five rays.
+- Particles and dust: each particle material's mesh and each dust volume's
+  mesh was rewritten every frame, even with nothing in it (13 mesh assets
+  modified per frame in a dust2 bot match). Any modified mesh makes every
+  mesh entity re-check its pipeline (`AssetChanged<Mesh3d>` in each
+  material's `check_entities_needing_specialization`) and the mesh is
+  uploaded again. Now an empty mesh is written once, and hidden dust
+  volumes wait (2-5 per frame left, from live particles).
+- Contacts nobody uses: avian computed contacts every step for each
+  character capsule and mover against the world and static props, though
+  two non-dynamic bodies never get constraints. The collision hooks now
+  drop pairs without a dynamic body unless a side reports contacts
+  (`map::contact_filter`).
+- Redundant writes: the sky and view-model cameras got their target,
+  tonemapping and projection re-inserted every frame, the radar its
+  material; now only on change.
 
+Measuring here: the dev box runs other agents' builds (load 4-16 on 12
+cores), which moves frame times by 2-4x between runs, more than these
+changes. `mashup_perf 3` counts (above) are exact. Before/after frame
+times on a quiet machine are still to be taken.
 
+Tried and dropped: one physics substep while no dynamic body is awake
+(characters and movers are kinematic with zero velocity). It made
+sleeping ragdolls wake again every step (`bullets_push_a_dead_body`
+failed), so substeps stay at avian's 6. Props, movers and the map's collision
+as hierarchies of their own instead of children of the map's root (avian
+walks every tree holding a collider each tick in
+`propagate_collider_transforms`, about 0.3 ms per tick on dust2 under
+load): a dust2 physics prop then settled differently
+(`physics_props_settle_and_get_pushed`), so it is left for later.
