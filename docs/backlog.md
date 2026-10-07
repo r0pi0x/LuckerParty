@@ -275,7 +275,7 @@ Counts are from de_dust2's entity lump and static prop lump.
 - **Brush entities**: movers (doors, buttons, func_rotating, trains,
   func_brush) move through the logic layer, breakables break; render modes other than normal and 10 (translucent func_brush) aren't
   applied.
-- **Fire** (`env_fire`, 16) and other effects, if they show in normal play.
+- **Fire**: spec written (specs/source/fire.md: env_fire heat and burn damage, entity flames; 54 env_fire on 8 stock maps, all lit by `BombExplode`); implementation next. It corrects prop_damage.md: the gas can's explode_fire does not ignite players.
 - **Lightmap styles**: animated styles (1-31) at their pattern (they're
   baked at normal brightness); switchable ones (32+) switch.
 - **Baked per-vertex prop lighting (`.vhv`)** for maps that ship it (dust2
