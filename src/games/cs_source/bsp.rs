@@ -504,7 +504,9 @@ pub fn convert(bsp: &Bsp, bytes: &[u8], name: &str) -> (MapData, LightmapLayout)
     }
 
     data.collision_hulls = brush_hulls(bsp, &leaves);
-    data.collision_brushes = collision_brushes(bsp, &leaves);
+    let (brushes, tree) = collision_brushes(bsp, &leaves);
+    data.collision_brushes = brushes;
+    data.brush_tree = Some(tree);
     data.water = water_volumes(bsp, &leaves);
     data.entities = map_entities(bsp, &leaves);
     data.entity_scale = METERS_PER_UNIT;
@@ -974,12 +976,55 @@ pub fn brush_hulls(bsp: &Bsp, leaves: &[RawLeaf]) -> Vec<Vec<[f32; 3]>> {
 
 /// The same brushes as planes (engine space), bevel planes included, for
 /// exact swept-box collision.
-pub fn collision_brushes(bsp: &Bsp, leaves: &[RawLeaf]) -> Vec<crate::map::MapBrush> {
-    brush_hulls_indexed(bsp, leaves)
+/// Also the world's BSP tree over them, for the order traces meet
+/// coincident faces in (a ladder flush with a player clip).
+pub fn collision_brushes(bsp: &Bsp, leaves: &[RawLeaf]) -> (Vec<crate::map::MapBrush>, crate::map::MapBrushTree) {
+    let world = brush_hulls_indexed(bsp, leaves);
+    let index: std::collections::HashMap<usize, u32> =
+        world.iter().enumerate().map(|(k, (i, _, _))| (*i, k as u32)).collect();
+    let brushes = world
         .into_iter()
         .chain(entity_hulls(bsp, leaves))
         .map(|(i, points, planes)| map_brush(points, planes, bsp.brushes[i].flags.contains(BrushFlags::LADDER)))
-        .collect()
+        .collect();
+    (brushes, brush_tree(bsp, leaves, &index))
+}
+
+/// The world's BSP tree (model 0) in engine space, its leaves listing
+/// brushes as `index` numbers them (brushes not in `index` left out).
+fn brush_tree(
+    bsp: &Bsp,
+    leaves: &[RawLeaf],
+    index: &std::collections::HashMap<usize, u32>,
+) -> crate::map::MapBrushTree {
+    let nodes = bsp
+        .nodes
+        .iter()
+        .map(|n| {
+            let p = &bsp.planes[n.plane_index as usize];
+            crate::map::BrushTreeNode {
+                normal: to_engine_dir(p.normal),
+                dist: p.dist * METERS_PER_UNIT,
+                children: n.children,
+            }
+        })
+        .collect();
+    let leaves = leaves
+        .iter()
+        .map(|l| {
+            bsp.leaf_brushes
+                .iter()
+                .skip(l.first_leaf_brush as usize)
+                .take(l.leaf_brush_count as usize)
+                .filter_map(|lb| index.get(&(lb.brush as usize)).copied())
+                .collect()
+        })
+        .collect();
+    crate::map::MapBrushTree {
+        nodes,
+        leaves,
+        root: bsp.models.first().map_or(0, |m| m.head_node),
+    }
 }
 
 /// Player-solid brushes of solid brush entities (doors, windows,

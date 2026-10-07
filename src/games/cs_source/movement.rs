@@ -20,7 +20,7 @@ use crate::{
         SimSet, Velocity,
     },
     map::{
-        MapBrushCollider, MapBrushes, MapTerrain, MapTerrainCollider, MapWater, PhysicsProp, PlaySound, PropSurface,
+        MapBrushCollider, MapBrushTree, MapBrushes, MapTerrain, MapTerrainCollider, MapWater, PhysicsProp, PlaySound, PropSurface,
         PushAway,
         sound::{SoundBank, SurfaceGrid},
     },
@@ -548,6 +548,9 @@ struct Tracer<'a, 'w, 's> {
     query: &'a SpatialQuery<'w, 's>,
     filter: SpatialQueryFilter,
     brushes: Option<&'a MapBrushes>,
+    /// The BSP tree over `brushes` (Source maps): decides which of two
+    /// faces hit at the same distance a trace reports.
+    tree: Option<&'a MapBrushTree>,
     water: Option<&'a MapWater>,
     surfaces: Option<&'a SurfaceGrid>,
     /// Surface property of a physics collider (props), by entity.
@@ -605,6 +608,8 @@ impl Tracer<'_, '_, '_> {
         let lo = from.min(to) - half - Vec3::splat(eps);
         let hi = from.max(to) + half + Vec3::splat(eps);
         let terrain = self.terrain_near(lo, hi);
+        // Brushes hit at the current fraction: (index, normal, ladder).
+        let mut tied: Vec<(usize, Vec3, bool)> = Vec::new();
         'brush: for (i, b) in brushes.iter().chain(self.others).chain(terrain).enumerate() {
             if b.max.cmplt(lo).any() || b.min.cmpgt(hi).any() {
                 continue;
@@ -646,15 +651,43 @@ impl Tracer<'_, '_, '_> {
                 }
                 continue;
             }
-            if enter < leave && enter > -1.0 && enter < out.fraction {
-                out.fraction = enter.max(0.0);
-                out.normal = clip;
-                out.ladder = b.ladder;
-                out.surface = b.surface.is_some().then_some(i);
-                out.owner = i
-                    .checked_sub(brushes.len())
-                    .and_then(|j| self.owners.get(j).copied().flatten());
+            if !(enter < leave && enter > -1.0) {
+                continue;
             }
+            let f = enter.max(0.0);
+            if out.fraction < 1.0 && (f - out.fraction).abs() < 1e-6 {
+                // The nearest first (the hit when nothing breaks the tie).
+                if f < out.fraction {
+                    out.fraction = f;
+                    tied.insert(0, (i, clip, b.ladder));
+                } else {
+                    tied.push((i, clip, b.ladder));
+                }
+            } else if f < out.fraction {
+                out.fraction = f;
+                tied.clear();
+                tied.push((i, clip, b.ladder));
+            }
+        }
+        // A ladder flush with another face (maps flank ladders with player
+        // clip): of the brushes hit at the same distance, the one the trace
+        // reaches first through the BSP tree wins, as in Source. Otherwise
+        // the first in our list.
+        let mut winner = tied.first().copied();
+        if tied.iter().any(|t| t.2) && tied.iter().any(|t| !t.2)
+            && let Some(tree) = self.tree
+        {
+            let order = tree.sweep_order(half, from, to, METERS_PER_UNIT);
+            let rank = |k: usize| order.iter().position(|&o| o as usize == k).unwrap_or(usize::MAX);
+            winner = tied.iter().copied().min_by_key(|t| rank(t.0));
+        }
+        if let Some((i, normal, ladder)) = winner {
+            out.normal = normal;
+            out.ladder = ladder;
+            out.surface = brushes.get(i).and_then(|b| b.surface.is_some().then_some(i));
+            out.owner = i
+                .checked_sub(brushes.len())
+                .and_then(|j| self.owners.get(j).copied().flatten());
         }
         out
     }
@@ -1831,10 +1864,11 @@ fn step(
     brushes: Option<Res<MapBrushes>>,
     water: Option<Res<MapWater>>,
     brush_colliders: Query<Entity, With<MapBrushCollider>>,
-    (terrain, terrain_colliders, movers): (
+    (terrain, terrain_colliders, movers, tree): (
         Option<Res<MapTerrain>>,
         Query<Entity, With<MapTerrainCollider>>,
         Query<(Entity, &MovingSolid)>,
+        Option<Res<MapBrushTree>>,
     ),
     props: Query<(Entity, &Transform, &PhysicsProp), Without<SourceMovement>>,
     surfaces: Option<Res<SurfaceGrid>>,
@@ -1925,6 +1959,7 @@ fn step(
             query: &query,
             filter: SpatialQueryFilter::from_excluded_entities(excluded).with_mask(crate::core::SOLID_LAYERS),
             brushes: brushes.as_deref(),
+            tree: tree.as_deref(),
             water: water.as_deref(),
             surfaces: surfaces.as_deref(),
             prop_surfaces: &prop_surface,
