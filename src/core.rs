@@ -758,6 +758,65 @@ pub struct MapWater(pub Vec<MapWaterVolume>);
 #[derive(Resource, Clone, Debug, Default)]
 pub struct MapBrushes(pub Vec<MapBrush>);
 
+/// The map's BSP tree over the leading `MapBrushes` (Source maps; the
+/// world's brushes). A Source trace tests brushes leaf by leaf down this
+/// tree, so of two faces hit at the same distance (a ladder flush with a
+/// player clip) the one reached first wins. Engine space.
+#[derive(Resource, Clone, Debug, Default)]
+pub struct MapBrushTree {
+    pub nodes: Vec<BrushTreeNode>,
+    /// Each leaf's brushes (indices into `MapBrushes`), in stored order.
+    pub leaves: Vec<Vec<u32>>,
+    /// Root: a node index (>= 0) or leaf -1-index.
+    pub root: i32,
+}
+
+#[derive(Clone, Debug)]
+pub struct BrushTreeNode {
+    /// Splitting plane n.p = dist; children[0] is in front of it.
+    pub normal: Vec3,
+    pub dist: f32,
+    pub children: [i32; 2],
+}
+
+impl MapBrushTree {
+    /// The order a box (half size `half`) swept from centre `from` to `to`
+    /// meets the brushes: leaves near the box's path, front to back along
+    /// the move (in front of a split plane first when moving along it),
+    /// each brush at its first leaf. `slop` widens the box when deciding
+    /// which side of a plane it touches.
+    pub fn sweep_order(&self, half: Vec3, from: Vec3, to: Vec3, slop: f32) -> Vec<u32> {
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut stack = vec![self.root];
+        while let Some(child) = stack.pop() {
+            if child < 0 {
+                for &b in self.leaves.get((-child - 1) as usize).map_or(&[][..], |l| &l[..]) {
+                    if seen.insert(b) {
+                        out.push(b);
+                    }
+                }
+                continue;
+            }
+            let Some(node) = self.nodes.get(child as usize) else { continue };
+            let offset = node.normal.abs().dot(half) + slop;
+            let (t1, t2) = (node.normal.dot(from) - node.dist, node.normal.dot(to) - node.dist);
+            if t1 >= offset && t2 >= offset {
+                stack.push(node.children[0]);
+            } else if t1 < -offset && t2 < -offset {
+                stack.push(node.children[1]);
+            } else {
+                // The side the move starts on first: the back when moving
+                // toward the front; the front when moving along the plane.
+                let first = usize::from(t1 < t2);
+                stack.push(node.children[first ^ 1]);
+                stack.push(node.children[first]);
+            }
+        }
+        out
+    }
+}
+
 /// Marks the physics collider built from the same brushes, so movement that
 /// sweeps `MapBrushes` itself can leave it out of physics queries.
 #[derive(Component, Debug)]

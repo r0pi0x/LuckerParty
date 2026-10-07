@@ -367,7 +367,8 @@ cargo run --features dev --bin movecmp -- --offline   # against the last CS:S lo
   Fuzzing water and ladders found: the 260 swim lift, CS:S's duck scale
   rule (duck held, or ducked/mid-duck at the tick's start; on ladders
   too), the per-tick contents cache at the water surface, and that a
-  coincident player-clip face wins over a ladder brush.
+  coincident player-clip face can win over a ladder brush (which one wins
+  follows the BSP tree's order, `MapBrushTree`).
 
 ## Planned
 

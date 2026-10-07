@@ -16,7 +16,7 @@ use bevy::{
 use crate::core::{MovingSolid, SpawnPoint, Team};
 // Collision-world types live in `core` (the greybox map uses them too).
 pub use crate::core::{
-    MapBrush, MapBrushCollider, MapBrushes, MapTerrain, MapTerrainCollider, MapWater, MapWaterVolume, PropSurface,
+    BrushTreeNode, MapBrush, MapBrushCollider, MapBrushTree, MapBrushes, MapTerrain, MapTerrainCollider, MapWater, MapWaterVolume, PropSurface,
 };
 
 pub mod anim;
@@ -1047,6 +1047,9 @@ pub struct MapData {
     /// Indices into `collision_brushes` of the ones line traces pass
     /// (player clips, grates, ladder-only volumes): `MapTraceSkip`.
     pub trace_skip: Vec<usize>,
+    /// The BSP tree over `collision_brushes` (Source maps), for the order
+    /// traces meet coincident faces in.
+    pub brush_tree: Option<MapBrushTree>,
     /// Feet positions.
     pub spawns: Vec<(Vec3, Option<Team>)>,
     /// Each spawn's facing as an `Intent` yaw (radians, 0 = -Z), same order
@@ -2763,6 +2766,9 @@ fn spawn_map(
         commands.insert_resource(KillHeight(floor - KILL_MARGIN));
         commands.insert_resource(MapBrushes(brushes));
         commands.insert_resource(MapTraceSkip(data.trace_skip.clone()));
+        if let Some(tree) = &data.brush_tree {
+            commands.insert_resource(tree.clone());
+        }
         if let Some(g) = data.gravity {
             commands.insert_resource(Gravity(Vec3::NEG_Y * g));
         }
@@ -2869,6 +2875,7 @@ pub fn unload_map(world: &mut World) {
     world.remove_resource::<nav::NavMesh>();
     world.remove_resource::<sound::SurfaceGrid>();
     world.remove_resource::<MapBrushes>();
+    world.remove_resource::<MapBrushTree>();
     world.remove_resource::<KillHeight>();
     world.remove_resource::<MapWater>();
     world.remove_resource::<RoundSounds>();

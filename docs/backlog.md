@@ -150,6 +150,12 @@ a first bot are in.
 
 ## 4. Bots
 
+- de_nuke's vent ladders up to A: bots now get on them (sidestepping off
+  the ladder's middle when pressing at its foot doesn't attach, since
+  clip faces flush beside it win ties on one side), but near the top they
+  turn to the next route point before clearing the lip and fall back.
+  Keep pressing into the ladder until the feet are above its top
+  (`tests/bot_nav.rs::nuke_vent_ladders_are_climbable`, ignored).
 - A CS:S bot behaviour spec (nav spec open questions 2-4) to check our
   team play against: path costs, how bots pick sites, hold and rotate,
   what they say. Ours (`bot::tactics`) plants and defuses only through
