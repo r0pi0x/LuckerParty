@@ -20,6 +20,7 @@ pub mod radar;
 pub mod radio;
 pub mod game_text;
 pub mod scoreboard;
+pub mod senses;
 pub mod team_menu;
 pub mod view;
 pub mod weapon_select;
@@ -208,6 +209,7 @@ impl Plugin for ClientPlugin {
                 radio::RadioPlugin,
                 objectives_hud::ObjectivesHudPlugin,
                 game_menu::GameMenuPlugin,
+                senses::SensesPlugin,
             ))
             .add_systems(PostStartup, spawn_local_player)
             .add_systems(Update, (follow_eye, zoom_camera));
@@ -349,6 +351,7 @@ fn follow_eye(
         (With<LocalPlayer>, Without<FirstPersonCamera>),
     >,
     mut cameras: Query<&mut Transform, With<FirstPersonCamera>>,
+    shake: Res<senses::ViewShake>,
     mode: Res<view::CameraMode>,
     free: Res<input::FreeLook>,
     mut freecam: ResMut<view::FreeCam>,
@@ -399,6 +402,12 @@ fn follow_eye(
             (inv.transform_point3(p), at.rotation.inverse() * q)
         };
         let mut cams = cameras.iter_many_mut(children);
+        // Blasts shake the eye's view (not a detached camera's).
+        let (offset, look) = if watched.is_none() && freecam.mode == 0 {
+            (offset + shake.offset, look * Quat::from_rotation_z(shake.roll))
+        } else {
+            (offset, look)
+        };
         while let Some(mut cam) = cams.fetch_next() {
             cam.translation = offset;
             cam.rotation = look;
