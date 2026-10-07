@@ -1644,6 +1644,8 @@ impl Plugin for MapPlugin {
                 ),
             )
             .add_systems(Update, (breakables::break_props, breakables::spawn_gibs, breakables::fly_gibs).chain())
+            // Before the physics step reads it (headless too).
+            .add_systems(FixedUpdate, loose::attach_loose.before(crate::core::SimSet::Movement))
             .add_systems(
                 Update,
                 (
@@ -1670,7 +1672,6 @@ impl Plugin for MapPlugin {
                         pose_bodies.after(DriveAnimation),
                         attach_held,
                         probe_lit::relight,
-                        loose::attach_loose,
                         loose::attach_shown,
                     )
                         .run_if(resource_exists::<CharacterBodies>),
@@ -1762,17 +1763,28 @@ fn spawn_map(
                 .map(|t| t.map(|i| Vec3::from(data.collision_positions[i as usize]))),
             TERRAIN_THICKNESS,
         ));
+        let positions: Vec<Vec3> = data.collision_positions.iter().map(|p| Vec3::from(*p)).collect();
         commands.entity(root).with_child((
             Name::new("Map collision (surfaces)"),
             MapPart,
             MapTerrainCollider,
             RigidBody::Static,
-            Collider::trimesh(
-                data.collision_positions.iter().map(|p| Vec3::from(*p)).collect(),
-                data.collision_indices.clone(),
-            ),
+            Collider::trimesh(positions.clone(), data.collision_indices.clone()),
+            // Loose items slide on their own copy (below).
+            CollisionLayers::new(LayerMask::DEFAULT, LayerMask::ALL & !crate::core::ITEM_LAYER),
             Transform::default(),
         ));
+        if let Some(smooth) = smooth_terrain(positions, &data.collision_indices) {
+            commands.entity(root).with_child((
+                Name::new("Map collision (surfaces, for loose items)"),
+                MapPart,
+                MapTerrainCollider,
+                RigidBody::Static,
+                smooth,
+                CollisionLayers::new(crate::core::ITEM_GROUND_LAYER, crate::core::ITEM_LAYER),
+                Transform::default(),
+            ));
+        }
     }
     if !data.collision_hulls.is_empty() {
         let hulls: Vec<_> = data
@@ -1844,6 +1856,22 @@ fn spawn_map(
     let mut envmap_variants: std::collections::HashMap<(usize, usize, bool, usize), Handle<PropMaterial>> =
         std::collections::HashMap::new();
 
+    // Headless: dropped weapons and gibs still have their bodies, undrawn.
+    if (meshes.is_none() || materials.is_none() || images.is_none() || bindposes.is_none())
+        && let Some(root) = data.characters.first().map(|c| c.root)
+    {
+        let loose = data
+            .held
+            .iter()
+            .map(|h| (h.key.clone(), loose::asset(h, root, Vec::new())))
+            .collect();
+        commands.insert_resource(loose::LooseAssets(loose));
+    }
+    if (meshes.is_none() || materials.is_none() || images.is_none() || prop_materials.is_none())
+        && let Some(gibs) = breakables::build_assets(data, &[], view, None)
+    {
+        commands.insert_resource(gibs);
+    }
     if let (Some(meshes), Some(materials), Some(images)) = (meshes.as_mut(), materials.as_mut(), images.as_mut()) {
         let textures: Vec<Handle<Image>> = data
             .textures
@@ -1924,7 +1952,7 @@ fn spawn_map(
                 commands.insert_resource(shells);
             }
             if let Some(prop_materials) = prop_materials.as_mut()
-                && let Some(gibs) = breakables::build_assets(data, &textures, view, meshes, prop_materials)
+                && let Some(gibs) = breakables::build_assets(data, &textures, view, Some((meshes, prop_materials)))
             {
                 commands.insert_resource(gibs);
             }
@@ -3368,16 +3396,41 @@ struct ShadowState {
     root: Entity,
 }
 
-/// Redraw the shadows of physics props that moved (silhouette and mesh).
+/// Redraw the shadows of physics props that moved (silhouette and mesh);
+/// a prop the logic hid (broken, killed) hides its shadow until it shows
+/// again (a round restart).
+#[allow(clippy::type_complexity)]
 fn update_prop_shadows(
     mut commands: Commands,
     state: Option<ResMut<ShadowState>>,
     moved: Query<(&PropIndex, &Transform), (With<PhysicsProp>, Changed<Transform>)>,
+    hidden: Query<&PropIndex, Added<vis::LogicHidden>>,
+    mut shown: RemovedComponents<vis::LogicHidden>,
+    props: Query<&PropIndex, Without<vis::LogicHidden>>,
+    shadow_vis: Query<Option<&vis::VisClusters>, With<PropShadow>>,
     mut images: ResMut<Assets<Image>>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
-    let Some(mut state) = state else { return };
+    let Some(mut state) = state else {
+        shown.clear();
+        return;
+    };
     let state = &mut *state;
+    for index in &hidden {
+        if let Some(e) = state.entities.get(&index.0) {
+            commands.entity(*e).insert((vis::LogicHidden, Visibility::Hidden));
+        }
+    }
+    for node in shown.read() {
+        let Ok(index) = props.get(node) else { continue };
+        if let Some(e) = state.entities.get(&index.0).copied() {
+            let on = shadow_vis.get(e).ok().flatten().is_none_or(|v| v.potentially_visible);
+            commands
+                .entity(e)
+                .remove::<vis::LogicHidden>()
+                .insert(if on { Visibility::Inherited } else { Visibility::Hidden });
+        }
+    }
     let mut atlas_dirty = false;
     for (index, t) in &moved {
         let Some(cell) = state.cells.get(&index.0).copied() else {
@@ -3832,6 +3885,21 @@ fn place_brush(planes: &[(Vec3, f32)], translation: Vec3, rotation: Quat, surfac
         ladder: false,
         surface,
     }
+}
+
+/// The collision triangles (displacements) as loose items see them: each
+/// triangle comes with its own corners, so they are merged and the mesh's
+/// internal edges fixed. On the plain mesh a small box sliding over it (a
+/// shot weapon) catches on every edge between two triangles as on a step
+/// and stops dead. Only loose items use it: physics props resting on it
+/// can sink through (a de_dust2 oil drum did), so they keep the plain one.
+fn smooth_terrain(positions: Vec<Vec3>, indices: &[[u32; 3]]) -> Option<Collider> {
+    let flags = TrimeshFlags::FIX_INTERNAL_EDGES
+        | TrimeshFlags::DELETE_DEGENERATE_TRIANGLES
+        | TrimeshFlags::DELETE_DUPLICATE_TRIANGLES;
+    Collider::try_trimesh_with_config(positions, indices.to_vec(), flags)
+        .inspect_err(|e| warn!("no smooth terrain for loose items: {e:?}"))
+        .ok()
 }
 
 /// A model's collider in model space: its collision model's convex pieces,

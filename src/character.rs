@@ -28,8 +28,8 @@ pub fn character_bundle(transform: Transform, team: Team) -> impl Bundle {
         Visibility::default(),
         RigidBody::Kinematic,
         Collider::capsule(CAPSULE_RADIUS, CAPSULE_HEIGHT - 2.0 * CAPSULE_RADIUS),
-        // Ragdolls pass through characters.
-        CollisionLayers::new(LayerMask::DEFAULT, crate::core::SOLID_LAYERS),
+        // Ragdolls and loose items pass through characters.
+        CollisionLayers::new(LayerMask::DEFAULT, crate::core::CHARACTER_FILTER),
         // Movement implementations move the character; avian must not.
         CustomPositionIntegration,
         // The app's collision hooks drop its contacts with other bodies

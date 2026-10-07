@@ -126,7 +126,8 @@ a first bot are in.
   against the vertex normals) or back-face culling of a two-sided part.
 - Dropping weapons, remaining (`drop`/G, pickup and death drops are in,
   `weapon/drop.rs`): throw speed, the re-pick delay, pickup reach and
-  mass are guesses (measure on the probe server); bullets hit loose
+  mass, friction (0.5) and the box collider are guesses (measure on
+  the probe server: how far a shot weapon skids); bullets hit loose
   weapons; the use key doesn't swap a weapon for the one you look at.
 - Ragdolls, remaining (`map/ragdoll.rs` has the spec's bodies, joints,
   self-collision pairs, death poses, impulse, bone velocities, bullet

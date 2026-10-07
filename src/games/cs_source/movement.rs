@@ -1870,7 +1870,12 @@ fn step(
         Query<(Entity, &MovingSolid)>,
         Option<Res<MapBrushTree>>,
     ),
-    props: Query<(Entity, &Transform, &PhysicsProp), Without<SourceMovement>>,
+    // Props that are there: a broken or killed one (body and collider
+    // disabled until a round restart) neither blocks nor pushes back.
+    props: Query<
+        (Entity, &Transform, &PhysicsProp),
+        (Without<SourceMovement>, Without<RigidBodyDisabled>, Without<ColliderDisabled>),
+    >,
     surfaces: Option<Res<SurfaceGrid>>,
     prop_surfaces: Query<&PropSurface>,
     bank: Option<Res<SoundBank>>,

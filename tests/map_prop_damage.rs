@@ -396,3 +396,84 @@ fn cs_militia_roof_boards_break_under_a_player() {
     sim.seconds(1.5);
     assert!(id_of(&sim, board).is_none(), "the boards broke under the player");
 }
+
+/// How far (Source units) a player standing still with their box 2 units
+/// off prop `index`'s side moves in half a second: "solid"-mode props
+/// push players back.
+fn pushed_beside(sim: &mut Sim, index: usize) -> Option<f32> {
+    use cs_source::movement::to_source;
+    use mashup::{games::cs_source::pushaway::prop_box, map::PhysicsProp};
+    let n = node(sim, index);
+    let world = sim.app.world();
+    let (t, p) = (world.get::<Transform>(n)?, world.get::<PhysicsProp>(n)?);
+    let (lo, hi) = prop_box(t, p.bounds);
+    // Feet on the prop's bottom, the box's -X face 2 units past its +X.
+    let feet = Vec3::new(hi.x + 2.0 + 16.0, (lo.y + hi.y) / 2.0, lo.z + 1.0);
+    let player = sim.spawn_character(to_engine(feet + Vec3::Z * 36.0), cs_source::movement::ID);
+    sim.ticks(2);
+    let start = to_source(sim.position(player));
+    sim.seconds(0.5);
+    let moved = (to_source(sim.position(player)) - start).truncate().length();
+    sim.app.world_mut().despawn(player);
+    Some(moved)
+}
+
+/// cs_office's chairs push players back (multiplayer "solid" mode); once
+/// a prop is gone (killed here; broken the same way) nothing is left
+/// where it stood: no push back, no blocking.
+#[test]
+fn cs_office_removed_props_stop_pushing_players() {
+    let Some(map) = load("cs_office") else { return };
+    let chairs = with_model(&map, "models/props/cs_office/chair_office.mdl");
+    assert!(chairs.len() >= 10, "{}", chairs.len());
+    let mut sim = sim(map);
+    sim.seconds(2.0);
+    let pushing: Vec<(usize, f32)> = chairs
+        .iter()
+        .filter_map(|c| Some((*c, pushed_beside(&mut sim, *c)?)))
+        .filter(|(_, m)| *m > 4.0)
+        .collect();
+    eprintln!("chairs pushing a player beside them: {pushing:?}");
+    assert!(pushing.len() >= 3, "{pushing:?}");
+    send(&mut sim, "prop_physics_multiplayer", "Kill");
+    for (c, before) in pushing {
+        assert!(id_of(&sim, c).is_none(), "chair {c} gone");
+        let after = pushed_beside(&mut sim, c).unwrap();
+        assert!(after < 0.5, "chair {c} pushed {before} whole and {after} gone");
+    }
+}
+
+/// A broken prop's pieces are bodies: they fall onto the floor and stay
+/// there, inside the map, instead of flying off.
+#[test]
+fn broken_crate_pieces_come_to_rest_on_the_floor() {
+    let Some((map, crate_)) = a_wood_crate() else { return };
+    let mut sim = sim(map);
+    sim.seconds(1.0);
+    let n = node(&mut sim, crate_);
+    let at = sim.app.world().get::<Transform>(n).unwrap().translation;
+    shoot(&mut sim, crate_, 100.0, None);
+    sim.ticks(3);
+    assert!(id_of(&sim, crate_).is_none(), "broken");
+    let pieces = |sim: &mut Sim| {
+        let world = sim.app.world_mut();
+        world
+            .query::<(&Name, &Transform, &LinearVelocity, &RigidBody)>()
+            .iter(world)
+            .filter(|(n, ..)| n.as_str() == "Gib")
+            .map(|(_, t, v, _)| (t.translation, v.0))
+            .collect::<Vec<_>>()
+    };
+    let flying = pieces(&mut sim);
+    assert_eq!(flying.len(), 7, "the crate's 7 pieces have bodies");
+    assert!(flying.iter().any(|(_, v)| v.length() > 1.0), "thrown out");
+    sim.seconds(4.0);
+    let rest = pieces(&mut sim);
+    assert_eq!(rest.len(), 7, "none gone yet (they fade after 20 s)");
+    for (p, v) in rest {
+        eprintln!("piece at {p} (crate at {at}) moving {v}");
+        assert!(v.length() < 0.05, "a piece at {p} still moving at {v}");
+        assert!(p.y > at.y - 1.0, "a piece at {p} fell through the floor (crate at {at})");
+        assert!(p.xz().distance(at.xz()) < 3.0, "a piece at {p} flew off (crate at {at})");
+    }
+}

@@ -287,8 +287,21 @@ pub struct Died {
 /// gameplay queries (movement, bullets, sight) leave them out with
 /// `SOLID_LAYERS` (specs/cs_source/ragdolls.md 4: ragdolls are debris).
 pub const RAGDOLL_LAYER: avian3d::prelude::LayerMask = avian3d::prelude::LayerMask(1 << 1);
-/// Every layer but ragdolls: the mask for gameplay spatial queries.
-pub const SOLID_LAYERS: avian3d::prelude::LayerMask = avian3d::prelude::LayerMask(!(1 << 1));
+/// Every layer but ragdolls (and the loose items' copy of the terrain):
+/// the mask for gameplay spatial queries.
+pub const SOLID_LAYERS: avian3d::prelude::LayerMask = avian3d::prelude::LayerMask(!(1 << 1) & !(1 << 3));
+/// Physics layer of loose items (dropped weapons): they collide with the
+/// world, props and each other but never with characters (Source's
+/// weapon collision group), so a weapon thrown from inside its dropper
+/// isn't shoved out of them. Shots and other gameplay queries still see
+/// them.
+pub const ITEM_LAYER: avian3d::prelude::LayerMask = avian3d::prelude::LayerMask(1 << 2);
+/// What a character's body collides with: solid things but loose items.
+pub const CHARACTER_FILTER: avian3d::prelude::LayerMask = avian3d::prelude::LayerMask(SOLID_LAYERS.0 & !ITEM_LAYER.0);
+/// The map's displacement surfaces as loose items collide with them (a
+/// copy with its internal edges fixed, `map::spawn_map`); nothing else
+/// touches or queries it.
+pub const ITEM_GROUND_LAYER: avian3d::prelude::LayerMask = avian3d::prelude::LayerMask(1 << 3);
 
 /// A speed cap the character's equipment imposes (e.g. the held weapon),
 /// meters per second. Movement implementations that model it read it.

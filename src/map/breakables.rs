@@ -1,6 +1,8 @@
 //! Breakable brushes for any game, the drawing and physics side: gibs
 //! (small models thrown when a brush breaks, flying with gravity, bouncing
-//! off the world and fading out; they never block anything) and windows
+//! off the world and fading out; a broken prop's pieces are physics
+//! bodies that tumble and come to rest; neither blocks characters or
+//! shots) and windows
 //! made of panes (`BrushPanes` on a brush entity node: only the unbroken
 //! panes are drawn and hit by shots). What breaks, and when, is the logic
 //! layer's; games load the gib models (`MapData::gibs`) and draw the
@@ -527,20 +529,56 @@ pub(super) struct GibAssets {
     light_scale: f32,
 }
 
-/// A gib model's meshes, its bounds' centre and its smallest half size
-/// (model space).
+/// A gib model's meshes (none headless), its bounds' centre, its
+/// smallest half size (model space), and the body a prop's piece gets:
+/// its collider about the centre, mass (kg) and damping.
 struct GibModel {
     parts: Vec<(Handle<Mesh>, Handle<PropMaterial>)>,
     centre: Vec3,
     radius: f32,
+    body: GibBody,
 }
 
+#[derive(Clone)]
+struct GibBody {
+    collider: Collider,
+    mass: f32,
+    damping: (f32, f32),
+}
+
+/// A piece's body: its collision model's convex pieces (Source's client
+/// prop pieces are physics objects), else its bounds' box; placed about
+/// the bounds' centre.
+fn gib_body(model: &MapModel) -> GibBody {
+    let (lo, hi) = model.bounds;
+    let centre = (lo + hi) / 2.0;
+    let hulls: Vec<(Vec3, Quat, Collider)> = model
+        .collision
+        .iter()
+        .flat_map(|c| &c.pieces)
+        .filter_map(|p| Collider::convex_hull(p.points.clone()))
+        .map(|hull| (-centre, Quat::IDENTITY, hull))
+        .collect();
+    let collider = if hulls.is_empty() {
+        let size = (hi - lo).max(Vec3::splat(0.02));
+        Collider::cuboid(size.x, size.y, size.z)
+    } else {
+        Collider::compound(hulls)
+    };
+    let c = model.collision.as_ref();
+    GibBody {
+        collider,
+        mass: c.map_or(1.0, |c| c.mass).max(0.1),
+        damping: c.map_or((0.0, 0.0), |c| (c.damping, c.rotdamping)),
+    }
+}
+
+/// Gib models, and their meshes when rendering (`render`).
 pub(super) fn build_assets(
     data: &MapData,
     textures: &[Handle<Image>],
     view: MapDebugView,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<PropMaterial>,
+    mut render: Option<(&mut Assets<Mesh>, &mut Assets<PropMaterial>)>,
 ) -> Option<GibAssets> {
     if data.gibs.is_empty() {
         return None;
@@ -553,20 +591,24 @@ pub(super) fn build_assets(
                 .models
                 .iter()
                 .map(|model| {
-                    let parts = model
-                        .meshes
-                        .iter()
-                        .map(|m| {
-                            let mut material = super::lit_prop_material(m, textures, data, view, false);
-                            material.params.dynamic = 0.0;
-                            (meshes.add(super::build_mesh(m, false)), materials.add(material))
-                        })
-                        .collect();
+                    let parts = match render.as_mut() {
+                        Some((meshes, materials)) => model
+                            .meshes
+                            .iter()
+                            .map(|m| {
+                                let mut material = super::lit_prop_material(m, textures, data, view, false);
+                                material.params.dynamic = 0.0;
+                                (meshes.add(super::build_mesh(m, false)), materials.add(material))
+                            })
+                            .collect(),
+                        None => Vec::new(),
+                    };
                     let (lo, hi) = model.bounds;
                     GibModel {
                         parts,
                         centre: (lo + hi) / 2.0,
                         radius: ((hi - lo) / 2.0).min_element().max(0.0),
+                        body: gib_body(model),
                     }
                 })
                 .collect();
@@ -590,6 +632,8 @@ pub(super) struct FlyingGib {
     prop: bool,
     /// Kept this far off what it bounces on (its smallest half size).
     radius: f32,
+    /// A physics body moves it (a prop's piece), not `state`.
+    body: bool,
     materials: Vec<Handle<PropMaterial>>,
 }
 
@@ -648,12 +692,20 @@ pub(super) fn spawn_gibs(
     light_field: Option<Res<LightField>>,
     mut materials: Option<ResMut<Assets<PropMaterial>>>,
     alive: Query<(), With<FlyingGib>>,
+    gravity: Option<Res<Gravity>>,
     mut dice: Local<u32>,
     mut commands: Commands,
 ) {
     let Some(assets) = assets else {
         events.clear();
         return;
+    };
+    // Prop pieces fall at their own gravity.
+    let world_gravity = gravity.map_or(9.81, |g| g.0.length());
+    let gravity_scale = if world_gravity > 0.0 {
+        assets.physics.prop_gravity / world_gravity
+    } else {
+        1.0
     };
     let mut count = alive.iter().count();
     for ev in events.read() {
@@ -710,22 +762,49 @@ pub(super) fn spawn_gibs(
                 age: 0.0,
                 resting: piece.frozen,
             };
-            commands
-                .spawn((
-                    Name::new("Gib"),
-                    MapPart,
-                    FlyingGib {
-                        state,
-                        life: piece.life,
-                        glass: ev.glass,
-                        prop: ev.prop,
-                        radius: if ev.prop { model.radius } else { 0.0 },
-                        materials: own.clone(),
+            // A prop's pieces are physics bodies (Source's client props):
+            // they tumble, collide with the world, props and each other,
+            // and come to rest; characters and shots pass through them
+            // (the ragdoll layer: debris). Brush gibs fly on their own.
+            let body = ev.prop;
+            let mut gib = commands.spawn((
+                Name::new("Gib"),
+                MapPart,
+                FlyingGib {
+                    state,
+                    life: piece.life,
+                    glass: ev.glass,
+                    prop: ev.prop,
+                    radius: if ev.prop { model.radius } else { 0.0 },
+                    body,
+                    materials: own.clone(),
+                },
+                Transform::from_translation(centre).with_rotation(rotation),
+                Visibility::default(),
+            ));
+            if body {
+                let b = &model.body;
+                gib.insert((
+                    if piece.frozen {
+                        RigidBody::Static
+                    } else {
+                        RigidBody::Dynamic
                     },
-                    Transform::from_translation(centre).with_rotation(rotation),
-                    Visibility::default(),
-                ))
-                .with_children(|g| {
+                    b.collider.clone(),
+                    CollisionLayers::new(crate::core::RAGDOLL_LAYER, LayerMask::DEFAULT | crate::core::RAGDOLL_LAYER),
+                    Mass(b.mass),
+                    LinearVelocity(piece.velocity),
+                    AngularVelocity(piece.spin),
+                    LinearDamping(b.damping.0),
+                    AngularDamping(b.damping.1.max(0.1)),
+                    Friction::new(0.8),
+                    Restitution::new(0.25),
+                    GravityScale(gravity_scale),
+                    MaxLinearSpeed(2000.0 * 0.0254),
+                    MaxAngularSpeed(3600f32.to_radians()),
+                ));
+            }
+            gib.with_children(|g| {
                     for ((mesh, _), material) in parts.iter().zip(own) {
                         g.spawn((
                             Mesh3d(mesh.clone()),
@@ -754,6 +833,16 @@ pub(super) fn fly_gibs(
     let dt = time.delta_secs().min(0.1);
     let filter = SpatialQueryFilter::from_excluded_entities(characters.iter());
     for (e, mut gib, mut transform) in &mut gibs {
+        if gib.body {
+            // Its body moves it; it only fades.
+            gib.state.age += dt;
+            if gib_alpha(gib.state.age, gib.life, p.fade).is_none() {
+                commands.entity(e).try_despawn();
+                continue;
+            }
+            fade(&gib, p, materials.as_deref_mut());
+            continue;
+        }
         let bounce = if gib.glass { p.glass_bounce } else { p.bounce };
         let gravity = if gib.prop { p.prop_gravity } else { p.gravity };
         let s = gib.state;
@@ -776,21 +865,28 @@ pub(super) fn fly_gibs(
             commands.entity(e).try_despawn();
             continue;
         };
-        if alpha < 1.0
-            && let Some(materials) = materials.as_mut()
-        {
-            let base = if gib.glass { p.glass_alpha } else { 1.0 };
-            for m in &gib.materials {
-                if let Some(mut material) = materials.get_mut(m) {
-                    material.alpha_mode = AlphaMode::Blend;
-                    material.params.translucent = 1.0;
-                    material.params.base_color.w = alpha * base;
-                }
-            }
+        if alpha < 1.0 {
+            fade(&gib, p, materials.as_deref_mut());
         }
         if transform.translation != gib.state.position || transform.rotation != gib.state.rotation {
             transform.translation = gib.state.position;
             transform.rotation = gib.state.rotation;
+        }
+    }
+}
+
+/// A fading gib's materials take its opacity.
+fn fade(gib: &FlyingGib, p: MapGibPhysics, materials: Option<&mut Assets<PropMaterial>>) {
+    let Some(alpha) = gib_alpha(gib.state.age, gib.life, p.fade).filter(|a| *a < 1.0) else {
+        return;
+    };
+    let Some(materials) = materials else { return };
+    let base = if gib.glass { p.glass_alpha } else { 1.0 };
+    for m in &gib.materials {
+        if let Some(mut material) = materials.get_mut(m) {
+            material.alpha_mode = AlphaMode::Blend;
+            material.params.translucent = 1.0;
+            material.params.base_color.w = alpha * base;
         }
     }
 }
