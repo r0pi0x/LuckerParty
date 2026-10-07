@@ -221,12 +221,20 @@ fn death_notices(
     };
     for d in died.read() {
         let attacker = d.attacker.filter(|a| *a != d.entity);
-        let weapon = attacker
-            .and_then(|a| who.get(a).ok())
-            .and_then(|(.., inv)| inv?.active)
-            .and_then(|w| weapons.get(w).ok())
-            .and_then(|w| {
-                let short = w.id.rsplit([':', '_']).next().unwrap_or(w.id);
+        // A thrown grenade names itself; otherwise what the killer holds.
+        let weapon = d
+            .damage
+            .weapon
+            .filter(|_| attacker.is_some())
+            .or_else(|| {
+                attacker
+                    .and_then(|a| who.get(a).ok())
+                    .and_then(|(.., inv)| inv?.active)
+                    .and_then(|w| weapons.get(w).ok())
+                    .map(|w| w.id)
+            })
+            .and_then(|id| {
+                let short = id.rsplit([':', '_']).next().unwrap_or(id);
                 hud.0.icons.get(&format!("d_{short}")).cloned()
             });
         let headshot = hits.0.get(&d.entity).is_some_and(|(_, g)| *g == Hitgroup::Head);

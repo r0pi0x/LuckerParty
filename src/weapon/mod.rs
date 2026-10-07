@@ -11,12 +11,13 @@
 mod deliver;
 pub mod drop;
 pub mod economy;
+pub mod grenade;
 
 use std::sync::Arc;
 
 use bevy::prelude::*;
 
-pub use deliver::{falloff, hitgroup_at, spread_dir};
+pub use deliver::{armor_split, falloff, hitgroup_at, quantize, spread_dir};
 
 use crate::{
     console::{Command, Console, ConsoleAppExt},
@@ -58,6 +59,7 @@ impl Plugin for WeaponPlugin {
                         .in_set(SimSet::Weapons),
                 ),
             );
+        grenade::plugin(app);
         app.init_resource::<Console>();
         app.world_mut().resource_mut::<Console>().add_command(Command {
             name: "give".into(),
@@ -750,6 +752,10 @@ pub enum WeaponEventKind {
     },
     ReloadStarted,
     Reloaded,
+    /// A grenade's pin came out (`grenade::Throwable`).
+    PinPulled,
+    /// A grenade was released (it leaves the hand a moment later).
+    Thrown,
 }
 
 // ---------------------------------------------------------------------------

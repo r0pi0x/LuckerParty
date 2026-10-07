@@ -118,6 +118,10 @@ pub struct PlayerAnim {
     fire: Option<(usize, f32)>,
     /// The reload layer: sequence and cycle.
     reload: Option<(usize, f32)>,
+    /// The grenade layer: sequence, cycle, and whether it is the throw.
+    grenade: Option<(usize, f32, bool)>,
+    /// A throw waits for the prime to reach its end.
+    throw_wanted: bool,
 }
 
 impl Default for PlayerAnim {
@@ -136,6 +140,8 @@ impl Default for PlayerAnim {
             moving: Queue::default(),
             fire: None,
             reload: None,
+            grenade: None,
+            throw_wanted: false,
         }
     }
 }
@@ -166,6 +172,10 @@ pub struct Inputs {
     pub fired: bool,
     /// A reload started this update.
     pub reloaded: bool,
+    /// A grenade's pin is out (or its throw is pending).
+    pub primed: bool,
+    /// A grenade was released this update.
+    pub threw: bool,
 }
 
 /// What the state decided: pose parameters by name and the render yaw.
@@ -303,7 +313,7 @@ impl PlayerAnim {
         a.advance(dt, now);
         let cycle = a.cycle;
         // Upper-body layers 1-4, phase-locked to the legs.
-        a.layers.resize(6, None);
+        a.layers.resize(7, None);
         let seq = |name: String| set.sequence(&name);
         let idle_name = if activity == Activity::CrouchIdle {
             format!("Crouch_Idle_Upper_{suffix}")
@@ -392,6 +402,50 @@ impl PlayerAnim {
             cycle,
             weight: 1.0,
         });
+        // Grenade layer (order 7; specs/cs_source/grenades.md 8): the
+        // prime (`<Move>_Shoot_GREN1`) plays and holds at its end while the
+        // pin is out; once it has reached its end a release plays the throw
+        // (`<Move>_Shoot_GREN2`) out. Always the grenade suffix: the
+        // thrower may hold something else by then.
+        self.throw_wanted |= i.threw;
+        let gren = |n: u8| {
+            let name = match activity {
+                Activity::Run => "Run_Shoot_GREN",
+                Activity::Walk => "Walk_Shoot_GREN",
+                Activity::CrouchIdle => "Crouch_Idle_Shoot_GREN",
+                Activity::CrouchWalk => "Crouch_Walk_Shoot_GREN",
+                _ => "Idle_Shoot_GREN",
+            };
+            set.sequence(&format!("{name}{n}"))
+                .or_else(|| set.sequence(&format!("Idle_Shoot_GREN{n}")))
+        };
+        self.grenade = match self.grenade {
+            Some((s, c, true)) => {
+                let c = c + set.cycle_rate(s, &a.params) * dt;
+                (c <= 1.0).then_some((s, c, true))
+            }
+            prime if i.primed || self.throw_wanted => {
+                let (s, c) = match prime {
+                    Some((s, c, false)) => (s, (c + set.cycle_rate(s, &a.params) * dt).min(1.0)),
+                    _ => match gren(1) {
+                        Some(s) => (s, 0.0),
+                        None => (usize::MAX, 1.0),
+                    },
+                };
+                if self.throw_wanted && c >= 1.0 {
+                    self.throw_wanted = false;
+                    gren(2).map(|s| (s, 0.0, true))
+                } else {
+                    (s != usize::MAX).then_some((s, c, false))
+                }
+            }
+            _ => None,
+        };
+        layers[6] = self.grenade.map(|(sequence, cycle, _)| Layer {
+            sequence,
+            cycle,
+            weight: 1.0,
+        });
         a.layers = layers;
         Outputs {
             move_x,
@@ -473,15 +527,21 @@ fn drive(
         Option<&Health>,
         Option<&Inventory>,
     )>,
-    weapons: Query<&Weapon>,
+    weapons: Query<(&Weapon, Option<&crate::weapon::grenade::Throwable>)>,
     mut events: MessageReader<WeaponEvent>,
     mut commands: Commands,
 ) {
-    let events: Vec<(Entity, bool)> = events
-        .read()
-        .filter_map(|e| match e.kind {
-            WeaponEventKind::Shot { .. } | WeaponEventKind::Swing { .. } => Some((e.owner, false)),
-            WeaponEventKind::ReloadStarted => Some((e.owner, true)),
+    let all: Vec<(Entity, WeaponEventKind)> = events.read().map(|e| (e.owner, e.kind.clone())).collect();
+    let threw: Vec<Entity> = all
+        .iter()
+        .filter(|(_, k)| matches!(k, WeaponEventKind::Thrown))
+        .map(|(e, _)| *e)
+        .collect();
+    let events: Vec<(Entity, bool)> = all
+        .iter()
+        .filter_map(|(owner, kind)| match kind {
+            WeaponEventKind::Shot { .. } | WeaponEventKind::Swing { .. } => Some((*owner, false)),
+            WeaponEventKind::ReloadStarted => Some((*owner, true)),
             _ => None,
         })
         .collect();
@@ -510,9 +570,15 @@ fn drive(
             jumped,
             fired: fired.contains(&e),
             reloaded: reloaded.contains(&e),
+            primed: false,
+            threw: threw.contains(&e),
         };
         let weapon = inventory.and_then(|i| i.active).and_then(|w| weapons.get(w).ok());
-        let suffix = suffix(weapon.map(|w| w.id));
+        let inputs = Inputs {
+            primed: weapon.and_then(|(_, t)| t).is_some_and(|t| t.primed()),
+            ..inputs
+        };
+        let suffix = suffix(weapon.map(|(w, _)| w.id));
         state.update(&mut animator, &inputs, suffix, dt, now);
         animator.yaw = Some(state.feet_yaw.to_radians());
     }

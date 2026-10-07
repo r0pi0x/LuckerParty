@@ -71,7 +71,13 @@ burst), HUD, deathmatch and a first bot are in.
 - Rounds, money and buying: slice 1 done (`mashup_rounds 1`,
   [plans/active/rounds.md](plans/active/rounds.md)); next: buy zones, a
   buy menu, ammo, round sounds, objectives.
-- Grenade and death animations on bodies (the reload gesture is in:
+- Grenades, remaining (HE, flashbang and smoke are in: `weapon/grenade.rs`,
+  `games/cs_source/grenades.rs`): measure the spec's open questions on the
+  probe (fuse ticks, release timing, flash amounts and overlay curve, HE vs
+  armour, smoke vs bots) and replace the fits (tech-debt); the flash's
+  after-image and DSP ringing, bots throwing grenades, the radio call,
+  the `_thrown` models.
+- Death animations on bodies (the grenade gesture is in; the reload gesture is in:
   `<Move>_Reload_<weapon>` by activity, an assumption for the spec's
   `reload_<suffix>`; shotgun start/loop/end reloads not yet).
 - Impact effects, remaining (specs/cs_source/impact_effects.md; the

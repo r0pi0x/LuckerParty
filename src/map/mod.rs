@@ -1245,6 +1245,7 @@ fn fall_out_of_map(
                         dir: Vec3::NEG_Y,
                         hitgroup: crate::core::Hitgroup::Generic,
                         kind: crate::core::DamageKind::Generic,
+                        weapon: None,
                     });
                 }
             }
@@ -1334,6 +1335,7 @@ impl Plugin for MapPlugin {
             .add_message::<SpawnGibs>()
             .add_message::<GlassShatter>()
             .init_resource::<particles::Particles>()
+            .configure_sets(Update, particles::ParticleSet::Step.before(particles::ParticleSet::Draw))
             .insert_resource(GlobalAmbientLight {
                 brightness: 600.0,
                 // Baked lighting already includes the map's ambient light.
@@ -1363,10 +1365,13 @@ impl Plugin for MapPlugin {
                     glow_visibility,
                     dust::update_dust,
                     (
-                        particles::step_particles,
-                        particles::draw_particles.run_if(
-                            resource_exists::<Assets<Mesh>>.and_then(resource_exists::<Assets<StandardMaterial>>),
-                        ),
+                        particles::step_particles.in_set(particles::ParticleSet::Step),
+                        particles::draw_particles
+                            .run_if(
+                                resource_exists::<Assets<Mesh>>
+                                    .and_then(resource_exists::<Assets<StandardMaterial>>),
+                            )
+                            .in_set(particles::ParticleSet::Draw),
                     )
                         .chain(),
                     show_skybox_in_place,
@@ -1378,6 +1383,7 @@ impl Plugin for MapPlugin {
                         pose_bodies.after(DriveAnimation),
                         attach_held,
                         loose::attach_loose,
+                        loose::attach_shown,
                     )
                         .run_if(resource_exists::<CharacterBodies>),
                     view_model::draw_view_models
@@ -2862,7 +2868,7 @@ pub struct PropShadow {
 /// A prop's physics collider (sprite glows see through static props, as
 /// the game's line test ignores them).
 #[derive(Component)]
-struct MapPropCollider;
+pub struct MapPropCollider;
 
 /// A glow sprite: drawn over everything, faded by how much of its
 /// occlusion proxy is visible.

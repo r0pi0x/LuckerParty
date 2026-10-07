@@ -258,6 +258,8 @@ impl Bot {
 const AIM_HEIGHT: f32 = 0.35;
 /// Fire when the aim is within this many degrees of the target.
 const FIRE_CONE_DEG: f32 = 3.0;
+/// Bots can't see while a flash leaves the screen whiter than this.
+const BLIND_ALPHA: f32 = 0.5;
 /// Seconds between new aim wobbles.
 const AIM_REROLL: f32 = 0.4;
 
@@ -271,8 +273,10 @@ fn think(
         &MovementState,
         &Team,
         &Health,
+        Option<&crate::core::Blinded>,
     )>,
     others: Query<(Entity, &Transform, &Team, &Health), With<Intent>>,
+    smoke: Query<&crate::core::SightBlocker>,
     spatial: SpatialQuery,
     nav: Option<Res<NavMesh>>,
     cfg: Res<BotConfig>,
@@ -287,16 +291,19 @@ fn think(
         *goals = Some((key, entities.as_deref().map(objectives).unwrap_or_default()));
     }
     let objective_points: &[Vec3] = goals.as_ref().map_or(&[], |(_, g)| g);
-    for (me, mut bot, mut intent, t, state, team, health) in &mut bots {
+    let now = time.elapsed_secs_f64();
+    for (me, mut bot, mut intent, t, state, team, health, blinded) in &mut bots {
         if health.current <= 0.0 {
             bot.target = None;
             continue;
         }
         let eye = t.translation + state.eye_offset;
+        // A flashed bot sees nothing until the white is mostly gone.
+        let blind = blinded.is_some_and(|b| b.alpha_at(now) > BLIND_ALPHA);
         // The nearest living enemy in sight.
         let mut best: Option<(Entity, Vec3, f32)> = None;
         for (e, ot, oteam, oh) in &others {
-            if e == me || oteam == team || oh.current <= 0.0 {
+            if blind || e == me || oteam == team || oh.current <= 0.0 {
                 continue;
             }
             let aim = ot.translation + Vec3::Y * AIM_HEIGHT;
@@ -310,7 +317,8 @@ fn think(
             let visible = spatial
                 .cast_ray(eye, dir, dist, true, &filter)
                 .is_none_or(|h| h.entity == e || h.distance >= dist - 0.05);
-            if visible {
+            // Nor through smoke (specs/cs_source/grenades.md Q16).
+            if visible && !smoke.iter().any(|s| s.blocks(eye, aim)) {
                 best = Some((e, aim, dist));
             }
         }

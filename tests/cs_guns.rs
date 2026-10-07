@@ -212,7 +212,10 @@ fn chest_damage_falls_off_by_each_guns_range_modifier() {
 
 #[test]
 fn helmet_headshots_take_the_armour_ratio() {
-    for (id, meters) in [(M4A1, 6.0), (AWP, 5.0), (USP, 5.0), (GLOCK, 5.0), (DEAGLE, 6.0)] {
+    // Spread is seeded by entity bits, so a new resource (resources are
+    // entities) can turn a marginal head hit into a miss: the Glock stands
+    // close enough that its cone stays on the head.
+    for (id, meters) in [(M4A1, 6.0), (AWP, 5.0), (USP, 5.0), (GLOCK, 4.0), (DEAGLE, 6.0)] {
         let (got, want) = hit(id, meters, true, true);
         assert_eq!(got, want, "{id} head with helmet at {meters} m");
     }

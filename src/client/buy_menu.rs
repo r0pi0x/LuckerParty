@@ -56,7 +56,11 @@ const CATEGORIES: [&str; 3] = ["Pistols", "Rifles", "Equipment"];
 
 /// A weapon's display name from its ID: `cs_source:weapon_m4a1` -> M4A1.
 fn label(id: &str) -> String {
-    id.rsplit(':').next().unwrap_or(id).trim_start_matches("weapon_").to_uppercase()
+    let name = id.rsplit(':').next().unwrap_or(id).trim_start_matches("weapon_").to_uppercase();
+    match name.strip_suffix("GRENADE") {
+        Some(kind) if !kind.is_empty() => format!("{kind} GRENADE"),
+        _ => name,
+    }
 }
 
 /// The items of a category, cheapest first.
@@ -74,20 +78,32 @@ fn items(category: usize, prices: &Prices, slots: &[(&'static str, u8)]) -> Vec<
                 })
             })
             .collect(),
-        _ => vec![
-            Item {
-                buy: "vest".into(),
-                label: "Kevlar".into(),
-                price: prices.vest,
-                team: None,
-            },
-            Item {
-                buy: "vesthelm".into(),
-                label: "Kevlar + Helmet".into(),
-                price: prices.vest_helmet,
-                team: None,
-            },
-        ],
+        _ => {
+            let mut out = vec![
+                Item {
+                    buy: "vest".into(),
+                    label: "Kevlar".into(),
+                    price: prices.vest,
+                    team: None,
+                },
+                Item {
+                    buy: "vesthelm".into(),
+                    label: "Kevlar + Helmet".into(),
+                    price: prices.vest_helmet,
+                    team: None,
+                },
+            ];
+            // Grenades (slot 3) are equipment.
+            out.extend(slots.iter().filter(|(_, slot)| *slot == 3).filter_map(|(id, _)| {
+                Some(Item {
+                    buy: id.to_string(),
+                    label: label(id),
+                    price: *prices.weapons.get(id)?,
+                    team: prices.team_only.get(id).copied(),
+                })
+            }));
+            out
+        }
     };
     out.sort_by_key(|i| (i.price, i.label.clone()));
     out
@@ -323,7 +339,11 @@ mod tests {
             ("cs_source:weapon_glock", 1),
             ("cs_source:weapon_ak47", 0),
             ("cs_source:weapon_knife", 2),
+            ("cs_source:weapon_hegrenade", 3),
+            ("cs_source:weapon_flashbang", 3),
         ];
+        p.weapons.insert("cs_source:weapon_hegrenade", 300);
+        p.weapons.insert("cs_source:weapon_flashbang", 200);
         let pistols = items(0, &p, &slots);
         assert_eq!(
             pistols.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(),
@@ -331,6 +351,11 @@ mod tests {
         );
         let rifles = items(1, &p, &slots);
         assert_eq!(rifles[0].team, Some(1));
-        assert_eq!(items(2, &p, &slots)[1].buy, "vesthelm");
+        let equipment = items(2, &p, &slots);
+        assert_eq!(
+            equipment.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(),
+            ["FLASHBANG", "HE GRENADE", "Kevlar", "Kevlar + Helmet"]
+        );
+        assert_eq!(equipment[3].buy, "vesthelm");
     }
 }

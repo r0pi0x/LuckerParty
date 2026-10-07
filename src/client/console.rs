@@ -1546,6 +1546,7 @@ fn client_commands(app: &mut App) {
                 dir,
                 hitgroup: group,
                 kind: DamageKind::Bullet,
+                weapon: None,
             });
             Ok(None)
         },

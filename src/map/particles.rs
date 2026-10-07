@@ -59,6 +59,15 @@ impl MapParticles {
     }
 }
 
+/// When the pool steps and draws each frame (`Update`): games that show
+/// a group for one frame only (rebuilt every frame, e.g. a smoke cloud)
+/// add it between the two, with `kill_after: Some(0.0)`.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ParticleSet {
+    Step,
+    Draw,
+}
+
 /// The loaded map's particle materials, for games to find theirs.
 #[derive(Resource, Clone, Debug, Default)]
 pub struct ParticleMaterials(pub MapParticles);
@@ -129,6 +138,9 @@ pub enum Fade {
     Dust,
     /// Full until the last `secs` seconds, then fading linearly.
     Tail(f32),
+    /// `(1 - age/life)^p` (Source's `Bias(1 - t, b)` is this with
+    /// `p = ln b / ln 0.5`).
+    Power(f32),
     /// Fade in from `start_alpha` to 1 between life fractions `fade_in`,
     /// out to 0 between `fade_out` (particle-system alpha fade). An empty
     /// fade-in window holds `start_alpha` until it.
@@ -149,6 +161,7 @@ impl Fade {
                 if r >= 0.75 { r } else { r * r }
             }
             Fade::Tail(secs) => ((life - age) / secs).clamp(0.0, 1.0),
+            Fade::Power(p) => (1.0 - t).clamp(0.0, 1.0).powf(p),
             Fade::Windows {
                 start_alpha,
                 fade_in,

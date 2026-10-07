@@ -159,6 +159,7 @@ fn kill(sim: &mut Sim, p: Entity, hitgroup: Hitgroup, point: Vec3, dir: Vec3) {
         dir,
         hitgroup,
         kind: DamageKind::Bullet,
+        weapon: None,
     });
 }
 

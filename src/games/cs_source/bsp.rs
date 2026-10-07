@@ -134,7 +134,7 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
     data.particles = super::impact_effects::load_materials(&mut materials);
     // What characters hold: the weapons' world models.
     if let Some(skeleton) = data.characters.first().map(|c| c.bones.clone()) {
-        for (weapon, path) in super::weapons::WORLD_MODELS {
+        for (weapon, path) in super::weapons::WORLD_MODELS.iter().chain(super::grenades::WORLD_MODELS) {
             match super::props::load_held(&mut materials, path, weapon, &skeleton) {
                 Ok(h) => data.held.push(h),
                 Err(e) => data.warnings.push(e),
@@ -149,7 +149,7 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
         }
     }
     // What the local player sees of them: the view models.
-    for (weapon, path, right_handed) in super::weapons::VIEW_MODELS {
+    for (weapon, path, right_handed) in super::weapons::VIEW_MODELS.iter().chain(super::grenades::VIEW_MODELS) {
         match super::props::load_view_model(&mut materials, path, weapon, *right_handed) {
             Ok(v) => data.view_models.push(v),
             Err(e) => data.warnings.push(e),
