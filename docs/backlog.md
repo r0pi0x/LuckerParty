@@ -60,15 +60,14 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
 ## 3. Weapons, remaining
 
 In progress: [plans/active/weapons.md](plans/active/weapons.md). The
-framework, knife, AK-47, M4A1, AWP, USP, Glock, Deagle (zoom, silencers,
-burst), HUD, deathmatch and a first bot are in.
+framework, the knife, every CS:S gun (zoom, silencers, bursts, pellets,
+shell-by-shell reloads, the dual Elites), grenades, HUD, deathmatch and
+a first bot are in.
 
-- The other CS:S guns from the spec's script tables, as `Gun` rows in
-  `games/cs_source/weapons.rs`: rifles (aug, famas with its burst, galil,
-  sg552 and aug scopes), snipers (scout, sg550, g3sg1), SMGs, m249,
-  p228/fiveseven/elite; their recoil isn't measured (probe M3 first), nor
-  the 556MM/9MM/57MM/357SIG penetration. Shotguns (m3, xm1014) need
-  pellets plus the shell-by-shell reload (M9).
+- Probe the new guns' unmeasured rules (listed in the weapons plan):
+  recoil of most guns, the shotgun reload and pellets, the other ammo
+  types' penetration. Buying ammo (CS:S's menu keys 6 and 7) isn't in:
+  reserves start full.
 - The AWP's view model is in (MDL v48 reads like v44,
   specs/cs_source/mdl_v48.md); compare its fire and reload against the
   game. HL2 v48 models with zero-frame data (streamed) aren't handled.
@@ -85,7 +84,7 @@ burst), HUD, deathmatch and a first bot are in.
   the `_thrown` models.
 - Death animations on bodies (the grenade gesture is in; the reload gesture is in:
   `<Move>_Reload_<weapon>` by activity, an assumption for the spec's
-  `reload_<suffix>`; shotgun start/loop/end reloads not yet).
+  `reload_<suffix>`, with the shotguns' `_start/_loop/_end`).
 - Impact effects, remaining (specs/cs_source/impact_effects.md; the
   surface effects, blood, bullet splashes and pane glass shards are in):
   section 9's exact shard burst at the hit point (ours spreads shards

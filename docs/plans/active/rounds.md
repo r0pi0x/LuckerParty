@@ -33,9 +33,10 @@ restarts.
 2. Buy zones: `func_buyzone` by team is in (`economy::in_buy_zone`; maps
    without zones let you buy anywhere, CS:S would make zones around the
    spawns), the buy menu doesn't yet say why a buy failed. Ammo buying
-   (`primammo`/`secammo`), bot buying preferences (ours: `economy::autobuy`, the dearest primary for the team then armour), the game's own VGUI buy-menu look
-   (ours: `client/buy_menu.rs`, B or `buymenu`, number keys, team-only
-   guns marked; rounds start from the team pistol and knife).
+   (`primammo`/`secammo`), bot buying preferences (ours: `economy::autobuy`, a primary for the team by `Prices::bot_weights` among the dearer half it can afford, then armour), the game's own VGUI buy-menu look
+   (ours: `client/buy_menu.rs`, B or `buymenu`, CS:S's category keys
+   and order, each team its own guns; rounds start from the team pistol
+   and knife).
 3. Round restarts re-creating map entities: done. `start_round` counts
    `core::RoundRestarts` up; the logic bridge re-creates its world from
    the map's entities (`LogicWorld::round_restart`: doors, buttons,

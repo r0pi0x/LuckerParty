@@ -18,8 +18,8 @@ use crate::{
     core::{Intent, MovementState, SimSet, Velocity},
     weapon::{
         AltModes, Burst, CharacterPass, DamageEffect, FireTiming, HitgroupScale, Hitscan, Inventory, Magazine, Melee,
-        PassMaterial, PassMaterials, Penetration, RegisterWeapons, SpreadShape, StartingWeapons, Swing, Trigger,
-        ViewPunch, Weapon, WeaponEvent, WeaponEventKind, WeaponFrame, WeaponSounds, Zoom,
+        PassMaterial, PassMaterials, Penetration, RegisterWeapons, ShellReload, SpreadShape, StartingWeapons, Swing,
+        Trigger, ViewPunch, Weapon, WeaponEvent, WeaponEventKind, WeaponFrame, WeaponSounds, Zoom,
     },
 };
 
@@ -34,6 +34,24 @@ pub const AWP: &str = "cs_source:weapon_awp";
 pub const USP: &str = "cs_source:weapon_usp";
 pub const GLOCK: &str = "cs_source:weapon_glock";
 pub const DEAGLE: &str = "cs_source:weapon_deagle";
+pub const FAMAS: &str = "cs_source:weapon_famas";
+pub const GALIL: &str = "cs_source:weapon_galil";
+pub const AUG: &str = "cs_source:weapon_aug";
+pub const SG552: &str = "cs_source:weapon_sg552";
+pub const SCOUT: &str = "cs_source:weapon_scout";
+pub const SG550: &str = "cs_source:weapon_sg550";
+pub const G3SG1: &str = "cs_source:weapon_g3sg1";
+pub const MAC10: &str = "cs_source:weapon_mac10";
+pub const TMP: &str = "cs_source:weapon_tmp";
+pub const MP5NAVY: &str = "cs_source:weapon_mp5navy";
+pub const UMP45: &str = "cs_source:weapon_ump45";
+pub const P90: &str = "cs_source:weapon_p90";
+pub const M249: &str = "cs_source:weapon_m249";
+pub const P228: &str = "cs_source:weapon_p228";
+pub const FIVESEVEN: &str = "cs_source:weapon_fiveseven";
+pub const ELITE: &str = "cs_source:weapon_elite";
+pub const M3: &str = "cs_source:weapon_m3";
+pub const XM1014: &str = "cs_source:weapon_xm1014";
 
 /// World models (the script's `playermodel`), held by characters.
 pub const WORLD_MODELS: &[(&str, &str)] = &[
@@ -44,6 +62,24 @@ pub const WORLD_MODELS: &[(&str, &str)] = &[
     (USP, "models/weapons/w_pist_usp.mdl"),
     (GLOCK, "models/weapons/w_pist_glock18.mdl"),
     (DEAGLE, "models/weapons/w_pist_deagle.mdl"),
+    (FAMAS, "models/weapons/w_rif_famas.mdl"),
+    (GALIL, "models/weapons/w_rif_galil.mdl"),
+    (AUG, "models/weapons/w_rif_aug.mdl"),
+    (SG552, "models/weapons/w_rif_sg552.mdl"),
+    (SCOUT, "models/weapons/w_snip_scout.mdl"),
+    (SG550, "models/weapons/w_snip_sg550.mdl"),
+    (G3SG1, "models/weapons/w_snip_g3sg1.mdl"),
+    (MAC10, "models/weapons/w_smg_mac10.mdl"),
+    (TMP, "models/weapons/w_smg_tmp.mdl"),
+    (MP5NAVY, "models/weapons/w_smg_mp5.mdl"),
+    (UMP45, "models/weapons/w_smg_ump45.mdl"),
+    (P90, "models/weapons/w_smg_p90.mdl"),
+    (M249, "models/weapons/w_mach_m249para.mdl"),
+    (P228, "models/weapons/w_pist_p228.mdl"),
+    (FIVESEVEN, "models/weapons/w_pist_fiveseven.mdl"),
+    (ELITE, "models/weapons/w_pist_elite.mdl"),
+    (M3, "models/weapons/w_shot_m3super90.mdl"),
+    (XM1014, "models/weapons/w_shot_xm1014.mdl"),
 ];
 
 /// World models with the silencer on (the scripts' `SilencerModel`), held
@@ -64,8 +100,10 @@ pub fn silenced_key(id: &str) -> String {
 /// The scripts are encrypted, so handedness comes from the models: the AK
 /// is held left of the eye (left-handed), the knife right of it
 /// (`tests/map_de_dust2.rs::view_model_handedness_in_the_files`). With the
-/// default `cl_righthand 1` only the AK is mirrored, so both end up in the
-/// right hand, as CS:S shows them.
+/// default `cl_righthand 1` the left-handed ones are mirrored, so all end
+/// up in the right hand, as CS:S shows them. Built right-handed (muzzle
+/// right of the eye): the knife, FAMAS, Galil, M249 and the Elites (whose
+/// first muzzle is the right pistol's).
 pub const VIEW_MODELS: &[(&str, &str, bool)] = &[
     (KNIFE, "models/weapons/v_knife_t.mdl", true),
     (AK47, "models/weapons/v_rif_ak47.mdl", false),
@@ -74,6 +112,24 @@ pub const VIEW_MODELS: &[(&str, &str, bool)] = &[
     (USP, "models/weapons/v_pist_usp.mdl", false),
     (GLOCK, "models/weapons/v_pist_glock18.mdl", false),
     (DEAGLE, "models/weapons/v_pist_deagle.mdl", false),
+    (FAMAS, "models/weapons/v_rif_famas.mdl", true),
+    (GALIL, "models/weapons/v_rif_galil.mdl", true),
+    (AUG, "models/weapons/v_rif_aug.mdl", false),
+    (SG552, "models/weapons/v_rif_sg552.mdl", false),
+    (SCOUT, "models/weapons/v_snip_scout.mdl", false),
+    (SG550, "models/weapons/v_snip_sg550.mdl", false),
+    (G3SG1, "models/weapons/v_snip_g3sg1.mdl", false),
+    (MAC10, "models/weapons/v_smg_mac10.mdl", false),
+    (TMP, "models/weapons/v_smg_tmp.mdl", false),
+    (MP5NAVY, "models/weapons/v_smg_mp5.mdl", false),
+    (UMP45, "models/weapons/v_smg_ump45.mdl", false),
+    (P90, "models/weapons/v_smg_p90.mdl", false),
+    (M249, "models/weapons/v_mach_m249para.mdl", true),
+    (P228, "models/weapons/v_pist_p228.mdl", false),
+    (FIVESEVEN, "models/weapons/v_pist_fiveseven.mdl", false),
+    (ELITE, "models/weapons/v_pist_elite.mdl", true),
+    (M3, "models/weapons/v_shot_m3super90.mdl", false),
+    (XM1014, "models/weapons/v_shot_xm1014.mdl", false),
 ];
 
 /// Sound entries the weapons use, for precaching with the map's sounds:
@@ -183,6 +239,24 @@ impl Plugin for CsWeaponsPlugin {
             .register_weapon(USP, |e| gun(e, &USP_GUN))
             .register_weapon(GLOCK, |e| gun(e, &GLOCK_GUN))
             .register_weapon(DEAGLE, |e| gun(e, &DEAGLE_GUN))
+            .register_weapon(FAMAS, |e| gun(e, &FAMAS_GUN))
+            .register_weapon(GALIL, |e| gun(e, &GALIL_GUN))
+            .register_weapon(AUG, |e| gun(e, &AUG_GUN))
+            .register_weapon(SG552, |e| gun(e, &SG552_GUN))
+            .register_weapon(SCOUT, |e| gun(e, &SCOUT_GUN))
+            .register_weapon(SG550, |e| gun(e, &SG550_GUN))
+            .register_weapon(G3SG1, |e| gun(e, &G3SG1_GUN))
+            .register_weapon(MAC10, |e| gun(e, &MAC10_GUN))
+            .register_weapon(TMP, |e| gun(e, &TMP_GUN))
+            .register_weapon(MP5NAVY, |e| gun(e, &MP5NAVY_GUN))
+            .register_weapon(UMP45, |e| gun(e, &UMP45_GUN))
+            .register_weapon(P90, |e| gun(e, &P90_GUN))
+            .register_weapon(M249, |e| gun(e, &M249_GUN))
+            .register_weapon(P228, |e| gun(e, &P228_GUN))
+            .register_weapon(FIVESEVEN, |e| gun(e, &FIVESEVEN_GUN))
+            .register_weapon(ELITE, |e| gun(e, &ELITE_GUN))
+            .register_weapon(M3, |e| gun(e, &M3_GUN))
+            .register_weapon(XM1014, |e| gun(e, &XM1014_GUN))
             .insert_resource(prices())
             .add_message::<WeaponEvent>()
             .add_systems(
@@ -218,16 +292,140 @@ fn prices() -> crate::weapon::economy::Prices {
         helmet: 350,
         ..default()
     };
-    for (id, price) in [(AK47, 2500), (M4A1, 3100), (AWP, 4750), (USP, 500), (GLOCK, 400), (DEAGLE, 650)] {
-        p.weapons.insert(id, price);
+    for (id, price, team) in BUY {
+        p.weapons.insert(id, *price);
+        if let Some(team) = team {
+            p.team_only.insert(id, *team);
+        }
     }
     for (id, price, _) in super::grenades::GRENADES {
         p.weapons.insert(id, *price);
     }
-    // The scripts' team column (our team 1: terrorists, 2: CTs).
-    p.team_only.insert(AK47, 1);
-    p.team_only.insert(M4A1, 2);
+    p.menu = menu();
+    // Computer players mostly buy the team rifles (ours; CS:S's bot
+    // profiles aren't in the spec).
+    for (id, weight) in BOT_WEIGHTS {
+        p.bot_weights.insert(id, *weight);
+    }
     p
+}
+
+/// Every gun's `WeaponPrice` and `Team` (spec weapons.md, "Economy": our
+/// team 1 terrorists, 2 CTs; None: anyone).
+pub const BUY: &[(&str, u32, Option<u8>)] = &[
+    (GLOCK, 400, None),
+    (USP, 500, None),
+    (P228, 600, None),
+    (DEAGLE, 650, None),
+    (ELITE, 800, Some(1)),
+    (FIVESEVEN, 750, Some(2)),
+    (M3, 1700, None),
+    (XM1014, 3000, None),
+    (MAC10, 1400, Some(1)),
+    (TMP, 1250, Some(2)),
+    (MP5NAVY, 1500, None),
+    (UMP45, 1700, None),
+    (P90, 2350, None),
+    (GALIL, 2000, Some(1)),
+    (FAMAS, 2250, Some(2)),
+    (AK47, 2500, Some(1)),
+    (M4A1, 3100, Some(2)),
+    (SCOUT, 2750, None),
+    (SG552, 3500, Some(1)),
+    (AUG, 3500, Some(2)),
+    (AWP, 4750, None),
+    (G3SG1, 5000, Some(1)),
+    (SG550, 4200, Some(2)),
+    (M249, 5750, None),
+];
+
+/// How much bots like each primary when buying (`Prices::bot_weights`).
+const BOT_WEIGHTS: &[(&str, f32)] = &[
+    (AK47, 8.0),
+    (M4A1, 8.0),
+    (GALIL, 3.0),
+    (FAMAS, 3.0),
+    (SG552, 3.0),
+    (AUG, 3.0),
+    (AWP, 2.0),
+    (MP5NAVY, 2.0),
+    (P90, 2.0),
+    (UMP45, 1.0),
+    (MAC10, 1.0),
+    (TMP, 1.0),
+    (M3, 1.0),
+    (XM1014, 1.0),
+    (SCOUT, 1.0),
+    (G3SG1, 0.5),
+    (SG550, 0.5),
+    (M249, 0.5),
+];
+
+/// CS:S's buy menu: its categories on their number keys (6 and 7, ammo,
+/// aren't bought separately here: reserves start full) and items in its
+/// order; each team sees its own.
+fn menu() -> Vec<crate::weapon::economy::BuyCategory> {
+    use crate::weapon::economy::{BuyCategory, BuyItem};
+    let category = |key: u8, name: &'static str, items: &[(&'static str, &'static str)]| BuyCategory {
+        key,
+        name,
+        items: items.iter().map(|(buy, label)| BuyItem { buy, label }).collect(),
+    };
+    use super::grenades::{FLASHBANG, HEGRENADE, SMOKEGRENADE};
+    vec![
+        category(
+            1,
+            "Pistols",
+            &[
+                (GLOCK, "Glock"),
+                (USP, "USP"),
+                (P228, "P228"),
+                (DEAGLE, "Desert Eagle"),
+                (ELITE, "Dual Elites"),
+                (FIVESEVEN, "Five-SeveN"),
+            ],
+        ),
+        category(2, "Shotguns", &[(M3, "M3"), (XM1014, "XM1014")]),
+        category(
+            3,
+            "Sub-Machine Guns",
+            &[
+                (MAC10, "MAC-10"),
+                (TMP, "TMP"),
+                (MP5NAVY, "MP5"),
+                (UMP45, "UMP45"),
+                (P90, "P90"),
+            ],
+        ),
+        category(
+            4,
+            "Rifles",
+            &[
+                (GALIL, "Galil"),
+                (FAMAS, "FAMAS"),
+                (AK47, "AK-47"),
+                (M4A1, "M4A1"),
+                (SCOUT, "Scout"),
+                (SG552, "SG 552"),
+                (AUG, "AUG"),
+                (AWP, "AWP"),
+                (G3SG1, "G3SG1"),
+                (SG550, "SG 550"),
+            ],
+        ),
+        category(5, "Machine Guns", &[(M249, "M249")]),
+        category(
+            8,
+            "Equipment",
+            &[
+                ("vest", "Kevlar"),
+                ("vesthelm", "Kevlar + Helmet"),
+                (FLASHBANG, "Flashbang"),
+                (HEGRENADE, "HE Grenade"),
+                (SMOKEGRENADE, "Smoke Grenade"),
+            ],
+        ),
+    ]
 }
 
 fn knife(e: &mut EntityWorldMut) {
@@ -342,6 +540,23 @@ pub const AMMO_9MM: Ammo = Ammo {
     max: 120,
 };
 
+/// 357SIG: UNMEASURED power and distance: 45ACP's (the measured pistol
+/// round).
+pub const AMMO_357SIG: Ammo = Ammo { max: 52, ..AMMO_45ACP };
+/// 57MM: UNMEASURED power and distance: 45ACP's.
+pub const AMMO_57MM: Ammo = Ammo { max: 100, ..AMMO_45ACP };
+/// BUCKSHOT: UNMEASURED power and distance (per pellet): 45ACP's.
+pub const AMMO_BUCKSHOT: Ammo = Ammo { max: 32, ..AMMO_45ACP };
+/// 556MM_BOX (the M249's): UNMEASURED power and distance: 556MM's.
+pub const AMMO_556MM_BOX: Ammo = Ammo { max: 200, ..AMMO_556MM };
+
+/// Which hand of the dual Elites fires the shot that leaves `clip` rounds:
+/// they alternate (spec weapons.md, view-model table), the right one on
+/// even counts (ours: the full 30 fires left first).
+pub fn elite_right_hand(clip: u32) -> bool {
+    clip.is_multiple_of(2)
+}
+
 /// The script's accuracy keys for one mode (`Spread`, `Inaccuracy*`; the
 /// alternate mode's are the `*Alt` keys), tangent units.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -376,11 +591,14 @@ impl AccuracyKeys {
 #[derive(Clone, Copy, Debug)]
 pub enum Alt {
     None,
-    /// Scope levels (FOV per level) and the zoomed max speed (M15); a shot
-    /// unzooms until the next one may fire.
+    /// Zoom levels (FOV per level) and the zoomed max speed (M15; None:
+    /// unchanged); `unzoom`: a shot unzooms until the next one may fire
+    /// (AWP, scout); `overlay`: a sniper scope (no view model).
     Scope {
         fov: &'static [f32],
-        speed: f32,
+        speed: Option<f32>,
+        unzoom: bool,
+        overlay: bool,
     },
     /// Screw the silencer on or off; both attacks wait `time` (M16).
     Silencer {
@@ -412,8 +630,12 @@ pub struct Gun {
     pub clip: u32,
     /// `primary_ammo`.
     pub ammo: Ammo,
-    /// The view model's reload duration, s.
+    /// The view model's reload duration, s (a shotgun's: one shell's).
     pub reload: f32,
+    /// Shell by shell (shotguns): the reload's start and each shell, s.
+    pub shells: Option<(f32, f32)>,
+    /// `TimeToIdle`, s (0: none).
+    pub idle: f32,
     /// `Damage`, hit points.
     pub damage: f32,
     /// `Range`, units.
@@ -422,6 +644,8 @@ pub struct Gun {
     pub range_modifier: f32,
     /// `Penetration`: objects passed.
     pub penetration: u32,
+    /// `Bullets`: pellets per shot.
+    pub pellets: u32,
     /// `WeaponArmorRatio`.
     pub armor_ratio: f32,
     pub accuracy: AccuracyKeys,
@@ -444,10 +668,15 @@ pub struct Gun {
 /// start: its animation events (event 5004, at cycle x duration), read
 /// from the install's model (`dump cs_source --sequences`).
 pub struct ModelSounds {
+    /// From the reload's start (a shotgun's: from each shell's insert).
     pub reload: &'static [(f32, &'static str)],
     pub draw: &'static [(f32, &'static str)],
     /// The silencer going on (mode 1) and off (mode 0).
     pub modes: &'static [(u8, f32, &'static str)],
+    /// From each shot (the fire sequence's, e.g. the scout's bolt).
+    pub fire: &'static [(f32, &'static str)],
+    /// From the end of a shell-by-shell reload (its finish sequence).
+    pub finish: &'static [(f32, &'static str)],
 }
 
 impl ModelSounds {
@@ -455,12 +684,17 @@ impl ModelSounds {
         reload: &[],
         draw: &[],
         modes: &[],
+        fire: &[],
+        finish: &[],
     };
 
     fn entries(&self) -> impl Iterator<Item = &'static str> {
-        let reload = self.reload.iter().map(|(_, s)| *s);
-        let draw = self.draw.iter().map(|(_, s)| *s);
-        reload.chain(draw).chain(self.modes.iter().map(|(_, _, s)| *s))
+        let timed = [self.reload, self.draw, self.fire, self.finish];
+        timed
+            .into_iter()
+            .flatten()
+            .map(|(_, s)| *s)
+            .chain(self.modes.iter().map(|(_, _, s)| *s))
     }
 }
 
@@ -472,6 +706,34 @@ const NO_CAP: f32 = 90.0;
 /// not measured (UNMEASURED: the same).
 const SEMI_AUTO_KICK: [Kick; 4] = [Kick::new((2.0, 0.0), (0.0, 0.0), (NO_CAP, NO_CAP)); 4];
 
+/// The AK-47's standing, crouched, moving and airborne sets (M3).
+const AK47_KICK: [Kick; 4] = [
+    Kick::new((1.0, 0.175), (0.375, 0.0375), (5.75, 1.75)),
+    // Caps not reached when measured: the standing ones.
+    Kick::new((0.9, 0.15), (0.35, 0.025), (5.75, 1.75)),
+    Kick::new((1.5, 0.225), (0.45, 0.05), (6.5, 2.5)),
+    Kick::new((2.0, 0.5), (1.0, 0.35), (9.0, 6.0)),
+];
+
+/// The M4A1's standing and crouched sets (M3); UNMEASURED: moving and
+/// airborne as standing.
+const M4A1_KICK: [Kick; 4] = [
+    Kick::new((0.65, 0.25), (0.35, 0.015), (3.5, 2.25)),
+    Kick::new((0.6, 0.2), (0.3, 0.0125), (3.25, 2.0)),
+    Kick::new((0.65, 0.25), (0.35, 0.015), (3.5, 2.25)),
+    Kick::new((0.65, 0.25), (0.35, 0.015), (3.5, 2.25)),
+];
+
+/// Shotguns: UNMEASURED; the SDK template's shotgun (spec weapons.md,
+/// constants): a whole 4-6 degrees up on the ground, 8-11 in the air, no
+/// sideways part.
+const SHOTGUN_KICK: [Kick; 4] = [
+    Kick::random_up(4.0, 6.0),
+    Kick::random_up(4.0, 6.0),
+    Kick::random_up(4.0, 6.0),
+    Kick::random_up(8.0, 11.0),
+];
+
 pub const AK47_GUN: Gun = Gun {
     id: AK47,
     slot: 0,
@@ -482,21 +744,18 @@ pub const AK47_GUN: Gun = Gun {
     clip: 30,
     ammo: AMMO_762MM,
     reload: 2.4324,
+    shells: None,
+    idle: 1.9,
     damage: 36.0,
     range: 8192.0,
     range_modifier: 0.98,
     penetration: 2,
+    pellets: 1,
     armor_ratio: 1.55,
     accuracy: AccuracyKeys::new([0.0006, 0.00687, 0.00916, 0.43044, 0.08609, 0.01158, 0.09222]),
     accuracy_alt: None,
     recovery: (0.34868, 0.48815),
-    recoil: Some([
-        Kick::new((1.0, 0.175), (0.375, 0.0375), (5.75, 1.75)),
-        // Caps not reached when measured: the standing ones.
-        Kick::new((0.9, 0.15), (0.35, 0.025), (5.75, 1.75)),
-        Kick::new((1.5, 0.225), (0.45, 0.05), (6.5, 2.5)),
-        Kick::new((2.0, 0.5), (1.0, 0.35), (9.0, 6.0)),
-    ]),
+    recoil: Some(AK47_KICK),
     alt: Alt::None,
     fire: "Weapon_AK47.Single",
     fire_alt: None,
@@ -505,6 +764,8 @@ pub const AK47_GUN: Gun = Gun {
         reload: &[(0.35, "Weapon_AK47.Clipout"), (1.54, "Weapon_AK47.Clipin")],
         draw: &[(0.3667, "Weapon_AK47.BoltPull")],
         modes: &[],
+        fire: &[],
+        finish: &[],
     },
 };
 
@@ -518,23 +779,20 @@ pub const M4A1_GUN: Gun = Gun {
     clip: 30,
     ammo: AMMO_556MM,
     reload: 3.0541,
+    shells: None,
+    idle: 1.5,
     damage: 33.0,
     range: 8192.0,
     range_modifier: 0.97,
     penetration: 2,
+    pellets: 1,
     armor_ratio: 1.4,
     accuracy: AccuracyKeys::new([0.0006, 0.00525, 0.007, 0.34151, 0.0683, 0.01266, 0.06872]),
     accuracy_alt: Some(AccuracyKeys::new([
         0.00054, 0.00525, 0.007, 0.34846, 0.06969, 0.01165, 0.07039,
     ])),
     recovery: (0.26973, 0.37762),
-    recoil: Some([
-        Kick::new((0.65, 0.25), (0.35, 0.015), (3.5, 2.25)),
-        Kick::new((0.6, 0.2), (0.3, 0.0125), (3.25, 2.0)),
-        // UNMEASURED: moving and airborne as standing.
-        Kick::new((0.65, 0.25), (0.35, 0.015), (3.5, 2.25)),
-        Kick::new((0.65, 0.25), (0.35, 0.015), (3.5, 2.25)),
-    ]),
+    recoil: Some(M4A1_KICK),
     alt: Alt::Silencer { time: 2.0 },
     fire: "Weapon_M4A1.Single",
     fire_alt: Some("Weapon_M4A1.Silenced"),
@@ -552,10 +810,13 @@ pub const AWP_GUN: Gun = Gun {
     clip: 10,
     ammo: AMMO_338MAG,
     reload: 3.6667,
+    shells: None,
+    idle: 2.0,
     damage: 115.0,
     range: 8192.0,
     range_modifier: 0.99,
     penetration: 3,
+    pellets: 1,
     armor_ratio: 1.95,
     accuracy: AccuracyKeys::new([0.0002, 0.0606, 0.0808, 0.546, 0.0546, 0.14, 0.273]),
     accuracy_alt: Some(AccuracyKeys::new([0.0002, 0.0015, 0.002, 0.546, 0.0546, 0.14, 0.273])),
@@ -563,7 +824,9 @@ pub const AWP_GUN: Gun = Gun {
     recoil: Some(SEMI_AUTO_KICK),
     alt: Alt::Scope {
         fov: &[40.0, 10.0],
-        speed: 150.0,
+        speed: Some(150.0),
+        unzoom: true,
+        overlay: true,
     },
     fire: "Weapon_AWP.Single",
     fire_alt: None,
@@ -582,10 +845,13 @@ pub const USP_GUN: Gun = Gun {
     clip: 12,
     ammo: AMMO_45ACP,
     reload: 2.6757,
+    shells: None,
+    idle: 0.0,
     damage: 34.0,
     range: 4096.0,
     range_modifier: 0.79,
     penetration: 1,
+    pellets: 1,
     armor_ratio: 1.0,
     accuracy: AccuracyKeys::new([0.004, 0.006, 0.008, 0.28725, 0.05745, 0.03495, 0.01724]),
     accuracy_alt: Some(AccuracyKeys::new([
@@ -610,10 +876,13 @@ pub const GLOCK_GUN: Gun = Gun {
     clip: 20,
     ammo: AMMO_9MM,
     reload: 2.1429,
+    shells: None,
+    idle: 0.0,
     damage: 25.0,
     range: 4096.0,
     range_modifier: 0.75,
     penetration: 1,
+    pellets: 1,
     armor_ratio: 1.05,
     accuracy: AccuracyKeys::new([0.004, 0.0075, 0.01, 0.2775, 0.0555, 0.03167, 0.01665]),
     accuracy_alt: Some(AccuracyKeys::new([
@@ -644,10 +913,13 @@ pub const DEAGLE_GUN: Gun = Gun {
     clip: 7,
     ammo: AMMO_50AE,
     reload: 2.1667,
+    shells: None,
+    idle: 0.0,
     damage: 54.0,
     range: 4096.0,
     range_modifier: 0.81,
     penetration: 2,
+    pellets: 1,
     armor_ratio: 1.5,
     accuracy: AccuracyKeys::new([0.004, 0.00975, 0.013, 0.345, 0.069, 0.055, 0.0207]),
     accuracy_alt: None,
@@ -658,6 +930,592 @@ pub const DEAGLE_GUN: Gun = Gun {
     fire_alt: None,
     empty: "Default.ClipEmpty_Pistol",
     model_sounds: DEAGLE_SOUNDS,
+};
+
+pub const FAMAS_GUN: Gun = Gun {
+    id: FAMAS,
+    slot: 0,
+    draw: 1.0,
+    max_speed: 220.0,
+    automatic: true,
+    cycle: 0.09,
+    clip: 25,
+    ammo: AMMO_556MM,
+    reload: 3.3333,
+    shells: None,
+    idle: 1.1,
+    damage: 30.0,
+    range: 8192.0,
+    range_modifier: 0.96,
+    penetration: 2,
+    pellets: 1,
+    armor_ratio: 1.4,
+    accuracy: AccuracyKeys::new([0.0006, 0.00412, 0.00549, 0.36527, 0.07305, 0.01186, 0.0698]),
+    accuracy_alt: Some(AccuracyKeys::new([
+        0.0006, 0.00412, 0.00549, 0.36527, 0.07305, 0.00593, 0.0698,
+    ])),
+    recovery: (0.30328, 0.4246),
+    // UNMEASURED: the M4A1's sets (both 5.56 CT rifles at 0.09 s).
+    recoil: Some(M4A1_KICK),
+    // Measured M16: 3 rounds 5-6 ticks apart, held a new burst every 36-37 ticks.
+    alt: Alt::Burst {
+        interval: 0.08,
+        refire: 0.55,
+    },
+    fire: "Weapon_FAMAS.Single",
+    fire_alt: None,
+    empty: "Default.ClipEmpty_Rifle",
+    model_sounds: FAMAS_SOUNDS,
+};
+
+pub const GALIL_GUN: Gun = Gun {
+    id: GALIL,
+    slot: 0,
+    draw: 0.7812,
+    max_speed: 215.0,
+    automatic: true,
+    cycle: 0.09,
+    clip: 35,
+    ammo: AMMO_556MM,
+    reload: 2.9524,
+    shells: None,
+    idle: 1.28,
+    damage: 30.0,
+    range: 8192.0,
+    range_modifier: 0.98,
+    penetration: 2,
+    pellets: 1,
+    armor_ratio: 1.55,
+    accuracy: AccuracyKeys::new([0.0006, 0.00939, 0.01253, 0.45434, 0.09087, 0.00984, 0.10561]),
+    accuracy_alt: None,
+    recovery: (0.35197, 0.49275),
+    // UNMEASURED: the M4A1's sets (a 5.56 rifle at 0.09 s).
+    recoil: Some(M4A1_KICK),
+    alt: Alt::None,
+    fire: "Weapon_Galil.Single",
+    fire_alt: None,
+    empty: "Default.ClipEmpty_Rifle",
+    model_sounds: GALIL_SOUNDS,
+};
+
+pub const AUG_GUN: Gun = Gun {
+    id: AUG,
+    slot: 0,
+    draw: 1.0,
+    max_speed: 221.0,
+    automatic: true,
+    cycle: 0.09,
+    clip: 30,
+    ammo: AMMO_762MM,
+    reload: 3.7714,
+    shells: None,
+    idle: 1.9,
+    damage: 32.0,
+    range: 8192.0,
+    range_modifier: 0.96,
+    penetration: 2,
+    pellets: 1,
+    armor_ratio: 1.4,
+    accuracy: AccuracyKeys::new([0.0006, 0.00412, 0.00549, 0.36936, 0.07387, 0.0109, 0.07268]),
+    accuracy_alt: Some(AccuracyKeys::new([
+        0.0006, 0.00288, 0.00385, 0.36936, 0.07387, 0.0109, 0.07268,
+    ])),
+    recovery: (0.30263, 0.42368),
+    // UNMEASURED: the M4A1's sets (scoped too).
+    recoil: Some(M4A1_KICK),
+    // Measured M15: 55, off; stays zoomed after a shot; zoomed speed 221 (unchanged).
+    alt: Alt::Scope {
+        fov: &[55.0],
+        speed: None,
+        unzoom: false,
+        overlay: false,
+    },
+    fire: "Weapon_AUG.Single",
+    fire_alt: None,
+    empty: "Default.ClipEmpty_Rifle",
+    model_sounds: AUG_SOUNDS,
+};
+
+pub const SG552_GUN: Gun = Gun {
+    id: SG552,
+    slot: 0,
+    draw: 0.8108,
+    max_speed: 235.0,
+    automatic: true,
+    cycle: 0.09,
+    clip: 30,
+    ammo: AMMO_556MM,
+    reload: 2.7568,
+    shells: None,
+    idle: 2.0,
+    damage: 33.0,
+    range: 8192.0,
+    range_modifier: 0.955,
+    penetration: 2,
+    pellets: 1,
+    armor_ratio: 1.4,
+    accuracy: AccuracyKeys::new([0.0006, 0.00405, 0.0054, 0.33464, 0.06693, 0.01227, 0.06132]),
+    accuracy_alt: Some(AccuracyKeys::new([
+        0.0006, 0.00284, 0.00378, 0.33464, 0.06693, 0.00859, 0.06132,
+    ])),
+    recovery: (0.27631, 0.38683),
+    // UNMEASURED: the M4A1's sets (scoped too).
+    recoil: Some(M4A1_KICK),
+    // Measured M15: 55, off, stays zoomed (as the AUG); UNMEASURED: the zoomed speed (unchanged, as the AUG's).
+    alt: Alt::Scope {
+        fov: &[55.0],
+        speed: None,
+        unzoom: false,
+        overlay: false,
+    },
+    fire: "Weapon_SG552.Single",
+    fire_alt: None,
+    empty: "Default.ClipEmpty_Rifle",
+    model_sounds: SG552_SOUNDS,
+};
+
+pub const SCOUT_GUN: Gun = Gun {
+    id: SCOUT,
+    slot: 0,
+    draw: 1.0,
+    max_speed: 260.0,
+    automatic: false,
+    cycle: 1.25,
+    clip: 10,
+    ammo: AMMO_762MM,
+    reload: 2.9,
+    shells: None,
+    idle: 1.8,
+    damage: 75.0,
+    range: 8192.0,
+    range_modifier: 0.98,
+    penetration: 3,
+    pellets: 1,
+    armor_ratio: 1.7,
+    accuracy: AccuracyKeys::new([0.0003, 0.02378, 0.0317, 0.38195, 0.03819, 0.06667, 0.19097]),
+    accuracy_alt: Some(AccuracyKeys::new([
+        0.0003, 0.003, 0.004, 0.38195, 0.03819, 0.06667, 0.19097,
+    ])),
+    recovery: (0.17681, 0.24753),
+    // UNMEASURED: the AWP's (semi-automatic) kick.
+    recoil: Some(SEMI_AUTO_KICK),
+    // Measured M15: 40, 15, off; a shot unzooms until it may fire again; zoomed speed 220.
+    alt: Alt::Scope {
+        fov: &[40.0, 15.0],
+        speed: Some(220.0),
+        unzoom: true,
+        overlay: true,
+    },
+    fire: "Weapon_Scout.Single",
+    fire_alt: None,
+    empty: "Default.ClipEmpty_Rifle",
+    model_sounds: SCOUT_SOUNDS,
+};
+
+pub const SG550_GUN: Gun = Gun {
+    id: SG550,
+    slot: 0,
+    draw: 1.0,
+    max_speed: 210.0,
+    automatic: true,
+    cycle: 0.25,
+    clip: 30,
+    ammo: AMMO_556MM,
+    reload: 3.75,
+    shells: None,
+    idle: 1.8,
+    damage: 70.0,
+    range: 8192.0,
+    range_modifier: 0.98,
+    penetration: 2,
+    pellets: 1,
+    armor_ratio: 1.45,
+    accuracy: AccuracyKeys::new([0.0003, 0.01928, 0.0257, 0.43727, 0.04373, 0.03829, 0.21864]),
+    accuracy_alt: Some(AccuracyKeys::new([
+        0.0003, 0.0015, 0.002, 0.43727, 0.04373, 0.03829, 0.21864,
+    ])),
+    recovery: (0.2097, 0.29358),
+    // UNMEASURED: the AWP's kick.
+    recoil: Some(SEMI_AUTO_KICK),
+    // Measured M15: 40, 15, off; stays zoomed; zoomed speed 150.
+    alt: Alt::Scope {
+        fov: &[40.0, 15.0],
+        speed: Some(150.0),
+        unzoom: false,
+        overlay: true,
+    },
+    fire: "Weapon_SG550.Single",
+    fire_alt: None,
+    empty: "Default.ClipEmpty_Rifle",
+    model_sounds: SG550_SOUNDS,
+};
+
+pub const G3SG1_GUN: Gun = Gun {
+    id: G3SG1,
+    slot: 0,
+    draw: 1.0,
+    max_speed: 210.0,
+    automatic: true,
+    cycle: 0.25,
+    clip: 20,
+    ammo: AMMO_762MM,
+    reload: 4.6667,
+    shells: None,
+    idle: 1.8,
+    damage: 80.0,
+    range: 8192.0,
+    range_modifier: 0.98,
+    penetration: 3,
+    pellets: 1,
+    armor_ratio: 1.65,
+    accuracy: AccuracyKeys::new([0.0003, 0.01935, 0.0258, 0.46557, 0.04656, 0.04989, 0.23279]),
+    accuracy_alt: Some(AccuracyKeys::new([
+        0.0003, 0.0015, 0.002, 0.46557, 0.04656, 0.04989, 0.23279,
+    ])),
+    recovery: (0.22245, 0.31142),
+    // UNMEASURED: the AWP's kick.
+    recoil: Some(SEMI_AUTO_KICK),
+    // Measured M15: 40, 15, off; stays zoomed. UNMEASURED: the zoomed speed (the SG550's 150).
+    alt: Alt::Scope {
+        fov: &[40.0, 15.0],
+        speed: Some(150.0),
+        unzoom: false,
+        overlay: true,
+    },
+    fire: "Weapon_G3SG1.Single",
+    fire_alt: None,
+    empty: "Default.ClipEmpty_Rifle",
+    model_sounds: G3SG1_SOUNDS,
+};
+
+pub const MAC10_GUN: Gun = Gun {
+    id: MAC10,
+    slot: 0,
+    draw: 1.0,
+    max_speed: 250.0,
+    automatic: true,
+    cycle: 0.075,
+    clip: 30,
+    ammo: AMMO_45ACP,
+    reload: 3.1429,
+    shells: None,
+    idle: 2.0,
+    damage: 29.0,
+    range: 4096.0,
+    range_modifier: 0.82,
+    penetration: 1,
+    pellets: 1,
+    armor_ratio: 0.95,
+    accuracy: AccuracyKeys::new([0.001, 0.01425, 0.019, 0.13704, 0.02741, 0.00845, 0.0062]),
+    accuracy_alt: None,
+    recovery: (0.25263, 0.35368),
+    // UNMEASURED: the M4A1's sets (the lightest measured automatic).
+    recoil: Some(M4A1_KICK),
+    alt: Alt::None,
+    fire: "Weapon_MAC10.Single",
+    fire_alt: None,
+    empty: "Default.ClipEmpty_Rifle",
+    model_sounds: MAC10_SOUNDS,
+};
+
+pub const TMP_GUN: Gun = Gun {
+    id: TMP,
+    slot: 0,
+    draw: 0.8333,
+    max_speed: 250.0,
+    automatic: true,
+    cycle: 0.07,
+    clip: 30,
+    ammo: AMMO_9MM,
+    reload: 2.12,
+    shells: None,
+    idle: 2.0,
+    damage: 26.0,
+    range: 4096.0,
+    range_modifier: 0.84,
+    penetration: 1,
+    pellets: 1,
+    armor_ratio: 1.0,
+    accuracy: AccuracyKeys::new([0.001, 0.015, 0.02, 0.1118, 0.02236, 0.01594, 0.00389]),
+    accuracy_alt: None,
+    recovery: (0.15131, 0.21184),
+    // UNMEASURED: the M4A1's sets. Always silenced (its own fire sound), no toggle.
+    recoil: Some(M4A1_KICK),
+    alt: Alt::None,
+    fire: "Weapon_TMP.Single",
+    fire_alt: None,
+    empty: "Default.ClipEmpty_Rifle",
+    model_sounds: TMP_SOUNDS,
+};
+
+pub const MP5NAVY_GUN: Gun = Gun {
+    id: MP5NAVY,
+    slot: 0,
+    draw: 0.8571,
+    max_speed: 250.0,
+    automatic: true,
+    cycle: 0.08,
+    clip: 30,
+    ammo: AMMO_9MM,
+    reload: 3.0526,
+    shells: None,
+    idle: 2.0,
+    damage: 26.0,
+    range: 4096.0,
+    range_modifier: 0.84,
+    penetration: 1,
+    pellets: 1,
+    armor_ratio: 1.0,
+    accuracy: AccuracyKeys::new([0.001, 0.01289, 0.01718, 0.23025, 0.04605, 0.00638, 0.01785]),
+    accuracy_alt: None,
+    recovery: (0.2796, 0.39144),
+    // UNMEASURED: the M4A1's sets.
+    recoil: Some(M4A1_KICK),
+    alt: Alt::None,
+    fire: "Weapon_MP5Navy.Single",
+    fire_alt: None,
+    empty: "Default.ClipEmpty_Rifle",
+    model_sounds: MP5NAVY_SOUNDS,
+};
+
+pub const UMP45_GUN: Gun = Gun {
+    id: UMP45,
+    slot: 0,
+    draw: 1.0,
+    max_speed: 250.0,
+    automatic: true,
+    cycle: 0.105,
+    clip: 25,
+    ammo: AMMO_45ACP,
+    reload: 3.4545,
+    shells: None,
+    idle: 2.0,
+    damage: 30.0,
+    range: 4096.0,
+    range_modifier: 0.82,
+    penetration: 1,
+    pellets: 1,
+    armor_ratio: 1.0,
+    accuracy: AccuracyKeys::new([0.001, 0.01439, 0.01919, 0.16941, 0.03388, 0.01129, 0.01366]),
+    accuracy_alt: None,
+    recovery: (0.2171, 0.30394),
+    // UNMEASURED: the M4A1's sets.
+    recoil: Some(M4A1_KICK),
+    alt: Alt::None,
+    fire: "Weapon_UMP45.Single",
+    fire_alt: None,
+    empty: "Default.ClipEmpty_Rifle",
+    model_sounds: UMP45_SOUNDS,
+};
+
+pub const P90_GUN: Gun = Gun {
+    id: P90,
+    slot: 0,
+    draw: 1.0,
+    max_speed: 245.0,
+    automatic: true,
+    cycle: 0.07,
+    clip: 50,
+    ammo: AMMO_57MM,
+    reload: 3.375,
+    shells: None,
+    idle: 2.0,
+    damage: 26.0,
+    range: 4096.0,
+    range_modifier: 0.84,
+    penetration: 1,
+    pellets: 1,
+    armor_ratio: 1.5,
+    accuracy: AccuracyKeys::new([0.001, 0.01463, 0.01951, 0.16494, 0.03299, 0.00732, 0.01062]),
+    accuracy_alt: None,
+    recovery: (0.23289, 0.32605),
+    // UNMEASURED: the M4A1's sets.
+    recoil: Some(M4A1_KICK),
+    alt: Alt::None,
+    fire: "Weapon_P90.Single",
+    fire_alt: None,
+    empty: "Default.ClipEmpty_Rifle",
+    model_sounds: P90_SOUNDS,
+};
+
+pub const M249_GUN: Gun = Gun {
+    id: M249,
+    slot: 0,
+    draw: 0.96,
+    max_speed: 220.0,
+    automatic: true,
+    cycle: 0.08,
+    clip: 100,
+    ammo: AMMO_556MM_BOX,
+    reload: 5.7,
+    shells: None,
+    idle: 1.6,
+    damage: 35.0,
+    range: 8192.0,
+    range_modifier: 0.97,
+    penetration: 2,
+    pellets: 1,
+    armor_ratio: 1.6,
+    accuracy: AccuracyKeys::new([0.002, 0.00763, 0.01017, 0.7083, 0.14166, 0.00427, 0.10618]),
+    accuracy_alt: None,
+    recovery: (0.5592, 0.78288),
+    // UNMEASURED: the AK-47's sets (the hardest-kicking measured automatic).
+    recoil: Some(AK47_KICK),
+    alt: Alt::None,
+    fire: "Weapon_M249.Single",
+    fire_alt: None,
+    empty: "Default.ClipEmpty_Rifle",
+    model_sounds: M249_SOUNDS,
+};
+
+pub const P228_GUN: Gun = Gun {
+    id: P228,
+    slot: 1,
+    draw: 1.0,
+    max_speed: 250.0,
+    automatic: false,
+    cycle: 0.15,
+    clip: 13,
+    ammo: AMMO_357SIG,
+    reload: 2.7143,
+    shells: None,
+    idle: 0.0,
+    damage: 40.0,
+    range: 4096.0,
+    range_modifier: 0.8,
+    penetration: 1,
+    pellets: 1,
+    armor_ratio: 1.25,
+    accuracy: AccuracyKeys::new([0.004, 0.00825, 0.011, 0.285, 0.057, 0.03318, 0.0171]),
+    accuracy_alt: None,
+    recovery: (0.23026, 0.27631),
+    // UNMEASURED: the USP's and Deagle's 2 degrees.
+    recoil: Some(SEMI_AUTO_KICK),
+    alt: Alt::None,
+    fire: "Weapon_P228.Single",
+    fire_alt: None,
+    empty: "Default.ClipEmpty_Pistol",
+    model_sounds: P228_SOUNDS,
+};
+
+pub const FIVESEVEN_GUN: Gun = Gun {
+    id: FIVESEVEN,
+    slot: 1,
+    draw: 1.0,
+    max_speed: 250.0,
+    automatic: false,
+    cycle: 0.15,
+    clip: 20,
+    ammo: AMMO_57MM,
+    reload: 3.2,
+    shells: None,
+    idle: 0.0,
+    damage: 25.0,
+    range: 4096.0,
+    range_modifier: 0.885,
+    penetration: 1,
+    pellets: 1,
+    armor_ratio: 1.5,
+    accuracy: AccuracyKeys::new([0.004, 0.006, 0.01, 0.25635, 0.05127, 0.05883, 0.01538]),
+    accuracy_alt: None,
+    recovery: (0.18628, 0.22353),
+    // UNMEASURED: the USP's and Deagle's 2 degrees.
+    recoil: Some(SEMI_AUTO_KICK),
+    alt: Alt::None,
+    fire: "Weapon_FiveSeven.Single",
+    fire_alt: None,
+    empty: "Default.ClipEmpty_Pistol",
+    model_sounds: FIVESEVEN_SOUNDS,
+};
+
+pub const ELITE_GUN: Gun = Gun {
+    id: ELITE,
+    slot: 1,
+    draw: 1.3333,
+    max_speed: 250.0,
+    automatic: false,
+    cycle: 0.12,
+    clip: 30,
+    ammo: AMMO_9MM,
+    reload: 3.76,
+    shells: None,
+    idle: 0.0,
+    damage: 45.0,
+    range: 4096.0,
+    range_modifier: 0.75,
+    penetration: 1,
+    pellets: 1,
+    armor_ratio: 1.05,
+    accuracy: AccuracyKeys::new([0.004, 0.006, 0.008, 0.29625, 0.05925, 0.03162, 0.01778]),
+    accuracy_alt: None,
+    recovery: (0.24753, 0.29703),
+    // UNMEASURED: the USP's and Deagle's 2 degrees. Hands alternate (`elite_right_hand`).
+    recoil: Some(SEMI_AUTO_KICK),
+    alt: Alt::None,
+    fire: "Weapon_Elite.Single",
+    fire_alt: None,
+    empty: "Default.ClipEmpty_Pistol",
+    model_sounds: ELITE_SOUNDS,
+};
+
+pub const M3_GUN: Gun = Gun {
+    id: M3,
+    slot: 0,
+    draw: 1.0,
+    max_speed: 220.0,
+    automatic: true,
+    cycle: 0.88,
+    clip: 8,
+    ammo: AMMO_BUCKSHOT,
+    reload: 0.4909,
+    // UNMEASURED (M9): the SDK template's start 0.5 s and 0.45 s a shell (spec T25); the model's start/insert/finish are 0.375/0.4909/0.875 s.
+    shells: Some((0.5, 0.45)),
+    idle: 0.0,
+    damage: 26.0,
+    range: 3000.0,
+    range_modifier: 0.7,
+    penetration: 1,
+    pellets: 9,
+    armor_ratio: 1.0,
+    accuracy: AccuracyKeys::new([0.04, 0.0075, 0.01, 0.42, 0.084, 0.04164, 0.0432]),
+    accuracy_alt: None,
+    recovery: (0.29605, 0.41447),
+    recoil: Some(SHOTGUN_KICK),
+    alt: Alt::None,
+    fire: "Weapon_M3.Single",
+    fire_alt: None,
+    empty: "Default.ClipEmpty_Rifle",
+    model_sounds: M3_SOUNDS,
+};
+
+pub const XM1014_GUN: Gun = Gun {
+    id: XM1014,
+    slot: 0,
+    draw: 1.0,
+    max_speed: 240.0,
+    automatic: true,
+    cycle: 0.25,
+    clip: 7,
+    ammo: AMMO_BUCKSHOT,
+    reload: 0.3889,
+    // UNMEASURED (M9): as the M3 (the template's); the model's are 0.6667/0.3889/0.4 s.
+    shells: Some((0.5, 0.45)),
+    idle: 0.0,
+    damage: 22.0,
+    range: 3000.0,
+    range_modifier: 0.7,
+    penetration: 1,
+    pellets: 6,
+    armor_ratio: 1.0,
+    accuracy: AccuracyKeys::new([0.04, 0.0075, 0.01, 0.41176, 0.08235, 0.03644, 0.03544]),
+    accuracy_alt: None,
+    recovery: (0.32894, 0.46052),
+    recoil: Some(SHOTGUN_KICK),
+    alt: Alt::None,
+    fire: "Weapon_XM1014.Single",
+    fire_alt: None,
+    empty: "Default.ClipEmpty_Rifle",
+    model_sounds: XM1014_SOUNDS,
 };
 
 // The silenced and unsilenced sequences play the same sounds.
@@ -672,6 +1530,8 @@ const M4A1_SOUNDS: ModelSounds = ModelSounds {
         (1, 0.9333, "Weapon_M4A1.Silencer_On"),
         (0, 0.7, "Weapon_M4A1.Silencer_Off"),
     ],
+    fire: &[],
+    finish: &[],
 };
 const USP_SOUNDS: ModelSounds = ModelSounds {
     reload: &[
@@ -685,6 +1545,8 @@ const USP_SOUNDS: ModelSounds = ModelSounds {
         (1, 1.027, "Weapon_USP.AttachSilencer"),
         (0, 0.7838, "Weapon_USP.DetachSilencer"),
     ],
+    fire: &[],
+    finish: &[],
 };
 const GLOCK_SOUNDS: ModelSounds = ModelSounds {
     reload: &[
@@ -695,6 +1557,8 @@ const GLOCK_SOUNDS: ModelSounds = ModelSounds {
     ],
     draw: &[(0.3778, "Weapon_Glock.Sliderelease")],
     modes: &[],
+    fire: &[],
+    finish: &[],
 };
 const DEAGLE_SOUNDS: ModelSounds = ModelSounds {
     reload: &[
@@ -704,10 +1568,235 @@ const DEAGLE_SOUNDS: ModelSounds = ModelSounds {
     ],
     draw: &[(0.0333, "Weapon_DEagle.Deploy")],
     modes: &[],
+    fire: &[],
+    finish: &[],
+};
+
+const FAMAS_SOUNDS: ModelSounds = ModelSounds {
+    reload: &[
+        (0.5187, "Weapon_FAMAS.Clipout"),
+        (1.4813, "Weapon_FAMAS.Clipin"),
+        (2.3333, "Weapon_FAMAS.Forearm"),
+    ],
+    draw: &[],
+    modes: &[],
+    fire: &[],
+    finish: &[],
+};
+const GALIL_SOUNDS: ModelSounds = ModelSounds {
+    reload: &[
+        (0.3809, "Weapon_Galil.Clipout"),
+        (1.3094, "Weapon_Galil.Clipin"),
+        (2.1668, "Weapon_Galil.Boltpull"),
+    ],
+    draw: &[],
+    modes: &[],
+    fire: &[],
+    finish: &[],
+};
+const AUG_SOUNDS: ModelSounds = ModelSounds {
+    reload: &[
+        (0.2859, "Weapon_AUG.Boltpull"),
+        (1.4286, "Weapon_AUG.Clipout"),
+        (2.5143, "Weapon_AUG.Clipin"),
+        (3.2, "Weapon_AUG.Boltslap"),
+    ],
+    draw: &[(0.3, "Weapon_AUG.Forearm")],
+    modes: &[],
+    fire: &[],
+    finish: &[],
+};
+const SG552_SOUNDS: ModelSounds = ModelSounds {
+    reload: &[
+        (0.4325, "Weapon_SG552.Clipout"),
+        (1.6486, "Weapon_SG552.Clipin"),
+        (2.4326, "Weapon_SG552.Boltpull"),
+    ],
+    draw: &[(0.3243, "Weapon_SG552.Boltpull")],
+    modes: &[],
+    fire: &[],
+    finish: &[],
+};
+const SCOUT_SOUNDS: ModelSounds = ModelSounds {
+    reload: &[
+        (0.4333, "Weapon_Scout.Clipout"),
+        (1.2334, "Weapon_Scout.Clipin"),
+        (1.7333, "Weapon_Scout.Bolt"),
+    ],
+    draw: &[],
+    modes: &[],
+    fire: &[(0.3714, "Weapon_Scout.Bolt")],
+    finish: &[],
+};
+const SG550_SOUNDS: ModelSounds = ModelSounds {
+    reload: &[
+        (0.7856, "Weapon_SG550.Clipout"),
+        (1.6429, "Weapon_SG550.Clipin"),
+        (2.9288, "Weapon_SG550.Boltpull"),
+    ],
+    draw: &[],
+    modes: &[],
+    fire: &[],
+    finish: &[],
+};
+const G3SG1_SOUNDS: ModelSounds = ModelSounds {
+    reload: &[
+        (0.5334, "Weapon_G3SG1.Slide"),
+        (1.8, "Weapon_G3SG1.Clipout"),
+        (2.8332, "Weapon_G3SG1.Clipin"),
+        (3.8668, "Weapon_G3SG1.Slide"),
+    ],
+    draw: &[],
+    modes: &[],
+    fire: &[],
+    finish: &[],
+};
+const MAC10_SOUNDS: ModelSounds = ModelSounds {
+    reload: &[
+        (0.6286, "Weapon_MAC10.Clipout"),
+        (1.5715, "Weapon_MAC10.Clipin"),
+        (2.4857, "Weapon_MAC10.Boltpull"),
+    ],
+    draw: &[],
+    modes: &[],
+    fire: &[],
+    finish: &[],
+};
+const TMP_SOUNDS: ModelSounds = ModelSounds {
+    reload: &[(0.48, "Weapon_TMP.Clipout"), (1.28, "Weapon_TMP.Clipin")],
+    // The draw's event names Weapon_TMP.Deploy, which no sound script
+    // defines (the game plays nothing).
+    draw: &[],
+    modes: &[],
+    fire: &[],
+    finish: &[],
+};
+const MP5NAVY_SOUNDS: ModelSounds = ModelSounds {
+    reload: &[
+        (0.3156, "Weapon_MP5Navy.Clipout"),
+        (1.1578, "Weapon_MP5Navy.Clipin"),
+        (2.2632, "Weapon_MP5Navy.Slideback"),
+    ],
+    draw: &[(0.3714, "Weapon_MP5Navy.Slideback")],
+    modes: &[],
+    fire: &[],
+    finish: &[],
+};
+const UMP45_SOUNDS: ModelSounds = ModelSounds {
+    reload: &[
+        (0.6971, "Weapon_UMP45.Clipout"),
+        (1.7877, "Weapon_UMP45.Clipin"),
+        (2.6061, "Weapon_UMP45.Boltslap"),
+    ],
+    draw: &[],
+    modes: &[],
+    fire: &[],
+    finish: &[],
+};
+const P90_SOUNDS: ModelSounds = ModelSounds {
+    reload: &[
+        (0.4249, "Weapon_P90.Cliprelease"),
+        (0.8751, "Weapon_P90.Clipout"),
+        (1.8752, "Weapon_P90.Clipin"),
+        (2.7, "Weapon_P90.Boltpull"),
+    ],
+    draw: &[(0.3, "Weapon_P90.Boltpull")],
+    modes: &[],
+    fire: &[],
+    finish: &[],
+};
+const M249_SOUNDS: ModelSounds = ModelSounds {
+    reload: &[
+        (0.4668, "Weapon_M249.Boxout"),
+        (1.5002, "Weapon_M249.Coverup"),
+        (2.6665, "Weapon_M249.Boxin"),
+        (3.2997, "Weapon_M249.Chain"),
+        (4.5002, "Weapon_M249.Coverdown"),
+    ],
+    draw: &[],
+    modes: &[],
+    fire: &[],
+    finish: &[],
+};
+const P228_SOUNDS: ModelSounds = ModelSounds {
+    reload: &[
+        (0.0, "Weapon_P228.Slideback"),
+        (0.6856, "Weapon_P228.Clipout"),
+        (1.4, "Weapon_P228.Clipin"),
+        (2.3142, "Weapon_P228.Sliderelease"),
+    ],
+    draw: &[(0.5, "Weapon_P228.Slidepull")],
+    modes: &[],
+    fire: &[],
+    finish: &[],
+};
+const FIVESEVEN_SOUNDS: ModelSounds = ModelSounds {
+    reload: &[
+        (0.0, "Weapon_FiveSeven.Slideback"),
+        (0.4998, "Weapon_FiveSeven.Clipout"),
+        (1.3667, "Weapon_FiveSeven.Clipin"),
+        (2.4998, "Weapon_FiveSeven.Sliderelease"),
+    ],
+    draw: &[(0.4333, "Weapon_FiveSeven.Slidepull")],
+    modes: &[],
+    fire: &[],
+    finish: &[],
+};
+const ELITE_SOUNDS: ModelSounds = ModelSounds {
+    reload: &[
+        (0.0, "Weapon_ELITE.Reloadstart"),
+        (0.4802, "Weapon_ELITE.Clipout"),
+        (1.4401, "Weapon_ELITE.Rclipin"),
+        (2.3602, "Weapon_ELITE.Lclipin"),
+        (3.24, "Weapon_ELITE.Sliderelease"),
+    ],
+    draw: &[(0.0333, "Weapon_ELITE.Deploy")],
+    modes: &[],
+    fire: &[],
+    finish: &[],
+};
+const M3_SOUNDS: ModelSounds = ModelSounds {
+    reload: &[(0.0, "Weapon_M3.Insertshell")],
+    draw: &[(0.3667, "Weapon_M3.Pump")],
+    modes: &[],
+    fire: &[],
+    finish: &[(0.3, "Weapon_M3.Pump")],
+};
+const XM1014_SOUNDS: ModelSounds = ModelSounds {
+    reload: &[(0.0222, "Weapon_XM1014.InsertShell")],
+    draw: &[(0.0333, "Weapon_DEagle.Deploy")],
+    modes: &[],
+    fire: &[],
+    finish: &[],
 };
 
 /// Every gun, for tables and tests.
-pub const GUNS: &[&Gun] = &[&AK47_GUN, &M4A1_GUN, &AWP_GUN, &USP_GUN, &GLOCK_GUN, &DEAGLE_GUN];
+pub const GUNS: &[&Gun] = &[
+    &AK47_GUN,
+    &M4A1_GUN,
+    &AWP_GUN,
+    &USP_GUN,
+    &GLOCK_GUN,
+    &DEAGLE_GUN,
+    &FAMAS_GUN,
+    &GALIL_GUN,
+    &AUG_GUN,
+    &SG552_GUN,
+    &SCOUT_GUN,
+    &SG550_GUN,
+    &G3SG1_GUN,
+    &MAC10_GUN,
+    &TMP_GUN,
+    &MP5NAVY_GUN,
+    &UMP45_GUN,
+    &P90_GUN,
+    &M249_GUN,
+    &P228_GUN,
+    &FIVESEVEN_GUN,
+    &ELITE_GUN,
+    &M3_GUN,
+    &XM1014_GUN,
+];
 
 fn timed(sounds: &[(f32, &str)]) -> Vec<(f32, String)> {
     sounds.iter().map(|(t, s)| (*t, s.to_string())).collect()
@@ -742,7 +1831,7 @@ pub fn gun(e: &mut EntityWorldMut, g: &Gun) {
         },
         Hitscan {
             range: g.range * UNIT,
-            pellets: 1,
+            pellets: g.pellets,
             spread: SpreadShape::Disc {
                 inaccuracy: accuracy.value,
                 spread: g.accuracy.spread,
@@ -774,6 +1863,8 @@ pub fn gun(e: &mut EntityWorldMut, g: &Gun) {
             deploy: None,
             reload: timed(g.model_sounds.reload),
             draw: timed(g.model_sounds.draw),
+            shot: timed(g.model_sounds.fire),
+            finish: timed(g.model_sounds.finish),
             modes: g
                 .model_sounds
                 .modes
@@ -782,6 +1873,9 @@ pub fn gun(e: &mut EntityWorldMut, g: &Gun) {
                 .collect(),
         },
     ));
+    if let Some((start, insert)) = g.shells {
+        e.insert(ShellReload { start, insert });
+    }
     if let Some([standing, crouched, moving, airborne]) = g.recoil {
         e.insert(Recoil {
             standing,
@@ -793,7 +1887,12 @@ pub fn gun(e: &mut EntityWorldMut, g: &Gun) {
     }
     match g.alt {
         Alt::None => {}
-        Alt::Scope { fov, speed } => {
+        Alt::Scope {
+            fov,
+            speed,
+            unzoom,
+            overlay,
+        } => {
             // Each step: next secondary in 0.3 s (M15).
             let mut modes = AltModes::new(fov.len() as u8 + 1, 0.3, false);
             modes.sound = Some("Default.Zoom".into());
@@ -801,9 +1900,9 @@ pub fn gun(e: &mut EntityWorldMut, g: &Gun) {
                 modes,
                 Zoom {
                     fov: fov.to_vec(),
-                    max_speed: Some(speed * UNIT),
-                    unzoom_after_shot: true,
-                    scope: true,
+                    max_speed: speed.map(|s| s * UNIT),
+                    unzoom_after_shot: unzoom,
+                    scope: overlay,
                 },
             ));
         }
@@ -890,6 +1989,9 @@ pub struct Kick {
     pub side_step: f32,
     pub up_cap: f32,
     pub side_cap: f32,
+    /// Above `up`: each shot kicks up a whole number of degrees from `up`
+    /// to this at random instead (the SDK template's shotgun).
+    pub up_max: f32,
 }
 
 impl Kick {
@@ -901,7 +2003,15 @@ impl Kick {
             side_step: side.1,
             up_cap: caps.0,
             side_cap: caps.1,
+            up_max: 0.0,
         }
+    }
+
+    /// Straight up by a random whole number of degrees in `lo..=hi`.
+    pub const fn random_up(lo: f32, hi: f32) -> Self {
+        let mut k = Self::new((lo, 0.0), (0.0, 0.0), (NO_CAP, NO_CAP));
+        k.up_max = hi;
+        k
     }
 }
 
@@ -1044,7 +2154,15 @@ fn after_shots(
         } else {
             r.standing
         };
-        let (up, side) = (kick.up + kick.up_step * n, kick.side + kick.side_step * n);
+        let (mut up, side) = (kick.up + kick.up_step * n, kick.side + kick.side_step * n);
+        if kick.up_max > kick.up {
+            // A second roll from the same dice.
+            r.rng ^= r.rng << 13;
+            r.rng ^= r.rng >> 7;
+            r.rng ^= r.rng << 17;
+            let u = (r.rng >> 40) as f32 / (1u64 << 24) as f32;
+            up = (kick.up + (u * (kick.up_max - kick.up + 1.0)).floor()).min(kick.up_max);
+        }
         let old = punch.as_ref().map_or(Vec2::ZERO, |p| p.0);
         let kicked = Vec2::new(
             (old.x + up.to_radians()).min(kick.up_cap.to_radians()),

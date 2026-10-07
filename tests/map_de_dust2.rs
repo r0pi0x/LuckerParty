@@ -1548,6 +1548,101 @@ fn shots_use_model_hitboxes() {
     assert!(hits.iter().all(|(e, _)| *e != target), "grazing shot hit {hits:?}");
 }
 
+/// Every gun has its upper body on the player models (by its suffix), the
+/// shotguns their shell-by-shell reload gestures and the Elites a shot per
+/// hand; a shotgun reload and Elite shots play them.
+#[test]
+fn every_gun_has_its_body_animations() {
+    use mashup::{
+        games::cs_source::{
+            movement::{self, SourceMovementPlugin},
+            player_anim::{PlayerAnimPlugin, suffix},
+            weapons::{CsWeaponsPlugin, ELITE, GUNS, M3},
+        },
+        map::anim::Animator,
+        weapon::{Inventory, Magazine, give},
+    };
+    let Some(map) = dust2() else { return };
+    let set = map.characters[0].animations.clone().expect("player animations");
+    for g in GUNS {
+        let x = suffix(Some(g.id));
+        for seq in [format!("Idle_Upper_{x}"), format!("Run_Upper_{x}"), format!("Crouch_Idle_Upper_{x}")] {
+            assert!(set.sequence(&seq).is_some(), "{}: no {seq}", g.id);
+        }
+        let reload = if g.shells.is_some() { "_start" } else { "" };
+        assert!(
+            set.sequence(&format!("Idle_Reload_{x}{reload}")).is_some(),
+            "{}: no reload gesture",
+            g.id
+        );
+    }
+    for part in ["_start", "_loop", "_end"] {
+        for x in ["M3S90", "XM1014"] {
+            assert!(set.sequence(&format!("Idle_Reload_{x}{part}")).is_some(), "{x}{part}");
+        }
+    }
+    for side in ["_L", "_R"] {
+        assert!(set.sequence(&format!("Idle_Shoot_ELITES{side}")).is_some(), "ELITES{side}");
+    }
+    let mut sim = Sim::new((
+        MapPlugin::new(map.clone()),
+        SourceMovementPlugin,
+        CsWeaponsPlugin,
+        PlayerAnimPlugin,
+    ));
+    sim.set_tick_interval(mashup::games::cs_source::TICK_INTERVAL);
+    sim.app
+        .insert_resource(mashup::slots::Loadout { movement: movement::ID });
+    let spawn = movement::to_engine(Vec3::new(-1024.0, -784.0, 140.0));
+    let c = sim.spawn_character(spawn + Vec3::Y * (36.0 * 0.0254 + 0.2), movement::ID);
+    sim.seconds(0.5);
+    let reload_layer = |sim: &Sim| {
+        let a = sim.app.world().get::<Animator>(c).unwrap();
+        a.layers
+            .get(5)
+            .copied()
+            .flatten()
+            .map(|l| set.sequences[l.sequence].name.to_lowercase())
+    };
+    let fire_layer = |sim: &Sim| {
+        let a = sim.app.world().get::<Animator>(c).unwrap();
+        a.layers
+            .get(4)
+            .copied()
+            .flatten()
+            .map(|l| set.sequences[l.sequence].name.to_lowercase())
+    };
+    give(sim.app.world_mut(), c, M3).unwrap();
+    sim.seconds(1.2);
+    let m3 = sim.app.world().get::<Inventory>(c).unwrap().active.unwrap();
+    sim.app.world_mut().get_mut::<Magazine>(m3).unwrap().clip = 6;
+    sim.intent(c).reload = true;
+    sim.ticks(2);
+    sim.intent(c).reload = false;
+    assert_eq!(reload_layer(&sim).as_deref(), Some("idle_reload_m3s90_start"));
+    // The first shell goes in 0.5 s after the start.
+    sim.seconds(0.5);
+    assert_eq!(reload_layer(&sim).as_deref(), Some("idle_reload_m3s90_loop"));
+    // Two shells: the end 1.425 s after the start (spec T25).
+    sim.seconds(1.0);
+    assert_eq!(reload_layer(&sim).as_deref(), Some("idle_reload_m3s90_end"));
+    // The Elites: the first shot from the left hand, the next the right.
+    give(sim.app.world_mut(), c, ELITE).unwrap();
+    sim.seconds(1.5);
+    let mut sides = Vec::new();
+    for _ in 0..2 {
+        sim.intent(c).fire = true;
+        sim.ticks(2);
+        sim.intent(c).fire = false;
+        sides.push(fire_layer(&sim));
+        sim.seconds(0.3);
+    }
+    assert_eq!(
+        sides,
+        [Some("idle_shoot_elites_l".to_string()), Some("idle_shoot_elites_r".to_string())]
+    );
+}
+
 /// Characters' animation follows their movement (specs/cs_source/
 /// animation.md §12): idle, run, walk and crouch-walk lower bodies, the
 /// held weapon's upper body, and feet that lag the view.
@@ -2274,7 +2369,7 @@ fn running_over_terrain_keeps_speed() {
 /// muzzle left of the eye means built left-handed).
 #[test]
 fn gun_models_icons_and_handedness() {
-    use mashup::games::cs_source::weapons::{GUNS, SILENCED_WORLD_MODELS, VIEW_MODELS, silenced_key};
+    use mashup::games::cs_source::weapons::{ELITE, GUNS, SILENCED_WORLD_MODELS, VIEW_MODELS, silenced_key};
     let Some(map) = dust2() else { return };
     let hud = map.hud.as_ref().expect("a HUD");
     for (id, _) in SILENCED_WORLD_MODELS {
@@ -2310,7 +2405,20 @@ fn gun_models_icons_and_handedness() {
         // Draw and reload durations from the spec's view-model table.
         let dur = |act: &str| set.duration(set.activity(act).expect(act));
         assert!((dur("ACT_VM_DRAW") - g.draw).abs() < 1e-3, "{} draw", g.id);
+        // A shotgun's reload activity is one shell's insert; its start and
+        // finish have their own.
         assert!((dur("ACT_VM_RELOAD") - g.reload).abs() < 1e-3, "{} reload", g.id);
+        if g.shells.is_some() {
+            dur("ACT_SHOTGUN_RELOAD_START");
+            dur("ACT_SHOTGUN_RELOAD_FINISH");
+        }
+    }
+    // The Elites: left shots the primary activity, right the secondary,
+    // each hand's last round its own.
+    let elite = map.view_models.iter().find(|v| v.key == ELITE).unwrap();
+    let set = elite.animations.as_ref().unwrap();
+    for act in ["ACT_VM_PRIMARYATTACK", "ACT_VM_SECONDARYATTACK", "ACT_VM_DRYFIRE", "ACT_VM_DRYFIRE_LEFT"] {
+        assert!(set.activity(act).is_some(), "elite {act}");
     }
 }
 
