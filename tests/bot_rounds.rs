@@ -2,7 +2,9 @@
 //! without a CS:S install.
 //!
 //! `dust2_bot_round_stats` (ignored) plays whole rounds bot against bot
-//! and prints winners, kills and time to first contact:
+//! and prints winners, kills, time to first contact and where bots got
+//! stuck (no progress for 4 s while walking a route, summed up by spot;
+//! `tests/bot_nav.rs` has the tools to look at one):
 //! `MASHUP_BOT_MAP=de_nuke MASHUP_BOT_ROUNDS=8 cargo test --features dev
 //! --test bot_rounds -- --ignored --nocapture`.
 
@@ -173,10 +175,10 @@ fn dust2_attackers_take_a_site_and_defenders_hold_both() {
             "defender {b} {d:.1} m from its site"
         );
         per_site[s] += 1;
-        // Within reach of its spot counts too: two defenders can shoulder
-        // each other the last step (no avoidance between bots yet).
-        let at_spot = bot.activity() == Activity::ToHold && bot.route_left() < 2.0;
-        if bot.activity() == Activity::Holding || bot.target.is_some() || at_spot {
+        // Two defenders shouldering each other short of neighbouring
+        // spots hold where they are (`HOLD_SHARE`), so this holds
+        // whatever the entity ids (route noise seeds) are.
+        if bot.activity() == Activity::Holding || bot.target.is_some() {
             holding += 1;
         }
     }
@@ -218,9 +220,13 @@ fn dust2_bot_round_stats() {
     let trace = std::env::var("MASHUP_BOT_TRACE").is_ok();
     let mut t = 0.0f64;
     let limit = rounds as f64 * 150.0;
+    let mut stuck = StuckWatch::default();
     while played < rounds && t < limit {
         sim.seconds(step);
         t += step;
+        if matches!(sim.app.world().resource::<RoundState>().phase, Phase::Live { .. }) {
+            stuck.check(&sim, &bots, t);
+        }
         if trace && (t * 10.0).round() as u64 % 40 == 0 {
             eprintln!("-- round {}", played + 1);
             trace_bots(&sim, &bots, t);
@@ -302,5 +308,90 @@ fn dust2_bot_round_stats() {
         mean(&contacts),
         contacts.len()
     );
+    stuck.report(&map);
     assert!(played > 0, "no round finished");
+}
+
+/// Bots trying to walk somewhere without getting anywhere: each episode
+/// (no more than `STUCK_MOVE` m in `STUCK_TIME` s while walking a route)
+/// is printed, and the spots are summed up at the end.
+#[derive(Default)]
+struct StuckWatch {
+    /// Per bot: recent (time, feet) samples, and whether it is in an
+    /// episode now.
+    samples: std::collections::HashMap<Entity, (Vec<(f64, Vec3)>, bool)>,
+    /// Spots: where, place, how often, what it was walking toward.
+    spots: Vec<(Vec3, String, u32, Vec3)>,
+}
+
+const STUCK_TIME: f64 = 4.0;
+const STUCK_MOVE: f32 = 0.75;
+
+impl StuckWatch {
+    fn check(&mut self, sim: &Sim, bots: &[Entity], t: f64) {
+        let w = sim.app.world();
+        let nav = w.get_resource::<mashup::map::nav::NavMesh>();
+        for &b in bots {
+            let (Some(bot), Some(h)) = (w.get::<Bot>(b), w.get::<Health>(b)) else {
+                continue;
+            };
+            let walking = matches!(
+                bot.activity(),
+                Activity::ToSite
+                    | Activity::Following
+                    | Activity::ToHold
+                    | Activity::Chasing
+                    | Activity::Assisting
+                    | Activity::Hunting
+                    | Activity::Roaming
+            ) && bot.route_left() > 1.0;
+            let entry = self.samples.entry(b).or_default();
+            if h.current <= 0.0 || !walking {
+                entry.0.clear();
+                entry.1 = false;
+                continue;
+            }
+            let at = feet(sim, b);
+            entry.0.push((t, at));
+            entry.0.retain(|s| t - s.0 <= STUCK_TIME + 0.05);
+            if t - entry.0[0].0 < STUCK_TIME - 0.05 {
+                continue;
+            }
+            let moved = entry.0.iter().map(|s| s.1.distance(at)).fold(0.0, f32::max);
+            if moved > STUCK_MOVE {
+                entry.1 = false;
+                continue;
+            }
+            if entry.1 {
+                continue;
+            }
+            entry.1 = true;
+            let place = nav
+                .and_then(|n| {
+                    n.area_at(at + Vec3::Y * 0.1)
+                        .and_then(|a| n.areas[a].place)
+                        .map(|p| n.places[p].clone())
+                })
+                .unwrap_or_default();
+            let next = bot.route().0.get(bot.route().1).copied().unwrap_or(at);
+            eprintln!(
+                "stuck: {t:.1} {b} {:?} {place} at {at:.2} next {next:.2} goal {:.1?}",
+                bot.activity(),
+                bot.goal()
+            );
+            match self.spots.iter_mut().find(|s| s.0.distance(at) < 3.0) {
+                Some(s) => s.2 += 1,
+                None => self.spots.push((at, place, 1, next)),
+            }
+        }
+    }
+
+    fn report(&mut self, map: &str) {
+        self.spots.sort_by(|a, b| b.2.cmp(&a.2));
+        let total: u32 = self.spots.iter().map(|s| s.2).sum();
+        eprintln!("{map}: {total} stuck episodes at {} spots", self.spots.len());
+        for (at, place, n, next) in &self.spots {
+            eprintln!("  {n:3} x {place} at {at:.1} toward {next:.1}");
+        }
+    }
 }

@@ -99,9 +99,20 @@ Only `Reflect`-registered types are visible; register new core components in
   cs_source:de_dust2 +mashup_rounds 1 +bot_add 1 +bot_add 1 +bot_add 1
   +bot_add 2 +bot_add 2 +bot_add 2 +mashup_drawbots 1 +bot_debug 1
   +noclip +setpos -400 3000 1200 +setang 89 90 0`. Headless round
-  statistics (winners, kills, time to first contact):
+  statistics (winners, kills, time to first contact, and every spot where
+  a bot walked a route without getting anywhere for 4 s, summed up):
   `MASHUP_BOT_MAP=de_dust2 MASHUP_BOT_ROUNDS=8 cargo test --features dev
-  --test bot_rounds -- --ignored --nocapture`. `bot_grenades 2` makes bots throw whenever
+  --test bot_rounds -- --ignored --nocapture`. To look at such a spot:
+  `MASHUP_NAV_MAP=de_nuke MASHUP_NAV_AT=11.4,-15.2,34.4 cargo test
+  --features dev --test bot_nav -- --ignored --nocapture nav_near` prints
+  the nav areas, links, ladders, ladder brushes and entities (breakables
+  with their keyvalues) around it (engine meters, as the report prints
+  them); add a case to `tests/bot_nav.rs` (a lone bot sent from a start
+  to a goal, `MASHUP_BOT_CASE=<name>` to run one, `MASHUP_BOT_TRACE=0`
+  for every tick of its intent, ladder and ground state), and try raw
+  inputs with `probe_walk` (`P_AT=x,y,z P_OPT=yaw,crouch,jump,seconds,
+  pitch,forward`). In game, `bot_goto <x> <y> <z>` (CS:S units) sends
+  every bot somewhere; `bot_goto` alone lets them go back. `bot_grenades 2` makes bots throw whenever
   an arc works (`mashup_watch 1` to follow one). On the greybox map:
   `--spawn 0,1,-5 +bot_dont_shoot 1 +bot_stop 1 +bot_grenades 2 +bot_add 1
   +bot_give weapon_hegrenade +mashup_drawbots 1 +mashup_watch 1
@@ -190,9 +201,15 @@ Details and baseline numbers: [performance.md](performance.md).
 - `mashup_perf 1` (2: every render pass) shows frame times (avg, p95,
   max), the main world's CPU time, GPU time per render pass, entity,
   mesh and triangle counts and visibility culling (camera cluster,
-  clusters and map parts potentially visible).
+  clusters and map parts potentially visible), and what changes each
+  frame (transforms written, under the map's root, mesh and material
+  assets modified). `mashup_perf 3` also logs each second which entities
+  (by name) write transforms: anything writing every frame for nothing
+  costs transform propagation and GPU re-preparation.
 - `refcmp bench --views tools/refcmp/<map>.toml` times 200 frames at each
-  view (vsync off) and prints a table; `-- <args>` passes options to
+  view (vsync off) and prints a table (frame, main-world CPU, process CPU
+  and GPU ms; with pipelined rendering a frame takes the longer of the
+  main world and the render world); `-- <args>` passes options to
   mashup (e.g. `-- +r_novis 1`). Build first; it runs the mashup next to
   it (`--profile playtest` for optimized numbers).
 - `r_novis 1` draws every map part (no visibility culling);

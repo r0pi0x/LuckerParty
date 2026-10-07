@@ -40,7 +40,15 @@ pub struct CostParams<'a> {
     pub exposure: Option<&'a [f32]>,
     pub team_seed: u64,
     pub bot_seed: u64,
+    /// Links (from area, to area) this bot got stuck on lately: costly
+    /// for a while, so it repaths around them.
+    pub stuck: &'a [(usize, usize)],
 }
+
+/// A link a bot got stuck on costs this much more (× distance, plus a
+/// fixed part in meters so short links count too).
+pub const STUCK_PENALTY: f64 = 30.0;
+pub const STUCK_EXTRA: f64 = 40.0;
 
 /// A stable pseudo-random u64 from a seed and a number (splitmix64).
 pub fn hash64(seed: u64, n: usize) -> u64 {
@@ -87,6 +95,9 @@ pub fn step_cost(nav: &NavMesh, from: usize, to: usize, via: Via, p: &CostParams
     }
     if let Some(e) = p.exposure.and_then(|e| e.get(to)) {
         cost += EXPOSURE_WEIGHT * e.clamp(0.0, 1.0) as f64 * dist;
+    }
+    if p.stuck.contains(&(from, to)) {
+        cost += STUCK_PENALTY * dist + STUCK_EXTRA;
     }
     cost += dist * (TEAM_NOISE * hash01(p.team_seed, to) + BOT_NOISE * hash01(p.bot_seed, to));
     cost
@@ -261,6 +272,22 @@ pub(crate) mod tests {
             })
             .count();
         assert!(short >= 60, "{short} of 64");
+    }
+
+    #[test]
+    fn a_link_it_got_stuck_on_is_walked_around() {
+        let m = two_ways(0);
+        assert_eq!(path(&m, &CostParams::default()), [0, 1, 3]);
+        let stuck = [(1, 3)];
+        let p = CostParams {
+            stuck: &stuck,
+            ..default()
+        };
+        assert_eq!(path(&m, &p), [0, 4, 2, 5, 3]);
+        // Only that way round: the reverse link costs as before.
+        let p0 = CostParams::default();
+        let back = step_cost(&m, 3, 1, Via::Walk(Side::MinX), &p);
+        assert_eq!(back, step_cost(&m, 3, 1, Via::Walk(Side::MinX), &p0));
     }
 
     #[test]

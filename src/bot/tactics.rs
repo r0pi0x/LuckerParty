@@ -52,8 +52,23 @@ const GROUP_SPREAD: f32 = 12.0;
 /// ...for at most this long, then not again for `WAIT_COOLDOWN`, s.
 const WAIT_MAX: f64 = 5.0;
 const WAIT_COOLDOWN: f64 = 10.0;
+/// The attackers gather when the leader has this much route left to the
+/// site, until everyone is within `STAGE_GROUP` of it (at least
+/// `STAGE_MIN` seconds, for grenades) or `STAGE_MAX` seconds passed, m
+/// and s.
+pub const STAGE_ROUTE: f32 = 24.0;
+const STAGE_GROUP: f32 = 7.0;
+const STAGE_MIN: f64 = 2.0;
+const STAGE_MAX: f64 = 8.0;
+/// An "enemy spotted" from a defender at its site moves the nearest
+/// defender from another site there, this many per round.
+const ROTATE_MAX: usize = 1;
 /// Radio calls bring teammates within this, m.
 const ASSIST_RANGE: f32 = 60.0;
+/// A link a bot got stuck on is avoided by every bot for this long per
+/// report, and for the rest of the map after `FAILED_FOREVER` reports, s.
+const FAILED_MEMORY: f64 = 60.0;
+const FAILED_FOREVER: u32 = 3;
 /// Danger halves in this many seconds.
 const DANGER_HALF_LIFE: f32 = 30.0;
 
@@ -113,6 +128,13 @@ pub struct TeamPlan {
     pub leader_left: f32,
     /// The leader waits for the group.
     pub leader_wait: bool,
+    /// The group gathers before going onto the site (and throws its
+    /// grenades at it), since when; then it went in.
+    pub staging: bool,
+    stage_since: Option<f64>,
+    pub staged: bool,
+    /// Defenders sent from another site this round.
+    rotated: usize,
     wait_since: Option<f64>,
     no_wait_until: f64,
     /// Per area: recent deaths of this team there (decaying).
@@ -133,6 +155,11 @@ pub struct Tactics {
     pub exposure: Vec<f32>,
     pub teams: Vec<TeamPlan>,
     round: Option<u32>,
+    /// Nav links bots got stuck on (`Bot::stuck_links`), shared by all
+    /// bots: (link, until, times reported, the last report's expiry).
+    failed: Vec<((usize, usize), f64, u32, f64)>,
+    /// The links in `failed` still in force (path cost `stuck`).
+    pub failed_links: Vec<(usize, usize)>,
 }
 
 impl Tactics {
@@ -562,7 +589,30 @@ pub(super) fn update(
         };
         build_map(&mut tactics, nav, entities.as_deref(), &spawns, &mut sees);
         tactics.round = None;
+        tactics.failed.clear();
     }
+
+    // Links bots keep getting stuck on: avoided by all of them.
+    for (_, bot, ..) in &bots {
+        for &(link, until) in &bot.stuck_links {
+            match tactics.failed.iter_mut().find(|f| f.0 == link) {
+                Some(f) if f.3 == until => {}
+                Some(f) => {
+                    f.2 += 1;
+                    f.3 = until;
+                    f.1 = if f.2 >= FAILED_FOREVER {
+                        f64::INFINITY
+                    } else {
+                        now + FAILED_MEMORY * f.2 as f64
+                    };
+                    info!("bots: nav link {link:?} failed {} times", f.2);
+                }
+                None => tactics.failed.push((link, now + FAILED_MEMORY, 1, until)),
+            }
+        }
+    }
+    tactics.failed.retain(|f| f.1 > now);
+    tactics.failed_links = tactics.failed.iter().map(|f| f.0).collect();
 
     // Deaths make their area dangerous for the victim's team.
     let decay = 0.5f32.powf(dt / DANGER_HALF_LIFE);
@@ -610,8 +660,9 @@ pub(super) fn update(
         }
     }
 
-    // Group leaders: the first living attacker, waiting for stragglers.
-    let alive: Vec<(Entity, Vec3, f32, bool)> = bots
+    // Group leaders: the bomb carrier, else the first living attacker,
+    // waiting for stragglers, and gathering everyone before the site.
+    let alive: Vec<(Entity, Vec3, f32, bool, bool)> = bots
         .iter()
         .filter(|b| b.4.current > 0.0)
         .map(|(e, b, t, ..)| {
@@ -620,6 +671,7 @@ pub(super) fn update(
                 t.translation - Vec3::Y * CAPSULE_HEIGHT / 2.0,
                 b.route_left(),
                 b.hold.is_none() && b.site == b.orders.site,
+                b.carrying,
             )
         })
         .collect();
@@ -627,14 +679,32 @@ pub(super) fn update(
         if plan.role != Role::Attack {
             continue;
         }
-        let group: Vec<&(Entity, Vec3, f32, bool)> =
+        let group: Vec<&(Entity, Vec3, f32, bool, bool)> =
             alive.iter().filter(|a| a.3 && plan.members.contains(&a.0)).collect();
-        let leader = group.first().copied();
+        let leader = group.iter().find(|a| a.4).or(group.first()).copied();
         plan.leader = leader.map(|l| l.0);
         plan.leader_feet = leader.map(|l| l.1);
         plan.leader_left = leader.map_or(0.0, |l| l.2);
         let spread = leader.map_or(0.0, |l| group.iter().map(|g| g.1.distance(l.1)).fold(0.0, f32::max));
-        let wait = spread > GROUP_SPREAD && now >= plan.no_wait_until;
+        // Gather before going on: once, when the leader nears the site.
+        plan.staging = false;
+        if let Some(l) = leader
+            && !plan.staged
+            && group.len() > 1
+            && l.2 > 0.0
+            && l.2 < STAGE_ROUTE
+        {
+            let since = *plan.stage_since.get_or_insert(now);
+            let gathered = group.iter().all(|g| g.1.distance(l.1) < STAGE_GROUP);
+            if (gathered && now - since >= STAGE_MIN) || now - since >= STAGE_MAX {
+                plan.staged = true;
+                // In together, no more waiting on the way.
+                plan.no_wait_until = f64::INFINITY;
+            } else {
+                plan.staging = true;
+            }
+        }
+        let wait = plan.staging || (spread > GROUP_SPREAD && now >= plan.no_wait_until);
         match (wait, plan.wait_since) {
             (true, None) => plan.wait_since = Some(now),
             (true, Some(since)) if now - since > WAIT_MAX => {
@@ -647,8 +717,62 @@ pub(super) fn update(
         plan.leader_wait = plan.wait_since.is_some();
     }
 
-    // Teammates' calls bring the nearest free bots.
-    for call in radio.read() {
+    // Teammates' calls bring the nearest free bots; a defender seeing
+    // enemies at its site brings some from the other sites.
+    let calls: Vec<Radio> = radio.read().cloned().collect();
+    for call in &calls {
+        if call.command != "enemyspot" {
+            continue;
+        }
+        let Ok((_, caller, t, team, _)) = bots.get(call.sender) else {
+            continue;
+        };
+        let (team, at) = (*team, t.translation);
+        let Some(site) = caller.site.filter(|_| caller.orders.role == Role::Defend) else {
+            continue;
+        };
+        let Some(point) = tactics.sites.get(site).map(|s| s.point) else {
+            continue;
+        };
+        if at.distance(point) > SITE_RADIUS * 1.5 {
+            continue;
+        }
+        let others: Vec<(Entity, f32)> = bots
+            .iter()
+            .filter(|(_, b, _, tm, h)| {
+                **tm == team
+                    && h.current > 0.0
+                    && b.orders.role == Role::Defend
+                    && b.site.is_some_and(|s| s != site)
+                    && b.target.is_none()
+            })
+            .map(|(e, _, t, ..)| (e, t.translation.distance(point)))
+            .collect();
+        let Some(plan) = tactics.teams.iter_mut().find(|p| p.team == team) else {
+            continue;
+        };
+        if plan.rotated >= ROTATE_MAX {
+            continue;
+        }
+        let Some(&(e, _)) = others.iter().min_by(|a, b| a.1.total_cmp(&b.1)) else {
+            continue;
+        };
+        plan.rotated += 1;
+        // A hold at the site nobody has.
+        let taken: Vec<Vec3> = bots.iter().filter_map(|(_, b, ..)| b.hold.as_ref().map(|h| h.spot)).collect();
+        let hold = tactics.sites[site].holds[0]
+            .iter()
+            .find(|h| taken.iter().all(|t| t.distance(h.spot) > 1.0))
+            .cloned();
+        if let Ok((_, mut bot, ..)) = bots.get_mut(e) {
+            debug!("bots: defender {e} rotates to site {site}");
+            bot.site = Some(site);
+            bot.hold = hold;
+            bot.hold_since = None;
+            bot.hunting = false;
+        }
+    }
+    for call in &calls {
         let wanted = match call.command.as_str() {
             "enemyspot" => 1,
             "needbackup" | "takingfire" => 2,

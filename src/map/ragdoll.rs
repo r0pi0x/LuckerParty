@@ -248,14 +248,19 @@ pub struct RagdollShot {
 /// (`PhysicsPlugins::default().with_collision_hooks::<MapCollisionHooks>()`):
 /// two bodies of one ragdoll collide only if the model's rules pair them
 /// (spec 1.3), bodies of different ragdolls never (spec 4: both are
-/// debris). Everything else is left to collision layers.
+/// debris). Pairs no solver or event uses are dropped
+/// (`contact_filter`). Everything else is left to collision layers.
 #[derive(SystemParam)]
 pub struct MapCollisionHooks<'w, 's> {
     bodies: Query<'w, 's, &'static RagdollBody>,
+    used: super::contact_filter::UsedContacts<'w, 's>,
 }
 
 impl CollisionHooks for MapCollisionHooks<'_, '_> {
     fn filter_pairs(&self, a: Entity, b: Entity, _: &mut Commands) -> bool {
+        if !self.used.used(a, b) {
+            return false;
+        }
         match (self.bodies.get(a), self.bodies.get(b)) {
             (Ok(a), Ok(b)) => a.ragdoll == b.ragdoll && a.collides & 1u32.checked_shl(b.index as u32).unwrap_or(0) != 0,
             _ => true,

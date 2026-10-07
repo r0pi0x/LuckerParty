@@ -54,6 +54,8 @@ struct ViewRun {
     waiting: bool,
     /// `--bench`: this view's frame times (seconds) and the results so far.
     times: Vec<f32>,
+    /// Main-world CPU time of each timed frame (seconds).
+    main_times: Vec<f32>,
     /// Process CPU time when this view's timing started.
     cpu_start: Option<f64>,
     results: Vec<BenchRow>,
@@ -64,6 +66,10 @@ struct BenchRow {
     avg: f32,
     p95: f32,
     max: f32,
+    /// Main-world CPU ms per frame (First to Last, `perf::FrameTimes`):
+    /// with pipelined rendering, a frame takes the longer of this and the
+    /// render world's time.
+    main: f32,
     meshes: (usize, usize, usize),
     parts: (usize, usize),
     /// Process CPU (all threads) and GPU ms per frame, when known.
@@ -171,6 +177,7 @@ fn start_views(
         frame: 0,
         waiting: false,
         times: Vec::new(),
+        main_times: Vec::new(),
         cpu_start: None,
         results: Vec::new(),
     });
@@ -188,6 +195,7 @@ fn run_views(
     assets: Res<super::perf::MeshTriangles>,
     vis: Res<crate::map::vis::VisStats>,
     diagnostics: Res<bevy::diagnostic::DiagnosticsStore>,
+    frame_times: Res<super::perf::FrameTimes>,
 ) {
     let Some(mut run) = run else { return };
     if run.waiting {
@@ -223,13 +231,18 @@ fn run_views(
             run.cpu_start = super::perf::process_cpu_seconds();
         }
         run.times.push(time.delta_secs());
+        if let Some((_, main)) = frame_times.frames.back() {
+            run.main_times.push(*main);
+        }
         if run.frame < settle + BENCH_FRAMES {
             return;
         }
         let mut t = std::mem::take(&mut run.times);
         t.sort_by(f32::total_cmp);
         let avg = t.iter().sum::<f32>() / t.len() as f32;
+        let main = std::mem::take(&mut run.main_times);
         let row = BenchRow {
+            main: main.iter().sum::<f32>() / main.len().max(1) as f32 * 1e3,
             name: view.name.clone(),
             avg: avg * 1e3,
             p95: t[(t.len() * 95 / 100).min(t.len() - 1)] * 1e3,
@@ -260,21 +273,22 @@ fn run_views(
 }
 
 /// Print `--bench` results: one row per view, then the averages. Frame
-/// times follow machine load; process CPU per frame (all threads) and GPU
-/// time much less.
+/// times follow machine load; process CPU per frame (all threads), main-world
+/// CPU and GPU time less.
 fn print_bench(rows: &[BenchRow]) {
     let opt = |v: Option<f32>| v.map_or("n/a".to_string(), |v| format!("{v:.2}"));
     println!(
-        "{:<24} {:>8} {:>8} {:>8} {:>8} {:>8} {:>10} {:>9} {:>11}",
-        "view", "avg ms", "p95 ms", "max ms", "cpu ms", "gpu ms", "meshes", "tris (k)", "vis parts"
+        "{:<24} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>10} {:>9} {:>11}",
+        "view", "avg ms", "p95 ms", "max ms", "main ms", "cpu ms", "gpu ms", "meshes", "tris (k)", "vis parts"
     );
     for r in rows {
         println!(
-            "{:<24} {:>8.2} {:>8.2} {:>8.2} {:>8} {:>8} {:>10} {:>9} {:>11}",
+            "{:<24} {:>8.2} {:>8.2} {:>8.2} {:>8.2} {:>8} {:>8} {:>10} {:>9} {:>11}",
             r.name,
             r.avg,
             r.p95,
             r.max,
+            r.main,
             opt(r.cpu),
             opt(r.gpu),
             format!("{}/{}", r.meshes.1, r.meshes.0),
@@ -288,11 +302,12 @@ fn print_bench(rows: &[BenchRow]) {
         rows.iter().map(f).collect::<Option<Vec<f32>>>().map(|v| v.iter().sum::<f32>() / n)
     };
     println!(
-        "{:<24} {:>8.2} {:>8.2} {:>8} {:>8} {:>8} {:>10.0} {:>9.0}",
+        "{:<24} {:>8.2} {:>8.2} {:>8} {:>8.2} {:>8} {:>8} {:>10.0} {:>9.0}",
         "MEAN",
         mean(&|r| r.avg),
         mean(&|r| r.p95),
         "",
+        mean(&|r| r.main),
         opt(mean_opt(&|r| r.cpu)),
         opt(mean_opt(&|r| r.gpu)),
         mean(&|r| r.meshes.1 as f32),

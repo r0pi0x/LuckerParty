@@ -25,6 +25,7 @@ impl Plugin for PerfPlugin {
             .init_resource::<Perf>()
             .init_resource::<FrameTimes>()
             .init_resource::<MeshTriangles>()
+            .init_resource::<Churn>()
             .insert_resource(HostTimescale(1.0))
             .add_systems(PreStartup, timescale_from_command_line)
             .add_systems(First, apply_timescale.after(bevy::time::TimeSystems))
@@ -32,12 +33,13 @@ impl Plugin for PerfPlugin {
             .add_systems(First, start_frame)
             .add_systems(
                 Last,
-                (record_triangles, end_frame, draw_overlay.run_if(|p: Res<Perf>| p.show > 0), hide_overlay).chain(),
+                (record_triangles, count_churn, end_frame, draw_overlay.run_if(|p: Res<Perf>| p.show > 0), hide_overlay).chain(),
             );
         resource_cvar::<Perf, u8>(
             app,
             "mashup_perf",
-            "1: performance overlay (frame times, CPU, GPU passes, meshes, visibility); 2: also every render pass.",
+            "1: performance overlay (frame times, CPU, GPU passes, meshes, visibility, per-frame changes); \
+             2: also every render pass; 3: also log what writes transforms, each second.",
             |p| &mut p.show,
         );
         resource_cvar::<HostTimescale, f32>(
@@ -280,8 +282,103 @@ pub fn mesh_counts(
     (total, drawn, tris)
 }
 
+/// What changes each frame, averaged over about a second: transforms
+/// written (each dirties its tree for transform propagation; one under the
+/// map's root dirties the map's), and mesh and material assets modified
+/// (each is prepared for the GPU again, and any modified mesh makes every
+/// mesh entity re-check its pipeline). Writes that store the same value
+/// count too: avoid them.
+#[derive(Resource, Default)]
+struct Churn {
+    frames: u32,
+    started: Option<Instant>,
+    sums: [u32; 4],
+    names: std::collections::HashMap<String, u32>,
+    /// Last second's averages: transforms, of them under the map's root,
+    /// meshes, materials.
+    shown: [f32; 4],
+}
+
+#[allow(clippy::too_many_arguments)]
+fn count_churn(
+    perf: Res<Perf>,
+    mut churn: ResMut<Churn>,
+    changed: Query<Entity, Changed<Transform>>,
+    parents: Query<&ChildOf>,
+    names: Query<&Name>,
+    map_parts: Query<(), With<crate::map::MapPart>>,
+    mut meshes: MessageReader<AssetEvent<Mesh>>,
+    mut props: MessageReader<AssetEvent<crate::map::prop_material::PropMaterial>>,
+    mut standard: MessageReader<AssetEvent<StandardMaterial>>,
+    mut sprites: MessageReader<AssetEvent<crate::map::sprite_material::SpriteMaterial>>,
+    mut particles: MessageReader<AssetEvent<crate::map::particles::ParticleDrawMaterial>>,
+    mut decals: MessageReader<AssetEvent<crate::map::decal::DecalMaterial>>,
+) {
+    fn modified<A: Asset>(events: &mut MessageReader<AssetEvent<A>>) -> u32 {
+        events.read().filter(|e| matches!(e, AssetEvent::Modified { .. })).count() as u32
+    }
+    let mesh_count = modified(&mut meshes);
+    let material_count = modified(&mut props)
+        + modified(&mut standard)
+        + modified(&mut sprites)
+        + modified(&mut particles)
+        + modified(&mut decals);
+    if perf.show == 0 {
+        churn.started = None;
+        return;
+    }
+    let churn = &mut *churn;
+    let (mut total, mut in_map) = (0, 0);
+    for e in &changed {
+        total += 1;
+        // The root of its tree, and the nearest name on the way up.
+        let (mut root, mut label) = (e, names.get(e).ok());
+        while let Ok(child_of) = parents.get(root) {
+            root = child_of.parent();
+            label = label.or_else(|| names.get(root).ok());
+        }
+        let label = label.map(|n| n.as_str().to_string());
+        if root != e && map_parts.contains(root) {
+            in_map += 1;
+        }
+        if perf.show >= 3 {
+            let label: String = label.unwrap_or_else(|| "?".into()).chars().filter(|c| !c.is_ascii_digit()).collect();
+            *churn.names.entry(label).or_default() += 1;
+        }
+    }
+    churn.frames += 1;
+    for (s, v) in churn.sums.iter_mut().zip([total, in_map, mesh_count, material_count]) {
+        *s += v;
+    }
+    let now = Instant::now();
+    let started = *churn.started.get_or_insert(now);
+    if (now - started).as_secs_f32() < 1.0 {
+        return;
+    }
+    let n = churn.frames.max(1) as f32;
+    churn.shown = churn.sums.map(|s| s as f32 / n);
+    if perf.show >= 3 {
+        let mut names: Vec<_> = churn.names.drain().collect();
+        names.sort_by(|a, b| b.1.cmp(&a.1));
+        let top: Vec<String> = names.iter().take(12).map(|(k, v)| format!("{k}: {:.1}", *v as f32 / n)).collect();
+        info!(
+            "per frame: {:.1} transforms written ({:.1} under the map's root), {:.1} meshes and {:.1} materials modified; \
+             transforms by name: {}",
+            churn.shown[0],
+            churn.shown[1],
+            churn.shown[2],
+            churn.shown[3],
+            top.join(", ")
+        );
+    }
+    churn.frames = 0;
+    churn.sums = [0; 4];
+    churn.started = Some(now);
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw_overlay(
+    churn: Res<Churn>,
     perf: Res<Perf>,
     times: Res<FrameTimes>,
     diagnostics: Res<DiagnosticsStore>,
@@ -324,6 +421,10 @@ fn draw_overlay(
         .unwrap_or(0.0);
     let (total, drawn, triangles) = mesh_counts(&meshes, &assets);
     lines.push(format!("entities {entities:.0}  meshes {drawn}/{total} drawn, {}k triangles", triangles / 1000));
+    let [t, m, meshes_changed, materials] = churn.shown;
+    lines.push(format!(
+        "per frame: {t:.0} transforms written ({m:.0} under the map), {meshes_changed:.1} meshes, {materials:.1} materials modified"
+    ));
     match vis.cluster {
         Some(c) => lines.push(format!(
             "vis: cluster {c}, sees {}/{} clusters, {}/{} map parts",

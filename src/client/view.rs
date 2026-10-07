@@ -181,6 +181,38 @@ pub(super) fn camera_look(mode: &CameraMode, look: Quat) -> Quat {
 /// The camera's offset from the character's origin: the eye in first
 /// person; in third person, behind it (along `look`, from `camera_look`),
 /// pulled in by a sweep against everything but characters.
+/// Clearance kept between the eye and a ceiling just above it: Bevy's
+/// near plane (0.1 m) plus a little, so the near plane never cuts into it.
+const CEILING_CLEARANCE: f32 = 0.12;
+
+/// The eye, lowered if a ceiling sits closer above it than
+/// `CEILING_CLEARANCE`. The measured CS:S box (62 units, eye at 64) fits a
+/// 64-unit duct like de_nuke's vents standing, with the eye on the ceiling
+/// plane: the near plane then cut into the ceiling and the map showed
+/// through it.
+fn below_ceiling(
+    origin: Vec3,
+    eye: Vec3,
+    spatial: &SpatialQuery,
+    characters: impl IntoIterator<Item = Entity>,
+) -> Vec3 {
+    let filter = SpatialQueryFilter::from_excluded_entities(characters).with_mask(crate::core::SOLID_LAYERS);
+    let reach = eye.y + CEILING_CLEARANCE;
+    if reach <= 0.0 {
+        return eye;
+    }
+    let hit = spatial.cast_ray(origin, Dir3::Y, reach, true, &filter).map(|h| h.distance);
+    eye.with_y(eye_under_ceiling(eye.y, hit))
+}
+
+/// The eye's height above the origin with a ceiling `hit` meters above it.
+fn eye_under_ceiling(eye: f32, hit: Option<f32>) -> f32 {
+    match hit {
+        Some(d) if d < eye + CEILING_CLEARANCE => (d - CEILING_CLEARANCE).max(0.0).min(eye),
+        _ => eye,
+    }
+}
+
 pub(super) fn camera_offset(
     mode: &CameraMode,
     origin: Vec3,
@@ -190,7 +222,7 @@ pub(super) fn camera_offset(
     characters: impl IntoIterator<Item = Entity>,
 ) -> Vec3 {
     if !mode.third_person {
-        return eye;
+        return below_ceiling(origin, eye, spatial, characters);
     }
     let ideal = mode.ideal_dist.max(0.0) * METERS_PER_UNIT;
     let Ok(dir) = Dir3::new(look * Vec3::Z) else {
@@ -376,6 +408,18 @@ mod tests {
         run(&mut app, "volume -1");
         assert_eq!(app.world().resource::<GlobalVolume>().volume.to_linear(), 0.0);
         assert!(app.world().resource::<Console>().cvar("volume").unwrap().archive);
+    }
+
+    #[test]
+    fn the_eye_stays_below_a_low_ceiling() {
+        let u = METERS_PER_UNIT;
+        // A 64-unit duct: origin 31 units up (box centre), eye 33 above it,
+        // ceiling 33 above it: the eye drops to keep the near plane clear.
+        let eye = eye_under_ceiling(33.0 * u, Some(33.0 * u));
+        assert!((eye - (33.0 * u - CEILING_CLEARANCE)).abs() < 1e-6, "{eye}");
+        // Open sky or a high ceiling: unchanged.
+        assert_eq!(eye_under_ceiling(33.0 * u, None), 33.0 * u);
+        assert_eq!(eye_under_ceiling(33.0 * u, Some(2.0)), 33.0 * u);
     }
 
     #[test]

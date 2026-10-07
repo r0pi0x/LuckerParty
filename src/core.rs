@@ -71,6 +71,8 @@ pub struct MovementState {
     pub hull_max: Vec3,
     /// The moving solid (`MovingSolid`) the character stands on, if any.
     pub ground: Option<Entity>,
+    /// Climbing a ladder (movements that have them).
+    pub on_ladder: bool,
 }
 
 /// A velocity that moves a character without being part of its own
