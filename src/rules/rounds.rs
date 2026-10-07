@@ -205,9 +205,13 @@ pub(super) fn plugin(app: &mut App) {
         .init_resource::<RoundState>()
         .add_message::<RoundEnded>();
     let cvars: [(&str, &str, fn(&mut RoundSettings) -> &mut f32); 3] = [
-        ("mp_freezetime", "Seconds frozen at the start of each round.", |r| &mut r.freeze_time),
+        ("mp_freezetime", "Seconds frozen at the start of each round.", |r| {
+            &mut r.freeze_time
+        }),
         ("mp_roundtime", "Minutes per round.", |r| &mut r.round_time),
-        ("mp_buytime", "Minutes buying stays open after the freeze.", |r| &mut r.buy_time),
+        ("mp_buytime", "Minutes buying stays open after the freeze.", |r| {
+            &mut r.buy_time
+        }),
     ];
     for (name, help, field) in cvars {
         resource_cvar::<RoundSettings, f32>(app, name, help, field);

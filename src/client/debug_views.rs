@@ -1,18 +1,20 @@
 //! Debug overlays drawn with gizmos: the nav mesh around you
 //! (`mashup_drawnav 1`: areas coloured by place, links between them) and
-//! what each bot is doing (`mashup_drawbots 1`: its target, where it last
-//! saw or heard an enemy, the route it walks and where it roams, its
+//! what each bot is doing (`mashup_drawbots 1`: its role, target, where
+//! it last saw or heard an enemy, the route it walks and its goal, its
+//! hold spot and the approaches it watches, what it looks at and the
+//! corner it checks, the teammate it answers, the map's sites, its
 //! planned grenade arc, target and burst point, a flash it looks away
-//! from) and
+//! from; `bot_debug 1`: a list of the bots' states) and
 //! ragdolls (`mashup_ragdoll_debug 1`: each body's bounds and axes, each
 //! joint from its parent body's anchor to the child body).
 
 use bevy::prelude::*;
 
 use crate::{
-    bot::Bot,
+    bot::{Bot, Role, Tactics},
     console::resource_cvar,
-    core::{Intent, LocalPlayer},
+    core::{Health, Intent, LocalPlayer, Team},
     map::{
         nav::NavMesh,
         ragdoll::{RagdollBody, RagdollJoint, RagdollSettings},
@@ -25,7 +27,8 @@ pub struct DebugViewsPlugin;
 impl Plugin for DebugViewsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<DebugViews>()
-            .add_systems(Update, (draw_nav, draw_bots, draw_ragdolls));
+            .add_systems(Startup, spawn_bot_list)
+            .add_systems(Update, (draw_nav, draw_bots, bot_list, draw_ragdolls));
         resource_cvar::<DebugViews, u8>(
             app,
             "mashup_ragdoll_debug",
@@ -53,8 +56,14 @@ impl Plugin for DebugViewsPlugin {
         resource_cvar::<DebugViews, u8>(
             app,
             "mashup_drawbots",
-            "1: each bot's target, last known enemy position, route, roaming goal, grenade arc and flash it avoids.",
+            "1: each bot's role, target, last known enemy position, route, goal, hold spot, look target, grenade arc and flash it avoids.",
             |d| &mut d.bots,
+        );
+        resource_cvar::<DebugViews, u8>(
+            app,
+            "bot_debug",
+            "1: list every bot's team, role, site, activity and health on screen.",
+            |d| &mut d.bot_list,
         );
     }
 }
@@ -63,6 +72,7 @@ impl Plugin for DebugViewsPlugin {
 struct DebugViews {
     nav: u8,
     bots: u8,
+    bot_list: u8,
     ragdolls: u8,
 }
 
@@ -85,7 +95,9 @@ fn draw_nav(
     me: Option<Single<&GlobalTransform, With<LocalPlayer>>>,
     mut gizmos: Gizmos,
 ) {
-    let (Some(nav), true) = (nav, views.nav > 0) else { return };
+    let (Some(nav), true) = (nav, views.nav > 0) else {
+        return;
+    };
     let here = me.map(|t| t.translation());
     for a in &nav.areas {
         if views.nav == 1 && here.is_some_and(|h| h.distance(a.center) > NAV_RADIUS) {
@@ -110,35 +122,101 @@ fn draw_nav(
     }
 }
 
+fn role_color(role: Role) -> Color {
+    match role {
+        Role::Attack => Color::srgb(1.0, 0.45, 0.1),
+        Role::Defend => Color::srgb(0.2, 0.55, 1.0),
+        Role::Roam => Color::srgb(0.7, 0.7, 0.7),
+    }
+}
+
 fn draw_bots(
     views: Res<DebugViews>,
-    bots: Query<(&Bot, &GlobalTransform, &Intent)>,
+    bots: Query<(&Bot, &GlobalTransform, &Intent, &Health)>,
     targets: Query<&GlobalTransform>,
+    tactics: Option<Res<Tactics>>,
     mut gizmos: Gizmos,
 ) {
     if views.bots == 0 {
         return;
     }
-    for (bot, at, intent) in &bots {
+    let flat = Quat::from_rotation_x(std::f32::consts::FRAC_PI_2);
+    // The sites (a yellow ring) and their approaches (orange: the
+    // attackers', blue: the defenders').
+    if let Some(t) = tactics.as_ref() {
+        for site in &t.sites {
+            let at = site.point + Vec3::Y * LIFT;
+            gizmos.circle(
+                Isometry3d::new(at, flat),
+                crate::bot::tactics::ARRIVE_RADIUS,
+                Color::srgb(1.0, 0.9, 0.2),
+            );
+            for (side, color) in [(0, role_color(Role::Attack)), (1, role_color(Role::Defend))] {
+                for a in &site.approaches[side] {
+                    gizmos.sphere(Isometry3d::from_translation(*a + Vec3::Y * 0.5), 0.5, color);
+                }
+            }
+        }
+    }
+    for (bot, at, intent, health) in &bots {
+        if health.current <= 0.0 {
+            continue;
+        }
         let eye = at.translation() + Vec3::Y * 0.6;
-        // Where it looks.
+        let feet = at.translation() - Vec3::Y * 0.9 + Vec3::Y * LIFT;
+        // Its role: a ring at its feet.
+        let role = role_color(bot.role());
+        gizmos.circle(Isometry3d::new(feet, flat), 0.5, role);
+        // Where it looks, and at what.
         gizmos.line(eye, eye + intent.look_rotation() * Vec3::NEG_Z * 1.5, Color::WHITE);
+        if bot.target.is_none()
+            && let Some(look) = bot.look_target()
+        {
+            gizmos.line(eye, look, Color::srgba(1.0, 1.0, 0.3, 0.35));
+        }
+        if let Some(spot) = bot.checking() {
+            gizmos.sphere(
+                Isometry3d::from_translation(spot + Vec3::Y * 0.2),
+                0.2,
+                Color::srgb(1.0, 1.0, 0.3),
+            );
+        }
         if let Some(t) = bot.target.and_then(|t| targets.get(t).ok()) {
             gizmos.line(eye, t.translation(), Color::srgb(1.0, 0.2, 0.2));
         }
         if let Some((lead, _)) = bot.lead {
-            gizmos.sphere(Isometry3d::from_translation(lead + Vec3::Y * 0.3), 0.3, Color::srgb(1.0, 0.6, 0.0));
+            gizmos.sphere(
+                Isometry3d::from_translation(lead + Vec3::Y * 0.3),
+                0.3,
+                Color::srgb(1.0, 0.6, 0.0),
+            );
             gizmos.line(eye, lead + Vec3::Y * 0.3, Color::srgba(1.0, 0.6, 0.0, 0.4));
+        }
+        if let Some(call) = bot.assisting() {
+            gizmos.line(eye, call + Vec3::Y * 1.0, Color::srgb(0.2, 1.0, 0.6));
         }
         let (route, next) = bot.route();
         let ahead = route.iter().skip(next).map(|p| *p + Vec3::Y * 0.1);
-        gizmos.linestrip(std::iter::once(at.translation()).chain(ahead), Color::srgb(0.3, 0.9, 1.0));
-        if let Some(goal) = bot.roam_goal() {
+        gizmos.linestrip(
+            std::iter::once(at.translation()).chain(ahead),
+            Color::srgb(0.3, 0.9, 1.0),
+        );
+        if let Some(goal) = bot.goal() {
             gizmos.sphere(
                 Isometry3d::from_translation(goal + Vec3::Y * 0.3),
                 0.25,
                 Color::srgb(0.6, 0.4, 1.0),
             );
+        }
+        // Its hold spot (a box in its role's colour) and what it watches.
+        if let Some(hold) = bot.hold() {
+            gizmos.cube(
+                Transform::from_translation(hold.spot + Vec3::Y * 0.25).with_scale(Vec3::splat(0.5)),
+                role,
+            );
+            for w in &hold.watch {
+                gizmos.line(hold.spot + Vec3::Y * 0.5, *w + Vec3::Y * 0.5, role.with_alpha(0.3));
+            }
         }
         if let Some(plan) = bot.grenade_plan() {
             let color = match plan.kind {
@@ -160,6 +238,82 @@ fn draw_bots(
             gizmos.line(eye, from, Color::srgba(1.0, 1.0, 1.0, 0.3));
             gizmos.sphere(Isometry3d::from_translation(from), 0.15, Color::WHITE);
         }
+    }
+}
+
+#[derive(Component)]
+struct BotList;
+
+fn spawn_bot_list(mut commands: Commands) {
+    commands.spawn((
+        BotList,
+        Text::default(),
+        TextFont {
+            font_size: FontSize::Px(13.0),
+            ..default()
+        },
+        TextColor(Color::srgb(0.85, 1.0, 0.85)),
+        Node {
+            position_type: PositionType::Absolute,
+            top: px(480.0),
+            left: px(8.0),
+            ..default()
+        },
+        Visibility::Hidden,
+    ));
+}
+
+/// `bot_debug 1`: each team's plan, then one line per bot (name, team,
+/// role, site, activity, `*` for the group leader, health).
+fn bot_list(
+    views: Res<DebugViews>,
+    bots: Query<(Entity, &Bot, &Team, &Health, Option<&Name>)>,
+    tactics: Option<Res<Tactics>>,
+    mut text: Query<(&mut Text, &mut Visibility), With<BotList>>,
+) {
+    let Ok((mut text, mut vis)) = text.single_mut() else {
+        return;
+    };
+    let show = views.bot_list > 0;
+    let want = if show { Visibility::Visible } else { Visibility::Hidden };
+    if *vis != want {
+        *vis = want;
+    }
+    if !show {
+        return;
+    }
+    let mut out = String::new();
+    if let Some(t) = tactics.as_ref() {
+        out += &format!("{:?}, {} sites\n", t.scenario, t.sites.len());
+        for plan in &t.teams {
+            let site = plan.site.map_or("-", |s| t.site_name(s));
+            let wait = if plan.leader_wait { " (leader waits)" } else { "" };
+            out += &format!("team {}: {:?} {site}{wait}\n", plan.team.0, plan.role);
+        }
+    }
+    let mut rows: Vec<_> = bots.iter().collect();
+    rows.sort_by_key(|r| (r.2.0, r.0));
+    for (e, bot, team, health, name) in rows {
+        let site = match (bot.site(), tactics.as_ref()) {
+            (Some(s), Some(t)) => t.site_name(s).to_string(),
+            _ => "-".to_string(),
+        };
+        let leader = tactics
+            .as_ref()
+            .and_then(|t| t.team(*team))
+            .is_some_and(|p| p.leader == Some(e));
+        let name = name.map_or_else(|| e.to_string(), |n| n.as_str().to_string());
+        out += &format!(
+            "{name:<8} t{} {:<7} {site:<10} {:<10}{} hp {:.0}\n",
+            team.0,
+            format!("{:?}", bot.role()),
+            format!("{:?}", bot.activity()),
+            if leader { " *" } else { "  " },
+            health.current * 100.0,
+        );
+    }
+    if text.0 != out {
+        text.0 = out;
     }
 }
 
@@ -188,7 +342,11 @@ fn draw_ragdolls(
         gizmos.line(p.translation(), anchor, Color::srgb(1.0, 0.9, 0.2));
         // Red when the child drifted from its anchor.
         let drift = anchor.distance(c.translation());
-        let color = if drift > 0.02 { Color::srgb(1.0, 0.1, 0.1) } else { Color::WHITE };
+        let color = if drift > 0.02 {
+            Color::srgb(1.0, 0.1, 0.1)
+        } else {
+            Color::WHITE
+        };
         gizmos.sphere(Isometry3d::from_translation(anchor), 0.015, color);
     }
 }

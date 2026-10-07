@@ -25,7 +25,43 @@ pub mod flags {
     pub const JUMP: u32 = 0x0002;
     pub const PRECISE: u32 = 0x0004;
     pub const NO_JUMP: u32 = 0x0008;
+    pub const AVOID: u32 = 0x0080;
+    pub const STAND: u32 = 0x0400;
     pub const STAIRS: u32 = 0x1000;
+}
+
+/// Hiding spot flag bits (the Source file's values).
+pub mod spot {
+    pub const IN_COVER: u8 = 0x01;
+    pub const GOOD_SNIPER: u8 = 0x02;
+    pub const IDEAL_SNIPER: u8 = 0x04;
+    pub const EXPOSED: u8 = 0x08;
+}
+
+/// A place a bot can hide or hold from, on the ground of its area.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HidingSpot {
+    pub pos: Vec3,
+    /// `spot` bits.
+    pub flags: u8,
+}
+
+/// Potential visibility bits of `NavArea::visible`.
+pub mod vis {
+    pub const PARTLY: u8 = 0x01;
+    pub const FULLY: u8 = 0x02;
+}
+
+/// Hiding spots that come into view, in order, when walking through an
+/// area from one neighbour to another (spec "Encounter record").
+#[derive(Clone, Debug, PartialEq)]
+pub struct Encounter {
+    /// Area indices entered from and left toward.
+    pub from: usize,
+    pub to: usize,
+    /// Each spot's position and the fraction (0..1) of the way through
+    /// where it becomes visible.
+    pub spots: Vec<(Vec3, f32)>,
 }
 
 /// Which edge of an area a link leaves by.
@@ -75,6 +111,12 @@ pub struct NavArea {
     pub links: Vec<(usize, Via)>,
     /// Index into `NavMesh::places`, if named.
     pub place: Option<usize>,
+    pub hiding: Vec<HidingSpot>,
+    /// Potentially visible areas (index, `vis` bits), sorted by index;
+    /// empty when the file has none (versions before 16).
+    pub visible: Vec<(usize, u8)>,
+    /// Corner checks along paths through this area (version 9 files).
+    pub encounters: Vec<Encounter>,
 }
 
 #[derive(Clone, Debug)]
@@ -163,7 +205,7 @@ impl NavMesh {
     }
 
     /// Stock path cost of entering `to` from `from` (spec "shortest path").
-    fn step_cost(&self, from: usize, to: usize, via: Via) -> f64 {
+    pub fn step_cost(&self, from: usize, to: usize, via: Via) -> f64 {
         let (a, b) = (&self.areas[from], &self.areas[to]);
         let dist = match via {
             Via::LadderUp(l) | Via::LadderDown(l) => self.ladders[l].length as f64,
@@ -183,6 +225,26 @@ impl NavMesh {
     /// areas with how each was entered (the first has none) and the total
     /// cost, or None when unreachable.
     pub fn find_path(&self, start: usize, goal: usize) -> Option<(Vec<(usize, Option<Via>)>, f64)> {
+        self.find_path_with(start, goal, |from, to, via| self.step_cost(from, to, via))
+    }
+
+    /// The step cost's distance part: ladder length or centre distance.
+    pub fn step_length(&self, from: usize, to: usize, via: Via) -> f64 {
+        match via {
+            Via::LadderUp(l) | Via::LadderDown(l) => self.ladders[l].length as f64,
+            Via::Walk(_) => (self.areas[to].center.as_dvec3() - self.areas[from].center.as_dvec3()).length(),
+        }
+    }
+
+    /// `find_path` with another step cost (`cost(from, to, via)`, the cost
+    /// of entering `to`; infinite: impassable). The heuristic stays the
+    /// straight distance, so costs should not fall below the distance.
+    pub fn find_path_with(
+        &self,
+        start: usize,
+        goal: usize,
+        cost_of: impl Fn(usize, usize, Via) -> f64,
+    ) -> Option<(Vec<(usize, Option<Via>)>, f64)> {
         let n = self.areas.len();
         let goal_pos = self.areas[goal].center.as_dvec3();
         let h = |i: usize| (self.areas[i].center.as_dvec3() - goal_pos).length();
@@ -210,7 +272,11 @@ impl NavMesh {
                 if next == cur || parent[cur].is_some_and(|(p, _)| p == next) {
                     continue;
                 }
-                let mut cost = g[cur] + self.step_cost(cur, next, via);
+                let step = cost_of(cur, next, via);
+                if !step.is_finite() {
+                    continue;
+                }
+                let mut cost = g[cur] + step;
                 cost = cost.max(1.00001 * g[cur] + 0.00001);
                 if g[next] <= cost {
                     continue;
@@ -281,28 +347,100 @@ impl NavMesh {
         let start = self.nearest_area(from)?;
         let goal = self.nearest_area(to)?;
         let (areas, _) = self.find_path(start, goal)?;
+        Some(
+            self.points_along(&areas, from, to, |_, _, _| 0.0)
+                .into_iter()
+                .map(|p| p.0)
+                .collect(),
+        )
+    }
+
+    /// World points (with the area each one leads into) to walk along an
+    /// area path from `from` to `to`, as `route` makes them. `lean(from,
+    /// to)` (-1..1) shifts each floor crossing from the nearest point
+    /// toward one end of the shared edge (0: nearest; used to spread
+    /// walkers over wide openings); it also gets the edge's length.
+    pub fn points_along(
+        &self,
+        areas: &[(usize, Option<Via>)],
+        from: Vec3,
+        to: Vec3,
+        lean: impl Fn(usize, usize, f32) -> f32,
+    ) -> Vec<(Vec3, usize)> {
         let mut points = Vec::new();
         let mut at = from;
         for w in areas.windows(2) {
             let (prev, (next, via)) = (w[0].0, w[1]);
             let p = match via {
-                Some(Via::Walk(side)) => self.crossing(prev, next, side, at),
+                Some(Via::Walk(side)) => {
+                    let near = self.crossing(prev, next, side, at);
+                    let (lo, hi) = self.portal_ends(prev, next, side);
+                    let l = lean(prev, next, lo.distance(hi)).clamp(-1.0, 1.0);
+                    let end = if l < 0.0 { lo } else { hi };
+                    near.lerp(end, l.abs())
+                }
                 Some(Via::LadderUp(l)) => {
                     let ladder = &self.ladders[l];
-                    points.push(ladder.bottom + ladder.normal * 32.0 * UNIT);
+                    points.push((ladder.bottom + ladder.normal * 32.0 * UNIT, prev));
                     ladder.top
                 }
                 Some(Via::LadderDown(l)) => {
                     let ladder = &self.ladders[l];
-                    points.push(ladder.top - ladder.normal * 32.0 * UNIT);
+                    points.push((ladder.top - ladder.normal * 32.0 * UNIT, prev));
                     ladder.bottom
                 }
                 None => continue,
             };
-            points.push(p);
+            points.push((p, next));
             at = p;
         }
-        points.push(to);
-        Some(points)
+        points.push((to, areas.last().map_or(0, |a| a.0)));
+        points
+    }
+
+    /// The two ends of the crossing range from `from` into `to` across
+    /// `side` (as `crossing` clamps to), on `from`'s edge.
+    pub fn portal_ends(&self, from: usize, to: usize, side: Side) -> (Vec3, Vec3) {
+        let far = Vec3::splat(1e6);
+        (self.crossing(from, to, side, -far), self.crossing(from, to, side, far))
+    }
+
+    /// Areas reachable from `start` within `max` of path length (centre
+    /// distances, ladders by length), with their distance, nearest first.
+    pub fn within(&self, start: usize, max: f32) -> Vec<(usize, f32)> {
+        let mut dist = vec![f32::INFINITY; self.areas.len()];
+        let mut out = Vec::new();
+        let mut open = vec![(0.0f32, start)];
+        dist[start] = 0.0;
+        while let Some(i) = open
+            .iter()
+            .enumerate()
+            .min_by(|a, b| a.1.0.total_cmp(&b.1.0))
+            .map(|(i, _)| i)
+        {
+            let (d, cur) = open.swap_remove(i);
+            if d > dist[cur] {
+                continue;
+            }
+            out.push((cur, d));
+            for &(next, via) in &self.areas[cur].links {
+                let nd = d + self.step_length(cur, next, via) as f32;
+                if nd <= max && nd < dist[next] {
+                    dist[next] = nd;
+                    open.push((nd, next));
+                }
+            }
+        }
+        out
+    }
+
+    /// Whether area `b` is in `a`'s potentially visible set (any bits),
+    /// or None when the mesh has no visibility data for `a`.
+    pub fn sees(&self, a: usize, b: usize) -> Option<bool> {
+        let list = &self.areas[a].visible;
+        if list.is_empty() {
+            return None;
+        }
+        Some(a == b || list.binary_search_by_key(&b, |v| v.0).is_ok())
     }
 }

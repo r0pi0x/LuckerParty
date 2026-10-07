@@ -142,3 +142,41 @@ fn train_ladders() {
         .collect();
     assert_eq!(ups, [67, 512]);
 }
+
+/// Hiding spots, potential visibility (v16) and encounter spots (v9).
+#[test]
+fn dust2_spots_and_visibility() {
+    use mashup::map::nav::spot;
+    let Some((m, _)) = mesh("de_dust2") else { return };
+    let spots: Vec<_> = m.areas.iter().flat_map(|a| &a.hiding).collect();
+    assert_eq!(spots.len(), 536);
+    assert_eq!(spots.iter().filter(|s| s.flags == spot::EXPOSED).count(), 290);
+    assert_eq!(spots.iter().filter(|s| s.flags == spot::IN_COVER).count(), 246);
+    let a10 = area(&m, 10);
+    assert_eq!(a10.hiding.len(), 1);
+    assert!((a10.hiding[0].pos - engine(-312.5, 1962.5, -126.30378)).length() < 1e-3);
+    // Area 10 sees area 3 partly and 3726 fully (its first entries).
+    let i3 = m.index_of(3).unwrap();
+    let i3726 = m.index_of(3726).unwrap();
+    assert!(a10.visible.iter().any(|v| v.0 == i3) && a10.visible.contains(&(i3726, 3)));
+    assert!(a10.visible.windows(2).all(|w| w[0].0 < w[1].0), "sorted");
+    assert_eq!(m.sees(m.index_of(10).unwrap(), i3), Some(true));
+    assert!(m.areas.iter().all(|a| a.encounters.is_empty()));
+}
+
+#[test]
+fn train_encounters() {
+    let Some((m, info)) = mesh("de_train") else { return };
+    assert_eq!(info.encounters, 14226);
+    let with: usize = m.areas.iter().map(|a| a.encounters.len()).sum();
+    assert!(with > 1000, "{with} encounters with spots");
+    // Every encounter spot is one of the mesh's hiding spots.
+    let spots: Vec<Vec3> = m.areas.iter().flat_map(|a| a.hiding.iter().map(|s| s.pos)).collect();
+    for e in m.areas.iter().flat_map(|a| &a.encounters).take(200) {
+        for (p, t) in &e.spots {
+            assert!((0.0..=1.0).contains(t));
+            assert!(spots.iter().any(|s| s.distance(*p) < 1e-4));
+        }
+    }
+    assert!(m.areas.iter().all(|a| a.visible.is_empty()), "v9 has no visibility");
+}

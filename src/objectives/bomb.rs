@@ -164,15 +164,28 @@ pub struct BombState {
 pub struct LooseKit;
 
 /// Last tick's fire and use buttons (press edges).
-#[derive(Component, Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct Buttons {
     pub fire: bool,
     pub use_key: bool,
 }
 
+/// Each character's buttons last tick (a resource, not a component: a
+/// component added to every character would reorder their archetypes and
+/// so the order other systems see them in).
+#[derive(Resource, Default)]
+pub struct LastButtons(pub std::collections::HashMap<Entity, Buttons>);
+
+impl LastButtons {
+    pub fn get(&self, e: Entity) -> Buttons {
+        self.0.get(&e).copied().unwrap_or_default()
+    }
+}
+
 pub(super) fn plugin(app: &mut App) {
     app.init_resource::<BombRules>()
         .init_resource::<BombState>()
+        .init_resource::<LastButtons>()
         .add_systems(
             FixedUpdate,
             (
@@ -255,10 +268,10 @@ fn arm(world: &mut World) {
             Option<&MovementState>,
             Option<&Health>,
             Option<&Arming>,
-            Option<&Buttons>,
         )>();
         let objectives = world.resource::<MapObjectives>();
-        for (e, intent, inv, t, state, health, arming, buttons) in q.iter(world) {
+        let last = world.resource::<LastButtons>();
+        for (e, intent, inv, t, state, health, arming) in q.iter(world) {
             let bomb = inv.active.filter(|w| world.get::<C4>(*w).is_some());
             let alive = health.is_none_or(|h| h.current > 0.0);
             let Some(bomb) = bomb.filter(|_| alive) else {
@@ -270,7 +283,7 @@ fn arm(world: &mut World) {
             let (lo, hi) = hull(t, state);
             let site = objectives.bomb_target_at(lo, hi);
             let ground = state.is_none_or(|s| s.on_ground);
-            let pressed = intent.fire && !buttons.is_some_and(|b| b.fire);
+            let pressed = intent.fire && !last.get(e).fire;
             match arming {
                 Some(a) if a.weapon != bomb => steps.push((e, ArmStep::Abort { left_zone: false })),
                 Some(_) if !intent.fire || !open || !ground => steps.push((e, ArmStep::Abort { left_zone: false })),
@@ -460,8 +473,8 @@ fn defuse(
         Option<&Health>,
         Option<&Team>,
         Has<DefuseKit>,
-        Option<&Buttons>,
     )>,
+    last: Res<LastButtons>,
     characters: Query<(), With<Intent>>,
     mut bombs: Query<(Entity, &mut PlantedBomb, &Transform), Without<Intent>>,
     spatial: SpatialQuery,
@@ -503,14 +516,14 @@ fn defuse(
                 events.write(ObjectiveEvent::AbortDefuse { who: d.who });
             }
         }
-        for (e, intent, t, state, health, team, kit, buttons) in &users {
+        for (e, intent, t, state, health, team, kit) in &users {
             if !intent.use_key || health.is_some_and(|h| h.current <= 0.0) || team != Some(&rules.defuser_team) {
                 continue;
             }
             if bomb.defuse.is_some_and(|d| d.who == e) {
                 continue;
             }
-            let pressed = !buttons.is_some_and(|b| b.use_key);
+            let pressed = !last.get(e).use_key;
             if !finds(t, intent, state) {
                 continue;
             }
@@ -701,18 +714,16 @@ fn carrier_events(
 }
 
 /// Remember this tick's fire and use buttons (press edges next tick).
-pub(super) fn remember_buttons(mut q: Query<(Entity, &Intent, Option<&mut Buttons>)>, mut commands: Commands) {
-    for (e, i, b) in &mut q {
-        let now = Buttons {
-            fire: i.fire,
-            use_key: i.use_key,
-        };
-        match b {
-            Some(mut b) => *b = now,
-            None => {
-                commands.entity(e).insert(now);
-            }
-        }
+pub(super) fn remember_buttons(q: Query<(Entity, &Intent)>, mut last: ResMut<LastButtons>) {
+    last.0.clear();
+    for (e, i) in &q {
+        last.0.insert(
+            e,
+            Buttons {
+                fire: i.fire,
+                use_key: i.use_key,
+            },
+        );
     }
 }
 

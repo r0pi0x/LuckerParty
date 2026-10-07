@@ -148,14 +148,23 @@ a first bot are in.
 
 ## 4. Bots
 
-- CS:S bot path costs and route variety (nav spec open questions 2–4),
-  checking corners, teamwork, team roles (attackers to a site, defenders
-  holding one; today both roam toward the objectives 70 % of the time).
+- A CS:S bot behaviour spec (nav spec open questions 2-4) to check our
+  team play against: path costs, how bots pick sites, hold and rotate,
+  what they say. Ours (`bot::tactics`) plants and defuses only through
+  `bot::objectives`' simple hooks (carrier to the nearest target,
+  defenders straight to a planted bomb: no guarding, covering a defuse,
+  or retaking), leads no hostages, buys no kits, has no buy strategy beyond autobuy, no sniper spots
+  (the spot flags are loaded), no crouching at hold spots, no lurkers or
+  split attacks, and only uses approach data it computes (v9 files'
+  approach records are skipped). Bots don't step around each other:
+  two heading to neighbouring hold spots can shoulder each other short
+  of them (tests/bot_rounds.rs counts a bot within 2 m as there).
 - Grenades, beyond the first pass: lineups from the nav mesh's hiding and
   approach spots (smokes cutting sight lines rather than landing on the
   objective point), flashes thrown around corners so they pop out of the
   thrower's view without turning, not flashing teammates, running and
   jump throws (carried velocity in the plan), "Fire in the hole" radio.
+- Movement: gap jumps, ladders, avoiding teammates in doorways.
 
 ## 5. Console, remaining
 

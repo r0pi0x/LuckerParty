@@ -111,3 +111,15 @@ fn defenders_win_when_time_runs_out_and_buying_closes() {
     assert_eq!(money(&sim, t), s.start_money + s.loss_bonus);
     let _ = sim.app.world().get::<Intent>(t);
 }
+
+/// The dead stop being solid (bots and players walk over the spot, a
+/// ragdoll takes the body's place) until they respawn.
+#[test]
+fn the_dead_are_not_solid_until_the_next_round() {
+    let (mut sim, t, ct, _) = setup();
+    sim.seconds(1.2);
+    kill(&mut sim, t, ct);
+    sim.ticks(1);
+    assert!(sim.app.world().get::<avian3d::prelude::ColliderDisabled>(ct).is_some());
+    assert!(sim.app.world().get::<avian3d::prelude::ColliderDisabled>(t).is_none());
+}

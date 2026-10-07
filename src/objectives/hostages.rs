@@ -11,7 +11,7 @@ use bevy::prelude::*;
 
 use super::{
     MapObjectives, ObjectiveEvent, UNIT,
-    bomb::{Buttons, hull, user_of},
+    bomb::{LastButtons, hull, user_of},
     use_search::{UseTarget, find_use},
 };
 use crate::{
@@ -164,10 +164,10 @@ pub(super) fn use_hostages(
             Option<&MovementState>,
             Option<&Health>,
             Option<&Team>,
-            Option<&Buttons>,
         ),
         Without<Hostage>,
     >,
+    last: Res<LastButtons>,
     mut hostages: Query<(Entity, &mut Hostage, &Transform, Option<&MovementState>, &Health)>,
     characters: Query<(), With<Intent>>,
     spatial: SpatialQuery,
@@ -194,8 +194,8 @@ pub(super) fn use_hostages(
             UseTarget { entity: e, lo, hi }
         })
         .collect();
-    for (e, intent, t, state, health, team, buttons) in &users {
-        let pressed = intent.use_key && !buttons.is_some_and(|b| b.use_key);
+    for (e, intent, t, state, health, team) in &users {
+        let pressed = intent.use_key && !last.get(e).use_key;
         if !pressed || health.is_some_and(|h| h.current <= 0.0) {
             continue;
         }
