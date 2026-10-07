@@ -458,6 +458,7 @@ Generic:
     effect on teammates when friendly fire is off.
 - Tracers: one every `tracer_freq` shots (counter global across shots), from
   the weapon's muzzle attachment in multiplayer, unless the shot broke glass.
+  Details: specs/cs_source/tracers.md.
 - Glass: if the surface is glass on a `func_breakable` without the "no
   bullet penetration" flag, the shot continues through it (generic HL2
   rule); CS:S has its own penetration (section 7, Q7).
@@ -1410,6 +1411,7 @@ modes; the airborne inaccuracy target.
 - **Q15** `sv_legacy_grenade_damage` exists on current CS:S servers ("replicate
   grenade damage behaviour of the original game"): grenade damage changed in
   an update; measure both settings when grenades are specced.
+  *Moved to specs/cs_source/grenades.md (Q10 there).*
 
 ### Measurement plan (CS:S dedicated server + SourceMod probe)
 

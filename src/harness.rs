@@ -31,6 +31,7 @@ impl Sim {
             // Interpolation eases rendering between ticks; headless, it
             // would make `Transform` show the previous tick.
             PhysicsPlugins::default()
+                .with_collision_hooks::<crate::map::MapCollisionHooks>()
                 .build()
                 .disable::<PhysicsInterpolationPlugin>(),
             SimPlugins,

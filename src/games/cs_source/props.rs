@@ -46,6 +46,7 @@ fn load_model(materials: &mut MaterialLoader, path: &str) -> Result<(vmdl::Model
 /// local space (feet at the origin, facing -Z, meters).
 pub fn load_character(
     materials: &mut MaterialLoader,
+    surfaces: &super::surfaceprops::SurfaceProps,
     path: &str,
     team: Option<crate::core::Team>,
 ) -> Result<crate::map::MapCharacterModel, String> {
@@ -141,7 +142,7 @@ pub fn load_character(
     };
     let ragdoll = match materials.read(&format!("{}.phy", path.trim_end_matches(".mdl"))) {
         Some(bytes) => match super::phy::parse_ragdoll(&bytes) {
-            Ok(phy) => ragdoll(&phy, &bones, path),
+            Ok(phy) => ragdoll(&phy, &bones, surfaces, path),
             Err(e) => {
                 warn!("{path}: ragdoll: {e}");
                 None
@@ -168,7 +169,12 @@ const RAGDOLL_MAX_BODIES: usize = 24;
 /// a body per solid whose bone the skeleton has (the pieces are already in
 /// that bone's frame, inches), joints between kept bodies with their
 /// limits in radians. None for a model with too many solids or no joints.
-pub fn ragdoll(phy: &super::phy::PhyRagdoll, bones: &[crate::map::MapBone], path: &str) -> Option<crate::map::MapRagdoll> {
+pub fn ragdoll(
+    phy: &super::phy::PhyRagdoll,
+    bones: &[crate::map::MapBone],
+    surfaces: &super::surfaceprops::SurfaceProps,
+    path: &str,
+) -> Option<crate::map::MapRagdoll> {
     use crate::map::{MapRagdoll, MapRagdollBody, MapRagdollJoint};
     if phy.solids.len() > RAGDOLL_MAX_BODIES || phy.solids.is_empty() {
         return None;
@@ -202,6 +208,8 @@ pub fn ragdoll(phy: &super::phy::PhyRagdoll, bones: &[crate::map::MapBone], path
             rotdamping: s.rotdamping,
             inertia: s.inertia,
             surfaceprop: s.surfaceprop.clone(),
+            friction: surfaces.get(&s.surfaceprop).friction,
+            elasticity: surfaces.get(&s.surfaceprop).elasticity,
         });
     }
     let body = |i: usize| body_of.get(i).copied().flatten();
@@ -219,11 +227,14 @@ pub fn ragdoll(phy: &super::phy::PhyRagdoll, bones: &[crate::map::MapBone], path
     if joints.is_empty() {
         return None;
     }
-    let collision_pairs = phy
-        .collision_pairs
-        .iter()
-        .filter_map(|(a, b)| Some((body(*a)?, body(*b)?)))
-        .collect();
+    // Spec 1.3: with a rules block only its pairs collide (none after
+    // `selfcollisions 0`); without one the default rule applies.
+    let collision_pairs = phy.has_collision_rules.then(|| {
+        phy.collision_pairs
+            .iter()
+            .filter_map(|(a, b)| Some((body(*a)?, body(*b)?)))
+            .collect()
+    });
     Some(MapRagdoll {
         bodies,
         joints,

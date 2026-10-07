@@ -344,11 +344,15 @@ fn drive_audio(
     mut live: ResMut<LiveSounds>,
     bank: Option<Res<SoundBank>>,
     listener: Query<&GlobalTransform, With<SoundListener>>,
-    sinks: Query<&AudioSink>,
+    mut sinks: Query<&mut AudioSink>,
     mut clips: ResMut<Assets<LiveClip>>,
+    global: Option<Res<bevy::audio::GlobalVolume>>,
     mut commands: Commands,
 ) {
     let Some(bank) = bank else { return };
+    // Bevy applies the master volume when a sink starts; follow later
+    // changes to it (the clip's own gains carry the rest).
+    let master = global.map_or(1.0, |g| g.volume.to_linear());
     let ear = listener.iter().next();
     for s in live.sounds.values_mut() {
         let (left, right) = match (s.at, ear) {
@@ -364,10 +368,13 @@ fn drive_audio(
         match &s.audio {
             Some((e, gains)) => {
                 gains.set(left, right);
-                if let Ok(sink) = sinks.get(*e)
-                    && (sink.speed() - speed).abs() > 1e-4
-                {
-                    sink.set_speed(speed);
+                if let Ok(mut sink) = sinks.get_mut(*e) {
+                    if (sink.speed() - speed).abs() > 1e-4 {
+                        sink.set_speed(speed);
+                    }
+                    if (sink.volume().to_linear() - master).abs() > 1e-4 {
+                        sink.set_volume(bevy::audio::Volume::Linear(master));
+                    }
                 }
             }
             None => {

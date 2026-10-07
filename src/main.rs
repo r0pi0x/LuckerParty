@@ -63,7 +63,7 @@ fn main() {
                 custom_layer: client::console::log_layer,
                 ..default()
             }),
-        PhysicsPlugins::default(),
+        PhysicsPlugins::default().with_collision_hooks::<mashup::map::MapCollisionHooks>(),
         SimPlugins,
         mashup::games::cs_source::movement::SourceMovementPlugin,
         mashup::games::cs_source::weapons::CsWeaponsPlugin,
