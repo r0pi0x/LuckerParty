@@ -135,7 +135,7 @@ fn update_hud(
     let speed = Vec2::new(vel.x, vel.z).length();
     hud.0 = format!(
         "movement: {}\nspeed: {speed:.2} m/s  vertical: {:.2}\nground: {}  crouch: {}  sprint: {}\n\n\
-         click: capture mouse  esc: release\nV: next movement  F1: inspector  F3: collision",
+         click: capture mouse  esc: menu\nV: next movement  F1: inspector  F3: collision",
         slot.0, vel.y, state.on_ground, state.crouching, state.sprinting,
     );
 }

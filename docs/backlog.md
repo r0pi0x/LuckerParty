@@ -62,6 +62,12 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   other game messages in the chat (team joins; bomb pickups and drops
   are in). The radar is in (`client/radar.rs`: the map overview turning
   with you, team dots, your place name); its range (2200 units) is a guess.
+- The game menu (Esc; `client/game_menu.rs`: new game with map, mode,
+  bots per team and difficulty; bots; team; options; bug report; quit)
+  is in, in its own look. Left: the game's own GameUI look
+  (`SourceScheme.res` frames, its fonts on Linux, where Tahoma is
+  missing), more options (binds, crosshair size, video), a scrollbar for
+  long map lists (pages of 42 now), map thumbnails.
 - Debug overlays: `mashup_drawhitboxes`, `mashup_healthbars`,
   `mashup_drawnav`, `mashup_drawbots` exist; add more as features need
   them (sound radii, triggers).
