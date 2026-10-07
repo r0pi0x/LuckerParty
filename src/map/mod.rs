@@ -29,6 +29,7 @@ mod dust;
 pub mod hud;
 pub mod live_sound;
 pub mod loose;
+pub mod probe_lit;
 pub mod nav;
 pub mod particles;
 pub mod tracer;
@@ -404,10 +405,10 @@ struct CharacterBodies(Vec<BodyAssets>);
 /// Meshes and materials of each held model, by key.
 #[derive(Resource)]
 #[allow(clippy::type_complexity)]
-struct HeldAssets(HashMap<String, (String, Vec<(Handle<Mesh>, Handle<StandardMaterial>)>, Option<Transform>)>);
+struct HeldAssets(HashMap<String, (String, Vec<(Handle<Mesh>, Handle<PropMaterial>)>, Option<Transform>)>);
 
 struct BodyAssets {
-    parts: Vec<(Handle<Mesh>, Handle<StandardMaterial>)>,
+    parts: Vec<(Handle<Mesh>, Handle<PropMaterial>)>,
     bindposes: Handle<bevy::mesh::skinning::SkinnedMeshInverseBindposes>,
     bones: Vec<MapBone>,
     root: Transform,
@@ -452,6 +453,7 @@ fn attach_bodies(
     >,
     existing: Query<&CharacterBody>,
     show_local: Res<ShowLocalBody>,
+    mut materials: Option<ResMut<Assets<PropMaterial>>>,
     mut commands: Commands,
 ) {
     let (Some(models), Some(bodies)) = (models, bodies) else {
@@ -502,10 +504,17 @@ fn attach_bodies(
             joints: joints.clone(),
             held: None,
         });
+        // Its own materials, lit where it stands (probe_lit), at its centre.
+        let mut own = Vec::new();
         for (mesh, material) in &assets.parts {
+            let material = match materials.as_mut() {
+                Some(m) => probe_lit::instance(m, material),
+                None => material.clone(),
+            };
+            own.push(material.clone());
             commands.spawn((
                 Mesh3d(mesh.clone()),
-                MeshMaterial3d(material.clone()),
+                MeshMaterial3d(material),
                 bevy::mesh::skinning::SkinnedMesh {
                     inverse_bindposes: assets.bindposes.clone(),
                     joints: joints.clone(),
@@ -513,8 +522,15 @@ fn attach_bodies(
                 ChildOf(body),
             ));
         }
+        commands
+            .entity(body)
+            .insert(probe_lit::ProbeLit::new(own, Vec3::Y * BODY_LIGHT_HEIGHT));
     }
 }
+
+/// Height of a body's lighting point above its feet, meters (about the
+/// models' own illumination position, their middle).
+const BODY_LIGHT_HEIGHT: f32 = 0.9;
 
 fn body_visibility(local: bool, show_local: ShowLocalBody) -> Visibility {
     if local && !show_local.0 {
@@ -562,6 +578,7 @@ fn attach_held(
     bodies: Option<Res<CharacterBodies>>,
     characters: Query<(Entity, &Held, &Children)>,
     mut body_query: Query<&mut CharacterBody>,
+    mut materials: Option<ResMut<Assets<PropMaterial>>>,
     mut commands: Commands,
 ) {
     let (Some(held), Some(bodies)) = (held, bodies) else {
@@ -590,11 +607,24 @@ fn attach_held(
         else {
             continue;
         };
+        // Its own materials, lit where it is (probe_lit).
+        let own: Vec<Handle<PropMaterial>> = parts
+            .iter()
+            .map(|(_, m)| match materials.as_mut() {
+                Some(assets) => probe_lit::instance(assets, m),
+                None => m.clone(),
+            })
+            .collect();
         let model = commands
-            .spawn((Transform::default(), Visibility::Inherited, ChildOf(joint)))
+            .spawn((
+                Transform::default(),
+                Visibility::Inherited,
+                ChildOf(joint),
+                probe_lit::ProbeLit::new(own.clone(), Vec3::ZERO),
+            ))
             .with_children(|m| {
-                for (mesh, material) in parts {
-                    m.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone())));
+                for ((mesh, _), material) in parts.iter().zip(own) {
+                    m.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material)));
                 }
                 if let Some(t) = muzzle {
                     m.spawn((*t, view_model::HeldMuzzle { owner: character }));
@@ -1382,6 +1412,7 @@ impl Plugin for MapPlugin {
                         turn_bodies,
                         pose_bodies.after(DriveAnimation),
                         attach_held,
+                        probe_lit::relight,
                         loose::attach_loose,
                     )
                         .run_if(resource_exists::<CharacterBodies>),
@@ -1563,30 +1594,35 @@ fn spawn_map(
         // Character bodies, drawn by `attach_bodies`: skinned when the
         // model has a skeleton.
         if let Some(bindposes) = bindposes.as_mut() {
+            // Bodies and what they hold are lit from the light field where
+            // they are (probe_lit), as Source lights models.
+            let Some(pm) = prop_materials.as_deref_mut() else {
+                panic!("PropMaterial assets exist wherever StandardMaterial does");
+            };
+            let model_material = |m: &MapMesh| {
+                let mut material = lit_prop_material(m, &textures, data, view, false);
+                if !m.unlit && view != MapDebugView::Albedo && data.light_field.is_some() {
+                    material.params.set_probe(&LightProbe::default(), 1.0);
+                }
+                material
+            };
+            let lighting_scale = if let MapDebugView::Lighting { scale } = view { scale } else { 1.0 };
+            commands.insert_resource(probe_lit::ProbeLightScale(data.look.light_scale * lighting_scale));
             let bodies = data
                 .characters
                 .iter()
-                .map(|c| {
-                    body_assets(&c.model, &c.bones, c.root, meshes, materials, bindposes, &|m| {
-                        build_material(m, &textures, view, data.look.light_scale)
-                    })
-                })
+                .map(|c| body_assets(&c.model, &c.bones, c.root, meshes, pm, bindposes, &model_material))
                 .collect();
             commands.insert_resource(CharacterBodies(bodies));
             let held = data
                 .held
                 .iter()
                 .map(|h| {
-                    let parts: Vec<(Handle<Mesh>, Handle<StandardMaterial>)> = h
+                    let parts: Vec<(Handle<Mesh>, Handle<PropMaterial>)> = h
                         .model
                         .meshes
                         .iter()
-                        .map(|m| {
-                            (
-                                meshes.add(build_mesh(m, false)),
-                                materials.add(build_material(m, &textures, view, data.look.light_scale)),
-                            )
-                        })
+                        .map(|m| (meshes.add(build_mesh(m, false)), pm.add(model_material(m))))
                         .collect();
                     (h.key.clone(), (h.bone.clone(), parts, h.muzzle))
                 })
@@ -2347,8 +2383,9 @@ fn spawn_map(
         MapPart,
         DirectionalLight {
             illuminance: 9000.0,
-            shadow_maps_enabled: true,
-            // The sun is baked into the lightmap; it still lights characters.
+            // Models are lit from the baked light field (probe_lit), so no
+            // shadow maps (they cost several ms a frame); the sun only lights
+            // the few plain materials left.
             affects_lightmapped_mesh_diffuse: false,
             ..default()
         },
@@ -2625,9 +2662,9 @@ fn body_assets(
     bones: &[MapBone],
     root: Transform,
     meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<StandardMaterial>,
+    materials: &mut Assets<PropMaterial>,
     bindposes: &mut Assets<bevy::mesh::skinning::SkinnedMeshInverseBindposes>,
-    material: &dyn Fn(&MapMesh) -> StandardMaterial,
+    material: &dyn Fn(&MapMesh) -> PropMaterial,
 ) -> BodyAssets {
     let parts = model
         .meshes

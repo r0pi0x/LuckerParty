@@ -22,7 +22,7 @@ const MASS: f32 = 3.0;
 pub(super) struct LooseAssets(pub(super) HashMap<String, LooseAsset>);
 
 pub(super) struct LooseAsset {
-    parts: Vec<(Handle<Mesh>, Handle<StandardMaterial>)>,
+    parts: Vec<(Handle<Mesh>, Handle<super::prop_material::PropMaterial>)>,
     /// From the held model's space (skeleton axes and units) to the item's
     /// frame, centred on its bounds.
     frame: Transform,
@@ -34,7 +34,7 @@ pub(super) struct LooseAsset {
 pub(super) fn asset(
     held: &MapHeldModel,
     root: Transform,
-    parts: Vec<(Handle<Mesh>, Handle<StandardMaterial>)>,
+    parts: Vec<(Handle<Mesh>, Handle<super::prop_material::PropMaterial>)>,
 ) -> LooseAsset {
     let to = Transform::from_rotation(root.rotation).with_scale(root.scale);
     let (lo, hi) = held
@@ -62,6 +62,7 @@ pub(super) fn asset(
 pub(super) fn attach_loose(
     items: Query<(Entity, &LooseItem), Without<RigidBody>>,
     assets: Option<Res<LooseAssets>>,
+    mut materials: Option<ResMut<Assets<super::prop_material::PropMaterial>>>,
     mut commands: Commands,
 ) {
     let Some(assets) = assets else { return };
@@ -85,9 +86,19 @@ pub(super) fn attach_loose(
             Visibility::default(),
         ));
         if let Some(a) = assets.0.get(&item.0) {
+            // Its own materials, lit where it lies (probe_lit).
+            let own: Vec<_> = a
+                .parts
+                .iter()
+                .map(|(_, m)| match materials.as_mut() {
+                    Some(assets) => super::probe_lit::instance(assets, m),
+                    None => m.clone(),
+                })
+                .collect();
+            ent.insert(super::probe_lit::ProbeLit::new(own.clone(), Vec3::ZERO));
             ent.with_children(|c| {
-                for (mesh, material) in &a.parts {
-                    c.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone()), a.frame));
+                for ((mesh, _), material) in a.parts.iter().zip(own) {
+                    c.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material), a.frame));
                 }
             });
         }
