@@ -103,4 +103,35 @@ Started 2026-10-05, from specs/cs_source/weapons.md. MVP plan items 4–5.
      grenade layer, a primed grenade dropped live on death, all cleared
      at a new round. Tests: `tests/cs_grenades.rs`, unit tests for the
      spec's G cases, `map_de_dust2::grenade_models_and_sequences`.
-   - [ ] The rest (backlog section 3).
+   - [x] The other 18 guns (2026-10-06): FAMAS (burst, M16's 0.08 s
+     rounds and 0.55 s refire), Galil, AUG and SG552 (55 zoom, no
+     overlay), scout, SG550, G3SG1 (40/15 scopes), MAC-10, TMP, MP5,
+     UMP45, P90, M249, P228, Five-SeveN, Elites, M3 and XM1014, each a
+     `Gun` row with the spec's script values, view-model durations and
+     sound events, world and view models, prices and team limits. New
+     parts: `ShellReload` (start, then a shell per insert a tick apart,
+     fire interrupts, `ShellInserting` events; view-model start/insert/
+     finish and the player's `_start/_loop/_end` gestures), `Hitscan::
+     pellets` with one inaccuracy offset per shot and a Spread draw per
+     pellet, timed fire and finish sounds (`WeaponSounds::shot`,
+     `finish`), zoom without an overlay or speed change, a random-up
+     kick (shotguns). The Elites alternate hands by clip parity (view
+     model left/right sequences, `_L`/`_R` player shots). The buy menu
+     is CS:S's (`Prices::menu`: 1 pistols, 2 shotguns, 3 SMGs, 4 rifles,
+     5 machine guns, 8 equipment; each team sees its own items); bots pick
+     a primary at random by `Prices::bot_weights` among the dearer half
+     they can afford and let go of the trigger between semi-automatic
+     shots. Tests: `tests/cs_guns.rs` (buy by name, slot, clip/reserve,
+     price, fire cycle, draw/reload ticks for all; pellets and cone, shell
+     reload T25 timing and interruption, scope FOVs, FAMAS burst, Elite
+     hands, shotgun kick), `tests/view_models.rs` (Elite sequences, shell
+     reload sequences, AUG keeps its view model), `tests/map_de_dust2.rs`
+     (every gun's models, icons, sounds, durations, handedness and body
+     animations).
+   - [ ] Real-game checks for the new guns (probe): recoil of every
+     automatic but the AK-47/M4A1 (M3), the scoped/semi-automatic kicks
+     of the scout, SG550, G3SG1, P228, Five-SeveN and Elites, the shotgun
+     punch, the shotgun reload timing and interruption (M9), the pellet
+     pattern and per-pellet inaccuracy (Q12), 357SIG/57MM/BUCKSHOT/
+     556MM_BOX penetration (M13), the SG552's and G3SG1's zoomed speed
+     (M15), the Elites' hand order.

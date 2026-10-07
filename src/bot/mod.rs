@@ -517,6 +517,7 @@ fn think(
     )>,
     others: Query<(Entity, &Transform, &Team, &Health), With<Intent>>,
     arms: grenades::Arms,
+    triggers: Query<&crate::weapon::Trigger>,
     projectiles: Query<(Entity, &Transform, &Projectile)>,
     smoke: Query<&crate::core::SightBlocker>,
     spatial: SpatialQuery,
@@ -648,6 +649,13 @@ fn think(
             }
         }
 
+        // Semi-automatics fire once per press: let go every other tick.
+        let pressed = intent.fire;
+        let semi = inv
+            .as_deref()
+            .and_then(|i| i.active)
+            .and_then(|w| triggers.get(w).ok())
+            .is_some_and(|t| !t.automatic);
         intent.fire = false;
         match best {
             Some((e, aim, _)) => {
@@ -677,7 +685,10 @@ fn think(
                 intent.yaw = wrap(intent.yaw + dyaw.clamp(-step, step));
                 intent.pitch += (want_pitch - intent.pitch).clamp(-step, step);
                 let off = wrap(want_yaw - intent.yaw).abs().max((want_pitch - intent.pitch).abs());
-                intent.fire = cfg.dont_shoot == 0 && bot.seen >= cfg.reaction && off.to_degrees() < FIRE_CONE_DEG;
+                intent.fire = cfg.dont_shoot == 0
+                    && bot.seen >= cfg.reaction
+                    && off.to_degrees() < FIRE_CONE_DEG
+                    && !(semi && pressed);
             }
             None => {
                 bot.target = None;

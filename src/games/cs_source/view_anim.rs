@@ -15,7 +15,9 @@ use crate::{
         DriveAnimation, EffectSettings, MapFlashLight, MapMuzzleFlash, ViewAnimator, ViewModelEvent,
         ViewModelEventKind, ViewModelSettings, ViewModels, anim::AnimEvent,
     },
-    weapon::{AltModes, Burst, Inventory, Magazine, Weapon, WeaponEvent, WeaponEventKind, Zoomed},
+    weapon::{
+        AltModes, Burst, Inventory, Magazine, ShellReload, Weapon, WeaponEvent, WeaponEventKind, WeaponState, Zoomed,
+    },
 };
 
 use super::view_motion::{self, ViewMotion};
@@ -131,12 +133,10 @@ pub fn muzzle_flash(materials: &mut super::material::MaterialLoader) -> MapMuzzl
 /// (spec weapons.md 3.7, legacy keys table). Weapons without one idle when
 /// their sequence ends.
 fn time_to_idle(weapon: &str) -> f32 {
-    match weapon {
-        super::weapons::AK47 => 1.9,
-        super::weapons::M4A1 => 1.5,
-        super::weapons::AWP => 2.0,
-        _ => 0.0,
-    }
+    super::weapons::GUNS
+        .iter()
+        .find(|g| g.id == weapon)
+        .map_or(0.0, |g| g.idle)
 }
 
 pub const DRAW: &str = "ACT_VM_DRAW";
@@ -145,6 +145,12 @@ pub const PRIMARY: &str = "ACT_VM_PRIMARYATTACK";
 pub const SECONDARY: &str = "ACT_VM_SECONDARYATTACK";
 pub const RELOAD: &str = "ACT_VM_RELOAD";
 pub const DRYFIRE: &str = "ACT_VM_DRYFIRE";
+/// Dual pistols: the last round from either hand.
+pub const DRYFIRE_LEFT: &str = "ACT_VM_DRYFIRE_LEFT";
+/// Shotguns (spec weapons.md 3.4): the reload's start and finish; each
+/// shell going in plays `RELOAD`.
+pub const SHOTGUN_RELOAD_START: &str = "ACT_SHOTGUN_RELOAD_START";
+pub const SHOTGUN_RELOAD_FINISH: &str = "ACT_SHOTGUN_RELOAD_FINISH";
 pub const ATTACH_SILENCER: &str = "ACT_VM_ATTACH_SILENCER";
 pub const DETACH_SILENCER: &str = "ACT_VM_DETACH_SILENCER";
 /// Silenced weapons' view models tag their silenced set with this suffix
@@ -314,6 +320,7 @@ fn drive(
         Option<&Burst>,
         Option<&Magazine>,
         Option<&crate::weapon::grenade::Throwable>,
+        (Option<&WeaponState>, Option<&ShellReload>),
     )>,
     mut events: MessageReader<WeaponEvent>,
     mut effects: MessageWriter<ViewModelEvent>,
@@ -341,9 +348,14 @@ fn drive(
         let mode = parts.and_then(|(_, m, ..)| m).map_or(0, |m| m.current);
         let silenced = mode > 0;
         let burst = parts.and_then(|(_, _, b, ..)| b).filter(|b| b.mode == mode);
-        let empty = parts.and_then(|(_, _, _, m, _)| m).is_some_and(|m| m.clip == 0);
+        let clip = parts.and_then(|(_, _, _, m, ..)| m).map(|m| m.clip);
+        let empty = clip == Some(0);
         // A grenade with its pin out holds the end of the pull.
-        let primed = parts.and_then(|(.., t)| t).is_some_and(|t| t.pin);
+        let primed = parts.and_then(|(.., t, _)| t).is_some_and(|t| t.pin);
+        let (state, shells) = parts.map_or((None, None), |(.., x)| x);
+        // No idle while a reload goes on (a shotgun's between shells).
+        let reloading = state.is_some_and(|s| s.reloading());
+        let dual = weapon == Some(super::weapons::ELITE);
         // Snipers hide the view model behind the scope (spec view_models.md,
         // "Zoomed weapons").
         view.hidden = zoomed.is_some_and(|z| z.scope);
@@ -371,6 +383,18 @@ fn drive(
                             dice.burst_started = now;
                             fired = play(&mut view, &mut dice, &[SECONDARY, PRIMARY], now);
                         }
+                    } else if dual {
+                        // Dual pistols fire hand by hand (spec weapons.md,
+                        // view-model table: left the primary activity,
+                        // right the secondary), the last round its own.
+                        let right = super::weapons::elite_right_hand(clip.unwrap_or(0));
+                        let order: &[&str] = match (empty, right) {
+                            (true, true) => &[DRYFIRE, SECONDARY],
+                            (true, false) => &[DRYFIRE_LEFT, PRIMARY],
+                            (false, true) => &[SECONDARY],
+                            (false, false) => &[PRIMARY],
+                        };
+                        fired = play(&mut view, &mut dice, order, now);
                     } else {
                         // The last round has its own sequence on pistols.
                         let order: &[&str] = if empty { &[DRYFIRE, PRIMARY] } else { &[PRIMARY] };
@@ -399,7 +423,20 @@ fn drive(
                     dice.last_attack = now;
                 }
                 WeaponEventKind::ReloadStarted => {
-                    restarted |= play_mode(&mut view, &mut dice, &[RELOAD], silenced, now);
+                    let order: &[&str] = if shells.is_some() {
+                        &[SHOTGUN_RELOAD_START]
+                    } else {
+                        &[RELOAD]
+                    };
+                    restarted |= play_mode(&mut view, &mut dice, order, silenced, now);
+                    dice.last_attack = now;
+                }
+                WeaponEventKind::ShellInserting => {
+                    restarted |= play(&mut view, &mut dice, &[RELOAD], now);
+                    dice.last_attack = now;
+                }
+                WeaponEventKind::Reloaded if shells.is_some() => {
+                    restarted |= play(&mut view, &mut dice, &[SHOTGUN_RELOAD_FINISH], now);
                     dice.last_attack = now;
                 }
                 WeaponEventKind::PinPulled => {
@@ -429,7 +466,7 @@ fn drive(
         }
         // Idle once the sequence has played out (spec 3.7); a non-looping
         // idle (the knife's) starts over.
-        if animator.finished() && !primed && now - dice.last_attack >= time_to_idle(weapon) as f64 {
+        if animator.finished() && !primed && !reloading && now - dice.last_attack >= time_to_idle(weapon) as f64 {
             play_mode(&mut view, &mut dice, &[IDLE], silenced, now);
         }
     }

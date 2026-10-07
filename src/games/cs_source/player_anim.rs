@@ -172,6 +172,11 @@ pub struct Inputs {
     pub fired: bool,
     /// A reload started this update.
     pub reloaded: bool,
+    /// Which part of a reload: "" a whole one, else "_start", "_loop" (a
+    /// shell going in) or "_end" (shotguns).
+    pub reload_part: &'static str,
+    /// The hand that fired: "" or, for dual pistols, "_L" or "_R".
+    pub shot_side: &'static str,
     /// A grenade's pin is out (or its throw is pending).
     pub primed: bool,
     /// A grenade was released this update.
@@ -364,7 +369,12 @@ impl PlayerAnim {
                 Activity::CrouchWalk => "Crouch_Walk_Shoot_",
                 _ => "Idle_Shoot_",
             };
-            self.fire = set.sequence(&format!("{name}{suffix}")).map(|s| (s, 0.0));
+            // Dual pistols shoot from either hand (`<Move>_Shoot_ELITES_L`
+            // and `_R`, spec 14).
+            self.fire = set
+                .sequence(&format!("{name}{suffix}{}", i.shot_side))
+                .or_else(|| set.sequence(&format!("{name}{suffix}")))
+                .map(|s| (s, 0.0));
         } else if let Some((s, c)) = &mut self.fire {
             *c += set.cycle_rate(*s, &a.params) * dt;
             if *c > 1.0 {
@@ -387,9 +397,13 @@ impl PlayerAnim {
                 Activity::CrouchWalk => "Crouch_Walk_Reload_",
                 _ => "Idle_Reload_",
             };
+            // Shotguns load shell by shell: `<Move>_reload_<X>_start`,
+            // `_loop` per shell, `_end` (spec 14).
+            let part = i.reload_part;
             self.reload = set
-                .sequence(&format!("{name}{suffix}"))
-                .or_else(|| set.sequence(&format!("Reload_{suffix}")))
+                .sequence(&format!("{name}{suffix}{part}"))
+                .or_else(|| set.sequence(&format!("Reload_{suffix}{part}")))
+                .or_else(|| set.sequence(&format!("Idle_Reload_{suffix}{part}")))
                 .map(|s| (s, 0.0));
         } else if let Some((s, c)) = &mut self.reload {
             *c += set.cycle_rate(*s, &a.params) * dt;
@@ -528,25 +542,45 @@ fn drive(
         Option<&Inventory>,
     )>,
     weapons: Query<(&Weapon, Option<&crate::weapon::grenade::Throwable>)>,
+    loading: Query<(Option<&crate::weapon::ShellReload>, Option<&crate::weapon::Magazine>)>,
     mut events: MessageReader<WeaponEvent>,
     mut commands: Commands,
 ) {
-    let all: Vec<(Entity, WeaponEventKind)> = events.read().map(|e| (e.owner, e.kind.clone())).collect();
+    let all: Vec<&WeaponEvent> = events.read().collect();
     let threw: Vec<Entity> = all
         .iter()
-        .filter(|(_, k)| matches!(k, WeaponEventKind::Thrown))
-        .map(|(e, _)| *e)
+        .filter(|e| matches!(e.kind, WeaponEventKind::Thrown))
+        .map(|e| e.owner)
         .collect();
-    let events: Vec<(Entity, bool)> = all
-        .iter()
-        .filter_map(|(owner, kind)| match kind {
-            WeaponEventKind::Shot { .. } | WeaponEventKind::Swing { .. } => Some((*owner, false)),
-            WeaponEventKind::ReloadStarted => Some((*owner, true)),
-            _ => None,
-        })
-        .collect();
-    let fired: Vec<Entity> = events.iter().filter(|(_, r)| !r).map(|(e, _)| *e).collect();
-    let reloaded: Vec<Entity> = events.iter().filter(|(_, r)| *r).map(|(e, _)| *e).collect();
+    // Shots (with the hand) and reload parts per owner.
+    let mut fired: Vec<(Entity, &'static str)> = Vec::new();
+    let mut reloaded: Vec<(Entity, &'static str)> = Vec::new();
+    for ev in &all {
+        let (shells, magazine) = loading.get(ev.weapon).unwrap_or((None, None));
+        match ev.kind {
+            WeaponEventKind::Shot { .. } | WeaponEventKind::Swing { .. } => {
+                let dual = weapons.get(ev.weapon).is_ok_and(|(w, _)| w.id == super::weapons::ELITE);
+                let side = match magazine {
+                    Some(m) if dual => {
+                        if super::weapons::elite_right_hand(m.clip) {
+                            "_R"
+                        } else {
+                            "_L"
+                        }
+                    }
+                    _ => "",
+                };
+                fired.push((ev.owner, side));
+            }
+            WeaponEventKind::ReloadStarted => {
+                reloaded.push((ev.owner, if shells.is_some() { "_start" } else { "" }));
+            }
+            WeaponEventKind::ShellInserting => reloaded.push((ev.owner, "_loop")),
+            WeaponEventKind::Reloaded if shells.is_some() => reloaded.push((ev.owner, "_end")),
+            _ => {}
+        }
+    }
+    let find = |list: &[(Entity, &'static str)], e: Entity| list.iter().rev().find(|(o, _)| *o == e).map(|(_, p)| *p);
     let (dt, now) = (time.delta_secs(), time.elapsed_secs_f64());
     for (e, mut animator, state, intent, velocity, movement, health, inventory) in &mut characters {
         let Some(mut state) = state else {
@@ -568,8 +602,10 @@ fn drive(
             ducked: movement.crouching,
             on_ground: movement.on_ground,
             jumped,
-            fired: fired.contains(&e),
-            reloaded: reloaded.contains(&e),
+            fired: find(&fired, e).is_some(),
+            reloaded: find(&reloaded, e).is_some(),
+            reload_part: find(&reloaded, e).unwrap_or(""),
+            shot_side: find(&fired, e).unwrap_or(""),
             primed: false,
             threw: threw.contains(&e),
         };
