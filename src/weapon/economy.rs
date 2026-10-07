@@ -64,6 +64,9 @@ impl Prices {
     }
 }
 
+/// Why buying fails outside a buy zone (CS:S's words).
+pub const NOT_IN_BUY_ZONE: &str = "You are not in a buy zone.";
+
 /// Whether buying is open: Ok, or why not (shown to the player).
 #[derive(Resource, Clone, Debug)]
 pub struct BuyWindow(pub Result<(), String>);
@@ -80,7 +83,7 @@ impl Default for BuyWindow {
 pub fn buy(world: &mut World, owner: Entity, name: &str) -> Result<String, String> {
     world.resource::<BuyWindow>().0.clone()?;
     if world.get::<Money>(owner).is_some() && !in_buy_zone(world, owner) {
-        return Err("you are not in a buy zone".into());
+        return Err(NOT_IN_BUY_ZONE.into());
     }
     let name = name.to_lowercase();
     let prices = world.resource::<Prices>().clone();
@@ -88,7 +91,7 @@ pub fn buy(world: &mut World, owner: Entity, name: &str) -> Result<String, Strin
     let pay = |world: &mut World, cost: u32| -> Result<(), String> {
         if let Some(have) = money {
             if have < cost {
-                return Err(format!("you have insufficient funds (${cost})"));
+                return Err("You have insufficient funds.".into());
             }
             world.entity_mut(owner).insert(Money(have - cost));
         }
@@ -98,7 +101,8 @@ pub fn buy(world: &mut World, owner: Entity, name: &str) -> Result<String, Strin
         let armor = world.get::<Armor>(owner).copied().unwrap_or_default();
         let full = armor.amount >= 1.0;
         let (cost, helmet) = match (name.as_str(), full, armor.helmet) {
-            ("vest", true, _) | ("vesthelm", true, true) => return Err("you already have armour".into()),
+            ("vest", true, _) => return Err("You already have Kevlar!".into()),
+            ("vesthelm", true, true) => return Err("You already have Kevlar and a helmet!".into()),
             ("vest", false, h) => (prices.vest, h),
             (_, true, false) => (prices.helmet, true),
             _ => (prices.vest_helmet, true),
@@ -121,7 +125,7 @@ pub fn buy(world: &mut World, owner: Entity, name: &str) -> Result<String, Strin
     if let Some(team) = prices.team_only.get(id)
         && world.get::<crate::core::Team>(owner).is_some_and(|t| t.0 != *team)
     {
-        return Err("your team can't buy that weapon".into());
+        return Err("Your team can't buy that weapon.".into());
     }
     let cost = prices.weapons.get(id).copied().unwrap_or(0);
     if let Some(have) = held
@@ -135,7 +139,7 @@ pub fn buy(world: &mut World, owner: Entity, name: &str) -> Result<String, Strin
             return Err("You cannot carry any more.".into());
         }
         if !room {
-            return Err("you already have that weapon".into());
+            return Err("You already own that weapon.".into());
         }
         pay(world, cost)?;
         if let Some(mut t) = world.get_mut::<Throwable>(have) {

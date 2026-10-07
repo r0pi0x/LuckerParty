@@ -20,7 +20,7 @@ use bevy::prelude::*;
 use super::{Armor, CHAN_WEAPON, Inventory, Weapon, WeaponEvent, WeaponEventKind, WeaponState, armor_split};
 use crate::{
     core::{
-        Blinded, Damage, DamageKind, Damageable, Died, Health, Hitgroup, Intent, MapWater, MovementState,
+        Blinded, Damage, DamageKind, Damageable, Died, Health, Hitgroup, Intent, MapWater, MovementState, Radio,
         RoundRestarts, SOLID_LAYERS, SightBlocker, Velocity,
     },
     map::{
@@ -42,7 +42,9 @@ const SKIN: f32 = 1e-3;
 pub(super) fn plugin(app: &mut App) {
     app.add_message::<Detonated>()
         .add_message::<PlaceDecal>()
+        .add_message::<Radio>()
         .init_resource::<GrenadeRng>()
+        .init_resource::<GrenadeRadio>()
         .add_systems(
             FixedUpdate,
             (
@@ -62,6 +64,11 @@ pub(super) fn plugin(app: &mut App) {
 
 #[derive(Resource)]
 struct GrenadeRng(ParticleRng);
+
+/// `sv_ignoregrenaderadio`: 1 stops the "Fire in the hole!" radio call
+/// on a throw (spec 2).
+#[derive(Resource, Default)]
+pub struct GrenadeRadio(pub u8);
 
 impl Default for GrenadeRng {
     fn default() -> Self {
@@ -475,6 +482,7 @@ fn throw_frame(
     mut weapons: Query<(Entity, &Weapon, &mut WeaponState, &mut Throwable)>,
     mut events: MessageWriter<WeaponEvent>,
     mut rng: ResMut<GrenadeRng>,
+    (mut radio, radio_off): (MessageWriter<Radio>, Res<GrenadeRadio>),
     mut commands: Commands,
     time: Res<Time>,
 ) {
@@ -509,6 +517,13 @@ fn throw_frame(
                 weapon: entity,
                 kind: WeaponEventKind::Thrown,
             });
+            // The thrower's team hears "Fire in the hole!" (spec 2).
+            if radio_off.0 == 0 {
+                radio.write(Radio {
+                    sender: owner,
+                    command: "fireinhole".into(),
+                });
+            }
         }
         // 3. The grenade leaves the hand (strictly after its time).
         if let Some(at) = t.throw_at

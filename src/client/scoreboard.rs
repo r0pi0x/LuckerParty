@@ -1,7 +1,7 @@
 //! The scoreboard, CS:S style: held with Tab (or `+showscores`), two team
 //! columns (Terrorists, Counter-Terrorists, then anyone else) listing each
-//! player's name, kills, deaths and whether they're dead, the local player
-//! highlighted.
+//! player's name, kills, deaths, latency (0 until networking) and whether
+//! they're dead, the local player highlighted.
 
 use bevy::prelude::*;
 
@@ -61,8 +61,8 @@ fn spawn(mut commands: Commands) {
     }
 }
 
-/// One row: name, kills, deaths, status.
-fn row(commands: &mut Commands, parent: Entity, cells: [String; 4], color: Color, highlight: bool, size: f32) {
+/// One row: name, kills, deaths, latency, status.
+fn row(commands: &mut Commands, parent: Entity, cells: [String; 5], color: Color, highlight: bool, size: f32) {
     let r = commands
         .spawn((
             Node {
@@ -88,7 +88,7 @@ fn row(commands: &mut Commands, parent: Entity, cells: [String; 4], color: Color
             TextColor(color),
             TextLayout::justify(if i == 0 { Justify::Left } else { Justify::Right }),
             Node {
-                width: if i == 0 { percent(55.0) } else { percent(15.0) },
+                width: if i == 0 { percent(48.0) } else { percent(13.0) },
                 ..default()
             },
             ChildOf(r),
@@ -182,6 +182,7 @@ fn update(
                 },
                 "Score".into(),
                 "Deaths".into(),
+                "Latency".into(),
                 String::new(),
             ],
             color,
@@ -193,7 +194,8 @@ fn update(
             row(
                 &mut commands,
                 column,
-                [name.clone(), kills.to_string(), deaths.to_string(), status.into()],
+                // Latency: everyone is local until networking (0 ms).
+                [name.clone(), kills.to_string(), deaths.to_string(), "0".into(), status.into()],
                 if *dead { color.with_alpha(0.5) } else { color },
                 *local,
                 size,

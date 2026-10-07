@@ -218,6 +218,8 @@ pub fn load(materials: &mut MaterialLoader, map: &str, surfaces: &SurfaceProps, 
     let mut wanted: HashSet<String> = ALWAYS
         .iter()
         .chain(super::weapons::sounds().iter())
+        .copied()
+        .chain(super::radio::sound_entries())
         .map(|s| s.to_lowercase())
         .chain(ambient_entries)
         .collect();

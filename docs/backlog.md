@@ -50,8 +50,15 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   and the Tab scoreboard are in (`client/game_hud.rs`,
   `client/scoreboard.rs`), and the weapon selection
   (`client/weapon_select.rs`, kill icons standing in for the scripts'
-  selection icons). The team menu is in (M; you start as CT). Left:
-  ping on the scoreboard, hint text, the game's own VGUI menu looks. The radar is in (`client/radar.rs`: the map overview turning
+  selection icons). The team menu is in (M; you start as CT). The radio
+  is in (`client/radio.rs`: Z/X/C menus, the calls as console commands,
+  "Fire in the hole!" on throws, bots' enemy spotted/down and need
+  backup), with a chat area and hint text (`client/chat.rs`) and a
+  scoreboard latency column (0 until networking). Left: the game's own
+  VGUI menu looks (buy, team), the radio icon over a caller's head
+  (`sprites/radio`), `ignorerad`, player text chat (`say`), bots
+  answering radio commands ("Roger that", following "Follow me"),
+  other game messages in the chat (team joins, bomb pickups). The radar is in (`client/radar.rs`: the map overview turning
   with you, team dots, your place name); its range (2200 units) is a guess.
 - Debug overlays: `mashup_drawhitboxes`, `mashup_healthbars`,
   `mashup_drawnav`, `mashup_drawbots` exist; add more as features need
@@ -80,8 +87,8 @@ a first bot are in.
   `games/cs_source/grenades.rs`): measure the spec's open questions on the
   probe (fuse ticks, release timing, flash amounts and overlay curve, HE vs
   armour, smoke vs bots) and replace the fits (tech-debt); the flash's
-  after-image and DSP ringing, bots throwing grenades, the radio call,
-  the `_thrown` models.
+  after-image and DSP ringing, bots throwing grenades, the `_thrown`
+  models.
 - Death animations on bodies (the grenade gesture is in; the reload gesture is in:
   `<Move>_Reload_<weapon>` by activity, an assumption for the spec's
   `reload_<suffix>`, with the shotguns' `_start/_loop/_end`).

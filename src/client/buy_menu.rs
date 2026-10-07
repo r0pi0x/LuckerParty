@@ -19,9 +19,7 @@ pub struct BuyMenuPlugin;
 
 impl Plugin for BuyMenuPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<BuyMenu>()
-            .init_resource::<BuyNotice>()
-            .add_systems(Update, ((keys, draw).chain(), notice));
+        app.init_resource::<BuyMenu>().add_systems(Update, (keys, draw).chain());
         app.console_command(
             "buymenu",
             "Open or close the buy menu (B); buymenu <n> opens the category on key n (CS:S: 1 pistols, 2 shotguns, 3 SMGs, 4 rifles, 5 machine guns, 8 equipment).",
@@ -35,6 +33,9 @@ impl Plugin for BuyMenuPlugin {
                 let mut m = w.resource_mut::<BuyMenu>();
                 m.open = category.is_some() || !m.open;
                 m.category = category;
+                if m.open {
+                    close_others(w);
+                }
                 Ok(None)
             },
         );
@@ -153,6 +154,28 @@ const DIGITS: [KeyCode; 10] = [
     KeyCode::Digit9,
 ];
 
+/// Close the team and radio menus (the buy menu opened).
+fn close_others(w: &mut World) {
+    if let Some(mut t) = w.get_resource_mut::<super::team_menu::TeamMenu>() {
+        t.0 = false;
+    }
+    if let Some(mut r) = w.get_resource_mut::<super::radio::RadioMenu>() {
+        r.0 = None;
+    }
+}
+
+/// Why the local player can't buy now (out of the buy time or a buy
+/// zone), as the hint CS:S shows when the buy key is pressed.
+fn cannot_buy(w: &mut World) -> Option<String> {
+    let player = w.query_filtered::<Entity, With<LocalPlayer>>().iter(w).next()?;
+    // Without money, buying is free and anywhere.
+    w.get::<Money>(player)?;
+    if let Err(why) = &w.resource::<BuyWindow>().0 {
+        return Some(why.clone());
+    }
+    (!crate::weapon::economy::in_buy_zone(w, player)).then(|| crate::weapon::economy::NOT_IN_BUY_ZONE.to_string())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn keys(
     keys: Res<ButtonInput<KeyCode>>,
@@ -168,8 +191,21 @@ fn keys(
         return;
     }
     if keys.just_pressed(KeyCode::KeyB) {
-        menu.open = !menu.open;
-        menu.category = None;
+        if menu.open {
+            *menu = BuyMenu::default();
+        } else {
+            commands.queue(|w: &mut World| {
+                if let Some(why) = cannot_buy(w) {
+                    w.write_message(super::chat::Hint(why));
+                    return;
+                }
+                *w.resource_mut::<BuyMenu>() = BuyMenu {
+                    open: true,
+                    category: None,
+                };
+                close_others(w);
+            });
+        }
         return;
     }
     if !menu.open {
@@ -190,16 +226,15 @@ fn keys(
         (Some(c), n) => {
             let items = all.iter().find(|x| x.key == c).map(|x| x.items.as_slice()).unwrap_or_default();
             if let Some(item) = items.get(n - 1) {
-                // Bought, or why not, across the screen (as CS:S says
-                // "You have insufficient funds!").
+                // Why not, as a hint (as CS:S says "You have
+                // insufficient funds.").
                 let what = item.buy.clone();
                 commands.queue(move |w: &mut World| {
                     let Some(player) = w.query_filtered::<Entity, With<LocalPlayer>>().iter(w).next() else {
                         return;
                     };
                     if let Err(why) = crate::weapon::economy::buy(w, player, &what) {
-                        let now = w.resource::<Time>().elapsed_secs();
-                        *w.resource_mut::<BuyNotice>() = BuyNotice(Some((why, now + 2.5)));
+                        w.write_message(super::chat::Hint(why));
                     }
                 });
                 *menu = BuyMenu::default();
@@ -210,57 +245,6 @@ fn keys(
 
 #[derive(Component)]
 struct MenuText;
-
-/// Why the last buy failed, until a time (seconds).
-#[derive(Resource, Default)]
-struct BuyNotice(Option<(String, f32)>);
-
-#[derive(Component)]
-struct NoticeText;
-
-fn notice(
-    mut notice: ResMut<BuyNotice>,
-    time: Res<Time>,
-    shown: Query<(Entity, &Text), With<NoticeText>>,
-    windows: Query<&Window>,
-    mut commands: Commands,
-) {
-    let now = time.elapsed_secs();
-    if notice.0.as_ref().is_some_and(|(_, until)| now > *until) {
-        notice.0 = None;
-    }
-    let want = notice.0.as_ref().map(|(m, _)| m.clone());
-    let current = shown.iter().next();
-    if current.map(|(_, t)| t.0.clone()) == want {
-        return;
-    }
-    for (e, _) in &shown {
-        commands.entity(e).despawn();
-    }
-    let Some(text) = want else { return };
-    let scale = windows.iter().next().map_or(1.0, |w| w.height() / 480.0);
-    let mut chars = text.chars();
-    let text: String = chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default();
-    commands.spawn((
-        NoticeText,
-        Text::new(format!("{text}!")),
-        TextFont {
-            font_size: FontSize::Px(12.0 * scale),
-            ..default()
-        },
-        TextColor(Color::WHITE),
-        TextShadow::default(),
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Percent(62.0),
-            width: Val::Percent(100.0),
-            justify_content: JustifyContent::Center,
-            ..default()
-        },
-        TextLayout::justify(Justify::Center),
-        GlobalZIndex(45),
-    ));
-}
 
 #[allow(clippy::too_many_arguments)]
 fn draw(
