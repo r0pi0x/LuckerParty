@@ -241,7 +241,12 @@ pub(crate) fn put_at_spawn(world: &mut World, e: Entity, fresh: bool) {
                 kit.retain(|id| !starting.all.contains(id));
             }
             for id in kit {
-                give(world, e, id);
+                let weapon = give(world, e, id);
+                // Rounds: you buy ammo, so the kit's reserve is the game's
+                // starting amount.
+                if rounds && let Some(w) = weapon {
+                    crate::weapon::economy::starting_reserve(world, w);
+                }
             }
         }
     }

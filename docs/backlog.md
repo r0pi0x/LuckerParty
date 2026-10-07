@@ -55,12 +55,16 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   is in (`client/radio.rs`: Z/X/C menus, the calls as console commands,
   "Fire in the hole!" on throws, bots' enemy spotted/down and need
   backup), with a chat area and hint text (`client/chat.rs`) and a
-  scoreboard latency column (0 until networking). Left: the game's own
-  VGUI menu looks (buy, team), the radio icon over a caller's head
-  (`sprites/radio`), `ignorerad`, player text chat (`say`), bots
-  answering radio commands ("Roger that", following "Follow me"),
-  other game messages in the chat (team joins; bomb pickups and drops
-  are in). The radar is in (`client/radar.rs`: the map overview turning
+  scoreboard latency column (0 until networking) and its BOMB / DEFUSER
+  markers, the radio icon over a teammate's head (`sprites/radio`), and
+  text chat (Y / U, `say`, `say_team`). The buy and team menus draw in the game's VGUI look from its `.res` files
+  (`client/vgui.rs`). Left: the class menu (`classmenu_*.res`, needs player
+  models per class), spectating from the team menu (no spectator team),
+  autobuy / rebuy / favourites, checking the widescreen placement against
+  the game, other game messages in the chat (team joins, bomb pickups
+  and drops are in), bots' answers checked against a bot behaviour spec
+  (`ignorerad` and bots answering and carrying out radio commands are
+  in: `bot::radio::obey`). The radar is in (`client/radar.rs`: the map overview turning
   with you, team dots, your place name); its range (2200 units) is a guess.
 - The game menu (Esc; `client/game_menu.rs`: new game with map, mode,
   bots per team and difficulty; bots; team; options; bug report; quit)
@@ -81,8 +85,9 @@ a first bot are in.
 
 - Probe the new guns' unmeasured rules (listed in the weapons plan):
   recoil of most guns, the shotgun reload and pellets, the other ammo
-  types' penetration. Buying ammo (CS:S's menu keys 6 and 7) isn't in:
-  reserves start full.
+  types' penetration. Ammo prices and box sizes are the well-known
+  values, not measured (docs/tech-debt.md); measure them, `primammo`'s
+  fill-up and the spawn pistols' reserves on the probe.
 - The AWP's view model is in (MDL v48 reads like v44,
   specs/cs_source/mdl_v48.md); compare its fire and reload against the
   game. (MDL 45–48, sections, `.ani` blocks and the zero-frame cache
@@ -90,7 +95,7 @@ a first bot are in.
 - Zoom: measure `zoom_sensitivity_ratio` and compare the scope overlay
   (the game's textures, laid out by eye) with CS:S.
 - Rounds, money and buying: slice 1 done (`mashup_rounds 1`,
-  [plans/active/rounds.md](plans/active/rounds.md)); next: ammo.
+  [plans/active/rounds.md](plans/active/rounds.md)); ammo buying is in.
 - Objectives, remaining (bomb and hostages are in: `src/objectives/`,
   specs/cs_source/objectives.md): measure the spec's open questions on the
   probe (Q1 movement while arming, Q3 blast shape/walls/armour, Q4 beep
@@ -98,13 +103,14 @@ a first bot are in.
   solidity, Q9 hostage models, Q10 follow speeds, Q11 rescue rules, Q14
   tick rounding); the C4's screen text (7355608) and LED glow sprite, the
   `sprites/c4` marker through walls, screen shake, the explosion's own
-  effect (it uses the HE's); the scoreboard bomb/kit markers; hostage
+  effect (it uses the HE's); the scoreboard's own bomb/kit icons (ours
+  are words); hostage
   animation beyond idle/walk/run and a nod (`hostage_anim.rs`: compare
   with CS:S's hostages, which aren't measured; head/aim pose parameters
   toward the leader, flinch and cower), hostages avoiding
   "no hostages" nav areas, crouching and jumping; drop/pickup game events
   and server log lines; bots leading hostages, buying kits, guarding;
-  the `Use` deny sound.
+  which `Player.UseDeny` CS:S plays (doors_buttons.md Q2).
 - Grenades, remaining (HE, flashbang and smoke are in: `weapon/grenade.rs`,
   `games/cs_source/grenades.rs`): measure the spec's open questions on the
   probe (fuse ticks, release timing, flash amounts and overlay curve, HE vs
@@ -254,9 +260,19 @@ docs/plans/active/sound.md.
   `$refractamount` 5 landing on barely submerged shore, which the spec's
   shore fade leaves unreflected). Water currents: no stock map has
   current contents (spec movement.md open question 15), so not applied.
-- **HDR parity**: CS:S defaults to mat_hdr_level 2 on dust2 (HDR lightmaps,
-  tonemapping, bloom); the reference install runs LDR. Compare and match
-  both if players use HDR. Tonemap (`env_tonemap_controller`).
+- **HDR parity**: `mat_hdr_level` 1/2 (default 0, the reference's LDR)
+  loads the HDR lightmaps, ambient cubes, world lights and `_hdr` sky,
+  renders HDR with bloom and auto exposure within the map-start
+  `env_tonemap_controller` bounds (client/hdr.rs). Not matched against the
+  game (no HDR reference captures; refcmp runs LDR). Open questions for a
+  spec session: the engine's HDR lightmap scale (taken as 1), the exposure
+  target (`hdr::EXPOSURE_TARGET` 0.5), metering and adaptation speed
+  (Bevy's histogram, 3/1 stops/s), the bloom filter and strength (Bevy's
+  `OLD_SCHOOL` at 0.05 x bloom scale), whether bloom precedes exposure,
+  HDR cubemaps/envmaps (still LDR), the `<sky>_hdr` material lookup rule,
+  controller inputs fired after map start (`SetTonemapRate`,
+  `UseDefaultAutoExposure`, triggers) and `mat_hdr_level` 1's exact look.
+  Then refcmp captures at mat_hdr_level 2.
 - **More refcmp views** across dust2 (mid, long, B, spawns) and other maps.
 - Detail blend modes other than 0 and 1;
   `$basetexturetransform` (unused on dust2).
@@ -264,11 +280,14 @@ docs/plans/active/sound.md.
 ## 9. Performance
 
 Measured and culled (docs/performance.md): `mashup_perf`, `refcmp bench`,
-PVS culling by world chunk, prop fade distances. Left:
-- Areaportals (closed doors and windows hide what's behind them) and
-  `func_occluder`.
-- Prop fade bands (alpha between `fademindist` and `fademaxdist`) and
-  LOD models.
+PVS culling by world chunk, areaportals (closed doors hide what's behind
+them; views clipped through openings), prop fade distances with dithered
+fade bands. Left:
+- `func_occluder`; fading physics/animated props; LOD models.
+- de_nuke `refcmp vischeck` view nav1627_90: the PVS culls the room seen
+  through the window beside the A site door (16k pixels, over the 0.5%
+  limit). Find why that cluster isn't in the PVS (translucent window
+  contents?) and keep it.
 - Measure on the Windows PC (`refcmp bench` there) and set a budget.
 - Frame-time follow-ups (performance.md, "Cheap wins found"): take
   before/after numbers on a quiet machine; props as hierarchies of their

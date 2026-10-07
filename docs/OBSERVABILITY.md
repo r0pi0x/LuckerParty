@@ -36,7 +36,9 @@ rendering. Write screenshots to a scratch directory, never into the repo.
 Needs a display: on the Linux dev box set `WAYLAND_DISPLAY=wayland-1` and
 `XDG_RUNTIME_DIR=/run/user/1000` if the shell lacks them. `--frames N`
 without `--screenshot` just runs N frames and exits (smoke test).
-`--help` lists all options.
+`--window 1920x1080` fixes the window's size in pixels (a fixed-size window
+floats under Hyprland instead of being tiled), for UI checked at a known
+resolution. `--help` lists all options.
 
 To photograph a live run step by step (e.g. before and after a round
 restart, where frame counts are too uncertain), run the game without
@@ -79,6 +81,12 @@ Only `Reflect`-registered types are visible; register new core components in
   on a page, for screenshots of it: `--screenshot menu.png +menu options`.
   Its logic is unit-tested in `client::game_menu` (keys and clicks in,
   console lines out).
+- `buymenu [n]` and `chooseteam` open the buy menu (on category n) and
+  the team menu, e.g. `--map cs_source:de_dust2 --screenshot buy.png
+  +wait 30 +buymenu 4` (the `wait` lets the map's HUD and menu layouts
+  load first, so the game-look pages are used). Their key and button
+  logic is tested headless in `client::buy_menu` and `client::team_menu`;
+  `tests/map_de_dust2.rs` checks the install's layouts load.
 - `ent_fire <target> <input> [value]` sends a map entity an input through
   the logic layer (names, `*` wildcards, classnames; the local player is
   the activator), e.g. `+wait 30 +ent_fire logic_timer Disable +ent_fire
@@ -98,10 +106,13 @@ Only `Reflect`-registered types are visible; register new core components in
   role's colour, lines to the approaches it watches), its planned
   grenade arc (red HE, pale yellow flash, grey smoke) with the target
   (green cross) and where it should go off (sphere), and a flash it is
-  looking away from (white). `bot_debug 1` lists each team's plan and
+  looking away from (white), and a teammate's radio command it carries
+  out (magenta: a line to whom it follows or where it regroups or falls
+  back to, a ring where it holds, and the order as text over its head,
+  "following Player"). `bot_debug 1` lists each team's plan and
   every bot's team, role, site, activity (ToSite, Following, Waiting,
-  Holding, Chasing, Assisting, ...; `*` marks the group leader) and
-  health on screen. To watch a round on dust2 from above: `--map
+  Holding, Chasing, Assisting, Obeying, ...; `*` marks the group
+  leader), health and radio order on screen. To watch a round on dust2 from above: `--map
   cs_source:de_dust2 +mashup_rounds 1 +bot_add 1 +bot_add 1 +bot_add 1
   +bot_add 2 +bot_add 2 +bot_add 2 +mashup_drawbots 1 +bot_debug 1
   +noclip +setpos -400 3000 1200 +setang 89 90 0`. Headless round
@@ -249,6 +260,10 @@ Details and baseline numbers: [performance.md](performance.md).
   main world and the render world); `-- <args>` passes options to
   mashup (e.g. `-- +r_novis 1`). Build first; it runs the mashup next to
   it (`--profile playtest` for optimized numbers).
+- `r_portalsopenall 1` ignores areaportals (closed doors no longer hide
+  what's behind them, no clipping through openings): PVS culling only.
+  `mashup_perf 1` shows the camera's area, the areas it reaches and how
+  many areaportals logic closed.
 - `r_novis 1` draws every map part (no visibility culling);
   `MASHUP_MERGED_WORLD=1` spawns the world as one mesh per material with no
   culling, as before chunking (A/B comparisons).
@@ -333,7 +348,8 @@ cargo run --features dev --bin refcmp -- capture-ours --only a_sign
   their rows; that's how rope gravity was found.
 - The reference CS:S install runs at mat_hdr_level 0, mat_trilinear 0,
   mat_forceaniso 1, no AA (queried over RCON). HDR (level 2, the game's
-  default) is not matched yet.
+  default) is an option (`+mat_hdr_level 2`, client/hdr.rs) but not
+  matched yet: captures stay LDR unless a run sets it.
 - `refcmp skyconv` measures how the engine samples sky cubemaps (an encoded
   debug sky, `MASHUP_SKY_DEBUG=1`) and fits each layer's texture and
   orientation to the reference: Bevy's skybox flips z, so looking toward -Z

@@ -37,15 +37,44 @@ pub struct Prices {
     /// How much computer players like each primary when buying (unlisted:
     /// 1; 0: never).
     pub bot_weights: HashMap<&'static str, f32>,
+    /// Ammo for sale: the box each weapon's ammo comes in, by weapon ID.
+    /// A weapon listed here and bought for money comes with an empty
+    /// reserve (you buy its ammo); unlisted weapons keep a full one.
+    pub ammo: HashMap<&'static str, AmmoBox>,
+    /// Rounds a starting weapon carries in reserve while ammo is sold
+    /// (rounds with money), by weapon ID; unlisted: none.
+    pub starting_reserve: HashMap<&'static str, u32>,
+    /// Sound entry played when ammo is bought.
+    pub ammo_sound: Option<String>,
 }
 
+/// A box of ammo: its price and the rounds in it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AmmoBox {
+    pub price: u32,
+    pub rounds: u32,
+}
+
+/// What buys ammo (`buy <name>`): the slot of the weapon it's for, and
+/// whether it fills the reserve (else one box). CS:S's `primammo` and
+/// `secammo` (the buy menu's ammo keys) fill; `buyammo1` and `buyammo2`
+/// (its `,` and `.` keys) buy a box.
+pub const AMMO_BUYS: [(&str, u8, bool); 4] = [
+    ("primammo", 0, true),
+    ("secammo", 1, true),
+    ("buyammo1", 0, false),
+    ("buyammo2", 1, false),
+];
+
 /// One buy-menu category: the number key that opens it, its name and its
-/// items in order.
+/// items in order. A category with `direct` set buys that instead of
+/// opening (CS:S's primary and secondary ammo keys).
 #[derive(Clone, Debug, PartialEq)]
 pub struct BuyCategory {
     pub key: u8,
     pub name: &'static str,
     pub items: Vec<BuyItem>,
+    pub direct: Option<&'static str>,
 }
 
 /// One buy-menu line: what `buy` gets (a weapon ID, `vest`, `vesthelm`)
@@ -87,9 +116,15 @@ impl Default for BuyWindow {
     }
 }
 
-/// Buy `name` (a weapon ID, `weapon_ak47`, `ak47`, `vest` or `vesthelm`)
-/// for `owner`: checks the window and the money, replaces a weapon in the
-/// same slot (dropped, as CS:S does). Returns what happened.
+/// Why buying fails without the money (CS:S's words).
+pub const INSUFFICIENT_FUNDS: &str = "You have insufficient funds.";
+/// Why buying fails with no room left (CS:S's words).
+pub const CANNOT_CARRY: &str = "You cannot carry any more.";
+
+/// Buy `name` (a weapon ID, `weapon_ak47`, `ak47`, `vest`, `vesthelm`,
+/// `defuser`, or ammo: `AMMO_BUYS`) for `owner`: checks the window and the
+/// money, replaces a weapon in the same slot (dropped, as CS:S does).
+/// Returns what happened.
 pub fn buy(world: &mut World, owner: Entity, name: &str) -> Result<String, String> {
     world.resource::<BuyWindow>().0.clone()?;
     if world.get::<Money>(owner).is_some() && !in_buy_zone(world, owner) {
@@ -101,7 +136,7 @@ pub fn buy(world: &mut World, owner: Entity, name: &str) -> Result<String, Strin
     let pay = |world: &mut World, cost: u32| -> Result<(), String> {
         if let Some(have) = money {
             if have < cost {
-                return Err("You have insufficient funds.".into());
+                return Err(INSUFFICIENT_FUNDS.into());
             }
             world.entity_mut(owner).insert(Money(have - cost));
         }
@@ -120,6 +155,9 @@ pub fn buy(world: &mut World, owner: Entity, name: &str) -> Result<String, Strin
         pay(world, cost)?;
         world.entity_mut(owner).insert(Armor { amount: 1.0, helmet });
         return Ok(format!("bought {name}"));
+    }
+    if let Some((_, slot, fill)) = AMMO_BUYS.iter().find(|(n, ..)| *n == name) {
+        return buy_ammo(world, owner, *slot, *fill);
     }
     if name == "defuser" {
         if prices.defuser == 0 {
@@ -162,7 +200,7 @@ pub fn buy(world: &mut World, owner: Entity, name: &str) -> Result<String, Strin
         // Grenades stack up to their carry limit (spec grenades.md 1).
         let room = world.get::<Throwable>(have).is_some_and(|t| t.count < t.max);
         if world.get::<Throwable>(have).is_some() && !room {
-            return Err("You cannot carry any more.".into());
+            return Err(CANNOT_CARRY.into());
         }
         if !room {
             return Err("You already own that weapon.".into());
@@ -176,6 +214,15 @@ pub fn buy(world: &mut World, owner: Entity, name: &str) -> Result<String, Strin
     pay(world, cost)?;
     let active = world.get::<Inventory>(owner).and_then(|i| i.active);
     let new = give(world, owner, id).ok_or("can't carry it")?;
+    // Bought for money where ammo is sold: the clip only (spec
+    // weapons.md 3.9: a new weapon has `default_clip` rounds, an equipped
+    // clip weapon adds nothing to the reserve).
+    if money.is_some()
+        && prices.ammo.contains_key(id)
+        && let Some(mut m) = world.get_mut::<super::Magazine>(new)
+    {
+        m.reserve = 0;
+    }
     if world.get::<Throwable>(new).is_some() {
         // Grenades share their slot and don't take the hand.
         if active.is_some()
@@ -194,6 +241,78 @@ pub fn buy(world: &mut World, owner: Entity, name: &str) -> Result<String, Strin
         super::drop::drop_this(world, owner, old, false);
     }
     Ok(format!("bought {id}"))
+}
+
+/// Buy ammo for the weapon `owner` carries in `slot`: one box, or
+/// (`fill`) boxes until the reserve is full or the money runs out. A box
+/// that doesn't fit whole costs its full price (CS:S's rule as commonly
+/// described; unmeasured).
+fn buy_ammo(world: &mut World, owner: Entity, slot: u8, fill: bool) -> Result<String, String> {
+    let prices = world.resource::<Prices>();
+    let sound = prices.ammo_sound.clone();
+    let held = world.get::<Inventory>(owner).map(|i| i.weapons.clone()).unwrap_or_default();
+    let Some((weapon, ammo)) = held.into_iter().find_map(|w| {
+        let id = world.get::<Weapon>(w).filter(|x| x.slot == slot)?.id;
+        world.get::<super::Magazine>(w)?;
+        Some((w, *prices.ammo.get(id)?))
+    }) else {
+        return Err("You have no weapon for that ammo.".into());
+    };
+    let mut bought = 0;
+    loop {
+        let m = world.get::<super::Magazine>(weapon).expect("checked above");
+        let room = m.reserve_max.saturating_sub(m.reserve);
+        let why = if room == 0 {
+            CANNOT_CARRY
+        } else if world.get::<Money>(owner).is_some_and(|m| m.0 < ammo.price) {
+            INSUFFICIENT_FUNDS
+        } else {
+            ""
+        };
+        if !why.is_empty() {
+            if bought == 0 {
+                return Err(why.into());
+            }
+            break;
+        }
+        if let Some(mut money) = world.get_mut::<Money>(owner) {
+            money.0 -= ammo.price;
+        }
+        world.get_mut::<super::Magazine>(weapon).expect("checked above").reserve += ammo.rounds.min(room);
+        bought += 1;
+        if !fill {
+            break;
+        }
+    }
+    if let Some(entry) = sound.filter(|_| world.contains_resource::<Messages<crate::map::PlaySound>>()) {
+        let at = world.get::<Transform>(owner).map(|t| t.translation);
+        world.write_message(crate::map::PlaySound {
+            entry,
+            at,
+            volume: None,
+            source: Some(owner),
+            channel: None,
+        });
+    }
+    Ok(format!("bought {bought} box{}", if bought == 1 { "" } else { "es" }))
+}
+
+/// Set a starting weapon's reserve for a game where ammo is bought:
+/// `Prices::starting_reserve` (no change where ammo isn't sold).
+pub fn starting_reserve(world: &mut World, weapon: Entity) {
+    let Some(id) = world.get::<Weapon>(weapon).map(|w| w.id) else {
+        return;
+    };
+    let Some(prices) = world.get_resource::<Prices>() else {
+        return;
+    };
+    if !prices.ammo.contains_key(id) {
+        return;
+    }
+    let rounds = prices.starting_reserve.get(id).copied().unwrap_or(0);
+    if let Some(mut m) = world.get_mut::<super::Magazine>(weapon) {
+        m.reserve = rounds.min(m.reserve_max);
+    }
 }
 
 /// Whether `owner` stands in one of its team's buy zones (Source
@@ -270,9 +389,9 @@ pub const BOT_GRENADE_CHANCE: [(GrenadeKind, f32); 3] = [
 
 /// What a computer player buys with its money: a primary its team may buy
 /// and afford (if it has none), picked at random by `Prices::bot_weights`
-/// among the dearer half of those, armour with what's left, then now and
-/// then grenades (`BOT_GRENADE_CHANCE`). CS:S's own bots weigh preferences
-/// and difficulty; this is the simple version.
+/// among the dearer half of those, ammo for its guns, armour with what's
+/// left, then now and then grenades (`BOT_GRENADE_CHANCE`). CS:S's own
+/// bots weigh preferences and difficulty; this is the simple version.
 pub fn autobuy(world: &mut World, owner: Entity) {
     // A roll per bot and round.
     let round = world
@@ -338,6 +457,9 @@ fn autobuy_gun_and_armour(world: &mut World, owner: Entity, roll: &mut dyn FnMut
             let _ = buy(world, owner, id);
         }
     }
+    // Ammo for what it carries, before armour (a gun is no use empty).
+    let _ = buy(world, owner, "primammo");
+    let _ = buy(world, owner, "secammo");
     let _ = buy(world, owner, "vesthelm").or_else(|_| buy(world, owner, "vest"));
 }
 
@@ -402,5 +524,76 @@ mod tests {
         assert_eq!(w.get::<Money>(p), Some(&Money(200)));
         w.insert_resource(BuyWindow(Err("buy time is over".into())));
         assert_eq!(buy(&mut w, p, "vest").unwrap_err(), "buy time is over");
+    }
+
+    #[test]
+    fn ammo_by_the_box_up_to_the_reserve_max() {
+        let (mut w, p) = world();
+        w.resource_mut::<WeaponRegistry>().0.push(super::super::WeaponDef {
+            id: "g:weapon_smg",
+            build: |e| {
+                e.insert((
+                    Weapon {
+                        id: "g:weapon_smg",
+                        slot: 0,
+                        owner: None,
+                        draw_time: 0.0,
+                        max_speed: None,
+                    },
+                    super::super::Magazine {
+                        clip: 30,
+                        size: 30,
+                        reserve: 90,
+                        reserve_max: 90,
+                        reload_time: 1.0,
+                        reload_while_held: false,
+                    },
+                ));
+            },
+        });
+        {
+            let mut prices = w.resource_mut::<Prices>();
+            prices.weapons.insert("g:weapon_smg", 1500);
+            prices.ammo.insert("g:weapon_smg", AmmoBox { price: 80, rounds: 30 });
+            prices.starting_reserve.insert("g:weapon_smg", 40);
+        }
+        let reserve = |w: &mut World| {
+            let gun = w.get::<Inventory>(p).unwrap().weapons[0];
+            w.get::<super::super::Magazine>(gun).unwrap().reserve
+        };
+        let set_reserve = |w: &mut World, n: u32| {
+            let gun = w.get::<Inventory>(p).unwrap().weapons[0];
+            w.get_mut::<super::super::Magazine>(gun).unwrap().reserve = n;
+        };
+        // Bought for money: the clip only.
+        buy(&mut w, p, "smg").unwrap();
+        assert_eq!((reserve(&mut w), w.get::<Money>(p).unwrap().0), (0, 1500));
+        // One box, then fill: two more boxes reach the max.
+        buy(&mut w, p, "buyammo1").unwrap();
+        assert_eq!((reserve(&mut w), w.get::<Money>(p).unwrap().0), (30, 1420));
+        buy(&mut w, p, "primammo").unwrap();
+        assert_eq!((reserve(&mut w), w.get::<Money>(p).unwrap().0), (90, 1260));
+        assert_eq!(buy(&mut w, p, "primammo").unwrap_err(), CANNOT_CARRY);
+        // A box that doesn't fit whole tops up for the full price.
+        set_reserve(&mut w, 75);
+        buy(&mut w, p, "buyammo1").unwrap();
+        assert_eq!((reserve(&mut w), w.get::<Money>(p).unwrap().0), (90, 1180));
+        // Out of money: refused; fill stops when the money runs out.
+        set_reserve(&mut w, 0);
+        w.entity_mut(p).insert(Money(50));
+        assert_eq!(buy(&mut w, p, "primammo").unwrap_err(), INSUFFICIENT_FUNDS);
+        w.entity_mut(p).insert(Money(170));
+        buy(&mut w, p, "primammo").unwrap();
+        assert_eq!((reserve(&mut w), w.get::<Money>(p).unwrap().0), (60, 10));
+        // No pistol: no secondary ammo.
+        assert!(buy(&mut w, p, "secammo").is_err());
+        // Starting weapons carry the game's starting reserve.
+        let gun = w.get::<Inventory>(p).unwrap().weapons[0];
+        starting_reserve(&mut w, gun);
+        assert_eq!(reserve(&mut w), 40);
+        // Free buying (no money) fills too.
+        w.entity_mut(p).remove::<Money>();
+        buy(&mut w, p, "primammo").unwrap();
+        assert_eq!(reserve(&mut w), 90);
     }
 }

@@ -11,7 +11,8 @@ fn main() {
     let args = client::Args::parse();
     let mut app = App::new();
     match &args.map {
-        Some(id) => match games::load_map(id) {
+        // At the HDR level the console will start with (mat_hdr_level).
+        Some(id) => match games::load_map_level(id, client::hdr::startup_level(&args.console)) {
             Ok(data) => {
                 eprintln!(
                     "loaded {}: {} triangles, {} textures, {} spawns, {} warnings",
@@ -54,6 +55,23 @@ fn main() {
             .set(WindowPlugin {
                 primary_window: Some(Window {
                     title: "mashup".into(),
+                    // Physical pixels whatever the display's scaling.
+                    resolution: args
+                        .window
+                        .map(|s| bevy::window::WindowResolution::new(s.x, s.y).with_scale_factor_override(1.0))
+                        .unwrap_or_default(),
+                    // A fixed size: tiling window managers float such
+                    // windows instead of resizing them.
+                    resizable: args.window.is_none(),
+                    resize_constraints: args
+                        .window
+                        .map(|s| bevy::window::WindowResizeConstraints {
+                            min_width: s.x as f32,
+                            min_height: s.y as f32,
+                            max_width: s.x as f32,
+                            max_height: s.y as f32,
+                        })
+                        .unwrap_or_default(),
                     ..default()
                 }),
                 ..default()

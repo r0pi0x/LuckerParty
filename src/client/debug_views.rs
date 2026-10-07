@@ -12,7 +12,7 @@
 use bevy::prelude::*;
 
 use crate::{
-    bot::{Bot, Role, Tactics},
+    bot::{Bot, Role, Tactics, radio::Order},
     console::resource_cvar,
     core::{Health, Intent, LocalPlayer, Team},
     map::{
@@ -28,7 +28,7 @@ impl Plugin for DebugViewsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<DebugViews>()
             .add_systems(Startup, spawn_bot_list)
-            .add_systems(Update, (draw_nav, draw_bots, bot_list, draw_ragdolls));
+            .add_systems(Update, (draw_nav, draw_bots, order_labels, bot_list, draw_ragdolls));
         resource_cvar::<DebugViews, u8>(
             app,
             "mashup_ragdoll_debug",
@@ -139,6 +139,9 @@ fn draw_nav(
     }
 }
 
+/// Radio-driven orders in `mashup_drawbots`.
+const ORDER_COLOR: Color = Color::srgb(1.0, 0.3, 1.0);
+
 fn role_color(role: Role) -> Color {
     match role {
         Role::Attack => Color::srgb(1.0, 0.45, 0.1),
@@ -212,6 +215,20 @@ fn draw_bots(
         if let Some(call) = bot.assisting() {
             gizmos.line(eye, call + Vec3::Y * 1.0, Color::srgb(0.2, 1.0, 0.6));
         }
+        // A teammate's radio command (magenta): a line to whom it follows
+        // or where it goes, a ring where it holds.
+        if let Some(o) = bot.order() {
+            let to = o.point() + Vec3::Y * LIFT;
+            match o.order {
+                Order::Hold { .. } => {
+                    gizmos.circle(Isometry3d::new(to, flat), crate::bot::radio::HOLD_NEAR, ORDER_COLOR);
+                }
+                _ => {
+                    gizmos.line(eye, to + Vec3::Y, ORDER_COLOR);
+                    gizmos.sphere(Isometry3d::from_translation(to + Vec3::Y * 0.3), 0.3, ORDER_COLOR);
+                }
+            }
+        }
         let (route, next) = bot.route();
         let ahead = route.iter().skip(next).map(|p| *p + Vec3::Y * 0.1);
         gizmos.linestrip(
@@ -258,6 +275,85 @@ fn draw_bots(
     }
 }
 
+/// A label over a bot carrying out a radio command (`mashup_drawbots`).
+#[derive(Component)]
+struct OrderLabel(Entity);
+
+/// What a bot does for a teammate's radio command ("following Player",
+/// "pressing on"), or None.
+fn order_text(bot: &Bot, now: f64, name_of: impl Fn(Entity) -> String) -> Option<String> {
+    match bot.order() {
+        Some(o) => Some(o.describe(&name_of(o.from))),
+        None if bot.urgent(now) => Some("pressing on".into()),
+        None => None,
+    }
+}
+
+/// `mashup_drawbots`: each bot's radio-driven order as text over its head.
+#[allow(clippy::type_complexity)]
+fn order_labels(
+    views: Res<DebugViews>,
+    time: Res<Time<Fixed>>,
+    bots: Query<(Entity, &Bot, &GlobalTransform, &Health)>,
+    names: Query<(Option<&Name>, Has<LocalPlayer>)>,
+    camera: Query<(&Camera, &GlobalTransform), With<super::FirstPersonCamera>>,
+    mut labels: Query<(Entity, &OrderLabel, &mut Text, &mut Node, &mut Visibility)>,
+    mut commands: Commands,
+) {
+    let now = time.elapsed_secs_f64();
+    let name_of = |e: Entity| match names.get(e) {
+        Ok((_, true)) => "Player".to_string(),
+        Ok((Some(n), _)) => n.to_string(),
+        _ => e.to_string(),
+    };
+    let cam = camera.iter().next();
+    let mut shown: Vec<Entity> = Vec::new();
+    if views.bots > 0 {
+        for (e, bot, at, health) in &bots {
+            let Some(text) = order_text(bot, now, name_of).filter(|_| health.current > 0.0) else {
+                continue;
+            };
+            let Some(p) = cam.and_then(|(c, ct)| c.world_to_viewport(ct, at.translation() + Vec3::Y * 1.2).ok()) else {
+                continue;
+            };
+            shown.push(e);
+            match labels.iter_mut().find(|l| l.1.0 == e) {
+                Some((_, _, mut t, mut node, mut vis)) => {
+                    if t.0 != text {
+                        t.0 = text;
+                    }
+                    node.left = px(p.x);
+                    node.top = px(p.y);
+                    *vis = Visibility::Visible;
+                }
+                None => {
+                    commands.spawn((
+                        OrderLabel(e),
+                        Text::new(text),
+                        TextFont {
+                            font_size: FontSize::Px(13.0),
+                            ..default()
+                        },
+                        TextColor(ORDER_COLOR),
+                        Node {
+                            position_type: PositionType::Absolute,
+                            left: px(p.x),
+                            top: px(p.y),
+                            ..default()
+                        },
+                        GlobalZIndex(40),
+                    ));
+                }
+            }
+        }
+    }
+    for (label, l, ..) in &labels {
+        if !shown.contains(&l.0) {
+            commands.entity(label).despawn();
+        }
+    }
+}
+
 #[derive(Component)]
 struct BotList;
 
@@ -281,10 +377,14 @@ fn spawn_bot_list(mut commands: Commands) {
 }
 
 /// `bot_debug 1`: each team's plan, then one line per bot (name, team,
-/// role, site, activity, `*` for the group leader, health).
+/// role, site, activity, `*` for the group leader, health, a teammate's
+/// radio command it carries out).
+#[allow(clippy::too_many_arguments)]
 fn bot_list(
     views: Res<DebugViews>,
     bots: Query<(Entity, &Bot, &Team, &Health, Option<&Name>)>,
+    names: Query<(Option<&Name>, Has<LocalPlayer>)>,
+    time: Res<Time<Fixed>>,
     tactics: Option<Res<Tactics>>,
     mut text: Query<(&mut Text, &mut Visibility), With<BotList>>,
 ) {
@@ -320,13 +420,19 @@ fn bot_list(
             .and_then(|t| t.team(*team))
             .is_some_and(|p| p.leader == Some(e));
         let name = name.map_or_else(|| e.to_string(), |n| n.as_str().to_string());
+        let order = order_text(bot, time.elapsed_secs_f64(), |e| match names.get(e) {
+            Ok((_, true)) => "Player".to_string(),
+            Ok((Some(n), _)) => n.to_string(),
+            _ => e.to_string(),
+        });
         out += &format!(
-            "{name:<8} t{} {:<7} {site:<10} {:<10}{} hp {:.0}\n",
+            "{name:<8} t{} {:<7} {site:<10} {:<10}{} hp {:.0}{}\n",
             team.0,
             format!("{:?}", bot.role()),
             format!("{:?}", bot.activity()),
             if leader { " *" } else { "  " },
             health.current * 100.0,
+            order.map_or_else(String::new, |o| format!("  [{o}]")),
         );
     }
     if text.0 != out {

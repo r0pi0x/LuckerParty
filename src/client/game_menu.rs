@@ -207,6 +207,11 @@ pub const SETTINGS: &[Setting] = &[
         label: "Show FPS",
         kind: SettingKind::Choice(&[("0", "Off"), ("1", "On"), ("2", "Detailed")]),
     },
+    Setting {
+        cvar: "mat_hdr_level",
+        label: "High dynamic range (next map)",
+        kind: SettingKind::Choice(&[("0", "None"), ("1", "Bloom"), ("2", "Full")]),
+    },
 ];
 
 impl Setting {
@@ -1030,27 +1035,7 @@ struct MenuFonts {
 }
 
 fn load_fonts(mut fonts: ResMut<Assets<Font>>, mut commands: Commands) {
-    let windows = std::env::var_os("WINDIR").map(|w| std::path::PathBuf::from(w).join("Fonts"));
-    let mut find = |names: &[&str]| -> Option<Handle<Font>> {
-        let mut dirs: Vec<std::path::PathBuf> = windows.iter().cloned().collect();
-        dirs.extend(
-            [
-                "/usr/share/fonts/TTF",
-                "/usr/share/fonts/truetype/dejavu",
-                "/usr/share/fonts/dejavu",
-                "/usr/share/fonts/liberation",
-                "/usr/share/fonts/truetype/liberation",
-                "/usr/share/fonts/noto",
-                "/usr/share/fonts/truetype/noto",
-            ]
-            .map(std::path::PathBuf::from),
-        );
-        names.iter().find_map(|n| {
-            dirs.iter()
-                .find_map(|d| std::fs::read(d.join(n)).ok())
-                .map(|bytes| fonts.add(Font::from_bytes(bytes)))
-        })
-    };
+    let mut find = |names: &[&str]| super::vgui::system_font(&mut fonts, names);
     let text = find(&[
         "tahoma.ttf",
         "DejaVuSans.ttf",

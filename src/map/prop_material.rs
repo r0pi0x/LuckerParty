@@ -108,6 +108,20 @@ impl Material for PropMaterial {
         _layout: &bevy::mesh::MeshVertexBufferLayoutRef,
         key: bevy::pbr::MaterialPipelineKey<Self>,
     ) -> Result<(), bevy::render::render_resource::SpecializedMeshPipelineError> {
+        // Opaque props get a depth-only prepass (no fragment stage); inside
+        // a fade band it must drop the dithered-out pixels too.
+        if descriptor.fragment.is_none()
+            && key
+                .mesh_key
+                .contains(bevy::pbr::MeshPipelineKey::VISIBILITY_RANGE_DITHER)
+        {
+            descriptor.fragment = Some(bevy::render::render_resource::FragmentState {
+                shader: DITHER_PREPASS_SHADER,
+                shader_defs: descriptor.vertex.shader_defs.clone(),
+                entry_point: Some("fragment".into()),
+                targets: Vec::new(),
+            });
+        }
         if key.bind_group_data.double_sided {
             descriptor.primitive.cull_mode = None;
         } else if key.bind_group_data.cull_front {
@@ -133,12 +147,18 @@ impl From<&PropMaterial> for PropMaterialKey {
     }
 }
 
+/// `prop_dither_prepass.wgsl`: the depth prepass fragment stage for opaque
+/// props in a fade band (see `specialize`).
+const DITHER_PREPASS_SHADER: Handle<Shader> = bevy::asset::uuid_handle!("6f3d2b8e-5c1a-4e7f-9a42-1d8b7c3e5f60");
+
 pub struct PropMaterialPlugin;
 
 impl Plugin for PropMaterialPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "prop.wgsl");
         embedded_asset!(app, "prop_prepass.wgsl");
+        bevy::shader::load_shader_library!(app, "dither.wgsl");
+        bevy::asset::load_internal_asset!(app, DITHER_PREPASS_SHADER, "prop_dither_prepass.wgsl", Shader::from_wgsl);
         app.add_plugins((super::fog::FogShaderPlugin, MaterialPlugin::<PropMaterial>::default()));
     }
 }

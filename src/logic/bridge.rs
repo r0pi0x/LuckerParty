@@ -128,6 +128,7 @@ fn load(world: &mut World) {
             world.write_message(SoundControl::StopAll);
             world.remove_resource::<Logic>();
             world.remove_resource::<LightStyles>();
+            world.remove_resource::<crate::map::vis::AreaPortalStates>();
             world.remove_resource::<SoundscapeTouches>();
             world.remove_resource::<crate::map::fire::MapFires>();
         }
@@ -381,7 +382,8 @@ fn set_prop_look(world: &mut World, node: Entity, state: &super::props::PropStat
 
 /// Sprites and dust volumes (`map::EntityPart`) follow their entity: on,
 /// off, or gone (killed) until a round restart; light styles follow the
-/// lights (`map::LightStyles`).
+/// lights (`map::LightStyles`), areaportals their doors and inputs
+/// (`map::vis::AreaPortalStates`).
 fn sync_visuals(world: &mut World, logic: &Logic) {
     let mut states = logic.world.part_states();
     states.sort_by_key(|s| s.0);
@@ -401,6 +403,12 @@ fn sync_visuals(world: &mut World, logic: &Logic) {
     };
     if world.get_resource::<LightStyles>() != Some(&styles) {
         world.insert_resource(styles);
+    }
+    let portals = crate::map::vis::AreaPortalStates {
+        closed: logic.world.closed_area_portals(),
+    };
+    if world.get_resource::<crate::map::vis::AreaPortalStates>() != Some(&portals) {
+        world.insert_resource(portals);
     }
 }
 

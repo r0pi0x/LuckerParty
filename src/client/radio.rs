@@ -3,7 +3,8 @@
 //! `enemyspot`, ... from `map::radio::RadioCommands`), and what
 //! `core::Radio` calls sound like to the local player: the call's sound
 //! entry and a "Name (RADIO): text" chat line, for their own calls and
-//! living teammates'.
+//! living teammates', and the radio icon over a teammate's head while
+//! they speak (the game's `sprites/radio`, else a text marker).
 
 use bevy::{prelude::*, window::CursorOptions};
 
@@ -22,14 +23,9 @@ pub struct RadioPlugin;
 
 impl Plugin for RadioPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<RadioMenu>().add_message::<Radio>().add_systems(
-            Update,
-            (
-                register_commands.run_if(resource_exists_and_changed::<RadioCommands>),
-                (keys, draw).chain(),
-                hear,
-            ),
-        );
+        app.add_plugins(RadioHearPlugin)
+            .init_resource::<RadioMenu>()
+            .add_systems(Update, ((keys, draw).chain(), draw_icons.after(hear)));
         for n in 1..=3usize {
             let help = ["Radio commands", "Group radio commands", "Radio responses"][n - 1];
             app.console_command(
@@ -42,6 +38,41 @@ impl Plugin for RadioPlugin {
             );
         }
     }
+}
+
+/// What the local player hears of the radio, without a window (tests):
+/// the calls' sounds, chat lines and icons, the radio's console commands,
+/// and `ignorerad`.
+pub struct RadioHearPlugin;
+
+impl Plugin for RadioHearPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<RadioIcons>()
+            .init_resource::<RadioSettings>()
+            .add_message::<Radio>()
+            .add_message::<ChatLine>()
+            .add_message::<PlaySound>()
+            .add_systems(
+                Update,
+                (
+                    register_commands.run_if(resource_exists_and_changed::<RadioCommands>),
+                    hear,
+                ),
+            );
+        crate::console::resource_cvar::<RadioSettings, u8>(
+            app,
+            "ignorerad",
+            "1: don't show or play teammates' radio calls (your own still play).",
+            |s| &mut s.ignore,
+        );
+    }
+}
+
+/// The local player's radio settings.
+#[derive(Resource, Default, Debug, Clone)]
+pub struct RadioSettings {
+    /// `ignorerad`: teammates' calls aren't shown or played.
+    pub ignore: u8,
 }
 
 /// Which radio menu is open (0-based).
@@ -236,6 +267,108 @@ fn draw(
     ));
 }
 
+/// Seconds the radio icon stays over a caller's head (ours: CS:S's
+/// timing isn't in the specs; docs/tech-debt.md).
+pub const RADIO_ICON_SECONDS: f32 = 1.5;
+
+/// Teammates speaking on the radio: seconds their icon has left, and its
+/// node once drawn.
+#[derive(Resource, Default, Debug)]
+pub struct RadioIcons(pub Vec<(Entity, f32, Option<Entity>)>);
+
+impl RadioIcons {
+    /// `who` spoke: show (or keep showing) their icon.
+    pub fn speak(&mut self, who: Entity) {
+        match self.0.iter_mut().find(|(e, ..)| *e == who) {
+            Some(i) => i.1 = RADIO_ICON_SECONDS,
+            None => self.0.push((who, RADIO_ICON_SECONDS, None)),
+        }
+    }
+}
+
+#[derive(Component)]
+struct RadioIcon;
+
+/// The icons over speaking teammates' heads, placed on screen each frame
+/// (sized as a sprite 16 units across; seen through walls).
+#[allow(clippy::type_complexity)]
+fn draw_icons(
+    time: Res<Time>,
+    mut icons: ResMut<RadioIcons>,
+    hud: Option<Res<crate::map::hud::ActiveHud>>,
+    camera: Query<(&Camera, &GlobalTransform), With<super::FirstPersonCamera>>,
+    who: Query<(&GlobalTransform, Option<&crate::core::MovementState>, Option<&Health>)>,
+    mut nodes: Query<(&mut Node, &mut Visibility), With<RadioIcon>>,
+    mut commands: Commands,
+) {
+    let cam = camera.iter().next();
+    let dt = time.delta_secs();
+    icons.0.retain_mut(|(e, left, node)| {
+        *left -= dt;
+        let speaker = who.get(*e).ok().filter(|(.., h)| h.is_none_or(|h| h.current > 0.0));
+        let (Some((gt, state, _)), true) = (speaker, *left > 0.0) else {
+            if let Some(n) = node {
+                commands.entity(*n).despawn();
+            }
+            return false;
+        };
+        let n = *node.get_or_insert_with(|| {
+            let sprite = hud
+                .as_ref()
+                .and_then(|h| Some((h.0.sprites.get("radio")?, h.1.clone())))
+                .and_then(|(s, textures)| {
+                    let [x, y, w, h] = s.rect;
+                    Some(ImageNode {
+                        image: textures.get(&s.texture)?.clone(),
+                        rect: Some(Rect::new(x, y, x + w, y + h)),
+                        ..default()
+                    })
+                });
+            let node = Node {
+                position_type: PositionType::Absolute,
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            };
+            let mut c = commands.spawn((RadioIcon, node, Visibility::Hidden, GlobalZIndex(30)));
+            match sprite {
+                Some(image) => {
+                    c.insert(image);
+                }
+                None => {
+                    c.insert((
+                        Text::new("((o))"),
+                        TextFont {
+                            font_size: FontSize::Px(14.0),
+                            ..default()
+                        },
+                        TextColor(Color::srgb_u8(255, 176, 0)),
+                    ));
+                }
+            }
+            c.id()
+        });
+        // Above the head: the hull's top plus 10 units.
+        let top = state.map_or(0.9, |s| s.hull_max.y) + 10.0 * 0.0254;
+        let at = gt.translation() + Vec3::Y * top;
+        if let (Some((c, ct)), Ok((mut node, mut vis))) = (cam, nodes.get_mut(n)) {
+            let right = ct.right() * (8.0 * 0.0254);
+            match (c.world_to_viewport(ct, at), c.world_to_viewport(ct, at + right)) {
+                (Ok(p), Ok(q)) => {
+                    let size = ((q - p).length() * 2.0).clamp(8.0, 64.0);
+                    node.left = px(p.x - size / 2.0);
+                    node.top = px(p.y - size);
+                    node.width = px(size);
+                    node.height = px(size);
+                    *vis = Visibility::Visible;
+                }
+                _ => *vis = Visibility::Hidden,
+            }
+        }
+        true
+    });
+}
+
 /// Play and print the radio calls the local player hears.
 #[allow(clippy::type_complexity)]
 fn hear(
@@ -250,8 +383,10 @@ fn hear(
         Option<&GlobalTransform>,
     )>,
     nav: Option<Res<NavMesh>>,
+    settings: Res<RadioSettings>,
     mut play: MessageWriter<PlaySound>,
     mut chat: MessageWriter<ChatLine>,
+    mut icons: ResMut<RadioIcons>,
     mut rng: Local<u64>,
 ) {
     let Some(radio) = radio else {
@@ -268,7 +403,10 @@ fn hear(
             continue;
         };
         let alive = health.is_none_or(|h| h.current > 0.0);
-        if !hears(me, my_team.map(|t| t.0), call.sender, team.map(|t| t.0), alive) || c.variants.is_empty() {
+        if !hears(me, my_team.map(|t| t.0), call.sender, team.map(|t| t.0), alive)
+            || c.variants.is_empty()
+            || (settings.ignore != 0 && !is_local)
+        {
             continue;
         }
         // xorshift: pick a variant.
@@ -279,6 +417,9 @@ fn hear(
         x ^= x >> 27;
         let (sound, text) = &c.variants[(x % c.variants.len() as u64) as usize];
         play.write(PlaySound::ui(sound.clone()));
+        if !is_local {
+            icons.speak(call.sender);
+        }
         let sender = if is_local {
             "Player".to_string()
         } else {
@@ -296,6 +437,17 @@ fn hear(
 mod tests {
     use super::*;
     use crate::map::radio::{RadioCommand, RadioMenu as Menu};
+
+    #[test]
+    fn speaking_again_keeps_one_icon_and_restarts_it() {
+        let mut icons = RadioIcons::default();
+        let a = Entity::from_raw_u32(5).unwrap();
+        icons.speak(a);
+        icons.0[0].1 = 0.2;
+        icons.speak(a);
+        assert_eq!(icons.0.len(), 1);
+        assert_eq!(icons.0[0].1, RADIO_ICON_SECONDS);
+    }
 
     #[test]
     fn menu_text_from_the_game_or_the_calls() {

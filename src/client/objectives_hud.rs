@@ -3,7 +3,9 @@
 //! `HudDefuser`, `HudHostageRescueZone`), the scenario icon (a planted
 //! bomb, the hostages left: `HudScenarioIcon`), the planting and defusing
 //! progress bar (`HudProgressBar`), the game's messages (centre text for
-//! everyone, hints for the local player, chat lines for the team), and
+//! everyone, hints for the local player, chat lines for the team), the
+//! game's deny sound when the local player's +use finds nothing (neither a
+//! map door or button nor the bomb or a hostage; spec 5, step 4), and
 //! `mashup_objectives 1`, a debug readout of the bomb and hostages.
 
 use bevy::prelude::*;
@@ -31,7 +33,13 @@ impl Plugin for ObjectivesHudPlugin {
         app.init_resource::<Overlay>()
             .init_resource::<Centre>()
             .add_systems(Startup, spawn)
-            .add_systems(Update, (messages, status, progress, centre, overlay));
+            .add_systems(Update, (messages, status, progress, centre, overlay))
+            .add_systems(
+                FixedUpdate,
+                use_deny
+                    .after(crate::core::SimSet::Weapons)
+                    .after(crate::logic::LogicSet::Pre),
+            );
         resource_cvar::<Overlay, u8>(
             app,
             "mashup_objectives",
@@ -523,5 +531,45 @@ fn overlay(
         if text.0 != s {
             text.0 = s;
         }
+    }
+}
+
+/// Whether an objective event says `me` used something by pressing +use.
+fn used(e: &ObjectiveEvent, me: Entity) -> bool {
+    match e {
+        ObjectiveEvent::BeginDefuse { who, .. }
+        | ObjectiveEvent::DefuseRefused { who, .. }
+        | ObjectiveEvent::HostageRefused { who } => *who == me,
+        ObjectiveEvent::HostageFollows { leader, .. } | ObjectiveEvent::HostageStops { leader, .. } => *leader == me,
+        _ => false,
+    }
+}
+
+/// The deny sound for a +use press of the living local player that found
+/// nothing: no map entity (`logic`'s use presses) and no objective.
+fn use_deny(
+    local: Query<(Entity, &crate::core::Intent, Option<&Health>), With<LocalPlayer>>,
+    logic: Option<Res<crate::logic::Logic>>,
+    sounds: Option<Res<crate::map::RoundSounds>>,
+    mut events: MessageReader<ObjectiveEvent>,
+    mut play: MessageWriter<crate::map::PlaySound>,
+    mut was: Local<bool>,
+) {
+    let Some((me, intent, health)) = local.iter().next() else {
+        events.clear();
+        return;
+    };
+    let objective = events.read().fold(false, |found, e| found || used(e, me));
+    let pressed = intent.use_key && !*was && health.is_none_or(|h| h.current > 0.0);
+    *was = intent.use_key;
+    if !pressed {
+        return;
+    }
+    let map = logic.is_some_and(|l| l.world.use_presses.iter().any(|(e, found)| *e == me && *found));
+    if !map
+        && !objective
+        && let Some(entry) = sounds.and_then(|s| s.use_deny.clone())
+    {
+        play.write(crate::map::PlaySound::ui(entry));
     }
 }

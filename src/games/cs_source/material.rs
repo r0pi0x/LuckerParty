@@ -480,6 +480,54 @@ impl<'a> MaterialLoader<'a> {
         index
     }
 
+    /// A sky material's HDR texture as linear RGB (specs/cs_source/shaders.md
+    /// section 6 and Constants): `$hdrbasetexture`, read linear, integer
+    /// 16-bit formats times 16; or `$hdrcompressedtexture`, RGB times alpha
+    /// times 8 (decoded per texel, before filtering, as the game does).
+    pub fn hdr_sky_texture(&mut self, material: &str) -> Result<crate::map::MapHdrImage, String> {
+        let text = self
+            .read_text(&format!("materials/{}.vmt", normalize(material)))
+            .ok_or("not found")?;
+        let (name, compressed) = match material_key::<String>(&text, "$hdrbasetexture") {
+            Some(n) => (n, false),
+            None => (
+                material_key::<String>(&text, "$hdrcompressedtexture").ok_or("no HDR texture")?,
+                true,
+            ),
+        };
+        let path = format!("materials/{}.vtf", normalize(&name).trim_end_matches(".vtf"));
+        let bytes = self.read(&path).ok_or(format!("{path}: not found"))?;
+        let vtf = vtf::from_bytes(&bytes).map_err(|e| e.to_string())?;
+        let (width, height) = (vtf.header.width as u32, vtf.header.height as u32);
+        let rgb: Vec<[f32; 3]> = match (compressed, vtf.header.highres_image_format) {
+            (false, vtf::ImageFormat::Rgba16161616) => {
+                let raw = vtf.highres_image.get_frame(0).map_err(|e| e.to_string())?;
+                let c = |b: &[u8]| u16::from_le_bytes([b[0], b[1]]) as f32 / 65535.0 * 16.0;
+                raw.as_chunks::<8>().0.iter().map(|p| [c(&p[0..]), c(&p[2..]), c(&p[4..])]).collect()
+            }
+            (false, vtf::ImageFormat::Rgba16161616f) => {
+                let raw = vtf.highres_image.get_frame(0).map_err(|e| e.to_string())?;
+                let c = |b: &[u8]| half::f16::from_le_bytes([b[0], b[1]]).to_f32();
+                raw.as_chunks::<8>().0.iter().map(|p| [c(&p[0..]), c(&p[2..]), c(&p[4..])]).collect()
+            }
+            (true, _) => {
+                let image = vtf.highres_image.decode(0).map_err(|e| e.to_string())?.to_rgba8();
+                image
+                    .pixels()
+                    .map(|p| {
+                        let s = p[3] as f32 / 255.0 * 8.0;
+                        [0, 1, 2].map(|i| p[i] as f32 / 255.0 * s)
+                    })
+                    .collect()
+            }
+            (false, other) => return Err(format!("{path}: HDR format {other:?} not supported")),
+        };
+        if rgb.len() != (width * height) as usize {
+            return Err(format!("{path}: {} texels for {width}x{height}", rgb.len()));
+        }
+        Ok(crate::map::MapHdrImage { width, height, rgb })
+    }
+
     /// A 1x1 texture of a colour (0-1, gamma space).
     fn solid(&mut self, rgb: [f32; 3]) -> usize {
         let px = rgb.map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8);
