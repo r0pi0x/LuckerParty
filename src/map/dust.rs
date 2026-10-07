@@ -2,7 +2,8 @@
 //! specs/cs_source/sprites_dust.md: motes spawn at random points in the
 //! volume, drift (horizontal speed dies out toward the wind, vertical stays),
 //! fade in and out over their life and with view depth, and keep a constant
-//! size on screen. One mesh per volume, rebuilt each frame facing the camera.
+//! size on screen. One mesh per volume, rebuilt each frame facing the camera
+//! while it is shown and has motes in view.
 
 use bevy::{asset::RenderAssetUsages, mesh::Indices, prelude::*, render::render_resource::PrimitiveTopology};
 
@@ -28,6 +29,10 @@ pub(super) struct DustEmitter {
     motes: Vec<Mote>,
     pending: f32,
     rng: u64,
+    /// The mesh was last written with no motes in it: not written again
+    /// until some show (a modified mesh is uploaded again and makes every
+    /// mesh entity re-check its pipeline that frame).
+    drawn_empty: bool,
 }
 
 impl DustEmitter {
@@ -38,6 +43,7 @@ impl DustEmitter {
             motes: Vec::new(),
             pending: 0.0,
             rng: seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1,
+            drawn_empty: false,
         }
     }
 
@@ -71,7 +77,7 @@ pub(super) fn empty_mesh() -> Mesh {
 pub(super) fn update_dust(
     time: Res<Time>,
     cameras: Query<&GlobalTransform, (With<Camera3d>, Without<SkyboxCamera>, Without<super::ViewModelCamera>, Without<super::water::WaterReflectionCamera>)>,
-    mut emitters: Query<(&mut DustEmitter, Option<&super::EntityPart>)>,
+    mut emitters: Query<(&mut DustEmitter, Option<&super::EntityPart>, Option<&Visibility>)>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     let dt = time.delta_secs();
@@ -82,8 +88,8 @@ pub(super) fn update_dust(
         eye.right().as_vec3(),
         eye.up().as_vec3(),
     );
-    let mut total: usize = emitters.iter().map(|(e, _)| e.motes.len()).sum();
-    for (mut e, part) in &mut emitters {
+    let mut total: usize = emitters.iter().map(|(e, ..)| e.motes.len()).sum();
+    for (mut e, part, visibility) in &mut emitters {
         // Turned off (TurnOff): no new motes, the others live out their
         // life; removed (Kill): gone at once.
         if part.is_some_and(|p| !p.exists) {
@@ -136,6 +142,10 @@ pub(super) fn update_dust(
             m.age += dt;
             m.age < m.life
         });
+        // Hidden (culled by `vis`, or switched off): the mesh waits.
+        if visibility == Some(&Visibility::Hidden) {
+            continue;
+        }
         // Draw: camera-facing quads, far to near.
         let fade = e.dust.fade_distance;
         let mut visible: Vec<(f32, &Mote)> = e
@@ -164,6 +174,10 @@ pub(super) fn update_dust(
             }
             indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
         }
+        if positions.is_empty() && e.drawn_empty {
+            continue;
+        }
+        e.drawn_empty = positions.is_empty();
         if positions.is_empty() {
             // Bevy's mesh allocator rejects updates to an empty mesh (it logs
             // a use-after-free every frame): keep one invisible triangle.

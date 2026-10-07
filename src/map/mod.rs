@@ -16,7 +16,7 @@ use bevy::{
 use crate::core::{MovingSolid, SpawnPoint, Team};
 // Collision-world types live in `core` (the greybox map uses them too).
 pub use crate::core::{
-    MapBrush, MapBrushCollider, MapBrushes, MapTerrain, MapTerrainCollider, MapWater, MapWaterVolume, PropSurface,
+    BrushTreeNode, MapBrush, MapBrushCollider, MapBrushTree, MapBrushes, MapTerrain, MapTerrainCollider, MapWater, MapWaterVolume, PropSurface,
 };
 
 pub mod anim;
@@ -25,6 +25,7 @@ pub mod entities;
 pub mod fog;
 pub use entities::{MapBrushEntity, MapEntities, MapEntity, MapHull};
 pub mod breakables;
+pub mod contact_filter;
 pub use breakables::{BreakProp, BrushPanes, GlassShatter, MapBreak, MapBreakPiece, SpawnGibs};
 mod dust;
 pub mod hud;
@@ -1036,6 +1037,9 @@ pub struct MapData {
     pub collision_hulls: Vec<Vec<[f32; 3]>>,
     /// The same volumes as planes, for exact swept-box movement collision.
     pub collision_brushes: Vec<MapBrush>,
+    /// The BSP tree over `collision_brushes` (Source maps), for the order
+    /// traces meet coincident faces in.
+    pub brush_tree: Option<MapBrushTree>,
     /// Feet positions.
     pub spawns: Vec<(Vec3, Option<Team>)>,
     /// Each spawn's facing as an `Intent` yaw (radians, 0 = -Z), same order
@@ -1806,7 +1810,7 @@ fn spawn_map(
                 ChildOf(root),
             ));
             if let Some(collider) = collider {
-                node.insert((MapBrushCollider, RigidBody::Kinematic, collider));
+                node.insert((MapBrushCollider, RigidBody::Kinematic, collider, contact_filter::hooks()));
             }
             Some(node.id())
         })
@@ -2121,6 +2125,8 @@ fn spawn_map(
                     detail: m.detail.map(|d| textures[d.texture].clone()),
                     alpha_mode: m.alpha.shader_alpha_mode(),
                     double_sided: m.double_sided,
+                    // Map overlays and infodecals (see WorldMaterial::decal).
+                    decal: m.material.starts_with("decal:") && m.alpha != MapAlpha::Opaque,
                 };
                 let material = world_materials.add(material);
                 for (chunk, clusters, centre) in chunks {
@@ -2777,6 +2783,9 @@ fn spawn_map(
             .unwrap_or_else(|| brushes.iter().map(|b| b.min.y).fold(f32::MAX, f32::min));
         commands.insert_resource(KillHeight(floor - KILL_MARGIN));
         commands.insert_resource(MapBrushes(brushes));
+        if let Some(tree) = &data.brush_tree {
+            commands.insert_resource(tree.clone());
+        }
         if let Some(g) = data.gravity {
             commands.insert_resource(Gravity(Vec3::NEG_Y * g));
         }
@@ -2883,6 +2892,7 @@ pub fn unload_map(world: &mut World) {
     world.remove_resource::<nav::NavMesh>();
     world.remove_resource::<sound::SurfaceGrid>();
     world.remove_resource::<MapBrushes>();
+    world.remove_resource::<MapBrushTree>();
     world.remove_resource::<KillHeight>();
     world.remove_resource::<MapWater>();
     world.remove_resource::<RoundSounds>();
@@ -4039,6 +4049,8 @@ fn follow_sky_camera(
             &mut Projection,
             &mut Camera,
             &mut bevy::camera::visibility::RenderLayers,
+            Option<&bevy::camera::RenderTarget>,
+            Option<&bevy::core_pipeline::tonemapping::Tonemapping>,
         ),
         With<SkyboxCamera>,
     >,
@@ -4082,7 +4094,7 @@ fn follow_sky_camera(
         });
     }
     match sky.single_mut() {
-        Ok((entity, mut tf, mut global, mut proj, mut camera, mut layers)) => {
+        Ok((entity, mut tf, mut global, mut proj, mut camera, mut layers, sky_target, sky_tonemapping)) => {
             if camera.is_active != sky_on {
                 camera.is_active = sky_on;
             }
@@ -4093,15 +4105,24 @@ fn follow_sky_camera(
             tf.rotation = rotation;
             // Propagation has run: set the global transform too (no parent).
             *global = GlobalTransform::from(*tf);
-            if let (Projection::Perspective(p), Projection::Perspective(main_p)) = (&mut *proj, projection) {
+            // Only real changes: a changed projection, target or tonemapping
+            // makes Bevy redo the camera's setup.
+            if let (Projection::Perspective(p), Projection::Perspective(main_p)) = (&*proj, projection)
+                && (p.fov != main_p.fov || p.aspect_ratio != main_p.aspect_ratio)
+                && let Projection::Perspective(p) = &mut *proj
+            {
                 p.fov = main_p.fov;
                 p.aspect_ratio = main_p.aspect_ratio;
             }
             let mut e = commands.entity(entity);
-            if let Some(t) = target {
+            if let Some(t) = target
+                && sky_target.and_then(|c| c.normalize(None)) != t.normalize(None)
+            {
                 e.insert(t.clone());
             }
-            if let Some(t) = tonemapping {
+            if let Some(t) = tonemapping
+                && sky_tonemapping != Some(t)
+            {
                 e.insert(*t);
             }
         }

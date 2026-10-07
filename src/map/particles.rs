@@ -705,8 +705,11 @@ impl Plugin for ParticleMaterialPlugin {
 pub(super) struct ParticleAssets {
     data: MapParticles,
     textures: Vec<Handle<Image>>,
-    /// Material index -> (mesh entity, mesh).
-    meshes: HashMap<usize, (Entity, Handle<Mesh>)>,
+    /// Material index -> (mesh entity, mesh, whether it was last written
+    /// empty). An empty mesh isn't written again until particles come
+    /// back: a modified mesh is uploaded again, and makes every mesh entity
+    /// re-check its pipeline that frame.
+    meshes: HashMap<usize, (Entity, Handle<Mesh>, bool)>,
 }
 
 impl ParticleAssets {
@@ -790,7 +793,7 @@ pub(super) fn draw_particles(
         if list.is_empty() && !assets.meshes.contains_key(&material) {
             continue;
         }
-        let (entity, handle) = match assets.meshes.get(&material) {
+        let (entity, handle, was_empty) = match assets.meshes.get(&material) {
             Some(m) => m.clone(),
             None => {
                 let handle = meshes.add(super::dust::empty_mesh());
@@ -811,8 +814,8 @@ pub(super) fn draw_particles(
                         Transform::default(),
                     ))
                     .id();
-                assets.meshes.insert(material, (entity, handle.clone()));
-                (entity, handle)
+                assets.meshes.insert(material, (entity, handle.clone(), false));
+                (entity, handle, false)
             }
         };
         let mut list = list;
@@ -889,6 +892,13 @@ pub(super) fn draw_particles(
                     b.quad([at - r - u, at - r + u, at + r + u, at + r - u], rect, rgba);
                 }
             }
+        }
+        let empty = b.positions.is_empty();
+        if empty && was_empty {
+            continue;
+        }
+        if let Some(m) = assets.meshes.get_mut(&material) {
+            m.2 = empty;
         }
         if let Ok(mut t) = transforms.get_mut(entity) {
             t.translation = centre;

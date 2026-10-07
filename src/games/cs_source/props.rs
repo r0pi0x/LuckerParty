@@ -500,25 +500,33 @@ fn convert_model_in(
             (look.apply(&m), slot)
         });
         let verts: Vec<&vmdl::vvd::Vertex> = mesh.vertices().collect();
-        for tri in verts.as_chunks::<3>().0 {
-            let p: Vec<Vec3> = tri
-                .iter()
-                .map(|t| {
-                    to_engine(v(if root {
-                        model.apply_root_transform(t.position)
-                    } else {
-                        t.position
-                    }))
-                })
-                .collect();
-            let n: Vec<Vec3> = tri.iter().map(|t| to_engine(v(t.normal)).normalize_or_zero()).collect();
-            // Wind counter-clockwise against the vertex normals.
-            let face = (p[1] - p[0]).cross(p[2] - p[0]);
-            let order = if face.dot(n[0] + n[1] + n[2]) < 0.0 {
-                [0, 2, 1]
+        let place = |t: &vmdl::vvd::Vertex| {
+            to_engine(v(if root {
+                model.apply_root_transform(t.position)
             } else {
-                [0, 1, 2]
-            };
+                t.position
+            }))
+        };
+        let tris = verts.as_chunks::<3>().0;
+        // Wind counter-clockwise against the vertex normals: the model's
+        // triangles share one winding, so take the majority over the mesh
+        // and apply it to all. (Deciding per triangle flips good ones where
+        // the normals mislead it, on thin parts and smoothed edges: the
+        // knife blade's back went missing.)
+        let reversed = tris
+            .iter()
+            .map(|tri| {
+                let p = tri.map(|t| place(t));
+                let n: Vec3 = tri.iter().map(|t| to_engine(v(t.normal)).normalize_or_zero()).sum();
+                let face = (p[1] - p[0]).cross(p[2] - p[0]);
+                if face.dot(n) < 0.0 { 1i64 } else { -1 }
+            })
+            .sum::<i64>()
+            > 0;
+        for tri in tris {
+            let p: Vec<Vec3> = tri.iter().map(|t| place(t)).collect();
+            let n: Vec<Vec3> = tri.iter().map(|t| to_engine(v(t.normal)).normalize_or_zero()).collect();
+            let order = if reversed { [0, 2, 1] } else { [0, 1, 2] };
             for i in order {
                 entry.indices.push(entry.positions.len() as u32);
                 entry.positions.push(p[i].to_array());

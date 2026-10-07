@@ -151,6 +151,12 @@ a first bot are in.
 
 ## 4. Bots
 
+- de_nuke's vent ladders up to A: bots now get on them (sidestepping off
+  the ladder's middle when pressing at its foot doesn't attach, since
+  clip faces flush beside it win ties on one side), but near the top they
+  turn to the next route point before clearing the lip and fall back.
+  Keep pressing into the ladder until the feet are above its top
+  (`tests/bot_nav.rs::nuke_vent_ladders_are_climbable`, ignored).
 - A CS:S bot behaviour spec (nav spec open questions 2-4) to check our
   team play against: path costs, how bots pick sites, hold and rotate,
   what they say. Ours (`bot::tactics`) plants and defuses only through
@@ -159,15 +165,23 @@ a first bot are in.
   or retaking), leads no hostages, buys no kits, has no buy strategy beyond autobuy, no sniper spots
   (the spot flags are loaded), no crouching at hold spots, no lurkers or
   split attacks, and only uses approach data it computes (v9 files'
-  approach records are skipped). Bots don't step around each other:
-  two heading to neighbouring hold spots can shoulder each other short
-  of them (tests/bot_rounds.rs counts a bot within 2 m as there).
+  approach records are skipped). Bots don't step around each other
+  beyond pushing apart (a bot short of a taken hold spot holds where it
+  is). Balance (15 rounds 5v5, after the staging/rotation/retake pass):
+  terrorists won 10/15 on de_dust2 and 11/15 on de_nuke, counter-
+  terrorists (the attackers there) 9/15 on cs_office: now leaning to
+  the attackers on bomb maps; next: defenders falling back to retake
+  instead of dying one by one on a lost site, and a measured reaction
+  time.
 - Grenades, beyond the first pass: lineups from the nav mesh's hiding and
   approach spots (smokes cutting sight lines rather than landing on the
   objective point), flashes thrown around corners so they pop out of the
   thrower's view without turning, not flashing teammates, running and
   jump throws (carried velocity in the plan), "Fire in the hole" radio.
-- Movement: gap jumps, ladders, avoiding teammates in doorways.
+- Movement: gap jumps, avoiding teammates in doorways, de_nuke's vent
+  ladders (no character attaches to them yet; bots learn to avoid them:
+  `tests/bot_nav.rs` `nuke_vent_ladders_are_climbable`, ignored), the
+  door into A from Inside on de_nuke (bots now and then stall at it).
 
 ## 5. Console, remaining
 
@@ -249,6 +263,11 @@ PVS culling by world chunk, prop fade distances. Left:
 - Prop fade bands (alpha between `fademindist` and `fademaxdist`) and
   LOD models.
 - Measure on the Windows PC (`refcmp bench` there) and set a budget.
+- Frame-time follow-ups (performance.md, "Cheap wins found"): take
+  before/after numbers on a quiet machine; props as hierarchies of their
+  own (cheaper collider propagation) without changing how physics props
+  settle; skip posing bodies nobody sees (hidden local body, culled bots)
+  if hitboxes and muzzles don't read the joints.
 
 ## 10. Long tail
 
@@ -263,7 +282,7 @@ Counts are from de_dust2's entity lump and static prop lump.
 - **Brush entities**: movers (doors, buttons, func_rotating, trains,
   func_brush) move through the logic layer, breakables break; render modes other than normal and 10 (translucent func_brush) aren't
   applied.
-- **Fire** (`env_fire`, 16) and other effects, if they show in normal play.
+- **Fire**: spec written (specs/source/fire.md: env_fire heat and burn damage, entity flames; 54 env_fire on 8 stock maps, all lit by `BombExplode`); implementation next. It corrects prop_damage.md: the gas can's explode_fire does not ignite players.
 - **Lightmap styles**: animated styles (1-31) at their pattern (they're
   baked at normal brightness); switchable ones (32+) switch.
 - **Baked per-vertex prop lighting (`.vhv`)** for maps that ship it (dust2

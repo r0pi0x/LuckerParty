@@ -217,6 +217,8 @@ pub(super) const TOSS_CHECK: f64 = 0.5;
 /// objective the bot walks to.
 pub(super) const TOSS_CHANCE_LEAD: f32 = 0.2;
 pub(super) const TOSS_CHANCE_OBJECTIVE: f32 = 0.06;
+/// Chance per check while the attackers gather before their site.
+pub(super) const TOSS_CHANCE_STAGING: f32 = 0.5;
 /// Throwing distances (horizontal), m.
 pub(super) const TOSS_RANGE: (f32, f32) = (4.0, 30.0);
 /// Where to aim above a target on the floor, m: a blast at the body's

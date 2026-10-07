@@ -441,10 +441,11 @@ pub(super) fn draw_view_models(
             &mut Projection,
             Option<&Children>,
             Option<&bevy::camera::RenderTarget>,
+            Option<&bevy::core_pipeline::tonemapping::Tonemapping>,
         ),
         With<ViewModelCamera>,
     >,
-    mut bodies: Query<(&mut ViewModelBody, &mut Transform), Without<BodyJoint>>,
+    mut bodies: Query<(&mut ViewModelBody, &mut Transform, &mut Visibility), Without<BodyJoint>>,
     mut joints: Query<&mut Transform, With<BodyJoint>>,
     mut materials: Option<ResMut<Assets<PropMaterial>>>,
     mut commands: Commands,
@@ -462,7 +463,7 @@ pub(super) fn draw_view_models(
             .and_then(|(s, _)| s.key.as_deref())
             .and_then(|k| Some((k, assets.models.get(k)?, models.as_ref()?.get(k)?)));
         let camera = children.into_iter().flatten().find(|c| cameras.contains(**c)).copied();
-        let Some((camera, mut cam, mut projection, cam_children, target)) =
+        let Some((camera, mut cam, mut projection, cam_children, target, cam_tonemapping)) =
             camera.and_then(|c| cameras.get_mut(c).ok())
         else {
             let mut e = commands.spawn((
@@ -489,7 +490,9 @@ pub(super) fn draw_view_models(
             cam.order = anchor_camera.order + 1;
             cam.is_active = anchor_camera.is_active;
         }
-        if let Some(t) = tonemapping {
+        if let Some(t) = tonemapping
+            && cam_tonemapping != Some(t)
+        {
             commands.entity(camera).insert(*t);
         }
         // Off-screen captures (`--views`) retarget the anchor camera; the
@@ -520,7 +523,7 @@ pub(super) fn draw_view_models(
             shown.is_some_and(|(_, _, m)| mirrored(m.right_handed, m.allow_flipping, settings.right_hand != 0));
         let current = body
             .and_then(|b| bodies.get(b).ok())
-            .map(|(b, _)| (b.key.clone(), b.mirrored));
+            .map(|(b, ..)| (b.key.clone(), b.mirrored));
         if current != shown.map(|(k, _, _)| (k.to_string(), mirror)) {
             if let Some(e) = body {
                 commands.entity(e).try_despawn();
@@ -533,22 +536,28 @@ pub(super) fn draw_view_models(
         let (Some(body), Some((_, asset, model))) = (body, shown) else {
             continue;
         };
-        let Ok((mut body, mut placed)) = bodies.get_mut(body) else {
+        let Ok((mut body, mut placed, mut visibility)) = bodies.get_mut(body) else {
             continue;
         };
         let offset = state.and_then(|(_, o)| o.copied()).unwrap_or_default();
-        *placed = placement(&offset, mirror);
+        placed.set_if_neq(placement(&offset, mirror));
         // Pose the shown model.
-        if let Some(animator) = state
+        let animator = state
             .and_then(|(s, _)| s.animator.as_ref())
-            .filter(|a| a.main.is_some())
-        {
+            .filter(|a| a.main.is_some());
+        if let Some(animator) = animator {
             for (joint, (q, p)) in body.joints.iter().zip(animator.pose(now)) {
                 if let Ok(mut t) = joints.get_mut(*joint) {
                     t.rotation = q;
                     t.translation = p;
                 }
             }
+        }
+        // A new body is hidden until its first pose: its skeleton spawns in
+        // the reference pose, which for view models is nothing like the
+        // drawn weapon (a full-screen mess for a frame on every switch).
+        if *visibility == Visibility::Hidden && (animator.is_some() || model.animations.is_none()) {
+            *visibility = Visibility::Inherited;
         }
         // Light it from one point near the eye (spec view_models.md 9): its
         // lighting origin, placed with the model but not mirrored.
@@ -602,7 +611,8 @@ fn spawn_body(commands: &mut Commands, camera: Entity, key: &str, asset: &ViewMo
         .spawn((
             Name::new(format!("View model {key}")),
             placement(&ViewModelOffset::default(), mirror),
-            Visibility::Inherited,
+            // Shown once posed (draw_view_models).
+            Visibility::Hidden,
             ChildOf(camera),
         ))
         .id();

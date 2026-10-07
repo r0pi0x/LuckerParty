@@ -66,5 +66,10 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // water's height fog; both are the surface's amount^0.4.
     let f = source_fog(fog.color, fog.range, fog.water_color, fog.water_range, in.world_position.xyz);
     factor = mix(factor, vec3(1.0), pow(f.a, 0.4));
+    // Nothing to show: no depth either (impacts write depth where they
+    // show, so overlays can't cover them; see DecalMaterial).
+    if all(abs(factor - vec3(1.0)) < vec3(0.02)) {
+        discard;
+    }
     return vec4(min(pow(factor, vec3(2.2)), vec3(2.0)) * 0.5, 1.0);
 }
