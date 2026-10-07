@@ -60,6 +60,8 @@ pub enum Class {
     FireSensor(super::fire::FireSensor),
     /// An entity flame (made at run time by ignition).
     Flame(Box<super::fire::Flame>),
+    /// func_areaportal, func_areaportalwindow.
+    AreaPortal(super::visuals::AreaPortal),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -282,6 +284,9 @@ impl Class {
             }
             "func_dustmotes" | "func_dustcloud" => {
                 Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::Dust))
+            }
+            "func_areaportal" | "func_areaportalwindow" => {
+                super::visuals::spawn_area_portal(w, id).map_or(Class::None, Class::AreaPortal)
             }
             "light" | "light_spot" => Class::Light(super::visuals::spawn_light(w, id)),
             "env_global" => Class::Global(global_spawn(w, id)),
@@ -847,6 +852,7 @@ pub(super) fn class_input(
         Class::Part(_) | Class::Light(_) => return super::visuals::input(w, id, input, value),
         Class::Global(name) => return global_input(w, id, &name, input, value, activator),
         Class::Fire(_) | Class::FireSource(_) | Class::FireSensor(_) => return super::fire::input(w, id, input, value),
+        Class::AreaPortal(_) => return super::visuals::area_portal_input(w, id, input),
         Class::Flame(_) | Class::None | Class::Auto => return false,
     }
     true

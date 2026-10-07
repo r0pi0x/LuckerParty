@@ -11,6 +11,7 @@
     view_transformations::position_world_to_view,
 }
 #import mashup::fog::source_fog
+#import mashup::dither::dithered_out
 
 struct PropParams {
     base_color: vec4<f32>,
@@ -77,6 +78,12 @@ fn dynamic_light(p: vec3<f32>, n: vec3<f32>, frag_coord: vec2<f32>) -> vec3<f32>
 
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
+#ifdef VISIBILITY_RANGE_DITHER
+    // Inside the prop's fade band (map::vis::fade_band).
+    if dithered_out(in.position, in.visibility_range_dither) {
+        discard;
+    }
+#endif
     var color = textureSample(base_texture, base_sampler, in.uv) * params.base_color;
     if params.alpha_cutoff > 0.0 && color.a < params.alpha_cutoff {
         discard;

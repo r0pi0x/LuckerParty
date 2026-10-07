@@ -947,8 +947,8 @@ pub struct MapProp {
     /// Simulated as a rigid body, when set.
     pub physics: Option<MapPhysics>,
     /// Fade distances from the camera (start, gone), meters, when the prop
-    /// fades out with distance. Drawn fully up to the far one, then hidden
-    /// (the fade between isn't drawn yet; docs/tech-debt.md).
+    /// fades out with distance: dithered out between them (`vis::fade_band`),
+    /// hidden beyond the far one.
     pub fade: Option<(f32, f32)>,
     /// The mover entity it's attached to (index into `MapData::entities`):
     /// it rides that entity's node (de_nuke's door handles) and isn't solid.
@@ -1627,6 +1627,7 @@ impl Plugin for MapPlugin {
         app.add_plugins(sound::SoundPlugin)
             .init_resource::<ShowLocalBody>()
             .init_resource::<vis::NoVis>()
+            .init_resource::<vis::PortalsOpenAll>()
             .init_resource::<vis::VisStats>()
             .add_message::<decal::PlaceDecal>()
             .add_message::<ViewModelEvent>()
@@ -2534,7 +2535,10 @@ fn spawn_map(
             e.insert(solid);
         }
         // Props that stay put are hidden where the camera can't see them,
-        // and beyond their fade distance (animated ones move anywhere).
+        // and beyond their fade distance (animated ones move anywhere);
+        // between the near and far fade distances their meshes dither out
+        // (Bevy's visibility range: opaque passes, no sorting).
+        let mut fade_range = None;
         if !prop.skybox && dynamic.is_none() && rider.is_none() && model.rig.is_none() && !merged_world() {
             let clusters = match data.visibility.as_deref() {
                 Some(v) => {
@@ -2555,8 +2559,9 @@ fn spawn_map(
             if !clusters.is_empty() || prop.fade.is_some() {
                 e.insert(vis::VisClusters::new(clusters));
             }
-            if let Some((_, far)) = prop.fade {
+            if let Some((near, far)) = prop.fade {
                 e.insert(vis::FadeDistance(far));
+                fade_range = vis::fade_band(near, far);
             }
         }
         if let Some(index) = prop.entity {
@@ -2712,6 +2717,9 @@ fn spawn_map(
                         },
                         ChildOf(id),
                     ));
+                    if let Some(range) = &fade_range {
+                        c.insert(range.clone());
+                    }
                     if let (true, Some(inverse)) = (skinned, inverse_bindposes.clone()) {
                         c.insert((
                             bevy::mesh::skinning::SkinnedMesh {
@@ -2727,7 +2735,7 @@ fn spawn_map(
             _ => {
                 if let Some(parts) = model_parts.get(prop.model) {
                     for (mesh_index, ((mesh, material), m)) in parts.iter().zip(&model.meshes).enumerate() {
-                        commands.spawn((
+                        let mut c = commands.spawn((
                             Mesh3d(mesh.clone()),
                             MeshMaterial3d(material.clone()),
                             layer_of(prop.skybox),
@@ -2739,6 +2747,9 @@ fn spawn_map(
                             },
                             ChildOf(id),
                         ));
+                        if let Some(range) = &fade_range {
+                            c.insert(range.clone());
+                        }
                     }
                 }
             }

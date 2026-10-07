@@ -109,7 +109,13 @@ pub fn load_level(mount: &Mount, name: &str, hdr_level: u8) -> Result<MapData, S
         }
     }
     data.sky_vis = Some(sky_vis(&bsp, &bytes));
-    data.visibility = visibility(&bsp, &bytes).map(std::sync::Arc::new);
+    data.visibility = visibility(&bsp, &bytes)
+        .map(|mut v| {
+            // Glass or grates in a portal's opening keep it open.
+            v.areas.mark_see_through(&data.meshes);
+            v
+        })
+        .map(std::sync::Arc::new);
     let lighting = super::ambient::MapLighting::read_level(&bytes, hdr_level >= 2);
     let occluders = super::ambient::Occluders::new(
         &shadow_hulls(&bsp, &super::ambient::raw_leaves(&bytes)),
@@ -820,7 +826,7 @@ pub fn visibility(bsp: &Bsp, bytes: &[u8]) -> Option<crate::map::vis::MapVisibil
         })
         .collect();
     let tree = sky_vis(bsp, bytes);
-    let leaf_clusters = super::ambient::raw_leaves(bytes)
+    let leaf_clusters: Vec<i32> = super::ambient::raw_leaves(bytes)
         .iter()
         .map(|l| {
             if l.contents & super::ambient::CONTENTS_SOLID != 0 {
@@ -830,13 +836,75 @@ pub fn visibility(bsp: &Bsp, bytes: &[u8]) -> Option<crate::map::vis::MapVisibil
             }
         })
         .collect();
+    let leaf_areas = super::ambient::raw_leaves(bytes).iter().map(|l| l.area).collect();
+    let areas = crate::map::vis::MapAreas::new(leaf_areas, &leaf_clusters, count, area_portals(bsp, bytes));
     Some(crate::map::vis::MapVisibility {
         planes: tree.planes,
         nodes: tree.nodes,
         leaf_clusters,
         cluster_count: count,
         visible,
+        areas,
     })
+}
+
+/// The areaportals between the map's areas (public BSP v20 description):
+/// the areas lump (20: per area, a count and first index into the
+/// areaportals lump), the areaportals lump (21: portal key, the area on
+/// the other side, first clip vertex and vertex count, plane) and the clip
+/// portal vertices (41). Each portal is listed from both its areas; it
+/// comes back once. A func_areaportalwindow's `FadeDist` (named by its
+/// `portalnumber`, which is the portal key) is kept as the portal's fade.
+pub fn area_portals(bsp: &Bsp, bytes: &[u8]) -> Vec<crate::map::vis::AreaPortal> {
+    let u16_at = |b: &[u8], at: usize| u16::from_le_bytes([b[at], b[at + 1]]);
+    let areas = super::ambient::lump(bytes, 20);
+    let portals = super::ambient::lump(bytes, 21);
+    let verts: Vec<Vec3> = super::ambient::lump(bytes, 41)
+        .chunks_exact(12)
+        .map(|b| {
+            let f = |at: usize| f32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+            to_engine(vbsp::Vector {
+                x: f(0),
+                y: f(4),
+                z: f(8),
+            })
+        })
+        .collect();
+    let windows: std::collections::HashMap<u16, f32> = bsp
+        .entities
+        .iter()
+        .filter(|e| e.prop("classname") == Some("func_areaportalwindow"))
+        .filter_map(|e| {
+            let key = e.prop("portalnumber")?.trim().parse().ok()?;
+            // Compiled maps lower-case some keys.
+            let fade = e
+                .properties()
+                .find(|(k, _)| k.eq_ignore_ascii_case("FadeDist"))
+                .and_then(|(_, v)| v.trim().parse::<f32>().ok())?;
+            Some((key, fade * METERS_PER_UNIT))
+        })
+        .collect();
+    let mut out: Vec<crate::map::vis::AreaPortal> = Vec::new();
+    for (area, a) in areas.chunks_exact(8).enumerate() {
+        let count = i32::from_le_bytes(a[0..4].try_into().unwrap()).max(0) as usize;
+        let first = i32::from_le_bytes(a[4..8].try_into().unwrap()).max(0) as usize;
+        for p in (first..first + count).filter_map(|i| portals.get(i * 12..i * 12 + 12)) {
+            let (key, other) = (u16_at(p, 0), u16_at(p, 2));
+            let (vfirst, vcount) = (u16_at(p, 4) as usize, u16_at(p, 6) as usize);
+            let pair = [(area as u16).min(other), (area as u16).max(other)];
+            if out.iter().any(|o| o.key == key && o.areas == pair) {
+                continue;
+            }
+            out.push(crate::map::vis::AreaPortal {
+                key,
+                areas: pair,
+                polygon: verts.get(vfirst..vfirst + vcount).map(<[Vec3]>::to_vec).unwrap_or_default(),
+                fade: windows.get(&key).copied(),
+                see_through: false,
+            });
+        }
+    }
+    out
 }
 
 /// Fog keys shared by `sky_camera` and `env_fog_controller`.

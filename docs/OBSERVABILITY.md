@@ -252,6 +252,10 @@ Details and baseline numbers: [performance.md](performance.md).
   main world and the render world); `-- <args>` passes options to
   mashup (e.g. `-- +r_novis 1`). Build first; it runs the mashup next to
   it (`--profile playtest` for optimized numbers).
+- `r_portalsopenall 1` ignores areaportals (closed doors no longer hide
+  what's behind them, no clipping through openings): PVS culling only.
+  `mashup_perf 1` shows the camera's area, the areas it reaches and how
+  many areaportals logic closed.
 - `r_novis 1` draws every map part (no visibility culling);
   `MASHUP_MERGED_WORLD=1` spawns the world as one mesh per material with no
   culling, as before chunking (A/B comparisons).

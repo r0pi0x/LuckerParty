@@ -6,6 +6,7 @@
 //! `LogicWorld::light_styles`).
 
 use super::classes::Class;
+use super::movers::DoorState;
 use super::value::Value;
 use super::world::{EntId, LogicWorld};
 
@@ -132,4 +133,81 @@ impl LogicWorld {
     pub fn light_styles(&self) -> &[(u8, bool)] {
         &self.light_styles
     }
+
+    /// The keys of the areaportals that are closed now, sorted: linked
+    /// ones by their door (closed while every door of that name is fully
+    /// closed; a name matching no door leaves the portal's own state),
+    /// the rest by their own state.
+    pub fn closed_area_portals(&self) -> Vec<u16> {
+        let ids = self.ids();
+        let mut closed: Vec<u16> = ids
+            .iter()
+            .filter_map(|&id| {
+                let Class::AreaPortal(p) = &self.get(id)?.class else { return None };
+                let doors: Vec<bool> = if p.door.is_empty() {
+                    Vec::new()
+                } else {
+                    ids.iter()
+                        .filter_map(|&d| {
+                            let e = self.get(d)?;
+                            if e.targetname.is_empty() || !super::world::name_matches(&p.door, &e.targetname) {
+                                return None;
+                            }
+                            match &e.class {
+                                Class::Door(door) => Some(door.state == DoorState::Closed),
+                                Class::PropDoor(door) => Some(door.state == DoorState::Closed),
+                                _ => None,
+                            }
+                        })
+                        .collect()
+                };
+                let open = if doors.is_empty() { p.open } else { doors.iter().any(|closed| !closed) };
+                (!open).then_some(p.key)
+            })
+            .collect();
+        closed.sort_unstable();
+        closed.dedup();
+        closed
+    }
+}
+
+/// func_areaportal, func_areaportalwindow (public entity documentation):
+/// a portal between two of the map's areas, by its compiled
+/// `portalnumber`. Linked to a door (`target`), it is closed while that
+/// door is fully closed and open otherwise; unlinked, `StartOpen` and the
+/// Open/Close/Toggle inputs set it. A window's distance fade is the map's
+/// (`map::vis::AreaPortal::fade`), so here it stays open.
+#[derive(Clone, Debug)]
+pub struct AreaPortal {
+    pub key: u16,
+    pub open: bool,
+    /// The linked door's name (empty: none).
+    pub door: String,
+}
+
+pub(super) fn spawn_area_portal(w: &LogicWorld, id: EntId) -> Option<AreaPortal> {
+    let e = w.get(id).unwrap();
+    let key = e.kv("portalnumber")?.trim().parse().ok()?;
+    let window = e.classname.eq_ignore_ascii_case("func_areaportalwindow");
+    Some(AreaPortal {
+        key,
+        // StartOpen: open unless it says 0 (an absent key too).
+        open: window || e.kv("StartOpen").is_none_or(|v| super::value::atoi(v) != 0),
+        door: if window { String::new() } else { e.kv("target").unwrap_or("").to_string() },
+    })
+}
+
+/// Areaportal inputs; false when the entity isn't one or the input isn't
+/// Open, Close or Toggle.
+pub(super) fn area_portal_input(w: &mut LogicWorld, id: EntId, input: &str) -> bool {
+    let Some(Class::AreaPortal(p)) = w.get_mut(id).map(|e| &mut e.class) else {
+        return false;
+    };
+    p.open = match input {
+        "open" => true,
+        "close" => false,
+        "toggle" => !p.open,
+        _ => return false,
+    };
+    true
 }

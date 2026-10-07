@@ -56,6 +56,14 @@ impl Plugin for PerfPlugin {
                 |v| &mut v.0,
             );
         }
+        if app.world().contains_resource::<crate::map::vis::PortalsOpenAll>() {
+            resource_cvar::<crate::map::vis::PortalsOpenAll, u8>(
+                app,
+                "r_portalsopenall",
+                "1: treat every areaportal as open and don't clip the view through them (PVS culling only).",
+                |v| &mut v.0,
+            );
+        }
         water_cvars(app);
     }
 }
@@ -425,6 +433,12 @@ fn draw_overlay(
     lines.push(format!(
         "per frame: {t:.0} transforms written ({m:.0} under the map), {meshes_changed:.1} meshes, {materials:.1} materials modified"
     ));
+    if vis.cluster.is_some() && vis.areas > 1 {
+        lines.push(format!(
+            "areas: in {}, reaching {}/{}, {} areaportals closed",
+            vis.area, vis.visible_areas, vis.areas, vis.closed_portals
+        ));
+    }
     match vis.cluster {
         Some(c) => lines.push(format!(
             "vis: cluster {c}, sees {}/{} clusters, {}/{} map parts",
