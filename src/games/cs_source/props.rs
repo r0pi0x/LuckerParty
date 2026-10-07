@@ -14,6 +14,7 @@ use super::{
 };
 use crate::map::{
     LightProbe, MapCollision, MapConvex, MapData, MapMesh, MapModel, MapPhysics, MapProp, PropSolid, PushAway,
+    entities::{DOOR_CLOSE_KEY, DOOR_MOVE_KEY, DOOR_OPEN_KEY, PROP_HEALTH_KEY},
 };
 
 /// Source rotation (pitch about Y, yaw about Z, roll about X; degrees) in
@@ -28,18 +29,16 @@ pub fn rotation(angles: vbsp::Angles) -> Quat {
     c * r * c.inverse()
 }
 
-/// A model and its `prop_data` key values (None: the model has none).
-fn load_model(
-    materials: &mut MaterialLoader,
-    path: &str,
-) -> Result<(vmdl::Model, Option<HashMap<String, String>>), String> {
+/// A model and its key values text (`$keyvalues`: `prop_data`,
+/// `door_options`...; None: the model has none).
+fn load_model(materials: &mut MaterialLoader, path: &str) -> Result<(vmdl::Model, Option<String>), String> {
     let read = |p: String| materials.read(&p).ok_or_else(|| format!("{p}: not found"));
     let mdl = vmdl::mdl::Mdl::read(&read(path.to_string())?).map_err(|e| format!("{path}: {e}"))?;
-    let prop_data = mdl.key_values.as_deref().and_then(prop_data);
+    let key_values = mdl.key_values.clone();
     let stem = path.trim_end_matches(".mdl");
     let vtx = vmdl::vtx::Vtx::read(&read(format!("{stem}.dx90.vtx"))?).map_err(|e| format!("{stem}.dx90.vtx: {e}"))?;
     let vvd = vmdl::vvd::Vvd::read(&read(format!("{stem}.vvd"))?).map_err(|e| format!("{stem}.vvd: {e}"))?;
-    Ok((vmdl::Model::from_parts(mdl, vtx, vvd), prop_data))
+    Ok((vmdl::Model::from_parts(mdl, vtx, vvd), key_values))
 }
 
 /// A player model as a character body (specs/cs_source/weapons.md 5): its
@@ -667,13 +666,14 @@ fn entity_props(bsp: &Bsp) -> Vec<PropPlacement> {
         .filter_map(|(index, e)| {
             let class = e.prop("classname")?;
             let physics = class.starts_with("prop_physics");
-            if !physics && !class.starts_with("prop_dynamic") {
+            let door = class == DOOR_CLASS;
+            if !physics && !door && !class.starts_with("prop_dynamic") {
                 return None;
             }
             let [x, y, z] = parse(e.prop("origin")?)?;
             let [pitch, yaw, roll] = e.prop("angles").and_then(parse).unwrap_or([0.0; 3]);
             // prop_dynamic: solid 0 = not solid, otherwise the physics model.
-            let solid = if physics || e.prop("solid").is_none_or(|s| s.trim() != "0") {
+            let solid = if physics || door || e.prop("solid").is_none_or(|s| s.trim() != "0") {
                 PropSolid::Mesh
             } else {
                 PropSolid::None
@@ -695,11 +695,17 @@ fn entity_props(bsp: &Bsp) -> Vec<PropPlacement> {
                         .filter(|max| *max > 0.0)
                         .map(|max| (key("fademindist").unwrap_or(0.0), max))
                 },
-                parent: e.prop("parentname").filter(|p| !p.is_empty()).and_then(|p| {
-                    bsp.entities
-                        .iter()
-                        .position(|o| o.prop("targetname").is_some_and(|n| n.eq_ignore_ascii_case(p)))
-                }),
+                // A model door rides its own mover node (the logic turns
+                // it); other props the entity they're parented to.
+                parent: if door {
+                    Some(index)
+                } else {
+                    e.prop("parentname").filter(|p| !p.is_empty()).and_then(|p| {
+                        bsp.entities
+                            .iter()
+                            .position(|o| o.prop("targetname").is_some_and(|n| n.eq_ignore_ascii_case(p)))
+                    })
+                },
                 entity: Some(index),
             })
         })
@@ -716,15 +722,19 @@ fn place_props(
 ) {
     let mut loaded: HashMap<(String, i32), Option<usize>> = HashMap::new();
     let mut prop_datas: HashMap<usize, HashMap<String, String>> = HashMap::new();
+    let mut key_values: HashMap<usize, String> = HashMap::new();
     let mut failed: Vec<String> = Vec::new();
     let bounds = super::bsp::playable_bounds(bsp);
     let surfaces = super::surfaceprops::SurfaceProps::load(materials);
+    // propdata.txt's templates (a model's prop_data "base"), read when an
+    // entity prop needs one.
+    let mut templates: Option<super::hud::Kv> = None;
     for prop in placements {
         let key = (prop.model.clone(), prop.skin);
         let model = *loaded
             .entry(key)
             .or_insert_with(|| match load_model(materials, &prop.model) {
-                Ok((m, pd)) => {
+                Ok((m, kv)) => {
                     let mut model = convert_model(&m, prop.skin, materials);
                     model.collision = load_collision(materials, &prop.model);
                     // What traces against the prop report: its collision
@@ -744,10 +754,14 @@ fn place_props(
                         .and_then(|b| vmdl::mdl::Mdl::read(&b).ok())
                         .map(|mdl| to_engine(v(m.apply_root_transform(mdl.header.illumination_position))));
                     data.models.push(model);
-                    if let Some(pd) = pd {
-                        prop_datas.insert(data.models.len() - 1, pd);
+                    let index = data.models.len() - 1;
+                    if let Some(pd) = kv.as_deref().and_then(prop_data) {
+                        prop_datas.insert(index, pd);
                     }
-                    Some(data.models.len() - 1)
+                    if let Some(kv) = kv {
+                        key_values.insert(index, kv);
+                    }
+                    Some(index)
                 }
                 Err(e) => {
                     failed.push(e);
@@ -789,6 +803,41 @@ fn place_props(
         };
         let lighting = probe(bsp, lighting, occluders, origin);
         let skybox = bounds.as_ref().is_some_and(|b| !b.contains(prop.origin));
+        let door = prop.class.as_deref() == Some(DOOR_CLASS);
+        // What the logic needs to know about the entity from its model.
+        if let Some(index) = prop.entity
+            && index < data.entities.len()
+        {
+            let mut extra = Vec::new();
+            let health = prop_datas.get(&model).and_then(|pd| {
+                let own = pd.get("health").and_then(|h| h.trim().parse::<i32>().ok());
+                own.or_else(|| {
+                    let base = pd.get("base")?;
+                    let t = templates.get_or_insert_with(|| {
+                        materials
+                            .read("scripts/propdata.txt")
+                            .map(|b| super::hud::parse(&String::from_utf8_lossy(&b)))
+                            .unwrap_or(super::hud::Kv::Block(Vec::new()))
+                    });
+                    template_health(t, base)
+                })
+            });
+            if let Some(h) = health {
+                extra.push((PROP_HEALTH_KEY.to_string(), h.to_string()));
+            }
+            if door {
+                if let Some((mv, open, close)) = key_values.get(&model).and_then(|kv| door_options(kv, prop.skin)) {
+                    extra.push((DOOR_MOVE_KEY.to_string(), mv));
+                    extra.push((DOOR_OPEN_KEY.to_string(), open));
+                    extra.push((DOOR_CLOSE_KEY.to_string(), close));
+                }
+                let hulls = door_hulls(&data.models[model]);
+                let e = &mut data.entities[index];
+                e.hulls = hulls;
+                e.mover = true;
+            }
+            data.entities[index].keyvalues.extend(extra);
+        }
         data.props.push(MapProp {
             model,
             translation,
@@ -796,7 +845,8 @@ fn place_props(
             skybox,
             lighting: Some(lighting),
             solid,
-            casts_shadow: prop.class.is_some(),
+            // A model door's shadow would stay where it was baked.
+            casts_shadow: prop.class.is_some() && !door,
             physics: physics.filter(|_| prop.parent.is_none()),
             parent: prop.parent,
             fade: prop.fade.map(|(a, b)| (a * METERS_PER_UNIT, b * METERS_PER_UNIT)),
@@ -806,6 +856,100 @@ fn place_props(
     failed.sort();
     failed.dedup();
     data.warnings.extend(failed);
+}
+
+/// Model doors (specs/source/doors_buttons.md, "prop_door_rotating"):
+/// drawn as a prop riding a mover node the logic turns.
+pub const DOOR_CLASS: &str = "prop_door_rotating";
+
+/// A propdata.txt template's health (`"sections"` holds the templates,
+/// possibly nested in groups; a template may name a `base`).
+fn template_health(kv: &super::hud::Kv, base: &str) -> Option<i32> {
+    use super::hud::Kv;
+    fn find<'a>(kv: &'a Kv, name: &str) -> Option<&'a Kv> {
+        for (k, v) in kv.items() {
+            if let Kv::Block(_) = v {
+                if k.eq_ignore_ascii_case(name) {
+                    return Some(v);
+                }
+                if let Some(f) = find(v, name) {
+                    return Some(f);
+                }
+            }
+        }
+        None
+    }
+    let t = find(kv, base)?;
+    t.str("health").and_then(|h| h.trim().parse().ok()).or_else(|| {
+        t.str("base")
+            .filter(|b| !b.eq_ignore_ascii_case(base))
+            .and_then(|b| template_health(kv, b))
+    })
+}
+
+/// A door model's (move, open, close) sound entries from its
+/// `door_options` key values: the block for its skin ("skinN"), else
+/// "default".
+fn door_options(text: &str, skin: i32) -> Option<(String, String, String)> {
+    use super::hud::Kv;
+    fn find<'a>(kv: &'a Kv, name: &str) -> Option<&'a Kv> {
+        kv.items().iter().find_map(|(k, v)| {
+            if k.eq_ignore_ascii_case(name) {
+                Some(v)
+            } else {
+                find(v, name)
+            }
+        })
+    }
+    let kv = super::hud::parse(text);
+    let options = find(&kv, "door_options")?;
+    let block = options
+        .get(&format!("skin{skin}"))
+        .or_else(|| options.get("default"))?;
+    let s = |k: &str| block.str(k).unwrap_or("").to_string();
+    Some((s("move"), s("open"), s("close")))
+}
+
+/// A model door's solid volumes in entity space (units, Z up, relative to
+/// its origin, unrotated): its collision model's pieces, else its bounds.
+fn door_hulls(model: &MapModel) -> Vec<crate::map::MapHull> {
+    let point = |p: Vec3| Vec3::new(p.x, -p.z, p.y) / METERS_PER_UNIT;
+    let normal = |n: Vec3| Vec3::new(n.x, -n.z, n.y);
+    if let Some(c) = &model.collision
+        && !c.pieces.is_empty()
+    {
+        return c
+            .pieces
+            .iter()
+            .map(|p| crate::map::MapHull {
+                points: p.points.iter().map(|q| point(*q)).collect(),
+                planes: p.planes.iter().map(|(n, d)| (normal(*n), d / METERS_PER_UNIT)).collect(),
+            })
+            .collect();
+    }
+    let (a, b) = (point(model.bounds.0), point(model.bounds.1));
+    let (lo, hi) = (a.min(b), a.max(b));
+    if (hi - lo).min_element() <= 0.0 {
+        return Vec::new();
+    }
+    let points = (0..8)
+        .map(|k| {
+            Vec3::new(
+                if k & 1 == 0 { lo.x } else { hi.x },
+                if k & 2 == 0 { lo.y } else { hi.y },
+                if k & 4 == 0 { lo.z } else { hi.z },
+            )
+        })
+        .collect();
+    let planes = vec![
+        (Vec3::X, hi.x),
+        (Vec3::NEG_X, -lo.x),
+        (Vec3::Y, hi.y),
+        (Vec3::NEG_Y, -lo.y),
+        (Vec3::Z, hi.z),
+        (Vec3::NEG_Z, -lo.z),
+    ];
+    vec![crate::map::MapHull { planes, points }]
 }
 
 pub fn probe(bsp: &Bsp, lighting: &MapLighting, occluders: &Occluders, origin: Vec3) -> LightProbe {

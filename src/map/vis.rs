@@ -146,6 +146,12 @@ impl VisClusters {
     }
 }
 
+/// A map part game logic removed or turned off (a broken or killed prop):
+/// culling keeps it hidden. Whoever adds it hides the part; whoever
+/// removes it shows it again.
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct LogicHidden;
+
 /// Hidden when the camera is farther than this from the entity's origin,
 /// meters (Source props' `fademaxdist`).
 #[derive(Component, Clone, Copy, Debug)]
@@ -300,6 +306,7 @@ pub(crate) fn cull(
             Option<&mut Visibility>,
             Has<super::GlowSprite>,
             Option<(&FadeDistance, &GlobalTransform)>,
+            Has<LogicHidden>,
         )>,
     )>,
     mut stats: ResMut<VisStats>,
@@ -332,7 +339,7 @@ pub(crate) fn cull(
         };
     }
     let (mut total, mut shown) = (0, 0);
-    for (mut part, visibility, glow, fade) in &mut queries.p1() {
+    for (mut part, visibility, glow, fade, removed) in &mut queries.p1() {
         if !changed && fade.is_none() {
             total += 1;
             shown += part.potentially_visible as usize;
@@ -353,7 +360,7 @@ pub(crate) fn cull(
             part.potentially_visible = on;
         }
         if !glow && let Some(mut v) = visibility {
-            v.set_if_neq(if on { Visibility::Inherited } else { Visibility::Hidden });
+            v.set_if_neq(if on && !removed { Visibility::Inherited } else { Visibility::Hidden });
         }
     }
     if changed {

@@ -872,7 +872,9 @@ pub struct MapData {
     /// Collision triangles (surfaces with no solid volume, e.g. terrain).
     pub collision_positions: Vec<[f32; 3]>,
     pub collision_indices: Vec<[u32; 3]>,
-    /// Solid convex volumes, each as its corner points.
+    /// Solid convex volumes, each as its corner points: what stops shots
+    /// and physics bodies (player-only clips are in `collision_brushes`
+    /// only).
     pub collision_hulls: Vec<Vec<[f32; 3]>>,
     /// The same volumes as planes, for exact swept-box movement collision.
     pub collision_brushes: Vec<MapBrush>,
@@ -2196,7 +2198,7 @@ fn spawn_map(
             }
         }
         if let Some(index) = prop.entity {
-            e.insert(PropEntity(index));
+            e.insert((PropEntity(index), PropHome(rider.map_or(placed, |r| r.1))));
         }
         let solid = if rider.is_some() { PropSolid::None } else { prop.solid };
         match (solid, &model_colliders[prop.model]) {
@@ -2824,6 +2826,11 @@ pub struct PropIndex(pub usize);
 /// `MapData::entities`), so logic can find it (a sound playing from it).
 #[derive(Component, Debug, Clone, Copy)]
 pub struct PropEntity(pub usize);
+
+/// Where an entity prop was placed (its spawn transform), so a round
+/// restart can put a moved physics prop back.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct PropHome(pub Transform);
 
 /// What it takes to redraw prop shadows when props move.
 #[derive(Resource)]
