@@ -85,7 +85,9 @@ Only `Reflect`-registered types are visible; register new core components in
   computer0* Skin 2` in a `--screenshot` run on de_nuke (the `wait` lets
   the map's logic load first). Logged at info level.
 - `mashup_drawnav 1` outlines the nav areas near you (2: all), coloured by
-  place, with half-links toward their neighbours; `mashup_drawbots 1`
+  place, with half-links toward their neighbours, and the mesh's ladders
+  (yellow line, green cross where bots get on at the foot, orange where
+  they start down from behind the top); `mashup_drawbots 1`
   shows the map's sites (yellow rings) with where routes from the
   attackers' (orange balls) and defenders' (blue balls) spawns come onto
   them, and per bot: its role (ring at its feet: orange attacker, blue
@@ -111,7 +113,8 @@ Only `Reflect`-registered types are visible; register new core components in
   --features dev --test bot_nav -- --ignored --nocapture nav_near` prints
   the nav areas, links, ladders, ladder brushes and entities (breakables
   with their keyvalues) around it (engine meters, as the report prints
-  them); add a case to `tests/bot_nav.rs` (a lone bot sent from a start
+  them; `MASHUP_NAV_BRUSHES=1` also lists every collision brush within
+  1 m, e.g. player clip flush with a ladder's face); add a case to `tests/bot_nav.rs` (a lone bot sent from a start
   to a goal, `MASHUP_BOT_CASE=<name>` to run one, `MASHUP_BOT_TRACE=0`
   for every tick of its intent, ladder and ground state), and try raw
   inputs with `probe_walk` (`P_AT=x,y,z P_OPT=yaw,crouch,jump,seconds,
@@ -120,7 +123,9 @@ Only `Reflect`-registered types are visible; register new core components in
   bot up and down every ladder on de_nuke's mesh; the ignored
   `ladders_climb_both_ways` does it on `MASHUP_NAV_MAP` (comma-separated
   maps) and lists the ladders bots fail, one `MASHUP_BOT_CASE="ladder 3
-  up"` at a time. Bot dice come from bot numbers, never entity ids:
+  up"` at a time (`MASHUP_BOT_TRACE_CASE="ladder 3 up"` with
+  `MASHUP_BOT_TRACE` traces just that one while running the whole map:
+  earlier cases leave stuck reports and broken grilles behind). Bot dice come from bot numbers, never entity ids:
   `MASHUP_TEST_PAD=<n>` spawns n entities and a resource in every `Sim`
   first, and a test's outcome must not change with it (run the bot tests
   with a few values after touching bot randomness). In game, `bot_goto <x> <y> <z>` (CS:S units) sends

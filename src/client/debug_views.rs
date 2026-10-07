@@ -120,6 +120,23 @@ fn draw_nav(
             gizmos.line(from, from.lerp(end, 0.5), color.with_alpha(0.5));
         }
     }
+    // Ladders: the climbable line (yellow), the point in front of the foot
+    // bots get on from (green) and the one behind the top they go down
+    // from (orange), 32 units out (nav spec, path building).
+    let out = 32.0 * 0.0254;
+    for l in &nav.ladders {
+        if views.nav == 1 && here.is_some_and(|h| h.distance(l.bottom) > NAV_RADIUS) {
+            continue;
+        }
+        gizmos.line(l.bottom, l.top, Color::srgb(1.0, 0.9, 0.2));
+        let cross = |gizmos: &mut Gizmos, p: Vec3, c: Color| {
+            gizmos.line(p - Vec3::X * 0.15, p + Vec3::X * 0.15, c);
+            gizmos.line(p - Vec3::Z * 0.15, p + Vec3::Z * 0.15, c);
+            gizmos.line(p, p + Vec3::Y * 0.3, c);
+        };
+        cross(&mut gizmos, l.bottom + l.normal * out, Color::srgb(0.3, 1.0, 0.3));
+        cross(&mut gizmos, l.top - l.normal * out, Color::srgb(1.0, 0.5, 0.1));
+    }
 }
 
 fn role_color(role: Role) -> Color {
