@@ -129,12 +129,14 @@ fn load(world: &mut World) {
             world.remove_resource::<Logic>();
             world.remove_resource::<LightStyles>();
             world.remove_resource::<SoundscapeTouches>();
+            world.remove_resource::<crate::map::fire::MapFires>();
         }
         (Some(m), b) if b.as_ref().is_none_or(|b| !std::sync::Arc::ptr_eq(b, &m.entities)) => {
             restore_settings(world);
             world.write_message(SoundControl::StopAll);
             let dt = world.resource::<Time<Fixed>>().timestep().as_secs_f32();
             let mut logic = LogicWorld::new(dt);
+            logic.collision = static_collision(world, m.scale);
             let ids = logic.load_map(&m.entities);
             let nodes = attach_nodes(world, &logic, &ids);
             let props = attach_props(world, &logic, &ids, false);
@@ -493,6 +495,52 @@ impl Collision for WorldCollision<'_> {
     }
 }
 
+/// The static world owned (the logic keeps it for traces outside a
+/// phase: fires dropping inside an input, their line-of-sight checks).
+struct StaticCollision {
+    brushes: MapBrushes,
+    terrain: Option<MapTerrain>,
+    scale: f32,
+}
+
+impl StaticCollision {
+    fn view(&self) -> WorldCollision<'_> {
+        WorldCollision {
+            brushes: Some(&self.brushes),
+            terrain: self.terrain.as_ref(),
+            scale: self.scale,
+        }
+    }
+}
+
+impl Collision for StaticCollision {
+    fn sweep(&self, mins: Vec3, maxs: Vec3, from: Vec3, to: Vec3) -> f32 {
+        self.view().sweep(mins, maxs, from, to)
+    }
+    fn solid(&self, mins: Vec3, maxs: Vec3, at: Vec3) -> bool {
+        self.view().solid(mins, maxs, at)
+    }
+}
+
+/// The map's static world for the logic, once the map has one.
+fn static_collision(world: &World, scale: f32) -> Option<std::sync::Arc<dyn Collision + Send + Sync>> {
+    let mut brushes = world.get_resource::<MapBrushes>()?.clone();
+    // Fire's traces pass player clips and grates.
+    if let Some(skip) = world.get_resource::<crate::map::MapTraceSkip>() {
+        let skip: std::collections::HashSet<usize> = skip.0.iter().copied().collect();
+        let mut i = 0;
+        brushes.0.retain(|_| {
+            i += 1;
+            !skip.contains(&(i - 1))
+        });
+    }
+    Some(std::sync::Arc::new(StaticCollision {
+        brushes,
+        terrain: world.get_resource::<MapTerrain>().cloned(),
+        scale,
+    }))
+}
+
 /// An entity-space brush in engine space.
 fn brush_to_engine(b: &MapBrush, scale: f32) -> MapBrush {
     let planes = b
@@ -718,6 +766,36 @@ fn apply_effects(world: &mut World, effects: Vec<Effect>, scale: f32) {
                     weapon: None,
                 });
             }
+            Effect::Burn { target, amount } => {
+                let point = world.get::<Transform>(target).map_or(Vec3::ZERO, |t| t.translation);
+                world.write_message(Damage {
+                    force: Vec3::ZERO,
+                    target,
+                    attacker: None,
+                    amount: amount / 100.0,
+                    point,
+                    dir: Vec3::NEG_Y,
+                    hitgroup: Hitgroup::Generic,
+                    kind: DamageKind::Burn,
+                    weapon: None,
+                });
+            }
+            Effect::FlameStart { id, target } => {
+                let follow = match target {
+                    Who::Player(p) => Some(p),
+                    Who::Ent(e) => prop_node(world, e),
+                };
+                let at = follow.and_then(|f| world.get::<Transform>(f)).map(|t| t.translation);
+                world.write_message(SoundControl::Start(StartSound {
+                    key: sound_key(id),
+                    entry: super::fire::BURNING_SOUND.into(),
+                    at,
+                    follow,
+                    volume: None,
+                    pitch: None,
+                    level: None,
+                }));
+            }
             Effect::Gibs { set, glass, pieces } => {
                 let pieces = pieces
                     .into_iter()
@@ -876,6 +954,10 @@ fn run_phase(world: &mut World, phase: impl FnOnce(&mut LogicWorld, &dyn Collisi
     };
     // The tick can change after the map loads (a game sets its own).
     logic.world.dt = world.resource::<Time<Fixed>>().timestep().as_secs_f32();
+    if logic.world.collision.is_none() {
+        logic.world.collision = static_collision(world, logic.scale);
+    }
+    prop_bounds(world, &mut logic);
     let players = snapshot(world, &logic);
     logic.world.players = players.clone();
     {
@@ -886,6 +968,7 @@ fn run_phase(world: &mut World, phase: impl FnOnce(&mut LogicWorld, &dyn Collisi
         };
         phase(&mut logic.world, &col);
     }
+    sync_fires(world, &logic);
     let after = std::mem::take(&mut logic.world.players);
     write_back(world, logic.scale, &players, &after);
     sync_movers(world, &mut logic);
@@ -903,6 +986,73 @@ fn run_phase(world: &mut World, phase: impl FnOnce(&mut LogicWorld, &dyn Collisi
     let scale = logic.scale;
     world.insert_resource(logic);
     apply_effects(world, effects, scale);
+}
+
+/// Where each logic prop's body is now (its collider's world box), for
+/// fire (flame size and place, damage boxes).
+fn prop_bounds(world: &mut World, logic: &mut Logic) {
+    let scale = logic.scale;
+    for (id, node) in logic.props.clone() {
+        let aabb = std::iter::once(node)
+            .chain(world.get::<Children>(node).map(|c| c.to_vec()).unwrap_or_default())
+            .find_map(|e| world.get::<ColliderAabb>(e).copied());
+        if let Some(a) = aabb {
+            let (lo, hi) = (engine_to_entity(a.min, scale), engine_to_entity(a.max, scale));
+            logic.world.set_prop_bounds(id, (lo.min(hi), lo.max(hi)));
+        }
+    }
+}
+
+/// Lit fires and burning entities for the game to draw
+/// (`map::fire::MapFires`).
+fn sync_fires(world: &mut World, logic: &Logic) {
+    use crate::map::fire::{FireLook, FlameLook, MapFires};
+    let scale = logic.scale;
+    let key = |id: EntId, serial: u32| (serial as u64) << 48 | (id.generation as u64 & 0xffff) << 32 | id.index as u64;
+    let fires: Vec<FireLook> = logic
+        .world
+        .fire_looks()
+        .into_iter()
+        .filter(|f| !f.plasma)
+        .map(|f| FireLook {
+            key: key(f.id, f.serial),
+            at: entity_to_engine(f.at, scale),
+            size: f.size,
+            smokeless: f.smokeless,
+        })
+        .collect();
+    let flames: Vec<FlameLook> = logic
+        .world
+        .flame_looks()
+        .into_iter()
+        .filter_map(|f| {
+            let (follow, lo, hi) = match f.target {
+                Who::Player(p) => {
+                    let pl = logic.world.player(p)?;
+                    (Some(p), pl.origin + pl.mins, pl.origin + pl.maxs)
+                }
+                Who::Ent(e) => {
+                    let node = logic.props.iter().find(|(id, _)| *id == e).map(|(_, n)| *n);
+                    let (lo, hi) = logic.world.prop(e)?.bounds.unwrap_or_else(|| {
+                        let o = logic.world.get(e).map_or(Vec3::ZERO, |x| x.origin);
+                        (o - Vec3::splat(8.0), o + Vec3::splat(8.0))
+                    });
+                    (node, lo, hi)
+                }
+            };
+            let (a, b) = (entity_to_engine(lo, scale), entity_to_engine(hi, scale));
+            Some(FlameLook {
+                key: key(f.id, 0),
+                follow,
+                min: a.min(b),
+                max: a.max(b),
+            })
+        })
+        .collect();
+    let want = MapFires { fires, flames };
+    if world.get_resource::<MapFires>() != Some(&want) {
+        world.insert_resource(want);
+    }
 }
 
 fn pre(world: &mut World) {
@@ -982,6 +1132,7 @@ fn damage(world: &mut World, mut cursor: Local<MessageCursor<Damage>>) {
                 point,
                 dir,
                 force: d.force.length() / scale,
+                direct: false,
             };
             if !w.prop_hit(id, hit) {
                 w.damage(id, hit.amount, d.kind, attacker, point, dir);

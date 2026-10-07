@@ -507,6 +507,7 @@ pub fn convert(bsp: &Bsp, bytes: &[u8], name: &str) -> (MapData, LightmapLayout)
     let (brushes, tree) = collision_brushes(bsp, &leaves);
     data.collision_brushes = brushes;
     data.brush_tree = Some(tree);
+    data.trace_skip = trace_skip(bsp, &leaves);
     data.water = water_volumes(bsp, &leaves);
     data.entities = map_entities(bsp, &leaves);
     data.entity_scale = METERS_PER_UNIT;
@@ -1025,6 +1026,20 @@ fn brush_tree(
         leaves,
         root: bsp.models.first().map_or(0, |m| m.head_node),
     }
+}
+
+/// Indices into `collision_brushes` of the brushes line traces pass
+/// (fire's drop and line of sight: solid and window contents stop them;
+/// player clips, grates and ladders don't).
+pub fn trace_skip(bsp: &Bsp, leaves: &[RawLeaf]) -> Vec<usize> {
+    let stops = BrushFlags::SOLID.union(BrushFlags::WINDOW);
+    brush_hulls_indexed(bsp, leaves)
+        .into_iter()
+        .chain(entity_hulls(bsp, leaves))
+        .enumerate()
+        .filter(|(_, (i, _, _))| !bsp.brushes[*i].flags.intersects(stops))
+        .map(|(n, _)| n)
+        .collect()
 }
 
 /// Player-solid brushes of solid brush entities (doors, windows,

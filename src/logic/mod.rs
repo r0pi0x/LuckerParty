@@ -14,6 +14,7 @@ pub mod ambient;
 pub mod breakables;
 mod bridge;
 pub mod classes;
+pub mod fire;
 pub mod hud;
 pub mod movers;
 pub mod prop_damage;

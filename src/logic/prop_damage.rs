@@ -97,6 +97,12 @@ pub struct Prop {
     /// scheduled.
     pub pressure_breaker: Option<Who>,
     pub pressure_pending: bool,
+    /// Set on fire (fire.rs); never cleared, as props are never told
+    /// their flame ended (specs/source/fire.md, Quirks).
+    pub burning: bool,
+    /// Where its body is now: world box (entity space), from the host;
+    /// None: not known (its origin stands for it).
+    pub bounds: Option<(Vec3, Vec3)>,
 }
 
 /// Whether a class is a prop the logic keeps (not a door).
@@ -198,6 +204,8 @@ impl Prop {
             last_attacker: None,
             pressure_breaker: None,
             pressure_pending: false,
+            burning: false,
+            bounds: None,
         }
     }
 }
@@ -444,6 +452,8 @@ pub struct Hit {
     pub dir: Vec3,
     /// The push's size, kg·units/s.
     pub force: f32,
+    /// Direct damage (an entity flame burning its own target).
+    pub direct: bool,
 }
 
 /// The multiplier for a kind of damage (spec 4 step 6; the knife counts
@@ -479,7 +489,30 @@ pub(super) fn prop_damage(w: &mut LogicWorld, id: EntId, hit: Hit) -> bool {
     if hit.amount < e.kv_f("minhealthdmg") {
         return true;
     }
-    let scaled = hit.amount * multiplier(&p, hit.kind);
+    let mut scaled = hit.amount * multiplier(&p, hit.kind);
+    // Fire rules (spec 4 step 8; specs/source/fire.md 4.2). The
+    // explosive-resist rule is left out (no stock prop has it).
+    let has = |i: &str| p.interactions.iter().any(|x| x == i);
+    if p.burning && hit.kind == DamageKind::Burn && !hit.direct {
+        return true;
+    }
+    let deadly = scaled >= p.health as f32;
+    let mut ignite = false;
+    if !deadly && matches!(hit.kind, DamageKind::Blast | DamageKind::Burn) {
+        ignite = true;
+    }
+    if !deadly && hit.kind == DamageKind::Bullet && has("ignite_halfhealth") {
+        if !p.burning && p.health as f32 - scaled <= (p.max_health / 2) as f32 {
+            let p = prop(w, id).unwrap();
+            p.health = p.max_health;
+            ignite = true;
+        } else if p.burning {
+            scaled = p.health as f32;
+        }
+    }
+    if ignite {
+        super::fire::ignite_from_damage(w, id);
+    }
     let spawn_tick = w.tick == p.spawn_tick;
     let p = prop(w, id).unwrap();
     if matches!(hit.attacker, Some(Who::Player(_))) {
@@ -544,7 +577,7 @@ fn client_damage(w: &mut LogicWorld, id: EntId, p: &Prop, hit: Hit) {
                 .length()
                 .trunc() as i32
         }
-        DamageKind::Crush | DamageKind::Fall | DamageKind::Generic => return,
+        DamageKind::Crush | DamageKind::Fall | DamageKind::Generic | DamageKind::Burn => return,
         DamageKind::Melee => CLIENT_OTHER_DAMAGE,
     };
     let p = prop(w, id).unwrap();
@@ -639,7 +672,9 @@ pub(super) fn prop_break(w: &mut LogicWorld, id: EntId, breaker: Option<Who>, at
             sound: Some(p.explode_sound.clone()).filter(|s| !s.is_empty()),
         })
     } else if explode_fire && !p.client {
-        // A 1-damage explosion of the same radius (ignition: not done).
+        // A 1-damage explosion of the same radius. Its ignition of the
+        // combat characters in the radius uses the NPC-only rule, which
+        // players refuse (specs/source/fire.md 4.2): nothing to do here.
         Some(PropExplosion {
             damage: 1.0,
             radius: r,
@@ -658,6 +693,8 @@ pub(super) fn prop_break(w: &mut LogicWorld, id: EntId, breaker: Option<Who>, at
         e.targetname.clear();
     }
     w.kill(id);
+    // Its flame goes with it (General.StopBurning).
+    super::fire::remove_flames_on(w, Who::Ent(id));
     for c in doomed {
         w.kill(c);
         if let Some(e) = w.get_mut(c) {
@@ -721,6 +758,9 @@ pub(super) fn prop_input(w: &mut LogicWorld, id: EntId, input: &str, value: &Val
             let p = prop(w, id).unwrap();
             p.sequence = Some(name.trim().to_string());
             p.sequence_serial += 1;
+        }
+        "ignite" | "ignitelifetime" | "ignitenumhitboxfires" | "ignitehitboxfirescale" => {
+            return super::fire::ignite_input(w, Who::Ent(id), input, value);
         }
         "setdefaultanimation" => {
             let Some(name) = w.need_str(value, input) else {
@@ -828,6 +868,13 @@ impl LogicWorld {
         match self.get(id).map(|e| &e.class) {
             Some(Class::Prop(p)) => Some((p.health, p.max_health)),
             _ => None,
+        }
+    }
+
+    /// Where a prop's body is now (world box, entity space).
+    pub fn set_prop_bounds(&mut self, id: EntId, bounds: (Vec3, Vec3)) {
+        if let Some(p) = prop(self, id) {
+            p.bounds = Some(bounds);
         }
     }
 

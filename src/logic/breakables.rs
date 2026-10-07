@@ -374,6 +374,7 @@ impl LogicWorld {
                 point,
                 dir,
                 force: 0.0,
+                direct: false,
             };
             return super::prop_damage::prop_damage(self, id, hit);
         };

@@ -228,8 +228,11 @@ pub struct Particle {
     /// Sprite-sheet sequence, and its frame rate (0: first frame only).
     pub sequence: u16,
     pub fps: f32,
-    /// sRGB, 0-1.
+    /// sRGB, 0-1 (above 1: overbright, for additive materials).
     pub color: Vec3,
+    /// Blend toward this colour between these life fractions
+    /// (particle-system colour fade).
+    pub color_fade: Option<(Vec3, f32, f32)>,
     /// Base alpha, 0-1, times `fade`.
     pub alpha: f32,
     pub fade: Fade,
@@ -253,6 +256,7 @@ impl Particle {
             sequence: 0,
             fps: 0.0,
             color: Vec3::ONE,
+            color_fade: None,
             alpha: 1.0,
             fade: Fade::Ramp(Ramp::constant(1.0)),
             size: Ramp::constant(size),
@@ -264,6 +268,23 @@ impl Particle {
 
     pub fn current_alpha(&self) -> f32 {
         (self.alpha * self.fade.at(self.age, self.life)).clamp(0.0, 1.0)
+    }
+
+    pub fn current_color(&self) -> Vec3 {
+        match self.color_fade {
+            Some((to, from_t, to_t)) => {
+                let t = if self.life > 0.0 { self.age / self.life } else { 1.0 };
+                let x = if to_t > from_t {
+                    ((t - from_t) / (to_t - from_t)).clamp(0.0, 1.0)
+                } else if t >= from_t {
+                    1.0
+                } else {
+                    0.0
+                };
+                self.color.lerp(to, x)
+            }
+            None => self.color,
+        }
     }
 
     pub fn current_size(&self) -> f32 {
@@ -838,7 +859,8 @@ pub(super) fn draw_particles(
                 continue;
             }
             let color = if def.vertex_color {
-                Color::srgb(p.color.x, p.color.y, p.color.z).to_linear()
+                let c = p.current_color();
+                Color::srgb(c.x, c.y, c.z).to_linear()
             } else {
                 LinearRgba::WHITE
             };
