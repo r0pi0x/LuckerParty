@@ -212,6 +212,9 @@ pub struct Bot {
     /// got stuck on lately (from area, to area), costly until then.
     stuck_count: u32,
     stuck_links: Vec<((usize, usize), f64)>,
+    /// Seconds spent at a ladder's foot pressing in without getting on it
+    /// (a ladder flush with clip brushes attaches only off its middle).
+    ladder_pressing: f32,
     /// When it last jumped.
     jumped: f64,
     /// Current aim offset (yaw, pitch radians) and seconds until re-rolled.
@@ -1096,6 +1099,13 @@ const LADDER_REACH: f32 = 1.5;
 /// foot within this (cosine) of straight at it; else to the point this
 /// far out in front, m (spec: 0.9, 2 × half hull).
 const LADDER_LINED_UP: f32 = -0.9;
+/// Pressing at a ladder's foot this long (s) without getting on, within
+/// this distance (m), a bot steps this far (m) to one side of its middle,
+/// switching sides every `LADDER_SIDESTEP_EACH` seconds.
+const LADDER_SIDESTEP_AFTER: f32 = 0.6;
+const LADDER_SIDESTEP_NEAR: f32 = 0.6;
+const LADDER_SIDESTEP: f32 = 0.25;
+const LADDER_SIDESTEP_EACH: f32 = 1.2;
 const LADDER_MOUNT: f32 = 32.0 * 0.0254;
 /// Going down, it backs out over the ladder's top until this far beyond
 /// it, then presses in (falling past it, it catches it), m.
@@ -1631,9 +1641,25 @@ fn walk_route(
                 return Some(step);
             }
         }
+        // Pressing at its foot without getting on: try off its middle,
+        // one side then the other (coincident clip faces beside a ladder
+        // win ties on one side; de_nuke's vent ladders).
+        if up && !on_ladder && on_ground && to_foot.length() < LADDER_SIDESTEP_NEAR {
+            bot.ladder_pressing += dt;
+        } else if on_ladder || !up {
+            bot.ladder_pressing = 0.0;
+        }
+        let side = if bot.ladder_pressing > LADDER_SIDESTEP_AFTER {
+            let tangent = Vec3::Y.cross(n).normalize_or_zero();
+            let turn = ((bot.ladder_pressing - LADDER_SIDESTEP_AFTER) / LADDER_SIDESTEP_EACH) as i32;
+            tangent * if turn % 2 == 0 { LADDER_SIDESTEP } else { -LADDER_SIDESTEP }
+        } else {
+            Vec3::ZERO
+        };
         // Always facing it. Up: walk at its foot. Down: back out over
         // its top, and once past it (falling) press in to catch it.
         step.dir = if up {
+            let to_foot = to_foot + side;
             if to_foot.length() > 0.1 { to_foot.normalize() } else { -n }
         } else {
             let beyond = (feet - foot).dot(n);
