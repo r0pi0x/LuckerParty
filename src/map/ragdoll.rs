@@ -969,6 +969,16 @@ fn adopt_bodies(
             .entity(body)
             .remove::<ChildOf>()
             .insert((Transform::IDENTITY, Visibility::Inherited, MapPart));
+        // Lit where the ragdoll lies (its root body), not at the origin
+        // where the drawn body now sits.
+        if let Some(&root) = r.bodies.first() {
+            commands.queue(move |w: &mut World| {
+                if let Some(mut lit) = w.get_mut::<super::probe_lit::ProbeLit>(body) {
+                    lit.follow = Some(root);
+                    lit.offset = Vec3::ZERO;
+                }
+            });
+        }
         r.visual = Some(body);
     }
 }

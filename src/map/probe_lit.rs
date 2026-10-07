@@ -15,6 +15,9 @@ pub struct ProbeLit {
     /// Added to the entity's position before sampling (e.g. a body's
     /// centre above its feet).
     pub offset: Vec3,
+    /// Sample at this entity instead of the lit one (a ragdoll's drawn
+    /// body sits at the origin; its root physics body is where it is).
+    pub follow: Option<Entity>,
     lit_at: Option<Vec3>,
 }
 
@@ -23,6 +26,7 @@ impl ProbeLit {
         Self {
             materials,
             offset,
+            follow: None,
             lit_at: None,
         }
     }
@@ -47,11 +51,13 @@ pub(super) fn relight(
     field: Option<Res<LightField>>,
     scale: Option<Res<ProbeLightScale>>,
     mut lit: Query<(&mut ProbeLit, &GlobalTransform)>,
+    places: Query<&GlobalTransform>,
     materials: Option<ResMut<Assets<PropMaterial>>>,
 ) {
     let (Some(field), Some(mut materials)) = (field, materials) else { return };
     let scale = scale.map_or(1.0, |s| s.0);
     for (mut l, at) in &mut lit {
+        let at = l.follow.and_then(|e| places.get(e).ok()).unwrap_or(at);
         let p = at.translation() + l.offset;
         if l.lit_at.is_some_and(|q| q.distance(p) < RELIGHT_DISTANCE) {
             continue;

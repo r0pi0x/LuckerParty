@@ -79,7 +79,8 @@ a first bot are in.
   reserves start full.
 - The AWP's view model is in (MDL v48 reads like v44,
   specs/cs_source/mdl_v48.md); compare its fire and reload against the
-  game. HL2 v48 models with zero-frame data (streamed) aren't handled.
+  game. (MDL 45–48, sections, `.ani` blocks and the zero-frame cache
+  are read: `anim.rs`.)
 - Zoom: measure `zoom_sensitivity_ratio` and compare the scope overlay
   (the game's textures, laid out by eye) with CS:S.
 - Rounds, money and buying: slice 1 done (`mashup_rounds 1`,
@@ -92,8 +93,9 @@ a first bot are in.
   tick rounding); the C4's screen text (7355608) and LED glow sprite, the
   `sprites/c4` marker through walls, screen shake, the explosion's own
   effect (it uses the HE's); the scoreboard bomb/kit markers; hostage
-  animation (HL2 `male_shared` uses external `.ani` data our loader
-  doesn't read: hostages stand in their reference pose), hostages avoiding
+  animation beyond idle/walk/run and a nod (`hostage_anim.rs`: compare
+  with CS:S's hostages, which aren't measured; head/aim pose parameters
+  toward the leader, flinch and cower), hostages avoiding
   "no hostages" nav areas, crouching and jumping; drop/pickup game events
   and server log lines; bots leading hostages, buying kits, guarding;
   the `Use` deny sound.

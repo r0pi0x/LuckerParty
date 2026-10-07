@@ -1,6 +1,7 @@
 //! What CS:S player bodies play: the player animation state of
 //! specs/cs_source/animation.md §12 (the SDK template the CS:S data
-//! follows) driving each character's `Animator`.
+//! follows) driving each character's `Animator`. The plugin also drives
+//! hostages (`hostage_anim`).
 
 use bevy::prelude::*;
 
@@ -27,7 +28,14 @@ pub struct PlayerAnimPlugin;
 impl Plugin for PlayerAnimPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<WeaponEvent>()
-            .add_systems(Update, (drive.in_set(DriveAnimation), hold_weapons));
+            .add_systems(
+                Update,
+                (
+                    drive.in_set(DriveAnimation),
+                    super::hostage_anim::drive.in_set(DriveAnimation),
+                    hold_weapons,
+                ),
+            );
     }
 }
 

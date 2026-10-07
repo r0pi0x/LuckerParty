@@ -232,6 +232,11 @@ pub(super) fn run_rounds(world: &mut World) {
     let settings = world.resource::<RoundSettings>().clone();
     let now = world.resource::<Time>().elapsed_secs_f64();
     let phase = world.resource::<RoundState>().phase;
+    // The dead drop their weapon in rounds, not in deathmatch.
+    let drops = crate::weapon::drop::DeathDrops(settings.enabled != 0);
+    if world.get_resource::<crate::weapon::drop::DeathDrops>() != Some(&drops) {
+        world.insert_resource(drops);
+    }
     if settings.enabled == 0 {
         if phase != Phase::Off {
             *world.resource_mut::<RoundState>() = RoundState::default();

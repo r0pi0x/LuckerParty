@@ -94,6 +94,11 @@ pub struct WorldMaterial {
     pub envmap_mask: Option<Handle<Image>>,
     pub alpha_mode: AlphaMode,
     pub double_sided: bool,
+    /// A map overlay or decal lying on a surface: drawn right after the
+    /// opaque world (alpha-mask phase) with its own blend and no depth
+    /// writes, so everything see-through (particles, smoke, glows, muzzle
+    /// flashes) draws over it rather than being sorted against it.
+    pub decal: bool,
 }
 
 impl Material for WorldMaterial {
@@ -104,6 +109,9 @@ impl Material for WorldMaterial {
     /// Alpha-tested surfaces count as masked, so the depth prepass (main
     /// views with water) runs `world_prepass.wgsl` and drops the same texels.
     fn alpha_mode(&self) -> AlphaMode {
+        if self.decal {
+            return AlphaMode::Mask(0.001);
+        }
         if self.alpha_mode == AlphaMode::Opaque && self.params.alpha_cutoff > 0.0 {
             return AlphaMode::Mask(self.params.alpha_cutoff);
         }
@@ -123,6 +131,29 @@ impl Material for WorldMaterial {
         if key.bind_group_data.double_sided {
             descriptor.primitive.cull_mode = None;
         }
+        // Decals: blended in the alpha-mask phase (see `decal`).
+        let blend = match key.bind_group_data.decal_blend {
+            1 => Some(bevy::render::render_resource::BlendState::ALPHA_BLENDING),
+            2 => Some(bevy::render::render_resource::BlendState {
+                color: bevy::render::render_resource::BlendComponent {
+                    src_factor: bevy::render::render_resource::BlendFactor::SrcAlpha,
+                    dst_factor: bevy::render::render_resource::BlendFactor::One,
+                    operation: bevy::render::render_resource::BlendOperation::Add,
+                },
+                alpha: bevy::render::render_resource::BlendComponent::OVER,
+            }),
+            _ => None,
+        };
+        if blend.is_some() {
+            if let Some(fragment) = descriptor.fragment.as_mut() {
+                for target in fragment.targets.iter_mut().flatten() {
+                    target.blend = blend;
+                }
+            }
+            if let Some(depth) = descriptor.depth_stencil.as_mut() {
+                depth.depth_write_enabled = Some(false);
+            }
+        }
         Ok(())
     }
 }
@@ -132,12 +163,19 @@ impl Material for WorldMaterial {
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct WorldMaterialKey {
     double_sided: bool,
+    /// Decals only: 1 alpha blend, 2 additive (0: not a decal).
+    decal_blend: u8,
 }
 
 impl From<&WorldMaterial> for WorldMaterialKey {
     fn from(m: &WorldMaterial) -> Self {
         Self {
             double_sided: m.double_sided,
+            decal_blend: match (m.decal, m.alpha_mode) {
+                (false, _) => 0,
+                (true, AlphaMode::Add) => 2,
+                (true, _) => 1,
+            },
         }
     }
 }

@@ -435,17 +435,17 @@ impl Material for DecalMaterial {
         "embedded://mashup/map/decal.wgsl".into()
     }
 
+    /// Drawn right after the opaque world (alpha-mask phase), before
+    /// anything see-through, so particles, smoke, dust and muzzle flashes
+    /// draw over impacts rather than being sorted against them.
     fn alpha_mode(&self) -> AlphaMode {
-        AlphaMode::Blend
+        AlphaMode::Mask(0.001)
     }
 
-    /// Sorted after the map's own decals and overlays (same surfaces,
-    /// lower lift), so impacts draw on top of them.
-    fn depth_bias(&self) -> f32 {
-        1000.0
-    }
-
-    /// The framebuffer times twice the shader's output; no depth writes.
+    /// The framebuffer times twice the shader's output. Depth is written
+    /// where the decal shows (the shader discards neutral texels), so the
+    /// map's overlays and decals (lifted less) never draw over an impact,
+    /// whichever draws first.
     fn specialize(
         _pipeline: &bevy::pbr::MaterialPipeline,
         descriptor: &mut bevy::render::render_resource::RenderPipelineDescriptor,
@@ -472,7 +472,7 @@ impl Material for DecalMaterial {
             }
         }
         if let Some(depth) = descriptor.depth_stencil.as_mut() {
-            depth.depth_write_enabled = Some(false);
+            depth.depth_write_enabled = Some(true);
         }
         Ok(())
     }

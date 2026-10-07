@@ -2093,6 +2093,8 @@ fn spawn_map(
                     detail: m.detail.map(|d| textures[d.texture].clone()),
                     alpha_mode: m.alpha.shader_alpha_mode(),
                     double_sided: m.double_sided,
+                    // Map overlays and infodecals (see WorldMaterial::decal).
+                    decal: m.material.starts_with("decal:") && m.alpha != MapAlpha::Opaque,
                 };
                 let material = world_materials.add(material);
                 for (chunk, clusters, centre) in chunks {

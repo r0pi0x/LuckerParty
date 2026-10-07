@@ -72,6 +72,7 @@ pub fn drop_this(world: &mut World, owner: Entity, weapon: Entity, thrown: bool)
     let look = world.get::<Intent>(owner).map_or(Quat::IDENTITY, Intent::look_rotation);
     let carried = world.get::<Velocity>(owner).map_or(Vec3::ZERO, |v| v.0);
     let id = world.get::<Weapon>(weapon)?.id;
+    let dead = world.get::<Health>(owner).is_some_and(|h| h.current <= 0.0);
     // Draw the best of what's left (the lowest slot), as CS:S does.
     let next = world.get::<Inventory>(owner).and_then(|inv| {
         inv.weapons
@@ -88,8 +89,9 @@ pub fn drop_this(world: &mut World, owner: Entity, weapon: Entity, thrown: bool)
         }
         if inv.active == Some(weapon) {
             inv.active = None;
-            // Unless a switch is already pending (a bought replacement).
-            if inv.wanted.is_none_or(|w| w == weapon) {
+            // Unless a switch is already pending (a bought replacement), or
+            // the owner is dead (no draw, and no draw sound, for a body).
+            if inv.wanted.is_none_or(|w| w == weapon) && !dead {
                 inv.wanted = next;
             }
         }
@@ -139,8 +141,17 @@ pub fn drop_this(world: &mut World, owner: Entity, weapon: Entity, thrown: bool)
     Some(loose)
 }
 
-/// The dead drop their best weapon where they fell.
-pub(super) fn drop_on_death(mut died: MessageReader<Died>, mut commands: Commands) {
+/// Whether the dead drop their best weapon: in CS:S rounds they do; in
+/// deathmatch (respawning with fresh weapons) they don't. The rules set it.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DeathDrops(pub bool);
+
+/// The dead drop their best weapon where they fell (when `DeathDrops`).
+pub(super) fn drop_on_death(mut died: MessageReader<Died>, drops: Option<Res<DeathDrops>>, mut commands: Commands) {
+    if !drops.is_some_and(|d| d.0) {
+        died.clear();
+        return;
+    }
     for d in died.read() {
         let owner = d.entity;
         commands.queue(move |w: &mut World| {

@@ -669,3 +669,50 @@ fn dropped_weapons_lie_loose_and_are_picked_up_again() {
     assert!(inv.weapons.contains(&ak));
     assert_eq!(sim.app.world().get::<Weapon>(ak).unwrap().owner, Some(p));
 }
+
+/// The dead drop their weapon only when the rules ask for it (CS:S rounds),
+/// not in deathmatch; and a body never draws another weapon (no draw sound).
+#[test]
+fn the_dead_drop_weapons_only_in_rounds_and_draw_nothing() {
+    use mashup::weapon::drop::{DeathDrops, Loose};
+    for rounds in [false, true] {
+        let mut sim = sim();
+        let p = sim.spawn_character(greybox::SPAWNS[0], placeholder::ID);
+        if rounds {
+            // The rules turn death drops on with rounds.
+            sim.app
+                .world_mut()
+                .resource_mut::<mashup::console::Console>()
+                .submit("mp_freezetime 0; mashup_rounds 1");
+        }
+        sim.ticks(4);
+        assert_eq!(sim.app.world().resource::<DeathDrops>().0, rounds);
+        let ak = active(&sim, p);
+        sim.app.world_mut().get_mut::<Health>(p).unwrap().current = 0.0;
+        sim.app.world_mut().write_message(mashup::core::Died {
+            entity: p,
+            attacker: None,
+            damage: mashup::core::Damage {
+                target: p,
+                attacker: None,
+                amount: 1.0,
+                point: Vec3::ZERO,
+                dir: Vec3::X,
+                hitgroup: Default::default(),
+                kind: Default::default(),
+                weapon: None,
+                force: Vec3::ZERO,
+            },
+        });
+        sim.ticks(3);
+        let loose = sim.app.world_mut().query::<&Loose>().iter(sim.app.world()).count();
+        assert_eq!(loose, rounds as usize, "rounds {rounds}: loose weapons");
+        let inv = sim.app.world().get::<Inventory>(p).unwrap();
+        if rounds {
+            assert!(!inv.weapons.contains(&ak));
+            assert_eq!(inv.active, None, "a body draws nothing");
+        } else {
+            assert_eq!(inv.active, Some(ak));
+        }
+    }
+}

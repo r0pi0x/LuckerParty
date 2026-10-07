@@ -47,6 +47,7 @@ impl Plugin for WeaponPlugin {
         app.init_resource::<WeaponRegistry>()
             .init_resource::<economy::Prices>()
             .init_resource::<economy::BuyWindow>()
+            .init_resource::<drop::DeathDrops>()
             .register_type::<economy::Money>()
             .register_type::<economy::DefuseKit>()
             .init_resource::<PassMaterials>()
