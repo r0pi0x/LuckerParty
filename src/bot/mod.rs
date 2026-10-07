@@ -10,6 +10,7 @@
 //! it looks away from flashes about to go off.
 
 mod grenades;
+pub mod radio;
 
 use std::sync::Arc;
 
@@ -32,7 +33,14 @@ pub struct BotPlugin;
 
 impl Plugin for BotPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<BotConfig>().add_systems(
+        app.init_resource::<BotConfig>()
+            .init_resource::<radio::TeamCalls>()
+            .add_message::<crate::core::Radio>();
+        app.add_systems(
+            FixedUpdate,
+            radio::speak.after(crate::core::apply_damage),
+        );
+        app.add_systems(
             FixedUpdate,
             (hear, think)
                 .chain()
@@ -52,6 +60,12 @@ impl Plugin for BotPlugin {
             "bot_grenades",
             "Bots throw grenades: 0 never, 1 now and then, 2 whenever they can.",
             |c| &mut c.grenades,
+        );
+        resource_cvar::<BotConfig, u8>(
+            app,
+            "bot_radio",
+            "1: bots use the team radio (enemy spotted, enemy down, need backup).",
+            |c| &mut c.radio,
         );
         resource_cvar::<BotConfig, f32>(app, "bot_aim_error", "Bot aim wobble, degrees.", |c| &mut c.aim_error);
         resource_cvar::<BotConfig, f32>(app, "bot_turn_rate", "Bot turn speed, degrees per second.", |c| {
@@ -122,6 +136,8 @@ pub struct BotConfig {
     pub aim_error: f32,
     /// Grenades: 0 never, 1 now and then, 2 whenever a throw is possible.
     pub grenades: u8,
+    /// 1: bots use the team radio (`radio`).
+    pub radio: u8,
 }
 
 impl Default for BotConfig {
@@ -133,6 +149,7 @@ impl Default for BotConfig {
             turn_rate: 360.0,
             aim_error: 2.5,
             grenades: 1,
+            radio: 1,
         }
     }
 }
@@ -170,6 +187,8 @@ pub struct Bot {
     /// Looking away from a flash; flashes already noticed.
     avert: Option<grenades::Avert>,
     watched: Vec<Entity>,
+    /// What it said on the radio lately.
+    radio: radio::BotRadio,
 }
 
 impl Bot {

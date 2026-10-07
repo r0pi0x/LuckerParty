@@ -31,6 +31,7 @@ pub mod hud;
 pub mod live_sound;
 pub mod loose;
 pub mod probe_lit;
+pub mod radio;
 pub mod nav;
 pub mod particles;
 pub mod tracer;
@@ -1042,6 +1043,8 @@ pub struct MapData {
     pub shadows: Option<MapShadows>,
     /// The announcer's round sounds (sound entries), when the game has them.
     pub round_sounds: RoundSounds,
+    /// The team radio (commands, menus, chat format), when the game has one.
+    pub radio: Option<radio::RadioCommands>,
     /// Gravity for physics bodies, m/s^2 (downward), when the game sets it.
     pub gravity: Option<f32>,
     /// The playable area (engine space, min and max), when the map has a 3D
@@ -2724,6 +2727,9 @@ fn spawn_map(
         commands.insert_resource(MapWater(data.water.clone()));
         commands.insert_resource(fog::SceneFog(fog::world_fog(data.fog.as_ref())));
         commands.insert_resource(data.round_sounds.clone());
+        if let Some(r) = &data.radio {
+            commands.insert_resource(r.clone());
+        }
     }
 
     commands.spawn((
@@ -2823,6 +2829,7 @@ pub fn unload_map(world: &mut World) {
     world.remove_resource::<KillHeight>();
     world.remove_resource::<MapWater>();
     world.remove_resource::<RoundSounds>();
+    world.remove_resource::<radio::RadioCommands>();
     world.remove_resource::<MapEntities>();
     world.remove_resource::<water::MapWaterRender>();
     world.remove_resource::<water::WaterView>();

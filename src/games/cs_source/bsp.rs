@@ -130,6 +130,7 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
     data.decals = super::decals::impact_decals(&mut materials);
     data.hud = super::hud::load(&mut materials).map(std::sync::Arc::new);
     data.round_sounds = super::sound::round_sounds();
+    data.radio = super::radio::load(&materials);
     data.overview = super::hud::overview(&mut materials, name);
     data.particles = super::impact_effects::load_materials(&mut materials);
     // What characters hold: the weapons' world models.

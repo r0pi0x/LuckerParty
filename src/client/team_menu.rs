@@ -36,12 +36,18 @@ fn keys(
     mut menu: ResMut<TeamMenu>,
     mut console: ResMut<Console>,
     teams: Query<&Team, With<Intent>>,
+    mut others: (ResMut<super::buy_menu::BuyMenu>, ResMut<super::radio::RadioMenu>),
 ) {
     if !super::input::cursor_grabbed(&cursor) {
         return;
     }
     if keys.just_pressed(KeyCode::KeyM) {
         menu.0 = !menu.0;
+        if menu.0 {
+            // Menus close each other.
+            *others.0 = default();
+            others.1.0 = None;
+        }
         return;
     }
     if !menu.0 {
