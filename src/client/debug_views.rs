@@ -255,7 +255,7 @@ fn spawn_bot_list(mut commands: Commands) {
         TextColor(Color::srgb(0.85, 1.0, 0.85)),
         Node {
             position_type: PositionType::Absolute,
-            top: px(80.0),
+            top: px(480.0),
             left: px(8.0),
             ..default()
         },
