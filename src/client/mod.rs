@@ -179,6 +179,9 @@ pub struct ClientPlugin {
 
 impl Plugin for ClientPlugin {
     fn build(&self, app: &mut App) {
+        if let Some(map) = &self.args.map {
+            app.insert_resource(crate::map::LoadedMapName(map.clone()));
+        }
         app.insert_resource(ClientArgs(self.args.clone()))
             .add_plugins((
                 input::LocalInputPlugin,

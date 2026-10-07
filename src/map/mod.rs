@@ -1568,6 +1568,12 @@ pub struct MapSkybox(pub Handle<Image>);
 #[derive(Resource, Clone, Debug)]
 pub struct ActiveMapLook(pub MapLook);
 
+/// The loaded map's name (`MapData::name`), for reports; the client sets
+/// it (from `--map` and the `map` command) so the simulation's entities
+/// stay as they were (bot seeds come from entity ids).
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct LoadedMapName(pub String);
+
 /// Marks every entity belonging to the loaded map.
 #[derive(Component)]
 pub struct MapPart;

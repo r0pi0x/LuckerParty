@@ -151,6 +151,12 @@ Only `Reflect`-registered types are visible; register new core components in
   `violence_hblood` (0/1). To see a shot's effects in a `--screenshot`
   run, fire with `++attack` and keep `--frames` low enough that they are
   still alive (dust lives about a second, sparks a tenth of one).
+- **Bug reports while playtesting:** press F9 (or `bugreport [note]` in the
+  console). It saves `screenshot.png` and `report.txt` (build commit,
+  map, a `setpos`/`setang` line to paste back, weapon, health, the last
+  40 console lines) to `<data dir>/mashup/bugreports/report-<time>/`
+  (`~/.local/share` on Linux, `%LOCALAPPDATA%` on Windows) and prints the
+  path.
 - `thirdperson` (back with `firstperson`; distance `cam_idealdist`, CS:S
   units) puts the camera behind the local player and draws its own
   animated body: `+thirdperson` in a `--screenshot` run shows the local

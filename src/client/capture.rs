@@ -86,6 +86,23 @@ impl Plugin for CapturePlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Update, (countdown, start_views, run_views.after(start_views)));
         app.console_command(
+            "bugreport",
+            "bugreport [note]: save a screenshot, your setpos/setang, map, weapon, build and recent console lines to a folder to send with a bug.",
+            |w, a| {
+                let dir = dirs::data_local_dir()
+                    .ok_or("no per-user data folder")?
+                    .join("mashup")
+                    .join("bugreports")
+                    .join(chrono_stamp());
+                std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+                let info = report_text(w, &a.join(" "));
+                std::fs::write(dir.join("report.txt"), &info).map_err(|e| format!("report: {e}"))?;
+                w.spawn(Screenshot::primary_window())
+                    .observe(save_to_disk(dir.join("screenshot.png")));
+                Ok(Some(format!("bug report saved to {}", dir.display())))
+            },
+        );
+        app.console_command(
             "screenshot",
             "screenshot <file.png>: save the window as it is now.",
             |w, a| {
@@ -313,4 +330,55 @@ fn print_bench(rows: &[BenchRow]) {
         mean(&|r| r.meshes.1 as f32),
         mean(&|r| r.meshes.2 as f32) / 1000.0,
     );
+}
+
+/// A folder name from the current time (UTC seconds since 1970).
+fn chrono_stamp() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    format!("report-{secs}")
+}
+
+/// What a bug report says besides the screenshot.
+fn report_text(w: &mut World, note: &str) -> String {
+    use crate::{console::Console, core::LocalPlayer};
+    let mut out = format!("mashup build {}\n", env!("MASHUP_GIT"));
+    if !note.is_empty() {
+        out += &format!("note: {note}\n");
+    }
+    if let Some(m) = w.get_resource::<crate::map::LoadedMapName>() {
+        out += &format!("map: {}\n", m.0);
+    }
+    let player = w.query_filtered::<Entity, With<LocalPlayer>>().iter(w).next();
+    if let Some(p) = player {
+        if let (Some(t), Some(i)) = (w.get::<Transform>(p), w.get::<crate::core::Intent>(p)) {
+            let s = Vec3::new(t.translation.x, -t.translation.z, t.translation.y) / 0.0254;
+            out += &format!(
+                "setpos {:.2} {:.2} {:.2};setang {:.2} {:.2} 0.00\n",
+                s.x,
+                s.y,
+                s.z,
+                -i.pitch.to_degrees(),
+                (i.yaw.to_degrees() + 90.0).rem_euclid(360.0)
+            );
+        }
+        let weapon = w
+            .get::<crate::weapon::Inventory>(p)
+            .and_then(|inv| inv.active)
+            .and_then(|e| w.get::<crate::weapon::Weapon>(e))
+            .map(|wpn| wpn.id);
+        out += &format!("weapon: {}\n", weapon.unwrap_or("none"));
+        if let Some(h) = w.get::<crate::core::Health>(p) {
+            out += &format!("health: {:.0}\n", h.current * 100.0);
+        }
+    }
+    if let Some(c) = w.get_resource::<Console>() {
+        out += "\nlast console lines:\n";
+        let n = c.output.len();
+        for l in &c.output[n.saturating_sub(40)..] {
+            out += &format!("{}\n", l.text);
+        }
+    }
+    out
 }

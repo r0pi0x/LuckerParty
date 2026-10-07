@@ -134,17 +134,20 @@ fn grab_cursor(
     }
 }
 
-/// G drops the held weapon (CS:S's default `bind g drop`).
+/// G drops the held weapon (CS:S's default `bind g drop`); F9 saves a
+/// bug report.
 fn drop_key(
     keys: Res<ButtonInput<KeyCode>>,
     cursor: Single<&CursorOptions>,
     console: Option<ResMut<crate::console::Console>>,
 ) {
-    if keys.just_pressed(KeyCode::KeyG)
-        && cursor_grabbed(&cursor)
-        && let Some(mut console) = console
-    {
+    let Some(mut console) = console else { return };
+    if keys.just_pressed(KeyCode::KeyG) && cursor_grabbed(&cursor) {
         console.submit("drop");
+    }
+    // F9: a bug report (screenshot, position, build, console) to send.
+    if keys.just_pressed(KeyCode::F9) {
+        console.submit("bugreport");
     }
 }
 

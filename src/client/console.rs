@@ -1603,6 +1603,7 @@ fn client_commands(app: &mut App) {
             // Load in the background, then swap in place (finish_map_load):
             // everyone respawns at the new spawn points.
             let id = format!("cs_source:{name}");
+            w.insert_resource(crate::map::LoadedMapName(id.clone()));
             let task = bevy::tasks::AsyncComputeTaskPool::get().spawn({
                 let id = id.clone();
                 async move { crate::games::load_map(&id) }
