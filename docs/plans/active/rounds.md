@@ -60,10 +60,31 @@ restarts.
    `Event.RoundDraw`, a radio line when the round goes live; whether the
    game plays it at freeze end for both teams is to check) and team
    scores on the scoreboard.
-4. Objectives: bomb (plant/defuse, C4), hostages; mp_timelimit and
-   mp_maxrounds; team switching rules (mp_limitteams, autoteambalance).
+4. Objectives (specs/cs_source/objectives.md): done, first slice.
+   `objectives` module: the C4 to a random terrorist each round, arming
+   in a `func_bomb_target` (3 s, clicks, view-model press and third-person
+   gesture), the planted bomb (`mp_c4timer`, beeps on the provisional
+   schedule, defuse with +use 10 s / 5 s with a $200 kit, interrupts
+   reset), the explosion through the HE `ExplosionRule` with the map's
+   `bombradius` (H1 falloff over 3.5 × radius) and the target's
+   `BombExplode` outputs through the logic layer; the round-end table and
+   its money (exploded/defused 3500, target saved 3250, +800 to planting
+   losers, planter 300, hostage touch 150, rescue 1000, kill −1500);
+   hostages as team-less characters led by +use over the nav mesh and
+   rescued in `func_hostage_rescue`; Ts win on time on hostage maps.
+   HUD icons, progress bar, messages, radar bomb marker. Tests:
+   tests/objectives.rs (O1, O5-O7, O10-O24 shape, O32-O41),
+   tests/map_objectives.rs (dust2 A, cs_office). Left: see backlog §3.
+5. mp_timelimit and mp_maxrounds; team switching rules (mp_limitteams,
+   autoteambalance).
 
 ## Decision log
+
+- 2026-10-07: objectives are their own module between weapon and rules
+  (rules end rounds from its state, bots and games use it), not part of
+  rules: bots and the game's data need them. Hostages are characters
+  with no team moved by the game's movement (collision, stairs, ragdolls
+  for free); everything that counts players skips `Hostage`.
 
 - 2026-10-06: rounds are a rules mode (off by default) rather than
   replacing deathmatch: minigame maps and quick playtests keep instant

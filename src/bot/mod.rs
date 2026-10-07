@@ -14,6 +14,7 @@
 
 mod grenades;
 mod look;
+pub mod objectives;
 pub mod path;
 pub mod radio;
 pub mod tactics;
@@ -47,7 +48,7 @@ impl Plugin for BotPlugin {
         app.add_systems(FixedUpdate, radio::speak.after(crate::core::apply_damage));
         app.add_systems(
             FixedUpdate,
-            (hear, tactics::update, think)
+            (hear, tactics::update, objectives::goals, think, objectives::act)
                 .chain()
                 .before(SimSet::Movement)
                 .before(crate::weapon::SelectWeapons),
@@ -229,6 +230,10 @@ pub struct Bot {
     look_at: Option<Vec3>,
     activity: Activity,
     dead: bool,
+    /// Where its objective is (feet; a bomb target to plant at, the
+    /// planted bomb to defuse or guard): walked to before anything else
+    /// (`objectives`).
+    pub objective: Option<Vec3>,
 }
 
 /// What a bot is doing, for debug views.
@@ -965,6 +970,11 @@ fn choose_goal(
     plan: Option<&tactics::TeamPlan>,
     nav: &NavMesh,
 ) -> Option<Vec3> {
+    // The bomb to plant or defuse comes first (`objectives`).
+    if let Some(at) = bot.objective {
+        bot.activity = Activity::ToSite;
+        return Some(at);
+    }
     let role = bot.orders.role;
     let site = bot.site.and_then(|s| tactics.sites.get(s));
     // A remembered enemy, if the role lets it go there.

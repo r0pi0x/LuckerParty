@@ -107,6 +107,13 @@ Only `Reflect`-registered types are visible; register new core components in
   +bot_give weapon_hegrenade +mashup_drawbots 1 +mashup_watch 1
   +cam_idealdist 600 +cam_idealyaw 70 ++attack --frames 130` shows the bot
   hearing you behind the long crate and lobbing an HE over it.
+- `mashup_objectives 1` prints the objectives' state on screen: who
+  carries the bomb, a planted bomb's place, site and time left, a defuse's
+  progress (who, kit, seconds), the outcome, and each hostage's health,
+  leader and position. To plant in a screenshot: `--map
+  cs_source:de_dust2 --spawn 29.46,3.5,-62.99 +give cs_source:weapon_c4`
+  (de_dust2's A site), then `+attack` over the remote console; hostages
+  appear with `mp_freezetime 0; mashup_rounds 1` on a cs_ map.
 - `mashup_drawhitboxes 1` outlines other characters' hitboxes, coloured
   by hitgroup, where shots test them (e.g. `+bot_stop 1 +bot_add 2
   +mashup_drawhitboxes 1` with `--screenshot` to check they follow the

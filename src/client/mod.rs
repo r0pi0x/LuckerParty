@@ -13,6 +13,7 @@ pub mod game_hud;
 pub mod hud_sprites;
 pub mod hud;
 pub mod input;
+pub mod objectives_hud;
 pub mod perf;
 pub mod radar;
 pub mod radio;
@@ -201,6 +202,7 @@ impl Plugin for ClientPlugin {
                 team_menu::TeamMenuPlugin,
                 chat::ChatPlugin,
                 radio::RadioPlugin,
+                objectives_hud::ObjectivesHudPlugin,
             ))
             .add_systems(PostStartup, spawn_local_player)
             .add_systems(Update, (follow_eye, zoom_camera));

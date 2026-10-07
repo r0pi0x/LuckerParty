@@ -23,7 +23,7 @@ impl Plugin for DeathmatchPlugin {
                 (rounds::run_rounds, respawn, hold_the_dead, rounds::hold_frozen)
                     .chain()
                     .in_set(SimSet::Rules),
-                (count_deaths, rounds::kill_rewards).after(SimSet::Weapons),
+                (count_deaths, rounds::kill_rewards, rounds::objective_money).after(SimSet::Weapons),
             ),
         );
         rounds::plugin(app);
@@ -102,7 +102,7 @@ pub struct Dead {
 /// fresh weapons, at the spawn points.
 pub fn respawn_everyone(world: &mut World) {
     let all: Vec<Entity> = world
-        .query_filtered::<Entity, (With<Intent>, With<Health>)>()
+        .query_filtered::<Entity, (With<Intent>, With<Health>, Without<crate::objectives::hostages::Hostage>)>()
         .iter(world)
         .collect();
     for e in all {
@@ -156,7 +156,7 @@ fn respawn(world: &mut World) {
     let now = world.resource::<Time>().elapsed_secs_f64();
     let delay = world.resource::<Deathmatch>().respawn_delay as f64;
     let ready: Vec<Entity> = world
-        .query::<(Entity, &Dead)>()
+        .query_filtered::<(Entity, &Dead), Without<crate::objectives::hostages::Hostage>>()
         .iter(world)
         .filter(|(_, d)| now - d.since >= delay)
         .map(|(e, _)| e)

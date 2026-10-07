@@ -111,24 +111,50 @@ pub(super) fn attach_loose(
 #[derive(Component, Clone, Debug, PartialEq)]
 pub struct ShownItem(pub String);
 
+/// A `ShownItem` whose model rests on its transform's origin (its
+/// bounds' bottom there) instead of being centred on it: something set
+/// down on the ground (a planted bomb).
+/// The rotation turns the model first (one whose own up isn't the
+/// held-model frame's).
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct SitOnOrigin(pub Quat);
+
 /// Marks a `ShownItem` whose meshes were added.
 #[derive(Component)]
 pub(super) struct ShownItemDrawn;
 
 /// Give new shown items their meshes.
 pub(super) fn attach_shown(
-    items: Query<(Entity, &ShownItem), Without<ShownItemDrawn>>,
+    items: Query<(Entity, &ShownItem, Option<&SitOnOrigin>), Without<ShownItemDrawn>>,
     assets: Option<Res<LooseAssets>>,
+    mut materials: Option<ResMut<Assets<super::prop_material::PropMaterial>>>,
     mut commands: Commands,
 ) {
     let Some(assets) = assets else { return };
-    for (e, item) in &items {
+    for (e, item, sit) in &items {
         let mut ent = commands.entity(e);
         ent.insert((ShownItemDrawn, MapPart, Visibility::default()));
         if let Some(a) = assets.0.get(&item.0) {
+            let mut frame = a.frame;
+            if let Some(SitOnOrigin(turn)) = sit {
+                let m = Mat3::from_quat(*turn);
+                let half = m.x_axis.abs() * a.half.x + m.y_axis.abs() * a.half.y + m.z_axis.abs() * a.half.z;
+                frame = Transform::from_rotation(*turn) * frame;
+                frame.translation.y += half.y;
+            }
+            // Its own materials, lit where it is (probe_lit).
+            let own: Vec<_> = a
+                .parts
+                .iter()
+                .map(|(_, m)| match materials.as_mut() {
+                    Some(assets) => super::probe_lit::instance(assets, m),
+                    None => m.clone(),
+                })
+                .collect();
+            ent.insert(super::probe_lit::ProbeLit::new(own.clone(), Vec3::ZERO));
             ent.with_children(|c| {
-                for (mesh, material) in &a.parts {
-                    c.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone()), a.frame));
+                for ((mesh, _), material) in a.parts.iter().zip(own) {
+                    c.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material), frame));
                 }
             });
         }

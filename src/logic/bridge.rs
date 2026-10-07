@@ -75,7 +75,8 @@ impl Plugin for LogicPlugin {
             )
             .add_systems(FixedUpdate, (load, pre).chain().in_set(LogicSet::Pre))
             .add_systems(FixedUpdate, post.in_set(LogicSet::Post))
-            .add_systems(FixedUpdate, damage.in_set(LogicSet::Damage))
+            .add_systems(FixedUpdate, (damage, fire_outputs).in_set(LogicSet::Damage))
+            .add_message::<crate::map::entities::FireEntityOutput>()
             // Physics impacts on props and players (after the physics
             // step; the damage lands next tick).
             .add_message::<CollisionStart>()
@@ -289,6 +290,22 @@ fn set_prop_shown(world: &mut World, node: Entity, visible: bool, solid: bool, e
             e.insert((LogicHidden, Visibility::Hidden));
         }
     }
+    // The body comes back before its colliders do: avian's query tree
+    // copies "body disabled" into a collider's proxy when the collider
+    // joins it and doesn't clear it when RigidBodyDisabled goes away. A
+    // stale flag makes each new contact pair of that collider start out
+    // generating no constraints and then switch on in the step it starts
+    // touching, which links the contact into an island twice and trips
+    // avian's island assertion a few rounds later (tests/map_logic.rs
+    // `restored_prop_contacts_join_islands_once`).
+    let enable_body = {
+        let mut e = world.entity_mut(node);
+        let enable = exists && e.contains::<RigidBody>() && e.contains::<RigidBodyDisabled>();
+        if enable {
+            e.remove::<RigidBodyDisabled>();
+        }
+        enable
+    };
     let colliders: Vec<Entity> = std::iter::once(node)
         .chain(world.get::<Children>(node).map(|c| c.to_vec()).unwrap_or_default())
         .filter(|c| world.get::<Collider>(*c).is_some())
@@ -303,6 +320,10 @@ fn set_prop_shown(world: &mut World, node: Entity, visible: bool, solid: bool, e
             } else {
                 e.insert(ColliderDisabled);
             }
+        } else if solid && enable_body {
+            // Solid all along under a disabled body: rejoin the tree so
+            // its proxy forgets the disabled body.
+            e.insert(ColliderDisabled).remove::<ColliderDisabled>();
         }
     }
     let mut e = world.entity_mut(node);
@@ -312,12 +333,8 @@ fn set_prop_shown(world: &mut World, node: Entity, visible: bool, solid: bool, e
     {
         m.solid = solid;
     }
-    if e.contains::<RigidBody>() && exists == e.contains::<RigidBodyDisabled>() {
-        if exists {
-            e.remove::<RigidBodyDisabled>();
-        } else {
-            e.insert(RigidBodyDisabled);
-        }
+    if !exists && e.contains::<RigidBody>() && !e.contains::<RigidBodyDisabled>() {
+        e.insert(RigidBodyDisabled);
     }
     if !exists {
         e.remove::<Damageable>();
@@ -1019,6 +1036,7 @@ fn prop_broke(world: &mut World, id: EntId, sound: Option<String>, explode: Opti
             attacker,
             inflictor: Some(node),
             sound: x.sound,
+            weapon: None,
         });
     }
     if let Some(index) = world.get::<PropIndex>(node).map(|p| p.0) {
@@ -1206,6 +1224,34 @@ fn impacts(
                 weapon: None,
                 force,
             });
+        }
+    }
+}
+
+/// Outputs game rules ask a map entity to fire (a bomb target's
+/// `BombExplode`), with the player as activator.
+fn fire_outputs(mut asks: MessageReader<crate::map::entities::FireEntityOutput>, logic: Option<ResMut<Logic>>) {
+    let Some(mut logic) = logic else {
+        asks.clear();
+        return;
+    };
+    for a in asks.read() {
+        let id = logic
+            .world
+            .ids()
+            .into_iter()
+            .find(|id| logic.world.get(*id).is_some_and(|e| e.map_index == Some(a.map_index)));
+        if let Some(id) = id {
+            let who = a.activator.map(super::world::Who::Player);
+            logic.world.fire_output(id, &a.output, who, super::Value::Void);
+            // A bomb target's legacy `target` is used when it explodes
+            // (spec objectives.md 6.3, *hyp.*).
+            let target = logic.world.get(id).and_then(|e| e.kv("target")).map(str::to_string);
+            if a.output.eq_ignore_ascii_case("BombExplode")
+                && let Some(t) = target.filter(|t| !t.is_empty())
+            {
+                logic.world.queue_input(&t, "Use", super::Value::Void, 0.0, who);
+            }
         }
     }
 }

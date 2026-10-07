@@ -24,7 +24,7 @@ usage: dump <game> [options]
   --list               list every file with its size
   --archives           combat_arms: per-archive title, entropy and file count
   --sequences <model>  cs_source: a model's bones, sequences (activity, frames, fps,
-                       duration, looping) and pose parameters, includes merged
+                       duration, looping, ground speed) and pose parameters, includes merged
   --filter <text>      only paths containing <text> (case-insensitive)
   --extract            write the (filtered) files to --out
   --out <dir>          extraction folder (default: per-user data dir; never inside the repo)
@@ -181,13 +181,18 @@ fn sequences(mount: &Mount, path: &str) -> Result<(), String> {
             0.0
         };
         println!(
-            "  seq {i:>3} {:24} {:28} w{:<3} {:>4} frames {:>5.1} fps {duration:>7.4} s{}",
+            "  seq {i:>3} {:24} {:28} w{:<3} {:>4} frames {:>5.1} fps {duration:>7.4} s{}{}",
             s.name,
             s.activity,
             s.activity_weight,
             a.frames,
             a.fps,
-            if s.looping { " looping" } else { "" }
+            if s.looping { " looping" } else { "" },
+            if a.speed > 0.0 {
+                format!(" {:.1} u/s", a.speed)
+            } else {
+                String::new()
+            }
         );
         for e in &s.events {
             println!("        event {:.4} {} {:?} {:?}", e.cycle, e.event, e.name, e.options);

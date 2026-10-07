@@ -640,6 +640,9 @@ enum StandIn {
     /// alpha (detail blend mode 2). The aztec materials all set
     /// `$detail_alpha_mask_base_texture 1`; its absence isn't modelled.
     TwoTextureBlend,
+    /// Eyes and Teeth (HL2 faces: the hostages): a plain VertexLitGeneric
+    /// model surface; the iris, glint and mouth darkening aren't modelled.
+    Model,
     /// Decal shaders with their own names
     /// (DecalBaseTimesLightmapAlphaBlendSelfIllum on de_nuke): a translucent
     /// LightmappedGeneric decal. Self-illumination isn't modelled.
@@ -659,6 +662,7 @@ fn stand_in_shader(text: &str) -> (std::borrow::Cow<'_, str>, Option<StandIn>) {
     let shader = body[..len].to_ascii_lowercase();
     let (stand_in, extra) = match shader.as_str() {
         "worldtwotextureblend" => (StandIn::TwoTextureBlend, ""),
+        "eyes" | "teeth" => (StandIn::Model, ""),
         s if s.starts_with("decalbasetimeslightmap") => {
             (StandIn::Decal, "\n\"$decal\" \"1\"\n\"$translucent\" \"1\"\n")
         }
@@ -671,8 +675,13 @@ fn stand_in_shader(text: &str) -> (std::borrow::Cow<'_, str>, Option<StandIn>) {
         _ => rest.to_string(),
     };
     let quote = if quoted { "\"" } else { "" };
+    let shader = if stand_in == StandIn::Model {
+        "VertexLitGeneric"
+    } else {
+        "LightmappedGeneric"
+    };
     (
-        Cow::Owned(format!("{}{quote}LightmappedGeneric{rest}", &text[..start])),
+        Cow::Owned(format!("{}{quote}{shader}{rest}", &text[..start])),
         Some(stand_in),
     )
 }

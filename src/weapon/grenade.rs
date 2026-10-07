@@ -997,7 +997,7 @@ fn explosions(
             e.origin,
             &b,
             e.attacker,
-            EXPLOSION_WEAPON,
+            e.weapon.unwrap_or(EXPLOSION_WEAPON),
             e.inflictor,
             &mut world,
             &mut rng.0,
@@ -1013,7 +1013,7 @@ fn explosions(
         }
         world.detonated.write(Detonated {
             kind: GrenadeKind::Blast,
-            weapon: EXPLOSION_WEAPON,
+            weapon: e.weapon.unwrap_or(EXPLOSION_WEAPON),
             thrower: e.attacker,
             at: origin,
             ground: probe,

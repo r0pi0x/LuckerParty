@@ -163,6 +163,7 @@ pub fn load_character(
     };
     Ok(crate::map::MapCharacterModel {
         team,
+        name: None,
         ragdoll,
         animations,
         boxes,
@@ -336,14 +337,21 @@ pub fn load_held(
             None => (q, p),
         });
     }
-    let (i, bone) = mdl
+    // Held by a bone it shares with the player skeleton; items that are
+    // never held (a planted bomb, a kit on the floor) stay in model space.
+    let shared = mdl
         .bones
         .iter()
         .enumerate()
-        .find(|(_, b)| skeleton.iter().any(|s| s.name.eq_ignore_ascii_case(&b.name)))
-        .ok_or_else(|| format!("{path}: no bone in common with the player skeleton"))?;
-    let (q, p) = global[i];
-    let to_bone = Transform::from_rotation(q).with_translation(p).to_matrix().inverse();
+        .find(|(_, b)| skeleton.iter().any(|s| s.name.eq_ignore_ascii_case(&b.name)));
+    let (i, bone) = match shared {
+        Some(b) => b,
+        None => (0, mdl.bones.first().ok_or_else(|| format!("{path}: no bones"))?),
+    };
+    let to_bone = match global.get(i) {
+        Some((q, p)) => Transform::from_rotation(*q).with_translation(*p).to_matrix().inverse(),
+        None => Mat4::IDENTITY,
+    };
     // Engine space (meters, x z -y) back to the model's units and axes.
     let source = |v: [f32; 3]| Vec3::new(v[0], -v[2], v[1]);
     let mut held = convert_model_in(&model, 0, materials, false, &[]);
@@ -492,25 +500,33 @@ fn convert_model_in(
             (look.apply(&m), slot)
         });
         let verts: Vec<&vmdl::vvd::Vertex> = mesh.vertices().collect();
-        for tri in verts.as_chunks::<3>().0 {
-            let p: Vec<Vec3> = tri
-                .iter()
-                .map(|t| {
-                    to_engine(v(if root {
-                        model.apply_root_transform(t.position)
-                    } else {
-                        t.position
-                    }))
-                })
-                .collect();
-            let n: Vec<Vec3> = tri.iter().map(|t| to_engine(v(t.normal)).normalize_or_zero()).collect();
-            // Wind counter-clockwise against the vertex normals.
-            let face = (p[1] - p[0]).cross(p[2] - p[0]);
-            let order = if face.dot(n[0] + n[1] + n[2]) < 0.0 {
-                [0, 2, 1]
+        let place = |t: &vmdl::vvd::Vertex| {
+            to_engine(v(if root {
+                model.apply_root_transform(t.position)
             } else {
-                [0, 1, 2]
-            };
+                t.position
+            }))
+        };
+        let tris = verts.as_chunks::<3>().0;
+        // Wind counter-clockwise against the vertex normals: the model's
+        // triangles share one winding, so take the majority over the mesh
+        // and apply it to all. (Deciding per triangle flips good ones where
+        // the normals mislead it, on thin parts and smoothed edges: the
+        // knife blade's back went missing.)
+        let reversed = tris
+            .iter()
+            .map(|tri| {
+                let p = tri.map(|t| place(t));
+                let n: Vec3 = tri.iter().map(|t| to_engine(v(t.normal)).normalize_or_zero()).sum();
+                let face = (p[1] - p[0]).cross(p[2] - p[0]);
+                if face.dot(n) < 0.0 { 1i64 } else { -1 }
+            })
+            .sum::<i64>()
+            > 0;
+        for tri in tris {
+            let p: Vec<Vec3> = tri.iter().map(|t| place(t)).collect();
+            let n: Vec<Vec3> = tri.iter().map(|t| to_engine(v(t.normal)).normalize_or_zero()).collect();
+            let order = if reversed { [0, 2, 1] } else { [0, 1, 2] };
             for i in order {
                 entry.indices.push(entry.positions.len() as u32);
                 entry.positions.push(p[i].to_array());

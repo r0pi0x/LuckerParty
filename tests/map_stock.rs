@@ -76,6 +76,56 @@ fn materials_and_models_resolve() {
     }
 }
 
+/// Every model a stock map's entities name reads its animations, including
+/// HL2 models whose animations sit in `.ani` blocks or sections
+/// (specs/cs_source/mdl_v48.md §8); the ones that do are listed.
+#[test]
+fn entity_models_read_their_animations() {
+    if !installed() {
+        return;
+    }
+    let path = LocalConfig::load().unwrap().game_path(cs_source::GAME).unwrap();
+    let mount = cs_source::mount::open(&path).unwrap();
+    let read = |p: &str| mount.read(&p.to_lowercase().replace('\\', "/")).ok();
+    let mut models: Vec<String> = Vec::new();
+    for name in STOCK {
+        let bsp = read(&format!("maps/{name}.bsp")).expect(name);
+        let text = String::from_utf8_lossy(&bsp);
+        for (at, _) in text.match_indices("\"model\" \"models/") {
+            let rest = &text[at + 9..];
+            let Some(end) = rest.find('"') else { continue };
+            let model = rest[..end].to_lowercase().replace('\\', "/");
+            if model.ends_with(".mdl") && !models.contains(&model) {
+                models.push(model);
+            }
+        }
+    }
+    models.sort();
+    let mut external = Vec::new();
+    let mut failed = Vec::new();
+    for m in &models {
+        let Some(bytes) = read(m) else { continue };
+        let i32_at = |at: usize| i32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+        match cs_source::anim::load(&read, m) {
+            Ok(set) => {
+                if i32_at(352) > 1 || i32_at(4) != 44 {
+                    external.push(format!(
+                        "{m} (version {}, {} sequences)",
+                        i32_at(4),
+                        set.sequences.len()
+                    ));
+                }
+            }
+            Err(e) => failed.push(format!("{m}: {e}")),
+        }
+    }
+    eprintln!(
+        "{} entity models; version 45-48 or with .ani blocks: {external:#?}",
+        models.len()
+    );
+    assert!(failed.is_empty(), "{failed:#?}");
+}
+
 /// WorldTwoTextureBlend's walls use the 2x grime mask (detail mode 4,
 /// specs/cs_source/shaders_two_texture_blend.md): the stone is the detail.
 #[test]

@@ -120,6 +120,7 @@ fn model() -> MapCharacterModel {
     let axes = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
     MapCharacterModel {
         team: None,
+        name: None,
         model: MapModel::default(),
         hitboxes: boxes
             .iter()
@@ -392,6 +393,7 @@ fn posed_model() -> MapCharacterModel {
             frames: 7,
             delta: false,
             base: 0,
+            speed: 0.0,
             tracks: vec![Track {
                 bone: 1,
                 rotation: Some((0..7).map(|f| if f == 0 { upright } else { bent }).collect()),

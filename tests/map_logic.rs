@@ -285,3 +285,124 @@ fn round_restart_puts_the_map_back() {
     assert_eq!(hud(&sim), 1, "logic_auto fired again");
     assert!(exists(&sim, 1), "the player is out of the trigger: still armed");
 }
+
+/// Every contact pair avian links into an island once: a pair still
+/// waiting to switch its constraints on must not be in one yet, and a
+/// collider of an enabled body must not carry a "body disabled" proxy.
+/// Either one, left over from a restored prop, later links a contact
+/// twice and trips avian's island assertion (`contact.island.is_none()`).
+fn island_bookkeeping_errors(world: &World) -> Vec<String> {
+    use avian3d::{
+        collider_tree::{ColliderTreeProxyFlags, ColliderTreeProxyKey, ColliderTrees},
+        prelude::*,
+    };
+    let mut errors = Vec::new();
+    let graph = world.resource::<ContactGraph>();
+    for p in graph.active_pairs().iter().chain(graph.sleeping_pairs()) {
+        let Some(edge) = graph.get_edge_by_id(p.contact_id) else { continue };
+        if edge.island.is_some() && p.flags.contains(ContactPairFlags::STARTED_GENERATING_CONSTRAINTS) {
+            errors.push(format!("contact {} / {} is in an island and about to join one", p.collider1, p.collider2));
+        }
+    }
+    let trees = world.resource::<ColliderTrees>();
+    for (e, key, of) in world
+        .try_query::<(Entity, &ColliderTreeProxyKey, &ColliderOf)>()
+        .unwrap()
+        .iter(world)
+    {
+        let disabled = world.get::<RigidBodyDisabled>(of.body).is_some();
+        if let Some(proxy) = trees.get_proxy(*key)
+            && proxy.flags.contains(ColliderTreeProxyFlags::BODY_DISABLED) != disabled
+        {
+            errors.push(format!("collider {e}: proxy says body disabled {}, body {disabled}", !disabled));
+        }
+    }
+    errors
+}
+
+#[test]
+fn restored_prop_contacts_join_islands_once() {
+    use avian3d::prelude::{LinearVelocity, RigidBody, RigidBodyDisabled};
+    use mashup::{
+        logic::Value,
+        map::{MapCollision, MapConvex, MapModel, MapPhysics, MapProp, PropEntity, PropSolid, PushAway},
+    };
+    // A physics crate resting on the floor, away from the player.
+    let crate_ = entity(&[("classname", "prop_physics"), ("targetname", "crate"), ("origin", "300 0 0")], Vec::new(), false);
+    let mut data = map(vec![crate_]);
+    let half = 16.0 * SCALE;
+    let (lo, hi) = (Vec3::new(-half, 0.0, -half), Vec3::new(half, 2.0 * half, half));
+    let corners = (0..8)
+        .map(|k| Vec3::new([lo.x, hi.x][k & 1], [lo.y, hi.y][(k >> 1) & 1], [lo.z, hi.z][(k >> 2) & 1]))
+        .collect();
+    data.models.push(MapModel {
+        bounds: (lo, hi),
+        collision: Some(MapCollision {
+            pieces: vec![MapConvex { points: corners, planes: Vec::new() }],
+            mass: 20.0,
+            ..default()
+        }),
+        ..default()
+    });
+    data.props.push(MapProp {
+        model: 0,
+        translation: to_engine(Vec3::new(300.0, 0.0, 0.0)),
+        rotation: Quat::IDENTITY,
+        solid: PropSolid::Mesh,
+        skybox: false,
+        lighting: None,
+        casts_shadow: false,
+        physics: Some(MapPhysics {
+            mass: 20.0,
+            friction: 0.8,
+            elasticity: 0.0,
+            damping: 0.0,
+            rotdamping: 0.0,
+            push: PushAway::Collide,
+            frozen: false,
+            asleep: false,
+        }),
+        fade: None,
+        parent: None,
+        entity: Some(0),
+        skin: 0,
+        body: 0,
+    });
+    let mut sim = Sim::new((MapPlugin::new(data), SourceMovementPlugin));
+    sim.set_tick_interval(cs_source::TICK_INTERVAL);
+    sim.spawn_character(to_engine(Vec3::new(-300.0, 0.0, 37.0)), movement::ID);
+    sim.ticks(30);
+    let world = sim.app.world_mut();
+    let node = world
+        .query::<(Entity, &PropEntity)>()
+        .iter(world)
+        .find(|(_, p)| p.0 == 0)
+        .expect("crate node")
+        .0;
+    assert!(world.get::<RigidBody>(node).is_some_and(|b| b.is_dynamic()));
+    assert_eq!(island_bookkeeping_errors(sim.app.world()), Vec::<String>::new());
+
+    // Killed (as when broken): its body stops.
+    sim.app
+        .world_mut()
+        .resource_mut::<Logic>()
+        .world
+        .queue_input("crate", "Kill", Value::Void, 0.0, None);
+    sim.ticks(5);
+    assert!(!exists(&sim, 0), "killed");
+    assert!(sim.app.world().get::<RigidBodyDisabled>(node).is_some());
+
+    // A new round brings it back where it was, on the floor.
+    sim.app.world_mut().resource_mut::<RoundRestarts>().0 += 1;
+    for i in 0..120 {
+        sim.ticks(1);
+        if i % 20 == 10 {
+            // Shoved about: its contacts with the floor change.
+            sim.app.world_mut().get_mut::<LinearVelocity>(node).unwrap().0 = Vec3::new(1.5, 0.5, -0.5);
+        }
+        let errors = island_bookkeeping_errors(sim.app.world());
+        assert!(errors.is_empty(), "tick {i} after the restart: {errors:?}");
+    }
+    assert!(exists(&sim, 0), "re-created");
+    assert!(sim.app.world().get::<RigidBodyDisabled>(node).is_none());
+}

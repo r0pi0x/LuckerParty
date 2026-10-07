@@ -1,8 +1,10 @@
-//! Player model animations from `.mdl` files (version 44, and 48 as the
-//! AWP's view model is: specs/cs_source/mdl_v48.md): bones,
-//! animations, sequences, pose parameters and include models, merged into
-//! one `AnimSet` for a target model (specs/cs_source/animation.md §1–§3,
-//! §8). Read from raw bytes.
+//! Model animations from `.mdl` files (versions 44–48:
+//! specs/cs_source/mdl_v48.md): bones, animations, sequences, pose
+//! parameters and include models, merged into one `AnimSet` for a target
+//! model (specs/cs_source/animation.md §1–§3, §8). Animation data may sit
+//! in sections and in external `.ani` blocks (HL2 content such as the
+//! hostages' `humans/male_*` models, mdl_v48.md §8); data that is missing
+//! falls back to the zero-frame cache (§6). Read from raw bytes.
 
 use std::collections::HashMap;
 
@@ -63,7 +65,12 @@ struct Bone {
     euler: Vec3,
     pos_scale: Vec3,
     rot_scale: Vec3,
+    flags: u32,
 }
+
+/// Bone flags: the bone has zero-frame positions / rotations (§6).
+const SAVEFRAME_POS: u32 = 0x0020_0000;
+const SAVEFRAME_ROT: u32 = 0x0040_0000;
 
 struct RawSequence {
     name: String,
@@ -84,6 +91,7 @@ struct RawSequence {
 
 /// One `.mdl` file's animation data, indices local to it.
 struct Model {
+    version: i32,
     bones: Vec<Bone>,
     /// Animation descriptions: name and byte offset.
     anims: Vec<(String, usize)>,
@@ -91,16 +99,22 @@ struct Model {
     params: Vec<PoseParam>,
     includes: Vec<String>,
     bytes: Vec<u8>,
+    /// The external animation file's name (empty: none), its bytes once
+    /// read, and its block table (start, end; entry 0 stands for the
+    /// `.mdl` itself).
+    ani_name: String,
+    ani: Option<Vec<u8>>,
+    blocks: Vec<(usize, usize)>,
 }
 
 fn parse(bytes: Vec<u8>) -> Result<Model, String> {
     let b = Bytes(&bytes);
     let version = b.i32(4)?;
-    // Version 48 reads like 44 for everything used here (spec
-    // mdl_v48.md: the extra header block is found by its offset; zero-frame
-    // data only in streamed HL2 models, ignored).
-    if version != 44 && version != 48 {
-        return Err(format!("model version {version}, want 44 or 48"));
+    // Versions 45-48 read like 44 for everything used here (spec
+    // mdl_v48.md §1, §9: the extra header block is found by its offset;
+    // the per-version differences are in `decode`).
+    if !(44..=48).contains(&version) {
+        return Err(format!("model version {version}, want 44 to 48"));
     }
     let count =
         |at| -> Result<(usize, usize), String> { Ok((b.i32(at)?.max(0) as usize, b.i32(at + 4)?.max(0) as usize)) };
@@ -117,6 +131,7 @@ fn parse(bytes: Vec<u8>) -> Result<Model, String> {
             euler: b.vec3(o + 60)?,
             pos_scale: b.vec3(o + 72)?,
             rot_scale: b.vec3(o + 84)?,
+            flags: b.i32(o + 160)? as u32,
         });
     }
     let (n, at) = count(180)?;
@@ -219,13 +234,31 @@ fn parse(bytes: Vec<u8>) -> Result<Model, String> {
             events,
         });
     }
+    // The external animation file (§8): name and block table.
+    let ani_at = b.i32(348)?;
+    let ani_name = if ani_at > 0 {
+        b.string(ani_at as usize)
+    } else {
+        String::new()
+    };
+    let (n, at) = count(352)?;
+    let blocks = (0..n)
+        .map(|i| {
+            let o = at + i * 8;
+            Ok((b.i32(o)?.max(0) as usize, b.i32(o + 4)?.max(0) as usize))
+        })
+        .collect::<Result<_, String>>()?;
     Ok(Model {
+        version,
         bones,
         anims,
         sequences,
         params,
         includes,
         bytes,
+        ani_name,
+        ani: None,
+        blocks,
     })
 }
 
@@ -292,24 +325,302 @@ fn stream(b: &Bytes, at: usize, frames: usize) -> Result<Vec<f32>, String> {
     Ok(out)
 }
 
+/// A run of an animation's frames stored together (animation.md §1,
+/// mdl_v48.md §8): the block (0: the `.mdl`, > 0: the `.ani`, < 0:
+/// missing), the records' offset, the section it came from, and which
+/// frames.
+struct Chunk {
+    block: i32,
+    offset: i64,
+    section: usize,
+    first: usize,
+    count: usize,
+}
+
+/// An animation's zero-frame cache (mdl_v48.md §6): frames between
+/// entries, and per bone (local index) its stored positions and rotations
+/// (either may be empty).
+#[derive(Debug, Clone)]
+pub struct ZeroFrames {
+    pub animation: String,
+    pub span: usize,
+    pub bones: Vec<(usize, Vec<Vec3>, Vec<Quat>)>,
+}
+
+/// The zero-frame cache of the animation description at `o` (version 48
+/// only: §9 makes it junk or incompatible before).
+fn zero_frames_at(m: &Model, o: usize) -> Result<Option<ZeroFrames>, String> {
+    if m.version < 48 {
+        return Ok(None);
+    }
+    let b = Bytes(&m.bytes);
+    let span = b.i16(o + 88)?.max(0) as usize;
+    let count = b.i16(o + 90)?.max(0) as usize;
+    let at = b.i32(o + 92)?;
+    if count == 0 || at <= 0 {
+        return Ok(None);
+    }
+    let mut p = o + at as usize;
+    let mut bones = Vec::new();
+    for (i, bone) in m.bones.iter().enumerate() {
+        let (mut ps, mut qs) = (Vec::new(), Vec::new());
+        if bone.flags & SAVEFRAME_POS != 0 {
+            for _ in 0..count {
+                ps.push(vec48(&b, p)?);
+                p += 6;
+            }
+        }
+        if bone.flags & SAVEFRAME_ROT != 0 {
+            for _ in 0..count {
+                qs.push(quat64(&b, p)?);
+                p += 8;
+            }
+        }
+        if !ps.is_empty() || !qs.is_empty() {
+            bones.push((i, ps, qs));
+        }
+    }
+    Ok(Some(ZeroFrames {
+        animation: String::new(),
+        span,
+        bones,
+    }))
+}
+
+/// The value of a zero-frame curve at fractional frame `f` (§6: a
+/// three-point Hermite curve; quaternions aligned to the next entry and
+/// renormalized).
+fn zero_sample(entries: &[Vec4], span: usize, f: f32, quat: bool) -> Vec4 {
+    let c = entries.len();
+    if c == 1 {
+        return entries[0];
+    }
+    let span = span.max(1) as f32;
+    let mut i = (f / span).floor().max(0.0) as usize;
+    let s = if i >= c - 1 {
+        i = c - 2;
+        1.0
+    } else {
+        ((f - i as f32 * span) / span).clamp(0.0, 1.0)
+    };
+    let (mut p0, mut p1, p2) = (entries[i.saturating_sub(1)], entries[i], entries[(i + 1).min(c - 1)]);
+    if quat {
+        let align = |q: Vec4| {
+            if (q - p2).length_squared() > (q + p2).length_squared() {
+                -q
+            } else {
+                q
+            }
+        };
+        p0 = align(p0);
+        p1 = align(p1);
+    }
+    let (d1, d2) = (p1 - p0, p2 - p1);
+    let (s2, s3) = (s * s, s * s * s);
+    let h1 = 2.0 * s3 - 3.0 * s2 + 1.0;
+    let (h2, h3, h4) = (1.0 - h1, s3 - 2.0 * s2 + s, s3 - s2);
+    let r = p1 * h1 + p2 * h2 + d1 * h3 + d2 * h4;
+    if quat { r.normalize_or_zero() } else { r }
+}
+
+/// The average ground speed of the animation description at `o`: the
+/// horizontal distance its last movement segment ends at over the time to
+/// its end frame (animation.md §11: 44-byte segments, end frame at +0,
+/// position at +32).
+fn movement_speed(b: &Bytes, o: usize) -> Result<f32, String> {
+    let n = b.i32(o + 20)?.clamp(0, 64) as usize;
+    let at = b.i32(o + 24)?;
+    let fps = b.f32(o + 8)?;
+    if n == 0 || at <= 0 || fps <= 0.0 {
+        return Ok(0.0);
+    }
+    let last = o + at as usize + 44 * (n - 1);
+    let end = b.i32(last)?;
+    if end <= 0 {
+        return Ok(0.0);
+    }
+    Ok(b.vec3(last + 32)?.truncate().length() / (end as f32 / fps))
+}
+
 /// Decode animation `a` of `m`, bone indices local to `m`.
 fn decode(m: &Model, a: usize) -> Result<Animation, String> {
     let b = Bytes(&m.bytes);
     let (name, o) = (&m.anims[a].0, m.anims[a].1);
     let flags = b.i32(o + 12)?;
-    let frames = b.i32(o + 16)?.max(1) as usize;
+    let mut frames = b.i32(o + 16)?.max(1) as usize;
     let delta = flags & 0x4 != 0;
+    let block = b.i32(o + 52)?;
+    let offset = b.i32(o + 56)? as i64;
+    let per_section = b.i32(o + 84)?.max(0) as usize;
+    let mut chunks: Vec<Chunk> = Vec::new();
+    if per_section == 0 {
+        chunks.push(Chunk {
+            block,
+            offset,
+            section: 0,
+            first: 0,
+            count: frames,
+        });
+    } else if m.version < 46 {
+        // §9: sectioned data written by version 45 is unusable; one
+        // frame, missing.
+        frames = 1;
+        chunks.push(Chunk {
+            block: -1,
+            offset: 0,
+            section: 0,
+            first: 0,
+            count: 1,
+        });
+    } else {
+        // §1: section ⌊f/S⌋ at local frame f − section·S; the last frame
+        // of a longer animation is stored alone in section ⌊N/S⌋ + 1.
+        let table = o as i64 + b.i32(o + 80)? as i64;
+        for f in 0..frames {
+            let section = if frames > per_section && f == frames - 1 {
+                frames / per_section + 1
+            } else {
+                f / per_section
+            };
+            match chunks.last_mut() {
+                Some(c) if c.section == section => c.count += 1,
+                _ => {
+                    let e = (table + 8 * section as i64) as usize;
+                    chunks.push(Chunk {
+                        block: b.i32(e)?,
+                        offset: b.i32(e + 4)? as i64,
+                        section,
+                        first: f,
+                        count: 1,
+                    });
+                }
+            }
+        }
+    }
     let mut anim = Animation {
         name: name.clone(),
         fps: b.f32(o + 8)?,
         frames,
         delta,
+        speed: movement_speed(&b, o)?,
         ..default()
     };
-    if b.i32(o + 52)? != 0 || b.i32(o + 84)? != 0 {
-        return Err(format!("{name}: external or sectioned animation data"));
+    // Each chunk's records (None: its data is missing).
+    let mut parts: Vec<(&Chunk, Option<Vec<Track>>)> = Vec::with_capacity(chunks.len());
+    for c in &chunks {
+        let data: Option<(&[u8], i64)> = match c.block {
+            0 => Some((&m.bytes, o as i64)),
+            k if k > 0 => m
+                .ani
+                .as_deref()
+                .zip(m.blocks.get(k as usize))
+                .map(|(ani, (start, _))| (ani, *start as i64)),
+            _ => None,
+        };
+        let tracks = match data {
+            Some((bytes, base)) => {
+                let at = base + c.offset;
+                if at < 0 {
+                    return Err(format!("{name}: records before the start of their block"));
+                }
+                Some(records(&Bytes(bytes), at as usize, c.count, &m.bones, name)?)
+            }
+            None => None,
+        };
+        parts.push((c, tracks));
     }
-    let mut r = o + b.i32(o + 56)? as usize;
+    if let [(_, Some(_))] = parts.as_slice() {
+        anim.tracks = parts.pop().and_then(|p| p.1).unwrap_or_default();
+        return Ok(anim);
+    }
+    // Several sections, or missing data: per bone and frame, then packed.
+    let zero = if parts.iter().any(|p| p.1.is_none()) {
+        zero_frames_at(m, o)?
+    } else {
+        None
+    };
+    let n = m.bones.len();
+    let mut rot: Vec<Vec<Option<Quat>>> = vec![Vec::new(); n];
+    let mut pos: Vec<Vec<Option<Vec3>>> = vec![Vec::new(); n];
+    fn put<T: Copy>(v: &mut Vec<Option<T>>, frames: usize, f: usize, x: T) {
+        if v.is_empty() {
+            v.resize(frames, None);
+        }
+        v[f] = Some(x);
+    }
+    for (c, tracks) in &parts {
+        match tracks {
+            Some(tracks) => {
+                for t in tracks {
+                    for k in 0..c.count {
+                        if let Some(r) = &t.rotation {
+                            put(&mut rot[t.bone], frames, c.first + k, r[k.min(r.len() - 1)]);
+                        }
+                        if let Some(p) = &t.position {
+                            put(&mut pos[t.bone], frames, c.first + k, p[k.min(p.len() - 1)]);
+                        }
+                    }
+                }
+            }
+            None => {
+                let Some(z) = &zero else { continue };
+                for (bone, ps, qs) in &z.bones {
+                    let ps: Vec<Vec4> = ps.iter().map(|p| p.extend(0.0)).collect();
+                    let qs: Vec<Vec4> = qs.iter().map(|q| Vec4::from(*q)).collect();
+                    for k in 0..c.count {
+                        let f = (c.first + k) as f32;
+                        if !ps.is_empty() {
+                            put(
+                                &mut pos[*bone],
+                                frames,
+                                c.first + k,
+                                zero_sample(&ps, z.span, f, false).truncate(),
+                            );
+                        }
+                        if !qs.is_empty() {
+                            let q = Quat::from_vec4(zero_sample(&qs, z.span, f, true));
+                            put(&mut rot[*bone], frames, c.first + k, q);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    fn pack<T: Copy + PartialEq>(v: Vec<Option<T>>, default: T) -> Option<Vec<T>> {
+        if v.is_empty() {
+            return None;
+        }
+        let v: Vec<T> = v.into_iter().map(|x| x.unwrap_or(default)).collect();
+        if v.iter().all(|x| *x == v[0]) {
+            Some(vec![v[0]])
+        } else {
+            Some(v)
+        }
+    }
+    for (bone, (r, p)) in rot.into_iter().zip(pos).enumerate() {
+        let info = &m.bones[bone];
+        let (dr, dp) = if delta {
+            (Quat::IDENTITY, Vec3::ZERO)
+        } else {
+            (info.rotation, info.position)
+        };
+        let track = Track {
+            bone,
+            rotation: pack(r, dr),
+            position: pack(p, dp),
+        };
+        if track.rotation.is_some() || track.position.is_some() {
+            anim.tracks.push(track);
+        }
+    }
+    Ok(anim)
+}
+
+/// The per-bone records starting at `start` (animation.md §1, §3), for
+/// `frames` frames from there.
+fn records(b: &Bytes, start: usize, frames: usize, bones: &[Bone], name: &str) -> Result<Vec<Track>, String> {
+    let mut tracks = Vec::new();
+    let mut r = start;
     loop {
         let bone = b.u8(r)? as usize;
         if bone == 255 {
@@ -317,7 +628,7 @@ fn decode(m: &Model, a: usize) -> Result<Animation, String> {
         }
         let rf = b.u8(r + 1)?;
         let next = b.i16(r + 2)?;
-        let Some(info) = m.bones.get(bone) else {
+        let Some(info) = bones.get(bone) else {
             return Err(format!("{name}: bone {bone} out of range"));
         };
         let data = r + 4;
@@ -374,13 +685,13 @@ fn decode(m: &Model, a: usize) -> Result<Animation, String> {
         } else if rdelta {
             track.position = Some(vec![Vec3::ZERO]);
         }
-        anim.tracks.push(track);
+        tracks.push(track);
         if next == 0 {
             break;
         }
         r = (r as i64 + next as i64) as usize;
     }
-    Ok(anim)
+    Ok(tracks)
 }
 
 /// The target model's bones in its reference pose (name, parent, local
@@ -421,6 +732,34 @@ pub fn bones(read: Read, path: &str) -> Result<Vec<(String, Option<usize>, Quat,
         .collect())
 }
 
+/// The model at `path` with its external animation file read (§8; a
+/// missing one leaves its animations to the zero-frame cache).
+fn parse_with_blocks(read: Read, path: &str) -> Result<Model, String> {
+    let mut m = parse(read(path).ok_or_else(|| format!("{path}: not found"))?).map_err(|e| format!("{path}: {e}"))?;
+    if m.blocks.len() > 1 && !m.ani_name.is_empty() {
+        let name = m.ani_name.replace('\\', "/");
+        m.ani = read(&name).filter(|a| a.starts_with(b"IDAG"));
+        if m.ani.is_none() {
+            warn!("{path}: animation blocks {name} missing; using the zero-frame cache");
+        }
+    }
+    Ok(m)
+}
+
+/// The zero-frame caches of the animations of the model at `path` (not
+/// its includes), bone indices its own (mdl_v48.md §6).
+pub fn zero_frames(read: Read, path: &str) -> Result<Vec<ZeroFrames>, String> {
+    let m = parse(read(path).ok_or_else(|| format!("{path}: not found"))?)?;
+    let mut out = Vec::new();
+    for (name, o) in &m.anims {
+        if let Some(mut z) = zero_frames_at(&m, *o)? {
+            z.animation = name.clone();
+            out.push(z);
+        }
+    }
+    Ok(out)
+}
+
 /// Everything the model at `path` can play, through its include models
 /// (§8). Bone indices are the model's own.
 pub fn load(read: Read, path: &str) -> Result<AnimSet, String> {
@@ -432,7 +771,7 @@ pub fn load(read: Read, path: &str) -> Result<AnimSet, String> {
             return Ok(());
         }
         seen.push(key);
-        let m = parse(read(path).ok_or_else(|| format!("{path}: not found"))?).map_err(|e| format!("{path}: {e}"))?;
+        let m = parse_with_blocks(read, path)?;
         let includes = m.includes.clone();
         models.push(m);
         for i in includes {

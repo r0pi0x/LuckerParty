@@ -5,6 +5,12 @@
 //! rewards, a win bonus and a loss bonus that grows with a losing streak;
 //! buying is open during the freeze and the buy period.
 //!
+//! Objectives (`objectives`, specs/cs_source/objectives.md 7-8): on bomb
+//! maps the bomb ends the round once planted (exploded: terrorists,
+//! defused: counter-terrorists) and the defenders win on time; on hostage
+//! maps rescuing every hostage wins for the counter-terrorists and the
+//! terrorists win on time; each reason pays its own bonus.
+//!
 //! Defaults are CS:S's public server defaults (mp_freezetime,
 //! mp_roundtime, mp_buytime, mp_startmoney) and its well-known reward
 //! amounts; none measured here yet (docs/plans/active/rounds.md).
@@ -15,6 +21,11 @@ use super::{Dead, put_at_spawn};
 use crate::{
     console::resource_cvar,
     core::{Died, Health, Intent, Team},
+    objectives::{
+        MapKind, MapObjectives, ObjectiveEvent, RoundOpen,
+        bomb::{BombOutcome, BombState},
+        hostages::{Hostage, HostageTally},
+    },
     weapon::economy::{BuyWindow, Money},
 };
 
@@ -45,6 +56,23 @@ pub struct RoundSettings {
     pub loss_max: u32,
     pub kill_reward: u32,
     pub teamkill_penalty: u32,
+    /// Objective wins (spec 8, *public*/*hyp.*): the bomb exploded or was
+    /// defused; time ran out on a bomb map with no plant; all hostages
+    /// rescued; time ran out on a hostage map.
+    pub win_bomb: u32,
+    pub win_target_saved: u32,
+    pub win_rescued: u32,
+    pub win_not_rescued: u32,
+    /// Every terrorist, on top of the loss bonus, when the bomb was planted
+    /// and they lost anyway.
+    pub plant_loss_bonus: u32,
+    pub planter_reward: u32,
+    pub defuser_reward: u32,
+    /// The defender who first leads a hostage this round; the one whose
+    /// hostage is rescued; whoever kills one loses this.
+    pub hostage_touch: u32,
+    pub hostage_rescue: u32,
+    pub hostage_kill_penalty: u32,
 }
 
 impl Default for RoundSettings {
@@ -63,6 +91,16 @@ impl Default for RoundSettings {
             loss_max: 3400,
             kill_reward: 300,
             teamkill_penalty: 3300,
+            win_bomb: 3500,
+            win_target_saved: 3250,
+            win_rescued: 3500,
+            win_not_rescued: 3250,
+            plant_loss_bonus: 800,
+            planter_reward: 300,
+            defuser_reward: 0,
+            hostage_touch: 150,
+            hostage_rescue: 1000,
+            hostage_kill_penalty: 1500,
         }
     }
 }
@@ -124,6 +162,34 @@ pub enum RoundEndReason {
     Eliminated,
     TimeRanOut,
     Draw,
+    /// The planted bomb exploded.
+    TargetBombed,
+    BombDefused,
+    /// Time ran out on a bomb map with no bomb planted.
+    TargetSaved,
+    HostagesRescued,
+    /// Time ran out on a hostage map.
+    HostagesNotRescued,
+}
+
+impl RoundEndReason {
+    /// What the game says across the screen (CS:S's words; elimination
+    /// and time name the winner).
+    pub fn text(self, winner: Option<Team>) -> &'static str {
+        match self {
+            RoundEndReason::TargetBombed => "Target Successfully Bombed!",
+            RoundEndReason::BombDefused => "The bomb has been defused.",
+            RoundEndReason::TargetSaved => "Target has been saved!",
+            RoundEndReason::HostagesRescued => "All hostages have been rescued!",
+            RoundEndReason::HostagesNotRescued => "Hostages have not been rescued!",
+            RoundEndReason::Draw => "Round Draw!",
+            _ => match winner {
+                Some(ATTACKERS) => "Terrorists Win!",
+                Some(DEFENDERS) => "Counter-Terrorists Win!",
+                _ => "Round Draw!",
+            },
+        }
+    }
 }
 
 fn side(team: Team) -> Option<usize> {
@@ -175,7 +241,7 @@ pub(super) fn run_rounds(world: &mut World) {
     }
     // Everyone has money while rounds run.
     let broke: Vec<Entity> = world
-        .query_filtered::<Entity, (With<Intent>, With<Health>, Without<Money>)>()
+        .query_filtered::<Entity, (With<Intent>, With<Health>, Without<Money>, Without<Hostage>)>()
         .iter(world)
         .collect();
     for e in broke {
@@ -186,7 +252,7 @@ pub(super) fn run_rounds(world: &mut World) {
             // A fresh game.
             *world.resource_mut::<RoundState>() = RoundState::default();
             let all: Vec<Entity> = world
-                .query_filtered::<Entity, (With<Intent>, With<Health>)>()
+                .query_filtered::<Entity, (With<Intent>, With<Health>, Without<Hostage>)>()
                 .iter(world)
                 .collect();
             for e in all {
@@ -201,24 +267,8 @@ pub(super) fn run_rounds(world: &mut World) {
             };
         }
         Phase::Live { ends, .. } => {
-            let (alive, present) = team_counts(world);
-            let outcome = if present[0] > 0 && present[1] > 0 && (alive[0] == 0 || alive[1] == 0) {
-                match (alive[0], alive[1]) {
-                    (0, 0) => Some((None, RoundEndReason::Draw)),
-                    (0, _) => Some((Some(DEFENDERS), RoundEndReason::Eliminated)),
-                    _ => Some((Some(ATTACKERS), RoundEndReason::Eliminated)),
-                }
-            } else if now >= ends {
-                Some(if present[1] > 0 {
-                    (Some(DEFENDERS), RoundEndReason::TimeRanOut)
-                } else {
-                    (None, RoundEndReason::Draw)
-                })
-            } else {
-                None
-            };
-            if let Some((winner, reason)) = outcome {
-                end_round(world, &settings, now, winner);
+            if let Some((winner, reason)) = live_outcome(world, now >= ends) {
+                end_round(world, &settings, now, winner, reason);
                 world.write_message(RoundEnded { winner, reason });
             }
         }
@@ -238,12 +288,54 @@ pub(super) fn run_rounds(world: &mut World) {
     if world.resource::<BuyWindow>().0 != window {
         world.insert_resource(BuyWindow(window));
     }
+    // Objectives (planting) only while the round is live.
+    let open = matches!(world.resource::<RoundState>().phase, Phase::Live { .. });
+    if world.get_resource::<RoundOpen>().is_none_or(|o| o.0 != open) {
+        world.insert_resource(RoundOpen(open));
+    }
+}
+
+/// Whether the live round ends now, and how (spec 7's table, in order).
+fn live_outcome(world: &mut World, time_up: bool) -> Option<(Option<Team>, RoundEndReason)> {
+    let kind = world.get_resource::<MapObjectives>().map_or(MapKind::Neither, |o| o.kind());
+    let bomb = world.get_resource::<BombState>().cloned().unwrap_or_default();
+    let planted = bomb.planted.is_some() || bomb.outcome.is_some();
+    match bomb.outcome {
+        Some(BombOutcome::Exploded) => return Some((Some(ATTACKERS), RoundEndReason::TargetBombed)),
+        Some(BombOutcome::Defused) => return Some((Some(DEFENDERS), RoundEndReason::BombDefused)),
+        None => {}
+    }
+    let (alive, present) = team_counts(world);
+    if present[0] > 0 && present[1] > 0 {
+        match (alive[0], alive[1]) {
+            (0, 0) if !planted => return Some((None, RoundEndReason::Draw)),
+            (_, 0) => return Some((Some(ATTACKERS), RoundEndReason::Eliminated)),
+            (0, _) if !planted => return Some((Some(DEFENDERS), RoundEndReason::Eliminated)),
+            _ => {}
+        }
+    }
+    if kind == MapKind::Hostage && world.get_resource::<HostageTally>().is_some_and(|t| t.all_rescued()) {
+        return Some((Some(DEFENDERS), RoundEndReason::HostagesRescued));
+    }
+    // After a plant the clock no longer ends the round.
+    if !time_up || planted {
+        return None;
+    }
+    Some(match kind {
+        MapKind::Bomb => (Some(DEFENDERS), RoundEndReason::TargetSaved),
+        MapKind::Hostage => (Some(ATTACKERS), RoundEndReason::HostagesNotRescued),
+        MapKind::Neither if present[1] > 0 => (Some(DEFENDERS), RoundEndReason::TimeRanOut),
+        MapKind::Neither => (None, RoundEndReason::Draw),
+    })
 }
 
 /// Living and present characters per side.
 fn team_counts(world: &mut World) -> ([u32; 2], [u32; 2]) {
     let (mut alive, mut present) = ([0; 2], [0; 2]);
-    for (team, health, dead) in world.query::<(&Team, &Health, Has<Dead>)>().iter(world) {
+    for (team, health, dead) in world
+        .query_filtered::<(&Team, &Health, Has<Dead>), Without<Hostage>>()
+        .iter(world)
+    {
         if let Some(s) = side(*team) {
             present[s] += 1;
             if !dead && health.current > 0.0 {
@@ -254,7 +346,10 @@ fn team_counts(world: &mut World) -> ([u32; 2], [u32; 2]) {
     (alive, present)
 }
 
-fn end_round(world: &mut World, s: &RoundSettings, now: f64, winner: Option<Team>) {
+fn end_round(world: &mut World, s: &RoundSettings, now: f64, winner: Option<Team>, reason: RoundEndReason) {
+    let planted = world
+        .get_resource::<BombState>()
+        .is_some_and(|b| b.planted.is_some() || b.outcome.is_some());
     let mut state = world.resource_mut::<RoundState>();
     state.phase = Phase::Over {
         until: now + s.end_delay as f64,
@@ -267,14 +362,24 @@ fn end_round(world: &mut World, s: &RoundSettings, now: f64, winner: Option<Team
         if winner == Some(team) {
             state.wins[i] += 1;
             state.losses[i] = 0;
-            bonus[i] = s.win_bonus;
+            bonus[i] = match reason {
+                RoundEndReason::TargetBombed | RoundEndReason::BombDefused => s.win_bomb,
+                RoundEndReason::TargetSaved => s.win_target_saved,
+                RoundEndReason::HostagesRescued => s.win_rescued,
+                RoundEndReason::HostagesNotRescued => s.win_not_rescued,
+                _ => s.win_bonus,
+            };
         } else {
             bonus[i] = (s.loss_bonus + s.loss_step * state.losses[i]).min(s.loss_max);
             state.losses[i] += 1;
+            // A planted bomb pays the terrorists even when they lose.
+            if team == ATTACKERS && planted {
+                bonus[i] += s.plant_loss_bonus;
+            }
         }
     }
     let payees: Vec<(Entity, usize)> = world
-        .query::<(Entity, &Team)>()
+        .query_filtered::<(Entity, &Team), Without<Hostage>>()
         .iter(world)
         .filter_map(|(e, t)| side(*t).map(|i| (e, i)))
         .collect();
@@ -296,7 +401,7 @@ fn start_round(world: &mut World, s: &RoundSettings, now: f64, fresh: bool) {
     // Everyone back at their spawns: the dead (or everyone, at the start
     // of a game) with fresh weapons, survivors with theirs.
     let all: Vec<(Entity, bool)> = world
-        .query_filtered::<(Entity, Has<Dead>), (With<Intent>, With<Health>)>()
+        .query_filtered::<(Entity, Has<Dead>), (With<Intent>, With<Health>, Without<Hostage>)>()
         .iter(world)
         .collect();
     for (e, dead) in all {
@@ -304,7 +409,12 @@ fn start_round(world: &mut World, s: &RoundSettings, now: f64, fresh: bool) {
     }
     // Computer players shop at once.
     let bots: Vec<Entity> = world
-        .query_filtered::<Entity, (With<Intent>, With<Health>, Without<crate::core::LocalPlayer>)>()
+        .query_filtered::<Entity, (
+            With<Intent>,
+            With<Health>,
+            Without<crate::core::LocalPlayer>,
+            Without<Hostage>,
+        )>()
         .iter(world)
         .collect();
     world.insert_resource(BuyWindow::default());
@@ -321,6 +431,8 @@ fn start_round(world: &mut World, s: &RoundSettings, now: f64, fresh: bool) {
         world.despawn(e);
         world.despawn(w);
     }
+    // The bomb to a terrorist, hostages back.
+    crate::objectives::round_start(world);
 }
 
 fn add_money(world: &mut World, e: Entity, delta: i64, max: u32) {
@@ -334,10 +446,12 @@ pub(super) fn kill_rewards(
     settings: Res<RoundSettings>,
     mut died: MessageReader<Died>,
     teams: Query<&Team>,
+    hostages: Query<(), With<Hostage>>,
     mut money: Query<&mut Money>,
 ) {
     for d in died.read() {
-        if settings.enabled == 0 {
+        // Hostages cost money instead (`objective_money`).
+        if settings.enabled == 0 || hostages.contains(d.entity) {
             continue;
         }
         let Some(killer) = d.attacker.filter(|a| *a != d.entity) else {
@@ -367,5 +481,32 @@ pub(super) fn hold_frozen(state: Res<RoundState>, mut intents: Query<&mut Intent
             select,
             ..default()
         };
+    }
+}
+
+/// Money for objectives as they happen (spec 8): planting, defusing,
+/// leading and rescuing hostages, killing them.
+pub(super) fn objective_money(
+    settings: Res<RoundSettings>,
+    mut events: MessageReader<ObjectiveEvent>,
+    mut money: Query<&mut Money>,
+) {
+    for ev in events.read() {
+        if settings.enabled == 0 {
+            continue;
+        }
+        let (who, delta) = match ev {
+            ObjectiveEvent::Planted { who, .. } => (Some(*who), settings.planter_reward as i64),
+            ObjectiveEvent::Defused { who } => (Some(*who), settings.defuser_reward as i64),
+            ObjectiveEvent::HostageFollows { leader, first: true, .. } => (Some(*leader), settings.hostage_touch as i64),
+            ObjectiveEvent::HostageRescued { leader, .. } => (*leader, settings.hostage_rescue as i64),
+            ObjectiveEvent::HostageKilled { attacker, .. } => (*attacker, -(settings.hostage_kill_penalty as i64)),
+            _ => (None, 0),
+        };
+        if delta != 0
+            && let Some(mut m) = who.and_then(|w| money.get_mut(w).ok())
+        {
+            m.0 = (m.0 as i64 + delta).clamp(0, settings.max_money as i64) as u32;
+        }
     }
 }

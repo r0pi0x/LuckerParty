@@ -286,6 +286,7 @@ fn update(
     weapons: Query<(&Weapon, Option<&Magazine>)>,
     notices: Res<DeathNotices>,
     rounds: Option<Res<RoundState>>,
+    bomb: Option<Res<crate::objectives::bomb::BombState>>,
     time: Res<Time<Fixed>>,
     mut built: Local<(u64, f32)>,
     mut parts: Query<(
@@ -321,7 +322,13 @@ fn update(
         }
         None => (None, None, None, true, None),
     };
-    let clock = rounds.as_ref().and_then(|r| r.clock(time.elapsed_secs_f64()));
+    // A planted bomb replaces the round clock (spec objectives.md 4,
+    // *hyp.*: the scenario icon shows instead).
+    let planted = bomb.is_some_and(|b| b.planted.is_some());
+    let clock = rounds
+        .as_ref()
+        .and_then(|r| r.clock(time.elapsed_secs_f64()))
+        .filter(|_| !planted);
     let ammo = active.and_then(|(_, m)| m).map(|m| (m.clip, m.reserve));
     for (entity, part, mut node, text, text_font, text_color, mut vis) in &mut parts {
         let kind = match part {
@@ -491,11 +498,7 @@ fn round_banner(
     }) {
         play.write(crate::map::PlaySound::ui(entry));
     }
-    let text = match end.winner {
-        Some(ATTACKERS) => "Terrorists Win!",
-        Some(DEFENDERS) => "Counter-Terrorists Win!",
-        _ => "Round Draw!",
-    };
+    let text = end.reason.text(end.winner);
     let scale = windows.iter().next().map_or(1.0, |w| w.height() / 480.0);
     for e in &banner {
         commands.entity(e).despawn();

@@ -137,6 +137,7 @@ pub const VIEW_MODELS: &[(&str, &str, bool)] = &[
 pub fn sounds() -> Vec<&'static str> {
     let mut out: Vec<&'static str> = SOUNDS.to_vec();
     out.extend(super::grenades::SOUNDS);
+    out.extend(super::objectives::SOUNDS);
     for g in GUNS {
         for s in [g.fire, g.empty]
             .into_iter()
@@ -267,6 +268,7 @@ impl Plugin for CsWeaponsPlugin {
                 super::impacts::ImpactSoundsPlugin,
                 super::impact_effects::ImpactEffectsPlugin,
                 super::grenades::GrenadesPlugin,
+                super::objectives::CsObjectivesPlugin,
             ))
             .insert_resource(pass_materials());
         let mut start = app.world_mut().get_resource_or_init::<StartingWeapons>();
@@ -301,6 +303,9 @@ fn prices() -> crate::weapon::economy::Prices {
     for (id, price, _) in super::grenades::GRENADES {
         p.weapons.insert(id, *price);
     }
+    // The defusal kit, counter-terrorists only (spec 5, "Kit").
+    p.defuser = super::objectives::DEFUSER_PRICE;
+    p.team_only.insert("defuser", 2);
     p.menu = menu();
     // Computer players mostly buy the team rifles (ours; CS:S's bot
     // profiles aren't in the spec).
@@ -423,6 +428,7 @@ fn menu() -> Vec<crate::weapon::economy::BuyCategory> {
                 (FLASHBANG, "Flashbang"),
                 (HEGRENADE, "HE Grenade"),
                 (SMOKEGRENADE, "Smoke Grenade"),
+                ("defuser", "Defusal Kit"),
             ],
         ),
     ]

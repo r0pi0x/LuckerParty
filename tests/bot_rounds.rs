@@ -173,7 +173,10 @@ fn dust2_attackers_take_a_site_and_defenders_hold_both() {
             "defender {b} {d:.1} m from its site"
         );
         per_site[s] += 1;
-        if bot.activity() == Activity::Holding || bot.target.is_some() {
+        // Within reach of its spot counts too: two defenders can shoulder
+        // each other the last step (no avoidance between bots yet).
+        let at_spot = bot.activity() == Activity::ToHold && bot.route_left() < 2.0;
+        if bot.activity() == Activity::Holding || bot.target.is_some() || at_spot {
             holding += 1;
         }
     }
