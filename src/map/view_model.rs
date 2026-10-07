@@ -198,6 +198,16 @@ pub enum ViewModelEventKind {
 #[derive(Component, Default)]
 pub struct ViewModelAnchor;
 
+/// On a `ViewModelAnchor`: draw this character's view model there instead
+/// of the anchor's parent's (a spectator watching through someone's eyes).
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ViewModelSource(pub Entity);
+
+/// Whose view model an anchor (a child of `parent`) draws.
+pub fn anchor_owner(parent: &ChildOf, source: Option<&ViewModelSource>) -> Entity {
+    source.map_or(parent.parent(), |s| s.0)
+}
+
 /// The camera that draws view models (a child of the anchor).
 #[derive(Component)]
 pub struct ViewModelCamera;
@@ -429,6 +439,7 @@ pub(super) fn draw_view_models(
             Option<&Children>,
             Option<&bevy::core_pipeline::tonemapping::Tonemapping>,
             Option<&bevy::camera::RenderTarget>,
+            Option<&ViewModelSource>,
         ),
         (With<ViewModelAnchor>, Without<ViewModelCamera>),
     >,
@@ -452,8 +463,9 @@ pub(super) fn draw_view_models(
 ) {
     let now = time.elapsed_secs_f64();
     let settings = settings.map(|s| *s).unwrap_or_default();
-    for (anchor, parent, anchor_camera, anchor_projection, eye, children, tonemapping, anchor_target) in &anchors {
-        let state = owners.get(parent.parent()).ok();
+    for (anchor, parent, anchor_camera, anchor_projection, eye, children, tonemapping, anchor_target, source) in &anchors
+    {
+        let state = owners.get(anchor_owner(parent, source)).ok();
         // In third person the own body holds the weapon; no view model.
         let hidden = third_person.as_ref().is_some_and(|t| t.0)
             || settings.draw == 0
@@ -754,7 +766,10 @@ pub(super) fn muzzle_flashes(
     flash: Option<Res<FlashAssets>>,
     models: Option<Res<ViewModels>>,
     time: Res<Time>,
-    anchors: Query<(&ChildOf, &GlobalTransform, &Projection, &Children), With<ViewModelAnchor>>,
+    anchors: Query<
+        (&ChildOf, &GlobalTransform, &Projection, &Children, Option<&ViewModelSource>),
+        With<ViewModelAnchor>,
+    >,
     vm_cameras: Query<&Projection, (With<ViewModelCamera>, Without<ViewModelAnchor>)>,
     bodies: Query<&ViewModelBody>,
     owners: Query<(&ViewAnimator, Option<&ViewModelOffset>)>,
@@ -801,8 +816,8 @@ pub(super) fn muzzle_flashes(
             continue;
         };
         // First person: the owner's anchor has its view model drawn.
-        let first_person = anchors.iter().find_map(|(parent, eye, projection, children)| {
-            if parent.parent() != ev.owner {
+        let first_person = anchors.iter().find_map(|(parent, eye, projection, children, source)| {
+            if anchor_owner(parent, source) != ev.owner {
                 return None;
             }
             let vm_camera = children.iter().find(|c| vm_cameras.contains(*c))?;

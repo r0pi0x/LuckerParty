@@ -20,6 +20,7 @@ pub mod radio;
 pub mod game_text;
 pub mod scoreboard;
 pub mod senses;
+pub mod spectate;
 pub mod team_menu;
 pub mod view;
 pub mod weapon_select;
@@ -208,9 +209,10 @@ impl Plugin for ClientPlugin {
                 radio::RadioPlugin,
                 objectives_hud::ObjectivesHudPlugin,
                 senses::SensesPlugin,
+                spectate::SpectatePlugin,
             ))
             .add_systems(PostStartup, spawn_local_player)
-            .add_systems(Update, (follow_eye, zoom_camera));
+            .add_systems(Update, (follow_eye, zoom_camera).after(spectate::SpectateSet));
 
         // Bevy Remote Protocol: query and edit the live ECS over HTTP
         // (JSON-RPC on localhost:15702). See docs/OBSERVABILITY.md.
@@ -320,9 +322,17 @@ fn spawn_local_player(
 /// model and sky cameras follow it.
 fn zoom_camera(
     player: Option<Single<Option<&crate::weapon::Zoomed>, With<LocalPlayer>>>,
+    spectating: Res<spectate::SpecView>,
+    zoomed: Query<&crate::weapon::Zoomed>,
     mut cameras: Query<&mut Projection, With<FirstPersonCamera>>,
 ) {
-    let fov_43 = player.and_then(|z| z.map(|z| z.fov)).unwrap_or(90.0);
+    // Spectating in first person: the target's zoom; otherwise none.
+    let zoom = match spectate::target_zoom(&spectating, &zoomed) {
+        Some(z) => z,
+        None if spectating.pose.is_some() => None,
+        None => player.and_then(|z| z.map(|z| z.fov)),
+    };
+    let fov_43 = zoom.unwrap_or(90.0);
     let fov = crate::map::view_model::vertical_fov(fov_43).to_radians();
     for mut projection in &mut cameras {
         if let Projection::Perspective(p) = projection.as_ref()
@@ -356,6 +366,7 @@ fn follow_eye(
     spatial: avian3d::prelude::SpatialQuery,
     characters: Query<Entity, With<Intent>>,
     watch: Res<view::Watch>,
+    spectating: Res<spectate::SpecView>,
     others: Query<(&Name, &Transform, &Intent, &MovementState), (Without<LocalPlayer>, Without<FirstPersonCamera>)>,
 ) {
     // The watched character, if any: a chase camera behind it (world space).
@@ -384,7 +395,8 @@ fn follow_eye(
         let offset = view::camera_offset(&mode, at.translation, state.eye_offset, look, &spatial, &characters);
         // Detached: starts where the camera is; placed in the world (the
         // camera is the player's child, so undo the player's transform).
-        let (offset, look) = if let Some((p, q)) = watched {
+        // Spectating while dead comes first; then the debug cameras.
+        let (offset, look) = if let Some((p, q)) = spectating.pose.or(watched) {
             let inv = at.compute_affine().inverse();
             (inv.transform_point3(p), at.rotation.inverse() * q)
         } else if freecam.mode == 0 {
@@ -401,7 +413,7 @@ fn follow_eye(
         };
         let mut cams = cameras.iter_many_mut(children);
         // Blasts shake the eye's view (not a detached camera's).
-        let (offset, look) = if watched.is_none() && freecam.mode == 0 {
+        let (offset, look) = if watched.is_none() && freecam.mode == 0 && spectating.pose.is_none() {
             (offset + shake.offset, look * Quat::from_rotation_z(shake.roll))
         } else {
             (offset, look)
