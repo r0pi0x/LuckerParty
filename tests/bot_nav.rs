@@ -155,9 +155,12 @@ fn nuke_stuck_spots_are_passable() {
     cases("de_nuke", NUKE);
 }
 
-/// The vents' ladders up to A (ending under breakable floor grilles): no
-/// character can get onto them yet (player movement in the vents is being
-/// worked on separately); bots learn to avoid the links
+/// The vents' ladders up to A (ending under breakable floor grilles):
+/// player clip flush with the ladder on both sides wins the ladder probe
+/// from the duct's centre line, as in CS:S; the ladders attach only from
+/// the duct's south half (box centre y < about -1438 Source units; see
+/// `map_de_nuke::vent_and_outside_ladders_climb`). Bots walk the centre
+/// line, so they don't get on; they learn to avoid the links
 /// (`Tactics::failed_links`) meanwhile.
 const NUKE_VENT_LADDERS: &[Case] = &[
     ("west vent up to A", [12.9, -15.24, 36.5], [11.7, -10.57, 32.0], 10.0),
