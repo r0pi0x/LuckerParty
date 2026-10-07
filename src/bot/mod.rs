@@ -129,6 +129,30 @@ impl Plugin for BotPlugin {
             }),
             complete: None,
         });
+        console.add_command(Command {
+            name: "bot_goto".into(),
+            help: "bot_goto <x> <y> <z>: send every bot to a feet position (CS:S units, as getpos less the eye height); \
+                   bot_goto alone lets them go back to their orders."
+                .into(),
+            run: Arc::new(|w, a| {
+                let at = match &a[..] {
+                    [] => None,
+                    [x, y, z] => {
+                        let n = |s: &String| s.parse::<f32>().map_err(|_| format!("bad number \"{s}\""));
+                        Some(Vec3::new(n(x)?, n(z)?, -n(y)?) * 0.0254)
+                    }
+                    _ => return Err("bot_goto [<x> <y> <z>]".into()),
+                };
+                let mut q = w.query::<&mut Bot>();
+                let mut n = 0;
+                for mut b in q.iter_mut(w) {
+                    b.send_to(at);
+                    n += 1;
+                }
+                Ok(Some(format!("sent {n} bots")))
+            }),
+            complete: None,
+        });
     }
 }
 
@@ -180,6 +204,14 @@ pub struct Bot {
     progress: (Vec3, f32),
     /// Seconds it has been trying to walk without moving.
     blocked: f32,
+    /// Jump was pressed last tick (it must be let go between jumps).
+    jump_held: bool,
+    /// The route point it walks to, and since when.
+    toward: (Vec3, f64),
+    /// Progress checks in a row that found it stuck, and the links it
+    /// got stuck on lately (from area, to area), costly until then.
+    stuck_count: u32,
+    stuck_links: Vec<((usize, usize), f64)>,
     /// When it last jumped.
     jumped: f64,
     /// Current aim offset (yaw, pitch radians) and seconds until re-rolled.
@@ -234,6 +266,11 @@ pub struct Bot {
     /// planted bomb to defuse or guard): walked to before anything else
     /// (`objectives`).
     pub objective: Option<Vec3>,
+    /// Carries the bomb (`objectives`): the attackers' group follows it.
+    pub carrying: bool,
+    /// Sent somewhere from outside (`bot_goto`, tests): walked to before
+    /// anything else but a fight.
+    pub move_to: Option<Vec3>,
 }
 
 /// What a bot is doing, for debug views.
@@ -257,6 +294,8 @@ pub enum Activity {
     Holding,
     Hunting,
     Roaming,
+    /// Going where it was sent (`Bot::move_to`).
+    Sent,
 }
 
 impl Bot {
@@ -302,6 +341,16 @@ impl Bot {
         self.assist.map(|a| a.0)
     }
 
+    /// Send it somewhere (feet), before anything but a fight; None lets
+    /// it go back to its orders. The route is worked out afresh.
+    pub fn send_to(&mut self, at: Option<Vec3>) {
+        self.move_to = at;
+        self.route.clear();
+        self.route_areas.clear();
+        self.next = 0;
+        self.repath = 0.0;
+    }
+
     /// Route left to walk, m.
     pub fn route_left(&self) -> f32 {
         let rest = self.route.get(self.next..).unwrap_or(&[]);
@@ -328,6 +377,8 @@ impl Bot {
         self.corners = default();
         self.area = None;
         self.prev_area = None;
+        self.stuck_count = 0;
+        self.stuck_links.clear();
         let (lo, hi) = match self.orders.role {
             Role::Attack => ATTACK_PATIENCE,
             _ => DEFEND_PATIENCE,
@@ -521,10 +572,12 @@ fn think(
         &crate::core::Velocity,
     )>,
     others: Query<(Entity, &Transform, &Team, &Health), With<Intent>>,
+    teamless: Query<(&Transform, &Health), (With<Intent>, Without<Team>)>,
     arms: grenades::Arms,
     triggers: Query<&crate::weapon::Trigger>,
     projectiles: Query<(Entity, &Transform, &Projectile)>,
     smoke: Query<&crate::core::SightBlocker>,
+    breakable: Query<(), With<crate::core::Damageable>>,
     spatial: SpatialQuery,
     nav: Option<Res<NavMesh>>,
     cfg: Res<BotConfig>,
@@ -798,7 +851,12 @@ fn think(
             bot.entered = feet;
         }
         let plan = tactics.team(*team);
-        let goal = choose_goal(&mut bot, me, feet, now, &tactics, plan, nav);
+        let mates: Vec<Vec3> = others
+            .iter()
+            .filter(|(e, _, oteam, oh)| *e != me && *oteam == team && oh.current > 0.0)
+            .map(|(_, ot, ..)| ot.translation - Vec3::Y * CAPSULE_HEIGHT / 2.0)
+            .collect();
+        let goal = choose_goal(&mut bot, me, feet, now, &tactics, plan, nav, &mates);
         bot.goal = goal;
         // Now and then a grenade at the remembered enemy or the site.
         if let Some(inv) = inv.as_deref()
@@ -807,14 +865,25 @@ fn think(
         {
             bot.next_toss_check = now + grenades::TOSS_CHECK;
             if now >= bot.next_toss {
+                // Gathering before the site: flashes and smokes onto where
+                // the group comes onto it.
+                let staging = plan.is_some_and(|p| p.staging && p.site == bot.site);
+                let site = bot.site.and_then(|s| tactics.sites.get(s));
                 let objective = match bot.activity {
-                    Activity::ToSite | Activity::Following | Activity::Waiting => {
-                        bot.site.and_then(|s| tactics.sites.get(s)).map(|s| s.point)
-                    }
+                    _ if staging => site.and_then(|s| {
+                        s.approaches[0]
+                            .iter()
+                            .copied()
+                            .min_by(|a, b| a.distance(feet).total_cmp(&b.distance(feet)))
+                            .or(Some(s.point))
+                    }),
+                    Activity::ToSite | Activity::Following | Activity::Waiting => site.map(|s| s.point),
                     Activity::Roaming if bot.roam_objective => bot.roam,
                     _ => None,
                 };
-                consider_throw(&mut bot, inv, &arms, &cfg, eye, feet, objective, now, dt, &box_trace);
+                consider_throw(
+                    &mut bot, inv, &arms, &cfg, eye, feet, objective, staging, now, dt, &box_trace,
+                );
             }
         }
         if bot.toss.is_some() {
@@ -826,9 +895,10 @@ fn think(
             exposure: Some(tactics.exposure.as_slice()).filter(|e| e.len() == nav.areas.len()),
             team_seed: plan.map_or(0, |p| p.seed),
             bot_seed: bot.seed,
+            stuck: &tactics.failed_links,
         };
         let step = match goal {
-            Some(goal) => walk_route(&mut bot, nav, feet, goal, &params, dt),
+            Some(goal) => walk_route(&mut bot, nav, feet, goal, &params, dt, now, state.on_ladder, state.on_ground),
             // Waiting keeps its route (for comparing with the leader's).
             None if bot.activity == Activity::Waiting => None,
             None => {
@@ -845,10 +915,18 @@ fn think(
         let mut look = choose_look(&mut bot, nav, eye, feet, step.map(|s| s.dir), looking, now, &los);
         let mut pitch_limit = LOOK_PITCH;
         if let Some(step) = step {
-            if let Some(rung) = step.climb {
-                // A ladder: face it, looking up (or down) the way to go.
+            if let Some(r) = step.rungs {
+                // A ladder: square to it. Up: looking up, pushing in.
+                // Down: level (the movement grabs a ladder along the
+                // view), pushing in to grab it, then backing off it.
+                let up = step.climb.is_some_and(|c| c.y > feet.y);
+                look = eye + r.face + Vec3::Y * if up { 6.0 } else { 0.0 };
+                pitch_limit = LADDER_PITCH;
+            } else if let Some(rung) = step.climb {
+                // A climb or drop with no ladder: face it, looking up (or
+                // down) the way to go.
                 look = rung + Vec3::Y * (rung.y - feet.y).signum() * 2.0;
-                pitch_limit = 1.4;
+                pitch_limit = LADDER_PITCH;
             } else if bot.blocked > USE_AFTER {
                 // Stuck: face the way (a door to open, a ledge to jump).
                 look = eye + step.dir * 2.0;
@@ -862,13 +940,16 @@ fn think(
         intent.yaw = wrap(intent.yaw + wrap(want_yaw - intent.yaw).clamp(-turn, turn));
         intent.pitch += (want_pitch - intent.pitch).clamp(-turn, turn);
         if let Some(step) = step {
-            // Keep off teammates close by (they block each other in
-            // doorways otherwise).
+            // Keep off teammates and other teamless characters
+            // (hostages) close by (they block each other in doorways
+            // otherwise).
             let mut dir = step.dir;
-            for (e, ot, oteam, oh) in &others {
-                if e == me || oteam != team || oh.current <= 0.0 {
-                    continue;
-                }
+            let near = others
+                .iter()
+                .filter(|(e, _, oteam, oh)| *e != me && *oteam == team && oh.current > 0.0)
+                .map(|(_, ot, ..)| ot)
+                .chain(teamless.iter().filter(|(_, h)| h.current > 0.0).map(|(t, _)| t));
+            for ot in near {
                 let away = (t.translation - ot.translation).with_y(0.0);
                 let d = away.length();
                 if d < PERSONAL_SPACE && (ot.translation.y - t.translation.y).abs() < 1.5 {
@@ -882,14 +963,26 @@ fn think(
             let axis = Vec2::new(dir.dot(right), dir.dot(fwd));
             // Full speed whichever way (the larger key fully pressed); on
             // a ladder, straight at it.
-            intent.move_axis = if step.climb.is_some() {
-                Vec2::Y
-            } else {
-                axis / axis.abs().max_element().max(1e-3)
+            intent.move_axis = match step.rungs {
+                // On the ladder: straight on, stepping sideways back to
+                // its middle line.
+                Some(r) if state.on_ladder => {
+                    let perp = Vec3::Y.cross(r.normal);
+                    let off = (feet - r.foot).dot(perp);
+                    let side = if off.abs() > LADDER_CENTRE {
+                        -(perp * off.signum()).dot(right).signum()
+                    } else {
+                        0.0
+                    };
+                    let up = step.climb.is_some_and(|c| c.y > feet.y);
+                    Vec2::new(side, if up { 1.0 } else { -1.0 })
+                }
+                _ if step.climb.is_some() && step.rungs.is_none() => Vec2::Y,
+                _ => axis / axis.abs().max_element().max(1e-3),
             };
             // Walking into something: press use now and then (doors),
             // jump it every so often (ledges).
-            if velocity.length() < BLOCKED_SPEED {
+            if velocity.0.xz().length() < BLOCKED_SPEED {
                 bot.blocked += dt;
             } else {
                 bot.blocked = 0.0;
@@ -897,14 +990,72 @@ fn think(
             let b = bot.blocked;
             intent.use_key = b > USE_AFTER && (b / USE_PERIOD) as u32 % 2 == 0;
             let blocked = b > BLOCKED_JUMP && (b - BLOCKED_JUMP) % JUMP_PERIOD < dt * 1.5;
-            intent.jump = (step.jump && step.climb.is_none()) || blocked;
+            // Jump is a fresh press each time (held, it jumps once), and
+            // never on a ladder (that lets go of it).
+            let want_jump = ((step.jump && step.climb.is_none()) || blocked) && !state.on_ladder;
+            intent.jump = want_jump && !bot.jump_held;
+            bot.jump_held = intent.jump;
             if intent.jump && state.on_ground {
                 bot.jumped = now;
             }
             // Duck in the air after a jump (a duck-jump clears higher
-            // ledges, as CS:S bots do).
+            // ledges, as CS:S bots do), and under a low ceiling ahead
+            // (vents).
             let airborne = !state.on_ground && now - bot.jumped > 0.05 && now - bot.jumped < DUCK_JUMP;
-            intent.crouch = step.crouch || airborne;
+            let ahead = feet + step.dir * LOW_AHEAD;
+            let low = |from: Vec3| {
+                // Not from inside something (a stair ahead).
+                spatial
+                    .cast_ray_predicate(
+                        from + Vec3::Y * LOW_FROM,
+                        Dir3::Y,
+                        LOW_CEILING - LOW_FROM,
+                        false,
+                        &filter,
+                        &not_character,
+                    )
+                    .is_some_and(|h| h.distance > 0.02)
+            };
+            let low_ceiling = !state.on_ladder && (low(feet) || low(ahead));
+            intent.crouch = step.crouch || airborne || low_ceiling;
+            // Something breakable in the way (a vent grille, a window):
+            // shoot it.
+            // How long it has been walking to this route point.
+            if let Some(target) = step.target
+                && bot.toward.0.distance(target) > 0.3
+            {
+                bot.toward = (target, now);
+            }
+            let slow = now - bot.toward.1 > BREAK_SLOW;
+            if (b > BREAK_AFTER || slow)
+                && cfg.dont_shoot == 0
+                && let Some(target) = step.target
+            {
+                // Along the way at a few heights, and at the route point.
+                let ahead = feet + step.dir * 0.6;
+                let aims = [
+                    ahead + Vec3::Y * 0.1,
+                    ahead + Vec3::Y * 0.5,
+                    ahead + Vec3::Y * 1.0,
+                    ahead + Vec3::Y * 1.5,
+                    target + Vec3::Y * 0.3,
+                ];
+                let filter = SpatialQueryFilter::from_excluded_entities([me]).with_mask(crate::core::SOLID_LAYERS);
+                let hit = aims.into_iter().find_map(|aim| {
+                    let dir = Dir3::new(aim - eye).ok()?;
+                    spatial
+                        .cast_ray(eye, dir, BREAK_REACH, true, &filter)
+                        .filter(|h| breakable.contains(h.entity))
+                        .map(|h| eye + *dir * h.distance)
+                });
+                if let Some(at) = hit {
+                    let d = at - eye;
+                    intent.yaw = (-d.x).atan2(-d.z);
+                    intent.pitch = d.y.atan2(d.xz().length());
+                    intent.fire = !(semi && pressed);
+                    bot.look_at = Some(at);
+                }
+            }
         } else {
             bot.blocked = 0.0;
             intent.use_key = false;
@@ -919,6 +1070,16 @@ const PERSONAL_SPACE: f32 = 1.2;
 const SEPARATION: f32 = 1.5;
 /// Seconds after a jump it ducks while in the air.
 const DUCK_JUMP: f64 = 0.8;
+/// A ceiling lower than this above the feet, here or this far ahead,
+/// makes a walking bot crouch (traced from `LOW_FROM` up), m.
+const LOW_CEILING: f32 = 73.0 * 0.0254;
+const LOW_AHEAD: f32 = 0.6;
+const LOW_FROM: f32 = 0.5;
+/// Blocked this long: shoot a breakable within this in the way, s and m.
+const BREAK_AFTER: f32 = 0.5;
+/// Walking to one route point this long also looks for one, s.
+const BREAK_SLOW: f64 = 2.0;
+const BREAK_REACH: f32 = 2.5;
 /// Slower than this while walking for this long: jump, m/s and s.
 const BLOCKED_SPEED: f32 = 0.5;
 const BLOCKED_JUMP: f32 = 0.4;
@@ -931,6 +1092,18 @@ const USE_PERIOD: f32 = 0.15;
 /// is up or down a ladder, m.
 const LADDER_RISE: f32 = 1.2;
 const LADDER_REACH: f32 = 1.5;
+/// Going up a ladder starts from in front of it: the direction to its
+/// foot within this (cosine) of straight at it; else to the point this
+/// far out in front, m (spec: 0.9, 2 × half hull).
+const LADDER_LINED_UP: f32 = -0.9;
+const LADDER_MOUNT: f32 = 32.0 * 0.0254;
+/// Going down, it backs out over the ladder's top until this far beyond
+/// it, then presses in (falling past it, it catches it), m.
+const LADDER_OVER: f32 = 0.45;
+/// Pitch limit looking up or down a ladder (radians).
+const LADDER_PITCH: f32 = 1.4;
+/// On a ladder further than this from its middle line: step sideways, m.
+const LADDER_CENTRE: f32 = 0.1;
 /// Seconds without contact a bot holds before moving on: attackers on a
 /// site they took go to the next one, defenders go hunting.
 const ATTACK_PATIENCE: (f64, f64) = (20.0, 35.0);
@@ -945,8 +1118,16 @@ const CHASE_HOLD: f32 = 15.0;
 const FOLLOW_FAR: f32 = 10.0;
 const AHEAD: f32 = 4.0;
 const AHEAD_DIST: f32 = 5.0;
+/// Gathering before the site, followers come this close to the leader, m.
+const STAGE_CLOSE: f32 = 3.5;
 /// At its hold spot within this, m.
 const HOLD_REACHED: f32 = 0.75;
+/// Within this of its spot, a bot holds where it is when a teammate
+/// stands within `HOLD_TAKEN` of the spot or it has been blocked for
+/// `HOLD_BLOCKED` seconds (bots shoulder each other otherwise), m.
+const HOLD_SHARE: f32 = 2.5;
+const HOLD_TAKEN: f32 = 1.0;
+const HOLD_BLOCKED: f32 = 1.0;
 /// Looks at a remembered enemy within this for this long, m and s.
 const LEAD_LOOK: (f32, f64) = (40.0, 8.0);
 /// Looks this far ahead along its route with nothing else to look at, m.
@@ -961,6 +1142,7 @@ const WATCH_LIFT: f32 = 1.3;
 
 /// Where a bot goes with nobody in sight, by its orders (None: stay),
 /// setting its `activity`.
+#[allow(clippy::too_many_arguments)]
 fn choose_goal(
     bot: &mut Bot,
     me: Entity,
@@ -969,7 +1151,12 @@ fn choose_goal(
     tactics: &Tactics,
     plan: Option<&tactics::TeamPlan>,
     nav: &NavMesh,
+    mates: &[Vec3],
 ) -> Option<Vec3> {
+    if let Some(at) = bot.move_to {
+        bot.activity = Activity::Sent;
+        return ((at - feet).xz().length() > ARRIVED * 0.5 || (at.y - feet.y).abs() > 1.0).then_some(at);
+    }
     // The bomb to plant or defuse comes first (`objectives`).
     if let Some(at) = bot.objective {
         bot.activity = Activity::ToSite;
@@ -1028,6 +1215,15 @@ fn choose_goal(
                     }
                 } else if let Some(lf) = plan.leader_feet {
                     let d = lf.distance(feet);
+                    if plan.staging {
+                        // Gathering: close to the leader, then wait.
+                        if d > STAGE_CLOSE {
+                            bot.activity = Activity::Following;
+                            return Some(lf);
+                        }
+                        bot.activity = Activity::Waiting;
+                        return None;
+                    }
                     if d > FOLLOW_FAR {
                         bot.activity = Activity::Following;
                         return Some(lf);
@@ -1058,8 +1254,18 @@ fn choose_goal(
         HOLD_REACHED
     };
     if (spot - feet).xz().length() > reach || (spot.y - feet.y).abs() > 1.5 {
-        bot.activity = Activity::ToHold;
-        return Some(spot);
+        // Nearly there, but a teammate stands on the spot or keeps it
+        // from being reached: hold from here instead.
+        let close = (spot - feet).xz().length() < HOLD_SHARE && (spot.y - feet.y).abs() < 1.0;
+        let taken = mates.iter().any(|m| (*m - spot).xz().length() < HOLD_TAKEN);
+        if close && (taken || bot.blocked > HOLD_BLOCKED) {
+            if let Some(h) = bot.hold.as_mut() {
+                h.spot = feet;
+            }
+        } else {
+            bot.activity = Activity::ToHold;
+            return Some(spot);
+        }
     }
     let since = *bot.hold_since.get_or_insert(now);
     if now - since.max(bot.contact) > bot.patience {
@@ -1168,6 +1374,7 @@ fn consider_throw(
     eye: Vec3,
     feet: Vec3,
     objective: Option<Vec3>,
+    staging: bool,
     now: f64,
     dt: f32,
     sweep: &dyn Fn(Vec3, Vec3, f32) -> Option<(Vec3, Vec3)>,
@@ -1193,6 +1400,12 @@ fn consider_throw(
             } else {
                 (at, [GrenadeKind::Flash, GrenadeKind::Blast])
             }
+        }
+        (_, Some(at)) if staging && in_range(at) => {
+            if !(always || bot.rand() < grenades::TOSS_CHANCE_STAGING) {
+                return;
+            }
+            (at, [GrenadeKind::Flash, GrenadeKind::Smoke])
         }
         (None, Some(at)) if in_range(at) => {
             if !(always || bot.rand() < grenades::TOSS_CHANCE_OBJECTIVE) {
@@ -1245,6 +1458,18 @@ const REPATH_SECONDS: f32 = 1.0;
 /// Without this much progress in `STUCK_SECONDS`, repath (and jump).
 const STUCK_DISTANCE: f32 = 0.5;
 const STUCK_SECONDS: f32 = 1.5;
+/// That many times in a row: the link it is on costs more for
+/// `STUCK_MEMORY` seconds (`path::STUCK_PENALTY`).
+const STUCK_MARK: u32 = 2;
+const STUCK_MEMORY: f64 = 25.0;
+
+/// The nav link a bot is trying to cross: from the area it stands in to
+/// the next different area its route leads into.
+fn stuck_link(bot: &Bot, nav: &NavMesh, feet: Vec3) -> Option<(usize, usize)> {
+    let from = nav.area_at(feet + Vec3::Y * 0.1).or(bot.area)?;
+    let to = bot.route_areas.iter().skip(bot.next).find(|a| **a != from)?;
+    nav.areas[from].links.iter().any(|l| l.0 == *to).then_some((from, *to))
+}
 
 /// Crossing points on edges wider than this lean aside, up to this share
 /// of the way to an end, per bot and edge (spreads a group out), m.
@@ -1255,14 +1480,28 @@ const LEAN: f32 = 0.45;
 #[derive(Clone, Copy, Debug)]
 struct Step {
     dir: Vec3,
+    /// The route point walked to.
+    target: Option<Vec3>,
     jump: bool,
     crouch: bool,
     /// The point up or down a ladder it climbs to.
     climb: Option<Vec3>,
+    /// The mesh's ladder it climbs.
+    rungs: Option<Rungs>,
+}
+
+/// A ladder being climbed: its foot (bottom going up, top going down),
+/// flat outward normal, and the way to face.
+#[derive(Clone, Copy, Debug)]
+struct Rungs {
+    foot: Vec3,
+    normal: Vec3,
+    face: Vec3,
 }
 
 /// Walk the navigation mesh toward `goal` (feet positions) by the bot's
 /// path cost: the direction to the next route point.
+#[allow(clippy::too_many_arguments)]
 fn walk_route(
     bot: &mut Bot,
     nav: &NavMesh,
@@ -1270,17 +1509,48 @@ fn walk_route(
     goal: Vec3,
     params: &path::CostParams,
     dt: f32,
+    now: f64,
+    on_ladder: bool,
+    on_ground: bool,
 ) -> Option<Step> {
-    bot.repath -= dt;
+    // Mid-ladder or in the air the route stays (a new one would start
+    // from the area below or above, back at a ladder's foot or top),
+    // unless it is stuck there.
+    if on_ground && !on_ladder {
+        bot.repath -= dt;
+    }
     bot.progress.1 += dt;
     let mut stuck = false;
     if bot.progress.1 >= STUCK_SECONDS {
         stuck = feet.distance(bot.progress.0) < STUCK_DISTANCE;
         bot.progress = (feet, 0.0);
+        if stuck {
+            bot.stuck_count += 1;
+            if bot.stuck_count >= STUCK_MARK
+                && let Some(link) = stuck_link(bot, nav, feet)
+            {
+                // Still stuck after a repath and a jump: avoid the link
+                // it keeps failing for a while.
+                debug!("bot stuck at {feet:.1} on link {link:?}: walking around it");
+                bot.stuck_links.retain(|l| l.0 != link);
+                bot.stuck_links.push((link, now + STUCK_MEMORY));
+                bot.stuck_count = 0;
+            }
+        } else {
+            bot.stuck_count = 0;
+        }
     }
+    bot.stuck_links.retain(|l| l.1 > now);
     if bot.repath <= 0.0 || bot.next >= bot.route.len() || stuck {
         bot.repath = REPATH_SECONDS;
         let seed = bot.seed;
+        let links: Vec<(usize, usize)> = bot
+            .stuck_links
+            .iter()
+            .map(|l| l.0)
+            .chain(params.stuck.iter().copied())
+            .collect();
+        let params = &path::CostParams { stuck: &links, ..*params };
         let found = nav
             .nearest_area(feet)
             .zip(nav.nearest_area(goal))
@@ -1296,6 +1566,18 @@ fn walk_route(
         });
         (bot.route, bot.route_areas) = points.unwrap_or_default().into_iter().unzip();
         bot.next = 0;
+        if on_ladder {
+            // Already on it: skip the point at its foot or top.
+            while bot.next + 1 < bot.route.len() {
+                let (a, b) = (bot.route[bot.next], bot.route[bot.next + 1]);
+                let mount = (b.y - a.y).abs() > LADDER_RISE && (b - a).xz().length() < LADDER_REACH;
+                if mount && (a - feet).xz().length() < LADDER_REACH {
+                    bot.next += 1;
+                } else {
+                    break;
+                }
+            }
+        }
     }
     while bot.next < bot.route.len()
         && (bot.route[bot.next] - feet).xz().length() < REACHED
@@ -1316,15 +1598,108 @@ fn walk_route(
     let ladder = to.y.abs() > STEP_HEIGHT
         && to.xz().length() < LADDER_REACH
         && (to.y.abs() > LADDER_RISE || (near_ladder(point) && near_ladder(feet)));
-    Some(Step {
+    let mut step = Step {
+        target: Some(point),
         climb: ladder.then_some(point),
         dir: to.with_y(0.0).normalize_or_zero(),
         // Jump up ledges higher than a step, and when stuck.
         jump: stuck || (to.y > STEP_HEIGHT && to.xz().length() < 1.5),
         crouch: nav.area_at(feet).is_some_and(|a| nav.areas[a].has(flags::CROUCH)),
-    })
+        rungs: None,
+    };
+    // One of the mesh's ladders (the route goes to its top or foot): get
+    // on it from the front, square to it (spec "Path following", ladder
+    // handling), and stay on its middle.
+    let up = to.y > 0.0;
+    let mesh_ladder = nav
+        .ladders
+        .iter()
+        .find(|l| if up { l.top } else { l.bottom }.distance(point) < 0.05);
+    if ladder && let Some(l) = mesh_ladder {
+        let n = l.normal.with_y(0.0).normalize_or_zero();
+        let foot = if up { l.bottom } else { l.top };
+        let to_foot = (foot - feet).with_y(0.0);
+        if up && !on_ladder {
+            let lined_up = to_foot.length() < 0.1 || to_foot.normalize().dot(n) < LADDER_LINED_UP;
+            if !lined_up {
+                // Round to the front first.
+                let mount = l.bottom + n * LADDER_MOUNT;
+                step.climb = None;
+                step.jump = false;
+                step.target = Some(mount);
+                step.dir = (mount - feet).with_y(0.0).normalize_or(-n);
+                return Some(step);
+            }
+        }
+        // Always facing it. Up: walk at its foot. Down: back out over
+        // its top, and once past it (falling) press in to catch it.
+        step.dir = if up {
+            if to_foot.length() > 0.1 { to_foot.normalize() } else { -n }
+        } else {
+            let beyond = (feet - foot).dot(n);
+            let side = (feet - foot).with_y(0.0) - n * beyond;
+            let back = if beyond > LADDER_OVER || !on_ground { -n } else { n };
+            // Square to its middle on the way.
+            (back - side * 2.0).normalize_or(back)
+        };
+        step.jump = false;
+        step.rungs = Some(Rungs {
+            foot,
+            normal: n,
+            face: -n,
+        });
+    }
+    Some(step)
 }
 
 fn wrap(a: f32) -> f32 {
     (a + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bot::path::tests::two_ways;
+
+    /// A bot that keeps failing to cross a link walks around it, and
+    /// goes back to the short way once the memory runs out.
+    #[test]
+    fn stuck_bot_repaths_around_the_link() {
+        let nav = two_ways(0);
+        let mut bot = Bot::default();
+        let params = path::CostParams::default();
+        // Standing in area 1 (x 4..8, z 0..4), going to area 3's middle.
+        let feet = Vec3::new(7.0, 0.0, 2.0);
+        let goal = nav.areas[3].center;
+        let dt = 1.0 / 60.0;
+        let mut now = 0.0;
+        walk_route(&mut bot, &nav, feet, goal, &params, dt, now, false, true);
+        assert!(
+            bot.route_areas.contains(&3) && !bot.route_areas.contains(&5),
+            "{:?}",
+            bot.route_areas
+        );
+        // Not moving at all (a wall the mesh doesn't know about).
+        let mut jumped = false;
+        while now < 3.0 * STUCK_SECONDS as f64 + 0.1 {
+            now += dt as f64;
+            let step = walk_route(&mut bot, &nav, feet, goal, &params, dt, now, false, true).unwrap();
+            jumped |= step.jump;
+        }
+        assert!(jumped, "a stuck bot jumps first");
+        assert_eq!(bot.stuck_links.iter().map(|l| l.0).collect::<Vec<_>>(), [(1, 3)]);
+        // The new route goes round through areas 2 and 5.
+        assert!(
+            bot.route_areas.contains(&5) && bot.route_areas.contains(&2),
+            "{:?}",
+            bot.route_areas
+        );
+        // Later it is forgotten.
+        now += STUCK_MEMORY + 1.0;
+        bot.repath = 0.0;
+        bot.progress = (Vec3::splat(100.0), 0.0);
+        walk_route(&mut bot, &nav, feet, goal, &params, dt, now, false, true);
+        assert!(bot.stuck_links.is_empty());
+        assert!(!bot.route_areas.contains(&5), "{:?}", bot.route_areas);
+    }
 }
