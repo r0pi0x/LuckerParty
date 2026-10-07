@@ -1,6 +1,7 @@
 //! The buy menu (B, or `buymenu`): categories, then items with their
 //! prices, picked with the number keys, as CS:S's menu can be driven from
-//! the keyboard. Buying goes through the `buy` command, so the money, the
+//! the keyboard; a game's direct keys (CS:S's 6 and 7, primary and
+//! secondary ammo) buy at once. Buying goes through the `buy` command, so the money, the
 //! buy period and team limits apply; items you can't buy now are dimmed.
 
 use bevy::prelude::*;
@@ -22,14 +23,14 @@ impl Plugin for BuyMenuPlugin {
         app.init_resource::<BuyMenu>().add_systems(Update, (keys, draw).chain());
         app.console_command(
             "buymenu",
-            "Open or close the buy menu (B); buymenu <n> opens the category on key n (CS:S: 1 pistols, 2 shotguns, 3 SMGs, 4 rifles, 5 machine guns, 8 equipment).",
+            "Open or close the buy menu (B); buymenu <n> opens the category on key n (CS:S: 1 pistols, 2 shotguns, 3 SMGs, 4 rifles, 5 machine guns, 6 primary ammo, 7 secondary ammo, 8 equipment).",
             |w, a| {
                 let slots = weapon_slots(w.resource::<WeaponRegistry>());
                 let menu = categories(w.resource::<Prices>(), &slots, None);
                 let category = a
                     .first()
                     .and_then(|n| n.parse::<u8>().ok())
-                    .filter(|n| menu.iter().any(|c| c.key == *n));
+                    .filter(|n| menu.iter().any(|c| c.key == *n && c.direct.is_none()));
                 let mut m = w.resource_mut::<BuyMenu>();
                 m.open = category.is_some() || !m.open;
                 m.category = category;
@@ -58,12 +59,14 @@ struct Item {
     team: Option<u8>,
 }
 
-/// One category: its number key and name, and its items.
+/// One category: its number key and name, and its items (or what it
+/// buys at once).
 #[derive(Clone, Debug, PartialEq)]
 struct Category {
     key: u8,
     name: String,
     items: Vec<Item>,
+    direct: Option<String>,
 }
 
 /// A weapon's display name from its ID: `cs_source:weapon_m4a1` -> M4A1.
@@ -110,16 +113,19 @@ fn categories(prices: &Prices, slots: &[(&'static str, u8)], team: Option<u8>) -
                 key: 1,
                 name: "Pistols".into(),
                 items: by_slot(1),
+                direct: None,
             },
             Category {
                 key: 2,
                 name: "Rifles".into(),
                 items: by_slot(0),
+                direct: None,
             },
             Category {
                 key: 3,
                 name: "Equipment".into(),
                 items: equipment,
+                direct: None,
             },
         ]
     } else {
@@ -130,6 +136,7 @@ fn categories(prices: &Prices, slots: &[(&'static str, u8)], team: Option<u8>) -
                 key: c.key,
                 name: c.name.into(),
                 items: c.items.iter().filter_map(|i| item(i.buy, i.label.into())).collect(),
+                direct: c.direct.map(str::to_string),
             })
             .collect()
     };
@@ -218,29 +225,35 @@ fn keys(
     let all = categories(&prices, slots, team.map(|t| t.0));
     match (menu.category, n) {
         (_, 0) => *menu = BuyMenu::default(),
-        (None, n) => {
-            if all.iter().any(|c| c.key as usize == n) {
-                menu.category = Some(n as u8);
+        (None, n) => match all.iter().find(|c| c.key as usize == n) {
+            Some(Category { direct: Some(what), .. }) => {
+                buy_now(&mut commands, what.clone());
+                *menu = BuyMenu::default();
             }
-        }
+            Some(_) => menu.category = Some(n as u8),
+            None => {}
+        },
         (Some(c), n) => {
             let items = all.iter().find(|x| x.key == c).map(|x| x.items.as_slice()).unwrap_or_default();
             if let Some(item) = items.get(n - 1) {
-                // Why not, as a hint (as CS:S says "You have
-                // insufficient funds.").
-                let what = item.buy.clone();
-                commands.queue(move |w: &mut World| {
-                    let Some(player) = w.query_filtered::<Entity, With<LocalPlayer>>().iter(w).next() else {
-                        return;
-                    };
-                    if let Err(why) = crate::weapon::economy::buy(w, player, &what) {
-                        w.write_message(super::chat::Hint(why));
-                    }
-                });
+                buy_now(&mut commands, item.buy.clone());
                 *menu = BuyMenu::default();
             }
         }
     }
+}
+
+/// Buy `what` for the local player; why not, as a hint (as CS:S says
+/// "You have insufficient funds.").
+fn buy_now(commands: &mut Commands, what: String) {
+    commands.queue(move |w: &mut World| {
+        let Some(player) = w.query_filtered::<Entity, With<LocalPlayer>>().iter(w).next() else {
+            return;
+        };
+        if let Err(why) = crate::weapon::economy::buy(w, player, &what) {
+            w.write_message(super::chat::Hint(why));
+        }
+    });
 }
 
 #[derive(Component)]
@@ -279,7 +292,10 @@ fn draw(
     }
     lines.push(String::new());
     let all = categories(&prices, slots, team.map(|t| t.0));
-    match menu.category.and_then(|c| all.iter().find(|x| x.key == c)) {
+    match menu
+        .category
+        .and_then(|c| all.iter().find(|x| x.key == c && x.direct.is_none()))
+    {
         None => {
             for c in &all {
                 lines.push(format!("{}  {}", c.key, c.name));
@@ -387,6 +403,7 @@ mod tests {
         p.menu = vec![
             BuyCategory {
                 key: 4,
+                direct: None,
                 name: "Rifles",
                 items: vec![
                     BuyItem {
@@ -401,15 +418,23 @@ mod tests {
             },
             BuyCategory {
                 key: 8,
+                direct: None,
                 name: "Equipment",
                 items: vec![BuyItem {
                     buy: "vest",
                     label: "Kevlar",
                 }],
             },
+            BuyCategory {
+                key: 6,
+                direct: Some("primammo"),
+                name: "Primary Ammo",
+                items: Vec::new(),
+            },
         ];
         let menu = categories(&p, &[], None);
         assert_eq!((menu[0].key, menu[1].key), (4, 8));
+        assert_eq!(menu[2].direct.as_deref(), Some("primammo"));
         assert_eq!((menu[0].items[0].price, menu[0].items[1].label.as_str()), (200, "B"));
         assert_eq!(menu[1].items[0].price, 650);
     }

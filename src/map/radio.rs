@@ -1,6 +1,7 @@
 //! A game's radio (Counter-Strike's team radio): which commands exist,
 //! the menus that list them, the sound entry and chat text each says, and
-//! the chat line format. Games fill `RadioCommands` from their data; the
+//! the chat line format; also the players' own text chat formats
+//! (`SayFormats`). Games fill `RadioCommands` from their data; the
 //! client opens the menus, registers the commands and plays what
 //! `core::Radio` messages say to the players who hear them.
 
@@ -47,6 +48,97 @@ pub struct RadioCommands {
     /// The same with the sender's place: `%s1` sender, `%s2` place, `%s3`
     /// text.
     pub format_location: Option<String>,
+    /// Players' text chat (`say`, `say_team`).
+    pub say: SayFormats,
+}
+
+/// Player text chat lines (`say`, `say_team`): `%s1` the sender, `%s2` the
+/// text, `%s3` the sender's place, with Source's colour control characters
+/// (as `RadioCommands::format`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SayFormats {
+    pub all: String,
+    pub all_dead: String,
+    /// From a player on no team.
+    pub all_spectator: String,
+    /// Team chat by team number.
+    pub team: Vec<(u8, TeamSay)>,
+    /// Team chat from a player on no team.
+    pub team_spectator: String,
+    /// The sound entry a chat line plays.
+    pub sound: Option<String>,
+}
+
+/// One team's chat formats: alive, alive at a known place, dead.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TeamSay {
+    pub alive: String,
+    pub alive_place: Option<String>,
+    pub dead: String,
+}
+
+impl Default for SayFormats {
+    /// A generic look (CS:S's without team names).
+    fn default() -> Self {
+        Self {
+            all: "\u{2}%s1 :  %s2".into(),
+            all_dead: "\u{1}*DEAD* \u{3}%s1\u{1} :  %s2".into(),
+            all_spectator: "\u{1}*SPEC* \u{3}%s1\u{1} :  %s2".into(),
+            team: Vec::new(),
+            team_spectator: "\u{1}(Spectator) \u{3}%s1\u{1} :  %s2".into(),
+            sound: None,
+        }
+    }
+}
+
+impl SayFormats {
+    /// The line `sender` (of `team`, alive or not, at `place`) says to
+    /// everyone or (`team_only`) to their team, as coloured runs.
+    pub fn line(
+        &self,
+        sender: &str,
+        text: &str,
+        team: Option<u8>,
+        alive: bool,
+        team_only: bool,
+        place: Option<&str>,
+    ) -> Vec<(ChatColor, String)> {
+        let own = team.and_then(|t| self.team.iter().find(|(n, _)| *n == t).map(|(_, f)| f));
+        let generic_team = TeamSay {
+            alive: "\u{1}(Team) \u{3}%s1\u{1} :  %s2".into(),
+            alive_place: None,
+            dead: "\u{1}*DEAD*(Team) \u{3}%s1\u{1} :  %s2".into(),
+        };
+        let format = match (team_only, team, alive) {
+            (false, None, _) => &self.all_spectator,
+            (false, _, true) => &self.all,
+            (false, _, false) => &self.all_dead,
+            (true, None, _) => &self.team_spectator,
+            (true, Some(_), _) => {
+                let f = own.unwrap_or(&generic_team);
+                match (alive, place, &f.alive_place) {
+                    (true, Some(p), Some(with_place)) => {
+                        return colour_runs(&fill(with_place, &[sender, text, p]), sender);
+                    }
+                    (true, ..) => &f.alive,
+                    (false, ..) => &f.dead,
+                }
+            }
+        };
+        colour_runs(&fill(format, &[sender, text]), sender)
+    }
+}
+
+/// Whether a viewer reads a chat line: team chat only within the team,
+/// and the living don't read the dead (CS:S).
+pub fn sees_say(
+    viewer_alive: bool,
+    viewer_team: Option<u8>,
+    sender_alive: bool,
+    sender_team: Option<u8>,
+    team_only: bool,
+) -> bool {
+    (!team_only || viewer_team == sender_team) && (sender_alive || !viewer_alive)
 }
 
 impl RadioCommands {
@@ -158,7 +250,49 @@ mod tests {
             menus: Vec::new(),
             format: "\u{2}%s1 (RADIO): %s2".into(),
             format_location: Some("\u{3}%s1\u{1} @ \u{4}%s2\u{1} (RADIO): %s3".into()),
+            say: SayFormats::default(),
         }
+    }
+
+    #[test]
+    fn say_lines_like_the_game() {
+        let mut f = SayFormats::default();
+        f.team.push((
+            2,
+            TeamSay {
+                alive: "\u{1}(Counter-Terrorist) \u{3}%s1\u{1} :  %s2".into(),
+                alive_place: Some("\u{1}(Counter-Terrorist) \u{3}%s1\u{1} @ \u{4}%s3\u{1} :  %s2".into()),
+                dead: "\u{1}*DEAD*(Counter-Terrorist) \u{3}%s1\u{1} :  %s2".into(),
+            },
+        ));
+        let text = |runs: Vec<(ChatColor, String)>| runs.into_iter().map(|r| r.1).collect::<String>();
+        assert_eq!(
+            f.line("Player", "hi", Some(2), true, false, None),
+            [
+                (ChatColor::Team, "Player".to_string()),
+                (ChatColor::Normal, " :  hi".to_string())
+            ]
+        );
+        assert_eq!(text(f.line("Player", "hi", Some(2), false, false, None)), "*DEAD* Player :  hi");
+        assert_eq!(
+            text(f.line("Player", "go", Some(2), true, true, None)),
+            "(Counter-Terrorist) Player :  go"
+        );
+        assert_eq!(
+            f.line("Player", "go", Some(2), true, true, Some("BombsiteA"))[3],
+            (ChatColor::Location, "BombsiteA".to_string())
+        );
+        assert_eq!(
+            text(f.line("Player", "go", Some(2), false, true, Some("BombsiteA"))),
+            "*DEAD*(Counter-Terrorist) Player :  go"
+        );
+        assert_eq!(text(f.line("Player", "x", Some(1), true, true, None)), "(Team) Player :  x");
+        assert_eq!(text(f.line("Player", "x", None, true, false, None)), "*SPEC* Player :  x");
+        // Who reads it.
+        assert!(sees_say(true, Some(2), true, Some(1), false));
+        assert!(!sees_say(true, Some(2), true, Some(1), true), "other team's team chat");
+        assert!(!sees_say(true, Some(2), false, Some(2), false), "the dead to the living");
+        assert!(sees_say(false, Some(1), false, Some(2), false), "the dead to the dead");
     }
 
     #[test]

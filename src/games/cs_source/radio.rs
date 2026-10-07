@@ -2,14 +2,18 @@
 //! (`RadioA`/`RadioB`/`RadioC` in `resource/cstrike_english.txt`), each
 //! command's chat text (its `Cstrike_TitlesTXT_*` string) and sound entry
 //! (`scripts/game_sounds_radio.txt`), and the chat line format
-//! (`Game_radio`, `Game_radio_location`). Only the pairing of console
+//! (`Game_radio`, `Game_radio_location`), and the players' text chat
+//! formats (`Cstrike_Chat_*`). Only the pairing of console
 //! names, menu slots, sound entries and text keys is ours; it follows the
 //! menus' own order.
 
 use std::collections::HashMap;
 
 use super::material::MaterialLoader;
-use crate::map::radio::{RadioCommand, RadioCommands, RadioMenu};
+use crate::map::radio::{RadioCommand, RadioCommands, RadioMenu, SayFormats, TeamSay};
+
+/// The sound a chat line plays (Source's chat HUD entry).
+pub const CHAT_SOUND: &str = "HudChat.Message";
 
 /// Console name, menu (0-based) and key, then (sound entry, text key)
 /// variants. `fireinhole` is said on a grenade throw, from no menu.
@@ -97,6 +101,28 @@ pub fn build(strings: &HashMap<String, String>) -> RadioCommands {
         menus,
         format: get("Game_radio").unwrap_or_else(|| "\u{2}%s1 (RADIO): %s2".into()),
         format_location: get("Game_radio_location"),
+        say: say(&get),
+    }
+}
+
+/// The text chat formats (our team 1 terrorists, 2 CTs); the generic
+/// look where a string is missing.
+fn say(get: &dyn Fn(&str) -> Option<String>) -> SayFormats {
+    let generic = SayFormats::default();
+    let team = |side: &str| TeamSay {
+        alive: get(&format!("Cstrike_Chat_{side}")).unwrap_or_default(),
+        alive_place: get(&format!("Cstrike_Chat_{side}_Loc")),
+        dead: get(&format!("Cstrike_Chat_{side}_Dead")).unwrap_or_default(),
+    };
+    let mut team = vec![(1, team("T")), (2, team("CT"))];
+    team.retain(|(_, t)| !t.alive.is_empty() && !t.dead.is_empty());
+    SayFormats {
+        all: get("Cstrike_Chat_All").unwrap_or(generic.all),
+        all_dead: get("Cstrike_Chat_AllDead").unwrap_or(generic.all_dead),
+        all_spectator: get("Cstrike_Chat_AllSpec").unwrap_or(generic.all_spectator),
+        team,
+        team_spectator: get("Cstrike_Chat_Spec").unwrap_or(generic.team_spectator),
+        sound: Some(CHAT_SOUND.into()),
     }
 }
 
@@ -203,6 +229,8 @@ mod tests {
         \"Cstrike_TitlesTXT_Roger_that\" \"Roger that.\"\n\
         \"Cstrike_TitlesTXT_Affirmative\" \"Affirmative.\"\n\
         \"Game_radio\" \"\u{2}%s1 (RADIO): %s2\"\n\
+        \"Cstrike_Chat_CT\" \"\u{1}(Counter-Terrorist) \u{3}%s1\u{1} :  %s2\"\n\
+        \"Cstrike_Chat_CT_Dead\" \"\u{1}*DEAD*(Counter-Terrorist) \u{3}%s1\u{1} :  %s2\"\n\
         \"RadioC\"\n\"Radio Responses/Reports\n\n1. \\\"Affirmative/Roger\\\"\n2. \\\"Enemy Spotted\\\"\n\n0. Exit\n\"\n\
         \"Other\" \"x\" [$X360]\n\"Other\" \"y\"\n}\n}\n";
 
@@ -238,6 +266,12 @@ mod tests {
         assert_eq!(r.menus[2].items[1], (2, "Enemy Spotted".to_string()));
         assert!(r.menus[0].items.is_empty());
         assert_eq!(r.format, "\u{2}%s1 (RADIO): %s2");
+        // Text chat: the CTs' team formats; the rest generic.
+        assert_eq!(r.say.team.len(), 1);
+        assert_eq!(r.say.team[0].0, 2);
+        assert!(r.say.team[0].1.dead.contains("*DEAD*(Counter-Terrorist)"));
+        assert_eq!(r.say.all, "\u{2}%s1 :  %s2");
+        assert_eq!(r.say.sound.as_deref(), Some(CHAT_SOUND));
         // Every menu has keys 1.. without gaps, and every command a sound.
         for m in 0..3 {
             let keys: Vec<usize> = r

@@ -188,6 +188,10 @@ const ALWAYS: &[&str] = &[
     "radio.moveout",
     "radio.letsgo",
     "radio.locknload",
+    // +use on nothing, a chat line, buying ammo.
+    "Player.UseDeny",
+    super::radio::CHAT_SOUND,
+    super::weapons::AMMO_SOUND,
 ];
 
 /// The announcer's round sounds (game_sounds_radio.txt entries).
@@ -197,6 +201,10 @@ pub fn round_sounds() -> crate::map::RoundSounds {
         defenders_win: Some("Event.CTWin".into()),
         draw: Some("Event.RoundDraw".into()),
         start: ["radio.moveout", "radio.letsgo", "radio.locknload"].map(String::from).to_vec(),
+        // The install defines it twice (common/use_deny.wav, then
+        // common/wpn_select.wav at 0.4); the later definition wins here.
+        // Which CS:S plays is an open question (doors_buttons.md Q2).
+        use_deny: Some("Player.UseDeny".into()),
     }
 }
 

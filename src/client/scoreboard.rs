@@ -1,13 +1,18 @@
 //! The scoreboard, CS:S style: held with Tab (or `+showscores`), two team
 //! columns (Terrorists, Counter-Terrorists, then anyone else) listing each
-//! player's name, kills, deaths, latency (0 until networking) and whether
-//! they're dead, the local player highlighted.
+//! player's name, kills, deaths, latency (0 until networking) and status:
+//! dead (the row greyed), or to teammates "BOMB" by the bomb carrier and
+//! "DEFUSER" by a player with a defusal kit (spec objectives.md: CS:S's
+//! bomb and defuser icons, the bomb for Ts only); the local player
+//! highlighted.
 
 use bevy::prelude::*;
 
 use crate::{
     core::{Intent, LocalPlayer, Team},
+    objectives::bomb::C4,
     rules::{Dead, Score},
+    weapon::{Weapon, economy::DefuseKit},
 };
 
 pub struct ScoreboardPlugin;
@@ -96,6 +101,21 @@ fn row(commands: &mut Commands, parent: Entity, cells: [String; 5], color: Color
     }
 }
 
+/// A scoreboard row: column (team), name, kills, deaths, dead, local,
+/// status.
+type Row = (u8, String, u32, u32, bool, bool, &'static str);
+
+/// The status column: "DEAD", else for a teammate "BOMB" (carrying the
+/// bomb) or "DEFUSER" (has a kit); the other team's are hidden.
+fn marker(dead: bool, carrier: bool, kit: bool, teammate: bool) -> &'static str {
+    match (dead, teammate && carrier, teammate && kit) {
+        (true, ..) => "DEAD",
+        (_, true, _) => "BOMB",
+        (_, _, true) => "DEFUSER",
+        _ => "",
+    }
+}
+
 #[allow(clippy::type_complexity)]
 fn update(
     keys: Res<ButtonInput<KeyCode>>,
@@ -111,12 +131,14 @@ fn update(
             Option<&Score>,
             Has<Dead>,
             Has<LocalPlayer>,
+            Has<DefuseKit>,
         ),
         With<Intent>,
     >,
+    bombs: Query<&Weapon, With<C4>>,
     windows: Query<&Window>,
     rounds: Option<Res<crate::rules::rounds::RoundState>>,
-    mut last: Local<Option<(Vec<(u8, String, u32, u32, bool, bool)>, Option<[u32; 2]>)>>,
+    mut last: Local<Option<(Vec<Row>, Option<[u32; 2]>)>>,
     mut commands: Commands,
 ) {
     let typing = console.is_some_and(|c| c.open);
@@ -130,10 +152,12 @@ fn update(
         *last = None;
         return;
     }
+    let my_team = players.iter().find(|p| p.5).and_then(|p| p.2.copied());
+    let carriers: Vec<Entity> = bombs.iter().filter_map(|w| w.owner).collect();
     // Rows by team, most kills first, then fewest deaths.
-    let mut rows: Vec<(u8, String, u32, u32, bool, bool)> = players
+    let mut rows: Vec<Row> = players
         .iter()
-        .map(|(e, name, team, score, dead, local)| {
+        .map(|(e, name, team, score, dead, local, kit)| {
             let s = score.copied().unwrap_or_default();
             let name = if local {
                 "Player".to_string()
@@ -142,7 +166,8 @@ fn update(
             };
             // Team 1 terrorists; everyone else in the CT column.
             let column = if team.is_some_and(|t| t.0 == 1) { 1 } else { 2 };
-            (column, name, s.kills, s.deaths, dead, local)
+            let mark = marker(dead, carriers.contains(&e), kit, team.is_some() && team.copied() == my_team);
+            (column, name, s.kills, s.deaths, dead, local, mark)
         })
         .collect();
     rows.sort_by(|a, b| {
@@ -189,13 +214,12 @@ fn update(
             false,
             size * 1.15,
         );
-        for (_, name, kills, deaths, dead, local) in members {
-            let status = if *dead { "DEAD" } else { "" };
+        for (_, name, kills, deaths, dead, local, status) in members {
             row(
                 &mut commands,
                 column,
                 // Latency: everyone is local until networking (0 ms).
-                [name.clone(), kills.to_string(), deaths.to_string(), "0".into(), status.into()],
+                [name.clone(), kills.to_string(), deaths.to_string(), "0".into(), (*status).into()],
                 if *dead { color.with_alpha(0.5) } else { color },
                 *local,
                 size,
@@ -203,4 +227,18 @@ fn update(
         }
     }
     *last = Some(key);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn markers_only_for_teammates() {
+        assert_eq!(marker(true, false, true, true), "DEAD");
+        assert_eq!(marker(false, true, false, true), "BOMB");
+        assert_eq!(marker(false, true, false, false), "");
+        assert_eq!(marker(false, false, true, true), "DEFUSER");
+        assert_eq!(marker(false, false, true, false), "");
+    }
 }

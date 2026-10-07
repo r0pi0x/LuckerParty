@@ -308,6 +308,20 @@ fn prices() -> crate::weapon::economy::Prices {
     p.defuser = super::objectives::DEFUSER_PRICE;
     p.team_only.insert("defuser", 2);
     p.menu = menu();
+    // Ammo by the box per ammo type; the spawn pistols carry two more
+    // clips (Glock 40, USP 24: UNMEASURED, the well-known values).
+    for g in GUNS {
+        p.ammo.insert(
+            g.id,
+            crate::weapon::economy::AmmoBox {
+                price: g.ammo.box_price,
+                rounds: g.ammo.box_rounds,
+            },
+        );
+    }
+    p.starting_reserve.insert(GLOCK, 40);
+    p.starting_reserve.insert(USP, 24);
+    p.ammo_sound = Some(AMMO_SOUND.into());
     // Computer players mostly buy the team rifles (ours; CS:S's bot
     // profiles aren't in the spec).
     for (id, weight) in BOT_WEIGHTS {
@@ -367,15 +381,23 @@ const BOT_WEIGHTS: &[(&str, f32)] = &[
     (M249, 0.5),
 ];
 
-/// CS:S's buy menu: its categories on their number keys (6 and 7, ammo,
-/// aren't bought separately here: reserves start full) and items in its
-/// order; each team sees its own.
+/// The sound of buying ammo (Source's generic ammo pickup entry).
+pub const AMMO_SOUND: &str = "BaseCombatCharacter.AmmoPickup";
+
+/// CS:S's buy menu: its categories on their number keys (6 and 7 buy
+/// primary and secondary ammo at once) and items in its order; each team
+/// sees its own.
 fn menu() -> Vec<crate::weapon::economy::BuyCategory> {
     use crate::weapon::economy::{BuyCategory, BuyItem};
     let category = |key: u8, name: &'static str, items: &[(&'static str, &'static str)]| BuyCategory {
         key,
         name,
         items: items.iter().map(|(buy, label)| BuyItem { buy, label }).collect(),
+        direct: None,
+    };
+    let direct = |key: u8, name: &'static str, buy: &'static str| BuyCategory {
+        direct: Some(buy),
+        ..category(key, name, &[])
     };
     use super::grenades::{FLASHBANG, HEGRENADE, SMOKEGRENADE};
     vec![
@@ -420,6 +442,8 @@ fn menu() -> Vec<crate::weapon::economy::BuyCategory> {
             ],
         ),
         category(5, "Machine Guns", &[(M249, "M249")]),
+        direct(6, "Primary Ammo", "primammo"),
+        direct(7, "Secondary Ammo", "secammo"),
         category(
             8,
             "Equipment",
@@ -497,7 +521,9 @@ fn knife(e: &mut EntityWorldMut) {
 }
 
 /// An ammo type: penetration power and reach (measured M13), most rounds
-/// carried (`ammo_<type>_max`, M17).
+/// carried (`ammo_<type>_max`, M17), and the box it's bought in
+/// (UNMEASURED: the spec has no ammo prices; these are the well-known
+/// Counter-Strike values, docs/tech-debt.md).
 #[derive(Clone, Copy, Debug)]
 pub struct Ammo {
     /// Units of a scale-1 material.
@@ -505,6 +531,9 @@ pub struct Ammo {
     /// Objects this far (units) or farther aren't passed.
     pub max_distance: f32,
     pub max: u32,
+    /// A box's price and rounds.
+    pub box_price: u32,
+    pub box_rounds: u32,
 }
 
 /// 762MM: power 39 (M13); it still passes at 4000 units, no farther limit
@@ -513,18 +542,24 @@ pub const AMMO_762MM: Ammo = Ammo {
     power: 39.0,
     max_distance: f32::INFINITY,
     max: 90,
+    box_price: 80,
+    box_rounds: 30,
 };
 /// 338MAG: power 45, still passes at 4000 (M13).
 pub const AMMO_338MAG: Ammo = Ammo {
     power: 45.0,
     max_distance: f32::INFINITY,
     max: 30,
+    box_price: 125,
+    box_rounds: 10,
 };
 /// 50AE: power 30, passes a player at 1006 units, not at 1015 (M13).
 pub const AMMO_50AE: Ammo = Ammo {
     power: 30.0,
     max_distance: 1010.0,
     max: 35,
+    box_price: 40,
+    box_rounds: 7,
 };
 /// 45ACP: power 15 (M13). UNMEASURED distance: the community value 500
 /// (the USP passed doors at 100).
@@ -532,6 +567,8 @@ pub const AMMO_45ACP: Ammo = Ammo {
     power: 15.0,
     max_distance: 500.0,
     max: 100,
+    box_price: 25,
+    box_rounds: 12,
 };
 /// 556MM: UNMEASURED power and distance: the community values 35 / 4000
 /// (the same table's 45ACP, 50AE, 762MM and 338MAG powers match M13).
@@ -539,23 +576,47 @@ pub const AMMO_556MM: Ammo = Ammo {
     power: 35.0,
     max_distance: 4000.0,
     max: 90,
+    box_price: 60,
+    box_rounds: 30,
 };
 /// 9MM: UNMEASURED power and distance: the community values 21 / 800.
 pub const AMMO_9MM: Ammo = Ammo {
     power: 21.0,
     max_distance: 800.0,
     max: 120,
+    box_price: 20,
+    box_rounds: 30,
 };
 
 /// 357SIG: UNMEASURED power and distance: 45ACP's (the measured pistol
 /// round).
-pub const AMMO_357SIG: Ammo = Ammo { max: 52, ..AMMO_45ACP };
+pub const AMMO_357SIG: Ammo = Ammo {
+    max: 52,
+    box_price: 50,
+    box_rounds: 13,
+    ..AMMO_45ACP
+};
 /// 57MM: UNMEASURED power and distance: 45ACP's.
-pub const AMMO_57MM: Ammo = Ammo { max: 100, ..AMMO_45ACP };
+pub const AMMO_57MM: Ammo = Ammo {
+    max: 100,
+    box_price: 50,
+    box_rounds: 50,
+    ..AMMO_45ACP
+};
 /// BUCKSHOT: UNMEASURED power and distance (per pellet): 45ACP's.
-pub const AMMO_BUCKSHOT: Ammo = Ammo { max: 32, ..AMMO_45ACP };
+pub const AMMO_BUCKSHOT: Ammo = Ammo {
+    max: 32,
+    box_price: 65,
+    box_rounds: 8,
+    ..AMMO_45ACP
+};
 /// 556MM_BOX (the M249's): UNMEASURED power and distance: 556MM's.
-pub const AMMO_556MM_BOX: Ammo = Ammo { max: 200, ..AMMO_556MM };
+pub const AMMO_556MM_BOX: Ammo = Ammo {
+    max: 200,
+    box_price: 60,
+    box_rounds: 30,
+    ..AMMO_556MM
+};
 
 /// Which hand of the dual Elites fires the shot that leaves `clip` rounds:
 /// they alternate (spec weapons.md, view-model table), the right one on

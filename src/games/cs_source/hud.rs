@@ -200,8 +200,13 @@ pub fn load(materials: &mut MaterialLoader) -> Option<GameHud> {
     }
 
     // The sniper scope: a quarter of the ring (transparent inside, black
-    // outside; the bottom-right quarter as stored) and the lens tint.
-    for (name, material) in [("scope_arc", "sprites/scope_arc"), ("scope_lens", "overlays/scope_lens")] {
+    // outside; the bottom-right quarter as stored) and the lens tint; the
+    // icon over a teammate's head while they speak on the radio.
+    for (name, material) in [
+        ("scope_arc", "sprites/scope_arc"),
+        ("scope_lens", "overlays/scope_lens"),
+        ("radio", "sprites/radio"),
+    ] {
         if materials.read(&format!("materials/{material}.vmt")).is_none() {
             continue;
         }

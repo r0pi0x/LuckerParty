@@ -55,10 +55,10 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   is in (`client/radio.rs`: Z/X/C menus, the calls as console commands,
   "Fire in the hole!" on throws, bots' enemy spotted/down and need
   backup), with a chat area and hint text (`client/chat.rs`) and a
-  scoreboard latency column (0 until networking). Left: the game's own
-  VGUI menu looks (buy, team), the radio icon over a caller's head
-  (`sprites/radio`), `ignorerad`, player text chat (`say`), bots
-  answering radio commands ("Roger that", following "Follow me"),
+  scoreboard latency column (0 until networking) and its BOMB / DEFUSER
+  markers, the radio icon over a teammate's head (`sprites/radio`), and
+  text chat (Y / U, `say`, `say_team`). Left: the game's own VGUI menu
+  looks (buy, team), `ignorerad`, bots answering radio commands ("Roger that", following "Follow me"),
   other game messages in the chat (team joins; bomb pickups and drops
   are in). The radar is in (`client/radar.rs`: the map overview turning
   with you, team dots, your place name); its range (2200 units) is a guess.
@@ -81,8 +81,9 @@ a first bot are in.
 
 - Probe the new guns' unmeasured rules (listed in the weapons plan):
   recoil of most guns, the shotgun reload and pellets, the other ammo
-  types' penetration. Buying ammo (CS:S's menu keys 6 and 7) isn't in:
-  reserves start full.
+  types' penetration. Ammo prices and box sizes are the well-known
+  values, not measured (docs/tech-debt.md); measure them, `primammo`'s
+  fill-up and the spawn pistols' reserves on the probe.
 - The AWP's view model is in (MDL v48 reads like v44,
   specs/cs_source/mdl_v48.md); compare its fire and reload against the
   game. (MDL 45–48, sections, `.ani` blocks and the zero-frame cache
@@ -90,7 +91,7 @@ a first bot are in.
 - Zoom: measure `zoom_sensitivity_ratio` and compare the scope overlay
   (the game's textures, laid out by eye) with CS:S.
 - Rounds, money and buying: slice 1 done (`mashup_rounds 1`,
-  [plans/active/rounds.md](plans/active/rounds.md)); next: ammo.
+  [plans/active/rounds.md](plans/active/rounds.md)); ammo buying is in.
 - Objectives, remaining (bomb and hostages are in: `src/objectives/`,
   specs/cs_source/objectives.md): measure the spec's open questions on the
   probe (Q1 movement while arming, Q3 blast shape/walls/armour, Q4 beep
@@ -98,13 +99,14 @@ a first bot are in.
   solidity, Q9 hostage models, Q10 follow speeds, Q11 rescue rules, Q14
   tick rounding); the C4's screen text (7355608) and LED glow sprite, the
   `sprites/c4` marker through walls, screen shake, the explosion's own
-  effect (it uses the HE's); the scoreboard bomb/kit markers; hostage
+  effect (it uses the HE's); the scoreboard's own bomb/kit icons (ours
+  are words); hostage
   animation beyond idle/walk/run and a nod (`hostage_anim.rs`: compare
   with CS:S's hostages, which aren't measured; head/aim pose parameters
   toward the leader, flinch and cower), hostages avoiding
   "no hostages" nav areas, crouching and jumping; drop/pickup game events
   and server log lines; bots leading hostages, buying kits, guarding;
-  the `Use` deny sound.
+  which `Player.UseDeny` CS:S plays (doors_buttons.md Q2).
 - Grenades, remaining (HE, flashbang and smoke are in: `weapon/grenade.rs`,
   `games/cs_source/grenades.rs`): measure the spec's open questions on the
   probe (fuse ticks, release timing, flash amounts and overlay curve, HE vs
