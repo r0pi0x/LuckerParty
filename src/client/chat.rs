@@ -32,7 +32,7 @@ pub struct ChatPlugin;
 
 impl Plugin for ChatPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<ChatLine>()
+        app.add_plugins(GameMessagesPlugin)
             .add_message::<Hint>()
             .init_resource::<ChatLog>()
             .init_resource::<HintState>()
@@ -61,6 +61,44 @@ impl Plugin for ChatPlugin {
             });
         }
     }
+}
+
+/// Game messages in the chat, without a window (tests): players joining a
+/// team ("Bot 2 is joining the Terrorist force", the game's own strings,
+/// `map::radio::SayFormats::joins`).
+pub struct GameMessagesPlugin;
+
+impl Plugin for GameMessagesPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_message::<ChatLine>().add_systems(Update, team_joins);
+    }
+}
+
+/// A line when a character first has a team or changes it (once the
+/// map's strings are loaded).
+fn team_joins(
+    radio: Option<Res<crate::map::radio::RadioCommands>>,
+    who: Query<(Entity, &Team, Option<&Name>, Has<LocalPlayer>), With<crate::core::Intent>>,
+    mut known: Local<std::collections::HashMap<Entity, u8>>,
+    mut chat: MessageWriter<ChatLine>,
+) {
+    let Some(radio) = radio else { return };
+    let mut now = std::collections::HashMap::with_capacity(known.len());
+    for (e, team, name, local) in &who {
+        now.insert(e, team.0);
+        if known.get(&e) == Some(&team.0) {
+            continue;
+        }
+        let name = match (local, name) {
+            (true, _) => "Player".to_string(),
+            (false, Some(n)) => n.to_string(),
+            (false, None) => e.to_string(),
+        };
+        if let Some(runs) = radio.say.join(&name, team.0) {
+            chat.write(ChatLine(runs, Some(*team)));
+        }
+    }
+    *known = now;
 }
 
 /// The chat typing line: open (to the team or not) and its text.

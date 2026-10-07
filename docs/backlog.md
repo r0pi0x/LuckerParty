@@ -61,9 +61,10 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   (`client/vgui.rs`). Left: the class menu (`classmenu_*.res`, needs player
   models per class), spectating from the team menu (no spectator team),
   autobuy / rebuy / favourites, checking the widescreen placement against
-  the game, `ignorerad`, bots answering radio commands ("Roger that", following "Follow me"),
-  other game messages in the chat (team joins; bomb pickups and drops
-  are in). The radar is in (`client/radar.rs`: the map overview turning
+  the game, other game messages in the chat (team joins, bomb pickups
+  and drops are in), bots' answers checked against a bot behaviour spec
+  (`ignorerad` and bots answering and carrying out radio commands are
+  in: `bot::radio::obey`). The radar is in (`client/radar.rs`: the map overview turning
   with you, team dots, your place name); its range (2200 units) is a guess.
 - The game menu (Esc; `client/game_menu.rs`: new game with map, mode,
   bots per team and difficulty; bots; team; options; bug report; quit)

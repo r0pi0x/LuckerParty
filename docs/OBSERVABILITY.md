@@ -104,10 +104,13 @@ Only `Reflect`-registered types are visible; register new core components in
   role's colour, lines to the approaches it watches), its planned
   grenade arc (red HE, pale yellow flash, grey smoke) with the target
   (green cross) and where it should go off (sphere), and a flash it is
-  looking away from (white). `bot_debug 1` lists each team's plan and
+  looking away from (white), and a teammate's radio command it carries
+  out (magenta: a line to whom it follows or where it regroups or falls
+  back to, a ring where it holds, and the order as text over its head,
+  "following Player"). `bot_debug 1` lists each team's plan and
   every bot's team, role, site, activity (ToSite, Following, Waiting,
-  Holding, Chasing, Assisting, ...; `*` marks the group leader) and
-  health on screen. To watch a round on dust2 from above: `--map
+  Holding, Chasing, Assisting, Obeying, ...; `*` marks the group
+  leader), health and radio order on screen. To watch a round on dust2 from above: `--map
   cs_source:de_dust2 +mashup_rounds 1 +bot_add 1 +bot_add 1 +bot_add 1
   +bot_add 2 +bot_add 2 +bot_add 2 +mashup_drawbots 1 +bot_debug 1
   +noclip +setpos -400 3000 1200 +setang 89 90 0`. Headless round

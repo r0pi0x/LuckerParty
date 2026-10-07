@@ -123,6 +123,10 @@ fn say(get: &dyn Fn(&str) -> Option<String>) -> SayFormats {
         team,
         team_spectator: get("Cstrike_Chat_Spec").unwrap_or(generic.team_spectator),
         sound: Some(CHAT_SOUND.into()),
+        joins: [(1, "terrorist"), (2, "ct")]
+            .into_iter()
+            .filter_map(|(t, side)| Some((t, get(&format!("Cstrike_game_join_{side}"))?.trim_end().to_string())))
+            .collect(),
     }
 }
 

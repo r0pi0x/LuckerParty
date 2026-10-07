@@ -23,17 +23,9 @@ pub struct RadioPlugin;
 
 impl Plugin for RadioPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<RadioMenu>()
-            .init_resource::<RadioIcons>()
-            .add_message::<Radio>()
-            .add_systems(
-                Update,
-                (
-                    register_commands.run_if(resource_exists_and_changed::<RadioCommands>),
-                    (keys, draw).chain(),
-                    (hear, draw_icons).chain(),
-                ),
-            );
+        app.add_plugins(RadioHearPlugin)
+            .init_resource::<RadioMenu>()
+            .add_systems(Update, ((keys, draw).chain(), draw_icons.after(hear)));
         for n in 1..=3usize {
             let help = ["Radio commands", "Group radio commands", "Radio responses"][n - 1];
             app.console_command(
@@ -46,6 +38,41 @@ impl Plugin for RadioPlugin {
             );
         }
     }
+}
+
+/// What the local player hears of the radio, without a window (tests):
+/// the calls' sounds, chat lines and icons, the radio's console commands,
+/// and `ignorerad`.
+pub struct RadioHearPlugin;
+
+impl Plugin for RadioHearPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<RadioIcons>()
+            .init_resource::<RadioSettings>()
+            .add_message::<Radio>()
+            .add_message::<ChatLine>()
+            .add_message::<PlaySound>()
+            .add_systems(
+                Update,
+                (
+                    register_commands.run_if(resource_exists_and_changed::<RadioCommands>),
+                    hear,
+                ),
+            );
+        crate::console::resource_cvar::<RadioSettings, u8>(
+            app,
+            "ignorerad",
+            "1: don't show or play teammates' radio calls (your own still play).",
+            |s| &mut s.ignore,
+        );
+    }
+}
+
+/// The local player's radio settings.
+#[derive(Resource, Default, Debug, Clone)]
+pub struct RadioSettings {
+    /// `ignorerad`: teammates' calls aren't shown or played.
+    pub ignore: u8,
 }
 
 /// Which radio menu is open (0-based).
@@ -356,6 +383,7 @@ fn hear(
         Option<&GlobalTransform>,
     )>,
     nav: Option<Res<NavMesh>>,
+    settings: Res<RadioSettings>,
     mut play: MessageWriter<PlaySound>,
     mut chat: MessageWriter<ChatLine>,
     mut icons: ResMut<RadioIcons>,
@@ -375,7 +403,10 @@ fn hear(
             continue;
         };
         let alive = health.is_none_or(|h| h.current > 0.0);
-        if !hears(me, my_team.map(|t| t.0), call.sender, team.map(|t| t.0), alive) || c.variants.is_empty() {
+        if !hears(me, my_team.map(|t| t.0), call.sender, team.map(|t| t.0), alive)
+            || c.variants.is_empty()
+            || (settings.ignore != 0 && !is_local)
+        {
             continue;
         }
         // xorshift: pick a variant.
