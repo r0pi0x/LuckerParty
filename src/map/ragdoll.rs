@@ -10,14 +10,21 @@
 //!   `RagdollJoint`s (a custom XPBD constraint: ball and socket plus
 //!   X-then-Y-then-Z Euler limits, spec Open question 5's proposal); the
 //!   owner gets `Ragdolled` and loses its drawn body to the ragdoll.
-//! - Ragdolls collide with the world and props only
-//!   (`core::RAGDOLL_LAYER`), sleep after 5 s of stillness, and go away
-//!   at a round restart and when their owner lives again (respawn) or is
+//! - Bone velocities aim at a death pose (spec 2.3) when the game's
+//!   animations have one for the hit: the side from the killing push and
+//!   the facing, the frame from the hit group.
+//! - Ragdolls collide with the world and props (`core::RAGDOLL_LAYER`),
+//!   and their own bodies with each other only for the model's collision
+//!   pairs (`MapCollisionHooks`, which the app's physics plugins must use);
+//!   later bullets push them (`RagdollShot`), joints that stay pulled
+//!   apart are repaired, they sleep after 5 s of stillness, and go away at
+//!   a round restart and when their owner lives again (respawn) or is
 //!   gone.
 
 use std::collections::VecDeque;
 
 use avian3d::{
+    collision::hooks::CollisionHooks,
     dynamics::{
         joints::EntityConstraint,
         solver::{
@@ -31,10 +38,10 @@ use avian3d::{
     },
     prelude::*,
 };
-use bevy::prelude::*;
+use bevy::{ecs::system::SystemParam, prelude::*};
 
 use super::{BodyJoint, BodyModel, CharacterBody, CharacterModels, MapCharacterModel, MapPart, anim};
-use crate::core::{Died, Health, Intent, RAGDOLL_LAYER};
+use crate::core::{Died, Health, Hitgroup, Intent, MovementState, RAGDOLL_LAYER};
 
 /// A character model's ragdoll: bodies on its bones, joints between them
 /// (specs/cs_source/ragdolls.md 1). Shapes and anchors are in the
@@ -44,9 +51,42 @@ use crate::core::{Died, Health, Intent, RAGDOLL_LAYER};
 pub struct MapRagdoll {
     pub bodies: Vec<MapRagdollBody>,
     pub joints: Vec<MapRagdollJoint>,
-    /// Body pairs allowed to collide with each other (not simulated yet:
-    /// docs/tech-debt.md).
-    pub collision_pairs: Vec<(usize, usize)>,
+    /// Self-collision (spec 1.3): the body pairs allowed to collide with
+    /// each other (empty: none). None: the model has no rules, so every
+    /// pair collides except a joint's parent and child.
+    pub collision_pairs: Option<Vec<(usize, usize)>>,
+}
+
+impl MapRagdoll {
+    /// Per body, a bit for each body of the same ragdoll it collides with
+    /// (spec 1.3; at most 32 bodies take part).
+    pub fn collision_masks(&self) -> Vec<u32> {
+        let n = self.bodies.len();
+        let bit = |i: usize| if i < 32 { 1u32 << i } else { 0 };
+        let mut masks = vec![0u32; n];
+        match &self.collision_pairs {
+            Some(pairs) => {
+                for &(a, b) in pairs {
+                    if a < n && b < n && a != b {
+                        masks[a] |= bit(b);
+                        masks[b] |= bit(a);
+                    }
+                }
+            }
+            None => {
+                for (a, m) in masks.iter_mut().enumerate() {
+                    *m = (0..n).filter(|&b| b != a).fold(0, |m, b| m | bit(b));
+                }
+                for j in &self.joints {
+                    if j.parent < n && j.child < n {
+                        masks[j.parent] &= !bit(j.child);
+                        masks[j.child] &= !bit(j.parent);
+                    }
+                }
+            }
+        }
+        masks
+    }
 }
 
 /// One rigid body, following bone `bone`.
@@ -62,6 +102,10 @@ pub struct MapRagdollBody {
     /// Multiplier on the shape's inertia tensor.
     pub inertia: f32,
     pub surfaceprop: String,
+    /// Contact friction and elasticity of its surface property (Source's
+    /// `surfaceproperties`; `flesh` for players).
+    pub friction: f32,
+    pub elasticity: f32,
 }
 
 /// A ball-and-socket joint: `child`'s bone origin is held at its bind-pose
@@ -89,9 +133,17 @@ const MAX_ANGULAR_SPEED: f32 = 3600.0 * std::f32::consts::PI / 180.0;
 /// Body 0 moving less than this on every axis per tick counts as still
 /// (spec 6.1: 1 in), m.
 const SETTLE_TOLERANCE: f32 = 0.0254;
-/// Contact friction of ragdoll bodies (flesh; Source's value comes from
-/// the surface properties, not read here).
-const FRICTION: f32 = 0.8;
+/// A later bullet's push on a ragdoll's pelvis (spec 6.2: 4000 kg·in/s),
+/// kg·m/s.
+pub const BULLET_PUSH: f32 = 4000.0 * 0.0254;
+/// Joint error (spec 6.3): a child farther than 3 in from its anchor for
+/// 15 ticks puts the ragdoll in error; then children more than 1 in off
+/// are candidates for repair. m.
+const ERROR_TOLERANCE: f32 = 3.0 * 0.0254;
+const ERROR_TICKS: u32 = 15;
+const SEPARATION_FIX: f32 = 0.0254;
+/// A death pose's frame f is sampled at cycle f / 6 (spec 2.2).
+const DEATH_POSE_FRAMES: f32 = 6.0;
 
 /// Ragdoll settings (the console sets them).
 #[derive(Resource, Clone, Debug)]
@@ -155,10 +207,20 @@ pub struct Ragdoll {
     /// Each body's joint parent body, and the child's anchor in the
     /// parent bone's frame (skeleton units).
     pub parents: Vec<Option<(usize, Vec3)>>,
+    /// Skeleton units to meters (`parents` anchors are in skeleton units).
+    pub scale: f32,
+    /// The death pose its bone velocities aimed at (spec 2.3), if any.
+    pub death_pose: Option<(DeathSide, u8)>,
+    /// How many child bodies separation repair moved back (spec 6.3).
+    pub repairs: u32,
     /// Settling (spec 6.1): body 0's position at the last check, and when
     /// it last moved.
     last_root: Vec3,
     last_moved: f64,
+    /// When it was made (the killing shot doesn't push it again, 6.2).
+    born: f64,
+    /// Ticks in a row some joint was pulled apart beyond the tolerance.
+    error_ticks: u32,
 }
 
 /// A rigid body of a ragdoll: which one and which of its bodies.
@@ -166,10 +228,131 @@ pub struct Ragdoll {
 pub struct RagdollBody {
     pub ragdoll: Entity,
     pub index: usize,
+    /// A bit for each body of the same ragdoll it collides with
+    /// (`MapRagdoll::collision_masks`).
+    pub collides: u32,
+}
+
+/// A bullet's path from where it started to where it stopped (or a
+/// blast's, `blast`): ragdolls on it get pushed (spec 6.2). Bullets pass
+/// through ragdolls; this is the separate client-side trace that finds
+/// them.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct RagdollShot {
+    pub from: Vec3,
+    pub to: Vec3,
+    pub blast: bool,
+}
+
+/// The collision filter for the app's physics
+/// (`PhysicsPlugins::default().with_collision_hooks::<MapCollisionHooks>()`):
+/// two bodies of one ragdoll collide only if the model's rules pair them
+/// (spec 1.3), bodies of different ragdolls never (spec 4: both are
+/// debris). Everything else is left to collision layers.
+#[derive(SystemParam)]
+pub struct MapCollisionHooks<'w, 's> {
+    bodies: Query<'w, 's, &'static RagdollBody>,
+}
+
+impl CollisionHooks for MapCollisionHooks<'_, '_> {
+    fn filter_pairs(&self, a: Entity, b: Entity, _: &mut Commands) -> bool {
+        match (self.bodies.get(a), self.bodies.get(b)) {
+            (Ok(a), Ok(b)) => a.ragdoll == b.ragdoll && a.collides & 1u32.checked_shl(b.index as u32).unwrap_or(0) != 0,
+            _ => true,
+        }
+    }
+}
+
+/// Which way a death pose throws the body (spec 2.3): the side the hit
+/// came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeathSide {
+    Front,
+    Back,
+    Left,
+    Right,
+}
+
+impl DeathSide {
+    /// The side for a killing push `force` in the skeleton's space (Source
+    /// axes: facing +X, left +Y). Ties go to front/back.
+    pub fn from_force(force: Vec3) -> Option<Self> {
+        let d = -force.try_normalize()?;
+        let (f, r) = (d.x, -d.y);
+        Some(if r.abs() > f.abs() {
+            if r < 0.0 { Self::Left } else { Self::Right }
+        } else if f < 0.0 {
+            Self::Back
+        } else {
+            Self::Front
+        })
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Front => "front",
+            Self::Back => "back",
+            Self::Left => "left",
+            Self::Right => "right",
+        }
+    }
+
+    /// The sequence's activity (`ACT_DIE_FRONTSIDE`, crouched
+    /// `ACT_DIE_CROUCH_FRONTSIDE`).
+    pub fn activity(self, crouch: bool) -> String {
+        let side = self.name().to_ascii_uppercase();
+        if crouch {
+            format!("ACT_DIE_CROUCH_{side}SIDE")
+        } else {
+            format!("ACT_DIE_{side}SIDE")
+        }
+    }
+
+    /// The sequence's name (`deathpose_front`, `deathpose_crouch_front`).
+    pub fn sequence(self, crouch: bool) -> String {
+        if crouch {
+            format!("deathpose_crouch_{}", self.name())
+        } else {
+            format!("deathpose_{}", self.name())
+        }
+    }
+}
+
+/// The death pose frame for a hit group (spec 2.3): head 1, chest and
+/// stomach 2, arms 3 and 4, legs 5 and 6, anything else 1.
+pub fn death_pose_frame(group: Hitgroup) -> u8 {
+    match group {
+        Hitgroup::Head | Hitgroup::Generic => 1,
+        Hitgroup::Chest | Hitgroup::Stomach => 2,
+        Hitgroup::LeftArm => 3,
+        Hitgroup::RightArm => 4,
+        Hitgroup::LeftLeg => 5,
+        Hitgroup::RightLeg => 6,
+    }
+}
+
+/// A death pose's bones in skeleton space (spec 2.2): the side's sequence
+/// (the crouched variant when crouching and the model has it) at cycle
+/// frame / 6 over the skeleton's default pose. None: the model's
+/// animations have no such sequence.
+pub fn death_pose_bones(m: &MapCharacterModel, side: DeathSide, frame: u8, crouch: bool) -> Option<Vec<(Quat, Vec3)>> {
+    let set = m.animations.as_ref()?;
+    let find = |crouch: bool| {
+        set.activity(&side.activity(crouch))
+            .or_else(|| set.sequence(&side.sequence(crouch)))
+    };
+    let s = if crouch { find(true).or_else(|| find(false)) } else { find(false) }?;
+    if set.defaults.len() != m.bones.len() {
+        return None;
+    }
+    let mut pose = set.defaults.clone();
+    set.accumulate(&mut pose, s, frame as f32 / DEATH_POSE_FRAMES, 1.0, &set.default_params());
+    Some(globals(m, &pose))
 }
 
 pub(super) fn plugin(app: &mut App) {
     app.init_resource::<RagdollSettings>()
+        .add_message::<RagdollShot>()
         .add_plugins(JointGraphPlugin::<RagdollJoint>::default())
         .add_systems(
             PhysicsSchedule,
@@ -183,7 +366,13 @@ pub(super) fn plugin(app: &mut App) {
         )
         .add_systems(
             FixedUpdate,
-            (remove_ragdolls, spawn_ragdolls, settle_ragdolls)
+            (
+                remove_ragdolls,
+                spawn_ragdolls,
+                shoot_ragdolls,
+                repair_ragdolls,
+                settle_ragdolls,
+            )
                 .chain()
                 .after(crate::core::apply_damage),
         )
@@ -308,7 +497,7 @@ fn spawn_ragdolls(
     mut died: MessageReader<Died>,
     settings: Res<RagdollSettings>,
     models: Option<Res<CharacterModels>>,
-    owners: Query<(&BodyModel, &SkeletonPose), Without<Ragdolled>>,
+    owners: Query<(&BodyModel, &SkeletonPose, Option<&MovementState>), Without<Ragdolled>>,
     time: Res<Time>,
     mut commands: Commands,
 ) {
@@ -320,7 +509,7 @@ fn spawn_ragdolls(
         if settings.enabled == 0 {
             continue;
         }
-        let Ok((model, pose)) = owners.get(d.entity) else { continue };
+        let Ok((model, pose, state)) = owners.get(d.entity) else { continue };
         let Some(m) = models.0.get(model.0) else { continue };
         let Some(ragdoll) = &m.ragdoll else { continue };
         let Some(b1) = pose.frames.back() else { continue };
@@ -331,11 +520,51 @@ fn spawn_ragdolls(
             .find(|f| f.time <= b1.time - BONE_DT + 1e-6)
             .or(pose.frames.front())
             .unwrap_or(b1);
-        let dt = (b1.time - b0.time) as f32;
-        let entity = spawn_ragdoll(&mut commands, d.entity, model.0, m, ragdoll, (b0, b1, dt), &d.damage, time.elapsed_secs_f64());
+        // The death pose (2.3): only for damage that pushes.
+        let pushes = matches!(
+            d.damage.kind,
+            crate::core::DamageKind::Bullet
+                | crate::core::DamageKind::Melee
+                | crate::core::DamageKind::Blast
+                | crate::core::DamageKind::Crush
+        );
+        let death = DeathSide::from_force(b1.root.rotation.inverse() * d.damage.dir)
+            .filter(|_| pushes)
+            .map(|side| (side, death_pose_frame(d.damage.hitgroup)))
+            .and_then(|(side, frame)| {
+                let crouch = state.is_some_and(|s| s.crouching);
+                let bones = death_pose_bones(m, side, frame, crouch)?;
+                Some((
+                    (side, frame),
+                    PoseFrame {
+                        time: b1.time,
+                        root: b1.root,
+                        bones,
+                    },
+                ))
+            });
+        let seed = RagdollSeed {
+            prev: b0,
+            seed: b1,
+            target: death.as_ref().map_or(b1, |(_, f)| f),
+            dt: (b1.time - b0.time) as f32,
+            death_pose: death.as_ref().map(|(p, _)| *p),
+        };
+        let entity = spawn_ragdoll(&mut commands, d.entity, model.0, m, ragdoll, &seed, &d.damage, time.elapsed_secs_f64());
         commands.entity(d.entity).insert(Ragdolled);
-        info!("ragdoll {entity} for {}", d.entity);
+        info!("ragdoll {entity} for {} (death pose {:?})", d.entity, seed.death_pose);
     }
+}
+
+/// The poses a ragdoll starts from (spec 2.2): bodies are placed at
+/// `seed`; bone velocities take each bone from `prev` to `target` in
+/// `dt` seconds (`target` is `seed`, or the death pose).
+pub struct RagdollSeed<'a> {
+    pub prev: &'a PoseFrame,
+    pub seed: &'a PoseFrame,
+    pub target: &'a PoseFrame,
+    pub dt: f32,
+    pub death_pose: Option<(DeathSide, u8)>,
 }
 
 /// Spawn one ragdoll; returns its entity.
@@ -346,12 +575,14 @@ pub fn spawn_ragdoll(
     model: usize,
     m: &MapCharacterModel,
     ragdoll: &MapRagdoll,
-    (b0, b1, dt): (&PoseFrame, &PoseFrame, f32),
+    poses: &RagdollSeed,
     hit: &crate::core::Damage,
     now: f64,
 ) -> Entity {
+    let (b0, b1, target, dt) = (poses.prev, poses.seed, poses.target, poses.dt);
     let scale = m.root.scale.x;
     let ragdoll_entity = commands.spawn((Name::new("Ragdoll"), MapPart, Transform::default())).id();
+    let masks = ragdoll.collision_masks();
     let k = hit_body(m, ragdoll, b1, hit);
     let force = match k {
         Some(_) => hit.dir.normalize_or_zero() * DEATH_IMPULSE,
@@ -383,7 +614,8 @@ pub fn spawn_ragdoll(
         // hit body's origin.
         let (mut v, mut w) = if dt > 0.0 {
             let (r0, p0) = b0.world(body.bone);
-            ((pos - p0) / dt, rotation_between(r0, rot) / dt)
+            let (r1, p1) = target.world(body.bone);
+            ((p1 - p0) / dt, rotation_between(r0, r1) / dt)
         } else {
             (Vec3::ZERO, Vec3::ZERO)
         };
@@ -403,6 +635,7 @@ pub fn spawn_ragdoll(
                     RagdollBody {
                         ragdoll: ragdoll_entity,
                         index: i,
+                        collides: masks[i],
                     },
                     MapPart,
                     Transform::from_translation(pos).with_rotation(rot),
@@ -418,9 +651,12 @@ pub fn spawn_ragdoll(
                     (
                         MaxLinearSpeed(MAX_LINEAR_SPEED),
                         MaxAngularSpeed(MAX_ANGULAR_SPEED),
-                        Friction::new(FRICTION),
-                        Restitution::new(0.0),
-                        CollisionLayers::new(RAGDOLL_LAYER, LayerMask::DEFAULT),
+                        Friction::new(body.friction),
+                        Restitution::new(body.elasticity),
+                        // Its own ragdoll's bodies too: `MapCollisionHooks`
+                        // keeps the listed pairs.
+                        CollisionLayers::new(RAGDOLL_LAYER, LayerMask::DEFAULT | RAGDOLL_LAYER),
+                        ActiveCollisionHooks::FILTER_PAIRS,
                         TransformInterpolation,
                     ),
                 ))
@@ -452,7 +688,8 @@ pub fn spawn_ragdoll(
                         bind: pq.inverse() * cq,
                         limits: j.limits,
                     },
-                    JointCollisionDisabled,
+                    // No `JointCollisionDisabled`: the collision rules alone
+                    // decide which bodies touch (1.3).
                 ))
                 .id(),
         );
@@ -465,8 +702,13 @@ pub fn spawn_ragdoll(
         joints,
         visual: None,
         parents,
+        scale,
+        death_pose: poses.death_pose,
+        repairs: 0,
         last_root: root,
         last_moved: now,
+        born: now,
+        error_ticks: 0,
     });
     ragdoll_entity
 }
@@ -506,6 +748,161 @@ fn despawn_ragdoll(commands: &mut Commands, e: Entity, r: &Ragdoll) {
     commands.entity(e).despawn();
     if let Ok(mut owner) = commands.get_entity(r.owner) {
         owner.remove::<Ragdolled>();
+    }
+}
+
+/// Bullets push the ragdolls on their path (spec 6.2): once per ragdoll,
+/// `BULLET_PUSH` along the shot on body 0 (the pelvis) at the point the
+/// trace first hit that ragdoll (a blast: 4000 × the trace's length at the
+/// pelvis's mass centre), waking it and restarting its settle timer. A
+/// ragdoll made this tick is left alone (the killing hit already pushed it).
+fn shoot_ragdolls(
+    mut shots: MessageReader<RagdollShot>,
+    spatial: SpatialQuery,
+    parts: Query<&RagdollBody>,
+    mut ragdolls: Query<&mut Ragdoll>,
+    mut forces: Query<Forces>,
+    time: Res<Time>,
+) {
+    let now = time.elapsed_secs_f64();
+    let filter = SpatialQueryFilter::from_mask(RAGDOLL_LAYER);
+    for shot in shots.read() {
+        let Ok(dir) = Dir3::new(shot.to - shot.from) else { continue };
+        let length = shot.from.distance(shot.to);
+        // The nearest hit on each ragdoll.
+        let mut first: Vec<(Entity, f32)> = Vec::new();
+        for hit in spatial.ray_hits(shot.from, dir, length, 64, true, &filter) {
+            let Ok(part) = parts.get(hit.entity) else { continue };
+            match first.iter_mut().find(|(r, _)| *r == part.ragdoll) {
+                Some((_, d)) => *d = d.min(hit.distance),
+                None => first.push((part.ragdoll, hit.distance)),
+            }
+        }
+        for (ragdoll, distance) in first {
+            let Ok(mut r) = ragdolls.get_mut(ragdoll) else { continue };
+            if r.born >= now {
+                continue;
+            }
+            let Some(mut pelvis) = r.bodies.first().and_then(|b| forces.get_mut(*b).ok()) else {
+                continue;
+            };
+            if shot.blast {
+                pelvis.apply_linear_impulse((shot.to - shot.from) * 4000.0);
+            } else {
+                pelvis.apply_linear_impulse_at_point(*dir * BULLET_PUSH, shot.from + *dir * distance);
+            }
+            r.last_moved = now;
+        }
+    }
+}
+
+/// Whether separation repair moves a child back to its anchor (spec 6.3):
+/// always when its parent was just moved; else when it is more than 1 in
+/// off and either lighter than half its parent or something lies between
+/// the anchor and it (`blocked`).
+pub fn needs_repair(gap: f32, child_mass: f32, parent_mass: f32, parent_repaired: bool, blocked: bool) -> bool {
+    parent_repaired || (gap > SEPARATION_FIX && (child_mass * 2.0 < parent_mass || blocked))
+}
+
+/// Separation repair (spec 6.3): once some joint of an awake ragdoll stays
+/// pulled apart past the tolerance for `ERROR_TICKS` ticks, each child that
+/// `needs_repair` (parents first) is moved to its anchor on the parent,
+/// keeping its rotation, with the parent's velocity at that point and no
+/// spin. A pass that repairs nothing clears the error. "Something in
+/// between" is a world trace from the anchor to the child (Source also
+/// asks for a contact in that direction).
+#[allow(clippy::type_complexity)]
+fn repair_ragdolls(
+    mut ragdolls: Query<&mut Ragdoll>,
+    mut physics: ParamSet<(
+        Query<
+            (
+                &mut Position,
+                &Rotation,
+                &mut LinearVelocity,
+                &mut AngularVelocity,
+                &ComputedMass,
+                &ComputedCenterOfMass,
+                Has<Sleeping>,
+            ),
+            With<RagdollBody>,
+        >,
+        SpatialQuery,
+    )>,
+) {
+    let world = SpatialQueryFilter::from_mask(LayerMask::DEFAULT);
+    for mut r in &mut ragdolls {
+        let mut state = Vec::with_capacity(r.bodies.len());
+        for b in &r.bodies {
+            let Ok((p, q, v, w, m, c, asleep)) = physics.p0().get(*b).map(|(p, q, v, w, m, c, s)| (p.0, q.0, v.0, w.0, m.value(), c.0, s)) else {
+                break;
+            };
+            state.push((p, q, v, w, m, c, asleep));
+        }
+        if state.len() != r.bodies.len() || state.iter().all(|s| s.6) {
+            continue;
+        }
+        let anchor = |r: &Ragdoll, state: &[(Vec3, Quat, Vec3, Vec3, f32, Vec3, bool)], i: usize| {
+            let (pi, a) = r.parents[i]?;
+            let (pp, pq, ..) = state[pi];
+            Some((pi, pp + pq * (a * r.scale)))
+        };
+        let worst = (0..state.len())
+            .filter_map(|i| Some(anchor(&r, &state, i)?.1.distance(state[i].0)))
+            .fold(0.0f32, f32::max);
+        if worst <= ERROR_TOLERANCE {
+            r.error_ticks = 0;
+            continue;
+        }
+        r.error_ticks += 1;
+        if r.error_ticks < ERROR_TICKS {
+            continue;
+        }
+        // Parents before children.
+        let depth = |mut i: usize| {
+            let mut d = 0;
+            while let Some((p, _)) = r.parents.get(i).copied().flatten() {
+                d += 1;
+                i = p;
+                if d > 64 {
+                    break;
+                }
+            }
+            d
+        };
+        let mut order: Vec<usize> = (0..state.len()).collect();
+        order.sort_by_key(|i| depth(*i));
+        let mut repaired = vec![false; state.len()];
+        for i in order {
+            let Some((pi, target)) = anchor(&r, &state, i) else { continue };
+            let gap = target - state[i].0;
+            let (pm, cm) = (state[pi].4, state[i].4);
+            let fix = needs_repair(gap.length(), cm, pm, repaired[pi], false)
+                || (gap.length() > SEPARATION_FIX
+                    && Dir3::new(-gap)
+                        .ok()
+                        .and_then(|dir| physics.p1().cast_ray(target, dir, gap.length(), true, &world))
+                        .is_some());
+            if !fix {
+                continue;
+            }
+            let (pp, pq, pv, pw, ..) = state[pi];
+            let v = pv + pw.cross(target - (pp + pq * state[pi].5));
+            if let Ok((mut p, _, mut lv, mut av, ..)) = physics.p0().get_mut(r.bodies[i]) {
+                p.0 = target;
+                lv.0 = v;
+                av.0 = Vec3::ZERO;
+            }
+            state[i].0 = target;
+            state[i].2 = v;
+            state[i].3 = Vec3::ZERO;
+            repaired[i] = true;
+        }
+        let count = repaired.iter().filter(|x| **x).count() as u32;
+        r.repairs += count;
+        if count == 0 {
+            r.error_ticks = 0;
+        }
     }
 }
 

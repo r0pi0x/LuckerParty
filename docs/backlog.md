@@ -93,11 +93,12 @@ burst), HUD, deathmatch and a first bot are in.
   `weapon/drop.rs`): throw speed, the re-pick delay, pickup reach and
   mass are guesses (measure on the probe server); bullets hit loose
   weapons; the use key doesn't swap a weapon for the one you look at.
-- Ragdolls, remaining (bodies, joints, impulse, bone velocities, settling
-  and removal are in, `map/ragdoll.rs`): death poses (spec 2.3), pushes
-  from later bullets (6.2), self-collision pairs (1.3), separation
-  repair (6.3); check the spec's open questions (force scale, bone_dt,
-  joint limit convention) in the game.
+- Ragdolls, remaining (`map/ragdoll.rs` has the spec's bodies, joints,
+  self-collision pairs, death poses, impulse, bone velocities, bullet
+  pushes, separation repair, settling and removal): blast pushes (send
+  `RagdollShot { blast: true }` from grenades once they exist); check the
+  spec's open questions (force scale, bone_dt, death-pose facing and
+  crouch choice, joint limit convention) in the game.
 - Held weapons don't stay in other players' hands (they float around the
   hands). Findings 2026-10-06: the world model's mesh follows the player's
   animated `weapon_bone` (child of the spine), which is right; the arms

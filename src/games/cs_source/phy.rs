@@ -262,7 +262,12 @@ pub fn parse_ragdoll(bytes: &[u8]) -> Result<PhyRagdoll, String> {
                 out.has_collision_rules = true;
                 for (k, v) in &keys {
                     match k.as_str() {
-                        "selfcollisions" if v.trim() == "0" => out.self_collisions = false,
+                        // Disables all self-collision; later pairs are
+                        // ignored (spec 1.3).
+                        "selfcollisions" if v.trim() == "0" => {
+                            out.self_collisions = false;
+                            out.collision_pairs.clear();
+                        }
                         "collisionpair" if out.self_collisions => {
                             let mut it = v.split(',').map(|s| s.trim().parse::<usize>());
                             if let (Some(Ok(a)), Some(Ok(b))) = (it.next(), it.next()) {

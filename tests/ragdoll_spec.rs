@@ -197,7 +197,7 @@ fn bodies_map_to_bones_and_anchors() {
         let (Some(p), Some(bones)) = (ragdoll_phy(model), skeleton(model)) else {
             return;
         };
-        let r = props::ragdoll(&p, &bones, model).expect("a ragdoll");
+        let r = props::ragdoll(&p, &bones, &Default::default(), model).expect("a ragdoll");
         let bone_of: Vec<usize> = r.bodies.iter().map(|b| b.bone).collect();
         assert_eq!(bone_of, [0, 10, 11, 28, 15, 16, 17, 18, 29, 30, 31, 5, 6, 1, 2, 14], "{model}");
         assert_eq!(bones.len() - r.bodies.len(), 34, "{model}: unsimulated bones");
@@ -219,6 +219,72 @@ fn bodies_map_to_bones_and_anchors() {
         // Limits come out in radians.
         let knee = r.joints.iter().find(|j| j.parent == 11 && j.child == 12).unwrap();
         assert!(near(knee.limits[2].1, 115f32.to_radians(), 1e-6));
+    }
+}
+
+/// Spec 2.3 test cases: `deathpose_front` frames 0 and 1 (cycles 0 and
+/// 1/6) on `ct_urban`'s skeleton: the head snaps back about 22 in, which
+/// over the 0.05 s look-back is the head body's seed velocity.
+#[test]
+fn front_death_pose_throws_the_head_back() {
+    use mashup::map::{
+        MapCharacterModel,
+        ragdoll::{DeathSide, death_pose_bones},
+    };
+    let Some(bones) = skeleton("ct_urban") else { return };
+    let Ok(set) = anim::load(&|p| read(p), "models/player/ct_urban.mdl") else {
+        return;
+    };
+    let m = MapCharacterModel {
+        team: None,
+        model: Default::default(),
+        hitboxes: Vec::new(),
+        bones,
+        root: Default::default(),
+        animations: Some(std::sync::Arc::new(set)),
+        boxes: Vec::new(),
+        ragdoll: None,
+    };
+    let head = m.bones.iter().position(|b| b.name == "ValveBiped.Bip01_Head1").unwrap();
+    let f0 = death_pose_bones(&m, DeathSide::Front, 0, false).expect("deathpose_front")[head].1;
+    let f1 = death_pose_bones(&m, DeathSide::Front, 1, false).unwrap()[head].1;
+    assert!((f0 - Vec3::new(6.208, -2.116, 62.414)).length() < 0.01, "frame 0 head {f0}");
+    assert!((f1 - Vec3::new(-16.242, 2.050, 60.962)).length() < 0.01, "frame 1 head {f1}");
+    let v = (f1 - f0) / 0.05;
+    assert!((v - Vec3::new(-449.0, 83.3, -29.0)).length() < 0.2, "head velocity {v}");
+    // The back pose throws it forward.
+    let back = death_pose_bones(&m, DeathSide::Back, 1, false).unwrap()[head].1;
+    assert!((back - Vec3::new(14.9, -4.2, 51.8)).length() < 0.2, "back frame 1 head {back}");
+    // Crouched variants exist too.
+    assert!(death_pose_bones(&m, DeathSide::Left, 3, true).is_some());
+}
+
+/// Spec 3: ragdoll bodies take friction and elasticity from their surface
+/// property (`flesh` for every player body), read from the install.
+#[test]
+fn bodies_use_flesh_surface_properties() {
+    use cs_source::surfaceprops::SurfaceProps;
+    let (Some(p), Some(bones), Some(manifest)) = (
+        ragdoll_phy("ct_urban"),
+        skeleton("ct_urban"),
+        read("scripts/surfaceproperties_manifest.txt"),
+    ) else {
+        return;
+    };
+    let mut surfaces = SurfaceProps::default();
+    let manifest = String::from_utf8_lossy(&manifest).to_string();
+    for file in manifest.split('"').filter(|s| s.ends_with(".txt")) {
+        if let Some(bytes) = read(file) {
+            surfaces.add(&String::from_utf8_lossy(&bytes));
+        }
+    }
+    // CS:S's flesh entry sets neither key, so it has default's 0.8 and
+    // 0.25.
+    assert!(surfaces.names().any(|n| n == "flesh"));
+    let flesh = surfaces.get("flesh");
+    let r = props::ragdoll(&p, &bones, &surfaces, "ct_urban").unwrap();
+    for b in &r.bodies {
+        assert_eq!((b.friction, b.elasticity), (flesh.friction, flesh.elasticity));
     }
 }
 
