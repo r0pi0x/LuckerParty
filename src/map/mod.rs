@@ -30,6 +30,7 @@ pub mod contact_filter;
 pub use breakables::{BreakProp, BrushPanes, GlassShatter, MapBreak, MapBreakPiece, SpawnGibs};
 mod dust;
 pub mod hud;
+pub mod hearing;
 pub mod live_sound;
 pub mod loose;
 pub mod probe_lit;
@@ -56,7 +57,7 @@ pub mod water;
 pub mod world_material;
 pub use view_model::{
     DynamicLight, EffectSettings, MapAttachment, MapViewModel, ViewAnimator, ViewModelAnchor, ViewModelCamera,
-    ViewModelEvent, ViewModelEventKind, ViewModelOffset, ViewModelSettings, ViewModels,
+    ViewModelEvent, ViewModelEventKind, ViewModelOffset, ViewModelSettings, ViewModelSource, ViewModels,
 };
 
 use prop_material::{PropMaterial, PropParams};

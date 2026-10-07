@@ -46,7 +46,10 @@ impl Plugin for ConsoleUiPlugin {
                 (
                     toggle,
                     edit.run_if(|ui: Res<ConsoleUi>| ui.open),
-                    run_binds.run_if(|ui: Res<ConsoleUi>| !ui.open),
+                    // Not in the game menu either: keys there drive it.
+                    run_binds.run_if(|ui: Res<ConsoleUi>, menu: Option<Res<super::game_menu::GameMenu>>| {
+                        !ui.open && !menu.is_some_and(|m| m.open)
+                    }),
                     drain_log,
                     record_sounds,
                     draw_console,
@@ -96,7 +99,7 @@ const VISIBLE_LINES: usize = 28;
 const SUGGESTIONS: usize = 8;
 
 #[derive(Component)]
-struct ConsoleRoot;
+pub(super) struct ConsoleRoot;
 #[derive(Component)]
 struct ConsoleOutput;
 /// One row of the output on screen.
@@ -197,11 +200,12 @@ fn spawn_ui(mut commands: Commands) {
     ));
 }
 
-fn toggle(
+pub(super) fn toggle(
     keys: Res<ButtonInput<KeyCode>>,
     mut ui: ResMut<ConsoleUi>,
     mut root: Single<&mut Visibility, With<ConsoleRoot>>,
     mut cursor: Single<&mut CursorOptions>,
+    menu: Option<Res<super::game_menu::GameMenu>>,
 ) {
     let close = ui.open && keys.just_pressed(KeyCode::Escape) && ui.search.is_none();
     if keys.just_pressed(KeyCode::Backquote) || close {
@@ -215,9 +219,9 @@ fn toggle(
             // Typing shouldn't move the player: the game reads input only
             // while the mouse is grabbed.
             super::input::release_cursor(&mut cursor);
-        } else if !close {
-            // Closed with the console key: straight back to playing. (Escape
-            // leaves the mouse free, as it does outside the console.)
+        } else if !close && !menu.is_some_and(|m| m.open) {
+            // Closed with the console key: straight back to playing, unless
+            // the game menu is open under it. (Escape leaves the mouse free.)
             super::input::capture_cursor(&mut cursor);
         }
     }
@@ -919,7 +923,10 @@ fn overlay_cvars(app: &mut App) {
             Ok(())
         },
     );
-    app.world_mut().resource_mut::<Console>().archive("con_timestamps");
+    let mut console = app.world_mut().resource_mut::<Console>();
+    console.archive("con_timestamps");
+    // Set from the game menu's options too.
+    console.archive("cl_showfps");
 }
 
 fn draw_overlays(
@@ -1282,7 +1289,7 @@ static MAP_NAMES: Mutex<Option<Vec<String>>> = Mutex::new(None);
 
 /// Every map the game can load: the install's, its downloads and
 /// mashup's cache (cached; `import` refreshes it).
-fn map_names() -> Vec<String> {
+pub(super) fn map_names() -> Vec<String> {
     let mut cached = MAP_NAMES.lock().unwrap_or_else(|e| e.into_inner());
     cached
         .get_or_insert_with(|| {
@@ -1328,6 +1335,11 @@ fn map_source(name: &str) -> &'static str {
     } else {
         "game"
     }
+}
+
+/// Whether a `map` command's load is under way.
+pub(super) fn map_loading(w: &World) -> bool {
+    w.contains_resource::<MapLoad>()
 }
 
 /// A map loading in the background for the `map` command.

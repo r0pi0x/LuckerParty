@@ -205,6 +205,11 @@ fn update(
         Query<(), With<crate::objectives::bomb::C4>>,
         Res<crate::objectives::bomb::BombRules>,
     ),
+    // Spectating: the watched player's radar.
+    spectating: (
+        Option<Res<super::spectate::Spectator>>,
+        Query<(&GlobalTransform, &Intent, Option<&Team>, Option<&Dead>)>,
+    ),
     mut commands: Commands,
 ) {
     let (Some(window), Ok((mut frame_node, mut frame_vis))) = (windows.iter().next(), frame.single_mut()) else {
@@ -229,6 +234,12 @@ fn update(
         return;
     };
     let (me_entity, at, intent, team, dead) = *me;
+    let (spectator, watched) = spectating;
+    let target = spectator
+        .filter(|s| s.phase == super::spectate::SpecPhase::Watching)
+        .and_then(|s| s.target)
+        .and_then(|t| watched.get(t).ok().map(|(g, i, tm, d)| (t, g, i, tm, d.is_some())));
+    let (me_entity, at, intent, team, dead) = target.unwrap_or((me_entity, at, intent, team, dead));
     *frame_vis = if dead {
         Visibility::Hidden
     } else {
@@ -263,7 +274,7 @@ fn update(
     let eye = at.translation() + Vec3::Y * 0.6;
     let mut seen: Vec<(Entity, Vec2, Color)> = Vec::new();
     for (e, t, other_team, health) in &others {
-        if health.is_some_and(|h| h.current <= 0.0) {
+        if e == me_entity || health.is_some_and(|h| h.current <= 0.0) {
             continue;
         }
         let friend = team.is_some() && other_team == team;

@@ -20,8 +20,8 @@ use bevy::prelude::*;
 use super::{Armor, CHAN_WEAPON, Inventory, Weapon, WeaponEvent, WeaponEventKind, WeaponState, armor_split};
 use crate::{
     core::{
-        Blinded, Damage, DamageKind, Damageable, Died, Explosion, Health, Hitgroup, Intent, MapWater, MovementState, Radio,
-        RoundRestarts, SOLID_LAYERS, SightBlocker, Velocity,
+        Blinded, Damage, DamageKind, Damageable, Deafened, Died, Explosion, Health, HearingEffect, Hitgroup, Intent,
+        MapWater, MovementState, Radio, RoundRestarts, SOLID_LAYERS, SightBlocker, Velocity,
     },
     map::{
         MapPropCollider, PlaySound,
@@ -215,6 +215,58 @@ pub struct Blast {
     /// Decal group placed on the probed ground.
     pub scorch: Option<String>,
     pub sound: Option<String>,
+    /// What it does to the hearing of characters it hurts.
+    pub hearing: Option<BlastHearing>,
+    /// How it shakes the view of those near it (clients draw it).
+    pub shake: Option<Shake>,
+}
+
+/// What a blast does to the hearing of a character it hurts (Source's
+/// base player, specs/cs_source/grenades.md 5.5): `shock` when the damage
+/// is at least `shock_damage`, else `ring` when the character's origin
+/// is closer than `ring_distance` (m) to the blast.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BlastHearing {
+    pub shock_damage: f32,
+    pub shock: HearingEffect,
+    pub ring_distance: f32,
+    pub ring: HearingEffect,
+}
+
+impl BlastHearing {
+    /// The effect on a character hurt by `damage` (before armour) with its
+    /// origin `distance` (m) from the blast.
+    pub fn effect(&self, damage: f32, distance: f32) -> Option<HearingEffect> {
+        if damage >= self.shock_damage {
+            Some(self.shock)
+        } else if distance < self.ring_distance {
+            Some(self.ring)
+        } else {
+            None
+        }
+    }
+}
+
+/// A screen shake around a point (Source's env_shake shape): the view
+/// moves up to `amplitude` (m) at the centre, less further out and none
+/// beyond `radius` (m), changing direction `frequency` times a second,
+/// dying out linearly over `duration` seconds.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Shake {
+    pub amplitude: f32,
+    pub frequency: f32,
+    pub duration: f32,
+    pub radius: f32,
+}
+
+impl Shake {
+    /// The amplitude `distance` (m) from the centre, `t` seconds in.
+    pub fn amplitude_at(&self, distance: f32, t: f32) -> f32 {
+        if distance >= self.radius || t < 0.0 || t >= self.duration {
+            return 0.0;
+        }
+        self.amplitude * (1.0 - distance / self.radius) * (1.0 - t / self.duration)
+    }
 }
 
 /// How strongly a flash blinds someone (a game's model): from the distance
@@ -227,7 +279,13 @@ pub type FlashModel = fn(distance: f32, facing: f32) -> Option<(f32, f32, f32)>;
 pub struct Flash {
     pub model: FlashModel,
     pub sound: Option<String>,
+    /// What it does to the hearing of those it blinds.
+    pub hearing: Option<FlashHearing>,
 }
+
+/// The hearing effect of a blindness (a game's model): from the peak
+/// whiteness (0-1) and how long it lasts (seconds, hold + fade).
+pub type FlashHearing = fn(alpha: f32, seconds: f32) -> Option<HearingEffect>;
 
 /// A smoke cloud (spec 7): grows to `max_radius` over `expand_time`, holds,
 /// fades between `fade_start` and `fade_end` (seconds after it starts).
@@ -409,6 +467,8 @@ pub struct Detonated {
     pub ground: Option<(Vec3, Vec3, Entity)>,
     /// The projectile (still alive for smoke: it lies in the cloud).
     pub projectile: Entity,
+    /// The view shake around `at`, if any.
+    pub shake: Option<Shake>,
 }
 
 // ---------------------------------------------------------------------------
@@ -680,6 +740,7 @@ struct GrenadeWorld<'w, 's> {
     play: MessageWriter<'w, PlaySound>,
     decals: MessageWriter<'w, PlaceDecal>,
     detonated: MessageWriter<'w, Detonated>,
+    deafened: MessageWriter<'w, Deafened>,
 }
 
 impl GrenadeWorld<'_, '_> {
@@ -877,6 +938,10 @@ fn detonate(
         at,
         ground: None,
         projectile: entity,
+        shake: match &p.effect {
+            GrenadeEffect::Blast(b) => b.shake,
+            _ => None,
+        },
     };
     match &p.effect {
         GrenadeEffect::Blast(b) => {
@@ -1018,6 +1083,7 @@ fn explosions(
             at: origin,
             ground: probe,
             projectile: Entity::PLACEHOLDER,
+            shake: b.shake,
         });
     }
 }
@@ -1038,6 +1104,8 @@ fn blast(
 ) {
     let src = origin + Vec3::Y * b.src_lift;
     let mut hits: Vec<(Entity, Vec3, f32)> = Vec::new();
+    // Characters' origins (the feet, as Source's), for their hearing.
+    let mut origins: Vec<(Entity, Vec3)> = Vec::new();
     for t in world.bodies.iter() {
         if Some(t.entity) == skip {
             continue;
@@ -1062,6 +1130,7 @@ fn blast(
                     lo.y
                 };
                 let h = rng.float(b.body_target.0, b.body_target.1);
+                origins.push((t.entity, t.transform.translation.with_y(feet)));
                 eye.with_y(feet + (eye.y - feet) * h)
             }
             _ => (lo + hi) / 2.0,
@@ -1092,6 +1161,12 @@ fn blast(
             let (to_health, to_armor) = armor_split(raw, ratio, b.quantum);
             amount = to_health;
             armor.amount = (armor.amount - to_armor).max(0.0);
+        }
+        if let Some(hearing) = &b.hearing
+            && let Some(&(_, at)) = origins.iter().find(|(e, _)| *e == target)
+            && let Some(effect) = hearing.effect(raw, at.distance(origin))
+        {
+            world.deafened.write(Deafened { target, effect });
         }
         let dir = (end - src).normalize_or_zero();
         world.damage.write(Damage {
@@ -1152,6 +1227,9 @@ fn flash(at: Vec3, fl: &Flash, world: &mut GrenadeWorld, commands: &mut Commands
         }
     }
     for (e, alpha, hold, fade) in blinded {
+        if let Some(effect) = fl.hearing.and_then(|h| h(alpha, hold + fade)) {
+            world.deafened.write(Deafened { target: e, effect });
+        }
         let new = Blinded {
             alpha,
             fade_start: now + hold as f64,

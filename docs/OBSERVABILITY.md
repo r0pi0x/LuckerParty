@@ -75,6 +75,10 @@ Only `Reflect`-registered types are visible; register new core components in
   action from the start, e.g. to fire in a `--screenshot` run; held
   console actions work without mouse capture. Automated runs never write
   config.cfg, and only archived cvars are saved there.
+- `menu [main|newgame|maps|bots|team|options]` opens the game menu (Esc)
+  on a page, for screenshots of it: `--screenshot menu.png +menu options`.
+  Its logic is unit-tested in `client::game_menu` (keys and clicks in,
+  console lines out).
 - `ent_fire <target> <input> [value]` sends a map entity an input through
   the logic layer (names, `*` wildcards, classnames; the local player is
   the activator), e.g. `+wait 30 +ent_fire logic_timer Disable +ent_fire
@@ -126,6 +130,11 @@ Only `Reflect`-registered types are visible; register new core components in
   +bot_give weapon_hegrenade +mashup_drawbots 1 +mashup_watch 1
   +cam_idealdist 600 +cam_idealyaw 70 ++attack --frames 130` shows the bot
   hearing you behind the long crate and lobbing an HE over it.
+- Spectating: `mashup_hurtme chest 500` (in a rounds game, `+mashup_rounds 1`) starts the
+  death cam; 2 s later the camera watches a living teammate. Drive it
+  with `spec_mode 4|5|6` (first person, chase, free look), `spec_next`
+  and `spec_prev`, `mp_forcecamera 0` to watch enemies too; the state is
+  the `Spectator` resource (`tests/spectate.rs` drives it headless).
 - `mashup_objectives 1` prints the objectives' state on screen: who
   carries the bomb, a planted bomb's place, site and time left, a defuse's
   progress (who, kit, seconds), the outcome, and each hostage's health,
@@ -150,6 +159,15 @@ Only `Reflect`-registered types are visible; register new core components in
   `Transform` on `mashup::core::Intent` entities, `setpos` near it, and
   tap `+attack`/`-attack` over the remote console between
   `screenshot`s.
+- Flashbang look (white plus the frozen after-image): run live on
+  de_dust2 with `+mp_freezetime 0 +god`, then over the remote console
+  `give cs_source:weapon_flashbang`, `setang 35 255 0`, `+attack`,
+  `-attack` a second later, and `screenshot`s from 1.7 s after the
+  release; a `setang` to another direction after the flash shows the
+  frozen frame over the new view. Hearing (muffle, ringing) can't be
+  photographed: `map::hearing::Hearing` and its tests
+  (`cargo test --lib hearing`) show the curves; `tests/cs_grenades.rs`
+  checks which effect each blast or flash gives.
 - `mashup_healthbars 1` draws a health bar over every other living
   character (green full, red nearly dead), e.g. to watch damage land in a
   `--screenshot` run with `+bot_add 2`.

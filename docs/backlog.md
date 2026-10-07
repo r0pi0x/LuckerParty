@@ -62,6 +62,12 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   other game messages in the chat (team joins; bomb pickups and drops
   are in). The radar is in (`client/radar.rs`: the map overview turning
   with you, team dots, your place name); its range (2200 units) is a guess.
+- The game menu (Esc; `client/game_menu.rs`: new game with map, mode,
+  bots per team and difficulty; bots; team; options; bug report; quit)
+  is in, in its own look. Left: the game's own GameUI look
+  (`SourceScheme.res` frames, its fonts on Linux, where Tahoma is
+  missing), more options (binds, crosshair size, video), a scrollbar for
+  long map lists (pages of 42 now), map thumbnails.
 - Debug overlays: `mashup_drawhitboxes`, `mashup_healthbars`,
   `mashup_drawnav`, `mashup_drawbots` exist; add more as features need
   them (sound radii, triggers).
@@ -102,9 +108,8 @@ a first bot are in.
 - Grenades, remaining (HE, flashbang and smoke are in: `weapon/grenade.rs`,
   `games/cs_source/grenades.rs`): measure the spec's open questions on the
   probe (fuse ticks, release timing, flash amounts and overlay curve, HE vs
-  armour, smoke vs bots) and replace the fits (tech-debt); the flash's
-  after-image and DSP ringing, bots throwing grenades, the `_thrown`
-  models.
+  armour, smoke vs bots, HE shake and hearing) and replace the fits
+  (tech-debt); bots throwing grenades, the `_thrown` models.
 - Death animations on bodies (the grenade gesture is in; the reload gesture is in:
   `<Move>_Reload_<weapon>` by activity, an assumption for the spec's
   `reload_<suffix>`, with the shotguns' `_start/_loop/_end`).
@@ -120,10 +125,6 @@ a first bot are in.
   check the knife's mark (`ManhackCut` is a guess) and lit decals (wood,
   glass) against the game; tracers are in (every 4th bullet, spec
   tracers.md; check N and the look in play); explosion impulses.
-- dust2's woven basket physics props (`props_junk`/`wicker` style pots):
-  parts of the lid and rim don't draw (seen from above, faces missing).
-  Suspect the model converter's winding fix-up (it winds triangles
-  against the vertex normals) or back-face culling of a two-sided part.
 - Dropping weapons, remaining (`drop`/G, pickup and death drops are in,
   `weapon/drop.rs`): throw speed, the re-pick delay, pickup reach and
   mass, friction (0.5) and the box collider are guesses (measure on

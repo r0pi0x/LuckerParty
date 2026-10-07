@@ -2,7 +2,9 @@
 //! flashbang and smoke grenade as `weapon::grenade::Throwable` weapons with
 //! the spec's numbers, the HE explosion's particles (spec 5.4, built on
 //! `map::particles`), the smoke cloud's 64 sprites (7.3), and the flash
-//! model (6.2, a fit pending the probe's measurement).
+//! model (6.2, a fit pending the probe's measurement), and what blasts
+//! and flashes do to hearing (5.5, 6.4: the DSP presets as
+//! `core::HearingEffect`s).
 //!
 //! Units: the spec's inches, converted with `UNIT`. Source's up (z) is our
 //! y.
@@ -11,6 +13,7 @@ use bevy::prelude::*;
 
 use super::weapons::HP;
 use crate::{
+    core::HearingEffect,
     map::{
         LightField,
         particles::{
@@ -21,7 +24,8 @@ use crate::{
     weapon::{
         RegisterWeapons, Weapon, WeaponSounds,
         grenade::{
-            Blast, Detonated, ExplosionRule, Flash, Flight, GrenadeEffect, GrenadeKind, Smoke, SmokeCloud, ThrowRule, Throwable,
+            Blast, BlastHearing, Detonated, ExplosionRule, Flash, Flight, GrenadeEffect, GrenadeKind, Shake, Smoke,
+            SmokeCloud, ThrowRule, Throwable,
         },
     },
 };
@@ -162,7 +166,105 @@ pub fn he_blast() -> Blast {
         max_push_speed: 2000.0 * UNIT,
         scorch: Some("scorch".into()),
         sound: Some("BaseGrenade.Explode".into()),
+        hearing: Some(BlastHearing {
+            shock_damage: SHOCK_DAMAGE * HP,
+            shock: SHOCK_MUFFLE,
+            ring_distance: EAR_RING_DISTANCE * UNIT,
+            ring: EXPLOSION_RING,
+        }),
+        shake: Some(he_shake()),
     }
+}
+
+/// The HE grenade's view shake: a GUESS (spec 5.2: the template's base
+/// grenade has none; whether CS:S shakes is Q9). Modest: 2 units at the
+/// blast, none past 700 units, 30 changes a second, over 1 s.
+pub fn he_shake() -> Shake {
+    Shake {
+        amplitude: 2.0 * UNIT,
+        frequency: 30.0,
+        duration: 1.0,
+        radius: 700.0 * UNIT,
+    }
+}
+
+// The hearing effects (spec 5.5, 6.4): the install's DSP presets (values
+// from scripts/dsp_presets.txt). Each row's duration holds the preset; its
+// fade time -1 means a 1 s exponential fade. We use the top of each
+// preset's mix range (sounds far from the listener get the most) and
+// stand in for its parts: a low-pass filter as is, a diffusor (all-pass
+// smearing) as a gentle low-pass (`DIFFUSOR_CUTOFF`), a 3 kHz sine LFO as
+// a ringing tone at the LFO's gain.
+
+/// Blast damage from which the shock effect plays, hp (spec 5.5).
+pub const SHOCK_DAMAGE: f32 = 30.0;
+/// Closer than this (units) the ring effect plays (spec 5.5).
+pub const EAR_RING_DISTANCE: f32 = 240.0;
+/// Our stand-in cutoff for a diffusor, Hz (ours).
+pub const DIFFUSOR_CUTOFF: f32 = 2500.0;
+/// The presets' ringing LFO, Hz.
+pub const RING_HZ: f32 = 3000.0;
+
+/// Presets 32-34, "explosion ring" (identical rows): diffusor, then a
+/// 1 kHz low-pass at gain 0.25; mix 0.2-0.7; 1.6 s, exponential fade.
+pub const EXPLOSION_RING: HearingEffect = HearingEffect {
+    hold: 1.6,
+    fade: 1.0,
+    exponential: true,
+    mix: 0.7,
+    cutoff: 1000.0,
+    wet_gain: 0.25,
+    ring_hz: RING_HZ,
+    ring_gain: 0.0,
+};
+
+/// Presets 35-37, "shock muffle" (identical rows): diffusor, then a 3 kHz
+/// sine LFO at gain 0.25; mix 0.2-0.7; 1.6 s, exponential fade.
+pub const SHOCK_MUFFLE: HearingEffect = HearingEffect {
+    hold: 1.6,
+    fade: 1.0,
+    exponential: true,
+    mix: 0.7,
+    cutoff: DIFFUSOR_CUTOFF,
+    wet_gain: 1.0,
+    ring_hz: RING_HZ,
+    ring_gain: 0.25,
+};
+
+/// Presets 134-136, "flashbang muffle" long / medium / short (spec 6.4):
+/// diffusor plus a 3 kHz sine LFO at gain 0.05; mix up to 0.7 / 0.4 /
+/// 0.2, held 1.6 / 0.2 / 0.1 s, exponential fade.
+pub const FLASH_MUFFLE: [HearingEffect; 3] = [
+    flash_muffle(0.7, 1.6),
+    flash_muffle(0.4, 0.2),
+    flash_muffle(0.2, 0.1),
+];
+
+const fn flash_muffle(mix: f32, hold: f32) -> HearingEffect {
+    HearingEffect {
+        hold,
+        fade: 1.0,
+        exponential: true,
+        mix,
+        cutoff: DIFFUSOR_CUTOFF,
+        wet_gain: 1.0,
+        ring_hz: RING_HZ,
+        ring_gain: 0.05,
+    }
+}
+
+/// Which flashbang muffle a blindness gets (spec 6.4 hypothesis, Q14:
+/// by its strength): the long one from 60 % of the longest blindness
+/// (`FLASH_MAX_TIME`), the medium one from 30 %, else the short one.
+pub fn flash_hearing(_alpha: f32, seconds: f32) -> Option<HearingEffect> {
+    let s = seconds / FLASH_MAX_TIME;
+    Some(if s >= 0.6 {
+        FLASH_MUFFLE[0]
+    } else if s >= 0.3 {
+        FLASH_MUFFLE[1]
+    } else {
+        FLASH_MUFFLE[2]
+    })
 }
 
 /// How far a flash reaches, units (FIT, Q12: not measured).
@@ -256,6 +358,7 @@ fn flashbang(e: &mut EntityWorldMut) {
     let effect = GrenadeEffect::Flash(Flash {
         model: flash_model,
         sound: Some("Flashbang.Explode".into()),
+        hearing: Some(flash_hearing),
     });
     grenade(e, FLASHBANG, 250.0, effect, "Flashbang.Bounce");
 }
@@ -732,6 +835,44 @@ mod tests {
         let far = flash_model(1200.0 * UNIT, 1.0).unwrap();
         assert!(far.1 + far.2 < full.1 + full.2);
         assert!(flash_model(1600.0 * UNIT, 1.0).is_none());
+    }
+
+    /// A flash at a given distance and angle: how long the white and its
+    /// after-image last (the blindness) and which ringing follows.
+    #[test]
+    fn flash_at_distance_and_angle_gives_after_image_and_ring_times() {
+        let hearing = |d: f32, k: f32| {
+            let (alpha, hold, fade) = flash_model(d * UNIT, k).unwrap();
+            (hold + fade, flash_hearing(alpha, hold + fade).unwrap())
+        };
+        // Close, looking at it: 5 s of white and after-image, the long
+        // muffle (1.6 s held, then a 1 s fade).
+        let (t, h) = hearing(100.0, 1.0);
+        assert!((t - 4.98).abs() < 0.01, "{t}");
+        assert_eq!(h, FLASH_MUFFLE[0]);
+        assert!((h.length() - 2.6).abs() < 1e-5);
+        // Close, facing away: a quarter of the strength, the short one.
+        let (t, h) = hearing(100.0, -1.0);
+        assert!((t - 1.245).abs() < 0.01, "{t}");
+        assert_eq!(h, FLASH_MUFFLE[2]);
+        // Halfway out, looking at it: three quarters, the long one;
+        // further, under 60 %: the medium one.
+        let (t, h) = hearing(750.0, 1.0);
+        assert!((t - 3.75).abs() < 0.01, "{t}");
+        assert_eq!(h, FLASH_MUFFLE[0]);
+        let (t, h) = hearing(1000.0, 1.0);
+        assert!((t - 2.78).abs() < 0.01, "{t}");
+        assert_eq!(h, FLASH_MUFFLE[1]);
+    }
+
+    #[test]
+    fn he_hearing_by_damage_then_distance() {
+        let h = he_blast().hearing.unwrap();
+        assert_eq!(h.effect(30.0 * HP, 300.0 * UNIT), Some(SHOCK_MUFFLE));
+        assert_eq!(h.effect(29.0 * HP, 200.0 * UNIT), Some(EXPLOSION_RING));
+        assert_eq!(h.effect(20.0 * HP, 250.0 * UNIT), None);
+        // The shock rings; the explosion ring only muffles (a low-pass).
+        assert!(SHOCK_MUFFLE.ring_gain > 0.0 && EXPLOSION_RING.ring_gain == 0.0);
     }
 
     #[test]

@@ -3,16 +3,19 @@
 //! the pin and release timing (G17, G30), the throw (G1), flight and
 //! bounces against floors, walls and players (G10-G14), the fuse (G16), HE
 //! damage by distance, walls and players in between (G18-G20), kill
-//! credit, flash blindness, the smoke cloud's life and bots' sight through
+//! credit, flash blindness, what blasts and flashes do to hearing (5.5,
+//! 6.4) and the HE's view shake, the smoke cloud's life and bots' sight through
 //! it, round restarts, and a primed grenade dropped by the dying.
 
 use bevy::{ecs::message::Messages, prelude::*};
 use mashup::{
     bot::{Bot, BotConfig},
-    core::{Blinded, Damage, DamageKind, Died, Health, Hitgroup, RoundRestarts, SightBlocker, Team},
+    core::{Blinded, Damage, DamageKind, Deafened, Died, Health, Hitgroup, RoundRestarts, SightBlocker, Team},
     games::cs_source::{
         TICK_INTERVAL,
-        grenades::{DRAW_TIME, FLASHBANG, HEGRENADE, SMOKEGRENADE, THROW_TIME},
+        grenades::{
+            DRAW_TIME, FLASH_MUFFLE, FLASHBANG, HEGRENADE, SHOCK_MUFFLE, SMOKEGRENADE, THROW_TIME, he_shake,
+        },
         weapons::{AK47, CsWeaponsPlugin},
     },
     greybox::{self, GreyboxMapPlugin},
@@ -22,7 +25,7 @@ use mashup::{
         Inventory, Weapon, WeaponEvent, WeaponEventKind,
         economy::{Money, buy},
         give,
-        grenade::{Projectile, SmokeCloud, Throwable, spawn_projectile},
+        grenade::{Detonated, Projectile, SmokeCloud, Throwable, spawn_projectile},
     },
 };
 
@@ -396,4 +399,58 @@ fn dying_with_the_pin_out_drops_a_live_grenade() {
     let thrown = projectiles(&mut sim);
     assert_eq!(thrown.len(), 1, "dropped live");
     assert!(thrown[0].1.velocity.xz().length() < 0.01, "only the body's velocity");
+}
+
+/// Messages of type `M` written while the sim runs `seconds`, tick by tick.
+fn collect<M: Message + Clone>(sim: &mut Sim, seconds: f64) -> Vec<M> {
+    let mut out = Vec::new();
+    let mut cursor = sim.app.world().resource::<Messages<M>>().get_cursor_current();
+    for _ in 0..(seconds / TICK_INTERVAL as f64).ceil() as usize {
+        sim.ticks(1);
+        out.extend(cursor.read(sim.app.world().resource::<Messages<M>>()).cloned());
+    }
+    out
+}
+
+#[test]
+fn flashes_muffle_hearing_by_blindness() {
+    let mut sim = sim();
+    // Close and looking at it: blind ~5 s, the long muffle; facing away:
+    // a quarter of that, the short one.
+    let facing = sim.spawn_character(Vec3::new(0.0, 0.9, 8.0), placeholder::ID);
+    let away = sim.spawn_character(Vec3::new(2.0, 0.9, 8.0), placeholder::ID);
+    sim.intent(away).yaw = std::f32::consts::PI;
+    sim.ticks(1);
+    place(&mut sim, FLASHBANG, Vec3::new(1.0, 1.6, 5.0), Vec3::ZERO);
+    let deaf = collect::<Deafened>(&mut sim, 1.7);
+    let of = |e: Entity| deaf.iter().find(|d| d.target == e).map(|d| d.effect);
+    assert_eq!(of(facing), Some(FLASH_MUFFLE[0]));
+    assert_eq!(of(away), Some(FLASH_MUFFLE[2]));
+    let b = sim.app.world().get::<Blinded>(facing).unwrap();
+    let a = sim.app.world().get::<Blinded>(away).unwrap();
+    assert!(b.end - b.fade_start > a.end - a.fade_start || b.end > a.end);
+}
+
+#[test]
+fn he_blasts_shock_hearing_and_shake() {
+    let mut sim = sim();
+    // 100 units away: ~70 hp of blast, the shock muffle (with its ring).
+    let near = sim.spawn_character(Vec3::new(0.0, 0.9, 10.0), placeholder::ID);
+    // 400 units: out of reach, nothing.
+    let far = sim.spawn_character(Vec3::new(3.0, 0.9, 10.0 + 400.0 * UNIT), placeholder::ID);
+    sim.ticks(1);
+    place(&mut sim, HEGRENADE, Vec3::new(0.0, 0.06, 10.0 - 100.0 * UNIT), Vec3::ZERO);
+    let mut deaf_at = sim.app.world().resource::<Messages<Deafened>>().get_cursor_current();
+    let mut det_at = sim.app.world().resource::<Messages<Detonated>>().get_cursor_current();
+    let (mut deaf, mut det) = (Vec::new(), Vec::new());
+    for _ in 0..120 {
+        sim.ticks(1);
+        let w = sim.app.world();
+        deaf.extend(deaf_at.read(w.resource::<Messages<Deafened>>()).cloned());
+        det.extend(det_at.read(w.resource::<Messages<Detonated>>()).cloned());
+    }
+    assert_eq!(deaf.iter().find(|d| d.target == near).map(|d| d.effect), Some(SHOCK_MUFFLE));
+    assert!(deaf.iter().all(|d| d.target != far));
+    assert_eq!(det.len(), 1);
+    assert_eq!(det[0].shake, Some(he_shake()));
 }

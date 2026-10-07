@@ -17,6 +17,7 @@ impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<HitMarker>()
             .init_resource::<Killfeed>()
+            .init_resource::<CrosshairColor>()
             .add_systems(Startup, spawn_hud)
             .add_systems(
                 Update,
@@ -28,6 +29,32 @@ impl Plugin for HudPlugin {
                     screen_tints,
                 ),
             );
+        crate::console::resource_cvar::<CrosshairColor, u8>(
+            app,
+            "cl_crosshaircolor",
+            "Crosshair colour: 0 green, 1 red, 2 blue, 3 yellow, 4 cyan.",
+            |c| &mut c.0,
+        );
+        app.world_mut()
+            .resource_mut::<crate::console::Console>()
+            .archive("cl_crosshaircolor");
+    }
+}
+
+/// `cl_crosshaircolor`: CS:S's crosshair colour presets.
+#[derive(Resource, Default, Clone, Copy, Debug, PartialEq)]
+pub struct CrosshairColor(pub u8);
+
+impl CrosshairColor {
+    pub fn color(self) -> Color {
+        let a = CROSSHAIR_COLOR.alpha();
+        match self.0 {
+            1 => Color::srgba(1.0, 0.3, 0.3, a),
+            2 => Color::srgba(0.3, 0.3, 1.0, a),
+            3 => Color::srgba(1.0, 1.0, 0.3, a),
+            4 => Color::srgba(0.3, 1.0, 1.0, a),
+            _ => CROSSHAIR_COLOR,
+        }
     }
 }
 
@@ -142,16 +169,15 @@ fn spawn_scope(commands: &mut Commands, images: &mut Assets<Image>) {
     ));
 }
 
-/// Full-screen tints: grey inside smoke, then the flashbang's white over
-/// it (specs/cs_source/grenades.md 7.4 and 6.3), under the HUD.
+/// Full-screen tints: grey inside smoke (specs/cs_source/grenades.md
+/// 7.4), under the flash overlay (`senses`) and the HUD.
 #[derive(Component, Clone, Copy, PartialEq)]
 enum ScreenTint {
     Smoke,
-    Flash,
 }
 
 fn spawn_tints(commands: &mut Commands) {
-    for (tint, z) in [(ScreenTint::Smoke, 30), (ScreenTint::Flash, 31)] {
+    for (tint, z) in [(ScreenTint::Smoke, 30)] {
         commands.spawn((
             tint,
             Node {
@@ -168,24 +194,20 @@ fn spawn_tints(commands: &mut Commands) {
 }
 
 /// The smoke clouds' grey (colour 0.3, alpha from the camera's place in
-/// each cloud) and the local player's flash white. CS:S also adds a frozen,
-/// over-bright copy of the frame at the flash (not done: white only).
+/// each cloud).
 fn screen_tints(
     mut tints: Query<(&ScreenTint, &mut BackgroundColor)>,
     camera: Query<&GlobalTransform, With<FirstPersonCamera>>,
     clouds: Query<&crate::weapon::grenade::SmokeCloud>,
-    local: Query<Option<&crate::core::Blinded>, With<LocalPlayer>>,
     time: Res<Time>,
 ) {
     let now = time.elapsed_secs_f64();
     let smoke = camera.iter().next().map_or(0.0, |c| {
         crate::weapon::grenade::smoke_fog_at(c.translation(), now, clouds.iter())
     });
-    let flash = local.iter().next().flatten().map_or(0.0, |b| b.alpha_at(now));
     for (tint, mut color) in &mut tints {
         let want = match tint {
             ScreenTint::Smoke => Color::srgba(0.3, 0.3, 0.3, smoke),
-            ScreenTint::Flash => Color::srgba(1.0, 1.0, 1.0, flash),
         };
         if color.0 != want {
             color.0 = want;
@@ -299,10 +321,13 @@ fn draw_hud(
     mut ammo_text: Single<&mut Text, (With<AmmoText>, Without<HealthText>, Without<CenterText>)>,
     mut center: Single<&mut Text, (With<CenterText>, Without<HealthText>, Without<AmmoText>)>,
     game_hud: Option<Res<crate::map::hud::ActiveHud>>,
+    spectator: Option<Res<super::spectate::Spectator>>,
 ) {
     let Some(p) = player else { return };
-    // The game's own HUD draws health, armour and ammo when there is one.
-    let plain = game_hud.is_none();
+    // The game's own HUD draws health, armour and ammo when there is one;
+    // spectating, the spectator panel says who you watch instead.
+    let spectating = spectator.is_some_and(|s| s.active());
+    let plain = game_hud.is_none() && !spectating;
     let (health, armor, inv, score, dead) = *p;
     let score = score.copied().unwrap_or_default();
     let armor = match armor.filter(|a| a.amount > 0.0) {
@@ -333,7 +358,7 @@ fn draw_hud(
             None => String::new(),
         }
     };
-    center.0 = if dead.is_some() {
+    center.0 = if dead.is_some() && !spectating {
         "You died. Respawning...".into()
     } else {
         String::new()
@@ -352,7 +377,8 @@ fn draw_crosshair(
     player: Option<Single<(&Inventory, Option<&Dead>, Option<&Zoomed>), With<LocalPlayer>>>,
     scans: Query<&Hitscan>,
     camera: Query<(&Camera, &Projection), With<FirstPersonCamera>>,
-    mut lines: Query<(&CrosshairLine, &mut Node, &mut Visibility)>,
+    mut lines: Query<(&CrosshairLine, &mut Node, &mut Visibility, &mut BackgroundColor)>,
+    color: Res<CrosshairColor>,
 ) {
     let Some((cam, proj)) = camera.iter().next() else {
         return;
@@ -379,7 +405,8 @@ fn draw_crosshair(
     };
     let gap = MIN_GAP + spread / (fov / 2.0).tan() * size.y / 2.0;
     let centre = size / 2.0;
-    for (line, mut node, mut vis) in &mut lines {
+    for (line, mut node, mut vis, mut bg) in &mut lines {
+        bg.set_if_neq(BackgroundColor(color.color()));
         *vis = if visible {
             Visibility::Inherited
         } else {
@@ -555,10 +582,14 @@ fn character_bodies(
     }
 }
 
-/// The dead aren't drawn.
-fn show_bodies(mut bodies: Query<(&mut Visibility, Has<Dead>), (With<Intent>, Without<LocalPlayer>)>) {
-    for (mut vis, dead) in &mut bodies {
-        let want = if dead {
+/// The dead aren't drawn, nor the one a spectator looks out of.
+fn show_bodies(
+    mut bodies: Query<(Entity, &mut Visibility, Has<Dead>), (With<Intent>, Without<LocalPlayer>)>,
+    spectating: Option<Res<super::spectate::SpecView>>,
+) {
+    let in_eye = spectating.and_then(|s| s.in_eye);
+    for (e, mut vis, dead) in &mut bodies {
+        let want = if dead || in_eye == Some(e) {
             Visibility::Hidden
         } else {
             Visibility::Inherited

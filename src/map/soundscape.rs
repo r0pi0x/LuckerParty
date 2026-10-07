@@ -3,13 +3,17 @@
 //! previous one's fade out, and play its random one-shots. Runs only with
 //! audio.
 
+use std::sync::Arc;
+
 use bevy::{
-    audio::{AudioPlayer, AudioSink, AudioSinkPlayback, AudioSource, PlaybackSettings, Volume},
+    audio::{AudioPlayer, AudioSink, AudioSinkPlayback, PlaybackSettings, Volume},
     prelude::*,
 };
 
-use super::sound::{
-    METERS_PER_UNIT, MapSoundClip, ScapePosition, SoundBank, SoundLevel, SoundListener, distance_gain, pan, stereo_wav,
+use super::{
+    hearing::Hearing,
+    live_sound::{Gains, LiveClip},
+    sound::{METERS_PER_UNIT, MapSoundClip, ScapePosition, SoundBank, SoundLevel, SoundListener, distance_gain, pan},
 };
 
 /// Seconds for a loop's volume to move by 1.0 (soundscape_fadetime).
@@ -25,7 +29,7 @@ impl Plugin for SoundscapePlugin {
             PostUpdate,
             (select, fade_loops, play_randoms)
                 .chain()
-                .run_if(resource_exists::<Assets<AudioSource>>),
+                .run_if(resource_exists::<Assets<LiveClip>>),
         );
     }
 }
@@ -85,7 +89,8 @@ fn select(
     listener: Query<&GlobalTransform, With<SoundListener>>,
     mut state: ResMut<ScapeState>,
     mut loops: Query<(Entity, &mut ScapeLoop)>,
-    mut sources: ResMut<Assets<AudioSource>>,
+    mut sources: ResMut<Assets<LiveClip>>,
+    hearing: Res<Hearing>,
     mut commands: Commands,
     time: Res<Time>,
 ) {
@@ -195,14 +200,17 @@ fn select(
             o.target = volume;
             continue;
         }
-        let clip = looped(&sounds.clips[l.clip]);
-        let handle = sources.add(AudioSource {
-            bytes: stereo_wav(&clip, 1.0, 1.0).into(),
-        });
+        // The clip loops itself (a loop played by Bevy would replay the
+        // first pass, muffle and all).
+        let clip = MapSoundClip {
+            loop_start: Some(0),
+            ..looped(&sounds.clips[l.clip])
+        };
+        let handle = sources.add(LiveClip::new(clip, Arc::new(Gains::new(1.0, 1.0)), hearing.mix.clone()));
         let start = if at.is_some() { 0.05 } else { 0.0 };
         commands.spawn((
             AudioPlayer(handle),
-            PlaybackSettings::LOOP
+            PlaybackSettings::DESPAWN
                 .with_volume(Volume::Linear(0.0))
                 .with_speed(pitch / 100.0),
             ScapeLoop {
@@ -267,7 +275,8 @@ fn play_randoms(
     bank: Option<Res<SoundBank>>,
     listener: Query<&GlobalTransform, With<SoundListener>>,
     mut state: ResMut<ScapeState>,
-    mut sources: ResMut<Assets<AudioSource>>,
+    mut sources: ResMut<Assets<LiveClip>>,
+    hearing: Res<Hearing>,
     mut commands: Commands,
     time: Res<Time>,
 ) {
@@ -316,9 +325,11 @@ fn play_randoms(
         if left.max(right) < 1e-3 {
             continue;
         }
-        let handle = sources.add(AudioSource {
-            bytes: stereo_wav(&bank.0.clips[r.clips[pick]], left, right).into(),
-        });
+        let once = MapSoundClip {
+            loop_start: None,
+            ..bank.0.clips[r.clips[pick]].clone()
+        };
+        let handle = sources.add(LiveClip::new(once, Arc::new(Gains::new(left, right)), hearing.mix.clone()));
         commands.spawn((AudioPlayer(handle), PlaybackSettings::DESPAWN.with_speed(pitch / 100.0)));
     }
 }

@@ -207,7 +207,10 @@ pub(super) fn eject(
     models: Option<Res<ViewModels>>,
     light_field: Option<Res<LightField>>,
     time: Res<Time>,
-    anchors: Query<(&ChildOf, &GlobalTransform, &Projection, &Children), With<ViewModelAnchor>>,
+    anchors: Query<
+        (&ChildOf, &GlobalTransform, &Projection, &Children, Option<&super::view_model::ViewModelSource>),
+        With<ViewModelAnchor>,
+    >,
     vm_cameras: Query<&Projection, (With<ViewModelCamera>, Without<ViewModelAnchor>)>,
     owners: Query<(&ViewAnimator, Option<&ViewModelOffset>, Option<&crate::core::Velocity>)>,
     third_person: Option<Res<super::ShowLocalBody>>,
@@ -246,7 +249,10 @@ pub(super) fn eject(
         let Some((parts, bounce)) = assets.models.get(&shell.to_lowercase()) else {
             continue;
         };
-        let Some((_, eye, projection, children)) = anchors.iter().find(|(c, ..)| c.parent() == ev.owner) else {
+        let Some((_, eye, projection, children, _)) = anchors
+            .iter()
+            .find(|(c, .., source)| super::view_model::anchor_owner(c, *source) == ev.owner)
+        else {
             continue;
         };
         let Some((eye, world_fov, vm_fov)) = projection_of((eye, projection, children), &vm_cameras) else {

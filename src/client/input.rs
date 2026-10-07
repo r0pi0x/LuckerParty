@@ -115,21 +115,25 @@ pub fn capture_cursor(cursor: &mut CursorOptions) {
     cursor.grab_mode = CursorGrabMode::Locked;
 }
 
-fn grab_cursor(
+pub(super) fn grab_cursor(
     mut cursor: Single<&mut CursorOptions>,
     mouse: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
     mut focus: MessageReader<bevy::window::WindowFocused>,
+    menu: Option<Res<super::game_menu::GameMenu>>,
 ) {
+    // The game menu owns the mouse while open (Esc opens and closes it),
+    // and the click that closes it isn't a click to grab.
+    let in_menu = menu.as_ref().is_some_and(|m| m.open || m.is_changed());
     // Losing focus (alt-tab) ends the grab: Windows drops the cursor clip
     // then, and a grab we still believed in would keep turning the view
     // while the real cursor wanders off and clicks other windows. Clicking
     // back in grabs again.
     if focus.read().any(|f| !f.focused) {
         release_cursor(&mut cursor);
-    } else if keys.just_pressed(KeyCode::Escape) {
+    } else if keys.just_pressed(KeyCode::Escape) && menu.is_none() {
         release_cursor(&mut cursor);
-    } else if mouse.just_pressed(MouseButton::Left) && !cursor_grabbed(&cursor) {
+    } else if mouse.just_pressed(MouseButton::Left) && !cursor_grabbed(&cursor) && !in_menu {
         capture_cursor(&mut cursor);
     }
 }
@@ -217,6 +221,7 @@ fn write_local_intent(
         Option<Res<super::radio::RadioMenu>>,
     ),
     zoomed: Query<&crate::weapon::Zoomed, With<LocalPlayer>>,
+    spectator: Option<Res<super::spectate::Spectator>>,
 ) {
     let freelook = keys.pressed(KeyCode::AltLeft) || held.as_ref().is_some_and(|h| h.freelook);
     if !freelook {
@@ -239,6 +244,17 @@ fn write_local_intent(
         return;
     }
 
+    // Spectating (dead): the keys and mouse drive the spectator camera.
+    if spectator.is_some_and(|s| s.active()) {
+        *wheel = WheelJump::default();
+        let (yaw, pitch) = (intent.yaw, intent.pitch);
+        **intent = Intent {
+            yaw,
+            pitch,
+            ..default()
+        };
+        return;
+    }
     let axis = |pos: KeyCode, neg: KeyCode| keys.pressed(pos) as i8 as f32 - keys.pressed(neg) as i8 as f32;
     // Flying the detached camera: the player stands still.
     if freecam.mode == 1 {
