@@ -202,6 +202,8 @@ pub enum DamageKind {
     /// Crushed by a mover.
     Crush,
     Fall,
+    /// Fire (Source's burn type): env_fire and entity flames.
+    Burn,
 }
 
 /// Takes `Damage` without having `Health`: something else (the logic

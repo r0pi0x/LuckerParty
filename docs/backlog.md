@@ -205,8 +205,7 @@ docs/plans/active/sound.md.
 ## 7. Physics props, remaining
 
 - The player physics shadow for `prop_physics` (dust2 has none).
-- Prop damage follow-ups (docs/tech-debt.md "Prop damage"): fire
-  (flammable props, the entity flame, burn damage), stress crush, the
+- Prop damage follow-ups (docs/tech-debt.md "Prop damage"): stress crush, the
   velocity restore after an impact breaks a prop, pieces as real avian
   bodies with their skin, the spec's open questions on the probe server
   (Q1-Q14: damage types, gas-can ignition, player impact rules, client
@@ -275,7 +274,7 @@ Counts are from de_dust2's entity lump and static prop lump.
 - **Brush entities**: movers (doors, buttons, func_rotating, trains,
   func_brush) move through the logic layer, breakables break; render modes other than normal and 10 (translucent func_brush) aren't
   applied.
-- **Fire**: spec written (specs/source/fire.md: env_fire heat and burn damage, entity flames; 54 env_fire on 8 stock maps, all lit by `BombExplode`); implementation next. It corrects prop_damage.md: the gas can's explode_fire does not ignite players.
+- **Fire** (specs/source/fire.md) is in: env_fire (heat, growth, burn damage box with line of sight, fuel, Extinguish, outputs, re-created unlit each round, Q4), env_firesource/env_firesensor, entity flames (Ignite inputs, burning props, the gas can), the `env_fire_large_smoke` and `burning_character` looks (docs/tech-debt.md "Fire"). Next: compare a lit de_dust2 fire with CS:S's (Q1, Q10 operator meanings), and the probe-server questions: burn vs armour, the kill icon and score (Q2), player ignition (Q3), the radius damage of a burning can (Q6), burning-prop light (Q7), buried fires (Q9), floors on de_dust/de_train (Q5).
 - **Lightmap styles**: animated styles (1-31) at their pattern (they're
   baked at normal brightness); switchable ones (32+) switch.
 - **Baked per-vertex prop lighting (`.vhv`)** for maps that ship it (dust2

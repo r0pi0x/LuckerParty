@@ -22,6 +22,7 @@ pub use crate::core::{
 pub mod anim;
 pub mod decal;
 pub mod entities;
+pub mod fire;
 pub mod fog;
 pub use entities::{MapBrushEntity, MapEntities, MapEntity, MapHull};
 pub mod breakables;
@@ -1015,6 +1016,12 @@ pub struct RoundSounds {
     pub start: Vec<String>,
 }
 
+/// Indices into `core::MapBrushes` of brushes that stop players but not
+/// line traces such as a fire's (player clips, grates, ladder-only
+/// volumes; `MapData::trace_skip`).
+#[derive(Resource, Clone, Debug, Default)]
+pub struct MapTraceSkip(pub Vec<usize>);
+
 #[derive(Clone, Debug, Default)]
 pub struct MapData {
     pub name: String,
@@ -1037,6 +1044,9 @@ pub struct MapData {
     pub collision_hulls: Vec<Vec<[f32; 3]>>,
     /// The same volumes as planes, for exact swept-box movement collision.
     pub collision_brushes: Vec<MapBrush>,
+    /// Indices into `collision_brushes` of the ones line traces pass
+    /// (player clips, grates, ladder-only volumes): `MapTraceSkip`.
+    pub trace_skip: Vec<usize>,
     /// Feet positions.
     pub spawns: Vec<(Vec3, Option<Team>)>,
     /// Each spawn's facing as an `Intent` yaw (radians, 0 = -Z), same order
@@ -2752,6 +2762,7 @@ fn spawn_map(
             .unwrap_or_else(|| brushes.iter().map(|b| b.min.y).fold(f32::MAX, f32::min));
         commands.insert_resource(KillHeight(floor - KILL_MARGIN));
         commands.insert_resource(MapBrushes(brushes));
+        commands.insert_resource(MapTraceSkip(data.trace_skip.clone()));
         if let Some(g) = data.gravity {
             commands.insert_resource(Gravity(Vec3::NEG_Y * g));
         }

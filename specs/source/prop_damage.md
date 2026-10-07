@@ -461,8 +461,10 @@ touch (breaker = the toucher). In this order, all at once:
 6. **Pieces** (7.3).
 7. If the prop has the onbreak-explode interaction: if step 5 did not
    explode, a 1-damage explosion of the same radius at the captured origin;
-   then **ignite every player/NPC within explosive_radius** of the origin
-   that passes the damage filter, for 30 s (Open question 5).
+   then ask every player/NPC within explosive_radius of the origin that
+   passes the damage filter to ignite for 30 s **with the NPC-only rule**:
+   players refuse, so in the SDK no player is ignited (corrected by
+   specs/source/fire.md section 4.2; Open question 5).
 8. **Remove** the prop now: its name is cleared immediately (later inputs
    by name find nothing), it is deleted at the end of the frame; every
    entity parented to it (directly or deeper) is removed with it
@@ -866,9 +868,11 @@ Bullet damages are examples, not CS:S weapon values.
 4. **Client "other" impact damage** (50) and which effect types reach client
    props in CS:S (bullets certainly; knife, grenade bounce?). Check: knife a
    client-side cardboard (Cardboard.breakclient 10) vs a mug (Pottery 20).
-5. **Gas can ignites players**: the onbreak-explode rule ignites every
-   combat character within 80 in for 30 s (5 hp/s). Does CS:S's player
-   accept ignition? Check: break the de_inferno gas can next to a bot.
+5. **Gas can ignites players**: the onbreak-explode rule asks every
+   combat character within 80 in to ignite for 30 s with the NPC-only rule,
+   which the SDK's player refuses (specs/source/fire.md 4.2, Q3). Does
+   CS:S's player override that? Check: break the de_inferno gas can next
+   to a bot.
 6. **Player stress (200 crush) and impact damage** from props: does CS:S's
    player keep the base rules? Check: drop a crate onto a bot from 390 in
    (≥ 10 by the table) and watch health.

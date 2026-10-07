@@ -84,6 +84,7 @@ pub fn load_materials(loader: &mut super::material::MaterialLoader) -> MapPartic
         materials: MATERIALS
             .iter()
             .chain(super::grenades::MATERIALS)
+            .chain(super::fire::MATERIALS)
             .filter_map(|m| loader.particle(m))
             .collect(),
     }

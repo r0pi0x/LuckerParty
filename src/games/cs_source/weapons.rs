@@ -268,6 +268,7 @@ impl Plugin for CsWeaponsPlugin {
                 super::impacts::ImpactSoundsPlugin,
                 super::impact_effects::ImpactEffectsPlugin,
                 super::grenades::GrenadesPlugin,
+                super::fire::FirePlugin,
                 super::objectives::CsObjectivesPlugin,
             ))
             .insert_resource(pass_materials());

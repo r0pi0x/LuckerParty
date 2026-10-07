@@ -372,6 +372,7 @@ fn hit(amount: f32, kind: DamageKind, attacker: Option<Who>) -> Hit {
         point: Vec3::ZERO,
         dir: Vec3::X,
         force: 0.0,
+        direct: false,
     }
 }
 

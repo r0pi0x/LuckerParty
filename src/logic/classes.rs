@@ -52,6 +52,14 @@ pub enum Class {
     Light(super::visuals::Light),
     /// env_global: names a global state.
     Global(String),
+    /// env_fire.
+    Fire(Box<super::fire::Fire>),
+    /// env_firesource.
+    FireSource(super::fire::FireSource),
+    /// env_firesensor.
+    FireSensor(super::fire::FireSensor),
+    /// An entity flame (made at run time by ignition).
+    Flame(Box<super::fire::Flame>),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -277,6 +285,9 @@ impl Class {
             }
             "light" | "light_spot" => Class::Light(super::visuals::spawn_light(w, id)),
             "env_global" => Class::Global(global_spawn(w, id)),
+            "env_fire" => Class::Fire(Box::new(super::fire::spawn_fire(w, id))),
+            "env_firesource" => Class::FireSource(super::fire::spawn_source(w, id)),
+            "env_firesensor" => Class::FireSensor(super::fire::spawn_sensor(w, id)),
             "prop_door_rotating" => Class::PropDoor(Box::new(super::props::PropDoor::spawn(w, id))),
             c if super::props::is_prop_class(c) => Class::Prop(Box::new(super::props::Prop::spawn(w, id))),
             _ if !e.hulls.is_empty() && e.kv("parentname").is_some_and(|p| !p.is_empty()) => {
@@ -378,6 +389,7 @@ pub(super) fn class_activate(w: &mut LogicWorld, id: EntId) {
         Class::Attached(_) => movers::activate_attached(w, id),
         Class::Ambient(_) => super::ambient::activate(w, id),
         Class::Prop(_) => super::prop_damage::activate(w, id),
+        Class::Fire(_) | Class::FireSource(_) | Class::FireSensor(_) => super::fire::activate(w, id),
         _ => {}
     }
 }
@@ -418,6 +430,7 @@ pub(super) fn class_think(w: &mut LogicWorld, id: EntId) {
         Class::Trigger(_) => triggers::think(w, id),
         Class::Ambient(_) => super::ambient::think(w, id),
         Class::Prop(_) => super::prop_damage::think(w, id),
+        Class::Fire(_) | Class::FireSource(_) | Class::FireSensor(_) | Class::Flame(_) => super::fire::think(w, id),
         _ => movers::think(w, id),
     }
 }
@@ -833,7 +846,8 @@ pub(super) fn class_input(
         Class::Ambient(_) => return super::ambient::input(w, id, input, value),
         Class::Part(_) | Class::Light(_) => return super::visuals::input(w, id, input, value),
         Class::Global(name) => return global_input(w, id, &name, input, value, activator),
-        Class::None | Class::Auto => return false,
+        Class::Fire(_) | Class::FireSource(_) | Class::FireSensor(_) => return super::fire::input(w, id, input, value),
+        Class::Flame(_) | Class::None | Class::Auto => return false,
     }
     true
 }

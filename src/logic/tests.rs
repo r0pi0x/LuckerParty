@@ -1387,3 +1387,6 @@ mod prop_cases;
 
 #[path = "visual_tests.rs"]
 mod visual_cases;
+
+#[path = "fire_tests.rs"]
+mod fire_cases;

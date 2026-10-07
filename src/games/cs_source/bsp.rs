@@ -505,6 +505,7 @@ pub fn convert(bsp: &Bsp, bytes: &[u8], name: &str) -> (MapData, LightmapLayout)
 
     data.collision_hulls = brush_hulls(bsp, &leaves);
     data.collision_brushes = collision_brushes(bsp, &leaves);
+    data.trace_skip = trace_skip(bsp, &leaves);
     data.water = water_volumes(bsp, &leaves);
     data.entities = map_entities(bsp, &leaves);
     data.entity_scale = METERS_PER_UNIT;
@@ -979,6 +980,20 @@ pub fn collision_brushes(bsp: &Bsp, leaves: &[RawLeaf]) -> Vec<crate::map::MapBr
         .into_iter()
         .chain(entity_hulls(bsp, leaves))
         .map(|(i, points, planes)| map_brush(points, planes, bsp.brushes[i].flags.contains(BrushFlags::LADDER)))
+        .collect()
+}
+
+/// Indices into `collision_brushes` of the brushes line traces pass
+/// (fire's drop and line of sight: solid and window contents stop them;
+/// player clips, grates and ladders don't).
+pub fn trace_skip(bsp: &Bsp, leaves: &[RawLeaf]) -> Vec<usize> {
+    let stops = BrushFlags::SOLID.union(BrushFlags::WINDOW);
+    brush_hulls_indexed(bsp, leaves)
+        .into_iter()
+        .chain(entity_hulls(bsp, leaves))
+        .enumerate()
+        .filter(|(_, (i, _, _))| !bsp.brushes[*i].flags.intersects(stops))
+        .map(|(n, _)| n)
         .collect()
 }
 

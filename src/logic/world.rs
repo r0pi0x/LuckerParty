@@ -8,6 +8,7 @@
 //! units, Z up. Time is in ticks of `dt` seconds.
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use bevy::prelude::*;
 
@@ -66,11 +67,15 @@ pub fn parse_connection(value: &str) -> Option<(String, String, Option<String>, 
     Some((field(0).to_string(), input.to_string(), param, atof(field(3)), times))
 }
 
+/// Outputs whose names don't start with "On": math_counter's OutValue,
+/// env_global's OutCounter and func_bomb_target's bomb outputs.
+pub const OTHER_OUTPUTS: &[&str] = &["outvalue", "outcounter", "bombexplode", "bombplanted", "bombdefused"];
+
 /// Whether a keyvalue is an output: output names start with "On" (plus
-/// math_counter's OutValue) and carry a connection.
+/// `OTHER_OUTPUTS`) and carry a connection.
 pub fn is_output_key(key: &str) -> bool {
     let k = key.to_ascii_lowercase();
-    (k.starts_with("on") && k.len() > 2) || k == "outvalue"
+    (k.starts_with("on") && k.len() > 2) || OTHER_OUTPUTS.contains(&k.as_str())
 }
 
 /// Name match (entity_io.md "Match rule"): case-insensitive from the
@@ -161,6 +166,13 @@ pub enum Effect {
         amount: f32,
         crush: bool,
     },
+    /// Burn damage to a player (fire.rs: env_fire, entity flames), health
+    /// points.
+    Burn { target: Entity, amount: f32 },
+    /// A flame started burning `target` (fire.rs): the host loops its
+    /// sound on the target (`fire::BURNING_SOUND`, keyed by the flame) and
+    /// stops it with `AmbientStop` when the flame ends.
+    FlameStart { id: EntId, target: Who },
     /// Heal up to max health.
     Heal { target: Entity, amount: f32 },
     SetHealth { target: Entity, health: f32 },
@@ -421,6 +433,12 @@ pub struct LogicWorld {
     /// Global states (env_global): name (lower case), state, counter.
     /// They outlive round restarts.
     pub globals: Vec<(String, GlobalState, i32)>,
+    /// The static world for traces made outside a phase's collision (a
+    /// fire dropping to the floor inside an input, its line-of-sight
+    /// checks in a think). None: open space.
+    pub collision: Option<Arc<dyn Collision + Send + Sync>>,
+    /// Players with a flame on them (fire.rs).
+    pub burning_players: Vec<Entity>,
 }
 
 /// An env_global state.
@@ -478,6 +496,8 @@ impl LogicWorld {
             round: 0,
             light_styles: Vec::new(),
             globals: Vec::new(),
+            collision: None,
+            burning_players: Vec::new(),
         }
     }
 
@@ -517,6 +537,7 @@ impl LogicWorld {
         fresh.record = self.record;
         fresh.round = self.round + 1;
         fresh.globals = std::mem::take(&mut self.globals);
+        fresh.collision = self.collision.clone();
         fresh.players = std::mem::take(&mut self.players);
         fresh.player_names = std::mem::take(&mut self.player_names);
         fresh.use_held = std::mem::take(&mut self.use_held);
@@ -747,6 +768,20 @@ impl LogicWorld {
                     generation: *g,
                 };
                 super::ambient::removed(&mut self.effects, id, a);
+            }
+            if let Some(e) = slot.as_ref().filter(|e| e.killed)
+                && let Class::Flame(f) = &e.class
+            {
+                let id = EntId {
+                    index: i as u32,
+                    generation: *g,
+                };
+                if !f.stopping {
+                    self.effects.push(Effect::AmbientStop { id });
+                    if let Who::Player(p) = f.target {
+                        self.burning_players.retain(|x| *x != p);
+                    }
+                }
             }
             if slot.as_ref().is_some_and(|e| e.killed) {
                 *slot = None;
@@ -1002,6 +1037,9 @@ impl LogicWorld {
                     amount: 10_000.0,
                     crush: false,
                 });
+            }
+            "ignite" | "ignitelifetime" | "ignitenumhitboxfires" | "ignitehitboxfirescale" => {
+                super::fire::ignite_input(self, Who::Player(p), input, &value);
             }
             _ => self.log.push(format!("player: unhandled input {input}")),
         }
