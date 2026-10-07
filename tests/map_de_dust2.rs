@@ -2407,7 +2407,7 @@ fn grenade_models_and_sequences() {
         assert!((dur("ACT_VM_PULLPIN") - PIN_TIME).abs() < 1e-3, "{id} pull pin {}", dur("ACT_VM_PULLPIN"));
         assert!((dur("ACT_VM_THROW") - THROW_TIME).abs() < 1e-3, "{id} throw {}", dur("ACT_VM_THROW"));
         assert!((dur("ACT_VM_DRAW") - DRAW_TIME).abs() < 1e-3, "{id} draw {}", dur("ACT_VM_DRAW"));
-        // Handedness: which side of the eye the right hand is on at idle.
+        // Handedness at idle.
         let mut pose = set.defaults.clone();
         let params = set.default_params();
         set.accumulate(&mut pose, set.activity("ACT_VM_IDLE").unwrap(), 0.5, 1.0, &params);
@@ -2418,14 +2418,16 @@ fn grenade_models_and_sequences() {
                 None => (*q, *p),
             });
         }
-        let hand = v
+        // The grenade (its `*_Parent` bone) sits right of the eye in a
+        // right-handed model (as the knife's), left in a left-handed one.
+        let grenade = v
             .bones
             .iter()
-            .position(|b| b.name.to_lowercase().contains("right_hand"))
-            .expect("a right hand bone");
+            .position(|b| b.name.to_lowercase().ends_with("_parent") && !b.name.to_lowercase().contains("hands"))
+            .expect("a grenade parent bone");
         let right_handed = VIEW_MODELS.iter().find(|m| m.0 == *id).unwrap().2;
-        eprintln!("{id}: right hand at {}", global[hand].1);
-        assert_eq!(global[hand].1.y < 0.0, right_handed, "{id} handedness");
+        eprintln!("{id}: grenade at {}", global[grenade].1);
+        assert_eq!(global[grenade].1.y < 0.0, right_handed, "{id} handedness");
     }
     for m in MATERIALS {
         assert!(map.particles.find(m).is_some(), "particle material {m}");

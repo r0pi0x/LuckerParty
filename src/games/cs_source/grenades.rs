@@ -43,12 +43,13 @@ pub const WORLD_MODELS: &[(&str, &str)] = &[
     (SMOKEGRENADE, "models/weapons/w_eq_smokegrenade.mdl"),
 ];
 
-/// View models and whether each is built right-handed (checked by
+/// View models and whether each is built right-handed (all three hold the
+/// grenade left of the eye, like the AK; checked by
 /// `tests/map_de_dust2.rs::grenade_models_and_sequences`).
 pub const VIEW_MODELS: &[(&str, &str, bool)] = &[
-    (HEGRENADE, "models/weapons/v_eq_fraggrenade.mdl", true),
-    (FLASHBANG, "models/weapons/v_eq_flashbang.mdl", true),
-    (SMOKEGRENADE, "models/weapons/v_eq_smokegrenade.mdl", true),
+    (HEGRENADE, "models/weapons/v_eq_fraggrenade.mdl", false),
+    (FLASHBANG, "models/weapons/v_eq_flashbang.mdl", false),
+    (SMOKEGRENADE, "models/weapons/v_eq_smokegrenade.mdl", false),
 ];
 
 /// Sound entries the grenades use.
