@@ -2015,6 +2015,7 @@ fn step(
                 a.max(b)
             },
             ground: me.ground_entity,
+            on_ladder: me.ladder.is_some(),
         };
     }
 }
