@@ -32,8 +32,13 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   `.vmf`, compiled with Valve's tools; plan section "Test map").
 - Entity I/O, triggers and moving brushes are in (`src/logic`, slices 3
   and 4 of the plan), and breakables (func_breakable, func_breakable_surf;
-  src/logic/breakables.rs). Left: breakable follow-ups (section 7),
-  `prop_door_rotating` (model doors: cs_assault, de_port), train facing/banking and
+  src/logic/breakables.rs), model doors (`prop_door_rotating`) and
+  prop damage/outputs (src/logic/props.rs). Left: breakable follow-ups
+  (section 7), prop inputs `Skin` (de_nuke/de_prodigy computer screens),
+  `SetAnimation` (de_nuke's cars, de_inferno's elevator door),
+  `SetBodyGroup`, `Wake`, physics outputs (`OnAwakened`,
+  `OnMotionEnabled`), env_sprite/light/dust removal by Kill/TurnOff
+  (cs_office's projector glow), a prop damage spec, train facing/banking and
   player train control, `trigger_soundscape` through the general touch
   code, env_global. (Round restarts re-create entities: rounds plan.) Target: two
   real minigame maps from the user's downloads.
@@ -136,9 +141,9 @@ docs/plans/active/sound.md.
   rules (we play the entries as scripted) and gib bounce sounds.
 - Soundscape DSP presets (room reverb), env_soundscape visibility
   checks; soundscape loops onto `map::live_sound` (intro, live panning).
-- What still keeps stock ambient_generics silent: prop outputs
-  (de_nuke's steam on OnHealthChanged of the fire extinguishers,
-  cs_office's projector stop), the bomb (de_nuke's alarm, dust2's fires).
+- What still keeps stock ambient_generics silent: the bomb (de_nuke's
+  alarm, dust2's fires). (Prop outputs are in: de_nuke's steam, cs_office's
+  projector.) de_nuke's env_steam jets themselves aren't drawn.
 - Measure ambient_generic's level for script entries vs raw waves (spec
   open question 11).
 - Measure on the probe server: the distance curves (replace the H1/H2
@@ -147,9 +152,12 @@ docs/plans/active/sound.md.
 ## 7. Physics props, remaining
 
 - The player physics shadow for `prop_physics` (dust2 has none).
-- Impact damage, breakable props.
-- `prop_door_rotating` (model doors) with the use key; brush doors
-  (`func_door`, `func_door_rotating`) and `+use` are done (src/logic).
+- Impact damage; breaking props into their model's gibs (`.phy` "break"
+  block; broken props just vanish now).
+- Model doors: the hardware's latch/lock sounds and the spec's open
+  question 8 (which entries the hardware and surface pick; we use the
+  model's `door_options` move/open/close), swing-side checks against the
+  world (only players are checked), forceclosed pushing physics props.
 - Breakables, remaining (vents and windows break: src/logic/breakables.rs,
   tests/map_breakables.rs): the cracked look of a broken window's panes
   (`$crackmaterial`, jagged edge pieces; spec open question 8), the

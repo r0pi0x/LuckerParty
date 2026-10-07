@@ -41,6 +41,10 @@ pub enum Class {
     Breakable(Box<super::breakables::Breakable>),
     /// ambient_generic.
     Ambient(Box<super::ambient::Ambient>),
+    /// prop_door_rotating: a model door, turned like a rotating door.
+    PropDoor(Box<super::props::PropDoor>),
+    /// prop_dynamic, prop_physics*: damage, outputs, visibility.
+    Prop(Box<super::props::Prop>),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -258,6 +262,8 @@ impl Class {
             "func_breakable" | "func_breakable_surf" => {
                 Class::Breakable(Box::new(super::breakables::Breakable::spawn(w, id)))
             }
+            "prop_door_rotating" => Class::PropDoor(Box::new(super::props::PropDoor::spawn(w, id))),
+            c if super::props::is_prop_class(c) => Class::Prop(Box::new(super::props::Prop::spawn(w, id))),
             _ if !e.hulls.is_empty() && e.kv("parentname").is_some_and(|p| !p.is_empty()) => {
                 Class::Attached(Box::new(movers::Attached::spawn(w, id)))
             }
@@ -345,9 +351,12 @@ pub(super) fn class_activate(w: &mut LogicWorld, id: EntId) {
             }
         }
         Class::Trigger(_) => triggers::activate(w, id),
-        Class::Door(_) | Class::Button(_) | Class::MoveLinear(_) | Class::Rotating(_) | Class::Train(_) => {
-            movers::activate(w, id)
-        }
+        Class::Door(_)
+        | Class::Button(_)
+        | Class::MoveLinear(_)
+        | Class::Rotating(_)
+        | Class::Train(_)
+        | Class::PropDoor(_) => movers::activate(w, id),
         Class::Breakable(_) if e.kv("parentname").is_some_and(|p| !p.is_empty()) => movers::activate_attached(w, id),
         Class::Breakable(_) => movers::activate(w, id),
         Class::PathTrack(_) => movers::activate_path(w, id),
@@ -798,7 +807,9 @@ pub(super) fn class_input(
         | Class::Rotating(_)
         | Class::Train(_)
         | Class::PathTrack(_)
-        | Class::Brush(_) => return movers::input(w, id, input, value, activator, caller),
+        | Class::Brush(_)
+        | Class::PropDoor(_) => return movers::input(w, id, input, value, activator, caller),
+        Class::Prop(_) => return super::props::prop_input(w, id, input, value, activator),
         Class::Attached(_) => return false,
         Class::Breakable(_) => return super::breakables::input(w, id, input, value, activator),
         Class::Ambient(_) => return super::ambient::input(w, id, input, value),

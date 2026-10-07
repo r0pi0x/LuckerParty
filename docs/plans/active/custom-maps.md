@@ -158,8 +158,15 @@ ourselves, so each can be checked in mashup and measured in real CS:S.
    weapon damage routed through `LogicSet::Damage`; gibs and window panes
    in `map::breakables`; tests: spec cases as unit tests,
    tests/map_breakables.rs shoots and knifes de_nuke's vents and shoots a
-   cs_office window). Left: breakable follow-ups (backlog 7), prop_door_rotating,
-   props parented to movers, train orientation and control.
+   cs_office window). Model doors and props as logic entities built
+   2026-10-06 (src/logic/props.rs: prop_door_rotating as a pusher whose
+   node carries the door model as a rider, volumes from its `.phy`;
+   prop_dynamic/prop_physics take weapon damage and fire
+   OnTakeDamage/OnHealthChanged/OnBreak, Break/health/visibility inputs;
+   props put back at a round restart; tests: src/logic/prop_tests.rs,
+   tests/map_props.rs: cs_assault's doors, de_nuke's steam, cs_office's
+   projector). Left: breakable follow-ups (backlog 7), prop gibs, Skin/
+   SetAnimation/SetBodyGroup inputs, train orientation and control.
 5. [ ] Gameplay entities (`game_player_equip`, `game_text`, map weapons,
    rounds) until the two target maps play through.
 6. [ ] Networking, then server-sent map download (hash check, bz2).

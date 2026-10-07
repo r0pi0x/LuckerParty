@@ -141,3 +141,39 @@ fn round_restart_keeps_removed_kept_entities_removed() {
     assert!(kept_on_restart("env_soundscape_proxy") && kept_on_restart("FUNC_BRUSH"));
     assert!(!kept_on_restart("func_breakable"));
 }
+
+#[test]
+fn round_restart_closes_model_doors_and_brings_props_back() {
+    let entities = vec![
+        map_entity(
+            &[
+                ("classname", "prop_door_rotating"),
+                ("targetname", "door"),
+                ("spawnflags", "8192"),
+                ("returndelay", "-1"),
+            ],
+            vec![hull(Vec3::new(-1.0, 0.0, 0.0), Vec3::new(1.0, 52.0, 100.0))],
+        ),
+        map_entity(
+            &[
+                ("classname", "prop_physics_multiplayer"),
+                ("targetname", "projector"),
+                (crate::map::entities::PROP_HEALTH_KEY, "20"),
+            ],
+            vec![],
+        ),
+    ];
+    let mut w = world();
+    let ids = w.load_map(&entities);
+    w.queue_input("door", "Open", Value::Void, 0.0, None);
+    w.damage(ids[1], 60.0, DamageKind::Bullet, None, Vec3::ZERO, Vec3::X);
+    run_to(&mut w, 100);
+    assert_eq!(angles_of(&w, ids[0]).y, -90.0);
+    assert!(w.get(ids[1]).is_none(), "broken");
+    let ids = w.round_restart(&entities);
+    assert_eq!(angles_of(&w, ids[0]).y, 0.0, "closed again");
+    assert!(matches!(&w.get(ids[0]).unwrap().class, Class::PropDoor(d) if d.state == DoorState::Closed));
+    assert!(w.mover_solid(ids[0]).is_some());
+    assert_eq!(w.prop_health(ids[1]), Some((20, 20)), "whole again");
+    assert_eq!(w.find("projector"), Some(ids[1]));
+}

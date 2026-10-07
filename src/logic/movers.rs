@@ -34,6 +34,8 @@ pub enum Done {
     LinearArrived,
     RotStep,
     TrainArrived,
+    PropDoorOpened,
+    PropDoorClosed,
 }
 
 /// A moving brush's motion state (entity space; angles in degrees).
@@ -74,7 +76,7 @@ impl Pusher {
     }
 
     /// Linear move to `goal` at `speed`.
-    fn move_to(&mut self, goal: Vec3, speed: f32, done: Done) {
+    pub(super) fn move_to(&mut self, goal: Vec3, speed: f32, done: Done) {
         self.on_done = done;
         self.goal_angles = None;
         self.avelocity = Vec3::ZERO;
@@ -93,7 +95,7 @@ impl Pusher {
     }
 
     /// Angular move to `goal` angles at `speed` degrees per second.
-    fn rotate_to(&mut self, goal: Vec3, speed: f32, done: Done) {
+    pub(super) fn rotate_to(&mut self, goal: Vec3, speed: f32, done: Done) {
         self.on_done = done;
         self.goal_origin = None;
         self.velocity = Vec3::ZERO;
@@ -105,7 +107,7 @@ impl Pusher {
     }
 
     /// Stand still until `wait` seconds of local time pass.
-    fn wait(&mut self, wait: f32, done: Done) {
+    pub(super) fn wait(&mut self, wait: f32, done: Done) {
         self.velocity = Vec3::ZERO;
         self.avelocity = Vec3::ZERO;
         self.goal_origin = None;
@@ -114,7 +116,7 @@ impl Pusher {
         self.move_done = Some(self.ltime + wait as f64);
     }
 
-    fn moving(&self) -> bool {
+    pub(super) fn moving(&self) -> bool {
         self.velocity != Vec3::ZERO || self.avelocity != Vec3::ZERO
     }
 }
@@ -560,6 +562,7 @@ pub fn pusher(class: &Class) -> Option<&Pusher> {
         Class::Rotating(r) => Some(&r.push),
         Class::Train(t) => Some(&t.push),
         Class::Brush(t) => Some(&t.push),
+        Class::PropDoor(d) => Some(&d.push),
         _ => None,
     }
 }
@@ -574,6 +577,7 @@ fn pusher_mut(class: &mut Class) -> Option<&mut Pusher> {
         Class::Rotating(r) => Some(&mut r.push),
         Class::Train(t) => Some(&mut t.push),
         Class::Brush(t) => Some(&mut t.push),
+        Class::PropDoor(d) => Some(&mut d.push),
         _ => None,
     }
 }
@@ -985,6 +989,7 @@ pub(super) fn think(w: &mut LogicWorld, id: EntId) {
             }
         }
         Class::Breakable(_) => super::breakables::think(w, id),
+        Class::PropDoor(_) => super::props::door_think(w, id),
         _ => {}
     }
 }
@@ -1037,6 +1042,7 @@ fn use_entity_inner(w: &mut LogicWorld, id: EntId, activator: Option<Who>, _call
             t_set_speed(w, id, s);
         }
         Class::Brush(_) => toggle_brush(w, id, None),
+        Class::PropDoor(_) => super::props::door_use(w, id, activator),
         _ => {}
     }
 }
@@ -1221,6 +1227,7 @@ fn input_inner(
             "toggle" => toggle_brush(w, id, None),
             _ => return false,
         },
+        Class::PropDoor(_) => return super::props::door_input(w, id, input, value, activator),
         _ => return false,
     }
     true
@@ -1274,6 +1281,8 @@ fn move_done(w: &mut LogicWorld, id: EntId, done: Done) {
             }
         }
         Done::RotStep => rot_step(w, id),
+        Done::PropDoorOpened => super::props::door_arrived(w, id, true),
+        Done::PropDoorClosed => super::props::door_arrived(w, id, false),
         Done::TrainArrived => {
             let Some(t) = train(w, id) else { return };
             let node = t.node;
@@ -1306,6 +1315,7 @@ fn blocked(w: &mut LogicWorld, id: EntId, blocker: Who) {
     };
     match class {
         Class::Door(_) => door_blocked(w, id, blocker, started),
+        Class::PropDoor(_) => super::props::door_blocked(w, id, blocker, started),
         Class::MoveLinear(m) => crush(w, m.block_damage),
         Class::Rotating(r) => crush(w, r.dmg),
         Class::Train(t) => {
@@ -1419,10 +1429,15 @@ impl LogicWorld {
                         pm.ltime += step;
                         pm.blocker.take()
                     };
+                    let door_state = match self.get(id).map(|e| &e.class) {
+                        Some(Class::Door(d)) => Some(d.state),
+                        Some(Class::PropDoor(d)) => Some(d.state),
+                        _ => None,
+                    };
                     if let Some(b) = unblocked
-                        && let Some(Class::Door(dd)) = self.get(id).map(|e| &e.class)
+                        && let Some(state) = door_state
                     {
-                        let out = if dd.state == DoorState::Opening {
+                        let out = if state == DoorState::Opening {
                             "OnUnblockedOpening"
                         } else {
                             "OnUnblockedClosing"
@@ -1524,13 +1539,23 @@ impl LogicWorld {
             .map(|i| (*i, self.players[*i].origin, self.players[*i].view))
             .collect();
         let turn = q_new * q_old.inverse();
+        // Model doors are physics-solid pushers: a rotation pushes by the
+        // corner of the box facing the motion, not its centre.
+        let physics_solid = matches!(self.get(id).map(|e| &e.class), Some(Class::PropDoor(_)));
         for &i in candidates.iter().rev() {
             let pl = self.players[i].clone();
             let centre = pl.origin + (pl.mins + pl.maxs) / 2.0;
             let push = if da == Vec3::ZERO {
                 d
             } else {
-                o_new + turn * (centre - o_old) - centre
+                let mut at = centre;
+                if physics_solid {
+                    let motion = o_new + turn * (centre - o_old) - centre;
+                    let half = (pl.maxs - pl.mins) / 2.0;
+                    let side = |m: f32| if m > 0.0 { 1.0 } else if m < 0.0 { -1.0 } else { 0.0 };
+                    at += half * Vec3::new(side(motion.x), side(motion.y), side(motion.z));
+                }
+                o_new + turn * (at - o_old) - at
             };
             let to = pl.origin + push;
             let frac = col
@@ -1598,11 +1623,13 @@ impl LogicWorld {
         let usable: Vec<EntId> = self
             .ids()
             .into_iter()
-            .filter(|id| {
-                matches!(
-                    self.get(*id).map(|e| &e.class),
-                    Some(Class::Door(_) | Class::Button(_) | Class::Rotating(_))
-                )
+            .filter(|id| match self.get(*id) {
+                Some(e) => match &e.class {
+                    Class::Door(_) | Class::Button(_) | Class::Rotating(_) => true,
+                    Class::PropDoor(_) => !e.has_flag(super::props::SF_DOOR_IGNORE_USE),
+                    _ => false,
+                },
+                None => false,
             })
             .collect();
         let (feet, head) = (pl.origin.z + pl.mins.z, pl.origin.z + pl.maxs.z);

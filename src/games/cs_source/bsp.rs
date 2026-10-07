@@ -913,12 +913,21 @@ fn model_brushes(bsp: &Bsp, leaves: &[RawLeaf], model: usize) -> std::collection
     out
 }
 
-/// Every player-solid world and brush entity brush as a convex hull in engine space: the
-/// corners where three of its planes meet and no other plane cuts them off.
+/// Every world and brush entity brush that stops shots and physics (player
+/// solids minus player-clip-only brushes) as a convex hull in engine space:
+/// the corners where three of its planes meet and no other plane cuts them
+/// off.
 pub fn brush_hulls(bsp: &Bsp, leaves: &[RawLeaf]) -> Vec<Vec<[f32; 3]>> {
+    // Player clips stop only players (movement sweeps `collision_brushes`):
+    // shots, physics props and ragdolls pass them.
+    let blocks = BrushFlags::SOLID
+        .union(BrushFlags::WINDOW)
+        .union(BrushFlags::GRATE)
+        .union(BrushFlags::LADDER);
     brush_hulls_indexed(bsp, leaves)
         .into_iter()
         .chain(entity_hulls(bsp, leaves))
+        .filter(|(i, _, _)| bsp.brushes[*i].flags.intersects(blocks))
         .map(|(_, h, _)| h)
         .collect()
 }
