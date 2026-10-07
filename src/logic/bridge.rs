@@ -289,6 +289,22 @@ fn set_prop_shown(world: &mut World, node: Entity, visible: bool, solid: bool, e
             e.insert((LogicHidden, Visibility::Hidden));
         }
     }
+    // The body comes back before its colliders do: avian's query tree
+    // copies "body disabled" into a collider's proxy when the collider
+    // joins it and doesn't clear it when RigidBodyDisabled goes away. A
+    // stale flag makes each new contact pair of that collider start out
+    // generating no constraints and then switch on in the step it starts
+    // touching, which links the contact into an island twice and trips
+    // avian's island assertion a few rounds later (tests/map_logic.rs
+    // `restored_prop_contacts_join_islands_once`).
+    let enable_body = {
+        let mut e = world.entity_mut(node);
+        let enable = exists && e.contains::<RigidBody>() && e.contains::<RigidBodyDisabled>();
+        if enable {
+            e.remove::<RigidBodyDisabled>();
+        }
+        enable
+    };
     let colliders: Vec<Entity> = std::iter::once(node)
         .chain(world.get::<Children>(node).map(|c| c.to_vec()).unwrap_or_default())
         .filter(|c| world.get::<Collider>(*c).is_some())
@@ -303,6 +319,10 @@ fn set_prop_shown(world: &mut World, node: Entity, visible: bool, solid: bool, e
             } else {
                 e.insert(ColliderDisabled);
             }
+        } else if solid && enable_body {
+            // Solid all along under a disabled body: rejoin the tree so
+            // its proxy forgets the disabled body.
+            e.insert(ColliderDisabled).remove::<ColliderDisabled>();
         }
     }
     let mut e = world.entity_mut(node);
@@ -312,12 +332,8 @@ fn set_prop_shown(world: &mut World, node: Entity, visible: bool, solid: bool, e
     {
         m.solid = solid;
     }
-    if e.contains::<RigidBody>() && exists == e.contains::<RigidBodyDisabled>() {
-        if exists {
-            e.remove::<RigidBodyDisabled>();
-        } else {
-            e.insert(RigidBodyDisabled);
-        }
+    if !exists && e.contains::<RigidBody>() && !e.contains::<RigidBodyDisabled>() {
+        e.insert(RigidBodyDisabled);
     }
     if !exists {
         e.remove::<Damageable>();
