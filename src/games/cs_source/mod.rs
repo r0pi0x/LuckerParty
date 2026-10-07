@@ -7,6 +7,7 @@ pub mod bsp;
 pub mod decals;
 pub mod dust;
 pub mod grenades;
+pub mod hostage_anim;
 pub mod hud;
 pub mod impact_effects;
 pub mod impacts;

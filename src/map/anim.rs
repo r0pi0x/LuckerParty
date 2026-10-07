@@ -39,6 +39,9 @@ pub struct Animation {
     pub delta: bool,
     /// Which `AnimSet::bases` entry untracked bones start from (non-delta).
     pub base: usize,
+    /// How fast its authored motion moves the character (skeleton units
+    /// per second; 0: in place), for matching playback to real speed.
+    pub speed: f32,
     pub tracks: Vec<Track>,
 }
 
@@ -356,6 +359,23 @@ impl AnimSet {
             }
         }
         rate
+    }
+
+    /// The authored ground speed of sequence `s` at `params`: its
+    /// animations' `speed` blended like `cycle_rate`.
+    pub fn ground_speed(&self, s: usize, params: &[f32]) -> f32 {
+        let seq = &self.sequences[s];
+        let (i0, s0) = self.axis(seq, 0, params);
+        let (i1, s1) = self.axis(seq, 1, params);
+        [
+            (0, 0, (1.0 - s0) * (1.0 - s1)),
+            (1, 0, s0 * (1.0 - s1)),
+            (0, 1, (1.0 - s0) * s1),
+            (1, 1, s0 * s1),
+        ]
+        .into_iter()
+        .map(|(dx, dy, w)| w * self.animations[Self::cell(seq, i0 + dx, i1 + dy)].speed)
+        .sum()
     }
 
     /// Merge sequence `s` at `cycle` and `weight` into `pose`, then its

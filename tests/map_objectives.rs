@@ -205,3 +205,92 @@ fn office_hostages_follow_and_are_rescued() {
     assert_eq!(sim.app.world().resource::<HostageTally>().rescued, 1);
     let _ = Inventory::default();
 }
+
+/// A following hostage animates: idle standing, then a walk or run
+/// sequence (HL2 citizen animations from `.ani` blocks) while it comes
+/// after its leader, its body turned toward where it goes, and a nod when
+/// it starts following.
+#[test]
+fn office_hostage_walks_after_its_leader() {
+    use mashup::{
+        games::cs_source::{
+            hostage_anim::{FOLLOW_GESTURE, HostageAnim},
+            player_anim::PlayerAnimPlugin,
+        },
+        map::anim::Animator,
+    };
+    let Some(map) = load("cs_office") else { return };
+    let mut sim = Sim::new((
+        MapPlugin::new(map),
+        SourceMovementPlugin,
+        CsWeaponsPlugin,
+        PlayerAnimPlugin,
+    ));
+    sim.set_tick_interval(TICK_INTERVAL);
+    sim.ticks(2);
+    let ct = character(&mut sim, Vec3::new(1500.0, 200.0, -150.0), 2);
+    sim.app
+        .world_mut()
+        .resource_mut::<Console>()
+        .submit("mp_freezetime 0; mp_roundtime 5; mashup_rounds 1");
+    sim.seconds(1.5);
+    let h = {
+        let w = sim.app.world_mut();
+        w.query::<(Entity, &Hostage)>()
+            .iter(w)
+            .find(|(_, h)| h.index == 0)
+            .map(|(e, _)| e)
+            .expect("hostage 1")
+    };
+    let main = |sim: &Sim| {
+        let a = sim.app.world().get::<Animator>(h).expect("hostages get an animator");
+        a.main.map(|s| a.set.sequences[s].name.to_lowercase())
+    };
+    assert_eq!(main(&sim).as_deref(), Some("idle_subtle"), "standing idle");
+    // The CT uses it and walks off; it follows.
+    let hs = sim.position(h);
+    teleport(&mut sim, ct, Vec3::new(1784.0, 734.0 - 50.0, -124.0));
+    sim.ticks(3);
+    let eye = sim.position(ct) + sim.state(ct).eye_offset;
+    let d = hs - eye;
+    sim.intent(ct).yaw = (-d.x).atan2(-d.z);
+    sim.intent(ct).pitch = d.y.atan2(d.xz().length());
+    sim.intent(ct).use_key = true;
+    sim.ticks(2);
+    sim.intent(ct).use_key = false;
+    sim.ticks(2);
+    assert_eq!(sim.app.world().get::<Hostage>(h).unwrap().leader, Some(ct));
+    {
+        let a = sim.app.world().get::<Animator>(h).unwrap();
+        let gesture = a
+            .layers
+            .first()
+            .copied()
+            .flatten()
+            .map(|l| a.set.sequences[l.sequence].name.clone());
+        assert_eq!(gesture.as_deref(), Some(FOLLOW_GESTURE), "a nod as it starts following");
+    }
+    teleport(&mut sim, ct, Vec3::new(1784.0 - 400.0, 734.0 - 50.0, -124.0));
+    let mut seen = Vec::new();
+    for _ in 0..30 {
+        sim.seconds(0.1);
+        if let Some(m) = main(&sim) {
+            seen.push(m);
+        }
+        let v = sim.velocity(h).xz();
+        let state = sim.app.world().get::<HostageAnim>(h).unwrap().clone();
+        if v.length() / UNIT > 60.0 && state.activity != "ACT_IDLE" {
+            // Facing where it goes (within the turn it is still making).
+            let heading = (-v.x).atan2(-v.y);
+            let yaw = sim.app.world().get::<Animator>(h).unwrap().yaw.unwrap();
+            let off = (heading - yaw).rem_euclid(std::f32::consts::TAU);
+            let off = off.min(std::f32::consts::TAU - off).to_degrees();
+            assert!(off < 60.0, "body {off}° off its heading");
+        }
+    }
+    assert!(
+        seen.iter().any(|s| s == "walk_all" || s == "run_all"),
+        "it never walked or ran: {seen:?}"
+    );
+    eprintln!("hostage played {seen:?}");
+}
