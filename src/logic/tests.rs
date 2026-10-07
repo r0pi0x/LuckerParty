@@ -1381,3 +1381,6 @@ fn parented_brushes_follow_their_mover() {
 
 #[path = "restart_tests.rs"]
 mod restart;
+
+#[path = "prop_tests.rs"]
+mod prop_cases;

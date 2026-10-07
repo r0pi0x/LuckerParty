@@ -196,6 +196,18 @@ pub enum Shape {
     /// A square in the plane with `normal`, turned `yaw` degrees about it;
     /// `size` is its full side.
     Flat { normal: Vec3, yaw: f32, yaw_speed: f32 },
+    /// A bullet tracer (specs/cs_source/tracers.md 3.1): a streak `length`
+    /// long whose head leaves `start` along `dir` at `speed` (m/s), both
+    /// ends kept between `start` and `distance` along; a camera-facing core
+    /// of half-width `width` and a dim outline twice as wide.
+    Streak {
+        start: Vec3,
+        dir: Vec3,
+        distance: f32,
+        length: f32,
+        width: f32,
+        speed: f32,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -765,6 +777,30 @@ pub(super) fn draw_particles(
                     let side = along.cross(p.position - from).normalize_or_zero() * w;
                     // Texture V runs along the strip.
                     b.quad([at - side, at - side + along, at + side + along, at + side], rect, rgba);
+                }
+                Shape::Streak {
+                    start,
+                    dir,
+                    distance,
+                    length,
+                    width,
+                    speed,
+                } => {
+                    let head = (speed * p.age).clamp(0.0, distance);
+                    let tail = (head - length).clamp(0.0, distance);
+                    if head <= tail {
+                        continue;
+                    }
+                    let (h, t) = (start + dir * head, start + dir * tail);
+                    let side = (h - t).cross(h - from).normalize_or_zero();
+                    let (h, t) = (h - centre, t - centre);
+                    // Outline: twice as wide at 64/255 of the core (additive).
+                    let dim = 64.0 / 255.0;
+                    let outline = [rgba[0] * dim, rgba[1] * dim, rgba[2] * dim, rgba[3]];
+                    let w2 = side * width * 2.0;
+                    b.quad([t - w2, h - w2, h + w2, t + w2], rect, outline);
+                    let w = side * width;
+                    b.quad([t - w, h - w, h + w, t + w], rect, rgba);
                 }
                 Shape::Flat { normal, yaw, .. } => {
                     let n = normal.normalize_or_zero();

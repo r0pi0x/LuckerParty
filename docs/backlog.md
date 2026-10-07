@@ -32,8 +32,13 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   `.vmf`, compiled with Valve's tools; plan section "Test map").
 - Entity I/O, triggers and moving brushes are in (`src/logic`, slices 3
   and 4 of the plan), and breakables (func_breakable, func_breakable_surf;
-  src/logic/breakables.rs). Left: breakable follow-ups (section 7),
-  `prop_door_rotating` (model doors: cs_assault, de_port), train facing/banking and
+  src/logic/breakables.rs), model doors (`prop_door_rotating`) and
+  prop damage/outputs (src/logic/props.rs). Left: breakable follow-ups
+  (section 7), prop inputs `Skin` (de_nuke/de_prodigy computer screens),
+  `SetAnimation` (de_nuke's cars, de_inferno's elevator door),
+  `SetBodyGroup`, `Wake`, physics outputs (`OnAwakened`,
+  `OnMotionEnabled`), env_sprite/light/dust removal by Kill/TurnOff
+  (cs_office's projector glow), a prop damage spec, train facing/banking and
   player train control, `trigger_soundscape` through the general touch
   code, env_global. (Round restarts re-create entities: rounds plan.) Target: two
   real minigame maps from the user's downloads.
@@ -90,7 +95,8 @@ burst), HUD, deathmatch and a first bot are in.
   follow-up).
 - Decals, remaining: on characters (blood);
   check the knife's mark (`ManhackCut` is a guess) and lit decals (wood,
-  glass) against the game; tracers; explosion impulses.
+  glass) against the game; tracers are in (every 4th bullet, spec
+  tracers.md; check N and the look in play); explosion impulses.
 - dust2's woven basket physics props (`props_junk`/`wicker` style pots):
   parts of the lid and rim don't draw (seen from above, faces missing).
   Suspect the model converter's winding fix-up (it winds triangles
@@ -99,11 +105,12 @@ burst), HUD, deathmatch and a first bot are in.
   `weapon/drop.rs`): throw speed, the re-pick delay, pickup reach and
   mass are guesses (measure on the probe server); bullets hit loose
   weapons; the use key doesn't swap a weapon for the one you look at.
-- Ragdolls, remaining (bodies, joints, impulse, bone velocities, settling
-  and removal are in, `map/ragdoll.rs`): death poses (spec 2.3), pushes
-  from later bullets (6.2), self-collision pairs (1.3), separation
-  repair (6.3); check the spec's open questions (force scale, bone_dt,
-  joint limit convention) in the game.
+- Ragdolls, remaining (`map/ragdoll.rs` has the spec's bodies, joints,
+  self-collision pairs, death poses, impulse, bone velocities, bullet
+  pushes, separation repair, settling and removal): blast pushes (send
+  `RagdollShot { blast: true }` from grenades once they exist); check the
+  spec's open questions (force scale, bone_dt, death-pose facing and
+  crouch choice, joint limit convention) in the game.
 - Held weapons don't stay in other players' hands (they float around the
   hands). Findings 2026-10-06: the world model's mesh follows the player's
   animated `weapon_bone` (child of the spine), which is right; the arms
@@ -142,9 +149,9 @@ docs/plans/active/sound.md.
   rules (we play the entries as scripted) and gib bounce sounds.
 - Soundscape DSP presets (room reverb), env_soundscape visibility
   checks; soundscape loops onto `map::live_sound` (intro, live panning).
-- What still keeps stock ambient_generics silent: prop outputs
-  (de_nuke's steam on OnHealthChanged of the fire extinguishers,
-  cs_office's projector stop), the bomb (de_nuke's alarm, dust2's fires).
+- What still keeps stock ambient_generics silent: the bomb (de_nuke's
+  alarm, dust2's fires). (Prop outputs are in: de_nuke's steam, cs_office's
+  projector.) de_nuke's env_steam jets themselves aren't drawn.
 - Measure ambient_generic's level for script entries vs raw waves (spec
   open question 11).
 - Measure on the probe server: the distance curves (replace the H1/H2
@@ -153,9 +160,12 @@ docs/plans/active/sound.md.
 ## 7. Physics props, remaining
 
 - The player physics shadow for `prop_physics` (dust2 has none).
-- Impact damage, breakable props.
-- `prop_door_rotating` (model doors) with the use key; brush doors
-  (`func_door`, `func_door_rotating`) and `+use` are done (src/logic).
+- Impact damage; breaking props into their model's gibs (`.phy` "break"
+  block; broken props just vanish now).
+- Model doors: the hardware's latch/lock sounds and the spec's open
+  question 8 (which entries the hardware and surface pick; we use the
+  model's `door_options` move/open/close), swing-side checks against the
+  world (only players are checked), forceclosed pushing physics props.
 - Breakables, remaining (vents and windows break: src/logic/breakables.rs,
   tests/map_breakables.rs): the cracked look of a broken window's panes
   (`$crackmaterial`, jagged edge pieces; spec open question 8), the

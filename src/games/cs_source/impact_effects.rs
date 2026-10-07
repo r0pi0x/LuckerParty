@@ -1087,6 +1087,45 @@ fn glass_effects(
     }
 }
 
+/// Bullets per tracer: one global count over every bullet (spec
+/// tracers.md 1; CS:S's N is open question 1, 4 is the shared default).
+pub const TRACER_EVERY: u64 = 4;
+
+/// The tracer's look (spec tracers.md constants), in meters.
+pub const TRACER_LOOK: crate::map::tracer::TracerLook = crate::map::tracer::TracerLook {
+    material: "effects/spark",
+    speed: 5000.0 * super::bsp::METERS_PER_UNIT,
+    length: (64.0 * super::bsp::METERS_PER_UNIT, 128.0 * super::bsp::METERS_PER_UNIT),
+    half_width: (0.75 * super::bsp::METERS_PER_UNIT, 0.9 * super::bsp::METERS_PER_UNIT),
+    min_distance: 256.0 * super::bsp::METERS_PER_UNIT,
+};
+
+/// Whether the bullet numbered `count` (from 0) draws a tracer.
+pub fn draws_tracer(count: u64) -> bool {
+    count.is_multiple_of(TRACER_EVERY)
+}
+
+/// One tracer every `TRACER_EVERY` bullets, from the gun to where the
+/// bullet stopped.
+fn tracers(
+    mut events: MessageReader<WeaponEvent>,
+    mut out: MessageWriter<crate::map::tracer::Tracer>,
+    mut count: Local<u64>,
+) {
+    for e in events.read() {
+        let WeaponEventKind::Shot { from, to, .. } = e.kind else { continue };
+        if draws_tracer(*count) {
+            out.write(crate::map::tracer::Tracer {
+                owner: e.owner,
+                from,
+                to,
+                look: TRACER_LOOK,
+            });
+        }
+        *count += 1;
+    }
+}
+
 pub struct ImpactEffectsPlugin;
 
 impl Plugin for ImpactEffectsPlugin {
@@ -1098,9 +1137,10 @@ impl Plugin for ImpactEffectsPlugin {
             .add_message::<PlaceDecal>()
             .add_message::<PlaySound>()
             .add_message::<crate::map::GlassShatter>()
+            .add_message::<crate::map::tracer::Tracer>()
             .add_systems(
                 FixedUpdate,
-                (impact_effects, blood_effects).after(crate::core::SimSet::Weapons),
+                (impact_effects, blood_effects, tracers).after(crate::core::SimSet::Weapons),
             )
             .add_systems(Update, glass_effects);
         {
@@ -1348,6 +1388,15 @@ fn blood_effects(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_fourth_bullet_draws_a_tracer() {
+        let drawn: Vec<u64> = (0..10).filter(|n| draws_tracer(*n)).collect();
+        assert_eq!(drawn, [0, 4, 8]);
+        // 256 in minimum, 5000 in/s.
+        assert!((TRACER_LOOK.min_distance - 6.5024).abs() < 1e-4);
+        assert!((TRACER_LOOK.speed - 127.0).abs() < 1e-3);
+    }
     use crate::map::particles::{NoWorld, step_particle};
 
     fn approx(a: f32, b: f32, eps: f32) -> bool {

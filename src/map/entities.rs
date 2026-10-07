@@ -63,6 +63,16 @@ impl MapEntity {
     }
 }
 
+/// Keyvalues a game's loader adds to a prop entity from its model (they
+/// are not in the map): the model's health (Source `prop_data`, or the
+/// template it names), and a model door's sound entries (Source
+/// `door_options` for its skin: starting to move, fully open, fully
+/// closed).
+pub const PROP_HEALTH_KEY: &str = "mashup_prop_health";
+pub const DOOR_MOVE_KEY: &str = "mashup_door_move";
+pub const DOOR_OPEN_KEY: &str = "mashup_door_open";
+pub const DOOR_CLOSE_KEY: &str = "mashup_door_close";
+
 /// "x y z" (or "[x y z]") as a vector; missing or bad parts are 0.
 pub fn parse_vector(s: &str) -> Vec3 {
     let mut v = [0.0f32; 3];

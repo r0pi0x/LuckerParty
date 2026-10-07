@@ -46,6 +46,7 @@ impl Plugin for WeaponPlugin {
             .init_resource::<PassMaterials>()
             .init_resource::<StartingWeapons>()
             .add_message::<WeaponEvent>()
+            .add_message::<crate::map::RagdollShot>()
             .add_message::<PlaySound>()
             .add_systems(
                 FixedUpdate,
@@ -54,7 +55,7 @@ impl Plugin for WeaponPlugin {
                         .chain()
                         .before(SimSet::Movement),
                     drop::drop_on_death.after(SimSet::Weapons),
-                    (weapon_frame.in_set(WeaponFrame), timed_sounds, apply_zoom)
+                    (weapon_frame.in_set(WeaponFrame), timed_sounds, apply_zoom, ragdoll_shots)
                         .chain()
                         .in_set(SimSet::Weapons),
                 ),
@@ -1264,6 +1265,17 @@ fn apply_zoom(
 }
 
 /// Play sounds whose time has come (reload parts), from the owner.
+/// Each bullet path (a shot and its continuations through walls) is also
+/// traced against ragdolls, which it passes through but pushes
+/// (specs/cs_source/ragdolls.md 6.2).
+fn ragdoll_shots(mut events: MessageReader<WeaponEvent>, mut shots: MessageWriter<crate::map::RagdollShot>) {
+    for e in events.read() {
+        if let WeaponEventKind::Shot { from, to, .. } | WeaponEventKind::ShotContinued { from, to, .. } = e.kind {
+            shots.write(crate::map::RagdollShot { from, to, blast: false });
+        }
+    }
+}
+
 fn timed_sounds(
     mut weapons: Query<(&Weapon, &mut WeaponState)>,
     owners: Query<&Transform>,

@@ -3,7 +3,10 @@
 //! (entity_io.md "Per-tick order"): thinks, movers and +use before
 //! movement; trigger touches, untouch, the event queue and removals after.
 
-use avian3d::prelude::{ColliderAabb, ColliderDisabled};
+use avian3d::prelude::{
+    AngularVelocity, Collider, ColliderAabb, ColliderDisabled, LinearVelocity, Position, RigidBody, RigidBodyDisabled,
+    Rotation,
+};
 use bevy::{ecs::message::MessageCursor, prelude::*};
 
 use super::hud::HudMessages;
@@ -15,8 +18,10 @@ use crate::core::{
 };
 use crate::map::breakables::{GibPiece, GlassShatter, SpawnGibs};
 use crate::map::entities::{engine_to_entity, entity_rotation, entity_to_engine, rotation_to_engine};
+use crate::map::vis::{LogicHidden, VisClusters};
 use crate::map::{
-    BrushPanes, MapBrushEntity, MapEntities, PlaySound, PropEntity, SoundControl, SoundKey, SoundLevel, StartSound,
+    BrushPanes, MapBrushEntity, MapEntities, PlaySound, PropEntity, PropHome, SoundControl, SoundKey, SoundLevel,
+    StartSound,
 };
 
 /// The running logic world of the loaded map.
@@ -27,6 +32,9 @@ pub struct Logic {
     pub scale: f32,
     /// Mover entity -> its ECS node.
     pub nodes: Vec<(EntId, Entity)>,
+    /// Prop entity (`classes::Class::Prop`) -> its prop node
+    /// (`map::PropEntity`).
+    pub props: Vec<(EntId, Entity)>,
     /// Server settings a map changed, with their values before (put back
     /// when another map loads).
     pub restore: Vec<(String, String)>,
@@ -89,10 +97,12 @@ fn load(world: &mut World) {
             let mut logic = LogicWorld::new(dt);
             let ids = logic.load_map(&m.entities);
             let nodes = attach_nodes(world, &logic, &ids);
+            let props = attach_props(world, &logic, &ids, false);
             world.insert_resource(Logic {
                 world: logic,
                 scale: m.scale,
                 nodes,
+                props,
                 restore: Vec::new(),
                 source: m.entities.clone(),
                 restarts,
@@ -107,6 +117,7 @@ fn load(world: &mut World) {
                 let source = logic.source.clone();
                 let ids = logic.world.round_restart(&source);
                 logic.nodes = attach_nodes(world, &logic.world, &ids);
+                logic.props = attach_props(world, &logic.world, &ids, true);
                 // HUD messages from the last round go too.
                 if let Some(mut hud) = world.get_resource_mut::<HudMessages>() {
                     *hud = HudMessages::default();
@@ -161,6 +172,119 @@ fn hide_node(world: &mut World, node: Entity) {
             e.insert(ColliderDisabled);
         }
         e.insert((Visibility::Hidden, MovingSolid::default())).remove::<Damageable>();
+    }
+}
+
+/// Pair every prop node (`map::PropEntity`) with its logic prop (`ids` in
+/// map order). They are shown and solid again; with `restart`, a moved
+/// physics prop goes back where the map placed it, at rest.
+fn attach_props(world: &mut World, logic: &LogicWorld, ids: &[EntId], restart: bool) -> Vec<(EntId, Entity)> {
+    let all: Vec<(Entity, usize, Option<Transform>)> = world
+        .query::<(Entity, &PropEntity, Option<&PropHome>)>()
+        .iter(world)
+        .map(|(e, p, h)| (e, p.0, h.map(|h| h.0)))
+        .collect();
+    let states = logic.prop_states();
+    let mut out = Vec::new();
+    for (node, index, home) in all {
+        let Some(id) = ids.get(index).copied() else { continue };
+        let Some(&(_, _, visible, solid, damageable)) = states.iter().find(|s| s.0 == id) else {
+            continue;
+        };
+        if restart
+            && let Some(home) = home
+            && let Ok(mut e) = world.get_entity_mut(node)
+            && e.contains::<RigidBody>()
+        {
+            if let Some(mut t) = e.get_mut::<Transform>() {
+                *t = home;
+            }
+            if let Some(mut p) = e.get_mut::<Position>() {
+                p.0 = home.translation;
+            }
+            if let Some(mut r) = e.get_mut::<Rotation>() {
+                *r = Rotation::from(home.rotation);
+            }
+            if let Some(mut v) = e.get_mut::<LinearVelocity>() {
+                v.0 = Vec3::ZERO;
+            }
+            if let Some(mut v) = e.get_mut::<AngularVelocity>() {
+                v.0 = Vec3::ZERO;
+            }
+        }
+        set_prop_shown(world, node, visible, solid, true);
+        if let Ok(mut e) = world.get_entity_mut(node) {
+            if damageable {
+                e.insert(Damageable);
+            } else {
+                e.remove::<Damageable>();
+            }
+        }
+        out.push((id, node));
+    }
+    out
+}
+
+/// Show or hide a prop node and turn its collision (its own collider and
+/// its children's) on or off; `exists` false also stops its body.
+fn set_prop_shown(world: &mut World, node: Entity, visible: bool, solid: bool, exists: bool) {
+    let Ok(e) = world.get_entity(node) else { return };
+    let hidden = e.contains::<LogicHidden>();
+    if visible == hidden {
+        let shown_by_vis = e.get::<VisClusters>().is_none_or(|v| v.potentially_visible);
+        let mut e = world.entity_mut(node);
+        if visible {
+            e.remove::<LogicHidden>();
+            if shown_by_vis {
+                e.insert(Visibility::Inherited);
+            }
+        } else {
+            e.insert((LogicHidden, Visibility::Hidden));
+        }
+    }
+    let colliders: Vec<Entity> = std::iter::once(node)
+        .chain(
+            world
+                .get::<Children>(node)
+                .map(|c| c.to_vec())
+                .unwrap_or_default(),
+        )
+        .filter(|c| world.get::<Collider>(*c).is_some())
+        .collect();
+    for c in colliders {
+        let mut e = world.entity_mut(c);
+        // Only on change: a re-inserted ColliderDisabled re-adds the
+        // collider to avian's query tree (see `hide_node`).
+        if solid == e.contains::<ColliderDisabled>() {
+            if solid {
+                e.remove::<ColliderDisabled>();
+            } else {
+                e.insert(ColliderDisabled);
+            }
+        }
+    }
+    let mut e = world.entity_mut(node);
+    if e.contains::<RigidBody>() && exists == e.contains::<RigidBodyDisabled>() {
+        if exists {
+            e.remove::<RigidBodyDisabled>();
+        } else {
+            e.insert(RigidBodyDisabled);
+        }
+    }
+    if !exists {
+        e.remove::<Damageable>();
+    }
+}
+
+/// Prop nodes follow their logic prop: hidden and not solid once it is
+/// gone (broken, killed) until a round restart, or as its inputs say.
+fn sync_props(world: &mut World, logic: &mut Logic) {
+    let states = logic.world.prop_states();
+    for (id, node) in logic.props.clone() {
+        match states.iter().find(|s| s.0 == id) {
+            Some(&(_, _, visible, solid, _)) => set_prop_shown(world, node, visible, solid, true),
+            None => set_prop_shown(world, node, false, false, false),
+        }
     }
 }
 
@@ -582,6 +706,7 @@ fn run_phase(world: &mut World, phase: impl FnOnce(&mut LogicWorld, &dyn Collisi
     let after = std::mem::take(&mut logic.world.players);
     write_back(world, logic.scale, &players, &after);
     sync_movers(world, &mut logic);
+    sync_props(world, &mut logic);
     let effects = std::mem::take(&mut logic.world.effects);
     for line in logic.world.log.drain(..) {
         if line.contains("refused") {
@@ -613,7 +738,8 @@ fn post(world: &mut World) {
     });
 }
 
-/// Damage dealt to mover nodes (breakables) this tick, into the logic.
+/// Damage dealt to mover nodes (breakables) and prop nodes this tick, into
+/// the logic.
 fn damage(world: &mut World, mut cursor: Local<MessageCursor<Damage>>) {
     let hits: Vec<Damage> = match world.get_resource::<Messages<Damage>>() {
         Some(m) => cursor.read(m).cloned().collect(),
@@ -626,7 +752,11 @@ fn damage(world: &mut World, mut cursor: Local<MessageCursor<Damage>>) {
     let targeted: Vec<(EntId, Damage)> = hits
         .into_iter()
         .filter_map(|d| {
-            let (id, _) = logic.nodes.iter().find(|(_, n)| *n == d.target)?;
+            let (id, _) = logic
+                .nodes
+                .iter()
+                .chain(&logic.props)
+                .find(|(_, n)| *n == d.target)?;
             Some((*id, d))
         })
         .collect();

@@ -354,9 +354,9 @@ pub fn scale_damage(amount: f32, kind: DamageKind) -> f32 {
 }
 
 impl LogicWorld {
-    /// Damage dealt to a breakable: `amount` in health points, at `point`
-    /// travelling along `dir` (entity space). Returns false when `id` is
-    /// not a breakable.
+    /// Damage dealt to a breakable or a prop (`props::prop_damage`):
+    /// `amount` in health points, at `point` travelling along `dir`
+    /// (entity space). Returns false when `id` is neither.
     pub fn damage(
         &mut self,
         id: EntId,
@@ -366,7 +366,9 @@ impl LogicWorld {
         point: Vec3,
         dir: Vec3,
     ) -> bool {
-        let Some(b) = breakable(self, id) else { return false };
+        let Some(b) = breakable(self, id) else {
+            return super::props::prop_damage(self, id, amount, kind, attacker);
+        };
         if b.broken && b.window.is_none() {
             return true;
         }

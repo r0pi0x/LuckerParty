@@ -29,11 +29,13 @@ mod dust;
 pub mod hud;
 pub mod live_sound;
 pub mod loose;
+pub mod probe_lit;
 pub mod nav;
 pub mod particles;
+pub mod tracer;
 pub mod prop_material;
 pub mod ragdoll;
-pub use ragdoll::{MapRagdoll, MapRagdollBody, MapRagdollJoint, Ragdoll, RagdollBody};
+pub use ragdoll::{MapCollisionHooks, MapRagdoll, MapRagdollBody, MapRagdollJoint, Ragdoll, RagdollBody, RagdollShot};
 pub mod rope_material;
 pub mod shadows;
 pub mod sound;
@@ -403,10 +405,10 @@ struct CharacterBodies(Vec<BodyAssets>);
 /// Meshes and materials of each held model, by key.
 #[derive(Resource)]
 #[allow(clippy::type_complexity)]
-struct HeldAssets(HashMap<String, (String, Vec<(Handle<Mesh>, Handle<StandardMaterial>)>, Option<Transform>)>);
+struct HeldAssets(HashMap<String, (String, Vec<(Handle<Mesh>, Handle<PropMaterial>)>, Option<Transform>)>);
 
 struct BodyAssets {
-    parts: Vec<(Handle<Mesh>, Handle<StandardMaterial>)>,
+    parts: Vec<(Handle<Mesh>, Handle<PropMaterial>)>,
     bindposes: Handle<bevy::mesh::skinning::SkinnedMeshInverseBindposes>,
     bones: Vec<MapBone>,
     root: Transform,
@@ -451,6 +453,7 @@ fn attach_bodies(
     >,
     existing: Query<&CharacterBody>,
     show_local: Res<ShowLocalBody>,
+    mut materials: Option<ResMut<Assets<PropMaterial>>>,
     mut commands: Commands,
 ) {
     let (Some(models), Some(bodies)) = (models, bodies) else {
@@ -501,10 +504,17 @@ fn attach_bodies(
             joints: joints.clone(),
             held: None,
         });
+        // Its own materials, lit where it stands (probe_lit), at its centre.
+        let mut own = Vec::new();
         for (mesh, material) in &assets.parts {
+            let material = match materials.as_mut() {
+                Some(m) => probe_lit::instance(m, material),
+                None => material.clone(),
+            };
+            own.push(material.clone());
             commands.spawn((
                 Mesh3d(mesh.clone()),
-                MeshMaterial3d(material.clone()),
+                MeshMaterial3d(material),
                 bevy::mesh::skinning::SkinnedMesh {
                     inverse_bindposes: assets.bindposes.clone(),
                     joints: joints.clone(),
@@ -512,8 +522,15 @@ fn attach_bodies(
                 ChildOf(body),
             ));
         }
+        commands
+            .entity(body)
+            .insert(probe_lit::ProbeLit::new(own, Vec3::Y * BODY_LIGHT_HEIGHT));
     }
 }
+
+/// Height of a body's lighting point above its feet, meters (about the
+/// models' own illumination position, their middle).
+const BODY_LIGHT_HEIGHT: f32 = 0.9;
 
 fn body_visibility(local: bool, show_local: ShowLocalBody) -> Visibility {
     if local && !show_local.0 {
@@ -561,6 +578,7 @@ fn attach_held(
     bodies: Option<Res<CharacterBodies>>,
     characters: Query<(Entity, &Held, &Children)>,
     mut body_query: Query<&mut CharacterBody>,
+    mut materials: Option<ResMut<Assets<PropMaterial>>>,
     mut commands: Commands,
 ) {
     let (Some(held), Some(bodies)) = (held, bodies) else {
@@ -589,11 +607,24 @@ fn attach_held(
         else {
             continue;
         };
+        // Its own materials, lit where it is (probe_lit).
+        let own: Vec<Handle<PropMaterial>> = parts
+            .iter()
+            .map(|(_, m)| match materials.as_mut() {
+                Some(assets) => probe_lit::instance(assets, m),
+                None => m.clone(),
+            })
+            .collect();
         let model = commands
-            .spawn((Transform::default(), Visibility::Inherited, ChildOf(joint)))
+            .spawn((
+                Transform::default(),
+                Visibility::Inherited,
+                ChildOf(joint),
+                probe_lit::ProbeLit::new(own.clone(), Vec3::ZERO),
+            ))
             .with_children(|m| {
-                for (mesh, material) in parts {
-                    m.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material.clone())));
+                for ((mesh, _), material) in parts.iter().zip(own) {
+                    m.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material)));
                 }
                 if let Some(t) = muzzle {
                     m.spawn((*t, view_model::HeldMuzzle { owner: character }));
@@ -841,7 +872,9 @@ pub struct MapData {
     /// Collision triangles (surfaces with no solid volume, e.g. terrain).
     pub collision_positions: Vec<[f32; 3]>,
     pub collision_indices: Vec<[u32; 3]>,
-    /// Solid convex volumes, each as its corner points.
+    /// Solid convex volumes, each as its corner points: what stops shots
+    /// and physics bodies (player-only clips are in `collision_brushes`
+    /// only).
     pub collision_hulls: Vec<Vec<[f32; 3]>>,
     /// The same volumes as planes, for exact swept-box movement collision.
     pub collision_brushes: Vec<MapBrush>,
@@ -1336,6 +1369,9 @@ impl Plugin for MapPlugin {
             .add_message::<GlassShatter>()
             .init_resource::<particles::Particles>()
             .configure_sets(Update, particles::ParticleSet::Step.before(particles::ParticleSet::Draw))
+            .init_resource::<tracer::MuzzleCache>()
+            .init_resource::<tracer::PendingTracers>()
+            .add_message::<tracer::Tracer>()
             .insert_resource(GlobalAmbientLight {
                 brightness: 600.0,
                 // Baked lighting already includes the map's ambient light.
@@ -1365,6 +1401,7 @@ impl Plugin for MapPlugin {
                     glow_visibility,
                     dust::update_dust,
                     (
+                        tracer::draw_tracers,
                         particles::step_particles.in_set(particles::ParticleSet::Step),
                         particles::draw_particles
                             .run_if(
@@ -1382,6 +1419,7 @@ impl Plugin for MapPlugin {
                         turn_bodies,
                         pose_bodies.after(DriveAnimation),
                         attach_held,
+                        probe_lit::relight,
                         loose::attach_loose,
                         loose::attach_shown,
                     )
@@ -1564,30 +1602,35 @@ fn spawn_map(
         // Character bodies, drawn by `attach_bodies`: skinned when the
         // model has a skeleton.
         if let Some(bindposes) = bindposes.as_mut() {
+            // Bodies and what they hold are lit from the light field where
+            // they are (probe_lit), as Source lights models.
+            let Some(pm) = prop_materials.as_deref_mut() else {
+                panic!("PropMaterial assets exist wherever StandardMaterial does");
+            };
+            let model_material = |m: &MapMesh| {
+                let mut material = lit_prop_material(m, &textures, data, view, false);
+                if !m.unlit && view != MapDebugView::Albedo && data.light_field.is_some() {
+                    material.params.set_probe(&LightProbe::default(), 1.0);
+                }
+                material
+            };
+            let lighting_scale = if let MapDebugView::Lighting { scale } = view { scale } else { 1.0 };
+            commands.insert_resource(probe_lit::ProbeLightScale(data.look.light_scale * lighting_scale));
             let bodies = data
                 .characters
                 .iter()
-                .map(|c| {
-                    body_assets(&c.model, &c.bones, c.root, meshes, materials, bindposes, &|m| {
-                        build_material(m, &textures, view, data.look.light_scale)
-                    })
-                })
+                .map(|c| body_assets(&c.model, &c.bones, c.root, meshes, pm, bindposes, &model_material))
                 .collect();
             commands.insert_resource(CharacterBodies(bodies));
             let held = data
                 .held
                 .iter()
                 .map(|h| {
-                    let parts: Vec<(Handle<Mesh>, Handle<StandardMaterial>)> = h
+                    let parts: Vec<(Handle<Mesh>, Handle<PropMaterial>)> = h
                         .model
                         .meshes
                         .iter()
-                        .map(|m| {
-                            (
-                                meshes.add(build_mesh(m, false)),
-                                materials.add(build_material(m, &textures, view, data.look.light_scale)),
-                            )
-                        })
+                        .map(|m| (meshes.add(build_mesh(m, false)), pm.add(model_material(m))))
                         .collect();
                     (h.key.clone(), (h.bone.clone(), parts, h.muzzle))
                 })
@@ -2161,7 +2204,7 @@ fn spawn_map(
             }
         }
         if let Some(index) = prop.entity {
-            e.insert(PropEntity(index));
+            e.insert((PropEntity(index), PropHome(rider.map_or(placed, |r| r.1))));
         }
         let solid = if rider.is_some() { PropSolid::None } else { prop.solid };
         match (solid, &model_colliders[prop.model]) {
@@ -2348,8 +2391,9 @@ fn spawn_map(
         MapPart,
         DirectionalLight {
             illuminance: 9000.0,
-            shadow_maps_enabled: true,
-            // The sun is baked into the lightmap; it still lights characters.
+            // Models are lit from the baked light field (probe_lit), so no
+            // shadow maps (they cost several ms a frame); the sun only lights
+            // the few plain materials left.
             affects_lightmapped_mesh_diffuse: false,
             ..default()
         },
@@ -2626,9 +2670,9 @@ fn body_assets(
     bones: &[MapBone],
     root: Transform,
     meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<StandardMaterial>,
+    materials: &mut Assets<PropMaterial>,
     bindposes: &mut Assets<bevy::mesh::skinning::SkinnedMeshInverseBindposes>,
-    material: &dyn Fn(&MapMesh) -> StandardMaterial,
+    material: &dyn Fn(&MapMesh) -> PropMaterial,
 ) -> BodyAssets {
     let parts = model
         .meshes
@@ -2788,6 +2832,11 @@ pub struct PropIndex(pub usize);
 /// `MapData::entities`), so logic can find it (a sound playing from it).
 #[derive(Component, Debug, Clone, Copy)]
 pub struct PropEntity(pub usize);
+
+/// Where an entity prop was placed (its spawn transform), so a round
+/// restart can put a moved physics prop back.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct PropHome(pub Transform);
 
 /// What it takes to redraw prop shadows when props move.
 #[derive(Resource)]
