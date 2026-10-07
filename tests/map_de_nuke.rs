@@ -63,7 +63,8 @@ fn ladders_can_be_climbed() {
     // Checked against CS:S with movecmp: the outside ladder climbs (tick
     // for tick as in the game). The ladder at (856..864, -1448..-1422) has
     // a player-clip face coinciding with its face, which wins the trace in
-    // CS:S too, so it doesn't attach from straight in front. The third
+    // CS:S too, so it doesn't attach from straight in front (from the
+    // duct's south half it does: `vent_and_outside_ladders_climb`). The third
     // (230..232, -816..-784) is player-width between walls 0.01 units proud
     // of its face; not attached from in front either.
     assert!(climbed >= 1, "{climbed} of {} ladders climbed", ladders.len());
