@@ -163,6 +163,7 @@ fn sim_with(model: MapCharacterModel) -> (Sim, Entity) {
 
 fn kill(sim: &mut Sim, p: Entity, hitgroup: Hitgroup, point: Vec3, dir: Vec3) {
     sim.app.world_mut().write_message(Damage {
+        force: bevy::math::Vec3::ZERO,
         target: p,
         attacker: None,
         amount: 5.0,

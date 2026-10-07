@@ -11,6 +11,7 @@ use mashup::{
 
 fn hit(sim: &mut Sim, attacker: Entity, target: Entity, amount: f32) {
     sim.app.world_mut().write_message(Damage {
+        force: bevy::math::Vec3::ZERO,
         target,
         attacker: Some(attacker),
         amount,

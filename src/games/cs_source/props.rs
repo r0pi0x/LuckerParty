@@ -15,7 +15,7 @@ use super::{
 use crate::map::{
     LightProbe, MapBone, MapCollision, MapConvex, MapData, MapMesh, MapMeshLook, MapModel, MapPhysics, MapProp, MapRig,
     PropSolid, PushAway,
-    entities::{DOOR_CLOSE_KEY, DOOR_MOVE_KEY, DOOR_OPEN_KEY, PROP_HEALTH_KEY},
+    entities::{DOOR_CLOSE_KEY, DOOR_MOVE_KEY, DOOR_OPEN_KEY},
 };
 
 /// Source rotation (pitch about Y, yaw about Z, roll about X; degrees) in
@@ -584,6 +584,7 @@ fn convert_model_in(
         skins: looks,
         body_parts,
         rig: None,
+        breaks: None,
     }
 }
 
@@ -636,15 +637,18 @@ fn load_collision(materials: &mut MaterialLoader, path: &str) -> Option<MapColli
 fn body(
     prop: &PropPlacement,
     model: &MapModel,
-    prop_data: Option<&HashMap<String, String>>,
+    physicsmode: Option<i32>,
     surfaces: &super::surfaceprops::SurfaceProps,
 ) -> Option<MapPhysics> {
+    const START_ASLEEP: u32 = 0x1;
     const MOTION_DISABLED: u32 = 0x8;
     const FORCE_SERVER_SIDE: u32 = 0x2000;
     let class = prop.class.as_deref()?;
-    if !class.starts_with("prop_physics") || prop.spawnflags & MOTION_DISABLED != 0 {
+    if !class.starts_with("prop_physics") {
         return None;
     }
+    // Pinned until enabled (physics_props.md 3.1 step 8).
+    let frozen = prop.spawnflags & MOTION_DISABLED != 0 || prop.enable_threshold;
     let c = model.collision.as_ref()?;
     let mass = (c.mass * if prop.massscale > 0.0 { prop.massscale } else { 1.0 }).clamp(0.1, 50_000.0);
     let surface = surfaces.get(&c.surfaceprop);
@@ -657,11 +661,9 @@ fn body(
         } else {
             PushAway::Solid
         };
-        // The model's prop_data physicsmode wins over the map's.
-        let physicsmode = prop_data
-            .and_then(|d| d.get("physicsmode"))
-            .and_then(|v| v.trim().parse().ok())
-            .unwrap_or(prop.physicsmode);
+        // The model's prop data physicsmode (through its templates) wins
+        // over the map's.
+        let physicsmode = physicsmode.unwrap_or(prop.physicsmode);
         let mode = match physicsmode {
             1 => PushAway::Solid,
             2 => PushAway::NonSolid,
@@ -683,6 +685,8 @@ fn body(
         damping: c.damping,
         rotdamping: c.rotdamping,
         push,
+        frozen,
+        asleep: prop.spawnflags & START_ASLEEP != 0,
     })
 }
 
@@ -717,6 +721,9 @@ struct PropPlacement {
     /// Plays sequences (a prop_dynamic with a default animation, or one the
     /// map tells to play one): loaded with its skeleton.
     animated: bool,
+    /// Has `forcetoenablemotion` or `damagetoenablemotion`: pinned until
+    /// they're reached.
+    enable_threshold: bool,
 }
 
 pub fn add_static_props(
@@ -757,6 +764,7 @@ pub fn add_static_props(
             entity: None,
             body: 0,
             animated: false,
+            enable_threshold: false,
         });
     }
     placements.extend(entity_props(bsp));
@@ -827,6 +835,11 @@ fn entity_props(bsp: &Bsp) -> Vec<PropPlacement> {
                 entity: Some(index),
                 body: e.prop("body").and_then(|v| v.trim().parse().ok()).unwrap_or(0),
                 animated,
+                enable_threshold: ["forcetoenablemotion", "damagetoenablemotion"].iter().any(|k| {
+                    e.prop(k)
+                        .and_then(|v| v.trim().parse::<f32>().ok())
+                        .is_some_and(|v| v > 0.0)
+                }),
             })
         })
         .collect()
@@ -863,7 +876,9 @@ fn place_props(
     let surfaces = super::surfaceprops::SurfaceProps::load(materials);
     // propdata.txt's templates (a model's prop_data "base"), read when an
     // entity prop needs one.
-    let mut templates: Option<super::hud::Kv> = None;
+    let mut templates: Option<(super::hud::Kv, Vec<(String, Vec<String>)>)> = None;
+    // How many pieces each model breaks into (its `MapModel::breaks`).
+    let mut broken_into: HashMap<usize, usize> = HashMap::new();
     for prop in placements {
         let key = (prop.model.clone(), prop.skin, prop.animated);
         let model = *loaded
@@ -931,7 +946,33 @@ fn place_props(
                 _ => {}
             }
         }
-        let physics = body(&prop, &data.models[model], prop_datas.get(&model), &surfaces);
+        // The model's prop data, through its propdata.txt templates.
+        let pd = if prop_datas.contains_key(&model) && prop.entity.is_some() {
+            let t = templates.get_or_insert_with(|| {
+                let text = materials
+                    .read("scripts/propdata.txt")
+                    .map(|b| String::from_utf8_lossy(&b).into_owned())
+                    .unwrap_or_default();
+                (
+                    super::propdata::templates(&text),
+                    super::breakables::breakable_models(&text),
+                )
+            });
+            Some(
+                key_values
+                    .get(&model)
+                    .and_then(|kv| super::propdata::resolve(kv, &t.0))
+                    .unwrap_or_default(),
+            )
+        } else {
+            None
+        };
+        let physics = body(
+            &prop,
+            &data.models[model],
+            pd.as_ref().and_then(|p| p.physicsmode),
+            &surfaces,
+        );
         let translation = to_engine(prop.origin);
         let rotation = rotation(prop.angles);
         // Like the game for maps without baked prop lighting: one lighting
@@ -955,21 +996,25 @@ fn place_props(
             && index < data.entities.len()
         {
             let mut extra = Vec::new();
-            let health = prop_datas.get(&model).and_then(|pd| {
-                let own = pd.get("health").and_then(|h| h.trim().parse::<i32>().ok());
-                own.or_else(|| {
-                    let base = pd.get("base")?;
-                    let t = templates.get_or_insert_with(|| {
-                        materials
-                            .read("scripts/propdata.txt")
-                            .map(|b| super::hud::parse(&String::from_utf8_lossy(&b)))
-                            .unwrap_or(super::hud::Kv::Block(Vec::new()))
-                    });
-                    template_health(t, base)
-                })
-            });
-            if let Some(h) = health {
-                extra.push((PROP_HEALTH_KEY.to_string(), h.to_string()));
+            if !door && let (Some(pd), Some(t)) = (&pd, &templates) {
+                let pieces = match broken_into.get(&model) {
+                    Some(n) => *n,
+                    None => {
+                        let n = model_breaks(materials, &prop.model, pd, &t.1, data, model);
+                        broken_into.insert(model, n);
+                        n
+                    }
+                };
+                let client = prop.class.as_deref() == Some("prop_physics_multiplayer")
+                    && physics.as_ref().is_some_and(|p| p.push == crate::map::PushAway::Ignore);
+                extra.extend(prop_keys(
+                    pd,
+                    pieces,
+                    client,
+                    physics.as_ref(),
+                    &data.models[model],
+                    &surfaces,
+                ));
             }
             if door {
                 if let Some((mv, open, close)) = key_values.get(&model).and_then(|kv| door_options(kv, prop.skin)) {
@@ -1042,29 +1087,142 @@ fn load_rig(materials: &mut MaterialLoader, path: &str) -> Option<std::sync::Arc
 /// drawn as a prop riding a mover node the logic turns.
 pub const DOOR_CLASS: &str = "prop_door_rotating";
 
-/// A propdata.txt template's health (`"sections"` holds the templates,
-/// possibly nested in groups; a template may name a `base`).
-fn template_health(kv: &super::hud::Kv, base: &str) -> Option<i32> {
-    use super::hud::Kv;
-    fn find<'a>(kv: &'a Kv, name: &str) -> Option<&'a Kv> {
-        for (k, v) in kv.items() {
-            if let Kv::Block(_) = v {
-                if k.eq_ignore_ascii_case(name) {
-                    return Some(v);
-                }
-                if let Some(f) = find(v, name) {
-                    return Some(f);
+/// Load what a prop model breaks into (prop_damage.md 7.3) onto
+/// `data.models[model].breaks`, its piece models into `data.gibs`: the
+/// `.phy` break pieces whose models load, else `breakable_count` chunks of
+/// the gib list `breakable_model` names. Returns the piece count (2.2
+/// step 1).
+fn model_breaks(
+    materials: &mut MaterialLoader,
+    path: &str,
+    pd: &super::propdata::PropData,
+    lists: &[(String, Vec<String>)],
+    data: &mut MapData,
+    model: usize,
+) -> usize {
+    use crate::map::{MapBreak, MapBreakPiece, breakables::MapGibSet};
+    let blocks = materials
+        .read(&format!("{}.phy", path.trim_end_matches(".mdl")))
+        .map(|b| super::phy::break_blocks(&b))
+        .unwrap_or_default();
+    let mut models = Vec::new();
+    let mut pieces = Vec::new();
+    for p in super::propdata::break_pieces(&blocks) {
+        match load_shell(materials, &p.model) {
+            Ok(m) => {
+                pieces.push(MapBreakPiece {
+                    model: models.len(),
+                    offset: to_engine(v_src(p.offset)),
+                    centre: (m.bounds.0 + m.bounds.1) / 2.0,
+                    life: if p.fadetime > 0.0 { p.fadetime } else { f32::INFINITY },
+                    burst: p.burst * METERS_PER_UNIT,
+                    frozen: p.motion_disabled,
+                });
+                models.push(m);
+            }
+            Err(e) => data.warnings.push(e),
+        }
+    }
+    if !pieces.is_empty() {
+        let n = pieces.len();
+        data.gibs.push(MapGibSet {
+            name: path.to_string(),
+            models,
+        });
+        data.models[model].breaks = Some(MapBreak::Pieces {
+            set: path.to_string(),
+            pieces,
+        });
+        return n;
+    }
+    let (Some(name), count) = (&pd.breakable_model, pd.breakable_count) else {
+        return 0;
+    };
+    if count <= 0 {
+        return 0;
+    }
+    if let Some((list, paths)) = super::propdata::chunk_list(lists, name) {
+        if !data.gibs.iter().any(|g| g.name.eq_ignore_ascii_case(list)) {
+            let mut models = Vec::new();
+            for p in paths {
+                match load_shell(materials, p) {
+                    Ok(m) => models.push(m),
+                    Err(e) => data.warnings.push(e),
                 }
             }
+            data.gibs.push(MapGibSet {
+                name: list.clone(),
+                models,
+            });
         }
-        None
+        let centres = data
+            .gibs
+            .iter()
+            .find(|g| g.name.eq_ignore_ascii_case(list))
+            .map(|g| g.models.iter().map(|m| (m.bounds.0 + m.bounds.1) / 2.0).collect())
+            .unwrap_or_default();
+        // The box in Source axes, units.
+        let (lo, hi) = data.models[model].bounds;
+        let s = (hi - lo) / METERS_PER_UNIT;
+        data.models[model].breaks = Some(MapBreak::Chunks {
+            set: list.clone(),
+            count: count as usize,
+            size_limit: super::propdata::chunk_size_limit(Vec3::new(s.x, s.z, s.y)),
+            life: CHUNK_LIFE,
+            centres,
+        });
     }
-    let t = find(kv, base)?;
-    t.str("health").and_then(|h| h.trim().parse().ok()).or_else(|| {
-        t.str("base")
-            .filter(|b| !b.eq_ignore_ascii_case(base))
-            .and_then(|b| template_health(kv, b))
-    })
+    count as usize
+}
+
+/// Template chunks live this long (seconds, a range; spec 7.3).
+const CHUNK_LIFE: (f32, f32) = (5.0, 10.0);
+
+/// The sound entry an exploding prop with the onbreak-explode
+/// interaction plays (spec 7.5).
+const EXPLODE_FIRE_SOUND: &str = "PropaneTank.Burst";
+
+/// The keyvalues the logic reads a prop's damage rules from
+/// (`map::entities::PROP_*_KEY`).
+fn prop_keys(
+    pd: &super::propdata::PropData,
+    pieces: usize,
+    client: bool,
+    physics: Option<&MapPhysics>,
+    model: &MapModel,
+    surfaces: &super::surfaceprops::SurfaceProps,
+) -> Vec<(String, String)> {
+    use crate::map::entities::*;
+    let mut out = Vec::new();
+    let mut put = |k: &str, v: String| out.push((k.to_string(), v));
+    if let Some(h) = pd.health {
+        put(PROP_HEALTH_KEY, h.to_string());
+    }
+    put(PROP_DAMAGE_KEY, format!("{} {} {}", pd.bullets, pd.club, pd.explosive));
+    put(PROP_PIECES_KEY, pieces.to_string());
+    if !pd.interactions.is_empty() {
+        put(PROP_INTERACTIONS_KEY, pd.interactions.join(" "));
+    }
+    let (d, r) = (pd.explosive_damage.unwrap_or(0.0), pd.explosive_radius.unwrap_or(0.0));
+    if d > 0.0 || r > 0.0 {
+        put(PROP_EXPLODE_KEY, format!("{d} {r}"));
+    }
+    if pd.interactions.contains(&"explode_fire") {
+        put(PROP_EXPLODE_SOUND_KEY, EXPLODE_FIRE_SOUND.to_string());
+    }
+    if let Some(t) = &pd.damage_table {
+        put(PROP_TABLE_KEY, t.clone());
+    }
+    if client {
+        put(PROP_CLIENT_KEY, "1".to_string());
+    }
+    if let Some(c) = &model.collision {
+        if let Some(s) = super::propdata::break_sound(surfaces, &c.surfaceprop) {
+            put(PROP_BREAK_SOUND_KEY, s);
+        }
+        put(PROP_MASS_KEY, physics.map_or(c.mass, |p| p.mass).to_string());
+    }
+    out
 }
 
 /// A door model's (move, open, close) sound entries from its
@@ -1083,9 +1241,7 @@ fn door_options(text: &str, skin: i32) -> Option<(String, String, String)> {
     }
     let kv = super::hud::parse(text);
     let options = find(&kv, "door_options")?;
-    let block = options
-        .get(&format!("skin{skin}"))
-        .or_else(|| options.get("default"))?;
+    let block = options.get(&format!("skin{skin}")).or_else(|| options.get("default"))?;
     let s = |k: &str| block.str(k).unwrap_or("").to_string();
     Some((s("move"), s("open"), s("close")))
 }
@@ -1103,7 +1259,11 @@ fn door_hulls(model: &MapModel) -> Vec<crate::map::MapHull> {
             .iter()
             .map(|p| crate::map::MapHull {
                 points: p.points.iter().map(|q| point(*q)).collect(),
-                planes: p.planes.iter().map(|(n, d)| (normal(*n), d / METERS_PER_UNIT)).collect(),
+                planes: p
+                    .planes
+                    .iter()
+                    .map(|(n, d)| (normal(*n), d / METERS_PER_UNIT))
+                    .collect(),
             })
             .collect();
     }

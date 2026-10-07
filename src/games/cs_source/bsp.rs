@@ -167,7 +167,12 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
         }
     }
     data.shell_physics = Some(super::view_anim::shell_physics());
-    data.gibs = super::breakables::load_gibs(&mut materials, &data.entities, &mut data.warnings);
+    // Props' break pieces are in already (`props::add_static_props`).
+    for set in super::breakables::load_gibs(&mut materials, &data.entities, &mut data.warnings) {
+        if !data.gibs.iter().any(|g| g.name.eq_ignore_ascii_case(&set.name)) {
+            data.gibs.push(set);
+        }
+    }
     data.gib_physics = Some(super::breakables::gib_physics());
     let mut sounds = super::sound::load(&mut materials, name, &surfaces, &data.entities);
     super::soundscape::load(&mut materials, &bsp, name, &mut sounds);

@@ -13,6 +13,7 @@ use mashup::{
 
 fn kill(sim: &mut Sim, attacker: Entity, target: Entity) {
     sim.app.world_mut().write_message(Damage {
+        force: bevy::math::Vec3::ZERO,
         target,
         attacker: Some(attacker),
         amount: 10.0,

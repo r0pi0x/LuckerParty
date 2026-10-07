@@ -69,6 +69,22 @@ impl MapEntity {
 /// `door_options` for its skin: starting to move, fully open, fully
 /// closed).
 pub const PROP_HEALTH_KEY: &str = "mashup_prop_health";
+/// The rest of a prop's damage rules from its model (Source prop data,
+/// specs/source/prop_damage.md 2): damage multipliers "bullets club
+/// blast"; how many pieces it breaks into; interactions (space separated:
+/// flammable, explosive_resist, ignite_halfhealth, explode_fire,
+/// firstimpact_break); explosion "damage radius" and its sound; impact
+/// damage table name; "1" for a client-only prop (multiplayer physics
+/// mode 3); the break sound entry; its mass (kg).
+pub const PROP_DAMAGE_KEY: &str = "mashup_prop_damage";
+pub const PROP_PIECES_KEY: &str = "mashup_prop_pieces";
+pub const PROP_INTERACTIONS_KEY: &str = "mashup_prop_interactions";
+pub const PROP_EXPLODE_KEY: &str = "mashup_prop_explode";
+pub const PROP_EXPLODE_SOUND_KEY: &str = "mashup_prop_explode_sound";
+pub const PROP_TABLE_KEY: &str = "mashup_prop_damage_table";
+pub const PROP_CLIENT_KEY: &str = "mashup_prop_client";
+pub const PROP_BREAK_SOUND_KEY: &str = "mashup_prop_break_sound";
+pub const PROP_MASS_KEY: &str = "mashup_prop_mass";
 pub const DOOR_MOVE_KEY: &str = "mashup_door_move";
 pub const DOOR_OPEN_KEY: &str = "mashup_door_open";
 pub const DOOR_CLOSE_KEY: &str = "mashup_door_close";

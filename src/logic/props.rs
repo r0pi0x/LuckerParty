@@ -1,24 +1,19 @@
 //! Prop entities in the logic: model doors (specs/source/doors_buttons.md,
-//! "prop_door_rotating") turned like rotating brush doors, and props that
-//! take damage and fire outputs (prop_dynamic, prop_physics*).
-//!
-//! Prop damage has no spec yet: it follows func_breakable's rules
-//! (specs/source/breakables.md "Damage": the shared damage scaling,
-//! minhealthdmg, integer health, OnHealthChanged with health / max health,
-//! breaking at 0) with the props' own health (the model's prop_data, given
-//! by the loader as `map::entities::PROP_HEALTH_KEY`). See
-//! docs/tech-debt.md.
+//! "prop_door_rotating") turned like rotating brush doors. Props that take
+//! damage and fire outputs (prop_dynamic, prop_physics*) are in
+//! `prop_damage`.
 
 use bevy::prelude::*;
 
-use super::breakables::scale_damage;
 use super::classes::Class;
 use super::movers::{Done, DoorState, Pusher};
 use super::triggers::forward;
 use super::value::Value;
 use super::world::{Effect, EntId, LogicWorld, SOLID_SKIN, Who, place_hull};
-use crate::core::DamageKind;
-use crate::map::entities::{DOOR_CLOSE_KEY, DOOR_MOVE_KEY, DOOR_OPEN_KEY, PROP_HEALTH_KEY, entity_rotation};
+use crate::map::entities::{DOOR_CLOSE_KEY, DOOR_MOVE_KEY, DOOR_OPEN_KEY, entity_rotation};
+
+pub use super::prop_damage::{Prop, PropState, is_prop_class};
+pub(super) use super::prop_damage::prop_input;
 
 /// prop_door_rotating defaults (doors_buttons.md constants).
 pub const PROPDOOR_DEFAULT_DISTANCE: f32 = 90.0;
@@ -128,86 +123,9 @@ impl PropDoor {
     }
 }
 
-/// A prop entity's damage and visibility state.
-#[derive(Clone, Debug)]
-pub struct Prop {
-    pub health: i32,
-    /// 0: takes no health damage (damage still fires its outputs).
-    pub max_health: i32,
-    pub broken: bool,
-    /// Drawn (Enable/Disable, TurnOn/TurnOff).
-    pub visible: bool,
-    /// Solid to players and shots (EnableCollision/DisableCollision).
-    pub solid: bool,
-    /// The model's skin family (`skin`, the Skin input).
-    pub skin: i32,
-    /// The body number set by SetBodyGroup (the combined body index;
-    /// `SetBodyGroup` keyvalue at spawn); None: the model's own.
-    pub body_group: Option<i32>,
-    /// The sequence asked for last (SetAnimation) and how many times one
-    /// was asked for (each ask restarts it).
-    pub sequence: Option<String>,
-    pub sequence_serial: u32,
-    /// Played when a sequence ends and at spawn (`DefaultAnim`,
-    /// SetDefaultAnimation).
-    pub default_sequence: String,
-}
-
-impl Prop {
-    pub(super) fn spawn(w: &mut LogicWorld, id: EntId) -> Prop {
-        let e = w.get(id).unwrap();
-        let health = match e.kv_i("health") {
-            h if h > 0 => h,
-            _ => e.kv_i(PROP_HEALTH_KEY).max(0),
-        };
-        Prop {
-            health,
-            max_health: health,
-            broken: false,
-            visible: true,
-            solid: true,
-            skin: e.kv_i("skin").max(0),
-            body_group: e.kv("SetBodyGroup").map(super::value::atoi),
-            sequence: None,
-            sequence_serial: 0,
-            default_sequence: e.kv("DefaultAnim").unwrap_or("").trim().to_string(),
-        }
-    }
-}
-
-/// What the map draws of a prop the logic keeps (`LogicWorld::prop_states`).
-#[derive(Clone, Debug, PartialEq)]
-pub struct PropState {
-    pub id: EntId,
-    /// Index in the map's entity list.
-    pub index: usize,
-    pub visible: bool,
-    pub solid: bool,
-    /// Takes damage from weapons (health, or damage outputs).
-    pub damageable: bool,
-    pub skin: i32,
-    pub body_group: Option<i32>,
-    /// The sequence to play and its serial (a new serial restarts it).
-    pub sequence: Option<(String, u32)>,
-    pub default_sequence: String,
-}
-
-/// Whether a class is a prop the logic keeps (not a door).
-pub fn is_prop_class(classname: &str) -> bool {
-    let c = classname.to_ascii_lowercase();
-    c.starts_with("prop_dynamic") || c.starts_with("prop_physics")
-}
-
 fn door(w: &mut LogicWorld, id: EntId) -> Option<&mut PropDoor> {
     match w.get_mut(id).map(|e| &mut e.class) {
         Some(Class::PropDoor(d)) => Some(d),
-        _ => None,
-    }
-}
-
-fn prop(w: &mut LogicWorld, id: EntId) -> Option<&mut Prop> {
-    match w.get_mut(id).map(|e| &mut e.class) {
-        Some(Class::Prop(p)) => Some(p),
         _ => None,
     }
 }
@@ -474,148 +392,7 @@ pub(super) fn door_blocked(w: &mut LogicWorld, id: EntId, blocker: Who, started:
     }
 }
 
-// ------------------------------------------------------------- props
-
-/// Damage to a prop (`amount` in health points). Returns false when `id`
-/// is not a prop.
-pub(super) fn prop_damage(w: &mut LogicWorld, id: EntId, amount: f32, kind: DamageKind, attacker: Option<Who>) -> bool {
-    let Some(p) = prop(w, id).cloned() else { return false };
-    if p.broken {
-        return true;
-    }
-    let min = w.get(id).map_or(0.0, |e| e.kv_f("minhealthdmg"));
-    if amount < min {
-        return true;
-    }
-    w.fire_output(id, "OnTakeDamage", attacker, Value::Void);
-    if p.max_health <= 0 {
-        // No health: the hit is only an event. OnHealthChanged still
-        // fires (de_nuke's fire extinguishers and cs_office's projector
-        // rely on it), with the full ratio.
-        w.fire_output(id, "OnHealthChanged", attacker, Value::Float(1.0));
-        return true;
-    }
-    let new = (p.health as f32 - scale_damage(amount, kind)).trunc() as i32;
-    set_health(w, id, new, attacker);
-    true
-}
-
-/// New health: OnHealthChanged if it changed, break at 0.
-fn set_health(w: &mut LogicWorld, id: EntId, new: i32, activator: Option<Who>) {
-    let Some(p) = prop(w, id) else { return };
-    if p.broken {
-        return;
-    }
-    let changed = new != p.health;
-    p.health = new;
-    let ratio = if p.max_health > 0 {
-        (new as f32 / p.max_health as f32).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    if changed {
-        w.fire_output(id, "OnHealthChanged", activator, Value::Float(ratio));
-    }
-    if new <= 0 {
-        prop_break(w, id, activator);
-    }
-}
-
-/// Break a prop: OnBreak, then it is removed (no gibs yet).
-pub(super) fn prop_break(w: &mut LogicWorld, id: EntId, breaker: Option<Who>) {
-    let Some(p) = prop(w, id) else { return };
-    if p.broken {
-        return;
-    }
-    p.broken = true;
-    p.solid = false;
-    if let Some(e) = w.get_mut(id) {
-        e.targetname.clear();
-    }
-    w.fire_output(id, "OnBreak", breaker, Value::Void);
-    w.kill(id);
-}
-
-/// Prop inputs; false when not one of them.
-pub(super) fn prop_input(w: &mut LogicWorld, id: EntId, input: &str, value: &Value, activator: Option<Who>) -> bool {
-    let Some(p) = prop(w, id).cloned() else { return false };
-    match input {
-        "break" => prop_break(w, id, activator),
-        "sethealth" | "addhealth" | "removehealth" => {
-            let Some(n) = w.need_int(value, input) else { return true };
-            let new = match input {
-                "sethealth" => n,
-                "addhealth" => p.health + n,
-                _ => p.health - n,
-            };
-            set_health(w, id, new, activator);
-        }
-        "enable" | "turnon" => prop(w, id).unwrap().visible = true,
-        "disable" | "turnoff" => prop(w, id).unwrap().visible = false,
-        "enablecollision" => prop(w, id).unwrap().solid = true,
-        "disablecollision" => prop(w, id).unwrap().solid = false,
-        "skin" => {
-            let Some(n) = w.need_int(value, input) else { return true };
-            prop(w, id).unwrap().skin = n.max(0);
-        }
-        "setbodygroup" => {
-            let Some(n) = w.need_int(value, input) else { return true };
-            prop(w, id).unwrap().body_group = Some(n.max(0));
-        }
-        "setanimation" => {
-            let Some(name) = w.need_str(value, input) else {
-                return true;
-            };
-            let p = prop(w, id).unwrap();
-            p.sequence = Some(name.trim().to_string());
-            p.sequence_serial += 1;
-        }
-        "setdefaultanimation" => {
-            let Some(name) = w.need_str(value, input) else {
-                return true;
-            };
-            prop(w, id).unwrap().default_sequence = name.trim().to_string();
-        }
-        _ => return false,
-    }
-    true
-}
-
 impl LogicWorld {
-    /// Map props the logic keeps, in entity order.
-    pub fn prop_states(&self) -> Vec<PropState> {
-        self.ids()
-            .into_iter()
-            .filter_map(|id| {
-                let e = self.get(id)?;
-                let Class::Prop(p) = &e.class else { return None };
-                let damageable = p.max_health > 0
-                    || ["OnHealthChanged", "OnTakeDamage", "OnBreak"]
-                        .iter()
-                        .any(|o| e.has_output(o));
-                Some(PropState {
-                    id,
-                    index: e.map_index?,
-                    visible: p.visible,
-                    solid: p.solid && !p.broken,
-                    damageable,
-                    skin: p.skin,
-                    body_group: p.body_group,
-                    sequence: p.sequence.clone().map(|s| (s, p.sequence_serial)),
-                    default_sequence: p.default_sequence.clone(),
-                })
-            })
-            .collect()
-    }
-
-    /// A prop's health and max health.
-    pub fn prop_health(&self, id: EntId) -> Option<(i32, i32)> {
-        match self.get(id).map(|e| &e.class) {
-            Some(Class::Prop(p)) => Some((p.health, p.max_health)),
-            _ => None,
-        }
-    }
-
     /// A model door's state.
     pub fn prop_door(&self, id: EntId) -> Option<&PropDoor> {
         match self.get(id).map(|e| &e.class) {

@@ -164,6 +164,21 @@ pub(super) fn wave_file(wave: &str) -> String {
 }
 
 /// Entries the movement and world use, beyond the surfaces' steps.
+/// func_breakable's material sounds (logic::breakables::Material).
+const BREAKABLE_SOUNDS: &[&str] = &[
+    "Breakable.Glass",
+    "Breakable.Crate",
+    "Breakable.Metal",
+    "Breakable.Flesh",
+    "Breakable.Concrete",
+    "Breakable.Ceiling",
+    "Breakable.MatGlass",
+    "Breakable.MatWood",
+    "Breakable.MatMetal",
+    "Breakable.MatConcrete",
+    "Breakable.Computer",
+];
+
 const ALWAYS: &[&str] = &[
     "Player.Swim",
     "Player.FallDamage",
@@ -220,6 +235,16 @@ pub fn load(materials: &mut MaterialLoader, map: &str, surfaces: &SurfaceProps, 
         .chain(super::weapons::sounds().iter())
         .map(|s| s.to_lowercase())
         .chain(ambient_entries)
+        // Props' break and explosion sounds (props.rs), breakables' own.
+        .chain(entities.iter().flat_map(|e| {
+            e.keyvalues
+                .iter()
+                .filter(|(k, _)| {
+                    k == crate::map::entities::PROP_BREAK_SOUND_KEY || k == crate::map::entities::PROP_EXPLODE_SOUND_KEY
+                })
+                .map(|(_, v)| v.to_lowercase())
+        }))
+        .chain(BREAKABLE_SOUNDS.iter().map(|s| s.to_lowercase()))
         .collect();
     for name in surfaces.names() {
         let num = |key: &str, fallback: f32| {

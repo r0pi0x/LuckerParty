@@ -382,6 +382,7 @@ fn dying_with_the_pin_out_drops_a_live_grenade() {
     sim.intent(p).fire = true;
     sim.ticks(5);
     sim.app.world_mut().write_message(Damage {
+        force: bevy::math::Vec3::ZERO,
         target: p,
         attacker: None,
         amount: 2.0,

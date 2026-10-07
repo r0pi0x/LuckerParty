@@ -20,7 +20,7 @@ use bevy::prelude::*;
 use super::{Armor, CHAN_WEAPON, Inventory, Weapon, WeaponEvent, WeaponEventKind, WeaponState, armor_split};
 use crate::{
     core::{
-        Blinded, Damage, DamageKind, Damageable, Died, Health, Hitgroup, Intent, MapWater, MovementState,
+        Blinded, Damage, DamageKind, Damageable, Died, Explosion, Health, Hitgroup, Intent, MapWater, MovementState,
         RoundRestarts, SOLID_LAYERS, SightBlocker, Velocity,
     },
     map::{
@@ -46,7 +46,7 @@ pub(super) fn plugin(app: &mut App) {
         .add_systems(
             FixedUpdate,
             (
-                (throw_frame, fly, smoke_clouds)
+                (throw_frame, fly, explosions, smoke_clouds)
                     .chain()
                     .after(super::WeaponFrame)
                     .in_set(crate::core::SimSet::Weapons),
@@ -808,6 +808,7 @@ fn fly(
             if breakable && p.breakable != Some(body) {
                 p.breakable = Some(body);
                 world.damage.write(Damage {
+                    force: bevy::math::Vec3::ZERO,
                     target: body,
                     attacker: p.thrower,
                     amount: f.breakable_damage,
@@ -864,31 +865,9 @@ fn detonate(
     };
     match &p.effect {
         GrenadeEffect::Blast(b) => {
-            // The ground under it (spec 5.2).
-            let (from, to) = (at + Vec3::Y * b.probe_up, at - Vec3::Y * b.probe_down);
-            let filter = SpatialQueryFilter::default().with_mask(SOLID_LAYERS);
-            let probe = Dir3::new(to - from).ok().and_then(|dir| {
-                world
-                    .spatial
-                    .cast_ray_predicate(from, dir, from.distance(to), true, &filter, &|e| {
-                        !world.is_character(world.body(e))
-                    })
-                    .map(|h| (from + *dir * h.distance, h.normal, world.body(h.entity)))
-            });
-            let origin = probe.map_or(at, |(point, n, _)| point + n * b.pull_out);
+            let (origin, probe) = explode_at(at, b, p.thrower, p.weapon, Some(entity), world, rng);
             message.at = origin;
             message.ground = probe;
-            blast(origin, b, p, world, rng);
-            if let (Some(group), Some((point, n, body))) = (&b.scorch, probe) {
-                world.decals.write(PlaceDecal {
-                    target: Some(body),
-                    group: DecalGroup::Named(group.clone()),
-                    point,
-                    normal: n,
-                    dir: -n,
-                    spin: true,
-                });
-            }
             if let Some(s) = &b.sound {
                 world.play.write(PlaySound {
                     entry: s.clone(),
@@ -937,11 +916,117 @@ fn detonate(
     world.detonated.write(message);
 }
 
-/// Radius damage from `origin` (spec 5.3) and the push on loose bodies.
-fn blast(origin: Vec3, b: &Blast, p: &Projectile, world: &mut GrenadeWorld, rng: &mut ParticleRng) {
+/// A blast at `at`: the ground probe under it (spec 5.2), radius damage
+/// and pushes from just above it, the scorch mark. Returns the blast
+/// point and what the probe hit.
+fn explode_at(
+    at: Vec3,
+    b: &Blast,
+    thrower: Option<Entity>,
+    weapon: &'static str,
+    inflictor: Option<Entity>,
+    world: &mut GrenadeWorld,
+    rng: &mut ParticleRng,
+) -> (Vec3, Option<(Vec3, Vec3, Entity)>) {
+    let (from, to) = (at + Vec3::Y * b.probe_up, at - Vec3::Y * b.probe_down);
+    let filter = SpatialQueryFilter::default().with_mask(SOLID_LAYERS);
+    let probe = Dir3::new(to - from).ok().and_then(|dir| {
+        world
+            .spatial
+            .cast_ray_predicate(from, dir, from.distance(to), true, &filter, &|e| {
+                let body = world.body(e);
+                !world.is_character(body) && Some(body) != inflictor
+            })
+            .map(|h| (from + *dir * h.distance, h.normal, world.body(h.entity)))
+    });
+    let origin = probe.map_or(at, |(point, n, _)| point + n * b.pull_out);
+    blast(origin, b, thrower, weapon, inflictor, world, rng);
+    if let (Some(group), Some((point, n, body))) = (&b.scorch, probe) {
+        world.decals.write(PlaceDecal {
+            target: Some(body),
+            group: DecalGroup::Named(group.clone()),
+            point,
+            normal: n,
+            dir: -n,
+            spin: true,
+        });
+    }
+    (origin, probe)
+}
+
+/// The blast rules explosions from map logic (`core::Explosion`) follow:
+/// a game's grenade blast, with the explosion's damage and radius (the
+/// push scaled with the damage). Without one, explosions do nothing.
+#[derive(Resource, Clone, Debug)]
+pub struct ExplosionRule(pub Blast);
+
+/// Apply `core::Explosion`s: a blast like a grenade's, then `Detonated`
+/// so games draw it.
+fn explosions(
+    mut events: MessageReader<Explosion>,
+    rule: Option<Res<ExplosionRule>>,
+    mut world: GrenadeWorld,
+    mut rng: ResMut<GrenadeRng>,
+) {
+    let Some(rule) = rule else {
+        events.clear();
+        return;
+    };
+    for e in events.read() {
+        let mut b = rule.0.clone();
+        let scale = if b.damage > 0.0 { e.damage / b.damage } else { 1.0 };
+        b.force *= scale;
+        b.damage = e.damage;
+        b.radius = e.radius;
+        let (origin, probe) = explode_at(
+            e.origin,
+            &b,
+            e.attacker,
+            EXPLOSION_WEAPON,
+            e.inflictor,
+            &mut world,
+            &mut rng.0,
+        );
+        if let Some(s) = &e.sound {
+            world.play.write(PlaySound {
+                entry: s.clone(),
+                at: Some(origin),
+                volume: None,
+                source: e.inflictor,
+                channel: None,
+            });
+        }
+        world.detonated.write(Detonated {
+            kind: GrenadeKind::Blast,
+            weapon: EXPLOSION_WEAPON,
+            thrower: e.attacker,
+            at: origin,
+            ground: probe,
+            projectile: Entity::PLACEHOLDER,
+        });
+    }
+}
+
+/// The weapon name explosions from map logic count as (kill notices).
+pub const EXPLOSION_WEAPON: &str = "env_explosion";
+
+/// Radius damage from `origin` (spec 5.3) and the push on loose bodies;
+/// `skip` (what exploded) takes none.
+fn blast(
+    origin: Vec3,
+    b: &Blast,
+    thrower: Option<Entity>,
+    weapon: &'static str,
+    skip: Option<Entity>,
+    world: &mut GrenadeWorld,
+    rng: &mut ParticleRng,
+) {
     let src = origin + Vec3::Y * b.src_lift;
     let mut hits: Vec<(Entity, Vec3, f32)> = Vec::new();
     for t in world.bodies.iter() {
+        if Some(t.entity) == skip {
+            continue;
+        }
         let alive = t.health.is_some_and(|h| h.current > 0.0);
         if !alive && t.damageable.is_none() {
             continue;
@@ -993,15 +1078,17 @@ fn blast(origin: Vec3, b: &Blast, p: &Projectile, world: &mut GrenadeWorld, rng:
             amount = to_health;
             armor.amount = (armor.amount - to_armor).max(0.0);
         }
+        let dir = (end - src).normalize_or_zero();
         world.damage.write(Damage {
+            force: dir * b.force,
             target,
-            attacker: p.thrower,
+            attacker: thrower,
             amount,
             point: end,
-            dir: (end - src).normalize_or_zero(),
+            dir,
             hitgroup: Hitgroup::Generic,
             kind: DamageKind::Blast,
-            weapon: Some(p.weapon),
+            weapon: Some(weapon),
         });
     }
     // Loose bodies in reach and in the open get the push (physics_props.md
@@ -1009,7 +1096,7 @@ fn blast(origin: Vec3, b: &Blast, p: &Projectile, world: &mut GrenadeWorld, rng:
     let pushes: Vec<(Entity, Vec3, f32)> = world
         .dynamic
         .iter()
-        .filter(|(_, rb, ..)| rb.is_dynamic())
+        .filter(|(e, rb, ..)| rb.is_dynamic() && Some(*e) != skip)
         .filter(|(_, _, pos, ..)| pos.0.distance(src) < b.radius)
         .map(|(e, _, pos, mass, _)| (e, pos.0, mass.map_or(1.0, |m| m.value())))
         .collect();

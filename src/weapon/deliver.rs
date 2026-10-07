@@ -372,6 +372,7 @@ impl Shot<'_, '_, '_> {
                 point,
                 dir,
                 DamageKind::Bullet,
+                dir * effect.impulse,
             );
         }
     }
@@ -389,6 +390,7 @@ impl Shot<'_, '_, '_> {
         point: Vec3,
         dir: Vec3,
         kind: DamageKind,
+        force: Vec3,
     ) {
         let mut amount = quantize(raw, quantum);
         if let Some(ratio) = armor_ratio
@@ -401,6 +403,7 @@ impl Shot<'_, '_, '_> {
             armor.amount = (armor.amount - to_armor).max(0.0);
         }
         self.w.damage.write(Damage {
+            force,
             target,
             attacker: Some(self.owner),
             amount,
@@ -526,6 +529,7 @@ impl Shot<'_, '_, '_> {
                 hit.point,
                 hit.dir,
                 DamageKind::Melee,
+                Vec3::ZERO,
             );
         }
         true
