@@ -17,6 +17,7 @@ impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<HitMarker>()
             .init_resource::<Killfeed>()
+            .init_resource::<CrosshairColor>()
             .add_systems(Startup, spawn_hud)
             .add_systems(
                 Update,
@@ -28,6 +29,32 @@ impl Plugin for HudPlugin {
                     screen_tints,
                 ),
             );
+        crate::console::resource_cvar::<CrosshairColor, u8>(
+            app,
+            "cl_crosshaircolor",
+            "Crosshair colour: 0 green, 1 red, 2 blue, 3 yellow, 4 cyan.",
+            |c| &mut c.0,
+        );
+        app.world_mut()
+            .resource_mut::<crate::console::Console>()
+            .archive("cl_crosshaircolor");
+    }
+}
+
+/// `cl_crosshaircolor`: CS:S's crosshair colour presets.
+#[derive(Resource, Default, Clone, Copy, Debug, PartialEq)]
+pub struct CrosshairColor(pub u8);
+
+impl CrosshairColor {
+    pub fn color(self) -> Color {
+        let a = CROSSHAIR_COLOR.alpha();
+        match self.0 {
+            1 => Color::srgba(1.0, 0.3, 0.3, a),
+            2 => Color::srgba(0.3, 0.3, 1.0, a),
+            3 => Color::srgba(1.0, 1.0, 0.3, a),
+            4 => Color::srgba(0.3, 1.0, 1.0, a),
+            _ => CROSSHAIR_COLOR,
+        }
     }
 }
 
@@ -350,7 +377,8 @@ fn draw_crosshair(
     player: Option<Single<(&Inventory, Option<&Dead>, Option<&Zoomed>), With<LocalPlayer>>>,
     scans: Query<&Hitscan>,
     camera: Query<(&Camera, &Projection), With<FirstPersonCamera>>,
-    mut lines: Query<(&CrosshairLine, &mut Node, &mut Visibility)>,
+    mut lines: Query<(&CrosshairLine, &mut Node, &mut Visibility, &mut BackgroundColor)>,
+    color: Res<CrosshairColor>,
 ) {
     let Some((cam, proj)) = camera.iter().next() else {
         return;
@@ -377,7 +405,8 @@ fn draw_crosshair(
     };
     let gap = MIN_GAP + spread / (fov / 2.0).tan() * size.y / 2.0;
     let centre = size / 2.0;
-    for (line, mut node, mut vis) in &mut lines {
+    for (line, mut node, mut vis, mut bg) in &mut lines {
+        bg.set_if_neq(BackgroundColor(color.color()));
         *vis = if visible {
             Visibility::Inherited
         } else {

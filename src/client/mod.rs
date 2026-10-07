@@ -10,6 +10,7 @@ pub mod debug;
 pub mod debug_views;
 pub mod effects;
 pub mod game_hud;
+pub mod game_menu;
 pub mod hud_sprites;
 pub mod hud;
 pub mod input;
@@ -208,6 +209,7 @@ impl Plugin for ClientPlugin {
                 chat::ChatPlugin,
                 radio::RadioPlugin,
                 objectives_hud::ObjectivesHudPlugin,
+                game_menu::GameMenuPlugin,
                 senses::SensesPlugin,
                 spectate::SpectatePlugin,
             ))

@@ -26,7 +26,7 @@ pub struct TeamMenu(pub bool);
 
 /// Auto-assign: the team with fewer players (terrorists on a tie), as
 /// Source's `jointeam` number.
-fn auto_team(t: usize, ct: usize) -> u8 {
+pub(super) fn auto_team(t: usize, ct: usize) -> u8 {
     if ct < t { 3 } else { 2 }
 }
 
