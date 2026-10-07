@@ -144,6 +144,16 @@ pub struct MapEntities {
     pub scale: f32,
 }
 
+/// Fire a map entity's output (by index into `MapEntities`), e.g. a bomb
+/// target's `BombExplode`: game rules outside the logic layer ask for it,
+/// the logic layer (if loaded) fires it with `activator`.
+#[derive(Message, Clone, Debug, PartialEq)]
+pub struct FireEntityOutput {
+    pub map_index: usize,
+    pub output: String,
+    pub activator: Option<Entity>,
+}
+
 /// The node of a mover brush entity (`MapEntity::mover`): index into
 /// `MapEntities`. Its transform places the entity (origin and angles in
 /// engine space); meshes and collider are its children/itself.

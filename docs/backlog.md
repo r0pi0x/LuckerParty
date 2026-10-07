@@ -59,7 +59,8 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   VGUI menu looks (buy, team), the radio icon over a caller's head
   (`sprites/radio`), `ignorerad`, player text chat (`say`), bots
   answering radio commands ("Roger that", following "Follow me"),
-  other game messages in the chat (team joins, bomb pickups). The radar is in (`client/radar.rs`: the map overview turning
+  other game messages in the chat (team joins; bomb pickups and drops
+  are in). The radar is in (`client/radar.rs`: the map overview turning
   with you, team dots, your place name); its range (2200 units) is a guess.
 - Debug overlays: `mashup_drawhitboxes`, `mashup_healthbars`,
   `mashup_drawnav`, `mashup_drawbots` exist; add more as features need
@@ -82,8 +83,20 @@ a first bot are in.
 - Zoom: measure `zoom_sensitivity_ratio` and compare the scope overlay
   (the game's textures, laid out by eye) with CS:S.
 - Rounds, money and buying: slice 1 done (`mashup_rounds 1`,
-  [plans/active/rounds.md](plans/active/rounds.md)); next: buy zones, a
-  buy menu, ammo, round sounds, objectives.
+  [plans/active/rounds.md](plans/active/rounds.md)); next: ammo.
+- Objectives, remaining (bomb and hostages are in: `src/objectives/`,
+  specs/cs_source/objectives.md): measure the spec's open questions on the
+  probe (Q1 movement while arming, Q3 blast shape/walls/armour, Q4 beep
+  schedule and loudness, Q5 money, Q6 carrier choice, Q7 the bomb's
+  solidity, Q9 hostage models, Q10 follow speeds, Q11 rescue rules, Q14
+  tick rounding); the C4's screen text (7355608) and LED glow sprite, the
+  `sprites/c4` marker through walls, screen shake, the explosion's own
+  effect (it uses the HE's); the scoreboard bomb/kit markers; hostage
+  animation (HL2 `male_shared` uses external `.ani` data our loader
+  doesn't read: hostages stand in their reference pose), hostages avoiding
+  "no hostages" nav areas, crouching and jumping; drop/pickup game events
+  and server log lines; bots leading hostages, buying kits, guarding;
+  the `Use` deny sound.
 - Grenades, remaining (HE, flashbang and smoke are in: `weapon/grenade.rs`,
   `games/cs_source/grenades.rs`): measure the spec's open questions on the
   probe (fuse ticks, release timing, flash amounts and overlay curve, HE vs
@@ -162,8 +175,8 @@ docs/plans/active/sound.md.
   rules (we play the entries as scripted) and gib bounce sounds.
 - Soundscape DSP presets (room reverb), env_soundscape visibility
   checks; soundscape loops onto `map::live_sound` (intro, live panning).
-- What still keeps stock ambient_generics silent: the bomb (de_nuke's
-  alarm, dust2's fires). (Prop outputs are in: de_nuke's steam, cs_office's
+- Stock ambient_generics the bomb starts (de_nuke's alarm, dust2's
+  fires) now play when it explodes (`BombExplode`); check them by ear. (Prop outputs are in: de_nuke's steam, cs_office's
   projector.) de_nuke's env_steam jets themselves aren't drawn.
 - Measure ambient_generic's level for script entries vs raw waves (spec
   open question 11).

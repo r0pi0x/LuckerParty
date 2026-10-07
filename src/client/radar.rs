@@ -199,6 +199,12 @@ fn update(
             Without<RadarDot>,
         ),
     >,
+    bombs: (
+        Query<(Entity, &GlobalTransform), With<crate::objectives::bomb::PlantedBomb>>,
+        Query<(Entity, &GlobalTransform, &crate::weapon::drop::Loose)>,
+        Query<(), With<crate::objectives::bomb::C4>>,
+        Res<crate::objectives::bomb::BombRules>,
+    ),
     mut commands: Commands,
 ) {
     let (Some(window), Ok((mut frame_node, mut frame_vis))) = (windows.iter().next(), frame.single_mut()) else {
@@ -273,6 +279,20 @@ fn update(
             _ => Color::srgb(0.9, 0.9, 0.9),
         };
         seen.push((e, turn * ((o.pixel(p) - centre) * k), color));
+    }
+    // The bomb: planted, for everyone; lying loose, for its carriers' team
+    // (spec objectives.md Q12).
+    let (planted, loose, c4s, rules) = bombs;
+    let bomb_color = Color::srgb(1.0, 0.55, 0.1);
+    for (e, t) in &planted {
+        seen.push((e, turn * ((o.pixel(t.translation()) - centre) * k), bomb_color));
+    }
+    if team == Some(&rules.carrier_team) {
+        for (e, t, l) in &loose {
+            if c4s.contains(l.weapon) {
+                seen.push((e, turn * ((o.pixel(t.translation()) - centre) * k), bomb_color));
+            }
+        }
     }
     for (dot, RadarDot(target), mut node, mut bg) in &mut dots {
         match seen.iter().position(|(e, ..)| e == target) {

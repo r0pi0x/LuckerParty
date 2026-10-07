@@ -127,6 +127,18 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
             Err(e) => data.warnings.push(e),
         }
     }
+    // Hostages' bodies, on maps with hostages (picked by name).
+    if data.entities.iter().any(|e| e.classname().eq_ignore_ascii_case("hostage_entity")) {
+        for path in super::objectives::HOSTAGE_MODELS {
+            match super::props::load_character(&mut materials, &surfaces, path, None) {
+                Ok(mut c) => {
+                    c.name = Some(path.to_string());
+                    data.characters.push(c);
+                }
+                Err(e) => data.warnings.push(e),
+            }
+        }
+    }
     data.decals = super::decals::impact_decals(&mut materials);
     data.hud = super::hud::load(&mut materials).map(std::sync::Arc::new);
     data.round_sounds = super::sound::round_sounds();
@@ -135,7 +147,11 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
     data.particles = super::impact_effects::load_materials(&mut materials);
     // What characters hold: the weapons' world models.
     if let Some(skeleton) = data.characters.first().map(|c| c.bones.clone()) {
-        for (weapon, path) in super::weapons::WORLD_MODELS.iter().chain(super::grenades::WORLD_MODELS) {
+        for (weapon, path) in super::weapons::WORLD_MODELS
+            .iter()
+            .chain(super::grenades::WORLD_MODELS)
+            .chain(super::objectives::WORLD_MODELS)
+        {
             match super::props::load_held(&mut materials, path, weapon, &skeleton) {
                 Ok(h) => data.held.push(h),
                 Err(e) => data.warnings.push(e),
@@ -150,7 +166,11 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
         }
     }
     // What the local player sees of them: the view models.
-    for (weapon, path, right_handed) in super::weapons::VIEW_MODELS.iter().chain(super::grenades::VIEW_MODELS) {
+    for (weapon, path, right_handed) in super::weapons::VIEW_MODELS
+        .iter()
+        .chain(super::grenades::VIEW_MODELS)
+        .chain(super::objectives::VIEW_MODELS)
+    {
         match super::props::load_view_model(&mut materials, path, weapon, *right_handed) {
             Ok(v) => data.view_models.push(v),
             Err(e) => data.warnings.push(e),

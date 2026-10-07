@@ -447,6 +447,15 @@ fn drive(
                     restarted |= play(&mut view, &mut dice, &[THROW], now);
                     dice.last_attack = now;
                 }
+                // The C4's key presses (spec objectives.md: `pressbutton`,
+                // the primary activity); stopping short goes back to idle.
+                WeaponEventKind::ArmingStarted => {
+                    restarted |= play(&mut view, &mut dice, &[PRIMARY], now);
+                    dice.last_attack = now;
+                }
+                WeaponEventKind::ArmingStopped => {
+                    restarted |= play(&mut view, &mut dice, &[IDLE], now);
+                }
                 _ => {}
             }
         }

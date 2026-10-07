@@ -181,6 +181,9 @@ pub struct Explosion {
     pub inflictor: Option<Entity>,
     /// A sound entry to play at the origin, if any.
     pub sound: Option<String>,
+    /// The weapon kills count as (kill notices); None: a map explosion
+    /// (`weapon::grenade::EXPLOSION_WEAPON`).
+    pub weapon: Option<&'static str>,
 }
 
 /// How damage was dealt (Source damage types, as far as anything here

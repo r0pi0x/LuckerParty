@@ -21,11 +21,14 @@ const ALLOWED: &[(&str, &[&str])] = &[
     ("greybox", &["core"]),
     ("map", &["core"]),
     ("weapon", &["core", "console", "map"]),
-    ("rules", &["core", "console", "weapon"]),
+    // Round objectives (bomb, hostages): zones from the map, NPCs as
+    // characters, the bomb as a weapon.
+    ("objectives", &["core", "console", "slots", "character", "map", "weapon"]),
+    ("rules", &["core", "console", "weapon", "objectives"]),
     // Map logic (entity I/O, triggers, movers): game-independent; games
     // feed it through `map::MapData::entities`.
     ("logic", &["core", "console", "map"]),
-    ("bot", &["core", "console", "slots", "character", "map", "weapon"]),
+    ("bot", &["core", "console", "slots", "character", "map", "weapon", "objectives"]),
     // `lib` = crate-root items such as `SimPlugins`.
     (
         "harness",
@@ -39,6 +42,7 @@ const ALLOWED: &[(&str, &[&str])] = &[
             "greybox",
             "map",
             "weapon",
+            "objectives",
             "rules",
             "bot",
             "logic",
@@ -56,6 +60,7 @@ const ALLOWED: &[(&str, &[&str])] = &[
             "greybox",
             "map",
             "weapon",
+            "objectives",
             "rules",
             "bot",
             "mount",
@@ -75,6 +80,7 @@ const ALLOWED: &[(&str, &[&str])] = &[
             "mount",
             "map",
             "weapon",
+            "objectives",
         ],
     ),
     // Binaries use the library through `mashup::`, not `crate::`.

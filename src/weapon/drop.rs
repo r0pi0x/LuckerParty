@@ -16,6 +16,11 @@ use crate::{
 #[derive(Component, Clone, Copy, Debug)]
 pub struct Undroppable;
 
+/// Only characters of this team may pick the weapon up (CS:S's C4: the
+/// terrorists).
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PickupTeam(pub crate::core::Team);
+
 /// A weapon lying in the world: the weapon entity, who dropped it and when.
 #[derive(Component, Clone, Copy, Debug)]
 pub struct Loose {
@@ -148,14 +153,14 @@ pub(super) fn drop_on_death(mut died: MessageReader<Died>, mut commands: Command
 /// nothing in its slot.
 pub(super) fn pick_up(
     loose: Query<(Entity, &Loose, &Transform)>,
-    owners: Query<(Entity, &Transform, &Inventory, &Health)>,
-    weapons: Query<&Weapon>,
+    owners: Query<(Entity, &Transform, &Inventory, &Health, Option<&crate::core::Team>)>,
+    weapons: Query<(&Weapon, Option<&PickupTeam>)>,
     time: Res<Time>,
     mut commands: Commands,
 ) {
     let now = time.elapsed_secs_f64();
     let mut taken = Vec::new();
-    for (owner, at, inv, health) in &owners {
+    for (owner, at, inv, health, team) in &owners {
         if health.current <= 0.0 {
             continue;
         }
@@ -167,10 +172,13 @@ pub(super) fn pick_up(
             if d.with_y(0.0).length() > PICKUP_REACH.x || d.y.abs() > PICKUP_REACH.y {
                 continue;
             }
-            let Ok(slot) = weapons.get(l.weapon).map(|w| w.slot) else {
+            let Ok((slot, only)) = weapons.get(l.weapon).map(|(w, t)| (w.slot, t.copied())) else {
                 continue;
             };
-            if inv.weapons.iter().any(|w| weapons.get(*w).is_ok_and(|w| w.slot == slot)) {
+            if only.is_some_and(|t| team != Some(&t.0)) {
+                continue;
+            }
+            if inv.weapons.iter().any(|w| weapons.get(*w).is_ok_and(|(w, _)| w.slot == slot)) {
                 continue;
             }
             taken.push(item);

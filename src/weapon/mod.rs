@@ -48,6 +48,7 @@ impl Plugin for WeaponPlugin {
             .init_resource::<economy::Prices>()
             .init_resource::<economy::BuyWindow>()
             .register_type::<economy::Money>()
+            .register_type::<economy::DefuseKit>()
             .init_resource::<PassMaterials>()
             .init_resource::<StartingWeapons>()
             .add_message::<WeaponEvent>()
@@ -157,7 +158,7 @@ impl Plugin for WeaponPlugin {
         )
         .console_command(
             "buy",
-            "buy <weapon>|vest|vesthelm, e.g. buy ak47 (costs money when you have some).",
+            "buy <weapon>|vest|vesthelm|defuser, e.g. buy ak47 (costs money when you have some).",
             |w, a| {
                 let name = a.first().ok_or("buy <weapon>")?.clone();
                 let player = local_player(w)?;
@@ -808,6 +809,11 @@ pub enum WeaponEventKind {
     PinPulled,
     /// A grenade was released (it leaves the hand a moment later).
     Thrown,
+    /// Arming a bomb began (the press-button animation, the third-person
+    /// gesture): `objectives::bomb`.
+    ArmingStarted,
+    /// Arming stopped short (let go, moved off): back to idle.
+    ArmingStopped,
 }
 
 // ---------------------------------------------------------------------------

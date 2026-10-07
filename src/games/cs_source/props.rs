@@ -163,6 +163,7 @@ pub fn load_character(
     };
     Ok(crate::map::MapCharacterModel {
         team,
+        name: None,
         ragdoll,
         animations,
         boxes,
@@ -336,14 +337,21 @@ pub fn load_held(
             None => (q, p),
         });
     }
-    let (i, bone) = mdl
+    // Held by a bone it shares with the player skeleton; items that are
+    // never held (a planted bomb, a kit on the floor) stay in model space.
+    let shared = mdl
         .bones
         .iter()
         .enumerate()
-        .find(|(_, b)| skeleton.iter().any(|s| s.name.eq_ignore_ascii_case(&b.name)))
-        .ok_or_else(|| format!("{path}: no bone in common with the player skeleton"))?;
-    let (q, p) = global[i];
-    let to_bone = Transform::from_rotation(q).with_translation(p).to_matrix().inverse();
+        .find(|(_, b)| skeleton.iter().any(|s| s.name.eq_ignore_ascii_case(&b.name)));
+    let (i, bone) = match shared {
+        Some(b) => b,
+        None => (0, mdl.bones.first().ok_or_else(|| format!("{path}: no bones"))?),
+    };
+    let to_bone = match global.get(i) {
+        Some((q, p)) => Transform::from_rotation(*q).with_translation(*p).to_matrix().inverse(),
+        None => Mat4::IDENTITY,
+    };
     // Engine space (meters, x z -y) back to the model's units and axes.
     let source = |v: [f32; 3]| Vec3::new(v[0], -v[2], v[1]);
     let mut held = convert_model_in(&model, 0, materials, false, &[]);

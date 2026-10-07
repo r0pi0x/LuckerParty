@@ -10,6 +10,7 @@
 //! it looks away from flashes about to go off.
 
 mod grenades;
+pub mod objectives;
 pub mod radio;
 
 use std::sync::Arc;
@@ -42,7 +43,7 @@ impl Plugin for BotPlugin {
         );
         app.add_systems(
             FixedUpdate,
-            (hear, think)
+            (hear, objectives::goals, think, objectives::act)
                 .chain()
                 .before(SimSet::Movement)
                 .before(crate::weapon::SelectWeapons),
@@ -189,6 +190,10 @@ pub struct Bot {
     watched: Vec<Entity>,
     /// What it said on the radio lately.
     radio: radio::BotRadio,
+    /// Where its objective is (feet; a bomb target to plant at, the
+    /// planted bomb to defuse or guard): walked to before anything heard
+    /// (`objectives`).
+    pub objective: Option<Vec3>,
 }
 
 impl Bot {
@@ -633,9 +638,10 @@ fn think(
             continue;
         }
         let Some(nav) = nav.as_deref() else { continue };
-        let goal = match bot.lead {
-            Some((at, _)) => at,
-            None => {
+        let goal = match (bot.objective, bot.lead) {
+            (Some(at), _) => at,
+            (None, Some((at, _))) => at,
+            (None, None) => {
                 if bot.roam.is_none() && !nav.areas.is_empty() {
                     let at_objective = !objective_points.is_empty() && bot.rand() < OBJECTIVE_SHARE;
                     bot.roam = Some(if at_objective {

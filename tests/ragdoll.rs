@@ -120,6 +120,7 @@ fn model() -> MapCharacterModel {
     let axes = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
     MapCharacterModel {
         team: None,
+        name: None,
         model: MapModel::default(),
         hitboxes: boxes
             .iter()

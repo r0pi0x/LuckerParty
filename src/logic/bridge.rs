@@ -75,7 +75,8 @@ impl Plugin for LogicPlugin {
             )
             .add_systems(FixedUpdate, (load, pre).chain().in_set(LogicSet::Pre))
             .add_systems(FixedUpdate, post.in_set(LogicSet::Post))
-            .add_systems(FixedUpdate, damage.in_set(LogicSet::Damage))
+            .add_systems(FixedUpdate, (damage, fire_outputs).in_set(LogicSet::Damage))
+            .add_message::<crate::map::entities::FireEntityOutput>()
             // Physics impacts on props and players (after the physics
             // step; the damage lands next tick).
             .add_message::<CollisionStart>()
@@ -1019,6 +1020,7 @@ fn prop_broke(world: &mut World, id: EntId, sound: Option<String>, explode: Opti
             attacker,
             inflictor: Some(node),
             sound: x.sound,
+            weapon: None,
         });
     }
     if let Some(index) = world.get::<PropIndex>(node).map(|p| p.0) {
@@ -1206,6 +1208,34 @@ fn impacts(
                 weapon: None,
                 force,
             });
+        }
+    }
+}
+
+/// Outputs game rules ask a map entity to fire (a bomb target's
+/// `BombExplode`), with the player as activator.
+fn fire_outputs(mut asks: MessageReader<crate::map::entities::FireEntityOutput>, logic: Option<ResMut<Logic>>) {
+    let Some(mut logic) = logic else {
+        asks.clear();
+        return;
+    };
+    for a in asks.read() {
+        let id = logic
+            .world
+            .ids()
+            .into_iter()
+            .find(|id| logic.world.get(*id).is_some_and(|e| e.map_index == Some(a.map_index)));
+        if let Some(id) = id {
+            let who = a.activator.map(super::world::Who::Player);
+            logic.world.fire_output(id, &a.output, who, super::Value::Void);
+            // A bomb target's legacy `target` is used when it explodes
+            // (spec objectives.md 6.3, *hyp.*).
+            let target = logic.world.get(id).and_then(|e| e.kv("target")).map(str::to_string);
+            if a.output.eq_ignore_ascii_case("BombExplode")
+                && let Some(t) = target.filter(|t| !t.is_empty())
+            {
+                logic.world.queue_input(&t, "Use", super::Value::Void, 0.0, who);
+            }
         }
     }
 }

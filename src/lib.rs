@@ -13,6 +13,7 @@ pub mod logic;
 pub mod map;
 pub mod mount;
 pub mod movement;
+pub mod objectives;
 pub mod rules;
 pub mod slots;
 pub mod weapon;
@@ -30,7 +31,12 @@ impl Plugin for SimPlugins {
     fn build(&self, app: &mut App) {
         app.insert_resource(Time::<Fixed>::from_hz(DEFAULT_TICK_HZ))
             .add_plugins((core::CorePlugin, console::ConsolePlugin, movement::MovementPlugins))
-            .add_plugins((weapon::WeaponPlugin, rules::DeathmatchPlugin, bot::BotPlugin))
+            .add_plugins((
+                weapon::WeaponPlugin,
+                objectives::ObjectivesPlugin,
+                rules::DeathmatchPlugin,
+                bot::BotPlugin,
+            ))
             .add_plugins(logic::LogicPlugin);
     }
 }

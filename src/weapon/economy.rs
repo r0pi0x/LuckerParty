@@ -28,6 +28,9 @@ pub struct Prices {
     pub vest: u32,
     pub vest_helmet: u32,
     pub helmet: u32,
+    /// A bomb defusal kit (`DefuseKit`); 0: not sold. Team-only through
+    /// `team_only["defuser"]`.
+    pub defuser: u32,
     /// The buy menu as the game lays it out (empty: pistols, primaries and
     /// equipment by slot).
     pub menu: Vec<BuyCategory>,
@@ -59,10 +62,17 @@ impl Prices {
         match buy {
             "vest" => Some(self.vest),
             "vesthelm" => Some(self.vest_helmet),
+            "defuser" => (self.defuser > 0).then_some(self.defuser),
             id => self.weapons.get(id).copied(),
         }
     }
 }
+
+/// A bomb defusal kit carried (CS:S): defusing takes the shorter time.
+/// Kept until death, then dropped (`objectives::bomb`).
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq, Reflect)]
+#[reflect(Component)]
+pub struct DefuseKit;
 
 /// Why buying fails outside a buy zone (CS:S's words).
 pub const NOT_IN_BUY_ZONE: &str = "You are not in a buy zone.";
@@ -110,6 +120,22 @@ pub fn buy(world: &mut World, owner: Entity, name: &str) -> Result<String, Strin
         pay(world, cost)?;
         world.entity_mut(owner).insert(Armor { amount: 1.0, helmet });
         return Ok(format!("bought {name}"));
+    }
+    if name == "defuser" {
+        if prices.defuser == 0 {
+            return Err("no defuser for sale".into());
+        }
+        if let Some(team) = prices.team_only.get("defuser")
+            && world.get::<crate::core::Team>(owner).is_some_and(|t| t.0 != *team)
+        {
+            return Err("Your team can't buy that.".into());
+        }
+        if world.get::<DefuseKit>(owner).is_some() {
+            return Err("You already have a defuse kit.".into());
+        }
+        pay(world, prices.defuser)?;
+        world.entity_mut(owner).insert(DefuseKit);
+        return Ok("bought defuser".into());
     }
     let wanted = if name.contains(':') || name.starts_with("weapon_") {
         name

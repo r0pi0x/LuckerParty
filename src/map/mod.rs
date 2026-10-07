@@ -452,6 +452,9 @@ pub fn body_choice(parts: &[u16], body: i32, part: usize) -> u16 {
 pub struct MapCharacterModel {
     /// The team it's for; None: anyone without a better match.
     pub team: Option<Team>,
+    /// Set for a model only characters that name it use (`BodyName`, e.g.
+    /// hostages); such models are never picked by team.
+    pub name: Option<String>,
     pub model: MapModel,
     pub hitboxes: Vec<crate::core::Hitbox>,
     /// The skeleton the meshes are skinned to, parents before children.
@@ -516,13 +519,31 @@ pub struct CharacterModels(pub Arc<Vec<MapCharacterModel>>);
 impl CharacterModels {
     /// The model for `team`: its own, else one without a team, else any.
     pub fn for_team(&self, team: Option<Team>) -> Option<(usize, &MapCharacterModel)> {
-        let all = self.0.iter().enumerate();
+        let all = self.0.iter().enumerate().filter(|(_, m)| m.name.is_none());
         all.clone()
             .find(|(_, m)| team.is_some() && m.team == team)
             .or_else(|| all.clone().find(|(_, m)| m.team.is_none()))
-            .or_else(|| self.0.iter().enumerate().next())
+            .or_else(|| all.clone().next())
+    }
+
+    /// The model a character uses: the one its `BodyName` names, else its
+    /// team's.
+    pub fn for_character(&self, team: Option<Team>, name: Option<&BodyName>) -> Option<(usize, &MapCharacterModel)> {
+        match name {
+            Some(n) => self
+                .0
+                .iter()
+                .enumerate()
+                .find(|(_, m)| m.name.as_deref().is_some_and(|x| x.eq_ignore_ascii_case(&n.0))),
+            None => self.for_team(team),
+        }
     }
 }
+
+/// A character drawn with a named model (`MapCharacterModel::name`)
+/// instead of its team's: a hostage.
+#[derive(Component, Clone, Debug, PartialEq)]
+pub struct BodyName(pub String);
 
 /// Meshes and materials of each character model (index as in
 /// `CharacterModels`).
@@ -570,7 +591,7 @@ fn attach_bodies(
     characters: Query<
         (
             Entity,
-            Option<&Team>,
+            (Option<&Team>, Option<&BodyName>),
             &ColliderAabb,
             &GlobalTransform,
             Option<&Children>,
@@ -586,8 +607,8 @@ fn attach_bodies(
     let (Some(models), Some(bodies)) = (models, bodies) else {
         return;
     };
-    for (e, team, aabb, at, children, local) in &characters {
-        let Some((index, _)) = models.for_team(team.copied()) else {
+    for (e, (team, name), aabb, at, children, local) in &characters {
+        let Some((index, _)) = models.for_character(team.copied(), name) else {
             continue;
         };
         let current = children
@@ -797,12 +818,12 @@ fn pose_bodies(
 /// the game).
 fn attach_hitboxes(
     models: Option<Res<CharacterModels>>,
-    characters: Query<(Entity, Option<&Team>, Option<&BodyModel>), With<crate::core::Intent>>,
+    characters: Query<(Entity, Option<&Team>, Option<&BodyName>, Option<&BodyModel>), With<crate::core::Intent>>,
     mut commands: Commands,
 ) {
     let Some(models) = models else { return };
-    for (e, team, current) in &characters {
-        let Some((index, m)) = models.for_team(team.copied()) else {
+    for (e, team, name, current) in &characters {
+        let Some((index, m)) = models.for_character(team.copied(), name) else {
             continue;
         };
         if current == Some(&BodyModel(index)) {
@@ -1678,7 +1699,7 @@ impl Plugin for MapPlugin {
 const LIGHTMAP_EXPOSURE: f32 = 1.2 * 831.746_4; // 1.2 * 2^9.7
 
 /// Height of the capsule center above the feet, so spawns start standing.
-const SPAWN_LIFT: f32 = 1.0;
+pub const SPAWN_LIFT: f32 = 1.0;
 
 fn spawn_map(
     mut commands: Commands,

@@ -504,7 +504,10 @@ pub fn suffix(weapon: Option<&str>) -> &'static str {
 
 /// Characters hold their active weapon's world model.
 fn hold_weapons(
-    characters: Query<(Entity, Option<&Inventory>, Option<&crate::map::Held>), With<Animator>>,
+    characters: Query<
+        (Entity, Option<&Inventory>, Option<&crate::map::Held>),
+        (With<Animator>, Without<crate::objectives::hostages::Hostage>),
+    >,
     weapons: Query<(&Weapon, Option<&crate::weapon::AltModes>)>,
     mut commands: Commands,
 ) {
@@ -540,7 +543,7 @@ fn drive(
         &MovementState,
         Option<&Health>,
         Option<&Inventory>,
-    )>,
+    ), Without<crate::objectives::hostages::Hostage>>,
     weapons: Query<(&Weapon, Option<&crate::weapon::grenade::Throwable>)>,
     loading: Query<(Option<&crate::weapon::ShellReload>, Option<&crate::weapon::Magazine>)>,
     mut events: MessageReader<WeaponEvent>,
@@ -558,7 +561,7 @@ fn drive(
     for ev in &all {
         let (shells, magazine) = loading.get(ev.weapon).unwrap_or((None, None));
         match ev.kind {
-            WeaponEventKind::Shot { .. } | WeaponEventKind::Swing { .. } => {
+            WeaponEventKind::Shot { .. } | WeaponEventKind::Swing { .. } | WeaponEventKind::ArmingStarted => {
                 let dual = weapons.get(ev.weapon).is_ok_and(|(w, _)| w.id == super::weapons::ELITE);
                 let side = match magazine {
                     Some(m) if dual => {
