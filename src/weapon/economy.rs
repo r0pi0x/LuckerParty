@@ -7,7 +7,10 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
-use super::{Armor, Inventory, Weapon, WeaponRegistry, give, grenade::Throwable};
+use super::{
+    Armor, Inventory, Weapon, WeaponRegistry, give,
+    grenade::{GrenadeKind, Throwable},
+};
 
 /// A character's money.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq, Reflect)]
@@ -178,11 +181,65 @@ pub fn weapon_slots(registry: &WeaponRegistry) -> Vec<(&'static str, u8)> {
         .collect()
 }
 
+/// Each registered grenade: (weapon ID, kind, carry limit).
+pub fn grenade_kinds(registry: &WeaponRegistry) -> Vec<(&'static str, GrenadeKind, u32)> {
+    let mut scratch = World::new();
+    registry
+        .0
+        .iter()
+        .filter_map(|d| {
+            let mut e = scratch.spawn_empty();
+            (d.build)(&mut e);
+            e.get::<Throwable>().map(|t| (d.id, t.effect.kind(), t.max))
+        })
+        .collect()
+}
+
+/// Chance a bot buys each grenade it can afford after its gun and armour
+/// (ours; CS:S's bot buying isn't public): an HE, a flash (a second one
+/// at half the chance), a smoke.
+pub const BOT_GRENADE_CHANCE: [(GrenadeKind, f32); 3] = [
+    (GrenadeKind::Blast, 0.6),
+    (GrenadeKind::Flash, 0.5),
+    (GrenadeKind::Smoke, 0.3),
+];
+
 /// What a computer player buys with its money: the dearest primary its
-/// team may buy and afford (if it has none), then armour with what's left.
-/// CS:S's own bots weigh preferences and difficulty; this is the simple
-/// version.
+/// team may buy and afford (if it has none), armour with what's left, then
+/// now and then grenades (`BOT_GRENADE_CHANCE`). CS:S's own bots weigh
+/// preferences and difficulty; this is the simple version.
 pub fn autobuy(world: &mut World, owner: Entity) {
+    // A roll per bot and round.
+    let round = world
+        .get_resource::<crate::core::RoundRestarts>()
+        .map_or(0, |r| r.0 as u64);
+    let mut rng = owner.to_bits().wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ round.wrapping_mul(0xD1B5_4A32_D192_ED03) | 1;
+    autobuy_rolling(world, owner, &mut || {
+        rng ^= rng >> 12;
+        rng ^= rng << 25;
+        rng ^= rng >> 27;
+        (rng.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 40) as f32 / (1u64 << 24) as f32
+    });
+}
+
+/// `autobuy` with the given dice (each roll in 0..1).
+pub fn autobuy_rolling(world: &mut World, owner: Entity, roll: &mut dyn FnMut() -> f32) {
+    autobuy_gun_and_armour(world, owner);
+    let grenades = grenade_kinds(world.resource::<WeaponRegistry>());
+    for (kind, chance) in BOT_GRENADE_CHANCE {
+        let Some((id, _, max)) = grenades.iter().find(|g| g.1 == kind) else {
+            continue;
+        };
+        for n in 0..*max {
+            let chance = if n == 0 { chance } else { chance / 2.0 };
+            if roll() >= chance || buy(world, owner, id).is_err() {
+                break;
+            }
+        }
+    }
+}
+
+fn autobuy_gun_and_armour(world: &mut World, owner: Entity) {
     let prices = world.resource::<Prices>().clone();
     let slots = weapon_slots(world.resource::<WeaponRegistry>());
     let team = world.get::<crate::core::Team>(owner).map(|t| t.0);
