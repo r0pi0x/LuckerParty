@@ -122,7 +122,7 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
         ("models/player/t_phoenix.mdl", Some(crate::core::Team(1))),
         ("models/player/ct_urban.mdl", None),
     ] {
-        match super::props::load_character(&mut materials, path, team) {
+        match super::props::load_character(&mut materials, &surfaces, path, team) {
             Ok(c) => data.characters.push(c),
             Err(e) => data.warnings.push(e),
         }

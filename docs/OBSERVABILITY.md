@@ -89,7 +89,13 @@ Only `Reflect`-registered types are visible; register new core components in
   `ragdoll_sleepaftertime` sets when still ones are frozen. To see one:
   `--map cs_source:de_dust2 --frames 400 +mp_respawn_delay 1000
   +thirdperson +cam_idealyaw 90 +wait 150 +mashup_hurtme head` (or
-  `chest 100 90`: a body shot from the side) with `--screenshot`.
+  `chest 100 90`: a body shot from the side) with `--screenshot`. The
+  log line `ragdoll ... (death pose Some((Front, 1)))` names the death
+  pose. To shoot a body after death, run live with `+bot_stop 1
+  +bot_dont_shoot 1 +bot_add 1`, find the bot with a `world.query` of
+  `Transform` on `mashup::core::Intent` entities, `setpos` near it, and
+  tap `+attack`/`-attack` over the remote console between
+  `screenshot`s.
 - `mashup_healthbars 1` draws a health bar over every other living
   character (green full, red nearly dead), e.g. to watch damage land in a
   `--screenshot` run with `+bot_add 2`.

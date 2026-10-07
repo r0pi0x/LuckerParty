@@ -34,7 +34,7 @@ pub mod particles;
 pub mod tracer;
 pub mod prop_material;
 pub mod ragdoll;
-pub use ragdoll::{MapRagdoll, MapRagdollBody, MapRagdollJoint, Ragdoll, RagdollBody};
+pub use ragdoll::{MapCollisionHooks, MapRagdoll, MapRagdollBody, MapRagdollJoint, Ragdoll, RagdollBody, RagdollShot};
 pub mod rope_material;
 pub mod shadows;
 pub mod sound;
