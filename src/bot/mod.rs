@@ -73,6 +73,30 @@ impl Plugin for BotPlugin {
             complete: None,
         });
         console.add_command(Command {
+            name: "bot_give".into(),
+            help: "bot_give <weapon>: give every bot a weapon (e.g. weapon_hegrenade); bots keep their gun in hand."
+                .into(),
+            run: Arc::new(|w, a| {
+                let name = a.first().ok_or("usage: bot_give <weapon>")?.to_lowercase();
+                let wanted = if name.contains(':') || name.starts_with("weapon_") {
+                    name
+                } else {
+                    format!("weapon_{name}")
+                };
+                let id = w
+                    .resource::<crate::weapon::WeaponRegistry>()
+                    .find(&wanted)
+                    .map(|d| d.id)
+                    .ok_or_else(|| format!("no weapon {wanted}"))?;
+                let bots: Vec<Entity> = w.query_filtered::<Entity, With<Bot>>().iter(w).collect();
+                for &b in &bots {
+                    crate::weapon::give(w, b, id);
+                }
+                Ok(Some(format!("gave {id} to {} bots", bots.len())))
+            }),
+            complete: None,
+        });
+        console.add_command(Command {
             name: "bot_kick".into(),
             help: "Remove every bot.".into(),
             run: Arc::new(|w, _| {
@@ -563,7 +587,6 @@ fn think(
         // Now and then a grenade at the remembered enemy or the objective.
         if let Some(inv) = inv.as_deref()
             && cfg.grenades > 0
-            && cfg.dont_shoot == 0
             && now >= bot.next_toss_check
         {
             bot.next_toss_check = now + grenades::TOSS_CHECK;
