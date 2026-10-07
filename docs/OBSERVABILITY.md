@@ -82,11 +82,26 @@ Only `Reflect`-registered types are visible; register new core components in
   the map's logic load first). Logged at info level.
 - `mashup_drawnav 1` outlines the nav areas near you (2: all), coloured by
   place, with half-links toward their neighbours; `mashup_drawbots 1`
-  shows each bot's look direction, target (red), last known enemy
-  position (orange), route (cyan), roaming goal (purple), its planned
+  shows the map's sites (yellow rings) with where routes from the
+  attackers' (orange balls) and defenders' (blue balls) spawns come onto
+  them, and per bot: its role (ring at its feet: orange attacker, blue
+  defender, grey roaming), look direction (white) and look target
+  (yellow line; a yellow ball on the hiding spot it is checking),
+  target (red), last known enemy position (orange), the teammate it
+  answers (green), route (cyan), goal (purple), hold spot (a box in its
+  role's colour, lines to the approaches it watches), its planned
   grenade arc (red HE, pale yellow flash, grey smoke) with the target
   (green cross) and where it should go off (sphere), and a flash it is
-  looking away from (white). `bot_grenades 2` makes bots throw whenever
+  looking away from (white). `bot_debug 1` lists each team's plan and
+  every bot's team, role, site, activity (ToSite, Following, Waiting,
+  Holding, Chasing, Assisting, ...; `*` marks the group leader) and
+  health on screen. To watch a round on dust2 from above: `--map
+  cs_source:de_dust2 +mashup_rounds 1 +bot_add 1 +bot_add 1 +bot_add 1
+  +bot_add 2 +bot_add 2 +bot_add 2 +mashup_drawbots 1 +bot_debug 1
+  +noclip +setpos -400 3000 1200 +setang 89 90 0`. Headless round
+  statistics (winners, kills, time to first contact):
+  `MASHUP_BOT_MAP=de_dust2 MASHUP_BOT_ROUNDS=8 cargo test --features dev
+  --test bot_rounds -- --ignored --nocapture`. `bot_grenades 2` makes bots throw whenever
   an arc works (`mashup_watch 1` to follow one). On the greybox map:
   `--spawn 0,1,-5 +bot_dont_shoot 1 +bot_stop 1 +bot_grenades 2 +bot_add 1
   +bot_give weapon_hegrenade +mashup_drawbots 1 +mashup_watch 1

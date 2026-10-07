@@ -4,7 +4,7 @@
 use bevy::prelude::*;
 
 use super::movement::to_engine;
-use crate::map::nav::{NavArea, NavLadder, NavMesh, Side, Via};
+use crate::map::nav::{Encounter, HidingSpot, NavArea, NavLadder, NavMesh, Side, Via};
 
 const MAGIC: u32 = 0xFEED_FACE;
 /// Runtime-only flag bits that should never be in a file.
@@ -72,6 +72,11 @@ struct RawArea {
     links: [Vec<u32>; 4],
     place: u16,
     ladders: [Vec<u32>; 2],
+    spots: Vec<(u32, Vec3, u8)>,
+    /// (from area, to area, [(spot id, t)]).
+    encounters: Vec<(u32, u32, Vec<(u32, u8)>)>,
+    visible: Vec<(u32, u8)>,
+    inherit: u32,
 }
 
 pub fn parse(bytes: &[u8]) -> Result<(NavMesh, NavInfo), String> {
@@ -126,22 +131,40 @@ pub fn parse(bytes: &[u8]) -> Result<(NavMesh, NavInfo), String> {
                 side.push(r.u32()?);
             }
         }
-        let spots = r.u8()? as usize;
-        info.hiding_spots += spots;
-        r.take(spots * if v >= 2 { 17 } else { 12 })?;
+        let count = r.u8()? as usize;
+        info.hiding_spots += count;
+        let mut spots = Vec::with_capacity(count);
+        for _ in 0..count {
+            if v >= 2 {
+                let id = r.u32()?;
+                let pos = r.vec3()?;
+                spots.push((id, pos, r.u8()?));
+            } else {
+                spots.push((u32::MAX, r.vec3()?, 0));
+            }
+        }
         if v < 15 {
             let approaches = r.u8()? as usize;
             r.take(approaches * 14)?;
         }
-        let encounters = r.u32()? as usize;
-        info.encounters += encounters;
+        let count = r.u32()? as usize;
+        info.encounters += count;
+        let mut encounters = Vec::new();
         if v >= 3 {
-            for _ in 0..encounters {
-                r.take(10)?;
+            for _ in 0..count {
+                let from = r.u32()?;
+                r.u8()?; // from_dir
+                let to = r.u32()?;
+                r.u8()?; // to_dir
                 let n = r.u8()? as usize;
-                r.take(n * 5)?;
+                let mut list = Vec::with_capacity(n);
+                for _ in 0..n {
+                    let id = r.u32()?;
+                    list.push((id, r.u8()?));
+                }
+                encounters.push((from, to, list));
             }
-        } else if encounters > 0 {
+        } else if count > 0 {
             return Err("nav: version < 3 encounters unsupported".into());
         }
         let place = if v >= 5 { r.u16()? } else { 0 };
@@ -162,9 +185,16 @@ pub fn parse(bytes: &[u8]) -> Result<(NavMesh, NavInfo), String> {
         if v >= 11 {
             r.take(16)?; // corner light
         }
+        let mut visible = Vec::new();
+        let mut inherit = 0;
         if v >= 16 {
-            let visible = r.u32()? as usize;
-            r.take(visible * 5 + 4)?;
+            let n = r.u32()? as usize;
+            visible.reserve(n);
+            for _ in 0..n {
+                let id = r.u32()?;
+                visible.push((id, r.u8()?));
+            }
+            inherit = r.u32()?;
         }
         if v >= 10 && info.subversion >= 1 {
             // CS:S's own per-area data: a count, 0 in every shipped file
@@ -182,6 +212,10 @@ pub fn parse(bytes: &[u8]) -> Result<(NavMesh, NavInfo), String> {
             links,
             place,
             ladders,
+            spots,
+            encounters,
+            visible,
+            inherit,
         });
     }
 
@@ -216,6 +250,31 @@ pub fn parse(bytes: &[u8]) -> Result<(NavMesh, NavInfo), String> {
     info.trailing = bytes.len() - r.at;
 
     let index: std::collections::HashMap<u32, usize> = raw.iter().enumerate().map(|(i, a)| (a.id, i)).collect();
+    let spot_at: std::collections::HashMap<u32, Vec3> = raw
+        .iter()
+        .flat_map(|a| a.spots.iter().map(|s| (s.0, to_engine(s.1))))
+        .collect();
+    // An area's visible set: its own list plus, when it names one, the
+    // list of the area it inherits from (the spec doesn't say how the two
+    // combine; the union is our reading).
+    let visible_of = |a: &RawArea| {
+        let mut list: Vec<(usize, u8)> = a
+            .visible
+            .iter()
+            .chain(
+                index
+                    .get(&a.inherit)
+                    .filter(|_| a.inherit != 0)
+                    .map(|&i| raw[i].visible.iter())
+                    .into_iter()
+                    .flatten(),
+            )
+            .filter_map(|(id, b)| index.get(id).map(|&i| (i, *b)))
+            .collect();
+        list.sort_by_key(|v| (v.0, std::cmp::Reverse(v.1)));
+        list.dedup_by_key(|v| v.0);
+        list
+    };
     let ladder_index = |id: u32| ladder_ends.iter().position(|l| l.0 == id);
     let areas = raw
         .iter()
@@ -253,6 +312,30 @@ pub fn parse(bytes: &[u8]) -> Result<(NavMesh, NavInfo), String> {
                 center: to_engine(centre),
                 links,
                 place: (a.place > 0).then(|| a.place as usize - 1),
+                hiding: a
+                    .spots
+                    .iter()
+                    .map(|s| HidingSpot {
+                        pos: to_engine(s.1),
+                        flags: s.2,
+                    })
+                    .collect(),
+                visible: visible_of(a),
+                encounters: a
+                    .encounters
+                    .iter()
+                    .filter_map(|(from, to, list)| {
+                        Some(Encounter {
+                            from: *index.get(from)?,
+                            to: *index.get(to)?,
+                            spots: list
+                                .iter()
+                                .filter_map(|(id, t)| Some((*spot_at.get(id)?, *t as f32 / 255.0)))
+                                .collect(),
+                        })
+                    })
+                    .filter(|e| !e.spots.is_empty())
+                    .collect(),
             }
         })
         .collect();

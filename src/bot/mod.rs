@@ -2,15 +2,21 @@
 //! (README, "Characters and control"), so they use the same movement and
 //! weapons as players. The brain turns toward the nearest enemy it can see
 //! at a limited turn rate, strafes, and fires once it has seen them for a
-//! reaction time and is on target. With nobody in sight it walks the map's
-//! navigation mesh to where it last saw or heard an enemy (sounds within
-//! their falloff range: shots carry far, footsteps less), else roams to
-//! random places on the mesh. Now and then it throws a grenade it carries
-//! at a remembered enemy or at the objective it walks to (`grenades`), and
-//! it looks away from flashes about to go off.
+//! reaction time and is on target. With nobody in sight it follows its
+//! team's plan (`tactics`): attackers walk to a site as a group and hold
+//! it, defenders hold spots at the sites watching the approaches; it goes
+//! after enemies it saw or heard (sounds within their falloff range: shots
+//! carry far, footsteps less) when its role allows, and to teammates who
+//! call for help. It walks the navigation mesh with its own path cost
+//! (`path`) and checks corners as it goes (`look`). Now and then it throws
+//! a grenade it carries at a remembered enemy or at the site it walks to
+//! (`grenades`), and it looks away from flashes about to go off.
 
 mod grenades;
+mod look;
+pub mod path;
 pub mod radio;
+pub mod tactics;
 
 use std::sync::Arc;
 
@@ -28,6 +34,7 @@ use crate::{
 };
 
 pub use grenades::{GrenadePlan, follow, plan_throw};
+pub use tactics::{Hold, Role, Tactics};
 
 pub struct BotPlugin;
 
@@ -35,14 +42,12 @@ impl Plugin for BotPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<BotConfig>()
             .init_resource::<radio::TeamCalls>()
+            .init_resource::<Tactics>()
             .add_message::<crate::core::Radio>();
+        app.add_systems(FixedUpdate, radio::speak.after(crate::core::apply_damage));
         app.add_systems(
             FixedUpdate,
-            radio::speak.after(crate::core::apply_damage),
-        );
-        app.add_systems(
-            FixedUpdate,
-            (hear, think)
+            (hear, tactics::update, think)
                 .chain()
                 .before(SimSet::Movement)
                 .before(crate::weapon::SelectWeapons),
@@ -163,13 +168,19 @@ pub struct Bot {
     strafe: f32,
     strafe_left: f32,
     rng: u64,
-    /// Points to walk through (engine space) and the next one's index.
+    /// Points to walk through (engine space), the area each leads into,
+    /// and the next one's index.
     route: Vec<Vec3>,
+    route_areas: Vec<usize>,
     next: usize,
     /// Seconds until the route is recomputed.
     repath: f32,
     /// Where the bot was at the last progress check, and when that was.
     progress: (Vec3, f32),
+    /// Seconds it has been trying to walk without moving.
+    blocked: f32,
+    /// When it last jumped.
+    jumped: f64,
     /// Current aim offset (yaw, pitch radians) and seconds until re-rolled.
     wobble: (Vec2, f32),
     /// Where an enemy was last seen or heard (feet), and when.
@@ -189,6 +200,58 @@ pub struct Bot {
     watched: Vec<Entity>,
     /// What it said on the radio lately.
     radio: radio::BotRadio,
+    /// Route noise seed (fixed per bot).
+    seed: u64,
+    /// The round's orders from `tactics`, and what it does with them in
+    /// this life: the site it heads for or holds, its hold spot, when it
+    /// got there, how long it holds without contact before moving on,
+    /// and whether it gave up holding to hunt.
+    orders: tactics::Orders,
+    site: Option<usize>,
+    hold: Option<Hold>,
+    hold_since: Option<f64>,
+    patience: f64,
+    hunting: bool,
+    /// A teammate's call it answers: where they were, and when.
+    assist: Option<(Vec3, f64)>,
+    /// When it last saw or heard an enemy.
+    contact: f64,
+    /// Nav area it stands in, the one before, and where it came in.
+    area: Option<usize>,
+    prev_area: Option<usize>,
+    entered: Vec3,
+    corners: look::Corners,
+    /// Which watched approach it looks at, until when.
+    watch: (usize, f64),
+    /// Where it is going and where it looks, and what it is doing (for
+    /// debug views).
+    goal: Option<Vec3>,
+    look_at: Option<Vec3>,
+    activity: Activity,
+    dead: bool,
+}
+
+/// What a bot is doing, for debug views.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Activity {
+    #[default]
+    Idle,
+    Dead,
+    Fighting,
+    Throwing,
+    Averting,
+    /// Going where it last saw or heard an enemy.
+    Chasing,
+    /// Going to a teammate who called.
+    Assisting,
+    ToSite,
+    Following,
+    /// Waiting for the group (leader) or for the leader (ahead of it).
+    Waiting,
+    ToHold,
+    Holding,
+    Hunting,
+    Roaming,
 }
 
 impl Bot {
@@ -197,9 +260,74 @@ impl Bot {
         (&self.route, self.next)
     }
 
-    /// Where the bot is roaming to, with nothing better to do.
-    pub fn roam_goal(&self) -> Option<Vec3> {
-        self.roam
+    /// Where the bot is going (feet), whatever the reason.
+    pub fn goal(&self) -> Option<Vec3> {
+        self.goal
+    }
+
+    /// The point it looks at while no enemy is in sight.
+    pub fn look_target(&self) -> Option<Vec3> {
+        self.look_at
+    }
+
+    /// The hiding spot it is checking now.
+    pub fn checking(&self) -> Option<Vec3> {
+        self.corners.current()
+    }
+
+    pub fn role(&self) -> Role {
+        self.orders.role
+    }
+
+    /// The site it heads for or holds (index into `Tactics::sites`).
+    pub fn site(&self) -> Option<usize> {
+        self.site
+    }
+
+    pub fn hold(&self) -> Option<&Hold> {
+        self.hold.as_ref()
+    }
+
+    pub fn activity(&self) -> Activity {
+        self.activity
+    }
+
+    /// Who it is answering, if a teammate called.
+    pub fn assisting(&self) -> Option<Vec3> {
+        self.assist.map(|a| a.0)
+    }
+
+    /// Route left to walk, m.
+    pub fn route_left(&self) -> f32 {
+        let rest = self.route.get(self.next..).unwrap_or(&[]);
+        rest.windows(2).map(|w| w[0].distance(w[1])).sum()
+    }
+
+    /// Start a life (a round, a respawn, new orders): forget the last
+    /// one and take up the orders.
+    fn new_life(&mut self) {
+        self.route.clear();
+        self.route_areas.clear();
+        self.next = 0;
+        self.lead = None;
+        self.assist = None;
+        self.roam = None;
+        self.target = None;
+        self.toss = None;
+        self.plan = None;
+        self.avert = None;
+        self.site = self.orders.site;
+        self.hold = self.orders.hold.clone();
+        self.hold_since = None;
+        self.hunting = false;
+        self.corners = default();
+        self.area = None;
+        self.prev_area = None;
+        let (lo, hi) = match self.orders.role {
+            Role::Attack => ATTACK_PATIENCE,
+            _ => DEFEND_PATIENCE,
+        };
+        self.patience = lo + (hi - lo) * self.rand() as f64;
     }
 
     /// The grenade throw planned or carried out lately.
@@ -226,11 +354,27 @@ const OBJECTIVE_SHARE: f32 = 0.7;
 /// bottom or the entity): bomb sites (`func_bomb_target`), hostage rescue
 /// zones and hostages.
 pub fn objectives(map: &crate::map::MapEntities) -> Vec<Vec3> {
+    objectives_of(
+        map,
+        &[
+            "func_bomb_target",
+            "func_hostage_rescue",
+            "hostage_entity",
+            "info_bomb_target",
+        ],
+    )
+}
+
+/// `objectives` of the given classes only.
+pub fn objectives_of(map: &crate::map::MapEntities, classes: &[&str]) -> Vec<Vec3> {
     use crate::map::entities::{entity_rotation, entity_to_engine};
     map.entities
         .iter()
         .filter_map(|e| {
             let class = e.classname();
+            if !classes.contains(&class) {
+                return None;
+            }
             match class {
                 "func_bomb_target" | "func_hostage_rescue" => {
                     let points: Vec<Vec3> = e.hulls.iter().flat_map(|h| h.points.iter().copied()).collect();
@@ -240,7 +384,10 @@ pub fn objectives(map: &crate::map::MapEntities) -> Vec<Vec3> {
                     let lo = points.iter().fold(Vec3::splat(f32::MAX), |a, p| a.min(*p));
                     let hi = points.iter().fold(Vec3::splat(f32::MIN), |a, p| a.max(*p));
                     let local = Vec3::new((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0, lo.z);
-                    Some(entity_to_engine(e.origin() + entity_rotation(e.angles()) * local, map.scale))
+                    Some(entity_to_engine(
+                        e.origin() + entity_rotation(e.angles()) * local,
+                        map.scale,
+                    ))
                 }
                 "hostage_entity" | "info_bomb_target" => Some(entity_to_engine(e.origin(), map.scale)),
                 _ => None,
@@ -325,6 +472,7 @@ pub fn add_bot(world: &mut World, team: Team) -> Option<Entity> {
         Name::new(format!("Bot {}", bots + 1)),
         Bot {
             rng: 0x2545_F491_4F6C_DD1D ^ (e.to_bits().wrapping_mul(0x9E37_79B9_7F4A_7C15)),
+            seed: e.to_bits().wrapping_mul(0xD1B5_4A32_D192_ED03),
             ..default()
         },
         Intent { yaw, ..default() },
@@ -365,6 +513,7 @@ fn think(
         &Health,
         Option<&crate::core::Blinded>,
         Option<&mut Inventory>,
+        &crate::core::Velocity,
     )>,
     others: Query<(Entity, &Transform, &Team, &Health), With<Intent>>,
     arms: grenades::Arms,
@@ -374,19 +523,13 @@ fn think(
     nav: Option<Res<NavMesh>>,
     cfg: Res<BotConfig>,
     time: Res<Time>,
-    entities: Option<Res<crate::map::MapEntities>>,
-    mut goals: Local<Option<(usize, Vec<Vec3>)>>,
+    tactics: Res<Tactics>,
 ) {
     let dt = time.delta_secs();
-    // The map's objectives, worked out once per map.
-    let key = entities.as_ref().map_or(0, |m| std::sync::Arc::as_ptr(&m.entities) as usize);
-    if goals.as_ref().is_none_or(|(k, _)| *k != key) {
-        *goals = Some((key, entities.as_deref().map(objectives).unwrap_or_default()));
-    }
-    let objective_points: &[Vec3] = goals.as_ref().map_or(&[], |(_, g)| g);
     let now = time.elapsed_secs_f64();
     // World traces for flash sight (a line) and grenade arcs (the
     // grenade's box swept, half size given): characters aren't in the way.
+    let no_nav = NavMesh::default();
     let filter = SpatialQueryFilter::default().with_mask(crate::core::SOLID_LAYERS);
     let not_character = |e: Entity| !others.contains(e);
     let world_trace = |a: Vec3, b: Vec3| -> Option<(Vec3, Vec3)> {
@@ -409,12 +552,19 @@ fn think(
             .cast_shape_predicate(&shape, a, Quat::IDENTITY, dir, &config, &filter, &not_character)
             .map(|h| (a + *dir * h.distance, h.normal1.normalize_or_zero()))
     };
-    for (me, mut bot, mut intent, t, state, team, health, blinded, mut inv) in &mut bots {
+    for (me, mut bot, mut intent, t, state, team, health, blinded, mut inv, velocity) in &mut bots {
         if health.current <= 0.0 {
             bot.target = None;
             bot.toss = None;
             bot.avert = None;
+            bot.dead = true;
+            bot.activity = Activity::Dead;
             continue;
+        }
+        if bot.dead {
+            // Respawned.
+            bot.dead = false;
+            bot.new_life();
         }
         let eye = t.translation + state.eye_offset;
         // A flashed bot sees nothing until the white is mostly gone, and
@@ -501,6 +651,7 @@ fn think(
         intent.fire = false;
         match best {
             Some((e, aim, _)) => {
+                bot.contact = now;
                 // Remember where they were (feet) for after they hide.
                 bot.lead = Some((
                     aim - Vec3::Y * (AIM_HEIGHT + CAPSULE_HEIGHT / 2.0),
@@ -536,6 +687,7 @@ fn think(
 
         // A throw in progress takes over.
         if bot.toss.is_some() {
+            bot.activity = Activity::Throwing;
             match inv.as_deref_mut() {
                 Some(inv) => {
                     grenades::step_toss(&mut bot, &mut intent, inv, &arms, &cfg, now, dt);
@@ -565,6 +717,7 @@ fn think(
             intent.fire = false;
             intent.move_axis = Vec2::ZERO;
             intent.jump = false;
+            bot.activity = Activity::Averting;
             continue;
         }
 
@@ -590,60 +743,365 @@ fn think(
         intent.crouch = false;
         if bot.target.is_some() {
             bot.route.clear();
+            bot.activity = Activity::Fighting;
             continue;
         }
         let feet = t.translation - Vec3::Y * CAPSULE_HEIGHT / 2.0;
-        // Chase what was seen or heard; once there (or it's stale), roam.
+        // What was seen or heard goes stale, or is where it went.
         if bot
             .lead
             .is_some_and(|(at, when)| now - when > MEMORY || at.distance(feet) < ARRIVED)
         {
             bot.lead = None;
         }
+        if let Some((_, when)) = bot.lead {
+            bot.contact = bot.contact.max(when);
+        }
+        if bot
+            .assist
+            .is_some_and(|(at, when)| now - when > ASSIST_TIME || at.distance(feet) < ARRIVED * 2.0)
+        {
+            bot.assist = None;
+        }
         if bot.roam.is_some_and(|at| at.distance(feet) < ARRIVED) {
             bot.roam = None;
         }
-        // Now and then a grenade at the remembered enemy or the objective.
+        if cfg.stop != 0 {
+            bot.route.clear();
+            bot.goal = None;
+            bot.activity = Activity::Idle;
+            continue;
+        }
+        // Without a mesh nothing walks, but throws still happen.
+        let nav = nav.as_deref().unwrap_or(&no_nav);
+        if let Some(here) = nav.area_at(feet + Vec3::Y * 0.1)
+            && bot.area != Some(here)
+        {
+            bot.prev_area = bot.area;
+            bot.area = Some(here);
+            bot.entered = feet;
+        }
+        let plan = tactics.team(*team);
+        let goal = choose_goal(&mut bot, me, feet, now, &tactics, plan, nav);
+        bot.goal = goal;
+        // Now and then a grenade at the remembered enemy or the site.
         if let Some(inv) = inv.as_deref()
             && cfg.grenades > 0
             && now >= bot.next_toss_check
         {
             bot.next_toss_check = now + grenades::TOSS_CHECK;
             if now >= bot.next_toss {
-                consider_throw(&mut bot, inv, &arms, &cfg, eye, feet, now, dt, &box_trace);
+                let objective = match bot.activity {
+                    Activity::ToSite | Activity::Following | Activity::Waiting => {
+                        bot.site.and_then(|s| tactics.sites.get(s)).map(|s| s.point)
+                    }
+                    Activity::Roaming if bot.roam_objective => bot.roam,
+                    _ => None,
+                };
+                consider_throw(&mut bot, inv, &arms, &cfg, eye, feet, objective, now, dt, &box_trace);
             }
         }
         if bot.toss.is_some() {
             intent.move_axis = Vec2::ZERO;
             continue;
         }
-        if cfg.stop != 0 {
-            bot.route.clear();
-            continue;
-        }
-        let Some(nav) = nav.as_deref() else { continue };
-        let goal = match bot.lead {
-            Some((at, _)) => at,
+        let params = path::CostParams {
+            danger: plan.map(|p| p.danger.as_slice()).filter(|d| d.len() == nav.areas.len()),
+            exposure: Some(tactics.exposure.as_slice()).filter(|e| e.len() == nav.areas.len()),
+            team_seed: plan.map_or(0, |p| p.seed),
+            bot_seed: bot.seed,
+        };
+        let step = match goal {
+            Some(goal) => walk_route(&mut bot, nav, feet, goal, &params, dt),
+            // Waiting keeps its route (for comparing with the leader's).
+            None if bot.activity == Activity::Waiting => None,
             None => {
-                if bot.roam.is_none() && !nav.areas.is_empty() {
-                    let at_objective = !objective_points.is_empty() && bot.rand() < OBJECTIVE_SHARE;
-                    bot.roam = Some(if at_objective {
-                        let k = (bot.rand() * objective_points.len() as f32) as usize % objective_points.len();
-                        objective_points[k]
-                    } else {
-                        let i = (bot.rand() * nav.areas.len() as f32) as usize % nav.areas.len();
-                        nav.areas[i].center
-                    });
-                    bot.roam_objective = at_objective;
-                    bot.repath = 0.0;
-                }
-                match bot.roam {
-                    Some(at) => at,
-                    None => continue,
-                }
+                bot.route.clear();
+                bot.route_areas.clear();
+                None
             }
         };
-        walk_route(&mut bot, &mut intent, nav, feet, goal, &cfg, dt);
+        // Look at what matters (`choose_look`), turning a little slower
+        // than in a fight; walk wherever the route goes, whatever the
+        // view.
+        let looking = intent.look_rotation() * Vec3::NEG_Z;
+        let los = |a: Vec3, b: Vec3| world_trace(a, b).is_none() && !smoke.iter().any(|s| s.blocks(a, b));
+        let look = choose_look(&mut bot, nav, eye, feet, step.map(|s| s.dir), looking, now, &los);
+        bot.look_at = Some(look);
+        let to = look - eye;
+        let want_yaw = (-to.x).atan2(-to.z);
+        let want_pitch = to.y.atan2(to.xz().length()).clamp(-LOOK_PITCH, LOOK_PITCH);
+        let turn = cfg.turn_rate.to_radians() * SCAN_TURN * dt;
+        intent.yaw = wrap(intent.yaw + wrap(want_yaw - intent.yaw).clamp(-turn, turn));
+        intent.pitch += (want_pitch - intent.pitch).clamp(-turn, turn);
+        if let Some(step) = step {
+            // Keep off teammates close by (they block each other in
+            // doorways otherwise).
+            let mut dir = step.dir;
+            for (e, ot, oteam, oh) in &others {
+                if e == me || oteam != team || oh.current <= 0.0 {
+                    continue;
+                }
+                let away = (t.translation - ot.translation).with_y(0.0);
+                let d = away.length();
+                if d < PERSONAL_SPACE && (ot.translation.y - t.translation.y).abs() < 1.5 {
+                    let push = if d > 1e-3 { away / d } else { Vec3::X };
+                    dir += push * (1.0 - d / PERSONAL_SPACE) * SEPARATION;
+                }
+            }
+            let dir = dir.with_y(0.0).normalize_or(step.dir);
+            let rot = intent.yaw_rotation();
+            let (fwd, right) = (rot * Vec3::NEG_Z, rot * Vec3::X);
+            let axis = Vec2::new(dir.dot(right), dir.dot(fwd));
+            // Full speed whichever way (the larger key fully pressed).
+            intent.move_axis = axis / axis.abs().max_element().max(1e-3);
+            // Walking into something: jump it after a moment.
+            if velocity.xz().length() < BLOCKED_SPEED {
+                bot.blocked += dt;
+            } else {
+                bot.blocked = 0.0;
+            }
+            let blocked = bot.blocked > BLOCKED_JUMP;
+            if blocked {
+                bot.blocked = 0.0;
+            }
+            intent.jump = step.jump || blocked;
+            if intent.jump && state.on_ground {
+                bot.jumped = now;
+            }
+            // Duck in the air after a jump (a duck-jump clears higher
+            // ledges, as CS:S bots do).
+            let airborne = !state.on_ground && now - bot.jumped > 0.05 && now - bot.jumped < DUCK_JUMP;
+            intent.crouch = step.crouch || airborne;
+        } else {
+            bot.blocked = 0.0;
+        }
+    }
+}
+
+/// Seconds a bot answers a teammate's call.
+const ASSIST_TIME: f64 = 20.0;
+/// Teammates closer than this push a walking bot aside, this hard, m.
+const PERSONAL_SPACE: f32 = 1.2;
+const SEPARATION: f32 = 1.5;
+/// Seconds after a jump it ducks while in the air.
+const DUCK_JUMP: f64 = 0.8;
+/// Slower than this while walking for this long: jump, m/s and s.
+const BLOCKED_SPEED: f32 = 0.5;
+const BLOCKED_JUMP: f32 = 0.4;
+/// Seconds without contact a bot holds before moving on: attackers on a
+/// site they took go to the next one, defenders go hunting.
+const ATTACK_PATIENCE: (f64, f64) = (20.0, 35.0);
+const DEFEND_PATIENCE: (f64, f64) = (45.0, 80.0);
+/// Attackers chase what they saw or heard within this; holders within
+/// this of their spot, m.
+const CHASE_ATTACK: f32 = 25.0;
+const CHASE_HOLD: f32 = 15.0;
+/// A follower farther than this from the leader goes to the leader; one
+/// with this much less route left than the leader, and this far from it,
+/// waits, m.
+const FOLLOW_FAR: f32 = 10.0;
+const AHEAD: f32 = 4.0;
+const AHEAD_DIST: f32 = 5.0;
+/// At its hold spot within this, m.
+const HOLD_REACHED: f32 = 0.75;
+/// Looks at a remembered enemy within this for this long, m and s.
+const LEAD_LOOK: (f32, f64) = (40.0, 8.0);
+/// Looks this far ahead along its route with nothing else to look at, m.
+const LOOK_AHEAD: f32 = 6.0;
+/// The view stays within this of the walking direction (radians).
+const LOOK_SPREAD: f32 = 2.0;
+/// Pitch limit when not fighting (radians), and the turn rate's share.
+const LOOK_PITCH: f32 = 0.45;
+const SCAN_TURN: f32 = 0.6;
+/// Eye height looked at on watched approaches and the route, m.
+const WATCH_LIFT: f32 = 1.3;
+
+/// Where a bot goes with nobody in sight, by its orders (None: stay),
+/// setting its `activity`.
+fn choose_goal(
+    bot: &mut Bot,
+    me: Entity,
+    feet: Vec3,
+    now: f64,
+    tactics: &Tactics,
+    plan: Option<&tactics::TeamPlan>,
+    nav: &NavMesh,
+) -> Option<Vec3> {
+    let role = bot.orders.role;
+    let site = bot.site.and_then(|s| tactics.sites.get(s));
+    // A remembered enemy, if the role lets it go there.
+    if let Some((at, _)) = bot.lead {
+        let chase = match (role, &bot.hold) {
+            _ if bot.hunting || site.is_none() => true,
+            (Role::Roam, _) => true,
+            (_, Some(h)) => at.distance(h.spot) < CHASE_HOLD,
+            (Role::Attack, None) => at.distance(feet) < CHASE_ATTACK,
+            (Role::Defend, None) => true,
+        };
+        if chase {
+            bot.activity = Activity::Chasing;
+            return Some(at);
+        }
+    }
+    if let Some((at, _)) = bot.assist {
+        bot.activity = Activity::Assisting;
+        return Some(at);
+    }
+    let Some(site) = site.filter(|_| !bot.hunting && role != Role::Roam) else {
+        // Roam: mostly to the objectives.
+        if bot.roam.is_none() && !nav.areas.is_empty() {
+            let objectives = &tactics.objectives;
+            let at_objective = !objectives.is_empty() && bot.rand() < OBJECTIVE_SHARE;
+            bot.roam = Some(if at_objective {
+                let k = (bot.rand() * objectives.len() as f32) as usize % objectives.len();
+                objectives[k]
+            } else {
+                let i = (bot.rand() * nav.areas.len() as f32) as usize % nav.areas.len();
+                nav.areas[i].center
+            });
+            bot.roam_objective = at_objective;
+            bot.repath = 0.0;
+        }
+        bot.activity = if bot.hunting {
+            Activity::Hunting
+        } else {
+            Activity::Roaming
+        };
+        return bot.roam;
+    };
+    if bot.hold.is_none() {
+        if role == Role::Attack && feet.distance(site.point) >= tactics::ARRIVE_RADIUS {
+            // On the way, as a group.
+            if let Some(plan) = plan.filter(|p| p.site == bot.site && p.leader.is_some()) {
+                if plan.leader == Some(me) {
+                    if plan.leader_wait {
+                        bot.activity = Activity::Waiting;
+                        return None;
+                    }
+                } else if let Some(lf) = plan.leader_feet {
+                    let d = lf.distance(feet);
+                    if d > FOLLOW_FAR {
+                        bot.activity = Activity::Following;
+                        return Some(lf);
+                    }
+                    if d > AHEAD_DIST && !bot.route.is_empty() && bot.route_left() + AHEAD < plan.leader_left {
+                        bot.activity = Activity::Waiting;
+                        return None;
+                    }
+                }
+            }
+            bot.activity = Activity::ToSite;
+            return Some(site.point);
+        }
+        // There (or a defender with no spot): hold somewhere on it.
+        let rank = bot.orders.rank;
+        bot.hold = tactics::attacker_hold(site, rank)
+            .filter(|_| role == Role::Attack)
+            .or(Some(Hold {
+                spot: site.point,
+                watch: site.approaches[0].clone(),
+            }));
+        bot.hold_since = None;
+    }
+    let spot = bot.hold.as_ref().map(|h| h.spot)?;
+    let reach = if bot.hold_since.is_some() {
+        HOLD_REACHED * 3.0
+    } else {
+        HOLD_REACHED
+    };
+    if (spot - feet).xz().length() > reach || (spot.y - feet.y).abs() > 1.5 {
+        bot.activity = Activity::ToHold;
+        return Some(spot);
+    }
+    let since = *bot.hold_since.get_or_insert(now);
+    if now - since.max(bot.contact) > bot.patience {
+        // Nothing happens here: move on.
+        bot.hold = None;
+        bot.hold_since = None;
+        if role == Role::Attack && !tactics.sites.is_empty() {
+            bot.site = bot.site.map(|s| (s + 1) % tactics.sites.len());
+        } else {
+            bot.hunting = true;
+        }
+        bot.contact = now;
+    }
+    bot.activity = Activity::Holding;
+    None
+}
+
+/// Where a bot looks with nobody in sight: a remembered enemy nearby;
+/// holding, the approaches it watches (switching now and then); else a
+/// hiding spot coming into view (`look::corner`), else a few meters
+/// ahead along its route, kept within `LOOK_SPREAD` of the walking
+/// direction.
+#[allow(clippy::too_many_arguments)]
+fn choose_look(
+    bot: &mut Bot,
+    nav: &NavMesh,
+    eye: Vec3,
+    feet: Vec3,
+    walk: Option<Vec3>,
+    looking: Vec3,
+    now: f64,
+    los: &dyn Fn(Vec3, Vec3) -> bool,
+) -> Vec3 {
+    let ahead = |bot: &Bot| -> Option<Vec3> {
+        let mut left = LOOK_AHEAD;
+        let mut at = feet;
+        for p in bot.route.iter().skip(bot.next) {
+            let d = at.distance(*p);
+            if d >= left {
+                return Some(at + (*p - at) * (left / d) + Vec3::Y * WATCH_LIFT);
+            }
+            left -= d;
+            at = *p;
+        }
+        (at != feet).then_some(at + Vec3::Y * WATCH_LIFT)
+    };
+    let within_spread = |p: Vec3| {
+        walk.is_none_or(|w| {
+            let d = (p - eye).with_y(0.0).normalize_or_zero();
+            d == Vec3::ZERO || d.angle_between(w) <= LOOK_SPREAD
+        })
+    };
+    if let Some((at, when)) = bot.lead
+        && now - when < LEAD_LOOK.1
+        && at.distance(feet) < LEAD_LOOK.0
+    {
+        let p = at + Vec3::Y * WATCH_LIFT;
+        if within_spread(p) {
+            return p;
+        }
+    }
+    if bot.activity == Activity::Holding
+        && let Some(n) = bot.hold.as_ref().map(|h| h.watch.len())
+        && n > 0
+    {
+        if now >= bot.watch.1 {
+            // Mostly the nearest approach.
+            let i = if bot.rand() < 0.6 {
+                0
+            } else {
+                (bot.rand() * n as f32) as usize % n
+            };
+            bot.watch = (i, now + 2.5 + 3.0 * bot.rand() as f64);
+        }
+        let h = bot.hold.as_ref().unwrap();
+        return h.watch[bot.watch.0 % n] + Vec3::Y * WATCH_LIFT;
+    }
+    if let Some(spot) = look::corner(bot, nav, eye, feet, walk, looking, now, los) {
+        let p = spot + Vec3::Y * look::SPOT_LIFT;
+        if within_spread(p) {
+            return p;
+        }
+    }
+    if let Some(p) = ahead(bot) {
+        return p;
+    }
+    match walk {
+        Some(w) => eye + w * LOOK_AHEAD,
+        None => eye + looking * LOOK_AHEAD,
     }
 }
 
@@ -662,6 +1120,7 @@ fn consider_throw(
     cfg: &BotConfig,
     eye: Vec3,
     feet: Vec3,
+    objective: Option<Vec3>,
     now: f64,
     dt: f32,
     sweep: &dyn Fn(Vec3, Vec3, f32) -> Option<(Vec3, Vec3)>,
@@ -676,7 +1135,7 @@ fn consider_throw(
         let d = (at - feet).xz().length();
         d >= grenades::TOSS_RANGE.0 && d <= grenades::TOSS_RANGE.1
     };
-    let (target, kinds) = match (bot.lead, bot.roam) {
+    let (target, kinds) = match (bot.lead, objective) {
         (Some((at, _)), _) if in_range(at) => {
             if !(always || bot.rand() < grenades::TOSS_CHANCE_LEAD) {
                 return;
@@ -688,7 +1147,7 @@ fn consider_throw(
                 (at, [GrenadeKind::Flash, GrenadeKind::Blast])
             }
         }
-        (None, Some(at)) if bot.roam_objective && in_range(at) => {
+        (None, Some(at)) if in_range(at) => {
             if !(always || bot.rand() < grenades::TOSS_CHANCE_OBJECTIVE) {
                 return;
             }
@@ -740,8 +1199,29 @@ const REPATH_SECONDS: f32 = 1.0;
 const STUCK_DISTANCE: f32 = 0.5;
 const STUCK_SECONDS: f32 = 1.5;
 
-/// Walk the navigation mesh toward `goal` (feet positions).
-fn walk_route(bot: &mut Bot, intent: &mut Intent, nav: &NavMesh, feet: Vec3, goal: Vec3, cfg: &BotConfig, dt: f32) {
+/// Crossing points on edges wider than this lean aside, up to this share
+/// of the way to an end, per bot and edge (spreads a group out), m.
+const LEAN_WIDTH: f32 = 2.0;
+const LEAN: f32 = 0.45;
+
+/// One tick's walking: direction (flat, unit), jump and crouch.
+#[derive(Clone, Copy, Debug)]
+struct Step {
+    dir: Vec3,
+    jump: bool,
+    crouch: bool,
+}
+
+/// Walk the navigation mesh toward `goal` (feet positions) by the bot's
+/// path cost: the direction to the next route point.
+fn walk_route(
+    bot: &mut Bot,
+    nav: &NavMesh,
+    feet: Vec3,
+    goal: Vec3,
+    params: &path::CostParams,
+    dt: f32,
+) -> Option<Step> {
     bot.repath -= dt;
     bot.progress.1 += dt;
     let mut stuck = false;
@@ -751,24 +1231,34 @@ fn walk_route(bot: &mut Bot, intent: &mut Intent, nav: &NavMesh, feet: Vec3, goa
     }
     if bot.repath <= 0.0 || bot.next >= bot.route.len() || stuck {
         bot.repath = REPATH_SECONDS;
-        bot.route = nav.route(feet, goal).unwrap_or_default();
+        let seed = bot.seed;
+        let found = nav
+            .nearest_area(feet)
+            .zip(nav.nearest_area(goal))
+            .and_then(|(a, b)| nav.find_path_with(a, b, |from, to, via| path::step_cost(nav, from, to, via, params)));
+        let points = found.map(|(areas, _)| {
+            nav.points_along(&areas, feet, goal, |from, to, width| {
+                if width < LEAN_WIDTH {
+                    0.0
+                } else {
+                    (path::hash01(seed, from * 7919 + to) as f32 * 2.0 - 1.0) * LEAN
+                }
+            })
+        });
+        (bot.route, bot.route_areas) = points.unwrap_or_default().into_iter().unzip();
         bot.next = 0;
     }
     while bot.next < bot.route.len() && (bot.route[bot.next] - feet).xz().length() < REACHED {
         bot.next += 1;
     }
-    let Some(&point) = bot.route.get(bot.next) else { return };
+    let point = *bot.route.get(bot.next)?;
     let to = point - feet;
-    let want_yaw = (-to.x).atan2(-to.z);
-    let step = cfg.turn_rate.to_radians() * dt;
-    intent.yaw = wrap(intent.yaw + wrap(want_yaw - intent.yaw).clamp(-step, step));
-    intent.pitch -= intent.pitch.clamp(-step, step);
-    // Walk forward once roughly facing the point.
-    let off = wrap(want_yaw - intent.yaw).abs();
-    intent.move_axis = Vec2::new(0.0, if off < 1.0 { 1.0 } else { 0.0 });
-    // Jump up ledges higher than a step, and when stuck.
-    intent.jump = stuck || (to.y > STEP_HEIGHT && to.xz().length() < 1.5);
-    intent.crouch = nav.area_at(feet).is_some_and(|a| nav.areas[a].has(flags::CROUCH));
+    Some(Step {
+        dir: to.with_y(0.0).normalize_or_zero(),
+        // Jump up ledges higher than a step, and when stuck.
+        jump: stuck || (to.y > STEP_HEIGHT && to.xz().length() < 1.5),
+        crouch: nav.area_at(feet).is_some_and(|a| nav.areas[a].has(flags::CROUCH)),
+    })
 }
 
 fn wrap(a: f32) -> f32 {
