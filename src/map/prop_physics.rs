@@ -7,7 +7,7 @@
 //! it spawned.
 
 use avian3d::prelude::*;
-use bevy::prelude::*;
+use bevy::{ecs::system::SystemParam, prelude::*};
 
 use super::{MapBrushCollider, MapPhysics, MapPropCollider, PhysicsProp};
 use crate::core::MovingSolid;
@@ -175,3 +175,69 @@ pub(super) fn wake_on_contact(
 
 /// A body slower than this (m/s) doesn't wake what it touches.
 const WAKE_SPEED: f32 = 0.05;
+
+/// A player's physics shadow (specs/cs_source/physics_props.md 4.1 step 3):
+/// an invisible 85 kg body the size of the player's box that the game
+/// drives to the player each tick. It is what touches physics props for
+/// the player: it pushes the light ones and holds up the ones resting on
+/// or against the player. It is on its own layer (`core::SHADOW_LAYER`),
+/// which no spatial query sees. Inactive (a dead player's), it touches
+/// nothing.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct PhysicsShadow {
+    pub owner: Entity,
+    pub active: bool,
+}
+
+/// A character whose contacts with physics props go through its
+/// `PhysicsShadow` (this entity): its own collider never touches them.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Shadowed(pub Entity);
+
+/// The shadow's mass, kg (spec 4.1 step 3).
+pub const SHADOW_MASS: f32 = 85.0;
+/// The heaviest prop a shadow pushes, kg (spec: the player push mass
+/// limit). Heavier props never touch the shadow: the player's movement
+/// treats them as walls, and the character's own collider (kinematic)
+/// stops them when they move into the player.
+pub const SHADOW_PUSH_MASS: f32 = 350.0;
+
+/// Which pairs players' shadows and shadowed characters keep.
+#[derive(SystemParam)]
+pub struct ShadowContacts<'w, 's> {
+    shadows: Query<'w, 's, &'static PhysicsShadow>,
+    shadowed: Query<'w, 's, (), With<Shadowed>>,
+    of: Query<'w, 's, &'static ColliderOf>,
+    props: Query<'w, 's, &'static PhysicsProp>,
+}
+
+impl ShadowContacts<'_, '_> {
+    /// Some(keep) when collider `a` or `b` is a shadow or a shadowed
+    /// character: an active shadow touches only the `prop_physics` bodies
+    /// it can push (multiplayer props are in a group players never touch,
+    /// spec 4.2.1); a shadowed character touches only the heavier ones.
+    /// None: neither is one.
+    pub fn filter(&self, a: Entity, b: Entity) -> Option<bool> {
+        let body = |e: Entity| self.of.get(e).map_or(e, |o| o.body);
+        let (a, b) = (body(a), body(b));
+        for (me, other) in [(a, b), (b, a)] {
+            if let Ok(s) = self.shadows.get(me) {
+                return Some(s.active && self.props.get(other).is_ok_and(pushable));
+            }
+        }
+        for (me, other) in [(a, b), (b, a)] {
+            if self.shadowed.contains(me)
+                && let Ok(p) = self.props.get(other)
+            {
+                return Some(p.push == super::PushAway::Collide && !pushable(p));
+            }
+        }
+        None
+    }
+}
+
+/// Whether players' shadows push this prop: a `prop_physics` (not a
+/// multiplayer one) up to `SHADOW_PUSH_MASS`.
+pub fn pushable(p: &PhysicsProp) -> bool {
+    p.push == super::PushAway::Collide && p.mass <= SHADOW_PUSH_MASS
+}

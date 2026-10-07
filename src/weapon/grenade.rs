@@ -732,6 +732,8 @@ struct GrenadeWorld<'w, 's> {
             Option<&'static ComputedMass>,
             Forces,
         ),
+        // Players' physics shadows follow their players, not blasts.
+        Without<crate::map::prop_physics::PhysicsShadow>,
     >,
     armor: Query<'w, 's, &'static mut Armor>,
     blinded: Query<'w, 's, &'static Blinded>,

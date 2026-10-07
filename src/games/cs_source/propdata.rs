@@ -185,6 +185,9 @@ pub struct BreakPiece {
     /// Outward speed, units/s.
     pub burst: f32,
     pub motion_disabled: bool,
+    /// `fademindist` and `fademaxdist` (units), when both are set and
+    /// the max is at least the min (spec 7.3).
+    pub fade_dist: Option<(f32, f32)>,
 }
 
 /// A `.phy`'s break blocks as pieces.
@@ -210,6 +213,13 @@ pub fn break_pieces(blocks: &[Vec<(String, String)>]) -> Vec<BreakPiece> {
                 fadetime: num("fadetime", 20.0),
                 burst: num("burst", 100.0),
                 motion_disabled: num("motiondisabled", 0.0) != 0.0,
+                fade_dist: match (
+                    get("fademindist").and_then(|v| v.parse::<f32>().ok()),
+                    get("fademaxdist").and_then(|v| v.parse::<f32>().ok()),
+                ) {
+                    (Some(min), Some(max)) if max >= min => Some((min, max)),
+                    _ => None,
+                },
             })
         })
         .collect()
@@ -301,11 +311,22 @@ mod tests {
             vec![
                 ("model".into(), "models/a.mdl".into()),
                 ("motiondisabled".into(), "1".into()),
+                ("fademindist".into(), "200".into()),
+                ("fademaxdist".into(), "400".into()),
+            ],
+            vec![
+                ("model".into(), "models/b.mdl".into()),
+                ("fademindist".into(), "500".into()),
+                ("fademaxdist".into(), "400".into()),
             ],
         ];
         let p = break_pieces(&blocks);
         assert_eq!(p[0].model, "models/props_junk/wood_crate001a_chunk01.mdl");
         assert_eq!((p[0].fadetime, p[0].burst), (10.0, 100.0));
         assert!(p[1].motion_disabled && p[1].fadetime == 20.0);
+        // Fade distances need both, max at least min.
+        assert_eq!(p[0].fade_dist, None);
+        assert_eq!(p[1].fade_dist, Some((200.0, 400.0)));
+        assert_eq!(p[2].fade_dist, None);
     }
 }
