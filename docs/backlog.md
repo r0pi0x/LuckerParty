@@ -256,9 +256,19 @@ docs/plans/active/sound.md.
   `$refractamount` 5 landing on barely submerged shore, which the spec's
   shore fade leaves unreflected). Water currents: no stock map has
   current contents (spec movement.md open question 15), so not applied.
-- **HDR parity**: CS:S defaults to mat_hdr_level 2 on dust2 (HDR lightmaps,
-  tonemapping, bloom); the reference install runs LDR. Compare and match
-  both if players use HDR. Tonemap (`env_tonemap_controller`).
+- **HDR parity**: `mat_hdr_level` 1/2 (default 0, the reference's LDR)
+  loads the HDR lightmaps, ambient cubes, world lights and `_hdr` sky,
+  renders HDR with bloom and auto exposure within the map-start
+  `env_tonemap_controller` bounds (client/hdr.rs). Not matched against the
+  game (no HDR reference captures; refcmp runs LDR). Open questions for a
+  spec session: the engine's HDR lightmap scale (taken as 1), the exposure
+  target (`hdr::EXPOSURE_TARGET` 0.5), metering and adaptation speed
+  (Bevy's histogram, 3/1 stops/s), the bloom filter and strength (Bevy's
+  `OLD_SCHOOL` at 0.05 x bloom scale), whether bloom precedes exposure,
+  HDR cubemaps/envmaps (still LDR), the `<sky>_hdr` material lookup rule,
+  controller inputs fired after map start (`SetTonemapRate`,
+  `UseDefaultAutoExposure`, triggers) and `mat_hdr_level` 1's exact look.
+  Then refcmp captures at mat_hdr_level 2.
 - **More refcmp views** across dust2 (mid, long, B, spawns) and other maps.
 - Detail blend modes other than 0 and 1;
   `$basetexturetransform` (unused on dust2).

@@ -15,19 +15,49 @@ const LUMP_LIGHTING_HDR: usize = 53;
 const PAD: u32 = 2;
 const ATLAS_WIDTH: u32 = 1024;
 
+const LUMP_FACES: usize = 7;
+const LUMP_FACES_HDR: usize = 58;
+/// Bytes per face (dface_t) and where its lighting offset sits.
+const FACE_SIZE: usize = 56;
+const FACE_LIGHT_OFS: usize = 20;
+
+fn lump(bsp_bytes: &[u8], i: usize) -> &[u8] {
+    let at = 8 + i * 16;
+    let Some(entry) = bsp_bytes.get(at..at + 8) else {
+        return &[];
+    };
+    let ofs = i32::from_le_bytes(entry[0..4].try_into().unwrap()).max(0) as usize;
+    let len = i32::from_le_bytes(entry[4..8].try_into().unwrap()).max(0) as usize;
+    bsp_bytes.get(ofs..ofs + len).unwrap_or(&[])
+}
+
 /// The raw lighting lump: LDR if present, else HDR.
 pub fn lighting_lump(bsp_bytes: &[u8]) -> &[u8] {
-    let lump = |i: usize| -> &[u8] {
-        let at = 8 + i * 16;
-        let Some(entry) = bsp_bytes.get(at..at + 8) else {
-            return &[];
-        };
-        let ofs = i32::from_le_bytes(entry[0..4].try_into().unwrap()).max(0) as usize;
-        let len = i32::from_le_bytes(entry[4..8].try_into().unwrap()).max(0) as usize;
-        bsp_bytes.get(ofs..ofs + len).unwrap_or(&[])
+    let ldr = lump(bsp_bytes, LUMP_LIGHTING);
+    if ldr.is_empty() { lump(bsp_bytes, LUMP_LIGHTING_HDR) } else { ldr }
+}
+
+/// The HDR lighting lump (53), when the map has one that the faces we
+/// read (lump 7) index: the HDR face lump (58) is absent or gives every
+/// face the same lighting offset (true of every stock CS:S map that has
+/// HDR lighting). Same luxel encoding as the LDR lump (RGB + shared
+/// exponent, linear), per the public BSP v20 description.
+pub fn hdr_lighting_lump(bsp_bytes: &[u8]) -> Option<&[u8]> {
+    let hdr = lump(bsp_bytes, LUMP_LIGHTING_HDR);
+    if hdr.is_empty() {
+        return None;
+    }
+    let faces_hdr = lump(bsp_bytes, LUMP_FACES_HDR);
+    if faces_hdr.is_empty() {
+        return Some(hdr);
+    }
+    let offsets = |faces: &[u8]| -> Vec<[u8; 4]> {
+        faces
+            .chunks_exact(FACE_SIZE)
+            .map(|f| f[FACE_LIGHT_OFS..FACE_LIGHT_OFS + 4].try_into().unwrap())
+            .collect()
     };
-    let ldr = lump(LUMP_LIGHTING);
-    if ldr.is_empty() { lump(LUMP_LIGHTING_HDR) } else { ldr }
+    (offsets(faces_hdr) == offsets(lump(bsp_bytes, LUMP_FACES))).then_some(hdr)
 }
 
 /// One face's samples, linear RGB where 1.0 shows the texture unchanged.
@@ -323,4 +353,108 @@ pub fn atlas_uv(atlas: &MapLightmap, p: Placement, luxel: Vec2) -> [f32; 2] {
     let max = (p.size.as_vec2() - 1.0).max(Vec2::ZERO);
     let c = luxel.clamp(Vec2::ZERO, max) + p.origin.as_vec2() + 0.5;
     [c.x / atlas.width as f32, c.y / atlas.height as f32]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A BSP v20 file holding only the given lumps (index, bytes).
+    fn bsp_with(lumps: &[(usize, Vec<u8>)]) -> Vec<u8> {
+        let header = 8 + 64 * 16 + 4;
+        let mut bytes = vec![0u8; header];
+        bytes[0..4].copy_from_slice(b"VBSP");
+        bytes[4..8].copy_from_slice(&20i32.to_le_bytes());
+        for (i, data) in lumps {
+            let at = 8 + i * 16;
+            let ofs = bytes.len() as i32;
+            bytes[at..at + 4].copy_from_slice(&ofs.to_le_bytes());
+            bytes[at + 4..at + 8].copy_from_slice(&(data.len() as i32).to_le_bytes());
+            bytes.extend_from_slice(data);
+        }
+        bytes
+    }
+
+    fn face_bytes(light_ofs: i32) -> Vec<u8> {
+        let mut f = vec![0u8; FACE_SIZE];
+        f[FACE_LIGHT_OFS..FACE_LIGHT_OFS + 4].copy_from_slice(&light_ofs.to_le_bytes());
+        f
+    }
+
+    fn face(light_offset: i32, size: [i32; 2]) -> vbsp::Face {
+        vbsp::Face {
+            plane_num: 0,
+            side: 0,
+            on_node: 0,
+            first_edge: 0,
+            num_edges: 0,
+            texture_info: 0,
+            displacement_info: -1,
+            surface_fog_volume_id: -1,
+            styles: [0, 255, 255, 255],
+            light_offset,
+            area: 0.0,
+            light_map_texture_min: [0, 0],
+            light_map_texture_size: size,
+            original_face: -1,
+            primitive_count: 0,
+            first_primitive_index: 0,
+            smoothing_groups: 0,
+        }
+    }
+
+    #[test]
+    fn hdr_lighting_is_the_hdr_lump_when_faces_agree() {
+        let ldr = vec![1u8; 8];
+        let hdr = vec![2u8; 8];
+        // No HDR face lump: the faces' offsets index both.
+        let b = bsp_with(&[(LUMP_LIGHTING, ldr.clone()), (LUMP_LIGHTING_HDR, hdr.clone())]);
+        assert_eq!(hdr_lighting_lump(&b), Some(&hdr[..]));
+        assert_eq!(lighting_lump(&b), &ldr[..], "LDR stays the default");
+        // An HDR face lump with the same offsets.
+        let faces = [face_bytes(0), face_bytes(4)].concat();
+        let b = bsp_with(&[
+            (LUMP_FACES, faces.clone()),
+            (LUMP_LIGHTING, ldr.clone()),
+            (LUMP_LIGHTING_HDR, hdr.clone()),
+            (LUMP_FACES_HDR, faces.clone()),
+        ]);
+        assert_eq!(hdr_lighting_lump(&b), Some(&hdr[..]));
+        // Different offsets: not usable with lump 7's faces.
+        let other = [face_bytes(4), face_bytes(0)].concat();
+        let b = bsp_with(&[(LUMP_FACES, faces), (LUMP_LIGHTING_HDR, hdr), (LUMP_FACES_HDR, other)]);
+        assert_eq!(hdr_lighting_lump(&b), None);
+        // No HDR lump at all.
+        assert_eq!(hdr_lighting_lump(&bsp_with(&[(LUMP_LIGHTING, ldr)])), None);
+    }
+
+    #[test]
+    fn hdr_luxels_decode_linear_and_unclamped() {
+        // ColorRGBExp32: c * 2^e / 255, the same decode as LDR; HDR values
+        // past the LDR encoding's ~4.0 ceiling come through as they are.
+        let lump = [
+            255u8,
+            128,
+            0,
+            3, // (8, 4.016, 0)
+            51,
+            102,
+            204,
+            (-2i8) as u8, // (0.05, 0.1, 0.2)
+            0,
+            0,
+            0,
+            0,
+            255,
+            255,
+            255,
+            0,
+        ];
+        let s = face_samples(&lump, &face(0, [1, 1])).unwrap();
+        assert_eq!((s.width, s.height), (2, 2));
+        let close = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-4);
+        assert!(close(s.rgb[0], [8.0, 128.0 * 8.0 / 255.0, 0.0]), "{:?}", s.rgb[0]);
+        assert!(close(s.rgb[1], [0.05, 0.1, 0.2]), "{:?}", s.rgb[1]);
+        assert!(close(s.rgb[3], [1.0, 1.0, 1.0]), "{:?}", s.rgb[3]);
+    }
 }

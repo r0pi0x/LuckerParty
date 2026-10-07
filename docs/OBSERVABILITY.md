@@ -343,7 +343,8 @@ cargo run --features dev --bin refcmp -- capture-ours --only a_sign
   their rows; that's how rope gravity was found.
 - The reference CS:S install runs at mat_hdr_level 0, mat_trilinear 0,
   mat_forceaniso 1, no AA (queried over RCON). HDR (level 2, the game's
-  default) is not matched yet.
+  default) is an option (`+mat_hdr_level 2`, client/hdr.rs) but not
+  matched yet: captures stay LDR unless a run sets it.
 - `refcmp skyconv` measures how the engine samples sky cubemaps (an encoded
   debug sky, `MASHUP_SKY_DEBUG=1`) and fits each layer's texture and
   orientation to the reference: Bevy's skybox flips z, so looking toward -Z

@@ -11,7 +11,8 @@ fn main() {
     let args = client::Args::parse();
     let mut app = App::new();
     match &args.map {
-        Some(id) => match games::load_map(id) {
+        // At the HDR level the console will start with (mat_hdr_level).
+        Some(id) => match games::load_map_level(id, client::hdr::startup_level(&args.console)) {
             Ok(data) => {
                 eprintln!(
                     "loaded {}: {} triangles, {} textures, {} spawns, {} warnings",
