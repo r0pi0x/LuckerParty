@@ -115,7 +115,7 @@ pub fn capture_cursor(cursor: &mut CursorOptions) {
     cursor.grab_mode = CursorGrabMode::Locked;
 }
 
-fn grab_cursor(
+pub(super) fn grab_cursor(
     mut cursor: Single<&mut CursorOptions>,
     mouse: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -221,6 +221,7 @@ fn write_local_intent(
         Option<Res<super::radio::RadioMenu>>,
     ),
     zoomed: Query<&crate::weapon::Zoomed, With<LocalPlayer>>,
+    spectator: Option<Res<super::spectate::Spectator>>,
 ) {
     let freelook = keys.pressed(KeyCode::AltLeft) || held.as_ref().is_some_and(|h| h.freelook);
     if !freelook {
@@ -243,6 +244,17 @@ fn write_local_intent(
         return;
     }
 
+    // Spectating (dead): the keys and mouse drive the spectator camera.
+    if spectator.is_some_and(|s| s.active()) {
+        *wheel = WheelJump::default();
+        let (yaw, pitch) = (intent.yaw, intent.pitch);
+        **intent = Intent {
+            yaw,
+            pitch,
+            ..default()
+        };
+        return;
+    }
     let axis = |pos: KeyCode, neg: KeyCode| keys.pressed(pos) as i8 as f32 - keys.pressed(neg) as i8 as f32;
     // Flying the detached camera: the player stands still.
     if freecam.mode == 1 {

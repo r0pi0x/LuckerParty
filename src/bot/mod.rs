@@ -215,6 +215,12 @@ pub struct Bot {
     /// Seconds spent at a ladder's foot pressing in without getting on it
     /// (a ladder flush with clip brushes attaches only off its middle).
     ladder_pressing: f32,
+    /// On a ladder: its feet's height when they last moved up or down,
+    /// and seconds since (a ceiling over a ladder's top stops it short).
+    climbed: Option<(f32, f32)>,
+    /// On a ladder: how far off its middle line it climbs (along the
+    /// rungs, m), after getting stuck under something on the middle.
+    ladder_shift: f32,
     /// When it last jumped.
     jumped: f64,
     /// Current aim offset (yaw, pitch radians) and seconds until re-rolled.
@@ -236,7 +242,11 @@ pub struct Bot {
     watched: Vec<Entity>,
     /// What it said on the radio lately.
     radio: radio::BotRadio,
-    /// Route noise seed (fixed per bot).
+    /// Its number ("Bot 3"): the lowest free one when added.
+    number: u32,
+    /// Route noise seed, fixed per bot: from its number and team, never
+    /// its entity id (`core::Seed`). The dice (`rng`) restart from it and
+    /// the round number each round.
     seed: u64,
     /// The round's orders from `tactics`, and what it does with them in
     /// this life: the site it heads for or holds, its hold spot, when it
@@ -503,7 +513,13 @@ pub fn add_bot(world: &mut World, team: Team) -> Option<Entity> {
         .iter(world)
         .map(|(t, s)| (*t, s.team))
         .collect();
-    let bots = world.query_filtered::<(), With<Bot>>().iter(world).count();
+    let numbers: Vec<u32> = world.query::<&Bot>().iter(world).map(|b| b.number).collect();
+    let bots = numbers.len();
+    // The lowest free number, so seeds repeat run to run whatever else
+    // was spawned (entity ids shift with every spawn).
+    let number = (1..).find(|n| !numbers.contains(n)).unwrap_or(1);
+    let seed = path::hash64(0xB075_EED5 ^ (team.0 as u64) << 40, number as usize);
+    let round = world.get_resource::<crate::core::RoundRestarts>().map_or(0, |r| r.0);
     let own: Vec<&Transform> = spawns.iter().filter(|s| s.1 == Some(team)).map(|s| &s.0).collect();
     let pool: Vec<&Transform> = if own.is_empty() {
         spawns.iter().map(|s| &s.0).collect()
@@ -528,11 +544,16 @@ pub fn add_bot(world: &mut World, team: Team) -> Option<Entity> {
         movement,
     );
     commands.entity(e).insert((
-        Name::new(format!("Bot {}", bots + 1)),
-        Bot {
-            rng: 0x2545_F491_4F6C_DD1D ^ (e.to_bits().wrapping_mul(0x9E37_79B9_7F4A_7C15)),
-            seed: e.to_bits().wrapping_mul(0xD1B5_4A32_D192_ED03),
-            ..default()
+        Name::new(format!("Bot {number}")),
+        crate::core::Seed(seed),
+        {
+            let mut bot = Bot {
+                number,
+                seed,
+                ..default()
+            };
+            bot.reseed(round);
+            bot
         },
         Intent { yaw, ..default() },
     ));
@@ -541,6 +562,17 @@ pub fn add_bot(world: &mut World, team: Team) -> Option<Entity> {
 }
 
 impl Bot {
+    /// Its number ("Bot 3").
+    pub fn number(&self) -> u32 {
+        self.number
+    }
+
+    /// Restart the dice for a round: from the bot's seed and the round
+    /// number only.
+    fn reseed(&mut self, round: u32) {
+        self.rng = path::hash64(self.seed ^ 0x2545_F491_4F6C_DD1D, round as usize) | 1;
+    }
+
     fn rand(&mut self) -> f32 {
         // xorshift64*
         self.rng ^= self.rng >> 12;
@@ -900,6 +932,9 @@ fn think(
             bot_seed: bot.seed,
             stuck: &tactics.failed_links,
         };
+        // Never left hanging on a ladder: with nowhere to go, it finishes
+        // the climb (its route's end).
+        let goal = goal.or_else(|| state.on_ladder.then(|| bot.route.last().copied()).flatten());
         let step = match goal {
             Some(goal) => walk_route(&mut bot, nav, feet, goal, &params, dt, now, state.on_ladder, state.on_ground),
             // Waiting keeps its route (for comparing with the leader's).
@@ -910,6 +945,9 @@ fn think(
                 None
             }
         };
+        // Nowhere left to go on a ladder (a goal reached from it, a step
+        // above the floor): step off it.
+        let step = step.or_else(|| state.on_ladder.then(|| off_ladder(nav, feet)).flatten());
         // Look at what matters (`choose_look`), turning a little slower
         // than in a fight; walk wherever the route goes, whatever the
         // view.
@@ -930,6 +968,9 @@ fn think(
                 // down) the way to go.
                 look = rung + Vec3::Y * (rung.y - feet.y).signum() * 2.0;
                 pitch_limit = LADDER_PITCH;
+            } else if step.dismount {
+                // Off a ladder's top: level, the way out.
+                look = eye + step.dir * 2.0;
             } else if bot.blocked > USE_AFTER {
                 // Stuck: face the way (a door to open, a ledge to jump).
                 look = eye + step.dir * 2.0;
@@ -971,7 +1012,7 @@ fn think(
                 // its middle line.
                 Some(r) if state.on_ladder => {
                     let perp = Vec3::Y.cross(r.normal);
-                    let off = (feet - r.foot).dot(perp);
+                    let off = (feet - r.foot).dot(perp) - r.shift;
                     let side = if off.abs() > LADDER_CENTRE {
                         -(perp * off.signum()).dot(right).signum()
                     } else {
@@ -980,7 +1021,14 @@ fn think(
                     let up = step.climb.is_some_and(|c| c.y > feet.y);
                     Vec2::new(side, if up { 1.0 } else { -1.0 })
                 }
-                _ if step.climb.is_some() && step.rungs.is_none() => Vec2::Y,
+                // A drop with no mesh ladder: straight on, over the edge.
+                // A climb: straight on once facing it (still turning,
+                // toward it: forward alone circles it).
+                _ if step.rungs.is_none()
+                    && step.climb.is_some_and(|c| c.y < feet.y || axis.y > CLIMB_FACING) =>
+                {
+                    Vec2::Y
+                }
                 _ => axis / axis.abs().max_element().max(1e-3),
             };
             // Walking into something: press use now and then (doors),
@@ -1030,7 +1078,7 @@ fn think(
                 bot.toward = (target, now);
             }
             let slow = now - bot.toward.1 > BREAK_SLOW;
-            if (b > BREAK_AFTER || slow)
+            if (b > BREAK_AFTER || slow || step.dismount)
                 && cfg.dont_shoot == 0
                 && let Some(target) = step.target
             {
@@ -1057,6 +1105,10 @@ fn think(
                     intent.pitch = d.y.atan2(d.xz().length());
                     intent.fire = !(semi && pressed);
                     bot.look_at = Some(at);
+                    if step.dismount && state.on_ladder {
+                        // Hang on the ladder until it breaks.
+                        intent.move_axis = Vec2::ZERO;
+                    }
                 }
             }
         } else {
@@ -1066,6 +1118,9 @@ fn think(
     }
 }
 
+/// A climb with no mesh ladder is walked straight on once the way there
+/// is within this cosine of the view.
+const CLIMB_FACING: f32 = 0.9;
 /// Seconds a bot answers a teammate's call.
 const ASSIST_TIME: f64 = 20.0;
 /// Teammates closer than this push a walking bot aside, this hard, m.
@@ -1110,6 +1165,13 @@ const LADDER_MOUNT: f32 = 32.0 * 0.0254;
 /// Going down, it backs out over the ladder's top until this far beyond
 /// it, then presses in (falling past it, it catches it), m.
 const LADDER_OVER: f32 = 0.45;
+/// On a ladder, a route point is reached with the feet this close to its
+/// height. Feet moving no more than `LADDER_RISING` in `LADDER_TOPPED`
+/// seconds short of that: stuck (under something going up: it sidesteps,
+/// `Bot::ladder_shift`), m and s.
+const LADDER_TOP_NEAR: f32 = 0.3;
+const LADDER_RISING: f32 = 0.01;
+const LADDER_TOPPED: f32 = 0.25;
 /// Pitch limit looking up or down a ladder (radians).
 const LADDER_PITCH: f32 = 1.4;
 /// On a ladder further than this from its middle line: step sideways, m.
@@ -1498,6 +1560,9 @@ struct Step {
     climb: Option<Vec3>,
     /// The mesh's ladder it climbs.
     rungs: Option<Rungs>,
+    /// Stepping off a ladder's top toward `target`: still on the ladder
+    /// it hangs there to shoot a breakable in the way (vent grilles).
+    dismount: bool,
 }
 
 /// A ladder being climbed: its foot (bottom going up, top going down),
@@ -1507,6 +1572,8 @@ struct Rungs {
     foot: Vec3,
     normal: Vec3,
     face: Vec3,
+    /// Climb this far off its middle line (along `Y × normal`), m.
+    shift: f32,
 }
 
 /// Walk the navigation mesh toward `goal` (feet positions) by the bot's
@@ -1589,13 +1656,50 @@ fn walk_route(
             }
         }
     }
+    // On a ladder: how long since the feet last moved up or down.
+    bot.climbed = match bot.climbed {
+        _ if !on_ladder => None,
+        Some((last, still)) if (feet.y - last).abs() <= LADDER_RISING => Some((last, still + dt)),
+        _ => Some((feet.y, 0.0)),
+    };
+    if !on_ladder {
+        bot.ladder_shift = 0.0;
+    }
+    // Stuck short of the top: try off the middle line, one side then the
+    // other (a hatch narrower than the ladder, off its middle: de_nuke's
+    // ladder room); after both, take it as far as it goes.
+    let still = bot.climbed.map_or(0.0, |c| c.1);
+    let topped_out = still > LADDER_TOPPED + 2.0 * LADDER_SIDESTEP_EACH;
+    // On a ladder, a point (its top or foot, or beyond) counts as reached
+    // only with the feet level with it, or a step above: turning to the
+    // next one any earlier steps off under the lip and falls, or hangs
+    // mid-ladder.
+    let short = |p: Vec3| {
+        on_ladder && (p.y - feet.y > LADDER_TOP_NEAR || feet.y - p.y > STEP_HEIGHT) && !topped_out
+    };
     while bot.next < bot.route.len()
         && (bot.route[bot.next] - feet).xz().length() < REACHED
         && (bot.route[bot.next].y - feet.y).abs() < LADDER_RISE
+        && !short(bot.route[bot.next])
     {
         bot.next += 1;
     }
+    if let Some(&p) = bot.route.get(bot.next)
+        && on_ladder
+        && p.y - feet.y > LADDER_TOP_NEAR
+        && still > LADDER_TOPPED
+    {
+        let turn = ((still - LADDER_TOPPED) / LADDER_SIDESTEP_EACH) as i32;
+        bot.ladder_shift = if turn % 2 == 0 { LADDER_SIDESTEP } else { -LADDER_SIDESTEP };
+    }
+    let ladder_top = |p: Vec3| nav.ladders.iter().any(|l| l.top.distance(p) < 0.05);
     let point = *bot.route.get(bot.next)?;
+    // Past a ladder's top, still on it: step off toward the next point.
+    let dismount = on_ladder
+        && bot.next > 0
+        && ladder_top(bot.route[bot.next - 1])
+        && (bot.route[bot.next - 1] - feet).xz().length() < LADDER_REACH
+        && (point.y - feet.y).abs() < LADDER_RISE;
     let to = point - feet;
     // Up or down a ladder: both ends near one of the mesh's ladders.
     let near_ladder = |p: Vec3| {
@@ -1616,6 +1720,7 @@ fn walk_route(
         jump: stuck || (to.y > STEP_HEIGHT && to.xz().length() < 1.5),
         crouch: nav.area_at(feet).is_some_and(|a| nav.areas[a].has(flags::CROUCH)),
         rungs: None,
+        dismount: false,
     };
     // One of the mesh's ladders (the route goes to its top or foot): get
     // on it from the front, square to it (spec "Path following", ladder
@@ -1625,6 +1730,11 @@ fn walk_route(
         .ladders
         .iter()
         .find(|l| if up { l.top } else { l.bottom }.distance(point) < 0.05);
+    if dismount && !ladder {
+        step.dismount = true;
+        step.jump = false;
+        return Some(step);
+    }
     if ladder && let Some(l) = mesh_ladder {
         let n = l.normal.with_y(0.0).normalize_or_zero();
         let foot = if up { l.bottom } else { l.top };
@@ -1673,9 +1783,29 @@ fn walk_route(
             foot,
             normal: n,
             face: -n,
+            shift: bot.ladder_shift,
         });
     }
     Some(step)
+}
+
+/// Away from the mesh's ladder the feet are at.
+fn off_ladder(nav: &NavMesh, feet: Vec3) -> Option<Step> {
+    let l = nav
+        .ladders
+        .iter()
+        .filter(|l| feet.y > l.bottom.y - 1.0 && feet.y < l.top.y + 1.0)
+        .min_by(|a, b| (a.bottom - feet).xz().length().total_cmp(&(b.bottom - feet).xz().length()))
+        .filter(|l| (l.bottom - feet).xz().length() < LADDER_REACH)?;
+    Some(Step {
+        dir: l.normal.with_y(0.0).normalize_or_zero(),
+        target: None,
+        jump: false,
+        crouch: false,
+        climb: None,
+        rungs: None,
+        dismount: false,
+    })
 }
 
 fn wrap(a: f32) -> f32 {

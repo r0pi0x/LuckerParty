@@ -321,10 +321,13 @@ fn draw_hud(
     mut ammo_text: Single<&mut Text, (With<AmmoText>, Without<HealthText>, Without<CenterText>)>,
     mut center: Single<&mut Text, (With<CenterText>, Without<HealthText>, Without<AmmoText>)>,
     game_hud: Option<Res<crate::map::hud::ActiveHud>>,
+    spectator: Option<Res<super::spectate::Spectator>>,
 ) {
     let Some(p) = player else { return };
-    // The game's own HUD draws health, armour and ammo when there is one.
-    let plain = game_hud.is_none();
+    // The game's own HUD draws health, armour and ammo when there is one;
+    // spectating, the spectator panel says who you watch instead.
+    let spectating = spectator.is_some_and(|s| s.active());
+    let plain = game_hud.is_none() && !spectating;
     let (health, armor, inv, score, dead) = *p;
     let score = score.copied().unwrap_or_default();
     let armor = match armor.filter(|a| a.amount > 0.0) {
@@ -355,7 +358,7 @@ fn draw_hud(
             None => String::new(),
         }
     };
-    center.0 = if dead.is_some() {
+    center.0 = if dead.is_some() && !spectating {
         "You died. Respawning...".into()
     } else {
         String::new()
@@ -579,10 +582,14 @@ fn character_bodies(
     }
 }
 
-/// The dead aren't drawn.
-fn show_bodies(mut bodies: Query<(&mut Visibility, Has<Dead>), (With<Intent>, Without<LocalPlayer>)>) {
-    for (mut vis, dead) in &mut bodies {
-        let want = if dead {
+/// The dead aren't drawn, nor the one a spectator looks out of.
+fn show_bodies(
+    mut bodies: Query<(Entity, &mut Visibility, Has<Dead>), (With<Intent>, Without<LocalPlayer>)>,
+    spectating: Option<Res<super::spectate::SpecView>>,
+) {
+    let in_eye = spectating.and_then(|s| s.in_eye);
+    for (e, mut vis, dead) in &mut bodies {
+        let want = if dead || in_eye == Some(e) {
             Visibility::Hidden
         } else {
             Visibility::Inherited

@@ -17,6 +17,15 @@ pub struct Sim {
     pub app: App,
 }
 
+/// `Sim::pad`'s resource.
+#[derive(Resource)]
+struct Padding(#[allow(dead_code)] usize);
+
+/// `MASHUP_TEST_PAD`, or 0.
+fn pad_from_env() -> usize {
+    std::env::var("MASHUP_TEST_PAD").ok().and_then(|v| v.parse().ok()).unwrap_or(0)
+}
+
 impl Sim {
     /// A headless app with the simulation plugins plus `plugins` (a map,
     /// and any game plugins whose implementations the test uses).
@@ -45,8 +54,24 @@ impl Sim {
         // Startup, and one tick so the physics spatial index contains the map.
         app.update();
         let mut sim = Self { app };
+        sim.pad(pad_from_env());
         sim.ticks(1);
         sim
+    }
+
+    /// Spawn `n` empty entities and a resource: every entity spawned
+    /// after gets another id (Bevy 0.19 resources are entities too).
+    /// Nothing may depend on entity ids; `MASHUP_TEST_PAD=<n>` pads
+    /// every `Sim` this way, to check a test's result doesn't change.
+    pub fn pad(&mut self, n: usize) {
+        if n == 0 {
+            return;
+        }
+        let world = self.app.world_mut();
+        for _ in 0..n {
+            world.spawn_empty();
+        }
+        world.insert_resource(Padding(n));
     }
 
     /// Run fixed ticks of `secs` from now on (e.g. a game's own tick).

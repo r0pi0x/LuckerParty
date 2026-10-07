@@ -2174,7 +2174,7 @@ fn before_shots(
 fn after_shots(
     mut events: MessageReader<WeaponEvent>,
     mut weapons: Query<(Option<&mut Inaccuracy>, Option<&mut Recoil>, Option<&AltModes>)>,
-    mut owners: Query<(&MovementState, &Velocity, Option<&mut ViewPunch>)>,
+    mut owners: Query<(&MovementState, &Velocity, Option<&mut ViewPunch>, Option<&crate::core::Seed>)>,
     mut commands: Commands,
     time: Res<Time>,
 ) {
@@ -2192,7 +2192,7 @@ fn after_shots(
             acc.value += acc.keys(modes.map_or(0, |m| m.current)).fire;
         }
         let Some(mut r) = recoil else { continue };
-        let Ok((state, vel, punch)) = owners.get_mut(e.owner) else {
+        let Ok((state, vel, punch, seed)) = owners.get_mut(e.owner) else {
             continue;
         };
         if now - r.last_shot > SHOTS_RESET {
@@ -2201,7 +2201,12 @@ fn after_shots(
         r.last_shot = now;
         r.shots += 1;
         // xorshift for the sideways direction.
-        r.rng = if r.rng == 0 { e.weapon.to_bits() | 1 } else { r.rng };
+        // From the owner's `Seed`: entity ids shift with any spawn.
+        r.rng = if r.rng == 0 {
+            seed.map_or(e.weapon.to_bits(), |s| s.0.wrapping_mul(0x9E37_79B9_7F4A_7C15)) | 1
+        } else {
+            r.rng
+        };
         r.rng ^= r.rng << 13;
         r.rng ^= r.rng >> 7;
         r.rng ^= r.rng << 17;
