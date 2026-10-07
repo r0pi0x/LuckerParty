@@ -67,6 +67,9 @@ pub struct SayFormats {
     pub team_spectator: String,
     /// The sound entry a chat line plays.
     pub sound: Option<String>,
+    /// "%s1 is joining the Terrorist force" by team number (`%s1` the
+    /// player).
+    pub joins: Vec<(u8, String)>,
 }
 
 /// One team's chat formats: alive, alive at a known place, dead.
@@ -87,11 +90,18 @@ impl Default for SayFormats {
             team: Vec::new(),
             team_spectator: "\u{1}(Spectator) \u{3}%s1\u{1} :  %s2".into(),
             sound: None,
+            joins: Vec::new(),
         }
     }
 }
 
 impl SayFormats {
+    /// The chat line saying `player` joins `team`, when the game has one.
+    pub fn join(&self, player: &str, team: u8) -> Option<Vec<(ChatColor, String)>> {
+        let (_, f) = self.joins.iter().find(|(t, _)| *t == team)?;
+        Some(colour_runs(&fill(f, &[player]), player))
+    }
+
     /// The line `sender` (of `team`, alive or not, at `place`) says to
     /// everyone or (`team_only`) to their team, as coloured runs.
     pub fn line(

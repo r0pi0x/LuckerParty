@@ -48,7 +48,7 @@ impl Plugin for BotPlugin {
         app.add_systems(FixedUpdate, radio::speak.after(crate::core::apply_damage));
         app.add_systems(
             FixedUpdate,
-            (hear, tactics::update, objectives::goals, think, objectives::act)
+            (hear, tactics::update, radio::obey, objectives::goals, think, objectives::act)
                 .chain()
                 .before(SimSet::Movement)
                 .before(crate::weapon::SelectWeapons),
@@ -260,6 +260,11 @@ pub struct Bot {
     hunting: bool,
     /// A teammate's call it answers: where they were, and when.
     assist: Option<(Vec3, f64)>,
+    /// A teammate's radio command it carries out (`radio::obey`), and
+    /// until when it presses on without waiting for the group ("Go go
+    /// go").
+    order: Option<radio::Ordered>,
+    urgent_until: f64,
     /// When it last saw or heard an enemy.
     contact: f64,
     /// Nav area it stands in, the one before, and where it came in.
@@ -309,6 +314,8 @@ pub enum Activity {
     Roaming,
     /// Going where it was sent (`Bot::move_to`).
     Sent,
+    /// Carrying out a teammate's radio command (`Bot::order`).
+    Obeying,
 }
 
 impl Bot {
@@ -378,6 +385,8 @@ impl Bot {
         self.next = 0;
         self.lead = None;
         self.assist = None;
+        self.order = None;
+        self.urgent_until = 0.0;
         self.roam = None;
         self.target = None;
         self.toss = None;
@@ -1234,6 +1243,10 @@ fn choose_goal(
         bot.activity = Activity::ToSite;
         return Some(at);
     }
+    // A teammate's radio command.
+    if let Some(goal) = radio::order_goal(bot, feet) {
+        return goal;
+    }
     let role = bot.orders.role;
     let site = bot.site.and_then(|s| tactics.sites.get(s));
     // A remembered enemy, if the role lets it go there.
@@ -1278,8 +1291,8 @@ fn choose_goal(
     };
     if bot.hold.is_none() {
         if role == Role::Attack && feet.distance(site.point) >= tactics::ARRIVE_RADIUS {
-            // On the way, as a group.
-            if let Some(plan) = plan.filter(|p| p.site == bot.site && p.leader.is_some()) {
+            // On the way, as a group (told to go: without waiting).
+            if let Some(plan) = plan.filter(|p| p.site == bot.site && p.leader.is_some() && !bot.urgent(now)) {
                 if plan.leader == Some(me) {
                     if plan.leader_wait {
                         bot.activity = Activity::Waiting;
