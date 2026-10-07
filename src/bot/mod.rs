@@ -182,6 +182,8 @@ pub struct Bot {
     blocked: f32,
     /// When it last jumped.
     jumped: f64,
+    /// It held jump last walking tick.
+    jump_down: bool,
     /// Current aim offset (yaw, pitch radians) and seconds until re-rolled.
     wobble: (Vec2, f32),
     /// Where an enemy was last seen or heard (feet), and when.
@@ -897,8 +899,14 @@ fn think(
             let b = bot.blocked;
             intent.use_key = b > USE_AFTER && (b / USE_PERIOD) as u32 % 2 == 0;
             let blocked = b > BLOCKED_JUMP && (b - BLOCKED_JUMP) % JUMP_PERIOD < dt * 1.5;
-            intent.jump = (step.jump && step.climb.is_none()) || blocked;
-            if intent.jump && state.on_ground {
+            let want = (step.jump && step.climb.is_none()) || blocked;
+            // Movement jumps on a fresh press only: a jump held through a
+            // jump area while stuck at its ledge is let go for a tick now
+            // and then, so the bot presses again.
+            let held = bot.jump_down;
+            intent.jump = want && !(held && state.on_ground && now - bot.jumped > JUMP_PERIOD as f64);
+            bot.jump_down = intent.jump;
+            if intent.jump && !held && state.on_ground {
                 bot.jumped = now;
             }
             // Duck in the air after a jump (a duck-jump clears higher

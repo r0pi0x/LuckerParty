@@ -1,6 +1,7 @@
 //! Loose items lying in the world, for any game (dropped weapons): a held
 //! model (`MapHeldModel`) as a small physics body that players walk
-//! through, like Source's debris.
+//! through (`core::ITEM_LAYER`), like Source's dropped weapons. Shots push
+//! it like any physics prop; it slides and tumbles over displacements.
 
 use std::collections::HashMap;
 
@@ -17,11 +18,15 @@ pub struct LooseItem(pub String);
 
 /// Kilograms (a rifle is about 4; the game's own weight isn't known).
 const MASS: f32 = 3.0;
+/// Friction (averaged with the world's 0.5): a guess that lets a shot
+/// weapon slide over the ground as CS:S's do (unmeasured).
+const FRICTION: f32 = 0.5;
 
 #[derive(Resource, Default)]
 pub(super) struct LooseAssets(pub(super) HashMap<String, LooseAsset>);
 
 pub(super) struct LooseAsset {
+    /// Its meshes (none headless).
     parts: Vec<(Handle<Mesh>, Handle<super::prop_material::PropMaterial>)>,
     /// From the held model's space (skeleton axes and units) to the item's
     /// frame, centred on its bounds.
@@ -72,11 +77,17 @@ pub(super) fn attach_loose(
         ent.insert((
             RigidBody::Dynamic,
             Collider::cuboid(half.x * 2.0, half.y * 2.0, half.z * 2.0),
+            CollisionLayers::new(crate::core::ITEM_LAYER, LayerMask::ALL),
             Mass(MASS),
-            Friction::new(0.8),
+            Friction::new(FRICTION),
             Restitution::new(0.1),
             LinearDamping(0.1),
-            AngularDamping(1.0),
+            AngularDamping(0.5),
+            // Small and fast when shot: swept so it can't pass through
+            // thin surfaces.
+            SweptCcd::default(),
+            MaxLinearSpeed(2000.0 * 0.0254),
+            MaxAngularSpeed(3600f32.to_radians()),
             PhysicsProp {
                 push: PushAway::Ignore,
                 mass: MASS,

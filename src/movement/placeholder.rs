@@ -61,7 +61,8 @@ fn step(
 ) {
     let dt = time.delta_secs();
     for (entity, intent, mut me, mut transform, mut vel, mut state, collider) in &mut q {
-        let filter = SpatialQueryFilter::from_excluded_entities([entity]).with_mask(crate::core::SOLID_LAYERS);
+        // Characters walk through ragdolls and loose items.
+        let filter = SpatialQueryFilter::from_excluded_entities([entity]).with_mask(crate::core::CHARACTER_FILTER);
         let config = MoveAndSlideConfig::default();
 
         // Horizontal: ease toward the wished velocity.

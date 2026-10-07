@@ -66,7 +66,10 @@ fn overlap(a: (Vec3, Vec3), b: (Vec3, Vec3)) -> bool {
 /// Shove props away from players (spec 4.2.2).
 fn push_props(
     players: Query<(&Transform, &Velocity, &SourceMovement)>,
-    mut props: Query<(&Transform, &PhysicsProp, Forces), Without<SourceMovement>>,
+    mut props: Query<
+        (&Transform, &PhysicsProp, Forces),
+        (Without<SourceMovement>, Without<RigidBodyDisabled>, Without<ColliderDisabled>),
+    >,
     cfg: Res<SourceMovementConfig>,
 ) {
     for (pt, pv, me) in &players {

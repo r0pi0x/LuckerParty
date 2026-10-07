@@ -12,7 +12,7 @@ use mashup::{
     games::{
         self, cs_source,
         cs_source::{
-            movement::{SourceMovementPlugin, to_engine},
+            movement::{SourceMovementPlugin, to_engine, to_source},
             weapons::{AK47, CsWeaponsPlugin, KNIFE},
         },
     },
@@ -279,4 +279,106 @@ fn office_windows_lose_shot_panes() {
         }
     }
     assert!(done, "no window could be shot");
+}
+
+/// How far (Source units, along the approach) a crouched player starting
+/// `dist` units out on each open side of a vent walks toward its centre
+/// in a second; the side's start and the distance.
+fn walk_into(sim: &mut Sim, e: &MapEntity, dist: f32) -> Vec<(Vec3, f32)> {
+    let (lo, _) = bounds(e);
+    let (centre, sides) = approaches(e, dist);
+    let mut out = Vec::new();
+    for side in sides {
+        let feet = Vec3::new(side.x, side.y, lo.z + 1.0);
+        let p = sim.spawn_character(to_engine(feet + Vec3::Z * 36.0), cs_source::movement::ID);
+        sim.intent(p).crouch = true;
+        sim.ticks(40);
+        let start = to_source(sim.position(p));
+        if start.truncate().distance(side.truncate()) > 4.0 || start.z < lo.z - 8.0 {
+            // No floor there (outside the duct), or pushed out: not an
+            // approach.
+            sim.app.world_mut().despawn(p);
+            continue;
+        }
+        let d = (centre - side).truncate().normalize();
+        {
+            // Intent yaw 0 looks along Source +Y (yaw 90).
+            let mut i = sim.intent(p);
+            i.yaw = d.y.atan2(d.x) - std::f32::consts::FRAC_PI_2;
+            i.move_axis = Vec2::Y;
+        }
+        sim.seconds(1.0);
+        let end = to_source(sim.position(p));
+        out.push((side, (end - start).truncate().dot(d)));
+        sim.app.world_mut().despawn(p);
+    }
+    out
+}
+
+/// How far (Source units) a small box swept from each side of a vent
+/// toward the other gets, as physics-query movement (and shots) see it.
+fn sweep_through(sim: &mut Sim, e: &MapEntity) -> Vec<f32> {
+    let (centre, sides) = approaches(e, 32.0);
+    let world = sim.app.world_mut();
+    let mut state = SystemState::<SpatialQuery>::new(world);
+    let q = state.get(world).unwrap();
+    let filter = SpatialQueryFilter::default().with_mask(mashup::core::CHARACTER_FILTER);
+    sides
+        .iter()
+        .map(|side| {
+            let (a, b) = (to_engine(*side), to_engine(centre));
+            let dir = Dir3::new(b - a).unwrap();
+            let config = ShapeCastConfig::from_max_distance(2.0 * (b - a).length());
+            q.cast_shape(&Collider::cuboid(0.1, 0.1, 0.1), a, Quat::IDENTITY, dir, &config, &filter)
+                .map_or(f32::MAX, |h| h.distance / 0.0254)
+        })
+        .collect()
+}
+
+#[test]
+fn nuke_vents_block_players_again_after_a_restart() {
+    let Some(map) = load("de_nuke") else { return };
+    let vents = vents(&map);
+    let entities = map.entities.clone();
+    let mut sim = sim(map);
+    sim.ticks(3);
+    let blocked = |walked: &[(Vec3, f32)]| walked.iter().all(|(_, w)| *w < 20.0);
+    let swept: Vec<Vec<f32>> = vents.iter().map(|&i| sweep_through(&mut sim, &entities[i])).collect();
+    for &i in &vents {
+        let w = walk_into(&mut sim, &entities[i], 32.0);
+        eprintln!("vent {i}: whole {w:?}");
+        assert!(!w.is_empty(), "vent {i} has an approach");
+        assert!(blocked(&w), "vent {i} blocks when whole: {w:?}");
+    }
+    sim.app.world_mut().resource_mut::<Logic>().world.queue_input(
+        "func_breakable",
+        "Break",
+        mashup::logic::Value::Void,
+        0.0,
+        None,
+    );
+    sim.seconds(1.0);
+    for &i in &vents {
+        assert!(broken(&sim, i));
+        let w = walk_into(&mut sim, &entities[i], 32.0);
+        eprintln!("vent {i}: broken {w:?}");
+        assert!(w.iter().any(|(_, w)| *w > 30.0), "vent {i} lets players through: {w:?}");
+    }
+    for round in 0..2 {
+        sim.app.world_mut().resource_mut::<RoundRestarts>().0 += 1;
+        sim.ticks(3);
+        for &i in &vents {
+            assert!(!broken(&sim, i));
+            let w = walk_into(&mut sim, &entities[i], 32.0);
+            eprintln!("vent {i}: restored (round {round}) {w:?}");
+            assert!(blocked(&w), "vent {i} blocks again after restart {round}: {w:?}");
+        }
+        for (k, &i) in vents.iter().enumerate() {
+            let now = sweep_through(&mut sim, &entities[i]);
+            eprintln!("vent {i}: swept {:?} whole, {now:?} restored", swept[k]);
+            for (a, b) in swept[k].iter().zip(&now) {
+                assert!((a - b).abs() < 1.0, "vent {i} collides again after restart {round}: {a} vs {b}");
+            }
+        }
+    }
 }
