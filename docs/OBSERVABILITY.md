@@ -122,7 +122,7 @@ Only `Reflect`-registered types are visible; register new core components in
   +bot_give weapon_hegrenade +mashup_drawbots 1 +mashup_watch 1
   +cam_idealdist 600 +cam_idealyaw 70 ++attack --frames 130` shows the bot
   hearing you behind the long crate and lobbing an HE over it.
-- Spectating: `kill` (in a rounds game, `+mashup_rounds 1`) starts the
+- Spectating: `mashup_hurtme chest 500` (in a rounds game, `+mashup_rounds 1`) starts the
   death cam; 2 s later the camera watches a living teammate. Drive it
   with `spec_mode 4|5|6` (first person, chase, free look), `spec_next`
   and `spec_prev`, `mp_forcecamera 0` to watch enemies too; the state is
