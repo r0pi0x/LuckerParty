@@ -119,10 +119,6 @@ a first bot are in.
   check the knife's mark (`ManhackCut` is a guess) and lit decals (wood,
   glass) against the game; tracers are in (every 4th bullet, spec
   tracers.md; check N and the look in play); explosion impulses.
-- dust2's woven basket physics props (`props_junk`/`wicker` style pots):
-  parts of the lid and rim don't draw (seen from above, faces missing).
-  Suspect the model converter's winding fix-up (it winds triangles
-  against the vertex normals) or back-face culling of a two-sided part.
 - Dropping weapons, remaining (`drop`/G, pickup and death drops are in,
   `weapon/drop.rs`): throw speed, the re-pick delay, pickup reach and
   mass, friction (0.5) and the box collider are guesses (measure on
