@@ -139,9 +139,13 @@ pub(super) fn plugin(app: &mut App) {
         .init_resource::<RoundState>()
         .add_message::<RoundEnded>();
     let cvars: [(&str, &str, fn(&mut RoundSettings) -> &mut f32); 3] = [
-        ("mp_freezetime", "Seconds frozen at the start of each round.", |r| &mut r.freeze_time),
+        ("mp_freezetime", "Seconds frozen at the start of each round.", |r| {
+            &mut r.freeze_time
+        }),
         ("mp_roundtime", "Minutes per round.", |r| &mut r.round_time),
-        ("mp_buytime", "Minutes buying stays open after the freeze.", |r| &mut r.buy_time),
+        ("mp_buytime", "Minutes buying stays open after the freeze.", |r| {
+            &mut r.buy_time
+        }),
     ];
     for (name, help, field) in cvars {
         resource_cvar::<RoundSettings, f32>(app, name, help, field);
@@ -239,10 +243,7 @@ pub(super) fn run_rounds(world: &mut World) {
 /// Living and present characters per side.
 fn team_counts(world: &mut World) -> ([u32; 2], [u32; 2]) {
     let (mut alive, mut present) = ([0; 2], [0; 2]);
-    for (team, health, dead) in world
-        .query::<(&Team, &Health, Has<Dead>)>()
-        .iter(world)
-    {
+    for (team, health, dead) in world.query::<(&Team, &Health, Has<Dead>)>().iter(world) {
         if let Some(s) = side(*team) {
             present[s] += 1;
             if !dead && health.current > 0.0 {

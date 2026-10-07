@@ -271,7 +271,7 @@ fn dust2_bot_round_stats() {
                     }
                     lengths.push(now - since);
                     stats.push(format!(
-                        "round {played}: T to {}, winner {:?}, {:.1} s, contact {}, kills {k}, alive T {alive_t} CT {alive_ct}",
+                        "round {played}: attackers to {}, winner {:?}, {:.1} s, contact {}, kills {k}, alive T {alive_t} CT {alive_ct}",
                         sites.last().unwrap(),
                         winner.map(|t| if t.0 == 1 { "T" } else { "CT" }),
                         now - since,

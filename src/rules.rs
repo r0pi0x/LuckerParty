@@ -125,8 +125,10 @@ fn count_deaths(mut died: MessageReader<Died>, mut scores: Query<&mut Score>, mu
                 e.insert(Score { kills: 1, deaths: 0 });
             }
         }
+        // The dead body stops being solid (a ragdoll takes its place), so
+        // it neither blocks the living nor holds them up.
         if let Ok(mut e) = commands.get_entity(d.entity) {
-            e.insert(Dead { since: now });
+            e.insert((Dead { since: now }, ColliderDisabled));
         }
     }
 }
@@ -145,7 +147,10 @@ fn hold_the_dead(mut dead: Query<&mut Intent, With<Dead>>) {
 
 fn respawn(world: &mut World) {
     // Rounds respawn everyone at the round's start instead.
-    if world.get_resource::<rounds::RoundSettings>().is_some_and(|r| r.enabled != 0) {
+    if world
+        .get_resource::<rounds::RoundSettings>()
+        .is_some_and(|r| r.enabled != 0)
+    {
         return;
     }
     let now = world.resource::<Time>().elapsed_secs_f64();
@@ -200,7 +205,7 @@ pub(crate) fn put_at_spawn(world: &mut World, e: Entity, fresh: bool) {
             }
         }
         let Ok(mut ent) = world.get_entity_mut(e) else { return };
-        ent.remove::<Dead>();
+        ent.remove::<(Dead, ColliderDisabled)>();
         if fresh {
             ent.insert(Inventory::default());
         }
@@ -228,7 +233,9 @@ pub(crate) fn put_at_spawn(world: &mut World, e: Entity, fresh: bool) {
             let team = world.get::<Team>(e).map(|t| t.0);
             // Rounds start from the team's own kit (you buy the rest);
             // deathmatch adds the extras everyone gets.
-            let rounds = world.get_resource::<rounds::RoundSettings>().is_some_and(|r| r.enabled != 0);
+            let rounds = world
+                .get_resource::<rounds::RoundSettings>()
+                .is_some_and(|r| r.enabled != 0);
             let mut kit = starting.for_team(team);
             if rounds {
                 kit.retain(|id| !starting.all.contains(id));

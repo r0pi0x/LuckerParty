@@ -837,11 +837,22 @@ fn think(
         // view.
         let looking = intent.look_rotation() * Vec3::NEG_Z;
         let los = |a: Vec3, b: Vec3| world_trace(a, b).is_none() && !smoke.iter().any(|s| s.blocks(a, b));
-        let look = choose_look(&mut bot, nav, eye, feet, step.map(|s| s.dir), looking, now, &los);
+        let mut look = choose_look(&mut bot, nav, eye, feet, step.map(|s| s.dir), looking, now, &los);
+        let mut pitch_limit = LOOK_PITCH;
+        if let Some(step) = step {
+            if let Some(rung) = step.climb {
+                // A ladder: face it, looking up (or down) the way to go.
+                look = rung + Vec3::Y * (rung.y - feet.y).signum() * 2.0;
+                pitch_limit = 1.4;
+            } else if bot.blocked > USE_AFTER {
+                // Stuck: face the way (a door to open, a ledge to jump).
+                look = eye + step.dir * 2.0;
+            }
+        }
         bot.look_at = Some(look);
         let to = look - eye;
         let want_yaw = (-to.x).atan2(-to.z);
-        let want_pitch = to.y.atan2(to.xz().length()).clamp(-LOOK_PITCH, LOOK_PITCH);
+        let want_pitch = to.y.atan2(to.xz().length()).clamp(-pitch_limit, pitch_limit);
         let turn = cfg.turn_rate.to_radians() * SCAN_TURN * dt;
         intent.yaw = wrap(intent.yaw + wrap(want_yaw - intent.yaw).clamp(-turn, turn));
         intent.pitch += (want_pitch - intent.pitch).clamp(-turn, turn);
@@ -864,19 +875,24 @@ fn think(
             let rot = intent.yaw_rotation();
             let (fwd, right) = (rot * Vec3::NEG_Z, rot * Vec3::X);
             let axis = Vec2::new(dir.dot(right), dir.dot(fwd));
-            // Full speed whichever way (the larger key fully pressed).
-            intent.move_axis = axis / axis.abs().max_element().max(1e-3);
-            // Walking into something: jump it after a moment.
-            if velocity.xz().length() < BLOCKED_SPEED {
+            // Full speed whichever way (the larger key fully pressed); on
+            // a ladder, straight at it.
+            intent.move_axis = if step.climb.is_some() {
+                Vec2::Y
+            } else {
+                axis / axis.abs().max_element().max(1e-3)
+            };
+            // Walking into something: press use now and then (doors),
+            // jump it every so often (ledges).
+            if velocity.length() < BLOCKED_SPEED {
                 bot.blocked += dt;
             } else {
                 bot.blocked = 0.0;
             }
-            let blocked = bot.blocked > BLOCKED_JUMP;
-            if blocked {
-                bot.blocked = 0.0;
-            }
-            intent.jump = step.jump || blocked;
+            let b = bot.blocked;
+            intent.use_key = b > USE_AFTER && (b / USE_PERIOD) as u32 % 2 == 0;
+            let blocked = b > BLOCKED_JUMP && (b - BLOCKED_JUMP) % JUMP_PERIOD < dt * 1.5;
+            intent.jump = (step.jump && step.climb.is_none()) || blocked;
             if intent.jump && state.on_ground {
                 bot.jumped = now;
             }
@@ -886,6 +902,7 @@ fn think(
             intent.crouch = step.crouch || airborne;
         } else {
             bot.blocked = 0.0;
+            intent.use_key = false;
         }
     }
 }
@@ -900,6 +917,15 @@ const DUCK_JUMP: f64 = 0.8;
 /// Slower than this while walking for this long: jump, m/s and s.
 const BLOCKED_SPEED: f32 = 0.5;
 const BLOCKED_JUMP: f32 = 0.4;
+const JUMP_PERIOD: f32 = 0.8;
+/// Blocked this long: face the way and press use every other
+/// `USE_PERIOD` (doors open on a press), s.
+const USE_AFTER: f32 = 0.25;
+const USE_PERIOD: f32 = 0.15;
+/// A route point at least this much above or below, this close (flat),
+/// is up or down a ladder, m.
+const LADDER_RISE: f32 = 1.2;
+const LADDER_REACH: f32 = 1.5;
 /// Seconds without contact a bot holds before moving on: attackers on a
 /// site they took go to the next one, defenders go hunting.
 const ATTACK_PATIENCE: (f64, f64) = (20.0, 35.0);
@@ -1221,6 +1247,8 @@ struct Step {
     dir: Vec3,
     jump: bool,
     crouch: bool,
+    /// The point up or down a ladder it climbs to.
+    climb: Option<Vec3>,
 }
 
 /// Walk the navigation mesh toward `goal` (feet positions) by the bot's
@@ -1259,12 +1287,27 @@ fn walk_route(
         (bot.route, bot.route_areas) = points.unwrap_or_default().into_iter().unzip();
         bot.next = 0;
     }
-    while bot.next < bot.route.len() && (bot.route[bot.next] - feet).xz().length() < REACHED {
+    while bot.next < bot.route.len()
+        && (bot.route[bot.next] - feet).xz().length() < REACHED
+        && (bot.route[bot.next].y - feet.y).abs() < LADDER_RISE
+    {
         bot.next += 1;
     }
     let point = *bot.route.get(bot.next)?;
     let to = point - feet;
+    // Up or down a ladder: both ends near one of the mesh's ladders.
+    let near_ladder = |p: Vec3| {
+        nav.ladders.iter().any(|l| {
+            (p.xz() - l.bottom.xz()).length() < LADDER_REACH
+                && p.y > l.bottom.y.min(l.top.y) - 1.0
+                && p.y < l.bottom.y.max(l.top.y) + 1.0
+        })
+    };
+    let ladder = to.y.abs() > STEP_HEIGHT
+        && to.xz().length() < LADDER_REACH
+        && (to.y.abs() > LADDER_RISE || (near_ladder(point) && near_ladder(feet)));
     Some(Step {
+        climb: ladder.then_some(point),
         dir: to.with_y(0.0).normalize_or_zero(),
         // Jump up ledges higher than a step, and when stuck.
         jump: stuck || (to.y > STEP_HEIGHT && to.xz().length() < 1.5),
