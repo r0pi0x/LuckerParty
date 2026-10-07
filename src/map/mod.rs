@@ -1359,6 +1359,17 @@ pub struct MapFog {
 #[derive(Clone, Debug)]
 pub struct MapSky {
     pub faces: [(usize, u8); 6],
+    /// HDR versions of the faces (same order and orientations), shown
+    /// instead when the map loads in HDR.
+    pub hdr: Option<Arc<[MapHdrImage; 6]>>,
+}
+
+/// A linear RGB image with values above 1 (an HDR sky face), top row first.
+#[derive(Clone, Debug, Default)]
+pub struct MapHdrImage {
+    pub width: u32,
+    pub height: u32,
+    pub rgb: Vec<[f32; 3]>,
 }
 
 /// Presentation choices that differ between games, measured against the
@@ -1379,6 +1390,20 @@ pub struct MapLook {
     /// Sample lightmaps with a bicubic B-spline filter (4 bilinear taps)
     /// instead of bilinear.
     pub bicubic_lightmaps: bool,
+    /// HDR presentation (Source's mat_hdr_level 1 and 2): cameras render
+    /// in HDR with bloom and, at level 2, auto exposure. None: LDR.
+    pub hdr: Option<MapHdr>,
+}
+
+/// How a map is shown in HDR: the client's cameras follow it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MapHdr {
+    /// Auto exposure: the scale on the scene's light stays within
+    /// (min, max). None: no exposure (Source's mat_hdr_level 1, bloom
+    /// only).
+    pub exposure: Option<(f32, f32)>,
+    /// Bloom strength, 1 = the game's default (Source's bloom scale).
+    pub bloom_scale: f32,
 }
 
 impl Default for MapLook {
@@ -1390,6 +1415,7 @@ impl Default for MapLook {
             tonemapping: true,
             source_ldr_lightmaps: false,
             bicubic_lightmaps: false,
+            hdr: None,
         }
     }
 }
@@ -3964,6 +3990,11 @@ fn attach_sky(
 /// Six faces into one cube texture. Faces narrower than tall or shorter
 /// than wide (Source sides are often half height) are stretched to square.
 fn sky_image(sky: &MapSky, textures: &[MapTexture]) -> Image {
+    if let Some(faces) = sky.hdr.as_deref()
+        && std::env::var_os("MASHUP_SKY_DEBUG").is_none()
+    {
+        return hdr_sky_image(sky, faces);
+    }
     let size = sky
         .faces
         .iter()
@@ -3991,26 +4022,58 @@ fn sky_image(sky: &MapSky, textures: &[MapTexture]) -> Image {
         let t = &textures[tex];
         for y in 0..size {
             for x in 0..size {
-                // Rotate clockwise by `turns` quarter turns: sample the source
-                // pixel that lands at (x, y).
-                let (mut u, mut v) = (x, y);
-                for _ in 0..turns % 4 {
-                    (u, v) = (v, size - 1 - u);
-                }
-                if turns >= 4 {
-                    u = size - 1 - u;
-                }
-                // Skip each face's outermost texel row and column: sky
-                // textures leave them as borders (dust2's side faces end in
-                // a black row) that the game never shows, while a cube map
-                // blends them in at every seam.
-                let inner = |p: u32, n: u32| 1 + (p as u64 * n.saturating_sub(2) as u64 / size as u64) as u32;
-                let (sx, sy) = (inner(u, t.width).min(t.width - 1), inner(v, t.height).min(t.height - 1));
+                let (sx, sy) = sky_texel(x, y, size, turns, t.width, t.height);
                 let i = ((sy * t.width + sx) * 4) as usize;
                 data.extend_from_slice(&t.rgba8[i..i + 4]);
             }
         }
     }
+    sky_cube_image(size, data, TextureFormat::Rgba8UnormSrgb)
+}
+
+/// Which texel of a `w` x `h` sky face lands at (x, y) of a `size` cube
+/// face.
+fn sky_texel(x: u32, y: u32, size: u32, turns: u8, w: u32, h: u32) -> (u32, u32) {
+    // Rotate clockwise by `turns` quarter turns: sample the source
+    // pixel that lands at (x, y).
+    let (mut u, mut v) = (x, y);
+    for _ in 0..turns % 4 {
+        (u, v) = (v, size - 1 - u);
+    }
+    if turns >= 4 {
+        u = size - 1 - u;
+    }
+    // Skip each face's outermost texel row and column: sky
+    // textures leave them as borders (dust2's side faces end in
+    // a black row) that the game never shows, while a cube map
+    // blends them in at every seam.
+    let inner = |p: u32, n: u32| 1 + (p as u64 * n.saturating_sub(2) as u64 / size as u64) as u32;
+    (inner(u, w).min(w - 1), inner(v, h).min(h - 1))
+}
+
+/// The HDR sky (`MapSky::hdr`) as a linear half-float cube map.
+fn hdr_sky_image(sky: &MapSky, faces: &[MapHdrImage; 6]) -> Image {
+    let size = faces.iter().map(|f| f.width.max(f.height)).max().unwrap_or(1).max(1);
+    let mut data = Vec::with_capacity((size * size * 8 * 6) as usize);
+    for (face, (_, turns)) in faces.iter().zip(sky.faces) {
+        for y in 0..size {
+            for x in 0..size {
+                let [r, g, b] = if face.width == 0 || face.height == 0 {
+                    [0.0; 3]
+                } else {
+                    let (sx, sy) = sky_texel(x, y, size, turns, face.width, face.height);
+                    face.rgb[(sy * face.width + sx) as usize]
+                };
+                for c in [r, g, b, 1.0] {
+                    data.extend_from_slice(&half::f16::from_f32(c).to_le_bytes());
+                }
+            }
+        }
+    }
+    sky_cube_image(size, data, TextureFormat::Rgba16Float)
+}
+
+fn sky_cube_image(size: u32, data: Vec<u8>, format: TextureFormat) -> Image {
     let mut image = Image::new(
         Extent3d {
             width: size,
@@ -4019,7 +4082,7 @@ fn sky_image(sky: &MapSky, textures: &[MapTexture]) -> Image {
         },
         TextureDimension::D2,
         data,
-        TextureFormat::Rgba8UnormSrgb,
+        format,
         RenderAssetUsages::RENDER_WORLD,
     );
     image.texture_view_descriptor = Some(bevy::render::render_resource::TextureViewDescriptor {

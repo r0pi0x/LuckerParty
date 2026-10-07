@@ -46,10 +46,20 @@ const NOT_SOLID: TextureFlags = TextureFlags::SKY2D
     .union(TextureFlags::SKIP);
 
 pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
+    load_level(mount, name, 0)
+}
+
+/// Load at a Source `mat_hdr_level`: 0 LDR (the default, what refcmp
+/// matches); 1 LDR lighting with bloom; 2 the map's HDR lighting (lumps
+/// 53, 51/55, 54) with auto exposure and bloom. Maps without HDR lighting
+/// load as LDR at any level, as in the game.
+pub fn load_level(mount: &Mount, name: &str, hdr_level: u8) -> Result<MapData, String> {
     let path = format!("maps/{name}.bsp");
     let bytes = mount.read(&path).map_err(|e| format!("{path}: {e}"))?;
     let bsp = Bsp::read(&bytes).map_err(|e| format!("{path}: {e}"))?;
-    let (mut data, layout) = convert(&bsp, &bytes, name);
+    let hdr_level = if lightmap::hdr_lighting_lump(&bytes).is_some() { hdr_level.min(2) } else { 0 };
+    let (mut data, layout) = convert_level(&bsp, &bytes, name, hdr_level >= 2);
+    data.look = source_look_level(hdr_level, &data.entities);
 
     let mut materials = MaterialLoader::new(&bsp, mount);
     for mesh in &mut data.meshes {
@@ -100,7 +110,7 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
     }
     data.sky_vis = Some(sky_vis(&bsp, &bytes));
     data.visibility = visibility(&bsp, &bytes).map(std::sync::Arc::new);
-    let lighting = super::ambient::MapLighting::read(&bytes);
+    let lighting = super::ambient::MapLighting::read_level(&bytes, hdr_level >= 2);
     let occluders = super::ambient::Occluders::new(
         &shadow_hulls(&bsp, &super::ambient::raw_leaves(&bytes)),
         (&data.collision_positions, &data.collision_indices),
@@ -206,7 +216,7 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
     }
     super::decals::add_decals(&bsp, &layout, &mut materials, &mut data);
     super::overlays::add_overlays(&bsp, &bytes, &layout, &mut materials, &mut data);
-    super::sky::add_sky(&bsp, &mut materials, &mut data);
+    super::sky::add_sky(&bsp, &mut materials, &mut data, hdr_level >= 2);
     // Cubemap samples (lump 42: origin as three ints, then a size): the
     // baked cubemap at each, for objects that take the nearest.
     for origin in cubemap_samples(&bytes) {
@@ -327,7 +337,16 @@ pub struct LightmapLayout {
 /// Geometry, collision, lightmaps and spawns, without materials.
 /// `bytes` is the whole BSP file (for lumps vbsp doesn't keep as stored).
 pub fn convert(bsp: &Bsp, bytes: &[u8], name: &str) -> (MapData, LightmapLayout) {
-    let lighting = lightmap::lighting_lump(bytes);
+    convert_level(bsp, bytes, name, false)
+}
+
+/// `convert`, with the HDR lightmaps (lump 53) when `hdr` and the map has
+/// them.
+pub fn convert_level(bsp: &Bsp, bytes: &[u8], name: &str, hdr: bool) -> (MapData, LightmapLayout) {
+    let lighting = match hdr {
+        true => lightmap::hdr_lighting_lump(bytes).unwrap_or_else(|| lightmap::lighting_lump(bytes)),
+        false => lightmap::lighting_lump(bytes),
+    };
     let leaves = super::ambient::raw_leaves(bytes);
     // Switchable light styles (32+) whose lights start off (spawnflag 1);
     // the others are lit at map start (cs_office's projector, cs_assault's
@@ -918,7 +937,87 @@ pub fn source_look() -> crate::map::MapLook {
         // CS:S runs r_lightmap_bicubic 1 (read over RCON; seen in a
         // RenderDoc capture as 4 taps per lightmap page).
         bicubic_lightmaps: true,
+        hdr: None,
     }
+}
+
+/// `source_look` at a `mat_hdr_level` (already lowered to 0 for maps
+/// without HDR lighting). Level 2 keeps lightmaps linear (shaders.md
+/// section 1: in HDR they aren't stored gamma-encoded; their scale is
+/// engine-defined and taken as 1 here, an open question) and adds auto
+/// exposure within the map's tone-map controller bounds; levels 1 and 2
+/// add bloom.
+pub fn source_look_level(hdr_level: u8, entities: &[crate::map::MapEntity]) -> crate::map::MapLook {
+    let mut look = source_look();
+    if hdr_level == 0 {
+        return look;
+    }
+    let t = tonemap_controller(entities);
+    look.hdr = Some(crate::map::MapHdr {
+        exposure: (hdr_level >= 2).then_some((t.exposure_min, t.exposure_max)),
+        bloom_scale: t.bloom_scale,
+    });
+    if hdr_level >= 2 {
+        look.source_ldr_lightmaps = false;
+    }
+    look
+}
+
+/// What the map's `env_tonemap_controller` is told at map start.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TonemapController {
+    pub exposure_min: f32,
+    pub exposure_max: f32,
+    pub bloom_scale: f32,
+}
+
+/// The game's tone-map defaults without a controller: the cvars
+/// mat_autoexposure_min 0.5, mat_autoexposure_max 2 and mat_bloomscale 1
+/// (their public defaults).
+pub const DEFAULT_TONEMAP: TonemapController = TonemapController {
+    exposure_min: 0.5,
+    exposure_max: 2.0,
+    bloom_scale: 1.0,
+};
+
+/// The tone-map settings an `env_tonemap_controller` gets from map-start
+/// outputs (`OnMapSpawn` of `logic_auto`, how every stock map sets them):
+/// SetAutoExposureMin, SetAutoExposureMax and SetBloomScale. Other inputs
+/// and outputs fired later aren't followed.
+pub fn tonemap_controller(entities: &[crate::map::MapEntity]) -> TonemapController {
+    let names: Vec<&str> = entities
+        .iter()
+        .filter(|e| e.classname().eq_ignore_ascii_case("env_tonemap_controller"))
+        .filter_map(|e| e.get("targetname"))
+        .collect();
+    let mut t = DEFAULT_TONEMAP;
+    for e in entities.iter().filter(|e| e.classname().eq_ignore_ascii_case("logic_auto")) {
+        for (key, value) in &e.keyvalues {
+            if !key.eq_ignore_ascii_case("OnMapSpawn") {
+                continue;
+            }
+            // target, input, parameter, delay, times: ESC-separated when
+            // there is one, else commas.
+            let sep = if value.contains('\u{1b}') { '\u{1b}' } else { ',' };
+            let parts: Vec<&str> = value.split(sep).collect();
+            let (Some(target), Some(input), Some(param)) = (parts.first(), parts.get(1), parts.get(2)) else {
+                continue;
+            };
+            if !names.iter().any(|n| n.eq_ignore_ascii_case(target.trim())) {
+                continue;
+            }
+            let Ok(v) = param.trim().parse::<f32>() else {
+                continue;
+            };
+            match input.to_ascii_lowercase().as_str() {
+                "setautoexposuremin" => t.exposure_min = v,
+                "setautoexposuremax" => t.exposure_max = v,
+                "setbloomscale" => t.bloom_scale = v,
+                _ => {}
+            }
+        }
+    }
+    t
 }
 
 /// Contents that stop players: solid world, glass, grates, player clips.
@@ -1332,4 +1431,59 @@ fn cubemap_samples(bytes: &[u8]) -> Vec<[i32; 3]> {
             [i(0), i(1), i(2)]
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tonemap_tests {
+    use super::*;
+    use crate::map::MapEntity;
+
+    fn entity(kv: &[(&str, &str)]) -> MapEntity {
+        MapEntity {
+            keyvalues: kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            ..default()
+        }
+    }
+
+    #[test]
+    fn tonemap_controller_follows_map_start_outputs() {
+        // de_nuke's set-up (commas), plus an ESC-separated output and one
+        // aimed at something else.
+        let entities = [
+            entity(&[("classname", "env_tonemap_controller"), ("targetname", "tonemap_global")]),
+            entity(&[
+                ("classname", "logic_auto"),
+                ("OnMapSpawn", "tonemap_global,SetAutoExposureMin,0,0,-1"),
+                ("OnMapSpawn", "tonemap_global,SetAutoExposureMax,2.5,0,-1"),
+                ("OnMapSpawn", "tonemap_global\u{1b}SetBloomScale\u{1b}.6\u{1b}0\u{1b}-1"),
+                ("OnMapSpawn", "other,SetAutoExposureMax,9,0,-1"),
+            ]),
+        ];
+        let t = tonemap_controller(&entities);
+        assert_eq!((t.exposure_min, t.exposure_max, t.bloom_scale), (0.0, 2.5, 0.6));
+        // No controller: the game's defaults.
+        assert_eq!(tonemap_controller(&entities[1..]), DEFAULT_TONEMAP);
+    }
+
+    #[test]
+    fn hdr_levels_change_the_look_only_above_zero() {
+        let entities = [
+            entity(&[("classname", "env_tonemap_controller"), ("targetname", "tonemap")]),
+            entity(&[("classname", "logic_auto"), ("OnMapSpawn", "tonemap,SetAutoExposureMax,1,0.1,-1")]),
+        ];
+        let ldr = source_look_level(0, &entities);
+        assert!(ldr.hdr.is_none() && ldr.source_ldr_lightmaps);
+        let bloom = source_look_level(1, &entities);
+        assert!(bloom.source_ldr_lightmaps, "level 1 keeps LDR lighting");
+        assert_eq!(bloom.hdr.as_ref().map(|h| h.exposure), Some(None));
+        let hdr = source_look_level(2, &entities);
+        assert!(!hdr.source_ldr_lightmaps);
+        assert_eq!(
+            hdr.hdr,
+            Some(crate::map::MapHdr {
+                exposure: Some((0.5, 1.0)),
+                bloom_scale: 1.0
+            })
+        );
+    }
 }

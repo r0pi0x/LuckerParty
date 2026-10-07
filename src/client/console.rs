@@ -1616,9 +1616,11 @@ fn client_commands(app: &mut App) {
             // everyone respawns at the new spawn points.
             let id = format!("cs_source:{name}");
             w.insert_resource(crate::map::LoadedMapName(id.clone()));
+            // At the HDR level set now (mat_hdr_level), as the game does.
+            let hdr_level = w.get_resource::<super::hdr::HdrSettings>().map_or(0, |s| s.level);
             let task = bevy::tasks::AsyncComputeTaskPool::get().spawn({
                 let id = id.clone();
-                async move { crate::games::load_map(&id) }
+                async move { crate::games::load_map_level(&id, hdr_level) }
             });
             w.insert_resource(MapLoad { id: id.clone(), task });
             Ok(Some(format!("loading {id}...")))

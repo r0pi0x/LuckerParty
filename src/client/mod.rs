@@ -11,6 +11,7 @@ pub mod debug_views;
 pub mod effects;
 pub mod game_hud;
 pub mod game_menu;
+pub mod hdr;
 pub mod hud_sprites;
 pub mod hud;
 pub mod input;
@@ -225,6 +226,7 @@ impl Plugin for ClientPlugin {
                 game_menu::GameMenuPlugin,
                 senses::SensesPlugin,
                 spectate::SpectatePlugin,
+                hdr::HdrPlugin,
             ))
             .add_systems(PostStartup, spawn_local_player)
             .add_systems(Update, (follow_eye, zoom_camera).after(spectate::SpectateSet));

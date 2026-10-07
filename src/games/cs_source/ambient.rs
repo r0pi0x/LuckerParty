@@ -142,10 +142,20 @@ pub struct MapLighting {
 const DWL_FLAGS_INAMBIENTCUBE: i32 = 1;
 
 impl MapLighting {
+    /// The LDR lighting (falling back to HDR where a map has only that).
     pub fn read(bytes: &[u8]) -> Self {
-        let (mut index, mut samples) = (lump(bytes, 52), lump(bytes, 56));
+        Self::read_level(bytes, false)
+    }
+
+    /// With `hdr`, the HDR ambient cubes (51/55) and world lights (54)
+    /// first (mat_hdr_level 2), falling back to LDR where a map lacks them.
+    pub fn read_level(bytes: &[u8], hdr: bool) -> Self {
+        // (index, samples, lone cubes, world lights), in order of preference.
+        let (ldr, hdr_lumps) = ((52, 56, 15), (51, 55, 54));
+        let (first, second) = if hdr { (hdr_lumps, ldr) } else { (ldr, hdr_lumps) };
+        let (mut index, mut samples) = (lump(bytes, first.0), lump(bytes, first.1));
         if index.is_empty() || samples.is_empty() {
-            (index, samples) = (lump(bytes, 51), lump(bytes, 55));
+            (index, samples) = (lump(bytes, second.0), lump(bytes, second.1));
         }
         let raw = raw_leaves(bytes);
         let mut leaves = Vec::new();
@@ -153,9 +163,9 @@ impl MapLighting {
         // version 0 leaves (BSP v19: de_aztec, cs_office), or as the
         // ambient lump without an index (early v20: de_nuke, de_train).
         if index.is_empty() {
-            let mut lone = lump(bytes, 56);
+            let mut lone = lump(bytes, first.1);
             if lone.is_empty() {
-                lone = lump(bytes, 55);
+                lone = lump(bytes, second.1);
             }
             let cubes: Vec<AmbientCube> = if raw.iter().all(|l| l.ambient.is_some()) {
                 raw.iter().filter_map(|l| l.ambient).collect()
@@ -197,9 +207,9 @@ impl MapLighting {
         }
 
         let mut lights = Vec::new();
-        let mut wl = lump(bytes, 15);
+        let mut wl = lump(bytes, first.2);
         if wl.is_empty() {
-            wl = lump(bytes, 54);
+            wl = lump(bytes, second.2);
         }
         for l in wl.as_chunks::<88>().0 {
             let v = |at: usize| src(f32_at(l, at), f32_at(l, at + 4), f32_at(l, at + 8));

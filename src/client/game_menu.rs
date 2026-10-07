@@ -207,6 +207,11 @@ pub const SETTINGS: &[Setting] = &[
         label: "Show FPS",
         kind: SettingKind::Choice(&[("0", "Off"), ("1", "On"), ("2", "Detailed")]),
     },
+    Setting {
+        cvar: "mat_hdr_level",
+        label: "High dynamic range (next map)",
+        kind: SettingKind::Choice(&[("0", "None"), ("1", "Bloom"), ("2", "Full")]),
+    },
 ];
 
 impl Setting {
