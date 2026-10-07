@@ -52,13 +52,35 @@ potentially visible from anywhere inside it (PVS, run-length encoded).
 - Not culled: the 3D skybox (drawn by the sky camera only where the
   camera's leaf sees sky), physics props and their shadows (they move),
   characters, runtime decals, particles.
-- Not done: areaportals (closed doors/windows hiding what's behind them),
-  `func_occluder`, LOD models. See tech-debt.
+- Areaportals: the BSP's areas (leaf lump), areas lump (20), areaportals
+  lump (21) and clip portal vertices (41) give each leaf an area and each
+  func_areaportal/func_areaportalwindow an opening between two areas
+  (`vis::MapAreas`). Logic closes a portal while its linked door
+  (`target`) is fully closed, or by Open/Close/Toggle when unlinked
+  (`vis::AreaPortalStates`); a portal with glass or a grate in its
+  opening is never closed (`see_through`). Windows (func_areaportalwindow) stay open:
+  the game closes them beyond `FadeDist` but then draws the window brush
+  opaque, which we don't yet.
+  Each frame `vis::cull` floods from the camera's area through open
+  portals, each portal narrowing a screen rectangle (its opening's
+  projected bounds, intersected with the rectangle it was reached by;
+  an opening crossing the eye's plane covers the screen), and draws only
+  clusters in the PVS that have a leaf in a reached area. The water
+  reflection camera floods whole areas (no rectangle). `r_portalsopenall 1`
+  goes back to PVS only.
+- Not done: `func_occluder` (the occluder lump is unused), LOD models,
+  per-leaf frustum culling. See tech-debt.
 
 Prop fade distances: static props' `fademaxdist` (static prop lump) and
 prop entities' `fademaxdist` key hide the prop beyond that distance from
-its origin. The fade band between `fademindist` and `fademaxdist` is drawn
-fully opaque (no per-prop alpha yet). Fades apply with `r_novis 1` too.
+its origin. Between `fademindist` and `fademaxdist` the prop's meshes are
+dithered out (`vis::fade_band`: a Bevy `VisibilityRange` per mesh, a 4x4
+screen-door pattern in `prop.wgsl`/`prop_prepass.wgsl`, and for opaque
+props a dither-only fragment stage added to Bevy's depth-only prepass).
+Dithering keeps props in the opaque passes (no blending, no sorting) at
+the cost of a stipple instead of a smooth alpha. A negative `fademindist`
+(or one not below the far distance) pops at `fademaxdist` as before.
+Fades apply with `r_novis 1` too.
 
 ### Checks
 
@@ -113,6 +135,29 @@ entities as well as fewer triangles; chunks that are too small add
 entities. 512 and 4096 units measure about the same; 512 stays the
 default (finer culling, and what vischeck and the ray tests checked).
 `MASHUP_CHUNK_SIZE=<units>` overrides it for measurements.
+
+Areaportals (playtest build, `refcmp bench`, load 14-20 on 12 cores, so
+frame times swing 2x between runs; back-to-back runs with and without
+`+r_portalsopenall 1`):
+
+| map (views) | areaportals | frame ms avg (runs) | meshes drawn | map parts drawn (mean) |
+|---|---|---|---|---|
+| de_nuke (27) | on | 7.6 / 7.1 | 548 | 723 |
+| de_nuke (27) | open all | 16.2 / 8.8 | 548 | 726 |
+| cs_italy (6) | on | 8.2 | 412 | 539 |
+| cs_italy (6) | open all | 7.6 | 412 | 545 |
+| cs_office (11) | (has none) | 21.2 | 380 | 583 |
+
+At these views the gain is in the noise: their doors are open or out of
+view, the PVS already culls most of what lies beyond, and what remains
+beyond an opening but outside its screen rectangle is mostly outside the
+frustum anyway (meshes drawn don't change). The win is behind shut doors
+(cs_militia: 54 map parts behind its front door, cs_assault: 15; see
+`tests/map_areaportals.rs`). `refcmp vischeck` on de_nuke lists the same
+15 views, pixel for pixel, with and without `+r_portalsopenall 1`, so none
+come from areaportals; one of them, nav1627_90 (16k pixels: the room seen
+through the window beside the A site door, culled by the PVS), is over
+vischeck's 0.5% limit (backlog).
 
 ## Cheap wins found
 

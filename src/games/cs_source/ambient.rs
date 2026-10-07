@@ -26,6 +26,8 @@ pub struct RawLeaf {
     pub cluster: i16,
     /// Leaf flags: 0x01 sees the 3D sky, 0x04 sees the 2D sky.
     pub flags: u8,
+    /// Area (areaportals divide the map into areas; 0: none).
+    pub area: u16,
     pub mins: [i16; 3],
     pub maxs: [i16; 3],
     /// Its brushes: a range of the leaf-brush lump.
@@ -55,6 +57,7 @@ pub fn raw_leaves(bytes: &[u8]) -> Vec<RawLeaf> {
             cluster: i16_at(b, 4),
             // Area in the low 9 bits, flags in the high 7.
             flags: (u16::from_le_bytes([b[6], b[7]]) >> 9) as u8,
+            area: u16::from_le_bytes([b[6], b[7]]) & 0x1ff,
             mins: [i16_at(b, 8), i16_at(b, 10), i16_at(b, 12)],
             maxs: [i16_at(b, 14), i16_at(b, 16), i16_at(b, 18)],
             first_leaf_brush: u16::from_le_bytes([b[24], b[25]]),

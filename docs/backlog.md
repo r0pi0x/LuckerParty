@@ -257,11 +257,14 @@ docs/plans/active/sound.md.
 ## 9. Performance
 
 Measured and culled (docs/performance.md): `mashup_perf`, `refcmp bench`,
-PVS culling by world chunk, prop fade distances. Left:
-- Areaportals (closed doors and windows hide what's behind them) and
-  `func_occluder`.
-- Prop fade bands (alpha between `fademindist` and `fademaxdist`) and
-  LOD models.
+PVS culling by world chunk, areaportals (closed doors hide what's behind
+them; views clipped through openings), prop fade distances with dithered
+fade bands. Left:
+- `func_occluder`; fading physics/animated props; LOD models.
+- de_nuke `refcmp vischeck` view nav1627_90: the PVS culls the room seen
+  through the window beside the A site door (16k pixels, over the 0.5%
+  limit). Find why that cluster isn't in the PVS (translucent window
+  contents?) and keep it.
 - Measure on the Windows PC (`refcmp bench` there) and set a budget.
 - Frame-time follow-ups (performance.md, "Cheap wins found"): take
   before/after numbers on a quiet machine; props as hierarchies of their

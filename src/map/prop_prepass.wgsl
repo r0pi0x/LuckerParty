@@ -1,7 +1,8 @@
 // Depth prepass for alpha-tested props: drop the texels the main pass
-// drops (prop.wgsl).
+// drops (prop.wgsl), including those dithered out in a fade band.
 
 #import bevy_pbr::prepass_io::VertexOutput
+#import mashup::dither::dithered_out
 
 // The start of PropParams.
 struct PropParamsHead {
@@ -15,6 +16,11 @@ struct PropParamsHead {
 
 @fragment
 fn fragment(in: VertexOutput) {
+#ifdef VISIBILITY_RANGE_DITHER
+    if dithered_out(in.position, in.visibility_range_dither) {
+        discard;
+    }
+#endif
 #ifdef VERTEX_UVS_A
     let a = textureSample(base_texture, base_sampler, in.uv).a * params.base_color.a;
     if params.alpha_cutoff > 0.0 && a < params.alpha_cutoff {
