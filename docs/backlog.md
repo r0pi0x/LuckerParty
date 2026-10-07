@@ -130,6 +130,11 @@ burst), HUD, deathmatch and a first bot are in.
 - CS:S bot path costs and route variety (nav spec open questions 2–4),
   checking corners, teamwork, team roles (attackers to a site, defenders
   holding one; today both roam toward the objectives 70 % of the time).
+- Grenades, beyond the first pass: lineups from the nav mesh's hiding and
+  approach spots (smokes cutting sight lines rather than landing on the
+  objective point), flashes thrown around corners so they pop out of the
+  thrower's view without turning, not flashing teammates, running and
+  jump throws (carried velocity in the plan), "Fire in the hole" radio.
 
 ## 5. Console, remaining
 

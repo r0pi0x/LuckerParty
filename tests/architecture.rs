@@ -25,7 +25,7 @@ const ALLOWED: &[(&str, &[&str])] = &[
     // Map logic (entity I/O, triggers, movers): game-independent; games
     // feed it through `map::MapData::entities`.
     ("logic", &["core", "console", "map"]),
-    ("bot", &["core", "console", "slots", "character", "map"]),
+    ("bot", &["core", "console", "slots", "character", "map", "weapon"]),
     // `lib` = crate-root items such as `SimPlugins`.
     (
         "harness",

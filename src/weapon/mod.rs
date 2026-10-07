@@ -37,6 +37,11 @@ pub struct WeaponPlugin;
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct WeaponFrame;
 
+/// Weapon selection (`Inventory::wanted` applied, deploys): brains that
+/// pick weapons run before it.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SelectWeapons;
+
 impl Plugin for WeaponPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<WeaponRegistry>()
@@ -51,7 +56,11 @@ impl Plugin for WeaponPlugin {
             .add_systems(
                 FixedUpdate,
                 (
-                    (give_starting_weapons, drop::pick_up, select_weapons)
+                    (
+                        give_starting_weapons,
+                        drop::pick_up,
+                        select_weapons.in_set(SelectWeapons),
+                    )
                         .chain()
                         .before(SimSet::Movement),
                     drop::drop_on_death.after(SimSet::Weapons),

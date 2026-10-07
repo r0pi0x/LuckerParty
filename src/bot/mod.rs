@@ -5,7 +5,11 @@
 //! reaction time and is on target. With nobody in sight it walks the map's
 //! navigation mesh to where it last saw or heard an enemy (sounds within
 //! their falloff range: shots carry far, footsteps less), else roams to
-//! random places on the mesh.
+//! random places on the mesh. Now and then it throws a grenade it carries
+//! at a remembered enemy or at the objective it walks to (`grenades`), and
+//! it looks away from flashes about to go off.
+
+mod grenades;
 
 use std::sync::Arc;
 
@@ -19,14 +23,22 @@ use crate::{
     core::{Health, Intent, LocalPlayer, MovementState, SimSet, SpawnPoint, Team},
     map::nav::{NavMesh, STEP_HEIGHT, flags},
     slots::{Loadout, MovementSlot},
+    weapon::{Inventory, grenade::Projectile},
 };
+
+pub use grenades::{GrenadePlan, follow, plan_throw};
 
 pub struct BotPlugin;
 
 impl Plugin for BotPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<BotConfig>()
-            .add_systems(FixedUpdate, (hear, think).chain().before(SimSet::Movement));
+        app.init_resource::<BotConfig>().add_systems(
+            FixedUpdate,
+            (hear, think)
+                .chain()
+                .before(SimSet::Movement)
+                .before(crate::weapon::SelectWeapons),
+        );
         resource_cvar::<BotConfig, u8>(app, "bot_stop", "1: bots stand still.", |c| &mut c.stop);
         resource_cvar::<BotConfig, u8>(app, "bot_dont_shoot", "1: bots never fire.", |c| &mut c.dont_shoot);
         resource_cvar::<BotConfig, f32>(
@@ -34,6 +46,12 @@ impl Plugin for BotPlugin {
             "bot_reaction",
             "Seconds a bot needs to see you before firing.",
             |c| &mut c.reaction,
+        );
+        resource_cvar::<BotConfig, u8>(
+            app,
+            "bot_grenades",
+            "Bots throw grenades: 0 never, 1 now and then, 2 whenever they can.",
+            |c| &mut c.grenades,
         );
         resource_cvar::<BotConfig, f32>(app, "bot_aim_error", "Bot aim wobble, degrees.", |c| &mut c.aim_error);
         resource_cvar::<BotConfig, f32>(app, "bot_turn_rate", "Bot turn speed, degrees per second.", |c| {
@@ -78,6 +96,8 @@ pub struct BotConfig {
     pub turn_rate: f32,
     /// Aim wobble, degrees (re-rolled every `AIM_REROLL` seconds).
     pub aim_error: f32,
+    /// Grenades: 0 never, 1 now and then, 2 whenever a throw is possible.
+    pub grenades: u8,
 }
 
 impl Default for BotConfig {
@@ -88,6 +108,7 @@ impl Default for BotConfig {
             reaction: 0.35,
             turn_rate: 360.0,
             aim_error: 2.5,
+            grenades: 1,
         }
     }
 }
@@ -114,6 +135,17 @@ pub struct Bot {
     pub lead: Option<(Vec3, f64)>,
     /// Where the bot is roaming to (feet), with nothing better to do.
     roam: Option<Vec3>,
+    /// The roaming goal is one of the map's objectives.
+    roam_objective: bool,
+    /// A grenade throw in progress, and the latest plan (shown until).
+    toss: Option<grenades::Toss>,
+    plan: Option<(GrenadePlan, f64)>,
+    /// No throw before this; next look for a chance to throw.
+    next_toss: f64,
+    next_toss_check: f64,
+    /// Looking away from a flash; flashes already noticed.
+    avert: Option<grenades::Avert>,
+    watched: Vec<Entity>,
 }
 
 impl Bot {
@@ -125,6 +157,21 @@ impl Bot {
     /// Where the bot is roaming to, with nothing better to do.
     pub fn roam_goal(&self) -> Option<Vec3> {
         self.roam
+    }
+
+    /// The grenade throw planned or carried out lately.
+    pub fn grenade_plan(&self) -> Option<&GrenadePlan> {
+        self.plan.as_ref().map(|(p, _)| p)
+    }
+
+    /// Throwing a grenade now.
+    pub fn throwing(&self) -> bool {
+        self.toss.is_some()
+    }
+
+    /// Looking away from a flash about to go off: from where.
+    pub fn averting(&self) -> Option<Vec3> {
+        self.avert.map(|a| a.from)
     }
 }
 
@@ -263,7 +310,7 @@ const BLIND_ALPHA: f32 = 0.5;
 /// Seconds between new aim wobbles.
 const AIM_REROLL: f32 = 0.4;
 
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn think(
     mut bots: Query<(
         Entity,
@@ -274,8 +321,11 @@ fn think(
         &Team,
         &Health,
         Option<&crate::core::Blinded>,
+        Option<&mut Inventory>,
     )>,
     others: Query<(Entity, &Transform, &Team, &Health), With<Intent>>,
+    arms: grenades::Arms,
+    projectiles: Query<(Entity, &Transform, &Projectile)>,
     smoke: Query<&crate::core::SightBlocker>,
     spatial: SpatialQuery,
     nav: Option<Res<NavMesh>>,
@@ -292,14 +342,42 @@ fn think(
     }
     let objective_points: &[Vec3] = goals.as_ref().map_or(&[], |(_, g)| g);
     let now = time.elapsed_secs_f64();
-    for (me, mut bot, mut intent, t, state, team, health, blinded) in &mut bots {
+    // World traces for flash sight (a line) and grenade arcs (the
+    // grenade's box swept, half size given): characters aren't in the way.
+    let filter = SpatialQueryFilter::default().with_mask(crate::core::SOLID_LAYERS);
+    let not_character = |e: Entity| !others.contains(e);
+    let world_trace = |a: Vec3, b: Vec3| -> Option<(Vec3, Vec3)> {
+        let d = b - a;
+        let dir = Dir3::new(d).ok()?;
+        spatial
+            .cast_ray_predicate(a, dir, d.length(), true, &filter, &not_character)
+            .map(|h| (a + *dir * h.distance, h.normal))
+    };
+    let box_trace = |a: Vec3, b: Vec3, half: f32| -> Option<(Vec3, Vec3)> {
+        let d = b - a;
+        let dir = Dir3::new(d).ok()?;
+        let config = ShapeCastConfig {
+            max_distance: d.length(),
+            ignore_origin_penetration: true,
+            ..ShapeCastConfig::DEFAULT
+        };
+        let shape = Collider::cuboid(half * 2.0, half * 2.0, half * 2.0);
+        spatial
+            .cast_shape_predicate(&shape, a, Quat::IDENTITY, dir, &config, &filter, &not_character)
+            .map(|h| (a + *dir * h.distance, h.normal1.normalize_or_zero()))
+    };
+    for (me, mut bot, mut intent, t, state, team, health, blinded, mut inv) in &mut bots {
         if health.current <= 0.0 {
             bot.target = None;
+            bot.toss = None;
+            bot.avert = None;
             continue;
         }
         let eye = t.translation + state.eye_offset;
-        // A flashed bot sees nothing until the white is mostly gone.
-        let blind = blinded.is_some_and(|b| b.alpha_at(now) > BLIND_ALPHA);
+        // A flashed bot sees nothing until the white is mostly gone, and
+        // aims worse while it fades.
+        let white = blinded.map_or(0.0, |b| b.alpha_at(now));
+        let blind = white > BLIND_ALPHA;
         // The nearest living enemy in sight.
         let mut best: Option<(Entity, Vec3, f32)> = None;
         for (e, ot, oteam, oh) in &others {
@@ -323,6 +401,60 @@ fn think(
             }
         }
 
+        // Flashes in flight it sees: now and then look away until they pop.
+        bot.watched.retain(|g| projectiles.contains(*g));
+        if !blind {
+            for (g, gt, p) in &projectiles {
+                let flash = matches!(p.effect, crate::weapon::grenade::GrenadeEffect::Flash(_));
+                let at = gt.translation;
+                if !flash
+                    || p.thrower == Some(me)
+                    || bot.watched.contains(&g)
+                    || at.distance(eye) > grenades::FLASH_WATCH
+                    || world_trace(eye, at).is_some()
+                    || smoke.iter().any(|s| s.blocks(eye, at))
+                {
+                    continue;
+                }
+                bot.watched.push(g);
+                if bot.rand() < grenades::FLASH_REACT {
+                    let left = (p.fuse - p.ticks as f32 * dt).max(0.0);
+                    bot.avert = Some(grenades::Avert {
+                        from: at,
+                        until: now + left as f64 + 0.3,
+                        grenade: Some(g),
+                    });
+                }
+            }
+        }
+        if let Some(a) = bot.avert.as_mut() {
+            match a.grenade.map(|g| projectiles.get(g)) {
+                Some(Ok((_, gt, _))) => a.from = gt.translation,
+                // Gone: it popped.
+                Some(Err(_)) => a.until = now,
+                None => {}
+            }
+            if now >= a.until {
+                bot.avert = None;
+            }
+        }
+        if bot.toss.is_none() && bot.plan.as_ref().is_some_and(|(_, until)| now > *until) {
+            bot.plan = None;
+        }
+        // An enemy in sight before the pin is out: forget the throw.
+        if best.is_some()
+            && let Some(toss) = bot.toss.as_ref()
+            && toss.pulled.is_none()
+        {
+            let previous = toss.previous;
+            bot.toss = None;
+            if let Some(inv) = inv.as_deref_mut() {
+                inv.wanted = previous
+                    .filter(|p| inv.weapons.contains(p))
+                    .or_else(|| grenades::best_weapon(inv, &arms));
+            }
+        }
+
         intent.fire = false;
         match best {
             Some((e, aim, _)) => {
@@ -340,7 +472,8 @@ fn think(
                 bot.wobble.1 -= dt;
                 if bot.wobble.1 <= 0.0 {
                     let (a, r) = (bot.rand() * std::f32::consts::TAU, bot.rand().sqrt());
-                    bot.wobble = (Vec2::from_angle(a) * r * cfg.aim_error.to_radians(), AIM_REROLL);
+                    let error = cfg.aim_error * (1.0 + FLASHED_AIM * white);
+                    bot.wobble = (Vec2::from_angle(a) * r * error.to_radians(), AIM_REROLL);
                 }
                 let to = aim - eye;
                 let want_yaw = (-to.x).atan2(-to.z) + bot.wobble.0.x;
@@ -356,6 +489,40 @@ fn think(
                 bot.target = None;
                 bot.seen = 0.0;
             }
+        }
+
+        // A throw in progress takes over.
+        if bot.toss.is_some() {
+            match inv.as_deref_mut() {
+                Some(inv) => {
+                    grenades::step_toss(&mut bot, &mut intent, inv, &arms, &cfg, now, dt);
+                }
+                None => bot.toss = None,
+            }
+            continue;
+        }
+        // Not throwing: a grenade in hand goes back for a gun.
+        if let Some(inv) = inv.as_deref_mut()
+            && inv
+                .active
+                .is_some_and(|a| arms.get(a).is_ok_and(|(_, t)| t.is_some_and(|t| !t.primed())))
+            && inv.wanted.is_none()
+            && let Some(gun) = grenades::best_weapon(inv, &arms)
+        {
+            inv.wanted = Some(gun);
+            intent.fire = false;
+        }
+        // Looking away from a flash: turn the back to it and wait.
+        if let Some(a) = bot.avert {
+            let away = eye - a.from;
+            let want_yaw = (-away.x).atan2(-away.z);
+            let step = cfg.turn_rate.to_radians() * dt;
+            intent.yaw = wrap(intent.yaw + wrap(want_yaw - intent.yaw).clamp(-step, step));
+            intent.pitch -= intent.pitch.clamp(-step, step);
+            intent.fire = false;
+            intent.move_axis = Vec2::ZERO;
+            intent.jump = false;
+            continue;
         }
 
         // Strafe in place, switching direction every 0.4-1.2 s.
@@ -378,13 +545,11 @@ fn think(
         };
         intent.jump = false;
         intent.crouch = false;
-        if bot.target.is_some() || cfg.stop != 0 {
+        if bot.target.is_some() {
             bot.route.clear();
             continue;
         }
-        let Some(nav) = nav.as_deref() else { continue };
         let feet = t.translation - Vec3::Y * CAPSULE_HEIGHT / 2.0;
-        let now = time.elapsed_secs_f64();
         // Chase what was seen or heard; once there (or it's stale), roam.
         if bot
             .lead
@@ -395,6 +560,26 @@ fn think(
         if bot.roam.is_some_and(|at| at.distance(feet) < ARRIVED) {
             bot.roam = None;
         }
+        // Now and then a grenade at the remembered enemy or the objective.
+        if let Some(inv) = inv.as_deref()
+            && cfg.grenades > 0
+            && cfg.dont_shoot == 0
+            && now >= bot.next_toss_check
+        {
+            bot.next_toss_check = now + grenades::TOSS_CHECK;
+            if now >= bot.next_toss {
+                consider_throw(&mut bot, inv, &arms, &cfg, eye, feet, now, dt, &box_trace);
+            }
+        }
+        if bot.toss.is_some() {
+            intent.move_axis = Vec2::ZERO;
+            continue;
+        }
+        if cfg.stop != 0 {
+            bot.route.clear();
+            continue;
+        }
+        let Some(nav) = nav.as_deref() else { continue };
         let goal = match bot.lead {
             Some((at, _)) => at,
             None => {
@@ -407,6 +592,7 @@ fn think(
                         let i = (bot.rand() * nav.areas.len() as f32) as usize % nav.areas.len();
                         nav.areas[i].center
                     });
+                    bot.roam_objective = at_objective;
                     bot.repath = 0.0;
                 }
                 match bot.roam {
@@ -416,6 +602,91 @@ fn think(
             }
         };
         walk_route(&mut bot, &mut intent, nav, feet, goal, &cfg, dt);
+    }
+}
+
+/// Aim error grows by this factor times the flash's whiteness (below the
+/// blind threshold).
+const FLASHED_AIM: f32 = 6.0;
+
+/// Maybe start a grenade throw: at the remembered enemy (an HE or a
+/// flash), else at the objective being walked to (a smoke or a flash),
+/// if an arc ends close enough to it.
+#[allow(clippy::too_many_arguments)]
+fn consider_throw(
+    bot: &mut Bot,
+    inv: &Inventory,
+    arms: &grenades::Arms,
+    cfg: &BotConfig,
+    eye: Vec3,
+    feet: Vec3,
+    now: f64,
+    dt: f32,
+    sweep: &dyn Fn(Vec3, Vec3, f32) -> Option<(Vec3, Vec3)>,
+) {
+    use crate::weapon::grenade::GrenadeKind;
+    let held = grenades::held(inv, arms);
+    if held.is_empty() {
+        return;
+    }
+    let always = cfg.grenades >= 2;
+    let in_range = |at: Vec3| {
+        let d = (at - feet).xz().length();
+        d >= grenades::TOSS_RANGE.0 && d <= grenades::TOSS_RANGE.1
+    };
+    let (target, kinds) = match (bot.lead, bot.roam) {
+        (Some((at, _)), _) if in_range(at) => {
+            if !(always || bot.rand() < grenades::TOSS_CHANCE_LEAD) {
+                return;
+            }
+            // Mostly an HE when there's a choice.
+            if bot.rand() < 0.65 {
+                (at, [GrenadeKind::Blast, GrenadeKind::Flash])
+            } else {
+                (at, [GrenadeKind::Flash, GrenadeKind::Blast])
+            }
+        }
+        (None, Some(at)) if bot.roam_objective && in_range(at) => {
+            if !(always || bot.rand() < grenades::TOSS_CHANCE_OBJECTIVE) {
+                return;
+            }
+            (at, [GrenadeKind::Smoke, GrenadeKind::Flash])
+        }
+        _ => return,
+    };
+    let Some((weapon, t)) = kinds
+        .iter()
+        .find_map(|k| held.iter().find(|(_, t)| t.effect.kind() == *k))
+    else {
+        return;
+    };
+    let kind = t.effect.kind();
+    let plan = grenades::plan_throw(
+        kind,
+        &t.throw,
+        &t.flight,
+        grenades::fuse_time(t.fuse, t.flight.check_interval, dt),
+        kind == GrenadeKind::Smoke,
+        eye,
+        target + Vec3::Y * grenades::aim_lift(kind),
+        &mut |a, b| sweep(a, b, t.flight.half),
+    );
+    match plan {
+        Some(plan) if plan.error <= grenades::tolerance(kind) => {
+            let (lo, hi) = grenades::TOSS_COOLDOWN;
+            bot.next_toss = now + lo + (hi - lo) * bot.rand() as f64;
+            bot.plan = Some((plan.clone(), now + grenades::PLAN_SHOWN));
+            bot.toss = Some(grenades::Toss {
+                weapon: *weapon,
+                previous: inv.active,
+                plan,
+                started: now,
+                pulled: None,
+                released: false,
+            });
+        }
+        // No good arc from here: look again in a while.
+        _ => bot.next_toss = now + 2.0,
     }
 }
 
