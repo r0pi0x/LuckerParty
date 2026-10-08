@@ -22,9 +22,10 @@ use crate::{
 
 use super::view_motion::{self, ViewMotion};
 
-/// `viewmodel_fov` default: horizontal degrees at 4:3 (spec
-/// view_models.md, constants).
-pub const VIEWMODEL_FOV: f32 = 54.0;
+/// `viewmodel_fov` default: horizontal degrees at 4:3. CS:S's is 54 (spec
+/// view_models.md, constants); ours starts at 80 by choice (a smaller,
+/// less screen-filling gun), changeable in the options.
+pub const VIEWMODEL_FOV: f32 = 80.0;
 /// `default_fov`: the player's normal field of view, same convention.
 pub const DEFAULT_FOV: f32 = 90.0;
 
@@ -505,6 +506,6 @@ mod tests {
         assert!(console.cvar("cl_righthand").unwrap().archive);
         assert!(console.cvar("viewmodel_fov").unwrap().archive);
         assert_eq!(console.cvar("cl_righthand").unwrap().default, "1");
-        assert_eq!(console.cvar("viewmodel_fov").unwrap().default, "54");
+        assert_eq!(console.cvar("viewmodel_fov").unwrap().default, "80");
     }
 }
