@@ -319,6 +319,7 @@ fn update(
     rounds: Option<Res<RoundState>>,
     bomb: Option<Res<crate::objectives::bomb::BombState>>,
     (time, clock_now): (Res<Time<Fixed>>, Res<Time>),
+    bars: Option<Res<super::spectate::SpectatorBarsUp>>,
     mut built: Local<(u64, f32)>,
     mut flash: Local<HealthFlash>,
     mut parts: Query<(
@@ -369,18 +370,22 @@ fn update(
         .and_then(|r| r.clock(time.elapsed_secs_f64()))
         .filter(|_| !planted);
     let ammo = active.and_then(|(_, m)| m).map(|m| (m.clip, m.reserve));
+    let bars_top = bars.and_then(|b| b.0);
     for (entity, part, mut node, text, text_font, text_color, mut vis) in &mut parts {
         let kind = match part {
             Part::Panel(k) | Part::Icon(k) | Part::Digits(k) | Part::Digits2(k) => Some(*k),
             Part::Bar => Some(PanelKind::Ammo),
             Part::Notices => None,
         };
+        // Spectating with the game's bars: they show the clock; the
+        // money goes with the rest of the player's HUD.
+        let spectating = bars_top.is_some();
         let shown = match kind {
             Some(PanelKind::Health) => !dead,
             Some(PanelKind::Armor) => !dead && armor.is_some(),
             Some(PanelKind::Ammo) => !dead && ammo.is_some(),
-            Some(PanelKind::Account) => money.is_some(),
-            Some(PanelKind::Timer) => clock.is_some(),
+            Some(PanelKind::Account) => money.is_some() && !spectating,
+            Some(PanelKind::Timer) => clock.is_some() && !spectating,
             None => true,
         };
         *vis = if shown {
@@ -396,7 +401,8 @@ fn update(
                 continue;
             };
             node.right = px(w - (panel.x.resolve(w, scale) + panel.wide * scale));
-            node.top = px(panel.y.resolve(h, scale));
+            // Below the spectator's top bar while it shows.
+            node.top = px(panel.y.resolve(h, scale).max(bars_top.map_or(0.0, |t| t + 4.0 * scale)));
             if *built != (notices.1, scale) {
                 *built = (notices.1, scale);
                 rebuild_notices(entity, &notices, hud, &fonts, scale, &mut commands);

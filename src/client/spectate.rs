@@ -342,6 +342,7 @@ impl Plugin for SpectatePlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(SpectateStatePlugin)
             .init_resource::<SpecView>()
+            .init_resource::<SpectatorBarsUp>()
             .init_resource::<ChaseOrbit>()
             .add_systems(
                 Update,
@@ -777,6 +778,7 @@ fn spectator_panel(
     ),
     (rounds, fixed): (Option<Res<crate::rules::rounds::RoundState>>, Res<Time<Fixed>>),
     mut last: Local<Option<BarsShot>>,
+    mut shown: ResMut<SpectatorBarsUp>,
     mut commands: Commands,
 ) {
     let (Ok((mut text, mut font, mut vis)), Ok((root, mut bars_vis))) = (panel.single_mut(), bars.single_mut()) else {
@@ -839,9 +841,12 @@ fn spectator_panel(
     let (Some((menus, layout, menu_layout)), Some(hud), true) = (layouts, hud.as_deref(), active) else {
         bars_vis.set_if_neq(Visibility::Hidden);
         *last = None;
+        shown.set_if_neq(SpectatorBarsUp(None));
         return;
     };
     bars_vis.set_if_neq(Visibility::Inherited);
+    let top = layout.get("topbar").map_or(52.0, |c| c.tall) * height / 480.0;
+    shown.set_if_neq(SpectatorBarsUp(Some(top)));
     let size = windows
         .iter()
         .next()
@@ -866,6 +871,13 @@ fn spectator_panel(
     draw_bars(&mut commands, root, &painter, menus, layout, menu_layout, &shot);
     *last = Some(shot);
 }
+
+/// Whether the game-look spectator bars are up, and the top bar's height
+/// in pixels: the HUD hides what they replace (round clock, money; health
+/// and ammo are gone while dead) and moves the death notices below the
+/// top bar.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
+pub struct SpectatorBarsUp(pub Option<f32>);
 
 /// What the bars show; redrawn when it changes.
 #[derive(Clone, Debug, PartialEq)]
