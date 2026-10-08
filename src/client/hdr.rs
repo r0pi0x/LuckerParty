@@ -167,7 +167,12 @@ fn hdr_cameras(
     view_models: Query<&Camera, With<ViewModelCamera>>,
     cameras: Query<
         (Entity, Has<Hdr>, Option<&HdrPost>),
-        Or<(With<FirstPersonCamera>, With<SkyboxCamera>, With<ViewModelCamera>)>,
+        Or<(
+            With<FirstPersonCamera>,
+            With<SkyboxCamera>,
+            With<ViewModelCamera>,
+            With<super::debug::UiCamera>,
+        )>,
     >,
     mut curves: ResMut<Assets<AutoExposureCompensationCurve>>,
     args: Option<Res<super::ClientArgs>>,
