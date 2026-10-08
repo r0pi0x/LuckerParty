@@ -44,6 +44,13 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   facing/banking and player train control. (Round restarts re-create
   entities: rounds plan.) Target: two
   real minigame maps from the user's downloads.
+- First minigame map: `mg_lego_multigames_v2` (in the user's content
+  cache). Fixed: impacts showing the sky on maps with water (decals were
+  in the depth prepass), packed materials whose names differ in case.
+  Open: about 11 fps at the breakable-block room (a perf pass is under
+  way), impacts don't land on brush entities (its walls are
+  func_breakable blocks; `decal::place_decals` projects only onto the
+  world and props).
 
 ## 2b. HUD and debug views
 

@@ -442,6 +442,18 @@ impl Material for DecalMaterial {
         AlphaMode::Mask(0.001)
     }
 
+    /// Kept out of the depth prepass (main views get one on maps with
+    /// water): written there, a decal's lifted depth would make the
+    /// surface under it fail the depth test in the main pass, and the
+    /// decal would then multiply whatever was drawn before (the sky).
+    fn enable_prepass() -> bool {
+        false
+    }
+
+    fn enable_shadows() -> bool {
+        false
+    }
+
     /// The framebuffer times twice the shader's output. Depth is written
     /// where the decal shows (the shader discards neutral texels), so the
     /// map's overlays and decals (lifted less) never draw over an impact,
@@ -490,6 +502,12 @@ impl Plugin for DecalMaterialPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn impacts_stay_out_of_the_depth_prepass() {
+        // Water maps' prepass would otherwise hide the wall under a decal.
+        assert!(!<DecalMaterial as Material>::enable_prepass());
+    }
 
     fn wall() -> TriSet {
         // A 4 m square wall facing +Z at z = 0, two triangles.
