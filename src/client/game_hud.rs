@@ -85,6 +85,48 @@ const NOTICE_SECONDS: f32 = 6.0;
 const MAX_NOTICES: usize = 4;
 const NOTICE_LINE: f32 = 22.0;
 
+/// The health panel's flash when health drops: the game's
+/// `HealthTookDamage` HUD animation (scripts/HudAnimations.txt): its
+/// colour goes to `HudIcon_Red` over 0.1 s, then pulses 4 times toward
+/// `OrangeDim` over a second. (Its blur is left out.)
+#[derive(Default)]
+struct HealthFlash {
+    last: Option<f32>,
+    since: Option<f32>,
+}
+
+impl HealthFlash {
+    const RISE: f32 = 0.1;
+    const PULSE: f32 = 1.0;
+    const PULSES: f32 = 4.0;
+
+    /// The health colour now, while flashing; `health` normalized.
+    fn colour(&mut self, health: Option<f32>, now: f32, red: Color, dim: Color) -> Option<Color> {
+        if let (Some(h), Some(last)) = (health, self.last)
+            && h < last
+            && h > 0.0
+        {
+            self.since = Some(now);
+        }
+        self.last = health;
+        let t = now - self.since?;
+        let mix = |a: Color, b: Color, k: f32| -> Color {
+            let (a, b) = (a.to_srgba(), b.to_srgba());
+            Color::Srgba(a.mix(&b, k.clamp(0.0, 1.0)))
+        };
+        if t < Self::RISE {
+            Some(mix(dim, red, t / Self::RISE))
+        } else if t < Self::RISE + Self::PULSE {
+            // VGUI's pulse: toward the target and back, `PULSES` times.
+            let k = 0.5 - 0.5 * ((t - Self::RISE) / Self::PULSE * Self::PULSES * std::f32::consts::TAU).cos();
+            Some(mix(red, dim, k))
+        } else {
+            self.since = None;
+            None
+        }
+    }
+}
+
 /// A kill to show: attacker, victim, weapon icon glyph, headshot.
 struct Notice {
     attacker: Option<(String, Option<Team>)>,
@@ -287,8 +329,9 @@ fn update(
     notices: Res<DeathNotices>,
     rounds: Option<Res<RoundState>>,
     bomb: Option<Res<crate::objectives::bomb::BombState>>,
-    time: Res<Time<Fixed>>,
+    (time, clock_now): (Res<Time<Fixed>>, Res<Time>),
     mut built: Local<(u64, f32)>,
+    mut flash: Local<HealthFlash>,
     mut parts: Query<(
         Entity,
         &Part,
@@ -309,6 +352,13 @@ fn update(
     let fg = hud.color("FgColor").unwrap_or(Color::srgb_u8(255, 176, 0));
     let warn = Color::srgb_u8(255, 0, 0);
     let font = |name: &str| fonts.0.get(name).cloned();
+    let health_now = player.as_ref().map(|p| p.0.current);
+    let health_colour = flash.colour(
+        health_now,
+        clock_now.elapsed_secs(),
+        hud.color("HudIcon_Red").unwrap_or(warn),
+        hud.color("OrangeDim").unwrap_or(fg),
+    );
     let (health, armor, active, dead, money) = match &player {
         Some(p) => {
             let (h, a, inv, dead, money) = **p;
@@ -450,7 +500,11 @@ fn update(
                     tf.font_size = FontSize::Px(tall * scale);
                 }
                 if let Some(mut c) = text_color {
-                    c.0 = if kind == PanelKind::Health && low { warn } else { fg };
+                    c.0 = match (kind, health_colour) {
+                        (PanelKind::Health, Some(flashed)) => flashed,
+                        (PanelKind::Health, None) if low => warn,
+                        _ => fg,
+                    };
                 }
             }
             Part::Notices => {}
@@ -610,6 +664,23 @@ fn rebuild_notices(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn health_flashes_red_when_it_drops() {
+        let (red, dim) = (Color::srgb(1.0, 0.0, 0.0), Color::srgb(1.0, 0.7, 0.0));
+        let mut f = HealthFlash::default();
+        assert_eq!(f.colour(Some(1.0), 0.0, red, dim), None);
+        // A drop starts it: red after the 0.1 s rise.
+        assert_eq!(f.colour(Some(0.8), 1.0, red, dim), Some(dim));
+        let at_rise = f.colour(Some(0.8), 1.1, red, dim).unwrap().to_srgba();
+        assert!((at_rise.red - 1.0).abs() < 1e-4 && at_rise.green < 1e-4, "{at_rise:?}");
+        // Half a pulse later (1/8 s): the dim colour.
+        let mid = f.colour(Some(0.8), 1.225, red, dim).unwrap().to_srgba();
+        assert!((mid.green - 0.7).abs() < 1e-3, "{mid:?}");
+        // Over after a second of pulses; healing never flashes.
+        assert_eq!(f.colour(Some(0.8), 2.2, red, dim), None);
+        assert_eq!(f.colour(Some(1.0), 2.3, red, dim), None);
+    }
 
     #[test]
     fn round_clock_reads_like_the_game() {

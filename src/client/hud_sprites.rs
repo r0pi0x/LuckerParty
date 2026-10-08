@@ -111,10 +111,18 @@ fn pain(
     };
     let (me, intent) = *me;
     for d in damage.read() {
-        if d.target != me || d.attacker.is_none_or(|a| a == me) {
+        if d.target != me {
             continue;
         }
-        let lit = sides(d.dir, intent.yaw);
+        // A fall has no direction: every side lights (a guess; see
+        // docs/tech-debt.md).
+        let lit = if d.kind == crate::core::DamageKind::Fall {
+            vec![0, 1, 2, 3]
+        } else if d.attacker.is_none_or(|a| a == me) {
+            continue;
+        } else {
+            sides(d.dir, intent.yaw)
+        };
         for mut p in &mut parts {
             if lit.contains(&p.0) {
                 p.1 = PAIN_SECONDS;

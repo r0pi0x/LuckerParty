@@ -4289,6 +4289,7 @@ dependencies = [
  "vmdl",
  "vmt-parser",
  "vtf",
+ "winit",
 ]
 
 [[package]]

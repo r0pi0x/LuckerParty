@@ -156,6 +156,8 @@ pub const DEFAULT_BINDS: &[(&str, &str)] = &[
     ("q", "lastinv"),
     ("g", "drop"),
     ("b", "buymenu"),
+    (",", "buyammo1"),
+    (".", "buyammo2"),
     ("m", "chooseteam"),
     ("tab", "+showscores"),
     ("z", "radio1"),
@@ -407,7 +409,7 @@ mod tests {
             assert!(names.contains(k), "{k} is not a key name");
             // Console commands run by `console::run_binds`; the rest are
             // read by their systems.
-            assert!(is_polled(c) || ["noclip"].contains(c), "{c}: not polled and not a known console default");
+            assert!(is_polled(c) || ["noclip", "buyammo1", "buyammo2"].contains(c), "{c}: not polled and not a known console default");
         }
         let mut keys: Vec<&str> = DEFAULT_BINDS.iter().map(|(k, _)| *k).collect();
         keys.sort();
