@@ -113,6 +113,8 @@ fn main() {
     .insert_resource(Loadout {
         movement: mashup::games::cs_source::movement::ID,
     })
+    // Network play: a listen server, or a client (`connect`).
+    .add_plugins(mashup::net::NetPlugin)
     .add_plugins(client::ClientPlugin { args })
     .run();
 }

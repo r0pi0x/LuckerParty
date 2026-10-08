@@ -13,6 +13,7 @@ pub mod logic;
 pub mod map;
 pub mod mount;
 pub mod movement;
+pub mod net;
 pub mod objectives;
 pub mod rules;
 pub mod slots;

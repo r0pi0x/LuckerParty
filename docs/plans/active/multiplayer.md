@@ -1,7 +1,9 @@
 # Plan: multiplayer
 
 Status: slice 0 done but per-tick server hitbox poses (moved to slice 4;
-2026-10-08); no networking yet. Recommendation:
+2026-10-08); slice 1 done (2026-10-08): a listen server and a dedicated
+server, direct-IP connect, characters replicated and drawn where the
+server puts them (no prediction yet). Recommendation:
 **bevy_replicon + renet (netcode over UDP)** for transport and
 replication; **our own Source-style prediction, interpolation and lag
 compensation** on top. Slices below; slice 0 is refactoring that pays off
@@ -413,13 +415,67 @@ with tests passing and something to see.
      jumping, ducking, an AK-47 spray and weapon switches replayed through
      `core::predict` from saved state: bit-identical, no sounds or damage;
      a client runs no damage or bots; pose history by tick).
-1. **[ ] Transport, connect/disconnect, replicated characters on the
+1. **[x] Transport, connect/disconnect, replicated characters on the
    greybox** (M, medium risk: the library choice is proven here). `net`
    module and layering rule, renet + replicon, `connect`/`disconnect`/
    `hostport`/`maxplayers`, listen server in the game binary, the
    dedicated binary, map handshake by name and hash (no download),
    characters spawned per client and their transforms replicated
    (drawn without prediction yet), `NetSim` with simulated latency.
+   Progress (2026-10-08):
+   - [x] bevy_replicon 0.44.3 + bevy_replicon_renet 0.20.0 (renet 2.0,
+     netcode UDP, unsecure) build on Bevy 0.19.1; `src/net/` with its
+     `ALLOWED` row (above the simulation, below client and harness).
+   - [x] Console: `connect <ip[:port]>` (27015 default), `disconnect`
+     (leaves, or stops hosting), `listen` (hosts the loaded map),
+     `status`, cvars `hostport`, `maxplayers`, `name`; `-port <n>` on
+     the command line. Source's way to host works: `maxplayers 4; map
+     <name>` (also `map greybox`) starts a listen server once the map has
+     loaded (`client::net::listen_if_hosting`).
+   - [x] Join handshake (replicon `AuthMethod::Custom`): the client sends
+     `Join { version, protocol hash, name }`; another `NET_VERSION` or
+     protocol hash, or a full server, gets `Refused { reason }` (the
+     client hangs up with it; the server drops it after 1 s). The
+     netcode protocol id is the same for every build so another build
+     hears why instead of timing out. Then `Welcome { map, SHA-256 of the
+     .bsp, tick interval, id }`: the client loads that map if it has
+     another one (`NetEvent::LoadMap` -> `map <name>`), compares the
+     hash (`MapData::file_hash`, kept as `map::MapFile`) and leaves on a
+     mismatch; it runs its fixed tick at the server's.
+   - [x] A character per client on the server (team with fewer players,
+     respawned by the rules at a spawn with the starting weapons). The
+     host's and bots' characters replicate too. Replicated:
+     `NetCharacter { owner, name }`, `NetBody` (origin, velocity, look,
+     eye offset, on ground/crouching/ladder/dead), `Team` (which picks
+     the body model) and `Health`. On a client they get the character
+     components without a movement slot; its own is `LocalPlayer` (camera
+     attached by the client). Leaving removes the character and weapons.
+   - [x] **Changed from the slice list:** so a client can move at all
+     before slice 2, it sends its latest `Intent` once a frame
+     (`NetIntent`, unreliable, made safe by the server: axis ≤ 1, finite
+     angles, pitch range, slot range) and the server applies the latest
+     one each tick. No command numbers, buffering or redundancy: slice 2
+     replaces it with usercmds bound to ticks.
+   - [x] Dedicated server `mashup_server` (`-port`, `+map greybox` or a
+     CS:S map, `+maxplayers`, `+bot_add`; console on stdin).
+   - [x] `harness::NetSim` (server + N clients in one process over
+     `net::memory`, seeded latency/jitter/loss) and `tests/it/net.rs`:
+     joining and seeing each other (and the host) move, looks and
+     crouch, disconnect cleanup both ways, version refused with its
+     reason, full server, map file mismatch, a lossy link converging,
+     and the real netcode over loopback on a system-picked port.
+   - [x] Two real games on the dev box (host `-port 27031`, client
+     `connect 127.0.0.1:27031`): each sees the other's capsule move
+     (screenshots), `status` shows the players and ping, `disconnect`
+     returns the client to the menu; a client on the dedicated server
+     sees its bot. How-to and Windows firewall notes:
+     docs/OBSERVABILITY.md, "Network play".
+   - Not yet (later slices): a `map` change while hosting doesn't take
+     clients along (slice 7: `changelevel`); `map` typed on a client
+     loads locally while still connected; clients see no weapons, shots,
+     chat, rounds or kill feed (slices 4-5); others are drawn at the
+     latest snapshot, stepping at the packet rate (slice 3); the
+     scoreboard's ping column isn't filled (slice 5).
 2. **[ ] Usercmds, server-authoritative movement, prediction and
    reconciliation** (L, high risk: the core of the feel). Command
    buffering bound to ticks, clock sync, the prediction loop and replay,

@@ -29,6 +29,25 @@ const ALLOWED: &[(&str, &[&str])] = &[
     // feed it through `map::MapData::entities`.
     ("logic", &["core", "console", "map"]),
     ("bot", &["core", "console", "slots", "character", "map", "weapon", "objectives"]),
+    // Network play: transport, replication, the join handshake. Above the
+    // simulation it serves, below the client and harness
+    // (docs/plans/active/multiplayer.md, section 3).
+    (
+        "net",
+        &[
+            "core",
+            "console",
+            "slots",
+            "character",
+            "movement",
+            "map",
+            "weapon",
+            "objectives",
+            "rules",
+            "bot",
+            "logic",
+        ],
+    ),
     // `lib` = crate-root items such as `SimPlugins`.
     (
         "harness",
@@ -46,6 +65,7 @@ const ALLOWED: &[(&str, &[&str])] = &[
             "rules",
             "bot",
             "logic",
+            "net",
         ],
     ),
     (
@@ -66,6 +86,7 @@ const ALLOWED: &[(&str, &[&str])] = &[
             "mount",
             "games",
             "logic",
+            "net",
         ],
     ),
     // Game plugins: may use the shared layers, never another game.

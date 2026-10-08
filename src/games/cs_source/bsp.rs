@@ -60,6 +60,8 @@ pub fn load_level(mount: &Mount, name: &str, hdr_level: u8) -> Result<MapData, S
     report(0.02, "LoadingProgress_LoadMap");
     let path = format!("maps/{name}.bsp");
     let bytes = mount.read(&path).map_err(|e| format!("{path}: {e}"))?;
+    // What the network handshake compares (`MapData::file_hash`).
+    let file_hash: [u8; 32] = sha2::Digest::finalize(<sha2::Sha256 as sha2::Digest>::new_with_prefix(&bytes)).into();
     // Community maps often ship LZMA-compressed lumps; our own lump
     // readers want them plain.
     let bytes = super::lumps::inflate(bytes);
@@ -69,6 +71,7 @@ pub fn load_level(mount: &Mount, name: &str, hdr_level: u8) -> Result<MapData, S
     let hdr_level = if lightmap::hdr_lighting_lump(&bytes).is_some() { hdr_level.min(2) } else { 0 };
     let (mut data, layout) = convert_level(&bsp, &bytes, name, hdr_level >= 2);
     data.look = source_look_level(hdr_level, &data.entities);
+    data.file_hash = Some(file_hash);
 
     report(0.15, "LoadingProgress_PrecacheWorld");
     let mut materials = MaterialLoader::new(&bsp, mount);

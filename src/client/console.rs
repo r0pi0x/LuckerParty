@@ -1773,6 +1773,10 @@ fn finish_map_load(w: &mut World) {
             w.resource_mut::<Console>()
                 .print(crate::console::Level::Error, format!("map {id}: {e}"));
             super::game_menu::map_load_failed(w);
+            // Joining a server needs its map.
+            if w.get_resource::<crate::core::NetRole>() == Some(&crate::core::NetRole::Client) {
+                crate::net::disconnect(w, &format!("couldn't load the server's map {id}: {e}"));
+            }
             return;
         }
     };
@@ -1801,6 +1805,7 @@ fn finish_map_load(w: &mut World) {
     crate::rules::new_game(w);
     w.resource_mut::<Console>().info(summary);
     super::game_menu::entered_game(w);
+    super::net::listen_if_hosting(w);
 }
 
 /// The greybox map in place of whatever map is loaded (`map greybox`, and
@@ -2057,6 +2062,7 @@ fn client_commands(app: &mut App) {
                 w.resource_mut::<Console>().submit("bot_kick");
                 load_greybox(w);
                 super::game_menu::entered_game(w);
+                super::net::listen_if_hosting(w);
                 return Ok(Some("loaded the greybox".into()));
             }
             if !map_names().is_empty() && !map_names().iter().any(|m| m == name) {
@@ -2079,8 +2085,9 @@ fn client_commands(app: &mut App) {
     )
     .console_command(
         "disconnect",
-        "Leave the game: bots kicked, the map unloaded, back to the main menu.",
+        "Leave the game (or stop hosting it): bots kicked, the map unloaded, back to the main menu.",
         |w, _| {
+            crate::net::disconnect(w, "Disconnect by user.");
             w.resource_mut::<Console>().submit("bot_kick");
             load_greybox(w);
             super::game_menu::left_game(w);
@@ -2092,10 +2099,12 @@ fn client_commands(app: &mut App) {
         Ok(None)
     })
     .console_command("quit", "Quit (binds and changed cvars are saved).", |w, _| {
+        crate::net::disconnect(w, "Quit.");
         w.write_message(AppExit::Success);
         Ok(None)
     })
     .console_command("exit", "Quit.", |w, _| {
+        crate::net::disconnect(w, "Quit.");
         w.write_message(AppExit::Success);
         Ok(None)
     })

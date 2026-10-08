@@ -25,6 +25,7 @@ mod map_sound_fx;
 mod mount_cs_source;
 mod movement;
 mod nav;
+mod net;
 mod objectives;
 mod phy_spec;
 mod prediction;

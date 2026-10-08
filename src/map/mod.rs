@@ -1104,6 +1104,10 @@ pub struct MapTraceSkip(pub Vec<usize>);
 #[derive(Clone, Debug, Default)]
 pub struct MapData {
     pub name: String,
+    /// SHA-256 of the map's file as read from the install (before any
+    /// lump inflating), for the network handshake (`net`): every player
+    /// must load the same file. None for maps built in code.
+    pub file_hash: Option<[u8; 32]>,
     pub meshes: Vec<MapMesh>,
     pub textures: Vec<MapTexture>,
     /// Baked reflection cubemaps (`MapEnvmap::cubemap` indexes these).
@@ -1737,6 +1741,15 @@ pub struct ActiveMapLook(pub MapLook);
 #[derive(Resource, Clone, Debug, Default, PartialEq)]
 pub struct LoadedMapName(pub String);
 
+/// The loaded map's name (`MapData::name`) and file hash
+/// (`MapData::file_hash`), set when it spawns, removed when it unloads.
+/// The network handshake compares them with the server's.
+#[derive(Resource, Clone, Debug, PartialEq, Eq)]
+pub struct MapFile {
+    pub name: String,
+    pub hash: Option<[u8; 32]>,
+}
+
 /// Marks every entity belonging to the loaded map.
 #[derive(Component)]
 pub struct MapPart;
@@ -1923,6 +1936,10 @@ fn spawn_map(
 ) {
     let data = &pending.0;
     let view = pending.1;
+    commands.insert_resource(MapFile {
+        name: data.name.clone(),
+        hash: data.file_hash,
+    });
     info!(
         "spawning map: world material {}, lightmap {}",
         if world_materials.is_some() {
@@ -3337,6 +3354,7 @@ pub fn unload_map(world: &mut World) {
         world.entity_mut(c).remove::<bevy::light::Skybox>();
     }
     world.remove_resource::<PendingMap>();
+    world.remove_resource::<MapFile>();
     world.remove_resource::<light_styles::StyledLightmaps>();
     world.remove_resource::<MapSkybox>();
     world.remove_resource::<PlayableArea>();
