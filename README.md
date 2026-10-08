@@ -1,10 +1,9 @@
-# Mashup prototype
+# Lucker Party
 
 Exploratory design for building minigames out of other games' assets, behavior
-and UI, and mixing those parts across games, as the engine of Lucker
-Party. Everything here is a prototype: a private repository, separate from the
-earlier Godot build, allowed to be messy, and expected to change as each
-imported game teaches us something.
+and UI, and mixing those parts across games; "mashup" is the engine and dev
+sandbox it runs on. Everything here is a prototype: allowed to be messy, and
+expected to change as each imported game teaches us something.
 
 Status: Bevy project set up (see CLAUDE.md for build commands). Working on the
 foundation milestone below.
@@ -41,8 +40,6 @@ plugin per game", which is what Bevy is. Rust also has Source format parsers
 (`vbsp`, `vmdl`, `vtf`, `vpk`). Known costs: Bevy API churn, immature UI, no
 editor (Blender-as-editor tooling partly covers it). The editor matters less
 here because imported content comes from importers, not hand placement.
-
-The current Godot game keeps working unchanged while this is explored.
 
 ## Architecture
 
@@ -304,7 +301,6 @@ never waits on asset formats.
 
 ## Open questions
 
-- Is this a new direction for Lucker Party or an experiment alongside it?
 - Which third game tests the interfaces best: MW2 or Minecraft?
 - How do players pick loadouts: fixed per minigame, chosen in a lobby, rolled
   by dice, or a mix?

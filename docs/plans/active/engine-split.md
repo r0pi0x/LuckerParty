@@ -108,7 +108,7 @@ Rules:
 3. [ ] Minigame definitions and rule modules; the existing modes as the
    first definitions.
 4. [ ] Networking; the Lucker Party app (lobby, party flow, rotation,
-   launcher), ported from the Godot prototype.
+   launcher).
 
 ## Module sorting (to fill in at step 3)
 
