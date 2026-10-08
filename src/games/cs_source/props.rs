@@ -751,9 +751,12 @@ pub fn add_static_props(
 ) {
     let mut placements = Vec::new();
     for prop in bsp.static_props() {
-        if prop.flags.contains(vbsp::StaticPropLumpFlags::NO_DRAW) {
-            continue;
-        }
+        // The stored NO_DRAW flag (0x4) is not read: the public BSP
+        // description marks it "computed at run time based on dx level",
+        // and community maps' version-10 prop lumps carry it on props the
+        // game draws (surf_boreas: its ramps, rocks and trees; no stock
+        // map sets it). Every stock and cached map leaves the dx level
+        // range open, so nothing else hides a static prop.
         placements.push(PropPlacement {
             model: prop.model().to_lowercase(),
             skin: prop.skin,
