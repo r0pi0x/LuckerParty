@@ -19,6 +19,8 @@ crc32fast = "1.5.2"
 dirs = "7.0.0"
 half = "2.7.1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# LZMA-compressed BSP lumps (bspzip -repack; vbsp already depends on it).
+lzma-rs = "0.3"
 # The window icon (`winit::window::Icon`; the winit bevy_winit uses).
 winit = { version = "0.30", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }

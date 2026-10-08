@@ -56,6 +56,9 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
 pub fn load_level(mount: &Mount, name: &str, hdr_level: u8) -> Result<MapData, String> {
     let path = format!("maps/{name}.bsp");
     let bytes = mount.read(&path).map_err(|e| format!("{path}: {e}"))?;
+    // Community maps often ship LZMA-compressed lumps; our own lump
+    // readers want them plain.
+    let bytes = super::lumps::inflate(bytes);
     let bsp = Bsp::read(&bytes).map_err(|e| format!("{path}: {e}"))?;
     let hdr_level = if lightmap::hdr_lighting_lump(&bytes).is_some() { hdr_level.min(2) } else { 0 };
     let (mut data, layout) = convert_level(&bsp, &bytes, name, hdr_level >= 2);

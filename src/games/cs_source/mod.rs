@@ -14,6 +14,7 @@ pub mod hud;
 pub mod impact_effects;
 pub mod impacts;
 pub mod lightmap;
+pub mod lumps;
 pub mod material;
 pub mod mount;
 pub mod movement;

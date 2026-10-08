@@ -4283,6 +4283,7 @@ dependencies = [
  "dirs",
  "half",
  "image",
+ "lzma-rs",
  "serde",
  "serde_json",
  "toml",
