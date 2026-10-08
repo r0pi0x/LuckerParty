@@ -115,7 +115,7 @@ Started 2026-10-05, from specs/cs_source/weapons.md. MVP plan items 4–5.
      pellets` with one inaccuracy offset per shot and a Spread draw per
      pellet, timed fire and finish sounds (`WeaponSounds::shot`,
      `finish`), zoom without an overlay or speed change, a random-up
-     kick (shotguns). The Elites alternate hands by clip parity (view
+     kick (shotguns; once per shot, not per pellet). The Elites alternate hands by clip parity (view
      model left/right sequences, `_L`/`_R` player shots). The buy menu
      is CS:S's (`Prices::menu`: 1 pistols, 2 shotguns, 3 SMGs, 4 rifles,
      5 machine guns, 8 equipment; each team sees its own items); bots pick
@@ -131,7 +131,13 @@ Started 2026-10-05, from specs/cs_source/weapons.md. MVP plan items 4–5.
    - [ ] Real-game checks for the new guns (probe): recoil of every
      automatic but the AK-47/M4A1 (M3), the scoped/semi-automatic kicks
      of the scout, SG550, G3SG1, P228, Five-SeveN and Elites, the shotgun
-     punch, the shotgun reload timing and interruption (M9), the pellet
+     punch (M3/XM1014 kick per shot standing, moving, crouched and in the
+     air, held and tapped; whether the decay is the M3 rule; whether
+     pellets follow view + 2 x punch), the shotgun reload timing and
+     interruption (M9), the pellet
      pattern and per-pellet inaccuracy (Q12), 357SIG/57MM/BUCKSHOT/
      556MM_BOX penetration (M13), the SG552's and G3SG1's zoomed speed
-     (M15), the Elites' hand order.
+     (M15), the Elites' hand order; how far CS:S bots pull down against
+     recoil (a bot spraying an AK-47 at a wall: its eye angles and
+     `m_vecPunchAngle` per tick, to see whether eye + 2 x punch stays on
+     the target, as `bot_recoil_control 1` assumes).

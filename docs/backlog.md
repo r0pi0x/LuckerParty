@@ -12,13 +12,6 @@ plan when work starts; delete them when done.
   (CS:S keeps them until the map changes; players bound `r_cleardecals`):
   verify against the game, add `r_cleardecals` and an optional
   `mashup_round_cleardecals 1` (off by default).
-- Bots move during freeze time while the player can't (round start).
-- Shotguns (M3, XM1014) kick the view far too high and take too long to
-  settle; check against specs/cs_source/weapons.md (shotgun recoil is
-  listed as unmeasured) and measure on the probe server.
-- Bots throw grenades at the spot of the last dead enemy at round end.
-- Bots don't control recoil (no pulling down while spraying); CS:S bots
-  keep their aim on the target through the view punch.
 
 CS:S feel:
 - Optional `+use` pickup of dropped weapons (CS:GO's; CS:S has none): a

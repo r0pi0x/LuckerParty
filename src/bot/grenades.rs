@@ -221,6 +221,9 @@ pub(super) const TOSS_CHANCE_OBJECTIVE: f32 = 0.06;
 pub(super) const TOSS_CHANCE_STAGING: f32 = 0.5;
 /// Throwing distances (horizontal), m.
 pub(super) const TOSS_RANGE: (f32, f32) = (4.0, 30.0);
+/// Seconds after an enemy was last seen or heard that a grenade still
+/// goes where they were (mashup's; CS:S bots throw at a fresh sighting).
+pub(super) const TOSS_LEAD_MEMORY: f64 = 5.0;
 /// Where to aim above a target on the floor, m: a blast at the body's
 /// centre, a flash at head height (both may go off in the air), a smoke
 /// on the floor.
