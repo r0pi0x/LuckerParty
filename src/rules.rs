@@ -240,7 +240,16 @@ pub(crate) fn put_at_spawn(world: &mut World, e: Entity, fresh: bool) {
                 i.pitch = 0.0;
             }
         }
-        if fresh {
+        // A map's spawn equipment (game_player_equip) replaces the kit,
+        // and comes at every spawn (survivors of a round too).
+        let equipment = world
+            .get_resource::<crate::weapon::equip::SpawnEquipment>()
+            .and_then(|s| s.0.clone());
+        if let Some(items) = equipment {
+            for (name, count) in items {
+                crate::weapon::equip::give_item(world, e, &name, count);
+            }
+        } else if fresh {
             let team = world.get::<Team>(e).map(|t| t.0);
             // Rounds start from the team's own kit (you buy the rest);
             // deathmatch adds the extras everyone gets.

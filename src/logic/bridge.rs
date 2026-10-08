@@ -939,6 +939,27 @@ fn apply_effects(world: &mut World, effects: Vec<Effect>, scale: f32) {
                     world.resource_mut::<HudMessages>().show(message, now);
                 }
             }
+            Effect::DamageFilter { target, filter } => {
+                let Ok(mut e) = world.get_entity_mut(target) else { continue };
+                match filter {
+                    Some((bits, negated)) => {
+                        // A damage passes when its Source type bits equal
+                        // the filter's (entity_io.md, filter_damage_type).
+                        let blocked = DAMAGE_KINDS
+                            .iter()
+                            .filter(|(_, b)| (*b == bits) == negated)
+                            .map(|(k, _)| *k)
+                            .collect();
+                        e.insert(crate::core::DamageFilter { blocked });
+                    }
+                    None => {
+                        e.remove::<crate::core::DamageFilter>();
+                    }
+                }
+            }
+            Effect::Equip { target, items, strip } => {
+                world.write_message(crate::core::Equip { target, items, strip });
+            }
             Effect::ServerCommand(line) => server_command(world, &line),
             Effect::ClientCommand { player, command } => {
                 if Some(player) == local
@@ -950,6 +971,20 @@ fn apply_effects(world: &mut World, effects: Vec<Effect>, scale: f32) {
         }
     }
 }
+
+/// Our damage kinds as Source damage-type bits (DMG_GENERIC 0, CRUSH 1,
+/// BULLET 2, SLASH 4, BURN 8, FALL 32, BLAST 64; the public SDK's
+/// names). Melee as slash and bullets without their extra flag bits are
+/// our reading; fall, the one maps filter, is exact.
+const DAMAGE_KINDS: [(DamageKind, u32); 7] = [
+    (DamageKind::Generic, 0),
+    (DamageKind::Crush, 1),
+    (DamageKind::Bullet, 2),
+    (DamageKind::Melee, 4),
+    (DamageKind::Burn, 8),
+    (DamageKind::Fall, 32),
+    (DamageKind::Blast, 64),
+];
 
 /// The long-lived sound of a logic entity.
 fn sound_key(id: EntId) -> SoundKey {

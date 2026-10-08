@@ -63,6 +63,8 @@ pub fn load_level(mount: &Mount, name: &str, hdr_level: u8) -> Result<MapData, S
     // Community maps often ship LZMA-compressed lumps; our own lump
     // readers want them plain.
     let bytes = super::lumps::inflate(bytes);
+    // Latin-1 text in the entity or texture-name lumps (after inflating).
+    let bytes = text_lumps_utf8(bytes);
     let bsp = Bsp::read(&bytes).map_err(|e| format!("{path}: {e}"))?;
     let hdr_level = if lightmap::hdr_lighting_lump(&bytes).is_some() { hdr_level.min(2) } else { 0 };
     let (mut data, layout) = convert_level(&bsp, &bytes, name, hdr_level >= 2);
@@ -243,6 +245,15 @@ pub fn load_level(mount: &Mount, name: &str, hdr_level: u8) -> Result<MapData, S
             origin[1],
             origin[2]
         );
+        // A renamed map packs them under its original name.
+        let file = format!("c{}_{}_{}.vtf", origin[0], origin[1], origin[2]);
+        let path = if materials.read(&format!("materials/{path}.vtf")).is_none()
+            && let Some(other) = materials.packed_map_file(&file)
+        {
+            other
+        } else {
+            path
+        };
         if let Some(c) = materials.cubemap(&path) {
             let at = Vec3::new(origin[0] as f32, origin[1] as f32, origin[2] as f32);
             data.cubemap_samples.push((
@@ -261,6 +272,39 @@ pub fn load_level(mount: &Mount, name: &str, hdr_level: u8) -> Result<MapData, S
     // Left: putting it in the world (`map::change_map`).
     report(0.95, "LoadingProgress_SignonLocal");
     Ok(data)
+}
+
+/// The BSP with its entity and texture-name lumps made valid UTF-8 in
+/// place: maps compiled or edited by other tools carry Latin-1 bytes there
+/// (`E:\\Ñteam` in a VMEX comment, a `™` in a server message), which the
+/// game reads as bytes but `vbsp` refuses. Each byte of an invalid
+/// sequence becomes `?`, so no offset moves. Compressed lumps are left
+/// alone.
+pub fn text_lumps_utf8(mut bytes: Vec<u8>) -> Vec<u8> {
+    const LUMPS: [usize; 2] = [0, 43];
+    for lump in LUMPS {
+        let at = 8 + lump * 16;
+        let Some(entry) = bytes.get(at..at + 8) else { continue };
+        let ofs = i32::from_le_bytes(entry[0..4].try_into().unwrap()).max(0) as usize;
+        let len = i32::from_le_bytes(entry[4..8].try_into().unwrap()).max(0) as usize;
+        let Some(data) = bytes.get_mut(ofs..ofs + len) else { continue };
+        if data.starts_with(b"LZMA") {
+            continue;
+        }
+        let mut i = 0;
+        while i < data.len() {
+            match std::str::from_utf8(&data[i..]) {
+                Ok(_) => break,
+                Err(e) => {
+                    let bad = i + e.valid_up_to();
+                    let n = e.error_len().unwrap_or(data.len() - bad);
+                    data[bad..bad + n].fill(b'?');
+                    i = bad + n;
+                }
+            }
+        }
+    }
+    bytes
 }
 
 /// Triangles of a face in Source space, each vertex with its lightmap
@@ -1618,6 +1662,23 @@ fn cubemap_samples(bytes: &[u8]) -> Vec<[i32; 3]> {
 mod tonemap_tests {
     use super::*;
     use crate::map::MapEntity;
+
+    /// Latin-1 bytes in the entity lump (a compile-tool comment, a server
+    /// message) become `?`, same length, so vbsp reads the map.
+    #[test]
+    fn text_lumps_become_utf8_in_place() {
+        let text = b"{ \"classname\" \"worldspawn\" \"comment\" \"E:\xd1team \x99\" }\0";
+        let mut bytes = vec![0u8; 8 + 64 * 16];
+        let ofs = bytes.len() as i32;
+        bytes[8..12].copy_from_slice(&ofs.to_le_bytes());
+        bytes[12..16].copy_from_slice(&(text.len() as i32).to_le_bytes());
+        bytes.extend_from_slice(text);
+        let out = text_lumps_utf8(bytes.clone());
+        assert_eq!(out.len(), bytes.len());
+        let lump = &out[ofs as usize..];
+        assert!(std::str::from_utf8(lump).is_ok());
+        assert!(String::from_utf8_lossy(lump).contains("E:?team ?"));
+    }
 
     fn entity(kv: &[(&str, &str)]) -> MapEntity {
         MapEntity {

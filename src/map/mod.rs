@@ -1643,6 +1643,8 @@ impl Plugin for MapPlugin {
             .init_resource::<vis::Occlusion>()
             .init_resource::<vis::VisStats>()
             .add_message::<decal::PlaceDecal>()
+            .add_message::<decal::ClearDecals>()
+            .init_resource::<decal::DecalSettings>()
             .add_message::<ViewModelEvent>()
             .add_message::<SpawnGibs>()
             .add_message::<breakables::BreakProp>()
@@ -1707,7 +1709,7 @@ impl Plugin for MapPlugin {
                     )
                         .chain(),
                     show_skybox_in_place,
-                    (decal::place_decals, decal::drop_brush_decals).chain(),
+                    (decal::place_decals, decal::drop_brush_decals, decal::clear_decals).chain(),
                     (
                         attach_bodies,
                         show_local_body,

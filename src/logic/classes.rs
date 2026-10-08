@@ -64,6 +64,37 @@ pub enum Class {
     AreaPortal(super::visuals::AreaPortal),
     /// func_occluder.
     Occluder(super::visuals::Occluder),
+    /// game_player_equip (what it gives, by Use) and player_weaponstrip
+    /// (gives nothing, strips).
+    Equip(Equip),
+}
+
+/// game_player_equip: its items (keyvalue name, count) and whether it
+/// strips the player's weapons first (spawnflag 2); player_weaponstrip:
+/// no items, strips. (Spawning players with a non-"Use Only" equip is
+/// the weapon layer's: `weapon::equip`.)
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Equip {
+    pub items: Vec<(String, u32)>,
+    pub strip: bool,
+}
+
+/// game_player_equip's "Use Only" spawnflag.
+pub const SF_EQUIP_USE_ONLY: u32 = 1;
+/// game_player_equip's "Strip all weapons first" spawnflag.
+pub const SF_EQUIP_STRIP: u32 = 2;
+
+/// A game_player_equip's items: keyvalues naming weapons or items
+/// (`weapon_*`, `item_*`, `ammo_*`) with a count (at least 1).
+pub fn equip_items(keyvalues: &[(String, String)]) -> Vec<(String, u32)> {
+    keyvalues
+        .iter()
+        .filter(|(k, _)| {
+            let k = k.to_ascii_lowercase();
+            k.starts_with("weapon_") || k.starts_with("item_") || k.starts_with("ammo_")
+        })
+        .map(|(k, v)| (k.to_ascii_lowercase(), atoi(v).max(1) as u32))
+        .collect()
 }
 
 #[derive(Clone, Debug, Default)]
@@ -341,6 +372,14 @@ impl Class {
                 },
             ),
             "game_text" => Class::GameText(game_text(e), e.has_flag(1)),
+            "game_player_equip" => Class::Equip(Equip {
+                items: equip_items(&e.keyvalues),
+                strip: e.has_flag(SF_EQUIP_STRIP),
+            }),
+            "player_weaponstrip" => Class::Equip(Equip {
+                items: Vec::new(),
+                strip: true,
+            }),
             "point_servercommand" => Class::ServerCommand,
             "point_clientcommand" => Class::ClientCommand,
             c if c.starts_with("trigger_") => triggers::spawn(w, id).map_or(Class::None, |t| Class::Trigger(Box::new(t))),
@@ -931,9 +970,27 @@ pub(super) fn class_input(
         Class::Fire(_) | Class::FireSource(_) | Class::FireSensor(_) => return super::fire::input(w, id, input, value),
         Class::AreaPortal(_) => return super::visuals::area_portal_input(w, id, input),
         Class::Occluder(_) => return super::visuals::occluder_input(w, id, input),
+        Class::Equip(equip) => match input {
+            // player_weaponstrip: Strip (the activator), StripWeaponsAndSuit.
+            "strip" | "stripweaponsandsuit" => equip_player(w, &equip, activator),
+            _ => return false,
+        },
         Class::Flame(_) | Class::None | Class::Auto => return false,
     }
     true
+}
+
+/// Give (or strip) the activator, when it is a player.
+fn equip_player(w: &mut LogicWorld, equip: &Equip, activator: Option<Who>) {
+    if let Some(Who::Player(p)) = activator
+        && w.player(p).is_some()
+    {
+        w.effects.push(Effect::Equip {
+            target: p,
+            items: equip.items.clone(),
+            strip: equip.strip,
+        });
+    }
 }
 
 fn set_relay(w: &mut LogicWorld, id: EntId, f: impl FnOnce(&mut Relay)) {
@@ -962,6 +1019,10 @@ fn game_text_display(w: &mut LogicWorld, id: EntId, activator: Option<Who>) {
 pub(super) fn class_use(w: &mut LogicWorld, id: EntId, activator: Option<Who>, caller: Option<Who>) {
     match w.get(id).map(|e| &e.class) {
         Some(Class::GameText(..)) => game_text_display(w, id, activator),
+        Some(Class::Equip(equip)) => {
+            let equip = equip.clone();
+            equip_player(w, &equip, activator)
+        }
         Some(_) => movers::use_entity(w, id, activator, caller),
         None => {}
     }

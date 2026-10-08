@@ -8,10 +8,9 @@ plan when work starts; delete them when done.
 
 ## 0. Playtest feedback (2026-10-07), top priority
 
-- Decals persist across rounds (bullet holes, blood). Probably faithful
-  (CS:S keeps them until the map changes; players bound `r_cleardecals`):
-  verify against the game, add `r_cleardecals` and an optional
-  `mashup_round_cleardecals 1` (off by default).
+- Decals persist across rounds (bullet holes, blood), as we believe CS:S
+  does (players bind `r_cleardecals`, now there; `mashup_round_cleardecals
+  1` clears them each round). Left: confirm the game keeps them.
 
 CS:S feel:
 - Optional `+use` pickup of dropped weapons (CS:GO's; CS:S has none): a
@@ -64,6 +63,10 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   Impacts land on brush entities (doors, breakables) and go with them;
   unbroken brush entities draw merged (`map::merge`: 1768 -> 58 meshes
   at the blocks room).
+
+- The user's ~89 community maps (surf_, bhop_, kz_, gg_, mg_): swept with
+  `mapsweep` ([plans/active/community-maps.md](plans/active/community-maps.md),
+  results and what's left, ranked).
 
 ## 2b. HUD and debug views
 
@@ -126,6 +129,15 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   off (no such cvars yet), starting a trace from the running game (needs
   the profile build), a fixed tick-rate control, a history graph per
   render pass.
+
+## 2c. Multiplayer
+
+Plan: [plans/active/multiplayer.md](plans/active/multiplayer.md)
+(bevy_replicon + renet; Source-style prediction, interpolation and lag
+compensation of our own; slices 0-9). Not started; its open questions
+wait on the user. Slice 0 (command-time weapon timers, spread seeds from
+command numbers, a replayable movement/weapon schedule) helps without
+networking too.
 
 ## 3. Weapons, remaining
 

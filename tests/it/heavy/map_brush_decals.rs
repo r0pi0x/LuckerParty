@@ -3,7 +3,9 @@
 //! leaves a bullet hole on the door's own brushes, as a child of its node,
 //! so it turns with the door and goes when the door is removed; a decal on
 //! a breakable goes when it breaks and doesn't come back with it at a
-//! round restart. Skipped without an install.
+//! round restart. `r_cleardecals` (`ClearDecals`) removes every decal,
+//! and so does a round start with `mashup_round_cleardecals 1`. Skipped
+//! without an install.
 
 use avian3d::prelude::*;
 use bevy::{ecs::system::SystemState, prelude::*};
@@ -20,7 +22,7 @@ use mashup::{
     logic::{Logic, Value},
     map::{
         BrushEntityBounds, MapBrushEntity, MapData, MapEntity, MapPlugin,
-        decal::{DecalGroup, DecalMaterial, PlaceDecal, RuntimeDecal},
+        decal::{ClearDecals, DecalGroup, DecalMaterial, DecalSettings, PlaceDecal, RuntimeDecal},
         prop_material::PropMaterial,
         rope_material::RopeMaterial,
         sprite_material::SpriteMaterial,
@@ -303,4 +305,50 @@ fn a_breakables_decal_goes_when_it_breaks() {
         return;
     }
     panic!("no vent to mark");
+}
+
+/// World decals stay through round restarts (as in the game) unless
+/// `mashup_round_cleardecals` is on; `ClearDecals` (`r_cleardecals`)
+/// removes them at any time.
+#[test]
+fn decals_clear_on_demand_and_optionally_each_round() {
+    let Some(map) = nuke() else { return };
+    let (spawn, _) = map.spawns[0];
+    let mut sim = sim(map);
+    sim.ticks(2);
+    // The floor under the first spawn (engine space back to Source units).
+    let at = Vec3::new(spawn.x, -spawn.z, spawn.y) / 0.0254;
+    let (_, point, normal) = ray(&mut sim, at + Vec3::Z * 32.0, at - Vec3::Z * 200.0, None).expect("a floor");
+    let count = |sim: &mut Sim| {
+        let world = sim.app.world_mut();
+        world.query_filtered::<(), With<RuntimeDecal>>().iter(world).count()
+    };
+    let mark = |sim: &mut Sim| {
+        sim.app.world_mut().write_message(PlaceDecal {
+            target: None,
+            group: DecalGroup::Material('C'),
+            point,
+            normal,
+            dir: -normal,
+            spin: false,
+        });
+        sim.ticks(1);
+    };
+    mark(&mut sim);
+    mark(&mut sim);
+    assert_eq!(count(&mut sim), 2, "two bullet holes in the floor");
+    sim.app.world_mut().resource_mut::<RoundRestarts>().0 += 1;
+    sim.ticks(3);
+    assert_eq!(count(&mut sim), 2, "kept through a round restart by default");
+    sim.app.world_mut().write_message(ClearDecals);
+    sim.ticks(1);
+    assert_eq!(count(&mut sim), 0, "r_cleardecals removes them");
+
+    mark(&mut sim);
+    sim.app.world_mut().resource_mut::<DecalSettings>().round_clear = 1;
+    sim.app.world_mut().resource_mut::<RoundRestarts>().0 += 1;
+    sim.ticks(3);
+    assert_eq!(count(&mut sim), 0, "mashup_round_cleardecals 1 clears at the round start");
+    mark(&mut sim);
+    assert_eq!(count(&mut sim), 1, "new decals still land");
 }
