@@ -12,7 +12,7 @@ use bevy::prelude::*;
 
 use super::{
     chat::{ChatLine, Hint},
-    game_hud::HudFonts,
+    fonts::UiFonts,
 };
 use crate::{
     console::resource_cvar,
@@ -68,7 +68,7 @@ enum Part {
     Overlay,
 }
 
-fn spawn(mut commands: Commands) {
+fn spawn(mut commands: Commands, fonts: Res<UiFonts>) {
     let abs = || Node {
         position_type: PositionType::Absolute,
         ..default()
@@ -121,10 +121,7 @@ fn spawn(mut commands: Commands) {
     commands.spawn((
         Part::Overlay,
         Text::default(),
-        TextFont {
-            font_size: FontSize::Px(13.0),
-            ..default()
-        },
+        fonts.debug(13.0),
         TextColor(Color::srgb(1.0, 1.0, 0.6)),
         TextShadow::default(),
         Node {
@@ -243,7 +240,7 @@ fn panel_box(hud: Option<&ActiveHud>, name: &str, fallback: (HudCoord, HudCoord,
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn status(
     hud: Option<Res<ActiveHud>>,
-    fonts: Option<Res<HudFonts>>,
+    fonts: Res<UiFonts>,
     windows: Query<&Window>,
     local: Option<
         Single<
@@ -278,7 +275,7 @@ fn status(
     let color = |name: &str, fallback: Color| hud_ref.and_then(|h| h.0.color(name)).unwrap_or(fallback);
     let glyph = |name: &str| -> Option<(Handle<Font>, f32, char)> {
         let (font, ch) = hud_ref?.0.icons.get(name)?.clone();
-        let (handle, tall) = fonts.as_ref()?.0.get(&font)?.clone();
+        let (handle, tall) = fonts.game(&font)?;
         Some((handle, tall, ch))
     };
     let flash = (time.elapsed_secs() * 4.0) as u32 % 2 == 0;
@@ -429,12 +426,14 @@ fn centre(
     windows: Query<&Window>,
     mut parts: Query<(&Part, &mut Text, &mut TextFont, &mut Visibility)>,
     time: Res<Time>,
+    fonts: Res<UiFonts>,
 ) {
     let now = time.elapsed_secs();
     if state.0.as_ref().is_some_and(|(_, until)| now > *until) {
         state.0 = None;
     }
-    let scale = windows.iter().next().map_or(1.0, |w| w.height() / 480.0);
+    // Centre print: the client scheme's CenterPrintText (Trebuchet).
+    let want = fonts.client("CenterPrintText", windows.iter().next().map_or(480.0, |w| w.height()), 18.0);
     for (part, mut text, mut font, mut vis) in &mut parts {
         if !matches!(part, Part::Centre) {
             continue;
@@ -444,7 +443,9 @@ fn centre(
                 if text.0 != *s {
                     text.0 = s.clone();
                 }
-                font.font_size = FontSize::Px(14.0 * scale);
+                if *font != want {
+                    *font = want.clone();
+                }
                 *vis = Visibility::Inherited;
             }
             None => *vis = Visibility::Hidden,

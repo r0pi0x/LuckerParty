@@ -11,6 +11,7 @@ pub mod debug;
 pub mod debug_ui;
 pub mod debug_views;
 pub mod effects;
+pub mod fonts;
 pub mod game_hud;
 pub mod game_menu;
 pub mod hdr;
@@ -222,6 +223,7 @@ impl Plugin for ClientPlugin {
         }
         app.insert_resource(ClientArgs(self.args.clone()))
             .add_plugins((
+                fonts::FontsPlugin,
                 input::LocalInputPlugin,
                 debug::DebugPlugin,
                 debug_views::DebugViewsPlugin,

@@ -66,8 +66,16 @@ fn spawn(mut commands: Commands) {
     }
 }
 
-/// One row: name, kills, deaths, latency, status.
-fn row(commands: &mut Commands, parent: Entity, cells: [String; 5], color: Color, highlight: bool, size: f32) {
+/// One row: name, kills, deaths, latency, status; the first cell in
+/// `fonts.0`, the others in `fonts.1`.
+fn row(
+    commands: &mut Commands,
+    parent: Entity,
+    cells: [String; 5],
+    color: Color,
+    highlight: bool,
+    fonts: (&TextFont, &TextFont),
+) {
     let r = commands
         .spawn((
             Node {
@@ -86,10 +94,7 @@ fn row(commands: &mut Commands, parent: Entity, cells: [String; 5], color: Color
     for (i, text) in cells.into_iter().enumerate() {
         commands.spawn((
             Text::new(text),
-            TextFont {
-                font_size: FontSize::Px(size),
-                ..default()
-            },
+            if i == 0 { fonts.0.clone() } else { fonts.1.clone() },
             TextColor(color),
             TextLayout::justify(if i == 0 { Justify::Left } else { Justify::Right }),
             Node {
@@ -138,6 +143,7 @@ fn update(
     >,
     bombs: Query<&Weapon, With<C4>>,
     windows: Query<&Window>,
+    fonts: Res<super::fonts::UiFonts>,
     rounds: Option<Res<crate::rules::rounds::RoundState>>,
     mut last: Local<Option<(Vec<Row>, Option<[u32; 2]>)>>,
     mut commands: Commands,
@@ -190,10 +196,12 @@ fn update(
         return;
     }
     let rows = &key.0;
-    let size = windows
-        .iter()
-        .next()
-        .map_or(16.0, |w| (w.height() / 60.0).clamp(12.0, 26.0));
+    // The client scheme's scoreboard fonts: team names, column titles,
+    // player rows.
+    let h = windows.iter().next().map_or(480.0, |w| w.height());
+    let team_font = fonts.client("ScoreboardTeamName", h, 14.0);
+    let column_font = fonts.client("ScoreboardColumns", h, 8.0);
+    let body_font = fonts.client("ScoreboardBody_1", h, 10.0);
     for (column, Column(team)) in &columns {
         commands.entity(column).despawn_related::<Children>();
         let (title, color) = if *team == 1 {
@@ -217,7 +225,7 @@ fn update(
             ],
             color,
             false,
-            size * 1.15,
+            (&team_font, &column_font),
         );
         for (_, name, kills, deaths, dead, local, status) in members {
             row(
@@ -227,7 +235,7 @@ fn update(
                 [name.clone(), kills.to_string(), deaths.to_string(), "0".into(), (*status).into()],
                 if *dead { color.with_alpha(0.5) } else { color },
                 *local,
-                size,
+                (&body_font, &body_font),
             );
         }
     }

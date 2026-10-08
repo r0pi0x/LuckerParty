@@ -7,9 +7,9 @@ use bevy::{prelude::*, window::PrimaryWindow};
 
 use crate::logic::{HudMessage, HudMessages};
 
-/// Default HUD message font size at a 480-pixel-high screen (Trebuchet
-/// 24), scaled with the window height like Source's proportional HUD.
-const FONT_PX_AT_480: f32 = 24.0;
+/// HUD messages' font: the client scheme's Trebuchet 24 (its size where
+/// the scheme lacks it, at 480 lines).
+const FONT: (&str, f32) = ("Trebuchet24", 24.0);
 
 #[derive(Component)]
 struct GameTextNode;
@@ -32,6 +32,7 @@ fn draw(
     time: Res<Time>,
     nodes: Query<Entity, With<GameTextNode>>,
     window: Query<&Window, With<PrimaryWindow>>,
+    fonts: Res<super::fonts::UiFonts>,
 ) {
     for e in &nodes {
         commands.entity(e).despawn();
@@ -45,11 +46,11 @@ fn draw(
             *slot = None;
             continue;
         }
-        spawn_message(&mut commands, m, t, height);
+        spawn_message(&mut commands, m, t, fonts.client(FONT.0, height, FONT.1));
     }
 }
 
-fn spawn_message(commands: &mut Commands, m: &HudMessage, t: f32, height: f32) {
+fn spawn_message(commands: &mut Commands, m: &HudMessage, t: f32, font: TextFont) {
     let opacity = m.opacity(t);
     let main = Vec3::from(m.color.map(|v| v as f32 / 255.0));
     // Where the block sits: a full-screen flex box aligned per x and y.
@@ -68,10 +69,6 @@ fn spawn_message(commands: &mut Commands, m: &HudMessage, t: f32, height: f32) {
         (AlignItems::FlexEnd, 0.0, -m.y * 100.0)
     };
     let text_justify = if m.x == -1.0 { Justify::Center } else { Justify::Left };
-    let font = TextFont {
-        font_size: FontSize::Px(FONT_PX_AT_480 * height / 480.0),
-        ..default()
-    };
     let root = commands
         .spawn((
             GameTextNode,

@@ -2,9 +2,8 @@
 //! of a panel layout as a Bevy UI node, in the virtual 640x480 screen
 //! scaled by the window height and centred across it, in the client
 //! scheme's colours (`Button.*`, `Label.*`, `Border.*`, `Frame.BgColor`)
-//! and text sizes. Labels and buttons use the system's Verdana (CS:S's
-//! menu face) where installed, else DejaVu Sans or another sans; Bevy's own
-//! without any. The buy and team menus use this; while one is open the
+//! and text fonts (`fonts::UiFonts`: the client scheme's, in the system's
+//! Verdana where installed, else a stand-in). The buy and team menus use this; while one is open the
 //! mouse is free (`VguiOpen`), as in CS:S, and grabbed again when it
 //! closes.
 
@@ -16,14 +15,14 @@ use bevy::{
     window::CursorOptions,
 };
 
-use crate::map::hud::{ActiveHud, GameHud, GameMenus, UiAlign, UiControl, UiKind, UiLayout, font_pixels};
+use super::fonts::{Scheme, UiFonts};
+use crate::map::hud::{ActiveHud, GameHud, UiAlign, UiControl, UiKind, UiLayout};
 
 pub struct VguiPlugin;
 
 impl Plugin for VguiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<VguiOpen>()
-            .add_systems(Startup, load_fonts)
             .add_systems(Update, style_buttons)
             .add_systems(PostUpdate, cursor);
     }
@@ -41,62 +40,6 @@ impl VguiOpen {
     pub fn any(&self) -> bool {
         self.buy || self.team
     }
-}
-
-/// The menus' text faces (regular and bold), from the system.
-#[derive(Resource, Default)]
-pub(super) struct VguiFonts {
-    pub regular: Option<Handle<Font>>,
-    pub bold: Option<Handle<Font>>,
-}
-
-/// The first of `names` found in the system's font folders (Windows'
-/// Fonts, then the usual Linux places), as a font asset.
-pub(super) fn system_font(fonts: &mut Assets<Font>, names: &[&str]) -> Option<Handle<Font>> {
-    let mut dirs: Vec<std::path::PathBuf> = std::env::var_os("WINDIR")
-        .map(|w| std::path::PathBuf::from(w).join("Fonts"))
-        .into_iter()
-        .collect();
-    dirs.extend(
-        [
-            "/usr/share/fonts/TTF",
-            "/usr/share/fonts/truetype/dejavu",
-            "/usr/share/fonts/dejavu",
-            "/usr/share/fonts/liberation",
-            "/usr/share/fonts/truetype/liberation",
-            "/usr/share/fonts/noto",
-            "/usr/share/fonts/truetype/noto",
-        ]
-        .map(std::path::PathBuf::from),
-    );
-    names.iter().find_map(|n| {
-        dirs.iter()
-            .find_map(|d| std::fs::read(d.join(n)).ok())
-            .map(|bytes| fonts.add(Font::from_bytes(bytes)))
-    })
-}
-
-fn load_fonts(mut fonts: ResMut<Assets<Font>>, mut commands: Commands) {
-    let regular = system_font(
-        &mut fonts,
-        &[
-            "verdana.ttf",
-            "DejaVuSans.ttf",
-            "LiberationSans-Regular.ttf",
-            "NotoSans-Regular.ttf",
-        ],
-    );
-    let bold = system_font(
-        &mut fonts,
-        &[
-            "verdanab.ttf",
-            "DejaVuSans-Bold.ttf",
-            "LiberationSans-Bold.ttf",
-            "NotoSans-Bold.ttf",
-        ],
-    )
-    .or_else(|| regular.clone());
-    commands.insert_resource(VguiFonts { regular, bold });
 }
 
 /// Which menu a button belongs to.
@@ -178,22 +121,16 @@ pub(super) fn area(width: f32, height: f32) -> Rect {
 /// Draws layouts for one window size.
 pub(super) struct Painter<'a> {
     pub hud: &'a GameHud,
-    pub menus: &'a GameMenus,
     pub images: &'a HashMap<usize, Handle<Image>>,
-    pub fonts: Option<&'a VguiFonts>,
+    pub fonts: &'a UiFonts,
     pub height: f32,
     pub scale: f32,
 }
 
-/// Source font heights are a line's (ascent plus descent); Bevy sizes the
-/// em square. Verdana's line is about 1.22 em.
-const EM_PER_LINE: f32 = 0.82;
-
 impl<'a> Painter<'a> {
-    pub fn new(hud: &'a ActiveHud, menus: &'a GameMenus, fonts: Option<&'a VguiFonts>, height: f32) -> Self {
+    pub fn new(hud: &'a ActiveHud, fonts: &'a UiFonts, height: f32) -> Self {
         Self {
             hud: &hud.0,
-            menus,
             images: &hud.1,
             fonts,
             height,
@@ -207,27 +144,13 @@ impl<'a> Painter<'a> {
         Color::srgba_u8(r, g, b, a)
     }
 
-    /// A scheme font (`Default` when None) at this window's size.
+    /// A client scheme font (`Default` when None or missing) at this
+    /// window's size.
     pub fn font(&self, name: Option<&str>) -> TextFont {
-        let sizes = self
-            .menus
-            .fonts
-            .get(name.unwrap_or("Default"))
-            .or_else(|| self.menus.fonts.get("Default"));
-        let pixels = sizes
-            .and_then(|s| font_pixels(s, self.height))
-            .unwrap_or(12.0 * self.scale);
-        let bold = sizes
-            .and_then(|s| s.first())
-            .is_none_or(|s| s.weight >= 600 || s.family.to_lowercase().contains("bold"));
-        let handle = self
-            .fonts
-            .and_then(|f| if bold { f.bold.clone() } else { f.regular.clone() });
-        TextFont {
-            font: handle.unwrap_or_default().into(),
-            font_size: FontSize::Px((pixels * EM_PER_LINE).max(1.0)),
-            ..default()
-        }
+        let name = name
+            .filter(|n| self.fonts.sizes(Scheme::Client, n).is_some())
+            .unwrap_or("Default");
+        self.fonts.client(name, self.height, 12.0)
     }
 
     fn text_color(&self, c: &UiControl, enabled: bool) -> Color {

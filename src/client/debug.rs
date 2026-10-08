@@ -239,14 +239,11 @@ fn keys(
     }
 }
 
-fn spawn_hud(mut commands: Commands) {
+fn spawn_hud(mut commands: Commands, fonts: Res<super::fonts::UiFonts>) {
     commands.spawn((
         DebugHud,
         Text::default(),
-        TextFont {
-            font_size: FontSize::Px(14.0),
-            ..default()
-        },
+        fonts.debug(14.0),
         Node {
             position_type: PositionType::Absolute,
             // Below the radar and place name (top left, as in CS:S).

@@ -432,7 +432,26 @@ fn units(v: Vec3) -> Vec3 {
     Vec3::new(v.x, -v.z, v.y) / 0.0254
 }
 
-fn draw(world: &mut World) {
+/// Labels in the GameUI scheme's default face (Tahoma, or its stand-in);
+/// egui's own mono stays for numbers and fields.
+fn set_egui_font(world: &World, ctx: &egui::Context) {
+    let Some(face) = world.get_resource::<super::fonts::UiFonts>().and_then(|f| f.face("Tahoma", false)) else {
+        return;
+    };
+    let Some(font) = world.get_resource::<Assets<Font>>().and_then(|a| a.get(&face.handle)) else {
+        return;
+    };
+    ctx.add_font(egui::epaint::text::FontInsert::new(
+        "scheme-default",
+        egui::FontData::from_owned(font.data.data().to_vec()),
+        vec![egui::epaint::text::InsertFontFamily {
+            family: egui::FontFamily::Proportional,
+            priority: egui::epaint::text::FontPriority::Highest,
+        }],
+    ));
+}
+
+fn draw(world: &mut World, mut fonts_set: Local<bool>) {
     let Ok(ctx) = world
         .query_filtered::<&mut EguiContext, With<PrimaryEguiContext>>()
         .single_mut(world)
@@ -440,6 +459,10 @@ fn draw(world: &mut World) {
     else {
         return;
     };
+    if !*fonts_set {
+        *fonts_set = true;
+        set_egui_font(world, &ctx);
+    }
     world.resource_scope::<DebugUi, _>(|world, mut state| {
         // The frame history for the graph.
         let dt = world.resource::<Time<Real>>().delta_secs() * 1e3;
