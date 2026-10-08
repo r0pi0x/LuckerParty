@@ -406,3 +406,58 @@ fn restored_prop_contacts_join_islands_once() {
     assert!(exists(&sim, 0), "re-created");
     assert!(sim.app.world().get::<RigidBodyDisabled>(node).is_none());
 }
+
+/// A map's point_servercommand sets server settings for as long as the
+/// map is loaded (specs/source/entity_io.md, "point_servercommand"; the
+/// rule in `logic::classes::check_server_command`): a known setting is
+/// applied and put back when another map loads or the map unloads
+/// (disconnect); commands and settings mashup lacks are ignored.
+#[test]
+fn map_server_settings_last_until_the_map_unloads() {
+    use mashup::console::Console;
+    let maxvelocity = |sim: &mut Sim| {
+        let world = sim.app.world_mut();
+        let cvar = world.resource::<Console>().cvar("sv_maxvelocity").cloned().unwrap();
+        (cvar.get)(world).unwrap()
+    };
+    let lines = |sim: &Sim| -> Vec<String> {
+        let c = sim.app.world().resource::<Console>();
+        c.output.iter().map(|l| l.text.clone()).filter(|t| t.starts_with("point_servercommand")).collect()
+    };
+    let entities = vec![
+        entity(&[("classname", "point_servercommand"), ("targetname", "server")], Vec::new(), false),
+        entity(
+            &[
+                ("classname", "logic_auto"),
+                ("OnMapSpawn", "server,Command,sv_maxvelocity 5000,0,-1"),
+                ("OnMapSpawn", "server,Command,sv_cheats 1,0,-1"),
+                ("OnMapSpawn", "server,Command,quit,0,-1"),
+                ("OnMapSpawn", "server,Command,sv_maxvelocity 6000,0.1,-1"),
+            ],
+            Vec::new(),
+            false,
+        ),
+    ];
+    let (mut sim, _) = sim(entities.clone(), Vec3::ZERO, 0.0);
+    sim.ticks(40);
+    assert_eq!(maxvelocity(&mut sim), "6000", "the map's last value");
+    let l = lines(&sim);
+    assert!(l.iter().any(|t| t == "point_servercommand: sv_maxvelocity 5000 (was 3500)"), "{l:?}");
+    assert!(l.iter().any(|t| t == "point_servercommand: sv_maxvelocity 6000"), "{l:?}");
+    assert!(l.iter().any(|t| t.contains("ignored 'sv_cheats 1' (no such setting)")), "{l:?}");
+    assert!(l.iter().any(|t| t.contains("refused 'quit' (not a game setting)")), "{l:?}");
+
+    // Another map: the setting goes back to what it was before the first.
+    mashup::map::change_map(sim.app.world_mut(), map(Vec::new()), mashup::map::MapDebugView::Normal);
+    sim.ticks(5);
+    assert_eq!(maxvelocity(&mut sim), "3500");
+    assert!(lines(&sim).iter().any(|t| t == "point_servercommand: map unloaded, sv_maxvelocity back to 3500"));
+
+    // The map again, then unloaded (disconnect).
+    mashup::map::change_map(sim.app.world_mut(), map(entities), mashup::map::MapDebugView::Normal);
+    sim.ticks(40);
+    assert_eq!(maxvelocity(&mut sim), "6000");
+    mashup::map::unload_map(sim.app.world_mut());
+    sim.ticks(5);
+    assert_eq!(maxvelocity(&mut sim), "3500");
+}

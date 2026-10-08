@@ -115,16 +115,50 @@ pub struct Filter {
     pub negated: bool,
 }
 
-/// Commands point_servercommand may run, with the bounds a value is
-/// clamped to (entity_io.md, "point_servercommand", security). Anything
-/// else is logged and ignored.
-pub const SERVER_COMMANDS: &[(&str, f32, f32)] = &[
-    ("say", 0.0, 0.0),
+/// What a map's point_servercommand may do (entity_io.md,
+/// "point_servercommand", security; the rule is ours, the spec leaves the
+/// list to us): `say <text>`, or set one game-rule setting, `<name>
+/// <value>`, where the name starts with one of these prefixes (movement
+/// and physics `sv_*`, round rules `mp_*`, `phys_*`, `bot_*`, `ammo_*`;
+/// the cvars minigame maps set) and isn't one of `SETTING_DENY`. The
+/// bridge then applies it only when our console has a cvar of that name
+/// (`mp_restartgame` too, which is a cvar in Source and a command here);
+/// unknown names (plugin cvars, settings mashup lacks) are logged and
+/// ignored. Everything else (other commands: quit, exec, bind, connect,
+/// rcon, changelevel, map, kick, writing configs, plugin commands such
+/// as `sm_say`; several commands on one line) is refused.
+pub const SETTING_PREFIXES: &[&str] = &["sv_", "mp_", "phys_", "bot_", "ammo_"];
+
+/// Parts of names a map may never set although their prefix fits:
+/// passwords, remote control, downloads and uploads, logging, bans,
+/// file checks, how the server shows itself to the network, and the
+/// gate on point_servercommand itself.
+pub const SETTING_DENY: &[&str] = &[
+    "password",
+    "rcon",
+    "download",
+    "upload",
+    "log",
+    "ban",
+    "pure",
+    "consistency",
+    "sv_lan",
+    "sv_region",
+    "sv_tags",
+    "sv_contact",
+    "sv_visiblemaxplayers",
+    "servercommand",
+];
+
+/// Bounds a map's value is clamped to for settings where an extreme value
+/// would make the game unplayable or hang it.
+pub const SETTING_BOUNDS: &[(&str, f32, f32)] = &[
     ("sv_gravity", -2000.0, 4000.0),
     ("sv_airaccelerate", -100.0, 1000.0),
     ("sv_accelerate", 0.0, 100.0),
     ("sv_friction", 0.0, 100.0),
     ("sv_maxspeed", 0.0, 2000.0),
+    ("sv_maxvelocity", 0.0, 100_000.0),
     ("sv_alltalk", 0.0, 1.0),
     ("mp_restartgame", 0.0, 60.0),
     ("mp_roundtime", 0.0, 60.0),
@@ -132,31 +166,71 @@ pub const SERVER_COMMANDS: &[(&str, f32, f32)] = &[
     ("mp_freezetime", 0.0, 60.0),
     ("mp_timelimit", 0.0, 1000.0),
     ("phys_pushscale", 0.0, 100.0),
+    ("phys_timescale", 0.0, 10.0),
 ];
+
+/// Longest value a map may set.
+const MAX_VALUE: usize = 64;
+
+/// A point_servercommand line that passed `check_server_command`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ServerLine {
+    /// `say <text>`: print it.
+    Say(String),
+    /// Set a game-rule setting (name in lower case; value clamped).
+    Set { name: String, value: String },
+}
+
+impl ServerLine {
+    /// The line as the console would run it.
+    pub fn line(&self) -> String {
+        match self {
+            ServerLine::Say(text) => format!("say {text}"),
+            ServerLine::Set { name, value } => format!("{name} {value}"),
+        }
+    }
+}
 
 /// Commands point_clientcommand may send to a player's client.
 pub const CLIENT_COMMANDS: &[&str] = &["play", "playgamesound", "r_screenoverlay", "echo"];
 
-/// Check a server command line against the allowlist: the line to run
-/// (values clamped), or None.
-pub fn allowed_server_command(line: &str) -> Option<String> {
+/// Check a server command line against the rule (`SETTING_PREFIXES`):
+/// what it may do, or why it is refused.
+pub fn check_server_command(line: &str) -> Result<ServerLine, &'static str> {
     let line = line.trim();
+    if line.contains([';', '\n', '\r']) {
+        return Err("more than one command");
+    }
     let (name, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
     let name = name.to_ascii_lowercase();
-    if line.contains(';') || line.contains('\n') {
-        return None;
-    }
-    let &(_, lo, hi) = SERVER_COMMANDS.iter().find(|(n, ..)| *n == name)?;
+    let rest = rest.trim();
     if name == "say" {
-        return Some(format!("say {}", rest.trim()));
+        return Ok(ServerLine::Say(rest.trim_matches('"').to_string()));
     }
-    let rest = rest.trim().trim_matches('"');
-    if rest.is_empty() {
-        return Some(name);
+    if !SETTING_PREFIXES.iter().any(|p| name.starts_with(p)) {
+        return Err("not a game setting");
     }
-    let v: f32 = rest.parse().ok()?;
-    let v = v.clamp(lo, hi);
-    Some(format!("{name} {}", super::value::fmt_g(v)))
+    if SETTING_DENY.iter().any(|d| name.contains(d)) {
+        return Err("a setting maps may not change");
+    }
+    let value = match rest.strip_prefix('"') {
+        Some(quoted) => quoted.strip_suffix('"').unwrap_or(quoted),
+        None => rest,
+    };
+    if value.is_empty() {
+        return Err("no value");
+    }
+    if value.contains('"') || value.len() > MAX_VALUE {
+        return Err("bad value");
+    }
+    let value = match SETTING_BOUNDS.iter().find(|(n, ..)| *n == name) {
+        Some(&(_, lo, hi)) => {
+            let v: f32 = value.parse().map_err(|_| "bad value")?;
+            super::value::fmt_g(v.clamp(lo, hi))
+        }
+        None => value.to_string(),
+    };
+    Ok(ServerLine::Set { name, value })
 }
 
 /// Check a client command against the allowlist.
@@ -818,9 +892,9 @@ pub(super) fn class_input(
                 if line.is_empty() {
                     return true;
                 }
-                match allowed_server_command(&line) {
-                    Some(ok) => w.effects.push(Effect::ServerCommand(ok)),
-                    None => w.log.push(format!("point_servercommand: refused '{line}' (not allowed)")),
+                match check_server_command(&line) {
+                    Ok(ok) => w.effects.push(Effect::ServerCommand(ok)),
+                    Err(why) => w.log.push(format!("point_servercommand: refused '{line}' ({why})")),
                 }
             }
             _ => return false,

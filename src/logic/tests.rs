@@ -3,7 +3,7 @@
 
 use bevy::prelude::*;
 
-use super::classes::{Class, allowed_client_command, allowed_server_command};
+use super::classes::{Class, ServerLine, allowed_client_command, check_server_command};
 use super::hud::HudMessage;
 use super::movers::{DoorState, pusher};
 use super::world::*;
@@ -599,10 +599,64 @@ fn game_text_rules() {
 
 #[test]
 fn command_allowlists() {
-    assert_eq!(allowed_server_command("sv_gravity 400").as_deref(), Some("sv_gravity 400"));
-    assert_eq!(allowed_server_command("rcon_password x"), None);
-    assert_eq!(allowed_server_command("sv_gravity 400; quit"), None);
-    assert_eq!(allowed_server_command("sv_gravity 99999").as_deref(), Some("sv_gravity 4000"));
+    let set = |n: &str, v: &str| Ok(ServerLine::Set { name: n.into(), value: v.into() });
+    assert_eq!(check_server_command("sv_gravity 400"), set("sv_gravity", "400"));
+    assert_eq!(check_server_command("rcon_password x"), Err("not a game setting"));
+    assert_eq!(check_server_command("sv_gravity 400; quit"), Err("more than one command"));
+    assert_eq!(check_server_command("sv_gravity 99999"), set("sv_gravity", "4000"));
+    assert_eq!(check_server_command("say hello there"), Ok(ServerLine::Say("hello there".into())));
+    assert_eq!(check_server_command("say \"hi\""), Ok(ServerLine::Say("hi".into())));
+    // Game-rule settings by prefix, as community maps send them; values
+    // quoted or not, names in any case.
+    assert_eq!(check_server_command(" SV_MaxVelocity  \"5000\" "), set("sv_maxvelocity", "5000"));
+    assert_eq!(check_server_command("sv_maxvelocity 1e9"), set("sv_maxvelocity", "100000"));
+    assert_eq!(check_server_command("sv_enablebunnyhopping 1"), set("sv_enablebunnyhopping", "1"));
+    assert_eq!(check_server_command("sv_cheats 1"), set("sv_cheats", "1"));
+    assert_eq!(check_server_command("mp_freezetime 0"), set("mp_freezetime", "0"));
+    assert_eq!(check_server_command("phys_pushscale 50"), set("phys_pushscale", "50"));
+    assert_eq!(check_server_command("bot_stop 1"), set("bot_stop", "1"));
+    assert_eq!(check_server_command("ammo_50ae_max 999"), set("ammo_50ae_max", "999"));
+    assert_eq!(check_server_command("mp_restartgame 3"), set("mp_restartgame", "3"));
+    // Commands that do something other than set a game rule.
+    for line in [
+        "quit",
+        "exit",
+        "exec server.cfg",
+        "bind w quit",
+        "unbindall",
+        "connect 1.2.3.4",
+        "rcon quit",
+        "host_writeconfig",
+        "writeip",
+        "changelevel de_dust2",
+        "map de_dust2",
+        "kick Bot",
+        "banid 0 x",
+        "sm_say hi",
+        "ma_csay hi",
+        "alias a quit",
+        "host_timescale 10",
+    ] {
+        assert_eq!(check_server_command(line), Err("not a game setting"), "{line}");
+    }
+    // Settings with a fitting prefix that maps may still not touch.
+    for line in [
+        "sv_password secret",
+        "sv_rcon_banpenalty 1",
+        "sv_allowdownload 1",
+        "sv_allowupload 1",
+        "sv_downloadurl http://x",
+        "sv_logfile 1",
+        "mp_logdetail 3",
+        "sv_lan 0",
+        "sv_pure 0",
+        "sv_allow_point_servercommand always",
+    ] {
+        assert_eq!(check_server_command(line), Err("a setting maps may not change"), "{line}");
+    }
+    assert_eq!(check_server_command("sv_gravity"), Err("no value"));
+    assert_eq!(check_server_command("sv_gravity fast"), Err("bad value"));
+    assert_eq!(check_server_command("mp_x a\"b"), Err("bad value"));
     assert!(allowed_client_command("play buttons/button1.wav").is_some());
     assert!(allowed_client_command("bind w quit").is_none());
 
@@ -610,7 +664,7 @@ fn command_allowlists() {
     let s = spawn(&mut w, &[("classname", "point_servercommand")]);
     w.deliver(Who::Ent(s), "Command", Value::Str("sv_gravity 400".into()), None, None);
     w.deliver(Who::Ent(s), "Command", Value::Str("rcon_password x".into()), None, None);
-    assert_eq!(w.effects, vec![Effect::ServerCommand("sv_gravity 400".into())]);
+    assert_eq!(w.effects, vec![Effect::ServerCommand(ServerLine::Set { name: "sv_gravity".into(), value: "400".into() })]);
     assert!(w.log.iter().any(|l| l.contains("refused")));
 
     let c = spawn(&mut w, &[("classname", "point_clientcommand")]);
