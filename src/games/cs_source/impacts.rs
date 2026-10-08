@@ -201,10 +201,12 @@ fn impact_decals(
                     spin: false,
                 });
             }
+            // A swing into water only splashes (impact_effects).
             WeaponEventKind::Swing {
                 at: Some((point, normal, hit)),
+                line,
                 ..
-            } if marked(*hit) => {
+            } if marked(*hit) && super::impact_effects::knife_splash(*line, water.as_deref()).is_none() => {
                 decals.write(PlaceDecal {
                     target: Some(*hit),
                     group: DecalGroup::Named(SLASH_DECAL.into()),

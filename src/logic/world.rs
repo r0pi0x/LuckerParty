@@ -245,6 +245,10 @@ pub enum Effect {
         velocity: Vec3,
         tile: bool,
     },
+    /// A bullet or club hit shattered the pane it hit: the glass-impact
+    /// burst at the hit point with the trace normal (entity space;
+    /// specs/cs_source/impact_effects.md section 9).
+    GlassImpact { at: Vec3, normal: Vec3 },
 }
 
 /// Static collision the logic needs (the world without movers), entity

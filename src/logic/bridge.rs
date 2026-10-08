@@ -18,7 +18,7 @@ use crate::core::{
     BaseVelocity, Damage, DamageKind, Damageable, EntityGravity, Explosion, Health, Hitgroup, Intent, LocalPlayer,
     MapBrush, MapBrushes, MapTerrain, MovementState, MovingSolid, RoundRestarts, SimSet, Team, Velocity,
 };
-use crate::map::breakables::{GibPiece, GlassShatter, SpawnGibs};
+use crate::map::breakables::{GibPiece, GlassImpact, GlassShatter, SpawnGibs};
 use crate::map::entities::{engine_to_entity, entity_rotation, entity_to_engine, rotation_to_engine};
 use crate::map::vis::{LogicHidden, VisClusters};
 use crate::map::{
@@ -66,6 +66,7 @@ impl Plugin for LogicPlugin {
             .add_message::<SoundControl>()
             .add_message::<SpawnGibs>()
             .add_message::<GlassShatter>()
+            .add_message::<GlassImpact>()
             .configure_sets(
                 FixedUpdate,
                 (
@@ -891,6 +892,12 @@ fn apply_effects(world: &mut World, effects: Vec<Effect>, scale: f32) {
                     size: size * scale,
                     velocity: entity_to_engine(velocity, scale),
                     tile,
+                });
+            }
+            Effect::GlassImpact { at, normal } => {
+                world.write_message(GlassImpact {
+                    at: entity_to_engine(at, scale),
+                    normal: entity_to_engine(normal, 1.0),
                 });
             }
             Effect::Heal { target, amount } => {

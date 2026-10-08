@@ -32,6 +32,7 @@ impl Plugin for ObjectivesHudPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Overlay>()
             .init_resource::<Centre>()
+            .add_message::<crate::weapon::drop::UsedPickup>()
             .add_systems(Startup, spawn)
             .add_systems(Update, (messages, status, progress, centre, overlay))
             .add_systems(
@@ -547,20 +548,25 @@ fn used(e: &ObjectiveEvent, me: Entity) -> bool {
 }
 
 /// The deny sound for a +use press of the living local player that found
-/// nothing: no map entity (`logic`'s use presses) and no objective.
+/// nothing: no map entity (`logic`'s use presses), no objective and no
+/// weapon taken (`mashup_usepickup`).
+#[allow(clippy::too_many_arguments)]
 fn use_deny(
     local: Query<(Entity, &crate::core::Intent, Option<&Health>), With<LocalPlayer>>,
     logic: Option<Res<crate::logic::Logic>>,
     sounds: Option<Res<crate::map::RoundSounds>>,
     mut events: MessageReader<ObjectiveEvent>,
+    mut picks: MessageReader<crate::weapon::drop::UsedPickup>,
     mut play: MessageWriter<crate::map::PlaySound>,
     mut was: Local<bool>,
 ) {
     let Some((me, intent, health)) = local.iter().next() else {
         events.clear();
+        picks.clear();
         return;
     };
-    let objective = events.read().fold(false, |found, e| found || used(e, me));
+    let objective = events.read().fold(false, |found, e| found || used(e, me))
+        | picks.read().fold(false, |found, p| found || p.who == me);
     let pressed = intent.use_key && !*was && health.is_none_or(|h| h.current > 0.0);
     *was = intent.use_key;
     if !pressed {

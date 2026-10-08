@@ -368,6 +368,15 @@ pub fn face_triangles_blend(face: &vbsp::Handle<'_, vbsp::Face>) -> Vec<[(vbsp::
         let base = lerp(lerp(corners[0], corners[1], fx), lerp(corners[3], corners[2], fx), fy);
         (base + offsets[x * n + y], Vec2::new(fy, fx) * size, alphas[x * n + y])
     };
+    // Every triangle below runs the grid's way round (x, then y). The
+    // whole surface faces the side the base face does, decided once from
+    // the undisplaced grid: a sculpted surface folds over (a cave's
+    // ceiling curling back from its wall) and those triangles face away
+    // from the base normal, which is right: re-winding them one by one
+    // turned them inside out (culled: holes in surf_boreas's caves).
+    let v3 = |v: vbsp::Vector| Vec3::new(v.x, v.y, v.z);
+    let grid_normal = (v3(corners[1]) - v3(corners[0])).cross(v3(corners[3]) - v3(corners[0]));
+    let flip = grid_normal.dot(v3(face.normal())) < 0.0;
     let mut out = Vec::with_capacity(steps * steps * 2);
     // Each grid square splits along alternating diagonals (checkerboard).
     // Measured with movecmp: with this split, landing on dust2's CT spawn
@@ -381,6 +390,11 @@ pub fn face_triangles_blend(face: &vbsp::Handle<'_, vbsp::Face>) -> Vec<[(vbsp::
                 out.push([grid(x, y), grid(x + 1, y), grid(x, y + 1)]);
                 out.push([grid(x + 1, y), grid(x + 1, y + 1), grid(x, y + 1)]);
             }
+        }
+    }
+    if flip {
+        for t in &mut out {
+            t.swap(1, 2);
         }
     }
     out
@@ -499,12 +513,13 @@ pub fn convert_level(bsp: &Bsp, bytes: &[u8], name: &str, hdr: bool) -> (MapData
             None => to_engine_dir(face.normal()),
         };
         let displaced_face = face.displacement().is_some();
-        // Re-wind triangles to face the plane normal.
+        // Re-wind triangles to face the plane normal (displacements come
+        // wound per surface, folds included: `face_triangles_blend`).
         let tris: Vec<[(vbsp::Vector, Vec2, f32); 3]> = face_triangles_blend(&face)
             .into_iter()
             .map(|t| {
                 let [a, b, c] = t.map(|(v, _, _)| to_engine(place(v)));
-                if (b - a).cross(c - a).dot(face_normal) < 0.0 {
+                if !displaced_face && (b - a).cross(c - a).dot(face_normal) < 0.0 {
                     [t[0], t[2], t[1]]
                 } else {
                     t

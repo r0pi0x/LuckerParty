@@ -24,7 +24,7 @@ use crate::{
     weapon::{
         RegisterWeapons, Weapon, WeaponSounds,
         grenade::{
-            Blast, BlastHearing, Detonated, ExplosionRule, Flash, Flight, GrenadeEffect, GrenadeKind, Shake, Smoke,
+            Blast, BlastHearing, Detonated, ExplosionRule, Flash, Flight, GrenadeEffect, GrenadeKind, RagdollBlast, Shake, Smoke,
             SmokeCloud, ThrowRule, Throwable,
         },
     },
@@ -164,6 +164,13 @@ pub fn he_blast() -> Blast {
         force_jitter: (0.85, 1.15),
         // Source physics' speed limit, 2000 units/s.
         max_push_speed: 2000.0 * UNIT,
+        // The explosion effect's magnitude (the damage, 100) as a line of
+        // 100 units at the blast, from 32 units below it (spec 5.3).
+        ragdolls: Some(RagdollBlast {
+            length: 100.0 * UNIT,
+            min: UNIT,
+            drop: 32.0 * UNIT,
+        }),
         scorch: Some("scorch".into()),
         sound: Some("BaseGrenade.Explode".into()),
         hearing: Some(BlastHearing {

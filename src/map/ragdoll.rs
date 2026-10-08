@@ -233,15 +233,31 @@ pub struct RagdollBody {
     pub collides: u32,
 }
 
-/// A bullet's path from where it started to where it stopped (or a
-/// blast's, `blast`): ragdolls on it get pushed (spec 6.2). Bullets pass
-/// through ragdolls; this is the separate client-side trace that finds
-/// them.
+/// A bullet's path from where it started to where it stopped: ragdolls on
+/// it get pushed (spec 6.2). Bullets pass through ragdolls; this is the
+/// separate client-side trace that finds them. A blast's (`blast`) names
+/// the one ragdoll it pushes (`ragdoll`, no trace; grenades.md 5.3: every
+/// ragdoll in the blast's radius gets one) and its push scales with the
+/// line's length.
 #[derive(Message, Clone, Copy, Debug)]
 pub struct RagdollShot {
     pub from: Vec3,
     pub to: Vec3,
     pub blast: bool,
+    /// The ragdoll a blast pushes; None: those on the line.
+    pub ragdoll: Option<Entity>,
+}
+
+impl RagdollShot {
+    /// A bullet's path.
+    pub fn bullet(from: Vec3, to: Vec3) -> Self {
+        Self {
+            from,
+            to,
+            blast: false,
+            ragdoll: None,
+        }
+    }
 }
 
 /// The collision filter for the app's physics
@@ -782,9 +798,14 @@ fn shoot_ragdolls(
     for shot in shots.read() {
         let Ok(dir) = Dir3::new(shot.to - shot.from) else { continue };
         let length = shot.from.distance(shot.to);
-        // The nearest hit on each ragdoll.
-        let mut first: Vec<(Entity, f32)> = Vec::new();
-        for hit in spatial.ray_hits(shot.from, dir, length, 64, true, &filter) {
+        // The nearest hit on each ragdoll (a blast names its own).
+        let mut first: Vec<(Entity, f32)> = shot.ragdoll.map(|r| (r, 0.0)).into_iter().collect();
+        let hits = if shot.ragdoll.is_some() {
+            Vec::new()
+        } else {
+            spatial.ray_hits(shot.from, dir, length, 64, true, &filter)
+        };
+        for hit in hits {
             let Ok(part) = parts.get(hit.entity) else { continue };
             match first.iter_mut().find(|(r, _)| *r == part.ragdoll) {
                 Some((_, d)) => *d = d.min(hit.distance),

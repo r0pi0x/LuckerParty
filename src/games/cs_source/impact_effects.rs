@@ -51,6 +51,9 @@ const DUST_DECAY_TIME: f32 = 0.5;
 const DUST_MIN_SPEED: f32 = 32.0;
 const SPARK_GRAVITY: f32 = 400.0;
 const SPARK_DAMPING: f32 = 8.0;
+/// Share of bullet impacts that play the ricochet (spec section 2).
+pub const RICOCHET_CHANCE: f32 = 0.3;
+pub const RICOCHET: &str = "Bounce.Shrapnel";
 /// Blood-on-wall traces behind a hit player, in.
 const BLEED_TRACE: f32 = 172.0;
 /// Merge key for fleck groups.
@@ -899,6 +902,16 @@ pub fn water_shot(from: Vec3, to: Vec3, water: &[MapWaterVolume]) -> WaterShot {
     }
 }
 
+/// Where a knife swing's line (eye to where it stopped) entered water, if
+/// it started dry and ended in water (not slime: its splash is a
+/// particle system not done yet). Spec section 12.
+pub fn knife_splash(line: (Vec3, Vec3), water: Option<&MapWater>) -> Option<Vec3> {
+    match water_shot(line.0, line.1, &water?.0) {
+        WaterShot::Entered { at, slime: false } => Some(at),
+        _ => None,
+    }
+}
+
 /// Splash scale factor `f = min(s/8, 4)`.
 pub fn splash_factor(s: f32) -> f32 {
     (s / 8.0).min(4.0)
@@ -1063,9 +1076,114 @@ pub fn glass_shards(
     Some(g)
 }
 
-/// Shards where window panes shatter.
+/// The glass impact (spec section 9): where a bullet or club hit
+/// shattered the pane it hit, at hit point `p` with the trace normal `n`;
+/// `light` is the light there (0-1). 2-4 flat shards spinning out along
+/// the normal, bouncing (keep 0.3) and fading over their last 2 s; 4 white
+/// grit sprites and a white smoke cap.
+pub fn glass_impact(
+    rng: &mut ParticleRng,
+    m: &EffectMaterials,
+    p: Vec3,
+    n: Vec3,
+    light: Vec3,
+    world: &impl WorldTrace,
+) -> Vec<ParticleGroup> {
+    let mut out = Vec::new();
+    let n = n.normalize_or(Vec3::Y);
+    let lit = light.clamp(Vec3::ZERO, Vec3::ONE) * 0.7 + Vec3::splat(0.3);
+    let color = (Vec3::new(200.0, 200.0, 210.0) * lit).trunc() / 255.0;
+    let mats = m.fleck_glass;
+    if mats.iter().any(Option::is_some) {
+        let planes = probe_planes(p, Some(n), (1.0 + 300.0) / 2.0 * UNIT, 800.0 * UNIT, world);
+        let mut g = ParticleGroup::new(Motion {
+            gravity: 800.0 * UNIT,
+            bounce: Some(Bounce {
+                keep: 0.3,
+                land_normal_y: 0.5,
+                land_speed: LAND_SPEED * UNIT,
+                planes,
+            }),
+            ..default()
+        });
+        let count = rng.int(2, 4);
+        let sigma = rng.float(2.0, 6.0);
+        for _ in 0..count {
+            let pick = rng.int(0, 1) as usize;
+            let Some(mat) = mats[pick].or(mats[1 - pick]) else { continue };
+            let side = (sigma + rng.float(-sigma / 2.0, sigma / 2.0)).trunc().max(1.0);
+            let life = rng.float(2.5, 5.0);
+            // Each axis: (n + U(-0.8, 0.8)) times its own speed draw.
+            let mut v = Vec3::ZERO;
+            for i in 0..3 {
+                v[i] = (n[i] + rng.float(-0.8, 0.8)) * rng.float(1.0, 300.0);
+            }
+            let facing = random_dir(rng);
+            let yaw = rng.float(0.0, 360.0);
+            let spin = rng.float(-800.0, 800.0);
+            g.particles.push(Particle {
+                fade: Fade::Tail(2.0),
+                size: Ramp::constant(side * UNIT),
+                shape: Shape::Flat {
+                    normal: facing,
+                    yaw,
+                    yaw_speed: spin,
+                },
+                ..sprite(p, v * UNIT, life, mat, color)
+            });
+        }
+        out.push(g);
+    }
+    // Grit and cap: the colour ramp clamps to white (quirk).
+    let mut pool = ParticleGroup::new(pool_motion());
+    pool.skip_first = false;
+    let at = p + n * 2.0 * UNIT;
+    if let Some(grit) = m.grit {
+        for i in 0..4 {
+            let k = (i + 1) as f32;
+            let life = rng.float(0.1, 0.25);
+            let dir = n + rng.vec3(-0.8, 0.8);
+            let start = rng.int(1, 4) as f32;
+            let v = down(dir * rng.float(8.0, 16.0) * k * UNIT, rng.float(16.0, 32.0) * k);
+            let alpha = rng.int(128, 255) as f32 / 255.0;
+            let roll_speed = rng.float(-1.0, 1.0);
+            pool.particles.push(Particle {
+                alpha,
+                fade: Fade::Ramp(Ramp::linear(1.0, 0.0)),
+                size: Ramp::linear(start * UNIT, start * 8.0 * UNIT),
+                roll_speed,
+                ..sprite(at, v, life, grit, Vec3::ONE)
+            });
+        }
+    }
+    if let Some(smoke) = m.smoke {
+        let life = rng.float(1.0, 1.5);
+        let dir = n + rng.vec3(-0.8, 0.8);
+        let start = rng.int(4, 8) as f32;
+        let mut v = dir * rng.float(2.0, 8.0) * UNIT;
+        v.y = rng.float(-2.0, 2.0) * UNIT;
+        let alpha = rng.int(32, 64) as f32 / 255.0;
+        let roll_speed = rng.float(-2.0, 2.0);
+        pool.particles.push(Particle {
+            alpha,
+            fade: Fade::Ramp(Ramp::linear(1.0, 0.0)),
+            size: Ramp::linear(start * UNIT, start * 4.0 * UNIT),
+            roll_speed,
+            ..sprite(at, v, life, smoke, Vec3::ONE)
+        });
+    }
+    if !pool.particles.is_empty() {
+        out.push(pool);
+    }
+    out
+}
+
+/// Shards where window panes shatter, and the glass impact where a hit
+/// shattered one.
+#[allow(clippy::too_many_arguments)]
 fn glass_effects(
     mut panes: MessageReader<crate::map::GlassShatter>,
+    mut hits: MessageReader<crate::map::GlassImpact>,
     materials: Option<Res<ParticleMaterials>>,
     colors: Option<Res<SurfaceColors>>,
     mut particles: ResMut<Particles>,
@@ -1074,9 +1192,16 @@ fn glass_effects(
 ) {
     let Some(materials) = materials else {
         panes.clear();
+        hits.clear();
         return;
     };
     let mats = EffectMaterials::new(&materials.0);
+    for hit in hits.read() {
+        let light = colors.as_deref().map_or(Vec3::ONE, |c| light_below(c, &world, hit.at));
+        for g in glass_impact(&mut rng.0, &mats, hit.at, hit.normal, light, &world) {
+            particles.add(g);
+        }
+    }
     for pane in panes.read() {
         if pane.tile {
             continue;
@@ -1138,6 +1263,7 @@ impl Plugin for ImpactEffectsPlugin {
             .add_message::<PlaceDecal>()
             .add_message::<PlaySound>()
             .add_message::<crate::map::GlassShatter>()
+            .add_message::<crate::map::GlassImpact>()
             .add_message::<crate::map::tracer::Tracer>()
             .add_systems(
                 FixedUpdate,
@@ -1229,11 +1355,10 @@ fn impact_effects(
     world: WorldTracer,
     mut play: MessageWriter<PlaySound>,
 ) {
-    let Some(materials) = materials else {
-        events.clear();
-        return;
-    };
-    let mats = EffectMaterials::new(&materials.0);
+    // Without materials (headless) there are no particles; sounds still
+    // play.
+    let mats = materials.map(|m| EffectMaterials::new(&m.0));
+    let mats = mats.as_ref();
     let rng = &mut rng.0;
     for e in events.read() {
         let (from, point, normal, hit, bullet) = match &e.kind {
@@ -1257,14 +1382,22 @@ fn impact_effects(
                     && let WaterShot::Entered { at, slime: false } = water_shot(*from, *to, &w.0)
                     && settings.cl_show_splashes != 0
                 {
-                    splash(rng, &mats, at, colors.as_deref(), &world, &mut particles, &mut play);
+                    splash(rng, mats, at, None, colors.as_deref(), &world, &mut particles, &mut play);
                 }
                 continue;
             }
-            WeaponEventKind::Swing {
-                at: Some((point, normal, hit)),
-                ..
-            } => (*point + *normal * 0.1, *point, *normal, *hit, false),
+            WeaponEventKind::Swing { at, line, .. } => {
+                // A swing from the dry into water splashes (fixed scale
+                // 8) and does nothing else, hit or miss (spec section 12).
+                if let Some(at) = knife_splash(*line, water.as_deref()) {
+                    if settings.cl_show_splashes != 0 {
+                        splash(rng, mats, at, Some(8.0), colors.as_deref(), &world, &mut particles, &mut play);
+                    }
+                    continue;
+                }
+                let Some((point, normal, hit)) = at else { continue };
+                (*point + *normal * 0.1, *point, *normal, *hit, false)
+            }
             _ => continue,
         };
         let d = (point - from).normalize_or_zero();
@@ -1274,7 +1407,7 @@ fn impact_effects(
                 WaterShot::Entered { at, slime } => {
                     // Slime splashes are particle systems not done yet.
                     if !slime && settings.cl_show_splashes != 0 {
-                        splash(rng, &mats, at, colors.as_deref(), &world, &mut particles, &mut play);
+                        splash(rng, mats, at, None, colors.as_deref(), &world, &mut particles, &mut play);
                     }
                     continue;
                 }
@@ -1291,9 +1424,6 @@ fn impact_effects(
             .and_then(|b| surface(&b.0, &name))
             .map_or('C', |s| s.game_material);
         let effect = effect_for(letter);
-        if effect == Effect::None {
-            continue;
-        }
         let prop = props.get(hit).ok().map(|p| p.0);
         let look = match colors.as_deref().map(|c| look_at(c, prop, point, normal)) {
             Some(Ok(look)) => look,
@@ -1301,12 +1431,17 @@ fn impact_effects(
             Some(Err(())) => continue,
             None => None,
         };
+        // Bullets only: 3 in 10 impacts ricochet (spec section 2 step 6).
+        if bullet && rng.random() < RICOCHET_CHANCE {
+            play.write(PlaySound::at(RICOCHET, point));
+        }
+        let Some(mats) = mats else { continue };
         let c = surface_color(look);
         let groups = match effect {
-            Effect::Debris { wood } => debris(rng, &mats, point, normal, wood, c, settings.r_drawflecks != 0, &world),
-            Effect::DustPuff => vec![dust_puff(rng, &mats, point, normal, c)],
-            Effect::MetalSparks => metal_sparks(rng, &mats, point, normal, d),
-            Effect::ElectricSparks => electric_sparks(rng, &mats, point, normal, &world),
+            Effect::Debris { wood } => debris(rng, mats, point, normal, wood, c, settings.r_drawflecks != 0, &world),
+            Effect::DustPuff => vec![dust_puff(rng, mats, point, normal, c)],
+            Effect::MetalSparks => metal_sparks(rng, mats, point, normal, d),
+            Effect::ElectricSparks => electric_sparks(rng, mats, point, normal, &world),
             Effect::None => Vec::new(),
         };
         for g in groups {
@@ -1315,28 +1450,36 @@ fn impact_effects(
     }
 }
 
+/// A water splash at `at` of scale `size` (None: a bullet's, U(8, 12)).
+#[allow(clippy::too_many_arguments)]
 fn splash(
     rng: &mut ParticleRng,
-    mats: &EffectMaterials,
+    mats: Option<&EffectMaterials>,
     at: Vec3,
+    size: Option<f32>,
     colors: Option<&SurfaceColors>,
     world: &impl WorldTrace,
     particles: &mut Particles,
     play: &mut MessageWriter<PlaySound>,
 ) {
-    let s = rng.float(8.0, 12.0);
-    let light = colors.map_or(Vec3::ONE, |c| light_below(c, world, at + Vec3::Y * s * UNIT));
-    for g in water_splash(rng, mats, at, s, light.min(Vec3::ONE)) {
-        particles.add(g);
+    let s = size.unwrap_or_else(|| rng.float(8.0, 12.0));
+    if let Some(mats) = mats {
+        let light = colors.map_or(Vec3::ONE, |c| light_below(c, world, at + Vec3::Y * s * UNIT));
+        for g in water_splash(rng, mats, at, s, light.min(Vec3::ONE)) {
+            particles.add(g);
+        }
     }
     play.write(PlaySound::at("Physics.WaterSplash", at));
 }
 
-/// Blood where players take weapon damage, and stains on the walls behind.
+/// Blood where players take weapon damage (not refused by team rules),
+/// and stains on the walls behind.
 #[allow(clippy::too_many_arguments)]
 fn blood_effects(
     mut damage: MessageReader<Damage>,
     characters: Query<(), With<Intent>>,
+    teams: Query<&crate::core::Team>,
+    friendly_fire: Option<Res<crate::core::FriendlyFire>>,
     materials: Option<Res<ParticleMaterials>>,
     settings: Res<ImpactEffectSettings>,
     bank: Option<Res<SoundBank>>,
@@ -1348,7 +1491,13 @@ fn blood_effects(
 ) {
     let rng = &mut rng.0;
     for hit in damage.read() {
-        if hit.attacker.is_none() || !characters.contains(hit.target) || settings.violence_hblood == 0 {
+        // Only damage that is taken: not a teammate's with friendly fire
+        // off (spec section 10).
+        if hit.attacker.is_none()
+            || !characters.contains(hit.target)
+            || settings.violence_hblood == 0
+            || crate::core::refused_by_team(hit, &teams, friendly_fire.as_deref())
+        {
             continue;
         }
         if let Some(m) = &materials {
@@ -1618,6 +1767,40 @@ mod tests {
             "{}",
             p.velocity
         );
+    }
+
+    /// Section 9: 2-4 flat glass shards of one shared size draw, spinning,
+    /// fading over their last 2 s, thrown along the normal per axis; 4
+    /// white grit sprites and one white cap.
+    #[test]
+    fn glass_impact_numbers() {
+        let mats = EffectMaterials::all(0);
+        let mut rng = ParticleRng::new(7);
+        for _ in 0..50 {
+            let n = Vec3::Z;
+            let groups = glass_impact(&mut rng, &mats, Vec3::ZERO, n, Vec3::splat(0.5), &NoWorld);
+            assert_eq!(groups.len(), 2);
+            let shards = &groups[0].particles;
+            assert!((2..=4).contains(&shards.len()), "{}", shards.len());
+            for s in shards {
+                assert!((2.5..=5.0).contains(&s.life));
+                assert!(matches!(s.fade, Fade::Tail(t) if t == 2.0));
+                assert!(matches!(s.shape, Shape::Flat { yaw_speed, .. } if yaw_speed.abs() <= 800.0));
+                let side = s.size.start / UNIT;
+                assert!((1.0..=9.0).contains(&side) && side.fract().abs() < 1e-3, "{side}");
+                // Per axis (n + U(-0.8, 0.8)) × U(1, 300).
+                let v = s.velocity / UNIT;
+                assert!(v.z >= 0.2 - 1e-3 && v.z <= 1.8 * 300.0 + 1e-3, "{v}");
+                assert!(v.x.abs() <= 0.8 * 300.0 + 1e-3);
+                // (200, 200, 210) × (0.7 × 0.5 + 0.3), truncated.
+                assert!((s.color * 255.0 - Vec3::new(130.0, 130.0, 136.0)).length() < 1e-3, "{}", s.color);
+            }
+            let pool = &groups[1].particles;
+            assert_eq!(pool.len(), 5, "4 grit + 1 cap");
+            assert!(pool.iter().all(|p| p.color == Vec3::ONE));
+            assert!(pool[..4].iter().all(|p| (0.1..=0.25).contains(&p.life)));
+            assert!((1.0..=1.5).contains(&pool[4].life));
+        }
     }
 
     #[test]
