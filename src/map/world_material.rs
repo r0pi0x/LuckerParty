@@ -38,7 +38,8 @@ pub struct WorldParams {
     /// often keep other data in alpha (env map masks), and the camera's
     /// output is composited over the sky camera by alpha.
     pub translucent: f32,
-    /// 1 when the surface reflects `envmap` (Source `$envmap`).
+    /// 1 when the surface reflects `envmap` (Source `$envmap`); 2 when it
+    /// shows it in the view direction, unlit (WindowImposter).
     pub envmap: f32,
     /// What scales the reflection: 0 nothing, 1 normal-map alpha, 2 one
     /// minus base alpha, 3 `envmap_mask` colour.

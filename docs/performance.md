@@ -298,7 +298,7 @@ At that view about 1770 meshes were still drawn: the wall of blocks is
 Brush entities drawn merged (`map::merge`): while a brush entity is
 where the map put it, whole and shown, its opaque and alpha-tested
 meshes are drawn through combined meshes per material and 512-unit
-chunk under the map's root, culled by the clusters their parts touch;
+chunk under the map's root of static parts, culled by the clusters their parts touch;
 its own meshes stay spawned but hidden. When it moves (doors, trains),
 breaks or is removed or turned off (`LogicHidden`: func_brush toggles),
 or shows broken panes, its triangles leave the combined meshes (their

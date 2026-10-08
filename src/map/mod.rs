@@ -316,6 +316,10 @@ pub struct MapEnvmap {
     pub saturation: f32,
     /// Fresnel R0 (1: no fresnel).
     pub fresnel: f32,
+    /// WindowImposter (a "fake sky" window): the surface shows the
+    /// cubemap in the view direction, unlit and unfogged, instead of
+    /// reflecting it.
+    pub imposter: bool,
 }
 
 /// Source `$detail`: a texture tiled `scale` times per base texture repeat
@@ -1808,6 +1812,21 @@ fn spawn_map(
             Visibility::default(),
         ))
         .id();
+    // Drawn parts that never move (world chunks, static props, merged brush
+    // entities, ropes, prop shadows) under a root of their own, beside the
+    // map's (both at the origin): any transform written under a root (a
+    // rotating brush, a physics prop) makes Bevy's transform propagation
+    // recompute every child of that root, several times a frame
+    // (surf_demise: 37k map parts, 9.6 ms a frame); a root whose tree
+    // didn't change is skipped whole.
+    let statics = commands
+        .spawn((
+            Name::new("Map static parts"),
+            MapPart,
+            Transform::default(),
+            Visibility::default(),
+        ))
+        .id();
 
     if !data.collision_indices.is_empty() {
         commands.insert_resource(MapTerrain::from_triangles(
@@ -2229,10 +2248,10 @@ fn spawn_map(
                             MapDebugView::Lighting { .. } => 1.0,
                             MapDebugView::Albedo => 2.0,
                         },
-                        envmap: if m.envmap.is_some_and(|e| e.cubemap.is_some()) {
-                            1.0
-                        } else {
-                            0.0
+                        envmap: match m.envmap {
+                            Some(e) if e.cubemap.is_some() && e.imposter => 2.0,
+                            Some(e) if e.cubemap.is_some() => 1.0,
+                            _ => 0.0,
                         },
                         envmap_mask: match m.envmap.map(|e| e.mask) {
                             Some(EnvmapMask::NormalAlpha) if m.normal_map.is_some() => 1.0,
@@ -2303,7 +2322,7 @@ fn spawn_map(
                         })),
                         MeshMaterial3d(material.clone()),
                         Transform::from_translation(centre),
-                        ChildOf(parent_of(m)),
+                        ChildOf(if own_node { parent_of(m) } else { statics }),
                     ));
                     if merged.is_some() {
                         e.insert((merge::MergedPiece, Visibility::Hidden));
@@ -2329,7 +2348,7 @@ fn spawn_map(
                     Mesh3d(meshes.add(build_mesh(&chunk, lit.is_some()))),
                     MeshMaterial3d(material.clone()),
                     Transform::from_translation(centre),
-                    ChildOf(parent_of(m)),
+                    ChildOf(if own_node { parent_of(m) } else { statics }),
                 ));
                 if let Some(image) = lit {
                     part.insert(bevy::pbr::Lightmap {
@@ -2362,7 +2381,7 @@ fn spawn_map(
                 Mesh3d(mesh),
                 Transform::from_translation(centre),
                 Visibility::default(),
-                ChildOf(root),
+                ChildOf(statics),
             ));
             if let Some(l) = lightmap {
                 e.insert(l);
@@ -2592,7 +2611,7 @@ fn spawn_map(
                         })),
                         bevy::light::NotShadowCaster,
                         Transform::default(),
-                        ChildOf(root),
+                        ChildOf(statics),
                     ));
                     tag(&mut e, clusters.clone());
                 }
@@ -2632,7 +2651,7 @@ fn spawn_map(
                         MeshMaterial3d(material.clone()),
                         bevy::light::NotShadowCaster,
                         Transform::default(),
-                        ChildOf(root),
+                        ChildOf(statics),
                     ));
                 tag(&mut e, clusters);
                 entities.insert(prop, e.id());
@@ -2646,7 +2665,7 @@ fn spawn_map(
                 material,
                 cells: built.cells.into_iter().map(|c| (c.prop, c)).collect(),
                 entities,
-                root,
+                root: statics,
             });
         }
     }
@@ -2729,7 +2748,15 @@ fn spawn_map(
             MapPart,
             rider.map_or(placed, |r| r.1),
             Visibility::default(),
-            ChildOf(rider.map_or(root, |r| r.0)),
+            // Static props (no entity, no physics) never move.
+            ChildOf(rider.map_or(
+                if prop.entity.is_none() && prop.physics.is_none() {
+                    statics
+                } else {
+                    root
+                },
+                |r| r.0,
+            )),
         ));
         if let Some(solid) = own_solid {
             e.insert(solid);

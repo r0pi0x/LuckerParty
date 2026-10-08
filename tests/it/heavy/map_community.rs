@@ -164,3 +164,111 @@ fn surf_boreas_lighting_and_ramps() {
         .count();
     assert!(ramps >= 19, "{ramps} props over 90 m (the ramps)");
 }
+
+/// Materials the VMT parser refused (the map sweep: 32 over 10 maps) read
+/// the game's way: `$detailscale "[9 9 9]"`, WorldVertexTransition without
+/// `$basetexture2`, an unreadable `$basetexturetransform`, a missing
+/// closing brace; unknown shaders as their stand-ins (WindowImposter,
+/// ShatteredGlass, `Refract_DX90`).
+#[test]
+fn lenient_materials() {
+    let refused = [
+        "Vec2OrSingle",
+        "$basetexture2",
+        "$basetexturetransform",
+        "No valid token",
+        "\"windowimposter\"",
+        "\"shatteredglass\"",
+        "\"lightmappedreflective\"",
+        "\"refract_dx90\"",
+        "Vec3OrSingle",
+        "duplicate field",
+        "missing field `$basetexture`",
+    ];
+    for name in [
+        "kz_11342",
+        "kz_hikari_od_nh_v2",
+        "mg_kommando",
+        "mg_escape_prison_beta",
+        "surf_halloween_tf2",
+        "surf_jive",
+        "surf_threnody",
+    ] {
+        let Some(map) = load(name) else { continue };
+        let bad: Vec<_> = map
+            .warnings
+            .iter()
+            .filter(|w| refused.iter().any(|r| w.contains(r)))
+            .collect();
+        assert!(bad.is_empty(), "{name}: {bad:#?}");
+        if name == "surf_threnody" {
+            // Its fake skies show their cubemap.
+            assert!(
+                map.meshes
+                    .iter()
+                    .any(|m| m.material.contains("fakeskies") && m.envmap.is_some_and(|e| e.imposter)),
+                "a WindowImposter surface"
+            );
+        }
+    }
+}
+
+/// mg_swag_multigames_v1 places about 250 weapons. Every resting one swept
+/// itself (swept CCD) against all it touched each tick, the world's
+/// colliders included: 19 ms a tick, so frames took 340 ms (ticks piled
+/// up). Resting items sweep nothing now.
+#[test]
+fn resting_placed_weapons_cost_no_sweeps() {
+    let Some(map) = load("mg_swag_multigames_v1") else { return };
+    let mut sim = Sim::new((MapPlugin::new(map), SourceMovementPlugin, CsWeaponsPlugin));
+    sim.set_tick_interval(cs_source::TICK_INTERVAL);
+    // Let them land and settle.
+    sim.ticks(200);
+    let placed = {
+        let world = sim.app.world_mut();
+        world.query::<(&Loose, &MapWeapon)>().iter(world).count()
+    };
+    assert!(placed > 200, "{placed} placed weapons");
+    let mut worst = std::time::Duration::ZERO;
+    type Diagnostics = avian3d::dynamics::solver::SolverDiagnostics;
+    for _ in 0..20 {
+        *sim.app.world_mut().resource_mut::<Diagnostics>() = Diagnostics::default();
+        sim.ticks(1);
+        worst = worst.max(sim.app.world().resource::<Diagnostics>().swept_ccd);
+    }
+    let moving = {
+        let world = sim.app.world_mut();
+        world
+            .query_filtered::<&avian3d::prelude::LinearVelocity, With<MapWeapon>>()
+            .iter(world)
+            .filter(|v| v.length() > 0.5)
+            .count()
+    };
+    eprintln!("swept CCD at most {worst:?} a tick; {moving} of {placed} weapons moving");
+    // 55 ms before, 0.1-3.5 ms after (machine load).
+    assert!(worst.as_secs_f32() < 0.02, "swept CCD took {worst:?} in a tick");
+}
+
+/// surf_demise: its ramps are translucent marble over an envmap-only
+/// material (no `$basetexture`) reflecting a tinted HDR sky cubemap: black
+/// albedo (specs/cs_source/shaders.md 2), not the grey stand-in (which
+/// read as a magenta floor at the spawn). The cubemap is a half-float VTF
+/// in an LZMA-compressed pak entry the zip reader's decoder refused.
+#[test]
+fn envmap_only_ramps_reflect_their_sky() {
+    let Some(map) = load("surf_demise") else { return };
+    let bad: Vec<_> = map.warnings.iter().filter(|w| w.contains("sky_demise_05")).collect();
+    assert!(bad.is_empty(), "{bad:#?}");
+    let sky: Vec<_> = map
+        .models
+        .iter()
+        .flat_map(|m| &m.meshes)
+        .filter(|m| m.material.contains("sky_demise_05"))
+        .collect();
+    assert!(!sky.is_empty(), "the ramps' fake-sky meshes");
+    for m in sky {
+        let texture = &map.textures[m.texture.expect("a black base texture")];
+        assert_eq!(&texture.rgba8[..3], &[0, 0, 0], "{}: black albedo", m.material);
+        assert!(m.envmap.is_some_and(|e| e.cubemap.is_some()), "{}: its sky cubemap", m.material);
+    }
+}

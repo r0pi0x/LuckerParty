@@ -102,10 +102,45 @@ impl<'a> MaterialLoader<'a> {
         if let Ok(Some(data)) = self.bsp.pack.get(&path) {
             return Some(data);
         }
-        if let Some(Ok(Some(data))) = self.pack_names.get(&path.to_lowercase()).map(|n| self.bsp.pack.get(n)) {
-            return Some(data);
+        if let Some(name) = self.pack_names.get(&path.to_lowercase()) {
+            match self.bsp.pack.get(name) {
+                Ok(Some(data)) => return Some(data),
+                Err(_) => return self.packed_lzma(name),
+                Ok(None) => {}
+            }
         }
         self.mount.read(&path).ok()
+    }
+
+    /// A packed file the zip reader's LZMA decoder refuses ("stream is
+    /// corrupted": surf_demise's 78 MB HDR sky cubemap, which the game
+    /// and other zip readers decode), decoded from its raw entry with
+    /// lzma-rs. Zip's LZMA entries: a version (2 bytes), the property
+    /// size (2, always 5), the properties (5), then the stream.
+    fn packed_lzma(&self, name: &str) -> Option<Vec<u8>> {
+        use std::io::Read;
+        let zip = self.bsp.pack.clone().into_zip();
+        let mut zip = zip.lock().unwrap_or_else(|e| e.into_inner());
+        let index = (0..zip.len()).find(|&i| zip.by_index_raw(i).is_ok_and(|f| f.name() == name))?;
+        let mut entry = zip.by_index_raw(index).ok()?;
+        let size = entry.size();
+        let mut raw = Vec::new();
+        entry.read_to_end(&mut raw).ok()?;
+        if raw.get(2..4)? != [5, 0] {
+            return None;
+        }
+        let mut out = Vec::with_capacity(size as usize);
+        lzma_rs::lzma_decompress_with_options(
+            &mut std::io::Cursor::new(&raw[4..]),
+            &mut out,
+            &lzma_rs::decompress::Options {
+                unpacked_size: lzma_rs::decompress::UnpackedSize::UseProvided(Some(size)),
+                allow_incomplete: false,
+                memlimit: None,
+            },
+        )
+        .ok()?;
+        (out.len() as u64 == size).then_some(out)
     }
 
     /// A packed file under `materials/maps/<any folder>/` named `file`
@@ -177,9 +212,16 @@ impl<'a> MaterialLoader<'a> {
             return fallback;
         };
         let (text, stand_in) = stand_in_shader(&text);
-        let material = vmt_parser::from_str(&text).map_err(VmtError::from).and_then(|m| {
-            m.resolve(|include: &str| self.read_text(include).ok_or(VmtError::Missing(include.to_string())))
-        });
+        match stand_in {
+            Some(StandIn::WindowImposter) => return self.window_imposter(&vmt_path, &text, fallback),
+            Some(StandIn::Reflective) => return self.reflective(&text, fallback),
+            _ => {}
+        }
+        // Strictly first; what the parser refuses is read again leniently,
+        // the way the game reads it (`lenient_vmt`).
+        let material = self
+            .parse_vmt(&text, false)
+            .or_else(|e| self.parse_vmt(&text, true).map_err(|_| e));
         let material = match material {
             Ok(m) => m,
             Err(e) => {
@@ -221,6 +263,18 @@ impl<'a> MaterialLoader<'a> {
         // debug colour.
         if let (None, vmt_parser::material::Material::Water(w)) = (texture, &material) {
             texture = Some(self.solid(w.fog_color.0));
+        }
+        // Envmap-only surfaces (no `$basetexture`) have black albedo
+        // (specs/cs_source/shaders.md 2): surf_demise's ramps glow with
+        // a tinted sky cubemap through translucent marble.
+        let generic = matches!(
+            material,
+            vmt_parser::material::Material::LightMappedGeneric(_)
+                | vmt_parser::material::Material::VertexLitGeneric(_)
+                | vmt_parser::material::Material::UnlitGeneric(_)
+        );
+        if generic && base.is_none() && texture.is_none() && self.keys(&text, 0).contains_key("$envmap") {
+            texture = Some(self.solid([0.0; 3]));
         }
         let normal_map = bump.and_then(|t| self.texture(t, false));
         let decal_scale = match &material {
@@ -286,6 +340,64 @@ impl<'a> MaterialLoader<'a> {
             surfaceprop: material.surface_prop().map(str::to_lowercase),
             envmap: self.envmap(&text, normal_map.is_some()),
             tint: tint(&self.keys(&text, 0)),
+        }
+    }
+
+    /// A material's text parsed, patches resolved through their included
+    /// material (whose unknown shader gets its stand-in too); `lenient`:
+    /// both texts through `lenient_vmt` first.
+    fn parse_vmt(&self, text: &str, lenient: bool) -> Result<vmt_parser::material::Material, VmtError> {
+        let fix = |t: &str| if lenient { lenient_vmt(t) } else { t.to_string() };
+        vmt_parser::from_str(&fix(text)).map_err(VmtError::from).and_then(|m| {
+            m.resolve(|include: &str| {
+                let included = self.read_text(include).ok_or(VmtError::Missing(include.to_string()))?;
+                Ok(fix(&stand_in_shader(&included).0))
+            })
+        })
+    }
+
+    /// WindowImposter ("fake sky" windows on surf maps): the `$envmap`
+    /// cubemap seen through the surface, unlit, tinted by `$color`
+    /// (`MapEnvmap::imposter`). The shader isn't specified
+    /// (specs/cs_source/shaders.md, open question 15): drawn as if the
+    /// cubemap were infinitely far, like a sky.
+    fn window_imposter(&mut self, vmt_path: &str, text: &str, fallback: Resolved) -> Resolved {
+        let keys = self.keys(text, 0);
+        let Some(name) = keys.get("$envmap").cloned() else {
+            self.missing.push(format!("{vmt_path}: WindowImposter without $envmap"));
+            return fallback;
+        };
+        let Some(cube) = self.cubemap(&name) else {
+            return fallback;
+        };
+        Resolved {
+            texture: Some(self.solid([0.0; 3])),
+            unlit: true,
+            envmap: Some(crate::map::MapEnvmap {
+                cubemap: Some(cube),
+                mask: crate::map::EnvmapMask::None,
+                tint: tint(&keys).unwrap_or([1.0; 3]),
+                contrast: 0.0,
+                saturation: 1.0,
+                fresnel: 1.0,
+                imposter: true,
+            }),
+            ..fallback
+        }
+    }
+
+    /// LightmappedReflective (glass that shows the scene reflected in real
+    /// time, and refracted behind it): an opaque lightmapped surface of its
+    /// `$refracttint`, with `$envmap` reflections if it names one. A
+    /// stand-in (specs/cs_source/shaders.md, open question 15).
+    fn reflective(&mut self, text: &str, fallback: Resolved) -> Resolved {
+        let keys = self.keys(text, 0);
+        let colour = keys.get("$refracttint").and_then(|v| vector(v)).unwrap_or([0.5; 3]);
+        Resolved {
+            texture: Some(self.solid(colour)),
+            surfaceprop: keys.get("$surfaceprop").map(|s| s.to_lowercase()),
+            envmap: self.envmap(text, false),
+            ..fallback
         }
     }
 
@@ -482,6 +594,7 @@ impl<'a> MaterialLoader<'a> {
             contrast,
             saturation,
             fresnel,
+            imposter: false,
         })
     }
 
@@ -744,6 +857,21 @@ pub fn convert_texels(format: vtf::ImageFormat, bytes: &[u8]) -> Option<Vec<u8>>
                 [five(v >> 10), five(v >> 5), five(v), a]
             })
             .collect(),
+        // Half floats, linear light (HDR cubemaps a WindowImposter or an
+        // envmap-only surface names in LDR too): clamped, sRGB-encoded
+        // for the 8-bit sRGB texture.
+        F::Rgba16161616f => bytes
+            .chunks_exact(8)
+            .map(|p| {
+                let c = |k: usize| half::f16::from_le_bytes([p[2 * k], p[2 * k + 1]]).to_f32();
+                let srgb = |v: f32| {
+                    let v = if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 };
+                    let e = if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+                    (e * 255.0).round() as u8
+                };
+                [srgb(c(0)), srgb(c(1)), srgb(c(2)), (c(3).clamp(0.0, 1.0) * 255.0).round() as u8]
+            })
+            .collect(),
         _ => return None,
     };
     Some(out.into_iter().flatten().collect())
@@ -823,7 +951,39 @@ enum StandIn {
     /// (DecalBaseTimesLightmapAlphaBlendSelfIllum on de_nuke): a translucent
     /// LightmappedGeneric decal. Self-illumination isn't modelled.
     Decal,
+    /// ShatteredGlass (func_breakable_surf windows): its base texture and
+    /// `$envmap` as LightmappedGeneric. The crack overlay isn't modelled.
+    Glass,
+    /// LightmappedReflective (reflective glass, no base texture): drawn by
+    /// `MaterialLoader::reflective`.
+    Reflective,
+    /// WindowImposter: drawn by `MaterialLoader::window_imposter`.
+    WindowImposter,
+    /// A DirectX-level variant name (`Refract_DX90`) read as its shader.
+    DxVariant,
 }
+
+/// Shaders the VMT parser knows (its `Material` variants).
+const PARSER_SHADERS: &[&str] = &[
+    "lightmappedgeneric",
+    "vertexlitgeneric",
+    "vertexlitgeneric_dx6",
+    "unlitgeneric",
+    "unlittwotexture",
+    "water",
+    "worldvertextransition",
+    "eyerefract",
+    "subrect",
+    "sprite",
+    "spritecard",
+    "cable",
+    "refract",
+    "modulate",
+    "decalmodulate",
+    "sky",
+    "replacements",
+    "patch",
+];
 
 /// `text` with an unknown shader name replaced by its stand-in.
 fn stand_in_shader(text: &str) -> (std::borrow::Cow<'_, str>, Option<StandIn>) {
@@ -842,6 +1002,10 @@ fn stand_in_shader(text: &str) -> (std::borrow::Cow<'_, str>, Option<StandIn>) {
         s if s.starts_with("decalbasetimeslightmap") => {
             (StandIn::Decal, "\n\"$decal\" \"1\"\n\"$translucent\" \"1\"\n")
         }
+        "shatteredglass" => (StandIn::Glass, ""),
+        "lightmappedreflective" => (StandIn::Reflective, ""),
+        "windowimposter" => (StandIn::WindowImposter, ""),
+        s if dx_variant_of(s).is_some() => (StandIn::DxVariant, ""),
         _ => return (Cow::Borrowed(text), None),
     };
     let rest = &text[start + usize::from(quoted) + len..];
@@ -851,15 +1015,184 @@ fn stand_in_shader(text: &str) -> (std::borrow::Cow<'_, str>, Option<StandIn>) {
         _ => rest.to_string(),
     };
     let quote = if quoted { "\"" } else { "" };
-    let shader = if stand_in == StandIn::Model {
-        "VertexLitGeneric"
-    } else {
-        "LightmappedGeneric"
+    let shader = match stand_in {
+        StandIn::Model => "VertexLitGeneric",
+        StandIn::DxVariant => dx_variant_of(&shader).unwrap_or("LightmappedGeneric"),
+        _ => "LightmappedGeneric",
     };
     (
         Cow::Owned(format!("{}{quote}{shader}{rest}", &text[..start])),
         Some(stand_in),
     )
+}
+
+/// A shader name with a DirectX-level suffix (`refract_dx90`,
+/// `unlitgeneric_dx8`) whose base name the parser knows: that name.
+fn dx_variant_of(shader: &str) -> Option<&'static str> {
+    let (base, level) = shader.rsplit_once("_dx")?;
+    if PARSER_SHADERS.contains(&shader) || level.is_empty() || !level.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    PARSER_SHADERS.iter().copied().find(|s| *s == base)
+}
+
+/// A material's text rewritten the way the game reads what the VMT parser
+/// refuses (community maps' materials, found by the map sweep):
+/// - unbalanced braces: missing `}` at the end are added, extra ones and
+///   a key without a value dropped;
+/// - in the shader's block, conditional blocks (`">=DX90" { ... }`) and
+///   the DirectX 9 fallback block (`<shader>_dx9`) count as their keys
+///   when they hold at DirectX level 9 (overriding), and are dropped
+///   otherwise, like other DirectX-level blocks (`<shader>_dx6`);
+/// - a key given twice: the last one counts;
+/// - WorldVertexTransition without `$basetexture2` is LightmappedGeneric
+///   (one layer; what the map compiler itself writes for such a
+///   material's brush faces, in the `_wvt_patch` materials it packs);
+/// - `$detailscale` with more numbers than two keeps the first two
+///   (`"[9 9 9]"`); `{r g b}` colours become `[r g b]` / 255, without a
+///   fourth number;
+/// - texture transforms the parser can't read (`"11"`) are dropped
+///   (identity).
+///
+/// The result is re-quoted text without comments.
+fn lenient_vmt(text: &str) -> String {
+    enum Node {
+        Pair(String, String),
+        Block(String, Vec<Node>),
+    }
+    fn block(t: &[String], i: &mut usize) -> Vec<Node> {
+        let mut out = Vec::new();
+        while *i < t.len() {
+            let tok = &t[*i];
+            *i += 1;
+            match tok.as_str() {
+                "}" => return out,
+                // A block without a name: its keys belong here.
+                "{" => out.extend(block(t, i)),
+                _ => match t.get(*i).map(String::as_str) {
+                    Some("{") => {
+                        *i += 1;
+                        out.push(Node::Block(tok.clone(), block(t, i)));
+                    }
+                    Some("}") | None => {}
+                    Some(value) => {
+                        out.push(Node::Pair(tok.clone(), value.to_string()));
+                        *i += 1;
+                    }
+                },
+            }
+        }
+        out
+    }
+    /// Whether a block in the shader's block applies at DirectX level 9
+    /// (Some(true): its keys count; Some(false): dropped; None: kept).
+    fn applies(name: &str) -> Option<bool> {
+        const LEVEL: u32 = 95;
+        let n = name.to_ascii_lowercase();
+        let ops: [(&str, fn(u32, u32) -> bool); 4] = [
+            (">=dx", |l, x| l >= x),
+            ("<=dx", |l, x| l <= x),
+            (">dx", |l, x| l > x),
+            ("<dx", |l, x| l < x),
+        ];
+        for (op, holds) in ops {
+            if let Some(level) = n.strip_prefix(op).and_then(|x| x.parse::<u32>().ok()) {
+                return Some(holds(LEVEL, level));
+            }
+        }
+        let (_, level) = n.rsplit_once("_dx")?;
+        match level {
+            _ if n.contains("hdr") => Some(false),
+            "9" | "90" | "95" => Some(true),
+            l if !l.is_empty() && l.bytes().all(|b| b.is_ascii_digit()) => Some(false),
+            _ => None,
+        }
+    }
+    fn numbers(v: &str) -> Vec<f32> {
+        v.trim()
+            .trim_start_matches(['[', '{'])
+            .trim_end_matches([']', '}'])
+            .split_whitespace()
+            .filter_map(|x| x.parse().ok())
+            .collect()
+    }
+    fn value(key: &str, value: &str) -> Option<String> {
+        let key = key.to_ascii_lowercase();
+        if key == "$detailscale" {
+            return match numbers(value).as_slice() {
+                [] => None,
+                [a] => Some(format!("{a}")),
+                [a, b, ..] => Some(format!("[{a} {b}]")),
+            };
+        }
+        if key.starts_with('$') && key.ends_with("transform") {
+            let readable = value
+                .to_ascii_lowercase()
+                .parse::<vmt_parser::TextureTransform>()
+                .is_ok();
+            return readable.then(|| value.to_string());
+        }
+        if value.trim_start().starts_with('{') {
+            let n: Vec<String> = numbers(value).iter().take(3).map(|x| format!("{}", x / 255.0)).collect();
+            return Some(format!("[{}]", n.join(" ")));
+        }
+        Some(value.to_string())
+    }
+    fn quote(s: &str) -> String {
+        format!("\"{}\"", s.replace('"', ""))
+    }
+    fn emit(nodes: Vec<Node>, out: &mut String) {
+        let mut last: HashMap<String, usize> = HashMap::new();
+        for (k, n) in nodes.iter().enumerate() {
+            if let Node::Pair(key, _) = n {
+                last.insert(key.to_ascii_lowercase(), k);
+            }
+        }
+        for (k, n) in nodes.into_iter().enumerate() {
+            match n {
+                Node::Pair(key, v) => {
+                    if last.get(&key.to_ascii_lowercase()) == Some(&k)
+                        && let Some(v) = value(&key, &v)
+                    {
+                        out.push_str(&format!("{} {}\n", quote(&key), quote(&v)));
+                    }
+                }
+                Node::Block(name, kids) => {
+                    out.push_str(&format!("{} {{\n", quote(&name)));
+                    emit(kids, out);
+                    out.push_str("}\n");
+                }
+            }
+        }
+    }
+    let t = super::surfaceprops::tokens(text);
+    let has_base2 = t.iter().any(|s| s.eq_ignore_ascii_case("$basetexture2"));
+    let mut i = 0;
+    let mut out = String::new();
+    for node in block(&t, &mut i) {
+        let Node::Block(shader, kids) = node else {
+            emit(vec![node], &mut out);
+            continue;
+        };
+        let mut body = Vec::new();
+        for kid in kids {
+            match kid {
+                Node::Block(name, inner) => match applies(&name) {
+                    Some(true) => body.extend(inner),
+                    Some(false) => {}
+                    None => body.push(Node::Block(name, inner)),
+                },
+                pair => body.push(pair),
+            }
+        }
+        let shader = if shader.eq_ignore_ascii_case("worldvertextransition") && !has_base2 {
+            "LightmappedGeneric".to_string()
+        } else {
+            shader
+        };
+        emit(vec![Node::Block(shader, body)], &mut out);
+    }
+    out
 }
 
 /// `$detailblendmode` from a material's text (0 when absent).
@@ -1098,5 +1431,83 @@ mod tests {
 
         let known = "\"LightmappedGeneric\" { \"$basetexture\" \"x\" }";
         assert!(matches!(stand_in_shader(known), (std::borrow::Cow::Borrowed(_), None)));
+
+        let glass = "\"ShatteredGlass\" { \"$basetexture\" \"glass/x\" \"$envmap\" \"env_cubemap\" }";
+        let (text, s) = stand_in_shader(glass);
+        assert_eq!(s, Some(StandIn::Glass));
+        assert_eq!(vmt_parser::from_str(&text).expect("parses").base_texture(), Some("glass/x"));
+
+        let refract = "\"Refract_DX90\" { \"$normalmap\" \"w/n\" \"$refractamount\" \"0.05\" }";
+        let (text, s) = stand_in_shader(refract);
+        assert_eq!(s, Some(StandIn::DxVariant));
+        assert!(matches!(
+            vmt_parser::from_str(&text).expect("parses"),
+            vmt_parser::material::Material::Refract(_)
+        ));
+        assert_eq!(dx_variant_of("vertexlitgeneric_dx6"), None);
+        assert_eq!(dx_variant_of("unlitgeneric_dx8"), Some("unlitgeneric"));
+        assert!(matches!(stand_in_shader("WindowImposter { $envmap x }").1, Some(StandIn::WindowImposter)));
+    }
+
+    /// What the parser refuses on community maps (the map sweep), read
+    /// the game's way.
+    #[test]
+    fn lenient_reading() {
+        use vmt_parser::material::Material;
+        let strict = |t: &str| vmt_parser::from_str(t);
+        let lenient = |t: &str| vmt_parser::from_str(&lenient_vmt(t)).expect("lenient parse");
+        // A vec3 where the parser wants a vec2.
+        let detail = "\"LightmappedGeneric\"\n{\n\t\"$basetexture\" \"b/x\"\n\t\"$detail\" \"detail\\plaster\"\n\t\"$detailscale\" \"[9 9 9]\" // comment\n\t$color \"{225 215 215}\"\n}\n";
+        assert!(strict(detail).is_err());
+        match lenient(detail) {
+            Material::LightMappedGeneric(m) => assert_eq!(m.detail_scale.0, [9.0, 9.0]),
+            m => panic!("{m:?}"),
+        }
+        // WorldVertexTransition without its second texture: one layer.
+        let wvt = "WorldVertexTransition\n{\n\t$basetexture \"elly/snow\"\n\t$bumpmap \"elly/snow_n\"\n\t$translucent \"1\"\n}\n";
+        assert!(strict(wvt).is_err());
+        match lenient(wvt) {
+            Material::LightMappedGeneric(m) => {
+                assert_eq!(m.base_texture, "elly/snow");
+                assert!(m.translucent);
+            }
+            m => panic!("{m:?}"),
+        }
+        // A transform the parser can't read is dropped; a full one stays.
+        let transform = "\"WorldVertexTransition\" { \"$basetexture\" \"a\" \"$basetexture2\" \"b\" \"$basetexturetransform\" \"11\" }";
+        assert!(strict(transform).is_err());
+        assert!(matches!(lenient(transform), Material::WorldVertexTransition(_)));
+        let full = "LightmappedGeneric { $basetexture a $basetexturetransform \"center .5 .5 scale 2 2 rotate 0 translate 0 0\" }";
+        match lenient(full) {
+            Material::LightMappedGeneric(m) => assert_eq!(m.base_texture_transform.scale, [2.0, 2.0]),
+            m => panic!("{m:?}"),
+        }
+        // A missing closing brace (the proxies block's).
+        let unclosed = "\"UnlitGeneric\"\n{\n\t\"$baseTexture\" \"m/laser\"\n\t\"$translucent\" 1\n\t\"Proxies\"\n\t{\n\t\t\"AnimatedTexture\"\n\t\t{\n\t\t\t\"animatedtexturevar\" \"$basetexture\"\n\t\t}\n}\n";
+        assert!(strict(unclosed).is_err());
+        assert!(matches!(lenient(unclosed), Material::UnlitGeneric(_)));
+        // Conditional and DirectX-level blocks: the DX9 ones count.
+        let blocks = "// comment\n\"LightmappedGeneric\"\n{\n\t\"LightmappedGeneric_DX6\" { \"$fallbackmaterial\" \"n/x_dx70\" }\n\t\"$envmap\" \"env_cubemap\"\n\t\"$fogcolor\" \"{29 99 39}\"\n\t\">=DX90\"\n\t{\n\t\t\"$basetexture\" \"Nature/slime\"\n\t\t\"Proxies\" { \"TextureScroll\" { \"texturescrollvar\" \"$bumptransform\" } }\n\t}\n\t\"<DX90\" { \"$basetexture\" \"Nature/old\" }\n}\n";
+        assert!(strict(blocks).is_err());
+        match lenient(blocks) {
+            Material::LightMappedGeneric(m) => assert_eq!(m.base_texture, "nature/slime"),
+            m => panic!("{m:?}"),
+        }
+        // A key given twice; a four-number colour in braces.
+        let twice = "VertexlitGeneric { $basetexture \"m/b\" \"$envmap\" \"env_cubemap\" \"$envmap\" \"env_cubemap\" }";
+        assert!(strict(twice).is_err());
+        assert!(matches!(lenient(twice), Material::VertexLitGeneric(_)));
+        let water = "\"Water\" { \"$normalmap\" \"dev/water_normal\" \"$fogcolor\" \"{55 248 7 200}\" \"$fogenable\" 1 }";
+        assert!(strict(water).is_err());
+        match lenient(water) {
+            Material::Water(w) => assert!((w.fog_color.0[1] - 248.0 / 255.0).abs() < 1e-4),
+            m => panic!("{m:?}"),
+        }
+        // Materials the parser takes read the same leniently.
+        let fine = "\"LightmappedGeneric\" { \"$basetexture\" \"x/y\" \"$detailscale\" \"4\" \"$surfaceprop\" \"metal\" }";
+        assert_eq!(
+            format!("{:?}", strict(fine).unwrap()),
+            format!("{:?}", lenient(fine))
+        );
     }
 }
