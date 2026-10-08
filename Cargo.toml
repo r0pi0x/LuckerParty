@@ -31,6 +31,8 @@ vbsp = "0.9"
 vmdl = "0.2"
 vmt-parser = "0.2"
 vtf = "0.4"
+# MP3 sounds packed in community maps (music, minigame sounds).
+symphonia = { version = "0.5.5", default-features = false, features = ["mp3"] }
 
 # Binaries without unit tests: `cargo test` skips building a test harness
 # of each (one more link of the game apiece). A binary that gets tests

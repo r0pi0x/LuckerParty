@@ -310,7 +310,7 @@ pub fn load(materials: &mut MaterialLoader, map: &str, surfaces: &SurfaceProps, 
         for w in &raw.waves {
             let file = wave_file(w);
             let index = *decoded.entry(file.clone()).or_insert_with(|| {
-                let clip = materials.read(&file).and_then(|b| super::wav::decode(&b).ok());
+                let clip = materials.read(&file).and_then(|b| super::wav::decode_any(&b).ok());
                 clip.map(|c| {
                     out.clips.push(c);
                     out.clips.len() - 1
@@ -361,7 +361,7 @@ pub fn load(materials: &mut MaterialLoader, map: &str, surfaces: &SurfaceProps, 
     for name in ambient_raw {
         let file = wave_file(&name);
         let index = *decoded.entry(file.clone()).or_insert_with(|| {
-            let clip = materials.read(&file).and_then(|b| super::wav::decode(&b).ok());
+            let clip = materials.read(&file).and_then(|b| super::wav::decode_any(&b).ok());
             clip.map(|c| {
                 out.clips.push(c);
                 out.clips.len() - 1

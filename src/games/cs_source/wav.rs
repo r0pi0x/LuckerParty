@@ -1,7 +1,9 @@
 //! Source sound files (RIFF WAVE), per specs/cs_source/sounds.md "Mapping
 //! to our engine": PCM (8-bit unsigned, 16-bit signed) and Microsoft ADPCM,
 //! mono or stereo, with an optional loop start from a `cue ` or `smpl`
-//! chunk. Decoded to interleaved 16-bit samples.
+//! chunk. Decoded to interleaved 16-bit samples. MP3 files (the engine
+//! plays them too; community maps pack music and effects as MP3) decode
+//! through `symphonia` (`decode_any`).
 
 use crate::map::MapSoundClip;
 
@@ -15,6 +17,73 @@ fn u32_at(b: &[u8], at: usize) -> Option<u32> {
 
 fn i16_at(b: &[u8], at: usize) -> Option<i16> {
     Some(i16::from_le_bytes(b.get(at..at + 2)?.try_into().ok()?))
+}
+
+/// Decode a sound file: RIFF WAVE, else MP3.
+pub fn decode_any(bytes: &[u8]) -> Result<MapSoundClip, String> {
+    if bytes.get(0..4) == Some(b"RIFF") {
+        decode(bytes)
+    } else {
+        decode_mp3(bytes)
+    }
+}
+
+/// Decode an MP3 file (no loop point).
+pub fn decode_mp3(bytes: &[u8]) -> Result<MapSoundClip, String> {
+    use symphonia::core::{
+        audio::SampleBuffer, codecs::DecoderOptions, errors::Error, formats::FormatOptions,
+        io::MediaSourceStream, meta::MetadataOptions, probe::Hint,
+    };
+    let stream = MediaSourceStream::new(Box::new(std::io::Cursor::new(bytes.to_vec())), Default::default());
+    let mut hint = Hint::new();
+    hint.with_extension("mp3");
+    let probed = symphonia::default::get_probe()
+        .format(&hint, stream, &FormatOptions::default(), &MetadataOptions::default())
+        .map_err(|e| e.to_string())?;
+    let mut format = probed.format;
+    let track = format.default_track().ok_or("no audio track")?;
+    let id = track.id;
+    let mut decoder = symphonia::default::get_codecs()
+        .make(&track.codec_params, &DecoderOptions::default())
+        .map_err(|e| e.to_string())?;
+    let (mut rate, mut channels) = (
+        track.codec_params.sample_rate.unwrap_or(44_100),
+        track.codec_params.channels.map_or(0, |c| c.count() as u16),
+    );
+    let mut samples: Vec<i16> = Vec::new();
+    loop {
+        let packet = match format.next_packet() {
+            Ok(p) => p,
+            Err(Error::IoError(_)) => break,
+            Err(Error::ResetRequired) => break,
+            Err(e) => return Err(e.to_string()),
+        };
+        if packet.track_id() != id {
+            continue;
+        }
+        match decoder.decode(&packet) {
+            Ok(audio) => {
+                let spec = *audio.spec();
+                rate = spec.rate;
+                channels = spec.channels.count() as u16;
+                let mut buffer = SampleBuffer::<i16>::new(audio.capacity() as u64, spec);
+                buffer.copy_interleaved_ref(audio);
+                samples.extend_from_slice(buffer.samples());
+            }
+            // A damaged frame: skip it, as players do.
+            Err(Error::DecodeError(_)) => continue,
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    if samples.is_empty() || channels == 0 {
+        return Err("no audio decoded".into());
+    }
+    Ok(MapSoundClip {
+        rate,
+        channels,
+        samples: samples.into(),
+        loop_start: None,
+    })
 }
 
 /// Decode a WAV file.

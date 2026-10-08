@@ -30,6 +30,35 @@ pub fn rotation(angles: vbsp::Angles) -> Quat {
     c * r * c.inverse()
 }
 
+/// Offset of `numlocalanim` in the MDL header (public studiohdr_t layout).
+const MDL_NUM_LOCAL_ANIM: usize = 180;
+
+/// An MDL header and everything but its animations' data (our own reader,
+/// `anim`, reads those). `vmdl` panics on animations stored in external
+/// blocks (`.ani` files, common in community models), so a model it can't
+/// read is read again with its local animations left out: the meshes,
+/// bones, textures and hitboxes don't need them.
+pub fn read_mdl(bytes: &[u8]) -> Result<vmdl::mdl::Mdl, String> {
+    let read = |b: &[u8]| {
+        std::panic::catch_unwind(|| vmdl::mdl::Mdl::read(b))
+            .map_err(|_| "unreadable animations".to_string())
+            .and_then(|r| r.map_err(|e| e.to_string()))
+    };
+    // Models with animation blocks go straight to the second read (no
+    // panic to catch).
+    let blocks = bytes.get(352..356).map_or(0, |b| i32::from_le_bytes(b.try_into().unwrap()));
+    if blocks <= 0
+        && let Ok(m) = read(bytes)
+    {
+        return Ok(m);
+    }
+    let mut copy = bytes.to_vec();
+    if let Some(n) = copy.get_mut(MDL_NUM_LOCAL_ANIM..MDL_NUM_LOCAL_ANIM + 4) {
+        n.copy_from_slice(&0i32.to_le_bytes());
+    }
+    read(&copy)
+}
+
 /// A model and its key values text (`$keyvalues`: `prop_data`,
 /// `door_options`...; None: the model has none).
 fn load_model(materials: &mut MaterialLoader, path: &str) -> Result<(vmdl::Model, Option<String>), String> {
@@ -43,13 +72,22 @@ fn load_model_with_layout(
     path: &str,
 ) -> Result<(vmdl::Model, Option<String>, Vec<Vec<usize>>), String> {
     let read = |p: String| materials.read(&p).ok_or_else(|| format!("{p}: not found"));
-    let mdl = vmdl::mdl::Mdl::read(&read(path.to_string())?).map_err(|e| format!("{path}: {e}"))?;
+    let mdl = read_mdl(&read(path.to_string())?).map_err(|e| format!("{path}: {e}"))?;
     let key_values = mdl.key_values.clone();
     let layout = body_layout(&mdl);
     let stem = path.trim_end_matches(".mdl");
     let vtx = vmdl::vtx::Vtx::read(&read(format!("{stem}.dx90.vtx"))?).map_err(|e| format!("{stem}.dx90.vtx: {e}"))?;
     let vvd = vmdl::vvd::Vvd::read(&read(format!("{stem}.vvd"))?).map_err(|e| format!("{stem}.vvd: {e}"))?;
-    Ok((vmdl::Model::from_parts(mdl, vtx, vvd), key_values, layout))
+    let model = vmdl::Model::from_parts(mdl, vtx, vvd);
+    // Meshes whose strip indices run past their vertices (a `.vtx` that
+    // doesn't match its `.vvd`): vmdl would panic converting them.
+    let whole = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        model.meshes().map(|m| m.vertices().count() + m.tangents().count()).sum::<usize>()
+    }));
+    if whole.is_err() {
+        return Err(format!("{path}: mesh indices outside its vertices (.vtx and .vvd disagree)"));
+    }
+    Ok((model, key_values, layout))
 }
 
 /// A player model as a character body (specs/cs_source/weapons.md 5): its
@@ -64,7 +102,7 @@ pub fn load_character(
     use crate::core::{Hitbox, Hitgroup};
     let (model, _) = load_model(materials, path)?;
     let bytes = materials.read(path).ok_or_else(|| format!("{path}: not found"))?;
-    let mdl = vmdl::mdl::Mdl::read(&bytes).map_err(|e| format!("{path}: {e}"))?;
+    let mdl = read_mdl(&bytes).map_err(|e| format!("{path}: {e}"))?;
     // Source models face +X; characters face -Z at yaw 0.
     let face = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
     let mut body = convert_model_in(&model, 0, materials, false, &[]);
@@ -327,7 +365,7 @@ pub fn load_held(
 ) -> Result<crate::map::MapHeldModel, String> {
     let (model, _) = load_model(materials, path)?;
     let bytes = materials.read(path).ok_or_else(|| format!("{path}: not found"))?;
-    let mdl = vmdl::mdl::Mdl::read(&bytes).map_err(|e| format!("{path}: {e}"))?;
+    let mdl = read_mdl(&bytes).map_err(|e| format!("{path}: {e}"))?;
     let mut global: Vec<(Quat, Vec3)> = Vec::with_capacity(mdl.bones.len());
     for b in &mdl.bones {
         let q = Quat::from_xyzw(b.quaternion.x, b.quaternion.y, b.quaternion.z, b.quaternion.w);
@@ -931,7 +969,7 @@ fn place_props(
                     // vertices).
                     model.illum = materials
                         .read(&prop.model)
-                        .and_then(|b| vmdl::mdl::Mdl::read(&b).ok())
+                        .and_then(|b| read_mdl(&b).ok())
                         .map(|mdl| to_engine(v(m.apply_root_transform(mdl.header.illumination_position))));
                     data.models.push(model);
                     let index = data.models.len() - 1;

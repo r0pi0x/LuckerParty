@@ -11,6 +11,7 @@
 mod deliver;
 pub mod drop;
 pub mod economy;
+pub mod equip;
 pub mod grenade;
 
 use std::sync::Arc;
@@ -52,6 +53,8 @@ impl Plugin for WeaponPlugin {
             .register_type::<economy::DefuseKit>()
             .init_resource::<PassMaterials>()
             .init_resource::<StartingWeapons>()
+            .init_resource::<equip::SpawnEquipment>()
+            .add_message::<crate::core::Equip>()
             .add_message::<WeaponEvent>()
             .add_message::<crate::map::RagdollShot>()
             .add_message::<PlaySound>()
@@ -59,7 +62,9 @@ impl Plugin for WeaponPlugin {
                 FixedUpdate,
                 (
                     (
+                        equip::map_equipment,
                         give_starting_weapons,
+                        equip::apply_equips,
                         drop::pick_up,
                         select_weapons.in_set(SelectWeapons),
                     )
@@ -323,8 +328,16 @@ fn give_starting_weapons(world: &mut World) {
         return;
     }
     let start = world.resource::<StartingWeapons>().clone();
+    let equipment = world.resource::<equip::SpawnEquipment>().0.clone();
     for (owner, team) in new {
         world.entity_mut(owner).insert(Inventory::default());
+        // A map's spawn equipment replaces the starting weapons.
+        if let Some(items) = &equipment {
+            for (name, count) in items {
+                equip::give_item(world, owner, name, *count);
+            }
+            continue;
+        }
         for id in start.for_team(team) {
             give(world, owner, id);
         }

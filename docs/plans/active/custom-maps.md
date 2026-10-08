@@ -169,6 +169,12 @@ ourselves, so each can be checked in mashup and measured in real CS:S.
    SetAnimation/SetBodyGroup inputs, train orientation and control.
 5. [ ] Gameplay entities (`game_player_equip`, `game_text`, map weapons,
    rounds) until the two target maps play through.
+   2026-10-08 (from the sweep of the user's 89 community maps,
+   [community-maps.md](community-maps.md)): game_player_equip (spawn
+   equipment replaces the starting weapons; Use gives; strip flag),
+   player_weaponstrip, placed `weapon_*` entities as loose weapons (back
+   each round), players' AddOutput gravity/basevelocity/health/origin and
+   SetDamageFilter (no-fall filters).
 6. [ ] Networking, then server-sent map download (hash check, bz2):
    [multiplayer.md](multiplayer.md) slice 7.
 7. [ ] Per-map extra mounts; a mashup package format.

@@ -1462,3 +1462,95 @@ fn use_presses_say_whether_something_was_found() {
     run_to(&mut w, 3);
     assert_eq!(w.use_presses, vec![(me, false)]);
 }
+
+// ------------------------------------------------- community map inputs
+
+/// What bhop, kz and surf maps send their players (found by the map sweep,
+/// docs/plans/active/community-maps.md): boosters add a base velocity once,
+/// gravity and origin through AddOutput, a fall-damage filter.
+#[test]
+fn player_addoutput_and_damage_filter() {
+    let mut w = world();
+    spawn(
+        &mut w,
+        &[("classname", "filter_damage_type"), ("targetname", "nofall"), ("damagetype", "32"), ("Negated", "1")],
+    );
+    spawn(&mut w, &[("classname", "filter_activator_team"), ("targetname", "team"), ("filterteam", "2")]);
+    w.activate();
+    let p = player_at(&mut w, 0, Vec3::new(50.0, 50.0, 0.0));
+    w.player_mut(p).unwrap().on_ground = true;
+    let me = Some(Who::Player(p));
+    w.deliver(Who::Player(p), "AddOutput", Value::Str("basevelocity 0 0 325".into()), me, None);
+    let pl = w.player(p).unwrap();
+    assert_eq!(pl.velocity, Vec3::new(0.0, 0.0, 325.0));
+    assert!(pl.unground && !pl.on_ground);
+    w.deliver(Who::Player(p), "AddOutput", Value::Str("gravity 0.5".into()), me, None);
+    assert_eq!(w.player(p).unwrap().gravity, 0.5);
+    w.deliver(Who::Player(p), "AddOutput", Value::Str("origin 10 20 30".into()), me, None);
+    assert_eq!(w.player(p).unwrap().origin, Vec3::new(10.0, 20.0, 30.0));
+    assert!(w.player(p).unwrap().teleported);
+    w.deliver(Who::Player(p), "AddOutput", Value::Str("health 50".into()), me, None);
+    w.deliver(Who::Player(p), "SetDamageFilter", Value::Str("nofall".into()), me, None);
+    // Not a damage-type filter: ignored.
+    w.deliver(Who::Player(p), "SetDamageFilter", Value::Str("team".into()), me, None);
+    w.deliver(Who::Player(p), "SetDamageFilter", Value::Str(String::new()), me, None);
+    assert_eq!(
+        w.effects,
+        vec![
+            Effect::SetHealth { target: p, health: 50.0 },
+            Effect::DamageFilter {
+                target: p,
+                filter: Some((32, true))
+            },
+            Effect::DamageFilter { target: p, filter: None },
+        ]
+    );
+}
+
+/// game_player_equip gives its items to whoever uses it (stripping first
+/// with spawnflag 2); player_weaponstrip's Strip takes the activator's
+/// weapons.
+#[test]
+fn equip_and_strip_the_activator() {
+    let mut w = world();
+    spawn(
+        &mut w,
+        &[
+            ("classname", "game_player_equip"),
+            ("targetname", "eq"),
+            ("spawnflags", "3"),
+            ("weapon_scout", "1"),
+            ("weapon_hegrenade", "2"),
+            ("item_kevlar", "1"),
+        ],
+    );
+    spawn(&mut w, &[("classname", "player_weaponstrip"), ("targetname", "strip")]);
+    w.activate();
+    let p = player_at(&mut w, 0, Vec3::ZERO);
+    let me = Some(Who::Player(p));
+    w.queue_input("eq", "Use", Value::Void, 0.0, me);
+    w.queue_input("strip", "Strip", Value::Void, 0.0, me);
+    // Nobody to give to.
+    w.queue_input("eq", "Use", Value::Void, 0.0, None);
+    run_to(&mut w, 1);
+    let items = vec![
+        ("weapon_scout".to_string(), 1),
+        ("weapon_hegrenade".to_string(), 2),
+        ("item_kevlar".to_string(), 1),
+    ];
+    assert_eq!(
+        w.effects,
+        vec![
+            Effect::Equip {
+                target: p,
+                items,
+                strip: true
+            },
+            Effect::Equip {
+                target: p,
+                items: Vec::new(),
+                strip: true
+            },
+        ]
+    );
+}
