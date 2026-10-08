@@ -278,13 +278,16 @@ docs/plans/active/sound.md.
 
 Measured and culled (docs/performance.md): `mashup_perf`, `refcmp bench`,
 PVS culling by world chunk, areaportals (closed doors hide what's behind
-them; views clipped through openings), prop fade distances with dithered
-fade bands. Left:
-- `func_occluder`; fading physics/animated props; LOD models.
-- de_nuke `refcmp vischeck` view nav1627_90: the PVS culls the room seen
-  through the window beside the A site door (16k pixels, over the 0.5%
-  limit). Find why that cluster isn't in the PVS (translucent window
-  contents?) and keep it.
+them; views clipped through openings; window brushes fade in and close
+their portal), occluders (func_occluder), prop fade distances with
+dithered fade bands. Left:
+- Fading physics/animated props; LOD models.
+- de_nuke `refcmp vischeck` view nav1627_90 (16k pixels, over the 0.5%
+  limit) isn't culling: the culled capture matches a fresh capture of
+  that view alone, with or without culling; the unculled run differs
+  only right after view nav1627_0 (the door window's glass draws
+  differently, even with game time running). Find what a previous view
+  leaves behind in the capture (performance.md, Checks).
 - Measure on the Windows PC (`refcmp bench` there) and set a budget.
 - Frame-time follow-ups (performance.md, "Cheap wins found"): take
   before/after numbers on a quiet machine; props as hierarchies of their

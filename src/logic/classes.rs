@@ -62,6 +62,8 @@ pub enum Class {
     Flame(Box<super::fire::Flame>),
     /// func_areaportal, func_areaportalwindow.
     AreaPortal(super::visuals::AreaPortal),
+    /// func_occluder.
+    Occluder(super::visuals::Occluder),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -288,6 +290,7 @@ impl Class {
             "func_areaportal" | "func_areaportalwindow" => {
                 super::visuals::spawn_area_portal(w, id).map_or(Class::None, Class::AreaPortal)
             }
+            "func_occluder" => super::visuals::spawn_occluder(w, id).map_or(Class::None, Class::Occluder),
             "light" | "light_spot" => Class::Light(super::visuals::spawn_light(w, id)),
             "env_global" => Class::Global(global_spawn(w, id)),
             "env_fire" => Class::Fire(Box::new(super::fire::spawn_fire(w, id))),
@@ -853,6 +856,7 @@ pub(super) fn class_input(
         Class::Global(name) => return global_input(w, id, &name, input, value, activator),
         Class::Fire(_) | Class::FireSource(_) | Class::FireSensor(_) => return super::fire::input(w, id, input, value),
         Class::AreaPortal(_) => return super::visuals::area_portal_input(w, id, input),
+        Class::Occluder(_) => return super::visuals::occluder_input(w, id, input),
         Class::Flame(_) | Class::None | Class::Auto => return false,
     }
     true

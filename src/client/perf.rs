@@ -64,6 +64,14 @@ impl Plugin for PerfPlugin {
                 |v| &mut v.0,
             );
         }
+        if app.world().contains_resource::<crate::map::vis::Occlusion>() {
+            resource_cvar::<crate::map::vis::Occlusion, u8>(
+                app,
+                "r_occlusion",
+                "0: ignore the map's occluders (func_occluder); 1: hide map parts fully behind active ones.",
+                |v| &mut v.0,
+            );
+        }
         water_cvars(app);
     }
 }
@@ -437,6 +445,12 @@ fn draw_overlay(
         lines.push(format!(
             "areas: in {}, reaching {}/{}, {} areaportals closed",
             vis.area, vis.visible_areas, vis.areas, vis.closed_portals
+        ));
+    }
+    if vis.occluders > 0 {
+        lines.push(format!(
+            "occluders: {}/{} active, hiding {} map parts",
+            vis.active_occluders, vis.occluders, vis.occluded_parts
         ));
     }
     match vis.cluster {

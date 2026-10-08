@@ -11,7 +11,7 @@ use mashup::{
     logic::{Logic, Value},
     map::{
         MapData, MapPlugin,
-        vis::{AreaPortalStates, FadeDistance, LogicHidden, MapVisibility, VisClusters},
+        vis::{self, AreaPortalStates, FadeDistance, LogicHidden, MapVisibility, VisClusters, WindowBrush},
     },
     mount::config::LocalConfig,
 };
@@ -195,4 +195,69 @@ fn a_closed_door_hides_the_area_behind_its_portal() {
             (-dir.x).atan2(-dir.z).to_degrees()
         );
     }
+}
+
+/// de_nuke's windows (func_areaportalwindow, TranslucencyLimit 0): near
+/// the opening the window brush isn't drawn and the portal is open; past
+/// its FadeDist the brush is drawn and the portal closed.
+#[test]
+fn window_brushes_fade_in_and_close_their_portal_with_distance() {
+    let Some(map) = load("de_nuke") else { return };
+    let v = map.visibility.clone().expect("visibility");
+    let windows: Vec<(usize, &vis::AreaPortal)> =
+        v.areas.portals.iter().enumerate().filter(|(_, p)| p.fade.is_some_and(|f| f.brush.is_some())).collect();
+    assert_eq!(windows.len(), 4, "de_nuke's four windows with brushes");
+    // A window and two spots looking at its opening: one within its
+    // start distance, one past its end (each in a cluster).
+    let mut setup = None;
+    'search: for (i, p) in &windows {
+        let fade = p.fade.unwrap();
+        let poly = &p.polygon;
+        let centre = poly.iter().copied().sum::<Vec3>() / poly.len() as f32;
+        let normal = (0..poly.len()).map(|k| poly[k].cross(poly[(k + 1) % poly.len()])).sum::<Vec3>().normalize();
+        for side in [1.0, -1.0] {
+            let near = centre + normal * side * 1.0;
+            if v.cluster_at(near).is_none() || fade.alpha(p.distance(near)) > 0.0 {
+                continue;
+            }
+            for extra in [1.0, 3.0, 6.0] {
+                let far = centre + normal * side * (fade.end + extra);
+                if v.cluster_at(far).is_some() && p.window_closed(far) {
+                    setup = Some((*i, centre, near, far));
+                    break 'search;
+                }
+            }
+        }
+    }
+    let (portal, centre, near, far) = setup.expect("a window with spots near and far");
+    let mut sim = Sim::new(MapPlugin::new(map));
+    sim.set_tick_interval(cs_source::TICK_INTERVAL);
+    let camera = sim
+        .app
+        .world_mut()
+        .spawn((Camera3d::default(), Transform::from_translation(near).looking_at(centre, Vec3::Y)))
+        .id();
+    // The brush's alpha and, when rendering spawned its meshes, whether
+    // they are drawn.
+    let brush = |sim: &mut Sim| -> (Option<f32>, Vec<bool>) {
+        let world = sim.app.world_mut();
+        let mut q = world.query::<(&WindowBrush, Option<&Children>)>();
+        let (alpha, children): (Option<f32>, Vec<Entity>) = q
+            .iter(world)
+            .find(|(w, _)| w.portal == portal)
+            .map(|(w, c)| (w.alpha, c.map(|c| c.iter().collect()).unwrap_or_default()))
+            .expect("the window's brush node");
+        let drawn = children.iter().filter_map(|c| world.get::<Visibility>(*c)).map(|v| *v != Visibility::Hidden).collect();
+        (alpha, drawn)
+    };
+    sim.ticks(2);
+    let (alpha, drawn) = brush(&mut sim);
+    assert_eq!(alpha, Some(0.0), "window {portal}: transparent up close");
+    assert!(drawn.iter().all(|d| !d), "window {portal}: brush hidden up close");
+    *sim.app.world_mut().get_mut::<Transform>(camera).unwrap() = Transform::from_translation(far).looking_at(centre, Vec3::Y);
+    sim.ticks(2);
+    let (alpha, drawn) = brush(&mut sim);
+    assert_eq!(alpha, Some(1.0), "window {portal}: opaque from afar");
+    assert!(drawn.iter().all(|d| *d), "window {portal}: brush drawn from afar");
+    eprintln!("de_nuke window {portal}: hidden at {near:.2}, drawn and closed at {far:.2}");
 }

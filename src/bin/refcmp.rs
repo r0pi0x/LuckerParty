@@ -24,7 +24,7 @@ use mashup::{
 use serde::Deserialize;
 
 const USAGE: &str = "\
-usage: refcmp [all|capture-ref|capture-ours|report|fit|skyconv|bench|vischeck] [--views <file>] [--only <name>] [--keep-running] [-- <mashup args>]
+usage: refcmp [all|capture-ref|capture-ours|report|fit|skyconv|bench|vischeck] [--views <file>] [--only <name>] [--out <dir>] [--keep-running] [-- <mashup args>]
   all            capture both, then report (default)
   capture-ref    capture views in CS:S (Steam must be logged in on this machine)
   capture-ours   capture views in mashup
@@ -41,6 +41,9 @@ usage: refcmp [all|capture-ref|capture-ours|report|fit|skyconv|bench|vischeck] [
   -- <args>      bench, vischeck: pass the rest to mashup (e.g. +r_novis 1)
   --views <file> views file (default: tools/refcmp/de_dust2.toml)
   --only <name>  only views whose name contains <name>
+  --out <dir>    write our captures, reports, bench and vischeck output under
+                 <dir>/<map> instead of the shared dump folder (reference
+                 captures are still read from there)
   --keep-running leave CS:S running after capturing (faster next time)";
 
 const RCON_PASSWORD: &str = "mashup-refcmp";
@@ -66,6 +69,8 @@ struct Args {
     views: PathBuf,
     only: Option<String>,
     keep_running: bool,
+    /// Where our side's output goes instead of the dump folder.
+    out: Option<PathBuf>,
     /// Extra mashup arguments (after `--`).
     extra: Vec<String>,
 }
@@ -76,6 +81,7 @@ fn main() -> ExitCode {
         views: Path::new(env!("CARGO_MANIFEST_DIR")).join("tools/refcmp/de_dust2.toml"),
         only: None,
         keep_running: false,
+        out: None,
         extra: Vec::new(),
     };
     let mut it = std::env::args().skip(1);
@@ -88,6 +94,7 @@ fn main() -> ExitCode {
             "--views" => args.views = it.next().map(PathBuf::from).unwrap_or_default(),
             "--only" => args.only = it.next(),
             "--keep-running" => args.keep_running = true,
+            "--out" => args.out = it.next().map(PathBuf::from),
             _ => {
                 eprintln!("{USAGE}");
                 return ExitCode::from(2);
@@ -109,10 +116,14 @@ fn run(args: &Args) -> Result<(), String> {
     if let Some(only) = &args.only {
         file.view.retain(|v| v.name.contains(only.as_str()));
     }
-    let out = default_dump_dir("refcmp")
+    let shared = default_dump_dir("refcmp")
         .ok_or("no per-user data folder")?
         .join(&file.map);
-    let (ref_dir, ours_dir, report_dir) = (out.join("ref"), out.join("ours"), out.join("report"));
+    let out = match &args.out {
+        Some(o) => o.join(&file.map),
+        None => shared.clone(),
+    };
+    let (ref_dir, ours_dir, report_dir) = (shared.join("ref"), out.join("ours"), out.join("report"));
     for d in [&ref_dir, &ours_dir, &report_dir] {
         std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
     }
@@ -350,7 +361,8 @@ fn vischeck(file: &mut ViewsFile, out: &Path, extra: &[&str]) -> Result<(), Stri
     }
     // Game time frozen, so dust motes and physics props are the same in
     // both runs.
-    let mut a: Vec<&str> = vec!["+host_timescale", "0", "+r_novis", "1"];
+    // Occluders off too: they cull without the PVS.
+    let mut a: Vec<&str> = vec!["+host_timescale", "0", "+r_novis", "1", "+r_occlusion", "0"];
     a.extend_from_slice(extra);
     capture_ours(file, &off, &a)?;
     let mut b: Vec<&str> = vec!["+host_timescale", "0", "+r_novis", "0"];

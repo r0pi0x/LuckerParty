@@ -1,0 +1,126 @@
+# Views of cs_assault for benchmarking occluders (docs/performance.md),
+# generated from its entities: the first three T and CT spawns,
+# looking four ways. Source eye positions; angles [pitch, yaw].
+
+map = "cs_assault"
+camera = "point_viewcontrol"
+
+[[view]]
+name = "t0_0"
+position = [5120, 4160, -543]
+angles = [0, 0]
+
+[[view]]
+name = "t0_90"
+position = [5120, 4160, -543]
+angles = [0, 90]
+
+[[view]]
+name = "t0_180"
+position = [5120, 4160, -543]
+angles = [0, 180]
+
+[[view]]
+name = "t0_270"
+position = [5120, 4160, -543]
+angles = [0, 270]
+
+[[view]]
+name = "t1_0"
+position = [5120, 3904, -543]
+angles = [0, 0]
+
+[[view]]
+name = "t1_90"
+position = [5120, 3904, -543]
+angles = [0, 90]
+
+[[view]]
+name = "t1_180"
+position = [5120, 3904, -543]
+angles = [0, 180]
+
+[[view]]
+name = "t1_270"
+position = [5120, 3904, -543]
+angles = [0, 270]
+
+[[view]]
+name = "t2_0"
+position = [5312, 3776, -543]
+angles = [0, 0]
+
+[[view]]
+name = "t2_90"
+position = [5312, 3776, -543]
+angles = [0, 90]
+
+[[view]]
+name = "t2_180"
+position = [5312, 3776, -543]
+angles = [0, 180]
+
+[[view]]
+name = "t2_270"
+position = [5312, 3776, -543]
+angles = [0, 270]
+
+[[view]]
+name = "ct0_0"
+position = [4992, 6464, -807]
+angles = [0, 0]
+
+[[view]]
+name = "ct0_90"
+position = [4992, 6464, -807]
+angles = [0, 90]
+
+[[view]]
+name = "ct0_180"
+position = [4992, 6464, -807]
+angles = [0, 180]
+
+[[view]]
+name = "ct0_270"
+position = [4992, 6464, -807]
+angles = [0, 270]
+
+[[view]]
+name = "ct1_0"
+position = [4864, 6336, -807]
+angles = [0, 0]
+
+[[view]]
+name = "ct1_90"
+position = [4864, 6336, -807]
+angles = [0, 90]
+
+[[view]]
+name = "ct1_180"
+position = [4864, 6336, -807]
+angles = [0, 180]
+
+[[view]]
+name = "ct1_270"
+position = [4864, 6336, -807]
+angles = [0, 270]
+
+[[view]]
+name = "ct2_0"
+position = [5120, 6464, -807]
+angles = [0, 0]
+
+[[view]]
+name = "ct2_90"
+position = [5120, 6464, -807]
+angles = [0, 90]
+
+[[view]]
+name = "ct2_180"
+position = [5120, 6464, -807]
+angles = [0, 180]
+
+[[view]]
+name = "ct2_270"
+position = [5120, 6464, -807]
+angles = [0, 270]

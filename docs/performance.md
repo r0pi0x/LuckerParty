@@ -58,9 +58,12 @@ potentially visible from anywhere inside it (PVS, run-length encoded).
   (`vis::MapAreas`). Logic closes a portal while its linked door
   (`target`) is fully closed, or by Open/Close/Toggle when unlinked
   (`vis::AreaPortalStates`); a portal with glass or a grate in its
-  opening is never closed (`see_through`). Windows (func_areaportalwindow) stay open:
-  the game closes them beyond `FadeDist` but then draws the window brush
-  opaque, which we don't yet.
+  opening is never closed (`see_through`). Windows (func_areaportalwindow):
+  their brush (`target`) draws with an alpha rising from
+  `TranslucencyLimit` at `FadeStartDist` to opaque at `FadeDist` from the
+  opening (`vis::fade_windows`; hidden at alpha 0, blended in between),
+  and past `FadeDist` the portal closes behind the opaque brush. Windows
+  without a brush stay open.
   Each frame `vis::cull` floods from the camera's area through open
   portals, each portal narrowing a screen rectangle (its opening's
   projected bounds, intersected with the rectangle it was reached by;
@@ -68,8 +71,19 @@ potentially visible from anywhere inside it (PVS, run-length encoded).
   clusters in the PVS that have a leaf in a reached area. The water
   reflection camera floods whole areas (no rectangle). `r_portalsopenall 1`
   goes back to PVS only.
-- Not done: `func_occluder` (the occluder lump is unused), LOD models,
-  per-leaf frustum culling. See tech-debt.
+- Occluders (func_occluder): the occlusion lump (9) gives each occluder
+  its polygons (indices into the vertex lump); the entity's
+  `occludernumber` names it, `StartActive` and Activate/Deactivate/Toggle
+  switch it (`vis::OccluderStates`). Each frame, while the main view has
+  active occluder polygons in sight (wholly in front of the eye), world
+  chunks and static props (`vis::Occludee`, their bounds) are hidden when
+  the bounds lie wholly behind a polygon's plane and their screen
+  rectangle lies inside its projected outline (conservative: no merging
+  of neighbouring occluders). Not while the water reflection draws.
+  `r_occlusion 0` turns them off; `mashup_perf 1` shows how many parts
+  they hide. de_aztec's occluders were compiled without polygons, so they
+  do nothing there (nor in the game, presumably).
+- Not done: LOD models, per-leaf frustum culling. See tech-debt.
 
 Prop fade distances: static props' `fademaxdist` (static prop lump) and
 prop entities' `fademaxdist` key hide the prop beyond that distance from
@@ -155,9 +169,33 @@ frustum anyway (meshes drawn don't change). The win is behind shut doors
 (cs_militia: 54 map parts behind its front door, cs_assault: 15; see
 `tests/map_areaportals.rs`). `refcmp vischeck` on de_nuke lists the same
 15 views, pixel for pixel, with and without `+r_portalsopenall 1`, so none
-come from areaportals; one of them, nav1627_90 (16k pixels: the room seen
-through the window beside the A site door, culled by the PVS), is over
-vischeck's 0.5% limit (backlog).
+come from areaportals; one of them, nav1627_90 (16k pixels inside the
+glass of the door beside the A site door), is over vischeck's 0.5% limit.
+It isn't culling: rays from that eye through the glass (a scratch test
+like `map_vis`) reach no culled chunk or prop, and capturing the view
+alone gives the same image with and without culling (equal to the
+culled run's). Capturing nav1627_0 then nav1627_90 without culling
+reproduces the 15997 pixels, also with game time running: something the
+previous view drew changes how the glass draws next (backlog).
+
+Occluders (playtest build, `refcmp bench` over each map's 24 spawn views
+in `tools/refcmp/`, two back-to-back pairs with `+r_occlusion 1` and `0`;
+load 15-30 on 12 cores, so frame times are noise; the counts are exact):
+
+| map | occluders | frame ms avg (runs) | meshes drawn | triangles drawn | map parts drawn (mean) |
+|---|---|---|---|---|---|
+| cs_assault | on | 20.8 / 20.0 | 350 | 36k | 762 |
+| cs_assault | off | 18.0 / 24.9 | 369 | 39k | 784 |
+| cs_compound | on | 31.5 / 18.9 | 327 | 28k | 1016 |
+| cs_compound | off | 28.3 / 23.5 | 458 | 40k | 1168 |
+| de_port | on | 32.0 / 14.9 | 1162 | 69k | 3192 |
+| de_port | off | 22.1 / 23.3 | 1162 | 69k | 3192 |
+
+cs_compound's spawn views look along occluded walls (29% fewer meshes,
+30% fewer triangles); de_port's occluders guard views its spawns don't
+have. de_aztec's occluders have no polygons. Whether occluders draw
+anything that culling then hides: `refcmp vischeck` (off: `r_novis 1`,
+`r_occlusion 0`) on the maps with occluders, below.
 
 ## Cheap wins found
 

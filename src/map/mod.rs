@@ -1629,6 +1629,7 @@ impl Plugin for MapPlugin {
             .init_resource::<ShowLocalBody>()
             .init_resource::<vis::NoVis>()
             .init_resource::<vis::PortalsOpenAll>()
+            .init_resource::<vis::Occlusion>()
             .init_resource::<vis::VisStats>()
             .add_message::<decal::PlaceDecal>()
             .add_message::<ViewModelEvent>()
@@ -1738,7 +1739,7 @@ impl Plugin for MapPlugin {
             .add_systems(
                 PostUpdate,
                 // From this frame's camera, before visibility propagates.
-                vis::cull
+                (vis::cull, vis::fade_windows)
                     .after(bevy::transform::TransformSystems::Propagate)
                     .before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate),
             );
@@ -1863,6 +1864,15 @@ fn spawn_map(
         })
         .collect();
     let parent_of = |m: &MapMesh| m.entity.and_then(|i| entity_nodes.get(i).copied().flatten()).unwrap_or(root);
+    // Areaportal windows' brushes fade in with distance (`vis::fade_windows`).
+    if let Some(v) = data.visibility.as_deref() {
+        for (portal, p) in v.areas.portals.iter().enumerate() {
+            let brush = p.fade.and_then(|f| f.brush);
+            if let Some(node) = brush.and_then(|b| entity_nodes.get(b).copied().flatten()) {
+                commands.entity(node).insert(vis::WindowBrush { portal, alpha: None });
+            }
+        }
+    }
     if !data.entities.is_empty() {
         commands.insert_resource(MapEntities {
             entities: Arc::new(data.entities.clone()),
@@ -2063,6 +2073,22 @@ fn spawn_map(
                 e.insert(vis::VisClusters::new(clusters));
             }
         };
+        // World chunks also hide behind occluders, by their bounds.
+        let tag_chunk = |e: &mut EntityCommands, clusters: Vec<u32>, chunk: &MapMesh, centre: Vec3| {
+            if visibility.is_some_and(|v| !v.occluders.is_empty()) && !clusters.is_empty() {
+                let (lo, hi) = chunk
+                    .positions
+                    .iter()
+                    .fold((Vec3::MAX, Vec3::MIN), |(a, b), p| (a.min(Vec3::from(*p)), b.max(Vec3::from(*p))));
+                if lo.x <= hi.x {
+                    e.insert(vis::Occludee {
+                        min: lo + centre,
+                        max: hi + centre,
+                    });
+                }
+            }
+            tag(e, clusters);
+        };
         let chunk_size = vis::chunk_size();
         for m in &data.meshes {
             if water_drawn && m.water.is_some() {
@@ -2194,7 +2220,7 @@ fn spawn_map(
                         Transform::from_translation(centre),
                         ChildOf(parent_of(m)),
                     ));
-                    tag(&mut e, clusters);
+                    tag_chunk(&mut e, clusters, &chunk, centre);
                 }
                 continue;
             }
@@ -2216,7 +2242,7 @@ fn spawn_map(
                         bicubic_sampling: false,
                     });
                 }
-                tag(&mut part, clusters);
+                tag_chunk(&mut part, clusters, &chunk, centre);
             }
         }
         model_parts = data
@@ -2553,6 +2579,10 @@ fn spawn_map(
                         prop.translation + prop.rotation * c
                     });
                     let (min, max) = corners.fold((Vec3::MAX, Vec3::MIN), |(a, b), p| (a.min(p), b.max(p)));
+                    // Hidden behind occluders by its bounds too.
+                    if !v.occluders.is_empty() && min.x <= max.x {
+                        e.insert(vis::Occludee { min, max });
+                    }
                     vis::box_clusters(v, min, max)
                 }
                 None => Vec::new(),

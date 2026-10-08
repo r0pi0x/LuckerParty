@@ -259,11 +259,15 @@ Details and baseline numbers: [performance.md](performance.md).
   what's behind them, no clipping through openings): PVS culling only.
   `mashup_perf 1` shows the camera's area, the areas it reaches and how
   many areaportals logic closed.
+- `r_occlusion 0` ignores the map's occluders (func_occluder);
+  `mashup_perf 1` shows how many are active and how many map parts they
+  hide.
 - `r_novis 1` draws every map part (no visibility culling);
   `MASHUP_MERGED_WORLD=1` spawns the world as one mesh per material with no
   culling, as before chunking (A/B comparisons).
 - `refcmp vischeck --views tools/refcmp/<map>.toml` renders the views
-  plus views from spawns and nav areas with culling off and on (game time
+  plus views from spawns and nav areas with culling off (`r_novis 1`,
+  `r_occlusion 0`) and on (game time
   frozen with `host_timescale 0`), lists the views that differ and fails
   if any differs by more than 0.5% of its pixels (small differences:
   geometry seen through sky brushes, which culling hides as the game
@@ -314,11 +318,16 @@ cargo run --features dev --bin refcmp -- capture-ours --only a_sign
 - Views: `tools/refcmp/<map>.toml` (Source eye positions and angles; add
   more as needed; pass `--views tools/refcmp/<map>.toml` for maps other
   than dust2). de_aztec, cs_office and de_nuke have views generated from
-  their own entities (intermission cameras, spawns, bomb/rescue zones).
+  their own entities (intermission cameras, spawns, bomb/rescue zones);
+  cs_assault, de_port and cs_compound (maps with occluders, for `bench`)
+  have spawn views only, with no reference captures yet.
   `camera` names the map's `point_viewcontrol`; maps whose cameras have
   no name (de_aztec) use the class name, which moves all of them.
   Output: `~/.local/share/mashup/dump/refcmp/<map>/` (game imagery; never
-  in the repo). Our captures currently show the view model.
+  in the repo). `--out <dir>` writes our captures, reports, bench and
+  vischeck output under `<dir>/<map>/` instead (reference captures are
+  still read from the shared folder), so parallel worktrees don't
+  overwrite each other's captures. Our captures currently show the view model.
 - Load warnings of every stock map: `cargo test --features dev --test
   map_stock -- --ignored --nocapture all_stock_maps_warnings`.
 - CS:S runs through the Steam client (logged in once on this machine) and

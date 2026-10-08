@@ -197,6 +197,56 @@ pub(super) fn spawn_area_portal(w: &LogicWorld, id: EntId) -> Option<AreaPortal>
     })
 }
 
+/// func_occluder (public entity documentation): the occluder its compiled
+/// `occludernumber` names hides what lies behind it while active;
+/// `StartActive` (absent: 1) and the Activate/Deactivate/Toggle inputs set
+/// that (`map::vis::Occluder`).
+#[derive(Clone, Debug)]
+pub struct Occluder {
+    pub key: u16,
+    pub active: bool,
+}
+
+pub(super) fn spawn_occluder(w: &LogicWorld, id: EntId) -> Option<Occluder> {
+    let e = w.get(id).unwrap();
+    Some(Occluder {
+        key: e.kv("occludernumber")?.trim().parse().ok()?,
+        active: e.kv("StartActive").is_none_or(|v| super::value::atoi(v) != 0),
+    })
+}
+
+/// Occluder inputs; false when the entity isn't one or the input isn't
+/// Activate, Deactivate or Toggle.
+pub(super) fn occluder_input(w: &mut LogicWorld, id: EntId, input: &str) -> bool {
+    let Some(Class::Occluder(o)) = w.get_mut(id).map(|e| &mut e.class) else {
+        return false;
+    };
+    o.active = match input {
+        "activate" => true,
+        "deactivate" => false,
+        "toggle" => !o.active,
+        _ => return false,
+    };
+    true
+}
+
+impl LogicWorld {
+    /// The keys of the occluders that are off now, sorted.
+    pub fn inactive_occluders(&self) -> Vec<u16> {
+        let mut off: Vec<u16> = self
+            .ids()
+            .into_iter()
+            .filter_map(|id| match &self.get(id)?.class {
+                Class::Occluder(o) if !o.active => Some(o.key),
+                _ => None,
+            })
+            .collect();
+        off.sort_unstable();
+        off.dedup();
+        off
+    }
+}
+
 /// Areaportal inputs; false when the entity isn't one or the input isn't
 /// Open, Close or Toggle.
 pub(super) fn area_portal_input(w: &mut LogicWorld, id: EntId, input: &str) -> bool {

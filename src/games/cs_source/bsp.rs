@@ -845,7 +845,76 @@ pub fn visibility(bsp: &Bsp, bytes: &[u8]) -> Option<crate::map::vis::MapVisibil
         cluster_count: count,
         visible,
         areas,
+        occluders: occluders(bsp, bytes),
     })
+}
+
+/// The map's occluders (public BSP v20 description, occlusion lump 9): a
+/// count and per occluder its flags, first polygon, polygon count and
+/// bounds (lump version 2 adds an area); a count and per polygon its
+/// first vertex index, vertex count and plane; a count and the vertex
+/// indices, into the vertex lump (3). Each func_occluder names its
+/// occluder by `occludernumber`; `StartActive` (default 1) sets whether it
+/// starts active. Occluders without an entity are taken as active.
+pub fn occluders(bsp: &Bsp, bytes: &[u8]) -> Vec<crate::map::vis::Occluder> {
+    const LUMP_OCCLUSION: usize = 9;
+    let lump = super::ambient::lump(bytes, LUMP_OCCLUSION);
+    let version = bytes
+        .get(8 + LUMP_OCCLUSION * 16 + 8..8 + LUMP_OCCLUSION * 16 + 12)
+        .map_or(2, |v| i32::from_le_bytes(v.try_into().unwrap()));
+    let int = |at: usize| lump.get(at..at + 4).map(|b| i32::from_le_bytes(b.try_into().unwrap()));
+    let count = |at: usize| int(at).map_or(0, |n| n.max(0) as usize);
+    let size = if version >= 2 { 40 } else { 36 };
+    let occluder_count = count(0);
+    let polys_at = 4 + occluder_count * size;
+    let poly_count = count(polys_at);
+    let indices_at = polys_at + 4 + poly_count * 12;
+    let index_count = count(indices_at);
+    if lump.len() < indices_at + 4 + index_count * 4 {
+        return Vec::new();
+    }
+    let vertices = super::ambient::lump(bytes, 3);
+    let vertex = |i: i32| -> Option<Vec3> {
+        let b = vertices.get(usize::try_from(i).ok()? * 12..)?.get(..12)?;
+        let f = |at: usize| f32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+        Some(to_engine(vbsp::Vector {
+            x: f(0),
+            y: f(4),
+            z: f(8),
+        }))
+    };
+    let polygon = |p: usize| -> Option<Vec<Vec3>> {
+        let at = polys_at + 4 + p * 12;
+        let (first, n) = (count(at), count(at + 4));
+        (first..first + n)
+            .map(|k| vertex(int(indices_at + 4 + k * 4).filter(|_| k < index_count)?))
+            .collect()
+    };
+    let start_active: std::collections::HashMap<u16, bool> = bsp
+        .entities
+        .iter()
+        .filter(|e| e.prop("classname") == Some("func_occluder"))
+        .filter_map(|e| {
+            let key = e.prop("occludernumber")?.trim().parse().ok()?;
+            let active = e
+                .properties()
+                .find(|(k, _)| k.eq_ignore_ascii_case("StartActive"))
+                .is_none_or(|(_, v)| v.trim().parse::<i32>().map_or(true, |v| v != 0));
+            Some((key, active))
+        })
+        .collect();
+    (0..occluder_count)
+        .map(|i| {
+            let at = 4 + i * size;
+            let (first, n) = (count(at + 4), count(at + 8));
+            let key = i as u16;
+            crate::map::vis::Occluder {
+                key,
+                polygons: (first..(first + n).min(poly_count)).filter_map(polygon).filter(|p| p.len() >= 3).collect(),
+                start_active: start_active.get(&key).copied().unwrap_or(true),
+            }
+        })
+        .collect()
 }
 
 /// The areaportals between the map's areas (public BSP v20 description):
@@ -870,18 +939,35 @@ pub fn area_portals(bsp: &Bsp, bytes: &[u8]) -> Vec<crate::map::vis::AreaPortal>
             })
         })
         .collect();
-    let windows: std::collections::HashMap<u16, f32> = bsp
+    let windows: std::collections::HashMap<u16, crate::map::vis::WindowFade> = bsp
         .entities
         .iter()
         .filter(|e| e.prop("classname") == Some("func_areaportalwindow"))
         .filter_map(|e| {
             let key = e.prop("portalnumber")?.trim().parse().ok()?;
             // Compiled maps lower-case some keys.
-            let fade = e
-                .properties()
-                .find(|(k, _)| k.eq_ignore_ascii_case("FadeDist"))
-                .and_then(|(_, v)| v.trim().parse::<f32>().ok())?;
-            Some((key, fade * METERS_PER_UNIT))
+            let num = |name: &str| {
+                e.properties()
+                    .find(|(k, _)| k.eq_ignore_ascii_case(name))
+                    .and_then(|(_, v)| v.trim().parse::<f32>().ok())
+            };
+            let end = num("FadeDist")?;
+            // The window's brush: the brush entity its `target` names.
+            let brush = e.prop("target").filter(|t| !t.is_empty()).and_then(|t| {
+                bsp.entities.iter().position(|b| {
+                    b.prop("targetname").is_some_and(|n| n.eq_ignore_ascii_case(t))
+                        && b.prop("model").is_some_and(|m| m.starts_with('*'))
+                })
+            });
+            Some((
+                key,
+                crate::map::vis::WindowFade {
+                    start: num("FadeStartDist").unwrap_or(end).min(end) * METERS_PER_UNIT,
+                    end: end * METERS_PER_UNIT,
+                    limit: num("TranslucencyLimit").unwrap_or(0.0),
+                    brush,
+                },
+            ))
         })
         .collect();
     let mut out: Vec<crate::map::vis::AreaPortal> = Vec::new();

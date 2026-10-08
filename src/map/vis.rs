@@ -41,6 +41,8 @@ pub struct MapVisibility {
     pub visible: Vec<Vec<u64>>,
     /// Areas and the portals between them; empty for maps without them.
     pub areas: MapAreas,
+    /// Occluders (`Occluder`); empty for maps without them.
+    pub occluders: Vec<Occluder>,
 }
 
 impl MapVisibility {
@@ -184,14 +186,65 @@ pub struct AreaPortal {
     /// The opening, a convex polygon (engine space, meters); empty when
     /// unknown (then looked through whole).
     pub polygon: Vec<Vec3>,
-    /// A window (func_areaportalwindow): the distance from the opening
-    /// beyond which the game closes it and draws the window's brush
-    /// opaque instead (meters). Not applied yet: the window brush doesn't
-    /// fade in, so closing it would show a hole (docs/tech-debt.md).
-    pub fade: Option<f32>,
+    /// A window (func_areaportalwindow): its brush fades in with the
+    /// view's distance and the portal closes once the brush is opaque.
+    pub fade: Option<WindowFade>,
     /// What closes it can be seen through (a door with a window): never
     /// closed, so the glass doesn't show a hole.
     pub see_through: bool,
+}
+
+impl AreaPortal {
+    /// The distance from `eye` to the opening's bounds (0 inside them, or
+    /// with no opening known).
+    pub fn distance(&self, eye: Vec3) -> f32 {
+        let Some(first) = self.polygon.first() else { return 0.0 };
+        let (lo, hi) = self.polygon.iter().fold((*first, *first), |(a, b), p| (a.min(*p), b.max(*p)));
+        (eye.clamp(lo, hi) - eye).length()
+    }
+
+    /// Whether a window is closed for a view at `eye` (past its fade's
+    /// end, with a brush drawn opaque there).
+    pub fn window_closed(&self, eye: Vec3) -> bool {
+        self.fade.is_some_and(|f| f.closes(self.distance(eye)))
+    }
+}
+
+/// A func_areaportalwindow's fade (public entity documentation): its
+/// brush (`target`) draws at `limit` alpha nearer than `start` from the
+/// opening, rising to opaque at `end`; beyond `end` the portal closes and
+/// the opaque brush stands in for what lies behind it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct WindowFade {
+    /// Meters from the opening (`FadeStartDist`, `FadeDist`).
+    pub start: f32,
+    pub end: f32,
+    /// The brush's alpha up close (`TranslucencyLimit`).
+    pub limit: f32,
+    /// The brush's entity (index in the map's entities); without one the
+    /// window never closes (nothing would stand in for the far side).
+    pub brush: Option<usize>,
+}
+
+impl WindowFade {
+    /// The brush's alpha for a view `distance` from the opening.
+    pub fn alpha(&self, distance: f32) -> f32 {
+        let t = if self.end > self.start {
+            ((distance - self.start) / (self.end - self.start)).clamp(0.0, 1.0)
+        } else if distance < self.end {
+            0.0
+        } else {
+            1.0
+        };
+        let limit = self.limit.clamp(0.0, 1.0);
+        limit + (1.0 - limit) * t
+    }
+
+    /// Whether the portal is closed at `distance`: past the end, with a
+    /// brush to draw.
+    pub fn closes(&self, distance: f32) -> bool {
+        self.brush.is_some() && distance > self.end
+    }
 }
 
 /// A rectangle in normalized device coordinates: min x, min y, max x,
@@ -393,6 +446,153 @@ impl AreaPortalStates {
 #[derive(Resource, Default, Clone, Copy)]
 pub struct PortalsOpenAll(pub u8);
 
+/// An occluder (Source's func_occluder): polygons that hide map parts
+/// lying fully behind them, while it is active. Mappers place them inside
+/// opaque geometry, so what they hide couldn't be seen anyway.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Occluder {
+    /// What map logic calls it by (Source: `occludernumber`).
+    pub key: u16,
+    /// Planar convex polygons (engine space, meters).
+    pub polygons: Vec<Vec<Vec3>>,
+    /// Active at map start (Source: `StartActive`).
+    pub start_active: bool,
+}
+
+/// Occluders map logic turned off (StartActive 0, Deactivate, Toggle):
+/// their keys, sorted; every other occluder is active. Without it each
+/// occluder's `start_active` holds.
+#[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
+pub struct OccluderStates {
+    pub inactive: Vec<u16>,
+}
+
+/// `r_occlusion`: 0 turns occluders off.
+#[derive(Resource, Clone, Copy)]
+pub struct Occlusion(pub u8);
+
+impl Default for Occlusion {
+    fn default() -> Self {
+        Self(1)
+    }
+}
+
+/// A map part's bounds (engine space, under the map's root): hidden while
+/// they lie fully behind an active occluder.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Occludee {
+    pub min: Vec3,
+    pub max: Vec3,
+}
+
+/// One occluder polygon as a view sees it.
+#[derive(Clone, Debug)]
+pub struct ScreenOccluder {
+    /// Its plane, the normal facing the eye.
+    normal: Vec3,
+    dist: f32,
+    /// Its corners in normalized device coordinates, counter-clockwise.
+    ndc: Vec<Vec2>,
+    rect: ScreenRect,
+}
+
+/// How far behind an occluder's plane a box must lie (meters), and how
+/// far inside its projected outline (NDC): rounding never hides an edge.
+const OCCLUDER_PLANE_EPSILON: f32 = 0.01;
+const OCCLUDER_SCREEN_EPSILON: f32 = 1e-4;
+
+/// The occluder polygons a view at `eye` with `clip_from_world` can use:
+/// those wholly in front of the eye, not edge on, overlapping the screen.
+pub fn screen_occluders<'a>(
+    polygons: impl IntoIterator<Item = &'a [Vec3]>,
+    eye: Vec3,
+    clip_from_world: Mat4,
+) -> Vec<ScreenOccluder> {
+    let mut out = Vec::new();
+    'polygons: for polygon in polygons {
+        if polygon.len() < 3 {
+            continue;
+        }
+        // Newell's normal: robust for any planar polygon.
+        let mut normal = Vec3::ZERO;
+        for (i, a) in polygon.iter().enumerate() {
+            let b = polygon[(i + 1) % polygon.len()];
+            normal += Vec3::new((a.y - b.y) * (a.z + b.z), (a.z - b.z) * (a.x + b.x), (a.x - b.x) * (a.y + b.y));
+        }
+        let Some(mut normal) = normal.try_normalize() else { continue };
+        let mut dist = normal.dot(polygon[0]);
+        let side = normal.dot(eye) - dist;
+        if side.abs() < OCCLUDER_PLANE_EPSILON {
+            continue;
+        }
+        if side < 0.0 {
+            (normal, dist) = (-normal, -dist);
+        }
+        let mut ndc = Vec::with_capacity(polygon.len());
+        for p in polygon {
+            let c = clip_from_world * p.extend(1.0);
+            if c.w <= 1e-4 {
+                continue 'polygons;
+            }
+            ndc.push(c.truncate().truncate() / c.w);
+        }
+        let area: f32 = (0..ndc.len()).map(|i| ndc[i].perp_dot(ndc[(i + 1) % ndc.len()])).sum();
+        if area.abs() < 1e-8 {
+            continue;
+        }
+        if area < 0.0 {
+            ndc.reverse();
+        }
+        let (lo, hi) = ndc.iter().fold((Vec2::MAX, Vec2::MIN), |(a, b), p| (a.min(*p), b.max(*p)));
+        let rect = [lo.x, lo.y, hi.x, hi.y];
+        if intersect(rect, FULL_SCREEN).is_none() {
+            continue;
+        }
+        out.push(ScreenOccluder { normal, dist, ndc, rect });
+    }
+    out
+}
+
+/// Whether the box `min`..`max` is hidden by one of `occluders` (from
+/// `screen_occluders` with the same `clip_from_world`): wholly in front of
+/// the eye, wholly behind the occluder's plane, and its screen rectangle
+/// inside the occluder's outline. Conservative: a box only partly hidden
+/// by each of two occluders stays drawn.
+pub fn occluded(occluders: &[ScreenOccluder], min: Vec3, max: Vec3, clip_from_world: Mat4) -> bool {
+    if occluders.is_empty() {
+        return false;
+    }
+    let corners: [Vec3; 8] = std::array::from_fn(|k| {
+        Vec3::new(
+            if k & 1 == 0 { min.x } else { max.x },
+            if k & 2 == 0 { min.y } else { max.y },
+            if k & 4 == 0 { min.z } else { max.z },
+        )
+    });
+    let (mut lo, mut hi) = (Vec2::MAX, Vec2::MIN);
+    for c in corners {
+        let p = clip_from_world * c.extend(1.0);
+        if p.w <= 1e-4 {
+            return false;
+        }
+        let ndc = p.truncate().truncate() / p.w;
+        lo = lo.min(ndc);
+        hi = hi.max(ndc);
+    }
+    let rect = [lo, Vec2::new(hi.x, lo.y), hi, Vec2::new(lo.x, hi.y)];
+    occluders.iter().any(|o| {
+        lo.x >= o.rect[0]
+            && lo.y >= o.rect[1]
+            && hi.x <= o.rect[2]
+            && hi.y <= o.rect[3]
+            && corners.iter().all(|c| o.normal.dot(*c) - o.dist < -OCCLUDER_PLANE_EPSILON)
+            && (0..o.ndc.len()).all(|i| {
+                let (a, b) = (o.ndc[i], o.ndc[(i + 1) % o.ndc.len()]);
+                rect.iter().all(|p| (b - a).perp_dot(*p - a) >= OCCLUDER_SCREEN_EPSILON * (b - a).length())
+            })
+    })
+}
+
 /// Decompress one run-length encoded visibility row (Quake/Source PVS: a
 /// zero byte is followed by a count of zero bytes; other bytes are eight
 /// clusters' bits, lowest bit first) into `cluster_count` bits.
@@ -488,6 +688,11 @@ pub struct VisStats {
     pub areas: usize,
     /// Areaportals closed by map logic.
     pub closed_portals: usize,
+    /// Occluders active and the map's count; map parts they hide (of
+    /// those otherwise drawn).
+    pub active_occluders: usize,
+    pub occluders: usize,
+    pub occluded_parts: usize,
 }
 
 /// The world mesh chunk size, meters (a cube's edge). Chunks are cells of
@@ -605,10 +810,13 @@ pub fn box_clusters(vis: &MapVisibility, min: Vec3, max: Vec3) -> Vec<u32> {
 /// cluster that lie in an area it reaches through open areaportals (a bit
 /// set), its area and how many areas it reaches. None outside the map.
 /// `clip_from_world` narrows the areas to those seen through portal
-/// openings; `open_all` ignores areaportals.
+/// openings; `open_all` ignores areaportals. Windows close by their
+/// distance from `window_eye` (the main view's, whose window brushes are
+/// drawn), even when glass is in them: their opaque brush covers it.
 pub fn camera_clusters(
     v: &MapVisibility,
     eye: Vec3,
+    window_eye: Vec3,
     clip_from_world: Option<Mat4>,
     states: &AreaPortalStates,
     open_all: bool,
@@ -621,7 +829,7 @@ pub fn camera_clusters(
     if open_all || area == 0 || areas.portals.is_empty() {
         return Some((row, area, areas.area_count()));
     }
-    let open = |p: &AreaPortal| p.see_through || states.is_open(p.key);
+    let open = |p: &AreaPortal| !p.window_closed(window_eye) && (p.see_through || states.is_open(p.key));
     let reached = areas.flood(area, &open, clip_from_world);
     for (w, m) in row.iter_mut().zip(areas.cluster_mask(&reached, v.cluster_count)) {
         *w &= m;
@@ -632,13 +840,17 @@ pub fn camera_clusters(
 /// Each frame: find what each camera draws from (`camera_clusters`); when
 /// that (or `r_novis`, or the set of tagged parts) changes, show the parts
 /// in those clusters and hide the rest. Parts with a fade distance are
-/// checked every frame.
+/// checked every frame, and so are parts with bounds (`Occludee`) while
+/// the main view has active occluders in sight: those fully behind one
+/// are hidden too (not while the water's reflection draws, which sees
+/// from elsewhere).
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub(crate) fn cull(
     vis: Option<Res<ActiveVisibility>>,
     novis: Res<NoVis>,
     open_all: Option<Res<PortalsOpenAll>>,
     portal_states: Option<Res<AreaPortalStates>>,
+    (occlusion, occluder_states): (Option<Res<Occlusion>>, Option<Res<OccluderStates>>),
     cameras: Query<
         (&GlobalTransform, &Camera, Option<&Projection>, Has<super::water::WaterReflectionCamera>),
         (With<Camera3d>, Without<super::SkyboxCamera>, Without<super::ViewModelCamera>),
@@ -651,10 +863,12 @@ pub(crate) fn cull(
             Has<super::GlowSprite>,
             Option<(&FadeDistance, &GlobalTransform)>,
             Has<LogicHidden>,
+            Option<&Occludee>,
         )>,
     )>,
     mut stats: ResMut<VisStats>,
     mut last: Local<Option<Option<Vec<u64>>>>,
+    mut was_occluding: Local<bool>,
 ) {
     // Every view that draws the map: the main one and, while it draws, the
     // water's mirrored reflection camera (whole areas: its projection is
@@ -670,6 +884,7 @@ pub(crate) fn cull(
         })
         .collect();
     let eye = active.iter().find(|(_, _, r)| !r).map(|(p, _, _)| *p);
+    let window_eye = eye.unwrap_or_else(|| active.first().map_or(Vec3::ZERO, |a| a.0));
     let default_states = AreaPortalStates::default();
     let states = portal_states.as_deref().unwrap_or(&default_states);
     let open_all = open_all.is_some_and(|o| o.0 != 0);
@@ -681,7 +896,7 @@ pub(crate) fn cull(
             let mut union = vec![0u64; v.0.cluster_count.div_ceil(64)];
             let mut inside = true;
             for (p, clip, reflection) in &active {
-                let Some((row, area, areas)) = camera_clusters(&v.0, *p, *clip, states, open_all) else {
+                let Some((row, area, areas)) = camera_clusters(&v.0, *p, window_eye, *clip, states, open_all) else {
                     inside = false;
                     break;
                 };
@@ -720,9 +935,32 @@ pub(crate) fn cull(
         }
         None => true,
     };
-    let (mut total, mut shown) = (0, 0);
-    for (mut part, visibility, glow, fade, removed) in &mut queries.p1() {
-        if !changed && fade.is_none() {
+    // The main view's occluders in sight (none while a reflection draws).
+    let occluders = vis.as_ref().map_or(&[][..], |v| &v.0.occluders[..]);
+    let is_active = |o: &&Occluder| match &occluder_states {
+        Some(s) => s.inactive.binary_search(&o.key).is_err(),
+        None => o.start_active,
+    };
+    stats.occluders = occluders.len();
+    stats.active_occluders = occluders.iter().filter(is_active).count();
+    let main_clip = match active.as_slice() {
+        [(p, Some(clip), false)] if occlusion.as_ref().is_none_or(|o| o.0 != 0) => Some((*p, *clip)),
+        _ => None,
+    };
+    let in_sight: Vec<ScreenOccluder> = match main_clip {
+        Some((p, clip)) if stats.active_occluders > 0 => screen_occluders(
+            occluders.iter().filter(is_active).flat_map(|o| o.polygons.iter().map(Vec::as_slice)),
+            p,
+            clip,
+        ),
+        _ => Vec::new(),
+    };
+    let occluding = !in_sight.is_empty();
+    let recheck_occludees = occluding || *was_occluding;
+    *was_occluding = occluding;
+    let (mut total, mut shown, mut hidden_by_occluders) = (0, 0, 0);
+    for (mut part, visibility, glow, fade, removed, occludee) in &mut queries.p1() {
+        if !changed && fade.is_none() && !(recheck_occludees && occludee.is_some()) {
             total += 1;
             shown += part.potentially_visible as usize;
             continue;
@@ -731,7 +969,14 @@ pub(crate) fn cull(
             (Some((FadeDistance(far), at)), Some(eye)) => at.translation().distance(eye) <= *far,
             _ => true,
         };
-        let on = near && in_set(&part.clusters);
+        let mut on = near && in_set(&part.clusters);
+        if on
+            && let (Some(b), Some((_, clip))) = (occludee, main_clip)
+            && occluded(&in_sight, b.min, b.max, clip)
+        {
+            on = false;
+            hidden_by_occluders += 1;
+        }
         total += 1;
         shown += on as usize;
         if part.potentially_visible != on {
@@ -747,6 +992,84 @@ pub(crate) fn cull(
     }
     stats.parts = total;
     stats.visible_parts = shown;
+    if recheck_occludees || changed {
+        stats.occluded_parts = hidden_by_occluders;
+    }
+}
+
+/// An areaportal window's brush (the node of the entity its `target`
+/// names): drawn with the alpha its fade gives for the main view's
+/// distance from the opening (`fade_windows`).
+#[derive(Component, Clone, Copy, Debug)]
+pub struct WindowBrush {
+    /// Index in the map's `MapAreas::portals`.
+    pub portal: usize,
+    /// The alpha last applied.
+    pub alpha: Option<f32>,
+}
+
+/// A window brush material's own blending: alpha mode, `translucent`
+/// and base alpha, kept while its fade changes them.
+type OwnBlend = (AlphaMode, f32, f32);
+
+/// Each frame: set each window brush's alpha from the main view's
+/// distance to its opening (`WindowFade::alpha`). Fully transparent, its
+/// meshes are hidden; partly, they blend; opaque, they draw as loaded.
+#[allow(clippy::type_complexity)]
+pub(crate) fn fade_windows(
+    vis: Option<Res<ActiveVisibility>>,
+    cameras: Query<
+        (&GlobalTransform, &Camera),
+        (
+            With<Camera3d>,
+            Without<super::SkyboxCamera>,
+            Without<super::ViewModelCamera>,
+            Without<super::water::WaterReflectionCamera>,
+        ),
+    >,
+    mut brushes: Query<(&mut WindowBrush, Option<&Children>)>,
+    mut panes: Query<(
+        Option<&mut Visibility>,
+        Option<&MeshMaterial3d<super::world_material::WorldMaterial>>,
+    )>,
+    mut materials: Option<ResMut<Assets<super::world_material::WorldMaterial>>>,
+    mut own: Local<std::collections::HashMap<AssetId<super::world_material::WorldMaterial>, OwnBlend>>,
+) {
+    let Some(vis) = vis else { return };
+    let Some(eye) = cameras.iter().find(|(_, c)| c.is_active).map(|(t, _)| t.translation()) else {
+        return;
+    };
+    for (mut brush, children) in &mut brushes {
+        let Some(portal) = vis.0.areas.portals.get(brush.portal) else { continue };
+        let Some(fade) = portal.fade else { continue };
+        let alpha = fade.alpha(portal.distance(eye));
+        if brush.alpha == Some(alpha) {
+            continue;
+        }
+        brush.alpha = Some(alpha);
+        for &child in children.into_iter().flatten() {
+            let Ok((visibility, material)) = panes.get_mut(child) else { continue };
+            if let Some(mut v) = visibility {
+                v.set_if_neq(if alpha > 0.0 { Visibility::Inherited } else { Visibility::Hidden });
+            }
+            let (Some(handle), Some(materials)) = (material, materials.as_mut()) else { continue };
+            let Some(mut m) = materials.get_mut(&handle.0) else { continue };
+            let (mode, translucent, base_alpha) = *own
+                .entry(handle.0.id())
+                .or_insert((m.alpha_mode, m.params.translucent, m.params.base_color.w));
+            if alpha >= 1.0 {
+                m.alpha_mode = mode;
+                m.params.translucent = translucent;
+                m.params.base_color.w = base_alpha;
+            } else if alpha > 0.0 {
+                if mode == AlphaMode::Opaque {
+                    m.alpha_mode = AlphaMode::Blend;
+                    m.params.translucent = 1.0;
+                }
+                m.params.base_color.w = base_alpha * alpha;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -763,6 +1086,7 @@ mod tests {
             cluster_count: 2,
             visible: vec![vec![0b11], vec![0b10]],
             areas: MapAreas::default(),
+            occluders: Vec::new(),
         }
     }
 
@@ -955,7 +1279,7 @@ mod tests {
 
     /// `two_rooms` with areas: cluster 0 in area 1, cluster 1 in area 2,
     /// joined by portal 7 (an opening at x = 0).
-    fn two_areas(fade: Option<f32>) -> MapVisibility {
+    fn two_areas(fade: Option<WindowFade>) -> MapVisibility {
         let mut v = two_rooms();
         // Cluster 1 sees cluster 0 too here.
         v.visible = vec![vec![0b11], vec![0b11]];
@@ -972,20 +1296,34 @@ mod tests {
         assert_eq!(v.area_at(at), 1);
         let open = AreaPortalStates::default();
         let closed = AreaPortalStates { closed: vec![7] };
-        assert_eq!(camera_clusters(&v, at, None, &open, false).unwrap(), (vec![0b11], 1, 3));
-        assert_eq!(camera_clusters(&v, at, None, &closed, false).unwrap(), (vec![0b01], 1, 2));
+        assert_eq!(camera_clusters(&v, at, at, None, &open, false).unwrap(), (vec![0b11], 1, 3));
+        assert_eq!(camera_clusters(&v, at, at, None, &closed, false).unwrap(), (vec![0b01], 1, 2));
         // r_portalsopenall: the PVS alone.
-        assert_eq!(camera_clusters(&v, at, None, &closed, true).unwrap().0, vec![0b11]);
-        // A window stays open at any distance (its fade isn't applied).
-        let w = two_areas(Some(2.0));
+        assert_eq!(camera_clusters(&v, at, at, None, &closed, true).unwrap().0, vec![0b11]);
+        // A window closes past its fade's end when it has a brush to draw
+        // there (by the distance from the main view's eye), even with
+        // glass in it; without a brush it stays open.
+        let fade = WindowFade {
+            start: 1.0,
+            end: 2.0,
+            limit: 0.0,
+            brush: Some(3),
+        };
+        let mut w = two_areas(Some(fade));
         let far = Vec3::new(5.0, 0.0, 0.0);
-        assert_eq!(camera_clusters(&w, far, None, &open, false).unwrap().0, vec![0b11]);
+        assert_eq!(camera_clusters(&w, far, far, None, &open, false).unwrap().0, vec![0b01]);
+        assert_eq!(camera_clusters(&w, far, at, None, &open, false).unwrap().0, vec![0b11]);
+        w.areas.portals[0].see_through = true;
+        assert_eq!(camera_clusters(&w, far, far, None, &open, false).unwrap().0, vec![0b01]);
+        let w = two_areas(Some(WindowFade { brush: None, ..fade }));
+        assert_eq!(camera_clusters(&w, far, far, None, &open, false).unwrap().0, vec![0b11]);
         // A door with a window: seen through even when closed.
         let mut glass = two_areas(None);
         glass.areas.portals[0].see_through = true;
-        assert_eq!(camera_clusters(&glass, at, None, &closed, false).unwrap().0, vec![0b11]);
+        assert_eq!(camera_clusters(&glass, at, at, None, &closed, false).unwrap().0, vec![0b11]);
         // Outside the map: None.
-        assert!(camera_clusters(&v, Vec3::new(20.0, 0.0, 0.0), None, &open, false).is_none());
+        let outside = Vec3::new(20.0, 0.0, 0.0);
+        assert!(camera_clusters(&v, outside, outside, None, &open, false).is_none());
     }
 
     #[test]
@@ -1042,5 +1380,132 @@ mod tests {
         assert!(fade_band(-1.0, 20.0).is_none());
         assert!(fade_band(20.0, 20.0).is_none());
         assert!(fade_band(0.0, 20.0).is_some());
+    }
+
+    #[test]
+    fn window_fades_rise_from_the_limit_to_opaque() {
+        let f = WindowFade {
+            start: 10.0,
+            end: 20.0,
+            limit: 0.2,
+            brush: Some(0),
+        };
+        assert_eq!(f.alpha(0.0), 0.2);
+        assert_eq!(f.alpha(10.0), 0.2);
+        assert!((f.alpha(15.0) - 0.6).abs() < 1e-6);
+        assert_eq!(f.alpha(25.0), 1.0);
+        assert!(!f.closes(20.0) && f.closes(20.5));
+        // Start and end equal (most stock windows): a switch at the end.
+        let sharp = WindowFade { start: 20.0, limit: 0.0, ..f };
+        assert_eq!(sharp.alpha(19.9), 0.0);
+        assert_eq!(sharp.alpha(20.0), 1.0);
+        // The distance is to the opening's bounds.
+        let p = portal(1, 1, 2, opening(Vec3::new(0.0, 0.0, -5.0)));
+        assert_eq!(p.distance(Vec3::new(0.0, 0.0, -5.0)), 0.0);
+        assert_eq!(p.distance(Vec3::new(4.0, 0.0, -5.0)), 3.0);
+        assert_eq!(p.distance(Vec3::new(0.0, 0.0, 5.0)), 10.0);
+    }
+
+    /// A camera at `eye` looking down -z, 90 degree field of view, square.
+    fn looking_down_z(eye: Vec3) -> Mat4 {
+        use bevy::camera::CameraProjection;
+        let projection = PerspectiveProjection {
+            fov: std::f32::consts::FRAC_PI_2,
+            aspect_ratio: 1.0,
+            ..default()
+        };
+        projection.get_clip_from_view() * Mat4::from_translation(-eye)
+    }
+
+    /// A square of side `2 * half` centred at `c`, facing along z.
+    fn square(c: Vec3, half: f32) -> Vec<Vec3> {
+        opening(Vec3::ZERO).into_iter().map(|p| c + p * half).collect()
+    }
+
+    #[test]
+    fn occluders_hide_boxes_wholly_behind_them() {
+        let clip = looking_down_z(Vec3::ZERO);
+        let wall = square(Vec3::new(0.0, 0.0, -5.0), 2.0);
+        let occ = screen_occluders([wall.as_slice()], Vec3::ZERO, clip);
+        assert_eq!(occ.len(), 1);
+        let hidden = |lo: [f32; 3], hi: [f32; 3]| occluded(&occ, Vec3::from(lo), Vec3::from(hi), clip);
+        // Behind it and inside its outline.
+        assert!(hidden([-1.0, -1.0, -11.0], [1.0, 1.0, -10.0]));
+        // Straddling its plane, or in front of it.
+        assert!(!hidden([-0.5, -0.5, -6.0], [0.5, 0.5, -4.0]));
+        assert!(!hidden([-0.5, -0.5, -4.0], [0.5, 0.5, -3.0]));
+        // Behind it but reaching past its edge (x 3..5 at 10 m is wider
+        // than its 2 m half width at 5 m), or larger than it.
+        assert!(!hidden([3.0, -1.0, -11.0], [5.0, 1.0, -10.0]));
+        assert!(!hidden([-5.0, -5.0, -11.0], [5.0, 5.0, -10.0]));
+        // Behind the eye.
+        assert!(!hidden([-1.0, -1.0, 10.0], [1.0, 1.0, 11.0]));
+        // Seen from either side (the winding doesn't matter).
+        let reversed: Vec<Vec3> = wall.iter().rev().copied().collect();
+        let occ_rev = screen_occluders([reversed.as_slice()], Vec3::ZERO, clip);
+        assert!(occluded(&occ_rev, Vec3::new(-1.0, -1.0, -11.0), Vec3::new(1.0, 1.0, -10.0), clip));
+        // Unusable: crossing the eye's plane, edge on, off screen.
+        let crossing = vec![Vec3::new(-1.0, -1.0, 1.0), Vec3::new(1.0, -1.0, -1.0), Vec3::new(0.0, 1.0, 0.0)];
+        assert!(screen_occluders([crossing.as_slice()], Vec3::ZERO, clip).is_empty());
+        let edge_on = vec![Vec3::new(0.0, -1.0, -4.0), Vec3::new(0.0, -1.0, -6.0), Vec3::new(0.0, 1.0, -5.0)];
+        assert!(screen_occluders([edge_on.as_slice()], Vec3::ZERO, clip).is_empty());
+        let aside = square(Vec3::new(40.0, 0.0, -5.0), 2.0);
+        assert!(screen_occluders([aside.as_slice()], Vec3::ZERO, clip).is_empty());
+        // No occluders: nothing hidden.
+        assert!(!occluded(&[], Vec3::new(-1.0, -1.0, -11.0), Vec3::new(1.0, 1.0, -10.0), clip));
+    }
+
+    #[test]
+    fn culling_hides_parts_behind_active_occluders() {
+        let mut v = two_rooms();
+        v.occluders = vec![Occluder {
+            key: 4,
+            polygons: vec![square(Vec3::new(1.0, 0.0, -5.0), 2.0)],
+            start_active: true,
+        }];
+        let mut app = App::new();
+        app.init_resource::<NoVis>()
+            .init_resource::<VisStats>()
+            .insert_resource(ActiveVisibility(std::sync::Arc::new(v)))
+            .add_systems(Update, cull);
+        let projection = Projection::Perspective(PerspectiveProjection {
+            fov: std::f32::consts::FRAC_PI_2,
+            aspect_ratio: 1.0,
+            ..default()
+        });
+        app.world_mut().spawn((
+            Camera3d::default(),
+            projection,
+            GlobalTransform::from_translation(Vec3::new(1.0, 0.0, 0.0)),
+        ));
+        let part = |app: &mut App, z: f32| {
+            app.world_mut()
+                .spawn((
+                    VisClusters::new(vec![0]),
+                    Occludee {
+                        min: Vec3::new(0.5, -0.5, z - 1.0),
+                        max: Vec3::new(1.5, 0.5, z),
+                    },
+                    Visibility::default(),
+                ))
+                .id()
+        };
+        let behind = part(&mut app, -10.0);
+        let before = part(&mut app, -3.0);
+        let shown = |app: &App| {
+            [behind, before].map(|e| app.world().get::<Visibility>(e) == Some(&Visibility::Inherited))
+        };
+        app.update();
+        assert_eq!(shown(&app), [false, true], "active from the start");
+        assert_eq!(app.world().resource::<VisStats>().occluded_parts, 1);
+        app.insert_resource(OccluderStates { inactive: vec![4] });
+        app.update();
+        assert_eq!(shown(&app), [true, true], "deactivated");
+        app.insert_resource(OccluderStates { inactive: vec![] });
+        app.update();
+        assert_eq!(shown(&app), [false, true], "activated again");
+        app.insert_resource(Occlusion(0));
+        app.update();
+        assert_eq!(shown(&app), [true, true], "r_occlusion 0");
     }
 }

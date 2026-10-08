@@ -1,0 +1,126 @@
+# Views of de_port for benchmarking occluders (docs/performance.md),
+# generated from its entities: the first three T and CT spawns,
+# looking four ways. Source eye positions; angles [pitch, yaw].
+
+map = "de_port"
+camera = "point_viewcontrol"
+
+[[view]]
+name = "t0_0"
+position = [480, -2496, 849]
+angles = [0, 0]
+
+[[view]]
+name = "t0_90"
+position = [480, -2496, 849]
+angles = [0, 90]
+
+[[view]]
+name = "t0_180"
+position = [480, -2496, 849]
+angles = [0, 180]
+
+[[view]]
+name = "t0_270"
+position = [480, -2496, 849]
+angles = [0, 270]
+
+[[view]]
+name = "t1_0"
+position = [480, -2624, 857]
+angles = [0, 0]
+
+[[view]]
+name = "t1_90"
+position = [480, -2624, 857]
+angles = [0, 90]
+
+[[view]]
+name = "t1_180"
+position = [480, -2624, 857]
+angles = [0, 180]
+
+[[view]]
+name = "t1_270"
+position = [480, -2624, 857]
+angles = [0, 270]
+
+[[view]]
+name = "t2_0"
+position = [608, -2752, 865]
+angles = [0, 0]
+
+[[view]]
+name = "t2_90"
+position = [608, -2752, 865]
+angles = [0, 90]
+
+[[view]]
+name = "t2_180"
+position = [608, -2752, 865]
+angles = [0, 180]
+
+[[view]]
+name = "t2_270"
+position = [608, -2752, 865]
+angles = [0, 270]
+
+[[view]]
+name = "ct0_0"
+position = [912, 1568, 593]
+angles = [0, 0]
+
+[[view]]
+name = "ct0_90"
+position = [912, 1568, 593]
+angles = [0, 90]
+
+[[view]]
+name = "ct0_180"
+position = [912, 1568, 593]
+angles = [0, 180]
+
+[[view]]
+name = "ct0_270"
+position = [912, 1568, 593]
+angles = [0, 270]
+
+[[view]]
+name = "ct1_0"
+position = [1008, 1568, 593]
+angles = [0, 0]
+
+[[view]]
+name = "ct1_90"
+position = [1008, 1568, 593]
+angles = [0, 90]
+
+[[view]]
+name = "ct1_180"
+position = [1008, 1568, 593]
+angles = [0, 180]
+
+[[view]]
+name = "ct1_270"
+position = [1008, 1568, 593]
+angles = [0, 270]
+
+[[view]]
+name = "ct2_0"
+position = [1104, 1696, 593]
+angles = [0, 0]
+
+[[view]]
+name = "ct2_90"
+position = [1104, 1696, 593]
+angles = [0, 90]
+
+[[view]]
+name = "ct2_180"
+position = [1104, 1696, 593]
+angles = [0, 180]
+
+[[view]]
+name = "ct2_270"
+position = [1104, 1696, 593]
+angles = [0, 270]
