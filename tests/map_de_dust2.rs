@@ -44,7 +44,11 @@ fn the_games_buy_and_team_menus_load() {
     let chat = &hud.text_fonts["ChatFont"];
     assert!(hud.text_fonts.contains_key("Default") && hud.text_fonts.contains_key("MenuTitle"));
     assert_eq!(chat[0].family, "Verdana");
-    assert!(chat[0].bold() && chat.iter().all(|s| s.yres.is_some()));
+    // Bold, one size per screen-height range, and a proportional one
+    // (no `yres`) for taller screens.
+    assert!(chat[0].bold() && chat[0].yres == Some((480, 599)), "{chat:?}");
+    assert!(chat.iter().filter(|s| s.yres.is_some()).count() >= 3, "{chat:?}");
+    assert!(chat.iter().any(|s| s.yres.is_none()), "{chat:?}");
     assert_eq!(hud.text_fonts["CenterPrintText"][0].family, "Trebuchet MS");
 }
 
