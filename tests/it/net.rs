@@ -313,3 +313,53 @@ fn netcode_over_loopback() {
     assert!(gone, "the server dropped the character");
     net::disconnect(server.app.world_mut(), "done");
 }
+
+/// `net_fakelag` on a client's UDP transport: the round trip grows by it,
+/// and the game still joins and predicts.
+#[test]
+fn fake_lag_delays_what_the_client_receives() {
+    let make = || {
+        mashup::harness::Sim::with(|app| {
+            app.add_plugins(net::NetPlugin);
+            greybox(app);
+        })
+    };
+    let mut server = make();
+    {
+        let world = server.app.world_mut();
+        let mut s = world.resource_mut::<NetSettings>();
+        s.hostport = 0;
+        s.maxplayers = 4;
+    }
+    let addr = net::server::listen(server.app.world_mut()).expect("listen");
+    let mut client = make();
+    client.app.world_mut().resource_mut::<net::udp::FakeLag>().lag = 80.0;
+    let to = std::net::SocketAddr::from(([127, 0, 0, 1], addr.port()));
+    net::client::connect(client.app.world_mut(), to).expect("connect");
+    let mut rtt = 0.0;
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_secs(6) {
+        server.app.update();
+        client.app.update();
+        std::thread::sleep(Duration::from_millis(2));
+        let world = client.app.world();
+        let predicting = world.resource::<net::predict::CommandClock>().tick.is_some();
+        rtt = world
+            .get_resource::<bevy_replicon_renet::RenetClient>()
+            .map_or(0.0, |c| c.rtt());
+        if predicting && rtt > 0.08 {
+            break;
+        }
+    }
+    assert!(rtt > 0.08, "round trip {rtt} s with 80 ms of fake lag");
+    assert!(
+        client
+            .app
+            .world()
+            .resource::<net::predict::CommandClock>()
+            .tick
+            .is_some()
+    );
+    net::disconnect(client.app.world_mut(), "done");
+    net::disconnect(server.app.world_mut(), "done");
+}

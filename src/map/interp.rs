@@ -97,6 +97,14 @@ impl Interpolated {
         self.sampled.then_some((self.prev, self.cur))
     }
 
+    /// Move both kept ticks by `by`: a network client corrected its
+    /// prediction (`net::predict`) and eases the error out itself, so the
+    /// blend must run along the corrected path.
+    pub fn shift(&mut self, by: Vec3) {
+        self.prev.translation += by;
+        self.cur.translation += by;
+    }
+
     fn adopt(&mut self, t: Transform) {
         self.prev = t;
         self.cur = t;

@@ -2,22 +2,25 @@
 //! server (a listen server in the game, or the dedicated `mashup_server`)
 //! and clients, over bevy_replicon with renet's netcode UDP transport.
 //!
-//! Slice 1 (this much so far): connect and disconnect (`connect`,
+//! So far (slices 1 and 2): connect and disconnect (`connect`,
 //! `disconnect`, `listen`, `status`; `hostport`, `maxplayers`, `name`),
 //! a join handshake (build version, protocol hash, then the map by name
 //! and file hash), a character spawned on the server per client, and
 //! characters replicated to every client (`NetCharacter`, `NetBody`,
-//! `Team`, `Health`), drawn where the server last put them. A client
-//! sends its latest `Intent` every frame (`NetIntent`) and the server
-//! moves its character with it; no prediction or interpolation buffer yet
-//! (slices 2 and 3).
+//! `Team`, `Health`), others drawn where the server last put them (no
+//! interpolation buffer yet: slice 3). A client sends a user command per
+//! server tick (`UserCmds`), runs its clock ahead of the server's so each
+//! arrives in time, predicts its own player and corrects it from the
+//! server's state (`OwnState`): `predict`.
 //!
 //! `NetRole` (core) says what this process is; `authoritative` systems
 //! (rules, bots, damage, logic) don't run on a client.
 
 pub mod client;
 pub mod memory;
+pub mod predict;
 pub mod server;
+pub mod udp;
 
 use std::net::SocketAddr;
 
@@ -43,7 +46,7 @@ pub const PROTOCOL_ID: u64 = 0x4C55_434B_4552_5059;
 /// This build's network version. A server refuses clients of another
 /// version. Bump the suffix when the protocol changes in a way the
 /// replicon protocol hash can't see (a field added to a message).
-pub const NET_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/net1");
+pub const NET_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/net2");
 
 /// The owner id of the listen server's own player (`NetCharacter::owner`).
 /// Remote clients' ids are never 0.
@@ -130,16 +133,21 @@ pub struct Refused {
 pub struct Welcome {
     pub map: String,
     pub map_hash: Option<[u8; 32]>,
-    /// Seconds per server tick.
-    pub tick_interval: f64,
+    /// Length of a server tick, ns (exact: the client's fixed tick must
+    /// be the same `Duration`).
+    pub tick_nanos: u64,
     /// The client's id (`NetCharacter::owner` of its character).
     pub you: u64,
 }
 
-/// Client -> server, every frame: the client's latest intent. Slice 2
-/// replaces this with numbered user commands bound to server ticks.
-#[derive(Message, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
-pub struct NetIntent {
+/// One user command (Source's usercmd): the intent for one server tick,
+/// with the look angles as the exact `f32`s the client simulated with.
+/// Its command number is the tick plus the character's `Seed` offset
+/// (`core::number_commands`) on both sides.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct NetCmd {
+    /// The server tick this command is for.
+    pub tick: u64,
     pub move_axis: [f32; 2],
     pub yaw: f32,
     pub pitch: f32,
@@ -148,7 +156,7 @@ pub struct NetIntent {
     pub select: Option<u8>,
 }
 
-/// `NetIntent::buttons` bits.
+/// `NetCmd::buttons` bits.
 pub mod buttons {
     pub const JUMP: u16 = 1;
     pub const CROUCH: u16 = 1 << 1;
@@ -161,8 +169,8 @@ pub mod buttons {
     pub const USE: u16 = 1 << 8;
 }
 
-impl NetIntent {
-    pub fn of(i: &crate::core::Intent) -> Self {
+impl NetCmd {
+    pub fn of(tick: u64, i: &crate::core::Intent) -> Self {
         use buttons::*;
         let mut b = 0;
         for (on, bit) in [
@@ -181,6 +189,7 @@ impl NetIntent {
             }
         }
         Self {
+            tick,
             move_axis: i.move_axis.to_array(),
             yaw: i.yaw,
             pitch: i.pitch,
@@ -190,9 +199,11 @@ impl NetIntent {
     }
 
     /// Write into an intent, made safe first (never trust a client): the
-    /// move axis at most 1 long, finite angles, pitch within straight up
-    /// and down, a weapon slot key 0-9. The command number stays (the
-    /// server stamps it).
+    /// move axis at most 1 long, finite angles, yaw in [0, 2 pi), pitch
+    /// within straight up and down, a weapon slot key 0-9. The command
+    /// number stays (stamped each tick). A client puts its own intent
+    /// through this too before it simulates (`normalize`), so both sides
+    /// simulate the same values.
     pub fn apply(&self, i: &mut crate::core::Intent) {
         use buttons::*;
         let finite = |v: f32| if v.is_finite() { v } else { 0.0 };
@@ -213,6 +224,62 @@ impl NetIntent {
         i.use_key = on(USE);
         i.select = self.select.filter(|s| *s < 10);
     }
+
+    /// The intent as the server will simulate it (`of`, then `apply`),
+    /// written back in place; returns the command for `tick`.
+    pub fn normalize(tick: u64, i: &mut crate::core::Intent) -> Self {
+        Self::of(tick, i).apply(i);
+        Self::of(tick, i)
+    }
+}
+
+/// Client -> server, every frame it ran ticks: its new commands and the
+/// `CMD_BACKUP` before them again (Source's `cl_cmdbackup`), so a lost
+/// packet costs nothing. Unreliable.
+#[derive(Message, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct UserCmds {
+    /// Oldest first.
+    pub cmds: Vec<NetCmd>,
+}
+
+/// Commands each `UserCmds` repeats besides the new ones.
+pub const CMD_BACKUP: usize = 3;
+
+/// Server -> the client a character belongs to, each frame it ran ticks:
+/// the server's state of that client's own player after a tick (its
+/// predicted components, `core::PredictedComponents::encode`), which the
+/// client compares with what it predicted for that tick, and how the
+/// client's commands are arriving (the clock sync: `lead`). Unreliable;
+/// only the newest matters.
+#[derive(Message, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct OwnState {
+    /// The server tick this state is after.
+    pub tick: u64,
+    /// The server's simulation time at that tick (`SimClock::now`) and its
+    /// tick length, ns: the client runs each command at the same time.
+    pub time_nanos: u64,
+    pub tick_nanos: u64,
+    /// The predicted components, encoded.
+    pub state: Vec<u8>,
+    /// The character's movement implementation (`slots::MovementSlot`).
+    pub movement: String,
+    /// The character's `Seed` (its command number offset).
+    pub seed: u64,
+    /// The rules hold it still (dead, freeze time): its commands do nothing.
+    pub held: bool,
+    /// The smallest lead of the commands heard since the last `OwnState`:
+    /// the newest command's tick less the server's last tick when it
+    /// arrived (1: just in time). None: none heard.
+    pub lead: Option<i32>,
+    /// The newest command tick heard (the client counts only the leads of
+    /// commands it sent after it last moved its clock).
+    pub newest: u64,
+    /// Commands waiting for later ticks.
+    pub buffered: u16,
+    /// Ticks run without this client's command (its last one repeated),
+    /// and commands that came after their tick, since it joined.
+    pub missed: u32,
+    pub late: u32,
 }
 
 /// A character the server replicates: whose it is and its name. On a
@@ -273,7 +340,10 @@ impl Plugin for NetPlugin {
         .make_event_independent::<Refused>()
         .add_server_event::<Welcome>(Channel::Ordered)
         .make_event_independent::<Welcome>()
-        .add_client_message::<NetIntent>(Channel::Unreliable)
+        .add_client_message::<UserCmds>(Channel::Unreliable)
+        .add_server_message::<OwnState>(Channel::Unreliable)
+        // Holds no entities: no need to wait for replication.
+        .make_message_independent::<OwnState>()
         .replicate::<NetCharacter>()
         .replicate::<NetBody>()
         .replicate::<Team>()
@@ -285,6 +355,8 @@ impl Plugin for NetPlugin {
         app.world_mut().resource_mut::<ProtocolHasher>().add_custom(NET_VERSION);
         server::plugin(app);
         client::plugin(app);
+        predict::plugin(app);
+        udp::plugin(app);
         memory::plugin(app);
         commands(app);
     }
@@ -469,6 +541,9 @@ pub fn status(world: &mut World) -> String {
                     c.packet_loss() * 100.0
                 ));
             }
+            if let Some(g) = world.get_resource::<predict::NetGraph>() {
+                out.push(format!("predict : {}", g.prediction_line()));
+            }
         }
         NetRole::Server => {
             let settings = world.resource::<NetSettings>().clone();
@@ -476,14 +551,16 @@ pub fn status(world: &mut World) -> String {
             out.push(format!("map     : {map}"));
             let players = server::players(world);
             out.push(format!("players : {} ({} max)", players.len(), settings.maxplayers));
-            out.push("# id               name                 ping  loss".into());
+            out.push("# id               name                 ping  loss   cmds missed".into());
             for p in players {
                 out.push(format!(
-                    "# {:<16} {:<20} {:>4}  {:>4.1}%",
+                    "# {:<16} {:<20} {:>4}  {:>4.1}%  {:>4} {:>6}",
                     p.id,
                     p.name,
                     p.ping_ms.map_or("-".into(), |p| format!("{p:.0}")),
-                    p.loss * 100.0
+                    p.loss * 100.0,
+                    p.buffered,
+                    p.missed
                 ));
             }
         }
@@ -510,7 +587,8 @@ mod tests {
     #[test]
     fn intents_from_clients_are_made_safe() {
         let mut i = crate::core::Intent::default();
-        NetIntent {
+        NetCmd {
+            tick: 7,
             move_axis: [3.0, f32::NAN],
             yaw: f32::INFINITY,
             pitch: 7.0,
@@ -534,8 +612,8 @@ mod tests {
             ..default()
         };
         let mut back = crate::core::Intent::default();
-        NetIntent::of(&src).apply(&mut back);
-        assert_eq!(NetIntent::of(&back), NetIntent::of(&src));
+        NetCmd::of(1, &src).apply(&mut back);
+        assert_eq!(NetCmd::of(1, &back), NetCmd::of(1, &src));
     }
 
     #[test]

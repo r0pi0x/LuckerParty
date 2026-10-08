@@ -3,6 +3,7 @@
 //! three").
 
 use bevy::prelude::*;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 /// What a character wants to do this tick. Written by exactly one intent
 /// source (local input, a bot brain, later the network) and read by the
@@ -54,14 +55,14 @@ impl Intent {
 
 /// Character velocity in meters per second, owned by the active Movement
 /// implementation.
-#[derive(Component, Reflect, Default, Clone, Copy, Debug, Deref, DerefMut)]
+#[derive(Component, Reflect, Default, Clone, Copy, Debug, Deref, DerefMut, Serialize, Deserialize)]
 #[reflect(Component)]
 pub struct Velocity(pub Vec3);
 
 /// Published by the active Movement implementation every tick. Other slots
 /// (weapons, HUD, animation) read this instead of depending on a specific
 /// movement implementation.
-#[derive(Component, Reflect, Default, Clone, Debug)]
+#[derive(Component, Reflect, Default, Clone, Debug, Serialize, Deserialize)]
 #[reflect(Component)]
 pub struct MovementState {
     pub on_ground: bool,
@@ -75,6 +76,8 @@ pub struct MovementState {
     pub hull_min: Vec3,
     pub hull_max: Vec3,
     /// The moving solid (`MovingSolid`) the character stands on, if any.
+    /// Not sent to a predicting client (entity ids differ).
+    #[serde(skip)]
     pub ground: Option<Entity>,
     /// Climbing a ladder (movements that have them).
     pub on_ladder: bool,
@@ -87,7 +90,7 @@ pub struct MovementState {
 /// velocity (Source base velocity: push triggers, leaving a moving
 /// platform), engine space, m/s. Movement implementations that model it
 /// read and consume it (specs/source/triggers.md, trigger_push).
-#[derive(Component, Reflect, Default, Clone, Copy, Debug)]
+#[derive(Component, Reflect, Default, Clone, Copy, Debug, Serialize, Deserialize)]
 #[reflect(Component)]
 pub struct BaseVelocity {
     pub velocity: Vec3,
@@ -355,7 +358,7 @@ pub const ITEM_GROUND_LAYER: avian3d::prelude::LayerMask = avian3d::prelude::Lay
 
 /// A speed cap the character's equipment imposes (e.g. the held weapon),
 /// meters per second. Movement implementations that model it read it.
-#[derive(Component, Reflect, Clone, Copy, Debug)]
+#[derive(Component, Reflect, Clone, Copy, Debug, Serialize, Deserialize)]
 #[reflect(Component)]
 pub struct MaxSpeed(pub f32);
 
@@ -482,7 +485,23 @@ struct PredictedComponent {
     name: &'static str,
     save: fn(&World, Entity) -> SavedComponent,
     restore: fn(&mut World, Entity, &SavedComponent),
+    /// How the server sends it to the client that predicts it
+    /// (`PredictedAppExt::predicted_net`), if it does.
+    net: Option<NetCodec>,
 }
+
+/// A predicted component's network form: the server's state of a
+/// client's own player is sent as these bytes, compared byte for byte
+/// with the client's prediction, and decoded over it on a mismatch.
+#[derive(Clone, Copy)]
+struct NetCodec {
+    encode: fn(&World, Entity) -> Option<Vec<u8>>,
+    decode: fn(&mut World, Entity, Option<&[u8]>),
+}
+
+/// The length `PredictedComponents::encode` writes for a component the
+/// entity doesn't have.
+const ABSENT: u16 = u16::MAX;
 
 /// Some entities' predicted components as they were
 /// (`PredictedComponents::save`).
@@ -504,6 +523,77 @@ impl PredictedComponents {
         )
     }
 
+    /// The networked predicted components of `entity` as one blob
+    /// (`predicted_net`), in name order: per component a little-endian
+    /// `u16` length (`u16::MAX`: absent) and its postcard bytes. Equal
+    /// blobs are equal states, bit for bit.
+    pub fn encode(&self, world: &World, entity: Entity) -> Vec<u8> {
+        let mut out = Vec::new();
+        for (_, net) in self.net_order() {
+            match (net.encode)(world, entity) {
+                Some(bytes) if bytes.len() < ABSENT as usize => {
+                    out.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
+                    out.extend_from_slice(&bytes);
+                }
+                _ => out.extend_from_slice(&ABSENT.to_le_bytes()),
+            }
+        }
+        out
+    }
+
+    /// Write a blob from `encode` over `entity`'s components (inserting
+    /// or removing them as the blob says). A blob of another layout fails
+    /// and changes nothing.
+    pub fn decode(&self, world: &mut World, entity: Entity, blob: &[u8]) -> Result<(), String> {
+        let parts = self.split(blob)?;
+        for ((_, net), part) in self.net_order().into_iter().zip(parts) {
+            (net.decode)(world, entity, part);
+        }
+        Ok(())
+    }
+
+    /// The names of the networked components two blobs disagree on
+    /// (`cl_showerror`).
+    pub fn differing(&self, a: &[u8], b: &[u8]) -> Vec<&'static str> {
+        let (Ok(pa), Ok(pb)) = (self.split(a), self.split(b)) else {
+            return vec!["(layout)"];
+        };
+        self.net_order()
+            .into_iter()
+            .zip(pa.into_iter().zip(pb))
+            .filter(|(_, (x, y))| x != y)
+            .map(|((name, _), _)| name)
+            .collect()
+    }
+
+    /// The networked components by name.
+    fn net_order(&self) -> Vec<(&'static str, NetCodec)> {
+        let mut v: Vec<(&'static str, NetCodec)> = self.0.iter().filter_map(|c| Some((c.name, c.net?))).collect();
+        v.sort_by_key(|(name, _)| *name);
+        v
+    }
+
+    fn split<'a>(&self, mut blob: &'a [u8]) -> Result<Vec<Option<&'a [u8]>>, String> {
+        let short = || "predicted state blob too short".to_string();
+        let mut parts = Vec::new();
+        for _ in 0..self.net_order().len() {
+            let (len, rest) = blob.split_first_chunk::<2>().ok_or_else(short)?;
+            blob = rest;
+            let len = u16::from_le_bytes(*len);
+            if len == ABSENT {
+                parts.push(None);
+                continue;
+            }
+            let (part, rest) = blob.split_at_checked(len as usize).ok_or_else(short)?;
+            parts.push(Some(part));
+            blob = rest;
+        }
+        if !blob.is_empty() {
+            return Err("predicted state blob too long".into());
+        }
+        Ok(parts)
+    }
+
     /// Put each saved entity's predicted components back as they were
     /// (removing the ones it didn't have). Entities gone since are skipped.
     pub fn restore(&self, world: &mut World, snapshot: &PredictedSnapshot) {
@@ -521,30 +611,68 @@ impl PredictedComponents {
 pub trait PredictedAppExt {
     /// Register a component prediction saves and restores.
     fn predicted<C: Component<Mutability = bevy::ecs::component::Mutable> + Clone>(&mut self) -> &mut Self;
+
+    /// The same, and the server sends it to the client predicting it,
+    /// which compares it with its own (`PredictedComponents::encode`).
+    /// Entity fields stay out of its serde form (`#[serde(skip)]`): ids
+    /// differ between server and client.
+    fn predicted_net<C: Component<Mutability = bevy::ecs::component::Mutable> + Clone + Serialize + DeserializeOwned>(
+        &mut self,
+    ) -> &mut Self;
 }
 
 impl PredictedAppExt for App {
     fn predicted<C: Component<Mutability = bevy::ecs::component::Mutable> + Clone>(&mut self) -> &mut Self {
-        let name = std::any::type_name::<C>();
-        let mut registry = self.world_mut().get_resource_or_init::<PredictedComponents>();
-        if !registry.0.iter().any(|c| c.name == name) {
-            registry.0.push(PredictedComponent {
-                name,
-                save: |w, e| {
-                    w.get::<C>(e)
-                        .map(|c| Box::new(c.clone()) as Box<dyn std::any::Any + Send + Sync>)
-                },
-                restore: |w, e, v| match v.as_ref().and_then(|v| v.downcast_ref::<C>()) {
+        register_predicted::<C>(self, None);
+        self
+    }
+
+    fn predicted_net<C: Component<Mutability = bevy::ecs::component::Mutable> + Clone + Serialize + DeserializeOwned>(
+        &mut self,
+    ) -> &mut Self {
+        register_predicted::<C>(
+            self,
+            Some(NetCodec {
+                encode: |w, e| w.get::<C>(e).and_then(|c| postcard::to_allocvec(c).ok()),
+                decode: |w, e, bytes| match bytes.and_then(|b| postcard::from_bytes::<C>(b).ok()) {
                     Some(c) => {
-                        w.entity_mut(e).insert(c.clone());
+                        w.entity_mut(e).insert(c);
                     }
                     None => {
                         w.entity_mut(e).remove::<C>();
                     }
                 },
-            });
-        }
+            }),
+        );
         self
+    }
+}
+
+fn register_predicted<C: Component<Mutability = bevy::ecs::component::Mutable> + Clone>(
+    app: &mut App,
+    net: Option<NetCodec>,
+) {
+    let name = std::any::type_name::<C>();
+    let mut registry = app.world_mut().get_resource_or_init::<PredictedComponents>();
+    if let Some(c) = registry.0.iter_mut().find(|c| c.name == name) {
+        c.net = c.net.or(net);
+    } else {
+        registry.0.push(PredictedComponent {
+            name,
+            net,
+            save: |w, e| {
+                w.get::<C>(e)
+                    .map(|c| Box::new(c.clone()) as Box<dyn std::any::Any + Send + Sync>)
+            },
+            restore: |w, e, v| match v.as_ref().and_then(|v| v.downcast_ref::<C>()) {
+                Some(c) => {
+                    w.entity_mut(e).insert(c.clone());
+                }
+                None => {
+                    w.entity_mut(e).remove::<C>();
+                }
+            },
+        });
     }
 }
 
@@ -749,21 +877,25 @@ pub enum SimSet {
     Weapons,
 }
 
-/// Stamp each intent with this tick's command number: the tick, offset by
+/// Stamp each intent with this tick's command number: the tick
+/// (`SimClock::tick`; a network client's is the server tick its command
+/// is for), offset by
 /// the character's `Seed` (Source clients number their commands from
 /// their own start, so two players firing on the same tick don't share a
 /// spread pattern). Never from entity ids.
-pub fn number_commands(tick: Res<SimTick>, mut intents: Query<(&mut Intent, Option<&Seed>)>) {
+pub fn number_commands(clock: Res<SimClock>, mut intents: Query<(&mut Intent, Option<&Seed>)>) {
     for (mut intent, seed) in &mut intents {
-        let n = (tick.0 as u32).wrapping_add(seed.map_or(0, |s| s.0 as u32));
+        let n = (clock.tick as u32).wrapping_add(seed.map_or(0, |s| s.0 as u32));
         if intent.command != n {
             intent.command = n;
         }
     }
 }
 
-/// Count the tick and set the clock (`SimClock`) from `Time<Fixed>`.
-fn start_tick(mut tick: ResMut<SimTick>, mut clock: ResMut<SimClock>, time: Res<Time<Fixed>>) {
+/// Count the tick and set the clock (`SimClock`) from `Time<Fixed>` (a
+/// network client then sets it to the server tick it predicts,
+/// `net::predict`).
+pub fn start_tick(mut tick: ResMut<SimTick>, mut clock: ResMut<SimClock>, time: Res<Time<Fixed>>) {
     tick.0 += 1;
     *clock = SimClock {
         tick: tick.0,
@@ -812,11 +944,11 @@ impl Plugin for CorePlugin {
             )
             .add_systems(FixedUpdate, number_commands.in_set(SimSet::Commands))
             .add_systems(FixedUpdate, run_predicted(Predict::Movement).in_set(SimSet::Movement))
-            .predicted::<Transform>()
-            .predicted::<Velocity>()
-            .predicted::<MovementState>()
-            .predicted::<BaseVelocity>()
-            .predicted::<MaxSpeed>();
+            .predicted_net::<Transform>()
+            .predicted_net::<Velocity>()
+            .predicted_net::<MovementState>()
+            .predicted_net::<BaseVelocity>()
+            .predicted_net::<MaxSpeed>();
         for stage in Predict::ALL {
             app.init_schedule(stage);
         }

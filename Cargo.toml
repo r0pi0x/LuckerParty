@@ -17,6 +17,12 @@ bevy_egui = { version = "0.40", default-features = false, features = ["bevy_ui"]
 # netcode UDP transport.
 bevy_replicon = { version = "0.44.3", default-features = false, features = ["client", "server"] }
 bevy_replicon_renet = "0.20.0"
+# Netcode's client protocol, for our UDP client transport with
+# `net_fakelag`/`net_fakeloss` (net::udp); the one bevy_replicon_renet uses.
+renetcode = "2.0"
+# The server's state of a client's own player, compared with its prediction
+# byte for byte (core::PredictedComponents::encode); replicon's format.
+postcard = { version = "1.1", default-features = false, features = ["alloc"] }
 bzip2 = "0.6.1"
 arboard = "3.6"
 crc32fast = "1.5.2"

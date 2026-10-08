@@ -394,7 +394,7 @@ const PARALLEL_SLOP: f32 = 2.5e-5;
 const SOLID_SKIN: f32 = 0.01;
 
 /// Per-character movement state. Units and seconds as in the spec.
-#[derive(Component, Clone, Debug)]
+#[derive(Component, Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SourceMovement {
     pub on_ground: bool,
     pub ground_normal: Vec3,
@@ -419,7 +419,9 @@ pub struct SourceMovement {
     last_nudge: f32,
     /// Feet at the end of the last tick, to notice teleports.
     last_feet: Option<Vec3>,
-    /// The moving solid stood on (`MovingSolid`), if any.
+    /// The moving solid stood on (`MovingSolid`), if any. Not sent to a
+    /// predicting client (entity ids differ).
+    #[serde(skip)]
     pub ground_entity: Option<Entity>,
     /// Jump stamina left, ms (CS:S).
     pub stamina: f32,
@@ -504,7 +506,7 @@ impl Plugin for SourceMovementPlugin {
         }
         app.register_movement::<SourceMovement>(ID)
             .add_systems(crate::core::Predict::Movement, step)
-            .predicted::<SourceMovement>()
+            .predicted_net::<SourceMovement>()
             .add_plugins((super::pushaway::PushAwayPlugin, super::shadow::ShadowPlugin));
     }
 }

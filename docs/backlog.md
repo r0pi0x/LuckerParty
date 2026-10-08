@@ -8,6 +8,15 @@ plan when work starts; delete them when done.
 
 ## 0. Playtest feedback (2026-10-07), top priority
 
+- HUD parity pass at pixel level: health, armour, ammo and money digits
+  and icons look slightly off-centre against CS:S; the weapon selection
+  (inventory) panel doesn't match CS:S's (layout, box sizes, which icons
+  and fonts, highlight, fade). Method: capture the real HUD with refcmp
+  (coordinator: reference client) at 1280x720, 1920x1080 and 4:3, overlay
+  and diff ours per panel (`HudLayout.res` positions, `xpos`/`ypos` with
+  `r`/`c` anchors, proportional scaling, digit and icon offsets), fix
+  until each panel lines up, and keep the captures' diff as a test.
+
 - Decals persist across rounds (bullet holes, blood), as we believe CS:S
   does (players bind `r_cleardecals`, now there; `mashup_round_cleardecals
   1` clears them each round). Left: confirm the game keeps them.
@@ -129,11 +138,13 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
 
 Plan: [plans/active/multiplayer.md](plans/active/multiplayer.md)
 (bevy_replicon + renet; Source-style prediction, interpolation and lag
-compensation of our own; slices 0-9). Slices 0 and 1 done: a listen
+compensation of our own; slices 0-9). Slices 0-2 done: a listen
 server (maxplayers 4; map <name>) and the dedicated mashup_server,
-connect <ip[:port]>, characters replicated and drawn where the server
-puts them (docs/OBSERVABILITY.md, Network play). Next: slice 2 (usercmds
-bound to ticks, prediction and reconciliation). Open questions 1, 3 and 4
+connect <ip[:port]>, characters replicated, usercmds bound to server
+ticks with clock sync, the client's own movement predicted and
+reconciled (net_graph-style readout, cl_showerror, net_fakelag;
+docs/OBSERVABILITY.md, Network play). Next: slice 3 (interpolation of
+others), then 4 (weapons, predicted). Open questions 1, 3 and 4
 still wait on the user; 2 was taken as both (listen first, dedicated too).
 
 ## 3. Weapons, remaining
