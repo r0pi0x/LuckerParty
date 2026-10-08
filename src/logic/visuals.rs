@@ -99,7 +99,42 @@ pub(super) fn input(w: &mut LogicWorld, id: EntId, input: &str, _value: &Value) 
     }
 }
 
+/// env_tonemap_controller inputs (the public entity docs' list; the
+/// controller drives the local player's HDR camera): SetAutoExposureMin,
+/// SetAutoExposureMax, SetBloomScale, SetTonemapRate and
+/// UseDefaultAutoExposure. Other inputs of the class are accepted and do
+/// nothing yet.
+pub(super) fn tonemap_input(w: &mut LogicWorld, input: &str, value: &Value) -> bool {
+    let t = &mut w.tonemap;
+    let v = value.to_float();
+    match input {
+        "setautoexposuremin" => {
+            t.exposure_min = v;
+            t.default_exposure = false;
+        }
+        "setautoexposuremax" => {
+            t.exposure_max = v;
+            t.default_exposure = false;
+        }
+        "setbloomscale" => t.bloom_scale = v,
+        "settonemaprate" => t.rate = v,
+        "usedefaultautoexposure" => {
+            t.exposure_min = None;
+            t.exposure_max = None;
+            t.default_exposure = true;
+        }
+        "setbloomscalerange" | "settonemapscale" | "blendtonemapscale" | "usedefaultbloomscale" => {}
+        _ => return false,
+    }
+    true
+}
+
 impl LogicWorld {
+    /// What env_tonemap_controller inputs have set.
+    pub fn tonemap(&self) -> &crate::map::TonemapInputs {
+        &self.tonemap
+    }
+
     /// Sprites and dust volumes from the map, in entity order: (map
     /// index, on). Removed ones are missing.
     pub fn part_states(&self) -> Vec<(usize, PartKind, bool)> {

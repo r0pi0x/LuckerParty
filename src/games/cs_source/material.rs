@@ -97,6 +97,17 @@ impl<'a> MaterialLoader<'a> {
         }
     }
 
+    /// A file from the map's pakfile only (any case).
+    pub fn read_packed(&self, path: &str) -> Option<Vec<u8>> {
+        let path = normalize(path);
+        if let Ok(Some(data)) = self.bsp.pack.get(&path) {
+            return Some(data);
+        }
+        self.pack_names
+            .get(&path.to_lowercase())
+            .and_then(|n| self.bsp.pack.get(n).ok().flatten())
+    }
+
     pub fn read(&self, path: &str) -> Option<Vec<u8>> {
         let path = normalize(path);
         if let Ok(Some(data)) = self.bsp.pack.get(&path) {

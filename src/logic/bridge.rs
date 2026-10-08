@@ -137,6 +137,7 @@ fn load(world: &mut World) {
             world.write_message(SoundControl::StopAll);
             world.remove_resource::<Logic>();
             world.remove_resource::<LightStyles>();
+            world.remove_resource::<crate::map::TonemapInputs>();
             world.remove_resource::<crate::map::vis::AreaPortalStates>();
             world.remove_resource::<crate::map::vis::OccluderStates>();
             world.remove_resource::<SoundscapeTouches>();
@@ -430,6 +431,10 @@ fn sync_visuals(world: &mut World, logic: &Logic) {
     };
     if world.get_resource::<LightStyles>() != Some(&styles) {
         world.insert_resource(styles);
+    }
+    let tonemap = logic.world.tonemap();
+    if world.get_resource::<crate::map::TonemapInputs>() != Some(tonemap) {
+        world.insert_resource(tonemap.clone());
     }
     let portals = crate::map::vis::AreaPortalStates {
         closed: logic.world.closed_area_portals(),

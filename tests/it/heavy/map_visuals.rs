@@ -207,9 +207,9 @@ fn de_prodigy_lights_switch_their_lightmap_style() {
         .expect("style 32 (bomb site B's lights)");
     assert!(s32.on && !s32.texels.is_empty());
     // As at map start: unchanged; style 32 off: darker where it lit.
-    let (same, _) = l.relit(&|s| l.styles.iter().find(|x| x.style == s).is_some_and(|x| x.on));
+    let (same, _) = l.relit(&|s| s.start());
     assert_eq!(same, l.rgb);
-    let (off, _) = l.relit(&|s| s != 32 && l.styles.iter().find(|x| x.style == s).is_some_and(|x| x.on));
+    let (off, _) = l.relit(&|s| if s.style == 32 { 0.0 } else { s.start() });
     let t = s32
         .rgb
         .iter()

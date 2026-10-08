@@ -441,6 +441,8 @@ pub struct LogicWorld {
     pub round: u32,
     /// Switchable light styles and whether each is lit (`visuals`).
     pub(super) light_styles: Vec<(u8, bool)>,
+    /// What env_tonemap_controller inputs set (`visuals::tonemap_input`).
+    pub(super) tonemap: crate::map::TonemapInputs,
     /// Global states (env_global): name (lower case), state, counter.
     /// They outlive round restarts.
     pub globals: Vec<(String, GlobalState, i32)>,
@@ -507,6 +509,7 @@ impl LogicWorld {
             use_presses: Vec::new(),
             round: 0,
             light_styles: Vec::new(),
+            tonemap: Default::default(),
             globals: Vec::new(),
             collision: None,
             burning_players: Vec::new(),
@@ -549,6 +552,9 @@ impl LogicWorld {
         fresh.record = self.record;
         fresh.round = self.round + 1;
         fresh.globals = std::mem::take(&mut self.globals);
+        // The camera's tone-map settings stay (the map's own outputs set
+        // them again).
+        fresh.tonemap = self.tonemap.clone();
         fresh.collision = self.collision.clone();
         fresh.players = std::mem::take(&mut self.players);
         fresh.player_names = std::mem::take(&mut self.player_names);

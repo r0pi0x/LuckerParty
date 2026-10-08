@@ -36,6 +36,7 @@ pub mod sprites;
 pub mod surfaceprops;
 pub mod view_anim;
 pub mod vgui;
+pub mod vhv;
 pub mod view_motion;
 pub mod vpk;
 pub mod water;
