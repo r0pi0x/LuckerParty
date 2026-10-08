@@ -12,11 +12,6 @@ plan when work starts; delete them when done.
   does (players bind `r_cleardecals`, now there; `mashup_round_cleardecals
   1` clears them each round). Left: confirm the game keeps them.
 
-CS:S feel:
-- Optional `+use` pickup of dropped weapons (CS:GO's; CS:S has none): a
-  cvar such as `mashup_usepickup`, off by default, reaching farther than
-  the touch box.
-
 ## 1. Playtest essentials
 
 A (settings, health bars, third person), B (penetration and collaterals,
@@ -184,26 +179,25 @@ a first bot are in.
   `<Move>_Reload_<weapon>` by activity, an assumption for the spec's
   `reload_<suffix>`, with the shotguns' `_start/_loop/_end`).
 - Impact effects, remaining (specs/cs_source/impact_effects.md; the
-  surface effects, blood, bullet splashes and pane glass shards are in):
-  section 9's exact shard burst at the hit point (ours spreads shards
-  over each shattered pane), slime splashes
-  (`.pcf` systems), the knife's water splash, the 30 % ricochet sound,
-  ragdoll pushes; check the spec's open questions in the game. The muzzle
-  flash's light on nearby walls is part of the view-model work (1C
-  follow-up).
-- Decals, remaining: on characters (blood);
-  check the knife's mark (`ManhackCut` is a guess) and lit decals (wood,
-  glass) against the game; tracers are in (every 4th bullet, spec
-  tracers.md; check N and the look in play); explosion impulses.
-- Dropping weapons, remaining (`drop`/G, pickup and death drops are in,
-  `weapon/drop.rs`): throw speed, the re-pick delay, pickup reach and
-  mass, friction (0.5) and the box collider are guesses (measure on
-  the probe server: how far a shot weapon skids); bullets hit loose
-  weapons; the use key doesn't swap a weapon for the one you look at.
+  surface effects, blood, bullet and knife splashes, the ricochet sound,
+  pane glass shards and section 9's burst at the hit point are in): slime
+  splashes (`.pcf` systems), the glass shards' three-angle spin and
+  settling (ours spin about one axis); check the spec's open questions in
+  the game. The muzzle flash's light on nearby walls is part of the
+  view-model work (1C follow-up).
+- Decals, remaining: on characters (blood; no spec covers model decals,
+  overlays_decals.md's open questions); check the knife's mark
+  (`ManhackCut` is a guess) and lit decals (wood, glass) against the
+  game; tracers are in (every 4th bullet, spec tracers.md; check N and
+  the look in play).
+- Dropping weapons, remaining (`drop`/G, pickup, death drops, bullets
+  and blasts pushing loose weapons and the optional `mashup_usepickup`
+  swap are in, `weapon/drop.rs`): throw speed, the re-pick delay, pickup
+  reach and mass, friction (0.5) and the box collider are guesses
+  (measure on the probe server: how far a shot weapon skids).
 - Ragdolls, remaining (`map/ragdoll.rs` has the spec's bodies, joints,
-  self-collision pairs, death poses, impulse, bone velocities, bullet
-  pushes, separation repair, settling and removal): blast pushes (send
-  `RagdollShot { blast: true }` from grenades once they exist); check the
+  self-collision pairs, death poses, impulse, bone velocities, bullet and
+  blast pushes, separation repair, settling and removal): check the
   spec's open questions (force scale, bone_dt, death-pose facing and
   crouch choice, joint limit convention) in the game.
 - Held weapons don't stay in other players' hands (they float around the

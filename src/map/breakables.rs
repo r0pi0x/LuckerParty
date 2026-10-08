@@ -6,7 +6,7 @@
 //! made of panes (`BrushPanes` on a brush entity node: only the unbroken
 //! panes are drawn and hit by shots). What breaks, and when, is the logic
 //! layer's; games load the gib models (`MapData::gibs`) and draw the
-//! shards of shattered glass (`GlassShatter`).
+//! shards of shattered glass (`GlassShatter`, `GlassImpact`).
 //! Engine space: meters, Y up.
 
 use avian3d::prelude::*;
@@ -322,6 +322,15 @@ pub struct GlassShatter {
     pub size: Vec2,
     pub velocity: Vec3,
     pub tile: bool,
+}
+
+/// A bullet or club hit shattered the window pane it hit: the hit point
+/// and the trace normal (towards the shooter). Games draw the glass
+/// impact (specs/cs_source/impact_effects.md section 9).
+#[derive(Message, Clone, Copy, Debug)]
+pub struct GlassImpact {
+    pub at: Vec3,
+    pub normal: Vec3,
 }
 
 /// A window on a brush entity node, as a grid of panes, in the node's own

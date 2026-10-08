@@ -1,7 +1,9 @@
 //! Dropping weapons (Source's `drop`, G in CS:S) and picking them up by
 //! walking over them. A dropped weapon keeps its entity (and so its ammo);
 //! a separate loose entity (`map::loose::LooseItem`) lies in the world
-//! and points back at it.
+//! and points back at it. With `mashup_usepickup 1`, +use on a loose
+//! weapon in view swaps it for the one in its slot (CS:GO's rule; CS:S
+//! has only the walk-over pickup).
 
 use avian3d::prelude::{AngularVelocity, LinearVelocity};
 use bevy::prelude::*;
@@ -46,6 +48,25 @@ const DEFAULT_HALF: Vec3 = Vec3::splat(0.1);
 const DEFAULT_HULL: (Vec3, Vec3) = (Vec3::new(-0.4, -0.9, -0.4), Vec3::new(0.4, 0.9, 0.4));
 /// Loose weapons kept at most; the oldest go first.
 const MAX_LOOSE: usize = 32;
+/// +use pickup reach from the eye to the weapon's centre (100 units: past
+/// the touch box's 36, as CS:GO's use reach; a guess, not measured).
+pub const USE_REACH: f32 = 100.0 * 0.0254;
+/// How far the view line may pass from a weapon's centre beyond its own
+/// half size and still take it (12 units; a guess).
+const USE_SLACK: f32 = 12.0 * 0.0254;
+
+/// `mashup_usepickup`: 1 lets +use take the loose weapon looked at
+/// (default 0: CS:S's walk-over pickup only).
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UsePickup(pub u8);
+
+/// A character took a loose weapon with +use (so the use key found
+/// something: no deny sound).
+#[derive(Message, Clone, Copy, Debug)]
+pub struct UsedPickup {
+    pub who: Entity,
+    pub weapon: Entity,
+}
 
 /// The weapon `owner` would drop: the active one if droppable, else (for
 /// the dead) the droppable one in the lowest slot.
@@ -241,7 +262,7 @@ pub(super) fn pick_up(
                 continue;
             }
             let touch = touch_of(weapon, inv, &weapons);
-            if touch == Touch::Refused || !in_sight(&spatial, eye, item_at.translation, item, &owners) {
+            if touch == Touch::Refused || !in_sight(&spatial, eye, item_at.translation, item, |c| owners.contains(c)) {
                 continue;
             }
             let weapon = l.weapon;
@@ -261,15 +282,134 @@ pub(super) fn pick_up(
     }
 }
 
+/// The loose weapon a +use press from `eye` along `aim` takes: within
+/// `USE_REACH` of the eye, ahead, the view line passing within its half
+/// size plus `USE_SLACK` of its centre; the one nearest the line (by
+/// angle) wins.
+pub fn use_target(eye: Vec3, aim: Vec3, items: impl Iterator<Item = (Entity, Vec3, f32)>) -> Option<Entity> {
+    let mut best: Option<(f32, Entity)> = None;
+    for (item, centre, half) in items {
+        let to = centre - eye;
+        let along = to.dot(aim);
+        if along <= 0.0 || to.length() > USE_REACH {
+            continue;
+        }
+        let off = (to - aim * along).length();
+        if off > half + USE_SLACK {
+            continue;
+        }
+        let score = off / along;
+        if best.is_none_or(|(b, _)| score < b) {
+            best = Some((score, item));
+        }
+    }
+    best.map(|(_, e)| e)
+}
+
+/// +use on a loose weapon (`mashup_usepickup 1`; CS:GO's rule, CS:S has
+/// none): on the press, the weapon looked at (`use_target`), touchable
+/// (1 s after its drop), seen from the eye and allowed to the team, is
+/// taken; whatever the character carries in its slot (the held one if it
+/// is there, else the first) is dropped, thrown as with `drop`. The taken
+/// weapon is drawn when the dropped one was held.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+pub(super) fn use_pick_up(
+    setting: Res<UsePickup>,
+    loose: Query<(Entity, &Loose, &Transform, Option<&crate::map::PhysicsProp>)>,
+    mut users: Query<(
+        Entity,
+        &Transform,
+        &Health,
+        Option<&crate::core::Team>,
+        Option<&crate::core::MovementState>,
+        &Intent,
+        &mut Inventory,
+    )>,
+    characters: Query<(), With<Inventory>>,
+    weapons: Query<(&Weapon, Option<&PickupTeam>)>,
+    spatial: avian3d::prelude::SpatialQuery,
+    time: Res<Time>,
+    mut used: MessageWriter<UsedPickup>,
+    mut commands: Commands,
+) {
+    let now = time.elapsed_secs_f64();
+    let mut taken = Vec::new();
+    for (owner, at, health, team, state, intent, mut inv) in &mut users {
+        let pressed = intent.use_key && !inv.prev_use;
+        if inv.prev_use != intent.use_key {
+            inv.prev_use = intent.use_key;
+        }
+        if !pressed || setting.0 == 0 || health.current <= 0.0 {
+            continue;
+        }
+        let eye = at.translation + state.map_or(Vec3::ZERO, |s| s.eye_offset);
+        let aim = intent.look_rotation() * Vec3::NEG_Z;
+        let items = loose
+            .iter()
+            .filter(|(e, l, ..)| !taken.contains(e) && now - l.since >= TOUCH_DELAY)
+            .filter(|(_, l, ..)| {
+                weapons
+                    .get(l.weapon)
+                    .is_ok_and(|(w, only)| w.owner.is_none() && only.is_none_or(|t| team == Some(&t.0)))
+            })
+            .filter(|(e, _, t, _)| in_sight(&spatial, eye, t.translation, *e, |c| characters.contains(c)))
+            .map(|(e, _, t, body)| {
+                let half = body.map_or(DEFAULT_HALF, |b| (b.bounds.1 - b.bounds.0) / 2.0);
+                (e, t.translation, half.max_element())
+            });
+        let Some(item) = use_target(eye, aim, items) else { continue };
+        let Ok((_, l, ..)) = loose.get(item) else { continue };
+        let weapon = l.weapon;
+        let Ok((wanted, _)) = weapons.get(weapon) else { continue };
+        // What it replaces: the held weapon if in that slot, else the
+        // first there (none: an empty slot, it is only taken).
+        let in_slot = |e: &Entity| weapons.get(*e).is_ok_and(|(w, _)| w.slot == wanted.slot);
+        let mine = inv
+            .active
+            .filter(in_slot)
+            .or_else(|| inv.weapons.iter().copied().find(in_slot));
+        taken.push(item);
+        used.write(UsedPickup { who: owner, weapon });
+        commands.queue(move |w: &mut World| swap(w, owner, item, weapon, mine));
+    }
+}
+
+/// Take `weapon` (lying as `item`), dropping `mine` first.
+fn swap(world: &mut World, owner: Entity, item: Entity, weapon: Entity, mine: Option<Entity>) {
+    if world.get_entity(item).is_err() || world.get::<Weapon>(weapon).is_none_or(|w| w.owner.is_some()) {
+        return;
+    }
+    if mine.is_some_and(|m| world.get::<Undroppable>(m).is_some()) {
+        return;
+    }
+    let held = world.get::<Inventory>(owner).and_then(|i| i.active);
+    world.despawn(item);
+    if let Some(m) = mine {
+        drop_this(world, owner, m, true);
+    }
+    take(world, owner, weapon);
+    if let Some(mut inv) = world.get_mut::<Inventory>(owner)
+        && (held.is_none() || held == mine)
+    {
+        inv.wanted = Some(weapon);
+    }
+}
+
 /// Whether `eye` sees `to` through solid geometry (characters and loose
 /// items don't block; `item` is the one looked at).
-fn in_sight(spatial: &avian3d::prelude::SpatialQuery, eye: Vec3, to: Vec3, item: Entity, owners: &Owners) -> bool {
+fn in_sight(
+    spatial: &avian3d::prelude::SpatialQuery,
+    eye: Vec3,
+    to: Vec3,
+    item: Entity,
+    character: impl Fn(Entity) -> bool,
+) -> bool {
     let filter = avian3d::prelude::SpatialQueryFilter::default()
         .with_mask(crate::core::SOLID_LAYERS.0 & !crate::core::ITEM_LAYER.0);
     let d = to - eye;
     let Ok(dir) = Dir3::new(d) else { return true };
     spatial
-        .cast_ray_predicate(eye, dir, d.length(), true, &filter, &|e| e != item && !owners.contains(e))
+        .cast_ray_predicate(eye, dir, d.length(), true, &filter, &|e| e != item && !character(e))
         .is_none()
 }
 

@@ -449,6 +449,8 @@ impl Shot<'_, '_, '_> {
         let forward = self.aim * Vec3::NEG_Z;
         let dir = Dir3::new(forward).unwrap_or(Dir3::NEG_Z);
         let mut hit = self.trace(dir, 0.0, swing.range, &[]);
+        // The line's span (its end on a miss: the range's end).
+        let line = (self.eye, hit.as_ref().map_or(self.eye + *dir * swing.range, |h| h.point));
         if hit.is_none()
             && let Some(half) = swing.hull
         {
@@ -485,6 +487,7 @@ impl Shot<'_, '_, '_> {
                 hit: hit.is_some(),
                 secondary,
                 at: hit.as_ref().map(|h| (h.point, h.normal, h.entity)),
+                line,
             },
         });
         let Some(hit) = hit else {

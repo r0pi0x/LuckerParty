@@ -281,6 +281,33 @@ fn window_first_hit_breaks_it_and_a_pane() {
     assert!(w.effects.iter().any(|e| matches!(e, Effect::PaneShatter { .. })));
 }
 
+/// A hit that shatters the pane it hits sends the glass impact (at the
+/// hit, the normal facing the shot: impact_effects.md section 9); a later
+/// hit on that broken pane sends none.
+#[test]
+fn a_hit_that_shatters_its_pane_sends_the_glass_impact() {
+    let impacts = |w: &LogicWorld| -> Vec<(Vec3, Vec3)> {
+        w.effects
+            .iter()
+            .filter_map(|e| match e {
+                Effect::GlassImpact { at, normal } => Some((*at, *normal)),
+                _ => None,
+            })
+            .collect()
+    };
+    let mut w = world();
+    let win = office_window(&mut w);
+    let at = office_point(4.5, 3.5);
+    w.damage(win, 26.0, DamageKind::Bullet, None, at, Vec3::Y);
+    let hits = impacts(&w);
+    assert_eq!(hits.len(), 1);
+    assert!(hits[0].0.distance(at) < 1e-3);
+    assert!((hits[0].1 - Vec3::NEG_Y).length() < 1e-3, "facing the shot: {}", hits[0].1);
+    w.effects.clear();
+    w.damage(win, 26.0, DamageKind::Bullet, None, at, Vec3::NEG_Y);
+    assert!(impacts(&w).is_empty(), "the pane was already broken");
+}
+
 #[test]
 fn edge_hits_take_the_neighbour() {
     let mut w = world();

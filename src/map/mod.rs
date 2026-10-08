@@ -27,7 +27,7 @@ pub mod fog;
 pub use entities::{MapBrushEntity, MapEntities, MapEntity, MapHull};
 pub mod breakables;
 pub mod contact_filter;
-pub use breakables::{BreakProp, BrushPanes, GlassShatter, MapBreak, MapBreakPiece, SpawnGibs};
+pub use breakables::{BreakProp, BrushPanes, GlassImpact, GlassShatter, MapBreak, MapBreakPiece, SpawnGibs};
 mod dust;
 pub mod hud;
 pub mod interp;
@@ -1650,6 +1650,7 @@ impl Plugin for MapPlugin {
             .add_message::<breakables::BreakProp>()
             .add_message::<prop_physics::PropAwakened>()
             .add_message::<GlassShatter>()
+            .add_message::<GlassImpact>()
             .init_resource::<particles::Particles>()
             .configure_sets(Update, particles::ParticleSet::Step.before(particles::ParticleSet::Draw))
             .init_resource::<tracer::MuzzleCache>()

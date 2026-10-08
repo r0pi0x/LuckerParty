@@ -630,7 +630,12 @@ fn window_hit(
             let (c, r) = (at.x.floor() as i32, at.y.floor() as i32);
             let (c, r) = (c.clamp(0, cols - 1), r.clamp(0, rows - 1));
             let force = local_dir * PANE_BULLET_FORCE;
-            shatter(w, id, c, r, force);
+            if shatter(w, id, c, r, force) {
+                // The trace normal: the window's face towards the shot.
+                let n = w.window(id).map_or(Vec3::ZERO, |win| win.normal);
+                let n = rot * if n.dot(local_dir) > 0.0 { -n } else { n };
+                w.effects.push(Effect::GlassImpact { at: point, normal: n });
+            }
             if glass {
                 let (fx, fy) = (at.x - at.x.floor(), at.y - at.y.floor());
                 if fx > 0.8 && c + 1 < cols {
@@ -682,12 +687,12 @@ fn break_window(w: &mut LogicWorld, id: EntId, breaker: Option<Who>, _dir: Vec3)
 }
 
 /// Shatter one pane (if there and unbroken): shards, the damage sound,
-/// and a support pass this tick.
-fn shatter(w: &mut LogicWorld, id: EntId, c: i32, r: i32, force: Vec3) {
+/// and a support pass this tick. Returns whether it shattered.
+fn shatter(w: &mut LogicWorld, id: EntId, c: i32, r: i32, force: Vec3) -> bool {
     let tick = w.tick;
-    let Some(win) = window_mut(w, id) else { return };
+    let Some(win) = window_mut(w, id) else { return false };
     if win.is_broken(c, r) {
-        return;
+        return false;
     }
     let (c, r) = (c as usize, r as usize);
     let i = win.index(c, r);
@@ -702,7 +707,7 @@ fn shatter(w: &mut LogicWorld, id: EntId, c: i32, r: i32, force: Vec3) {
     let sound = win.sounded != tick;
     win.sounded = tick;
     if w.get(id).is_none() {
-        return;
+        return true;
     }
     let (origin, rot) = pose(w, id);
     w.effects.push(Effect::PaneShatter {
@@ -723,6 +728,7 @@ fn shatter(w: &mut LogicWorld, id: EntId, c: i32, r: i32, force: Vec3) {
             w.think_in(id, 0.0);
         }
     }
+    true
 }
 
 /// Panes a player's box overlaps shatter (spec "Touch").

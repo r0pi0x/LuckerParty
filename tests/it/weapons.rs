@@ -826,3 +826,69 @@ fn dropped_weapons_are_touched_in_the_grown_box_after_a_second() {
     assert!(!sim.app.world().get::<Inventory>(owner).unwrap().weapons.contains(&ak));
     let _ = sim.app.world().get::<Loose>(loose).unwrap();
 }
+
+/// `mashup_usepickup 1` (CS:GO's +use pickup; off by default as CS:S has
+/// none): a press of +use on a dropped gun looked at from beyond the touch
+/// box swaps it for the one in its slot, which is dropped; holding the key
+/// takes nothing more, and with the cvar at 0 the key does nothing.
+#[test]
+fn use_pickup_swaps_the_gun_looked_at_when_enabled() {
+    use mashup::{
+        games::cs_source::weapons::M4A1,
+        weapon::drop::{Loose, USE_REACH, UsePickup, drop_weapon},
+    };
+    let mut sim = sim();
+    let p = sim.spawn_character(greybox::SPAWNS[0], placeholder::ID);
+    sim.ticks(2);
+    let ak = active(&sim, p);
+    let item = drop_weapon(sim.app.world_mut(), p, true).expect("dropped");
+    // Lying 1.6 m ahead (-Z): past the touch box (36 units sideways), within
+    // the use reach.
+    let floor_at = sim.position(p).with_y(0.1) - Vec3::Z * 1.6;
+    let eye = sim.position(p) + sim.state(p).eye_offset;
+    assert!(eye.distance(floor_at) < USE_REACH);
+    sim.app.world_mut().get_mut::<Transform>(item).unwrap().translation = floor_at;
+    let m4 = mashup::weapon::give(sim.app.world_mut(), p, M4A1).unwrap();
+    sim.seconds(1.5);
+    assert_eq!(active(&sim, p), m4);
+    let press = |sim: &mut Sim| {
+        sim.intent(p).use_key = true;
+        sim.ticks(2);
+        sim.intent(p).use_key = false;
+        sim.ticks(2);
+    };
+    // Off by default: looking at it and pressing +use does nothing.
+    assert_eq!(sim.app.world().resource::<UsePickup>().0, 0);
+    aim_at(&mut sim, p, floor_at);
+    press(&mut sim);
+    assert!(sim.app.world().get_entity(item).is_ok(), "the default leaves it lying");
+    sim.app
+        .world_mut()
+        .resource_mut::<mashup::console::Console>()
+        .submit("mashup_usepickup 1");
+    sim.ticks(1);
+    assert_eq!(sim.app.world().resource::<UsePickup>().0, 1);
+    // Looking away: nothing.
+    aim_at(&mut sim, p, floor_at + Vec3::X * 2.0);
+    press(&mut sim);
+    assert!(sim.app.world().get_entity(item).is_ok(), "not looked at");
+    // Held from before it's looked at: no new press, nothing.
+    sim.intent(p).use_key = true;
+    sim.ticks(1);
+    aim_at(&mut sim, p, floor_at);
+    sim.ticks(2);
+    assert!(sim.app.world().get_entity(item).is_ok(), "a held key is not a press");
+    sim.intent(p).use_key = false;
+    sim.ticks(1);
+    // A press: the AK is taken and drawn, the M4 dropped in its place.
+    press(&mut sim);
+    assert!(sim.app.world().get_entity(item).is_err(), "taken");
+    let inv = sim.app.world().get::<Inventory>(p).unwrap();
+    assert!(inv.weapons.contains(&ak) && !inv.weapons.contains(&m4));
+    assert_eq!(sim.app.world().get::<Weapon>(ak).unwrap().owner, Some(p));
+    sim.ticks(2);
+    assert_eq!(active(&sim, p), ak, "the taken gun is drawn");
+    let w = sim.app.world_mut();
+    let loose: Vec<Entity> = w.query::<&Loose>().iter(w).map(|l| l.weapon).collect();
+    assert_eq!(loose, vec![m4], "the M4 lies loose");
+}
