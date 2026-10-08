@@ -203,6 +203,7 @@ fn draw(
     hud: Option<Res<crate::map::hud::ActiveHud>>,
     shown: Query<Entity, With<MenuText>>,
     windows: Query<&Window>,
+    fonts: Res<super::fonts::UiFonts>,
     mut built: Local<Option<(Option<usize>, f32)>>,
     mut commands: Commands,
 ) {
@@ -226,16 +227,13 @@ fn draw(
     let title_color = named("MenuColor", Color::srgb_u8(233, 208, 173));
     let item_color = named("ItemColor", Color::srgba_u8(255, 167, 42, 200));
     let bg = named("MenuBoxBg", Color::srgba_u8(0, 0, 0, 100));
-    // HudMenu's "Default" font: 12 at 480 lines.
-    let size = FontSize::Px(12.0 * scale * 0.85);
+    // HudMenu's `TextFont` and `ItemFont`: the client scheme's Default.
+    let font = fonts.client("Default", h, 12.0);
     let root = commands
         .spawn((
             MenuText,
             Text::default(),
-            TextFont {
-                font_size: size,
-                ..default()
-            },
+            font.clone(),
             BackgroundColor(bg),
             Node {
                 position_type: PositionType::Absolute,
@@ -250,19 +248,13 @@ fn draw(
         .id();
     commands.spawn((
         TextSpan::new(format!("{title}\n\n")),
-        TextFont {
-            font_size: size,
-            ..default()
-        },
+        font.clone(),
         TextColor(title_color),
         ChildOf(root),
     ));
     commands.spawn((
         TextSpan::new(items.join("\n")),
-        TextFont {
-            font_size: size,
-            ..default()
-        },
+        font,
         TextColor(item_color),
         ChildOf(root),
     ));

@@ -93,6 +93,9 @@ pub struct GameHud {
     pub icons: HashMap<String, (String, char)>,
     /// Named colours (RGBA 0..255).
     pub colors: HashMap<String, [u8; 4]>,
+    /// The client scheme's text fonts by name (`ChatFont`, `Default`):
+    /// sizes in order of preference, drawn in system faces.
+    pub text_fonts: HashMap<String, Vec<UiFontSize>>,
     /// Icon name -> a rectangle of a texture (pixels).
     pub sprites: HashMap<String, HudSprite>,
     /// The game's own menus, when it describes them (see `GameMenus`).
@@ -261,7 +264,8 @@ impl UiLayout {
 }
 
 /// One size of a scheme font: its family, height (pixels at 480 lines,
-/// or, when `yres` names the screen heights it is for, pixels) and weight.
+/// or, when `yres` names the screen heights it is for, pixels; a line's
+/// height, ascent plus descent), weight and smoothing.
 #[derive(Clone, Debug, PartialEq)]
 pub struct UiFontSize {
     pub family: String,
@@ -269,21 +273,38 @@ pub struct UiFontSize {
     pub weight: u32,
     /// Screen heights (inclusive) this size is for.
     pub yres: Option<(u32, u32)>,
+    /// Drawn smoothed (`antialias 1`); else hard-edged.
+    pub antialias: bool,
+}
+
+impl UiFontSize {
+    /// Drawn with the family's bold face: weight 600 and up.
+    pub fn bold(&self) -> bool {
+        self.weight >= 600
+    }
+}
+
+/// The size of `sizes` meant for a window `height` pixels tall: the one
+/// whose `yres` holds it, else the first without one, else the first.
+pub fn font_for_height(sizes: &[UiFontSize], height: f32) -> Option<&UiFontSize> {
+    let h = height.round() as u32;
+    sizes
+        .iter()
+        .find(|s| s.yres.is_some_and(|(lo, hi)| (lo..=hi).contains(&h)))
+        .or_else(|| sizes.iter().find(|s| s.yres.is_none()))
+        .or(sizes.first())
 }
 
 /// The text height (pixels) in a window `height` pixels tall: the size
 /// meant for that height, else the first without one scaled from 480
 /// lines (Source's proportional fonts), else the first, scaled.
 pub fn font_pixels(sizes: &[UiFontSize], height: f32) -> Option<f32> {
-    let h = height.round() as u32;
-    if let Some(s) = sizes
-        .iter()
-        .find(|s| s.yres.is_some_and(|(lo, hi)| (lo..=hi).contains(&h)))
-    {
-        return Some(s.tall);
-    }
-    let s = sizes.iter().find(|s| s.yres.is_none()).or(sizes.first())?;
-    Some(s.tall * height / 480.0)
+    let s = font_for_height(sizes, height)?;
+    Some(if s.yres.is_some_and(|(lo, hi)| (lo..=hi).contains(&(height.round() as u32))) {
+        s.tall
+    } else {
+        s.tall * height / 480.0
+    })
 }
 
 /// A layout file's path as a `GameMenus::layouts` key: lower case, forward
@@ -292,8 +313,8 @@ pub fn layout_key(path: &str) -> String {
     path.trim().replace('\\', "/").to_lowercase()
 }
 
-/// A game's own menus (buy, team) as panel layouts, with the scheme's text
-/// fonts; without them the client draws plain menus.
+/// A game's own menus (buy, team) as panel layouts (their text in
+/// `GameHud::text_fonts`); without them the client draws plain menus.
 #[derive(Clone, Debug, Default)]
 pub struct GameMenus {
     /// Layouts by `layout_key` of their file.
@@ -302,9 +323,6 @@ pub struct GameMenus {
     pub buy: HashMap<u8, String>,
     /// The team menu's layout.
     pub team: Option<String>,
-    /// The scheme's text fonts by name (`Default`, `MenuTitle`): sizes in
-    /// order of preference.
-    pub fonts: HashMap<String, Vec<UiFontSize>>,
     /// The loaded map's description (the team menu's `MapInfo`).
     pub map_info: Option<String>,
 }
@@ -500,6 +518,7 @@ mod tests {
             tall,
             weight: 900,
             yres,
+            antialias: false,
         };
         let sizes = [
             size(12.0, Some((480, 599))),
@@ -510,6 +529,9 @@ mod tests {
         assert_eq!(font_pixels(&sizes, 720.0), Some(13.5));
         assert_eq!(font_pixels(&sizes[..1], 960.0), Some(24.0));
         assert_eq!(font_pixels(&[], 960.0), None);
+        assert_eq!(font_for_height(&sizes, 1080.0).map(|s| s.tall), Some(20.0));
+        assert_eq!(font_for_height(&sizes, 720.0).map(|s| s.tall), Some(9.0));
+        assert!(sizes[0].bold());
         assert_eq!(layout_key(r"Resource\UI/BuyPistols_TER.res "), "resource/ui/buypistols_ter.res");
     }
 }

@@ -97,6 +97,12 @@ Only `Reflect`-registered types are visible; register new core components in
   back to the main menu: `+disconnect`; `map greybox` plays the greybox
   from anywhere; `toggleconsole` opens the console as the menu's
   Console entry does.
+- Fonts: the startup log line `fonts: tahoma -> tahoma.ttf, ...` says
+  which file each scheme family resolved to (`(stand-in)` when the
+  system lacks the real face, e.g. Liberation Sans for Tahoma on Linux;
+  `client::fonts`). Text sizes and faces per element are unit-tested
+  there; screenshots of the console, chat, scoreboard, buy menu, main
+  menu and `debugui` at 1280x720 show them.
 - Binds: `bindlist` lists them; every game key is one (`client::binds`),
   `binddefaults` puts the defaults back.
 - `buymenu [n]` and `chooseteam` open the buy menu (on category n) and
@@ -322,7 +328,9 @@ Details and baseline numbers: [performance.md](performance.md).
   hide.
 - `r_novis 1` draws every map part (no visibility culling);
   `MASHUP_MERGED_WORLD=1` spawns the world as one mesh per material with no
-  culling, as before chunking (A/B comparisons).
+  culling, as before chunking (A/B comparisons); `MASHUP_MERGE_BRUSHES=0`
+  draws every brush entity from its own meshes (no merged combined
+  meshes, `map::merge`).
 - `refcmp vischeck --views tools/refcmp/<map>.toml` renders the views
   plus views from spawns and nav areas with culling off (`r_novis 1`,
   `r_occlusion 0`) and on (game time

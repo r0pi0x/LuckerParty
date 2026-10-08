@@ -8,6 +8,8 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
+use super::fonts::UiFonts;
+
 use crate::{
     core::{Damage, Died, Health, Hitgroup, LocalPlayer, Team},
     map::hud::{ActiveHud, GameHud},
@@ -35,10 +37,6 @@ impl Plugin for GameHudPlugin {
             );
     }
 }
-
-/// Font handles made from the HUD's font files, by the game's font name.
-#[derive(Resource, Default)]
-pub(super) struct HudFonts(pub(super) HashMap<String, (Handle<Font>, f32)>);
 
 /// Everything this HUD spawned.
 #[derive(Component)]
@@ -150,20 +148,12 @@ fn color(c: [u8; 4]) -> Color {
 
 fn build(
     hud: Res<ActiveHud>,
-    mut fonts: ResMut<Assets<Font>>,
     old: Query<Entity, With<GameHudPart>>,
     mut commands: Commands,
 ) {
     for e in &old {
         commands.entity(e).despawn();
     }
-    let handles = hud
-        .0
-        .fonts
-        .iter()
-        .map(|(name, f)| (name.clone(), (fonts.add(Font::from_bytes(f.data.to_vec())), f.tall)))
-        .collect();
-    commands.insert_resource(HudFonts(handles));
     let fg = hud.0.color("FgColor").unwrap_or(Color::srgb_u8(255, 176, 0));
     let spawn_text = |commands: &mut Commands, part: Part| {
         commands.spawn((
@@ -231,7 +221,6 @@ fn teardown(parts: Query<Entity, With<GameHudPart>>, mut commands: Commands) {
     for e in &parts {
         commands.entity(e).despawn();
     }
-    commands.remove_resource::<HudFonts>();
 }
 
 fn remember_hits(mut damage: MessageReader<Damage>, mut hits: ResMut<LastHits>) {
@@ -322,7 +311,7 @@ fn clock_text(seconds: f32) -> String {
 #[allow(clippy::type_complexity)]
 fn update(
     hud: Res<ActiveHud>,
-    fonts: Option<Res<HudFonts>>,
+    fonts: Res<UiFonts>,
     windows: Query<&Window>,
     player: Option<Single<LocalState, With<LocalPlayer>>>,
     weapons: Query<(&Weapon, Option<&Magazine>)>,
@@ -343,7 +332,7 @@ fn update(
     )>,
     mut commands: Commands,
 ) {
-    let (Some(fonts), Some(window)) = (fonts, windows.iter().next()) else {
+    let Some(window) = windows.iter().next() else {
         return;
     };
     let (w, h) = (window.width(), window.height());
@@ -351,7 +340,7 @@ fn update(
     let hud = &hud.0;
     let fg = hud.color("FgColor").unwrap_or(Color::srgb_u8(255, 176, 0));
     let warn = Color::srgb_u8(255, 0, 0);
-    let font = |name: &str| fonts.0.get(name).cloned();
+    let font = |name: &str| fonts.game(name);
     let health_now = player.as_ref().map(|p| p.0.current);
     let health_colour = flash.colour(
         health_now,
@@ -525,6 +514,7 @@ fn round_banner(
     sounds: Option<Res<crate::map::RoundSounds>>,
     mut play: MessageWriter<crate::map::PlaySound>,
     mut was_live: Local<bool>,
+    fonts: Res<UiFonts>,
     mut commands: Commands,
 ) {
     use crate::rules::rounds::{ATTACKERS, DEFENDERS, Phase};
@@ -553,17 +543,15 @@ fn round_banner(
         play.write(crate::map::PlaySound::ui(entry));
     }
     let text = end.reason.text(end.winner);
-    let scale = windows.iter().next().map_or(1.0, |w| w.height() / 480.0);
+    let h = windows.iter().next().map_or(480.0, |w| w.height());
     for e in &banner {
         commands.entity(e).despawn();
     }
     commands.spawn((
         RoundBanner,
         Text::new(text),
-        TextFont {
-            font_size: FontSize::Px(18.0 * scale),
-            ..default()
-        },
+        // A centre print: the client scheme's CenterPrintText.
+        fonts.client("CenterPrintText", h, 18.0),
         TextColor(Color::WHITE),
         TextShadow::default(),
         Node {
@@ -592,7 +580,7 @@ fn rebuild_notices(
     root: Entity,
     notices: &DeathNotices,
     hud: &GameHud,
-    fonts: &HudFonts,
+    fonts: &UiFonts,
     scale: f32,
     commands: &mut Commands,
 ) {
@@ -605,7 +593,15 @@ fn rebuild_notices(
         }
         .unwrap_or(Color::WHITE)
     };
-    let text_size = 9.0 * scale;
+    // HudDeathNotice's TextFont: the client scheme's Default.
+    let text_font = fonts.client(
+        hud.panels
+            .get("HudDeathNotice")
+            .and_then(|p| p.keys.get("textfont"))
+            .map_or("Default", String::as_str),
+        scale * 480.0,
+        12.0,
+    );
     for n in &notices.0 {
         let row = commands
             .spawn((
@@ -638,10 +634,7 @@ fn rebuild_notices(
                         ..default()
                     },
                 )),
-                None => e.insert(TextFont {
-                    font_size: FontSize::Px(text_size),
-                    ..default()
-                }),
+                None => e.insert(text_font.clone()),
             };
         };
         if let Some((name, team)) = &n.attacker {
@@ -650,12 +643,12 @@ fn rebuild_notices(
         let glyph = |name: &str| hud.icons.get(name).cloned();
         let weapon = n.weapon.clone().or_else(|| glyph("d_skull_cs"));
         if let Some((font, ch)) = weapon {
-            word(ch.to_string(), Color::WHITE, fonts.0.get(&font).cloned());
+            word(ch.to_string(), Color::WHITE, fonts.game(&font));
         }
         if n.headshot
             && let Some((font, ch)) = glyph("d_headshot")
         {
-            word(ch.to_string(), Color::WHITE, fonts.0.get(&font).cloned());
+            word(ch.to_string(), Color::WHITE, fonts.game(&font));
         }
         word(n.victim.0.clone(), team_color(n.victim.1), None);
     }

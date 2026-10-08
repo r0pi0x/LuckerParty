@@ -29,6 +29,7 @@ use bevy::{
 
 use super::{
     binds,
+    fonts::UiFonts,
     options::{SETTINGS, SettingKind, TABS, Tab},
 };
 use crate::{
@@ -45,7 +46,7 @@ impl Plugin for GameMenuPlugin {
             .init_resource::<AfterLoad>()
             .init_resource::<RegrabCursor>()
             .init_resource::<MenuUi>()
-            .add_systems(Startup, (load_fonts, start_loading_ui, start_session))
+            .add_systems(Startup, (start_loading_ui, start_session))
             .add_systems(
                 Update,
                 (
@@ -1272,8 +1273,9 @@ struct MenuUi {
     thumbs: HashMap<String, (Handle<Image>, f32)>,
     /// The main menu's backgrounds: 4:3, widescreen.
     backgrounds: [Option<Handle<Image>>; 2],
-    /// The title's font and height in scheme pixels.
-    title_font: Option<(Handle<Font>, f32)>,
+    /// The title's font, its height in scheme pixels and its line height
+    /// in ems.
+    title_font: Option<(Handle<Font>, f32, f32)>,
 }
 
 impl MenuUi {
@@ -1327,6 +1329,7 @@ fn ui_loaded(
     mut menu: ResMut<GameMenu>,
     mut images: ResMut<Assets<Image>>,
     mut fonts: ResMut<Assets<Font>>,
+    mut ui_fonts: ResMut<UiFonts>,
 ) {
     let Some(slot) = ui.loading.clone() else { return };
     let Some(loaded) = slot.lock().ok().and_then(|mut s| s.take()) else {
@@ -1346,7 +1349,11 @@ fn ui_loaded(
     ui.title_font = game_ui
         .title_font
         .as_ref()
-        .map(|(bytes, tall)| (fonts.add(Font::from_bytes(bytes.to_vec())), *tall));
+        .map(|(bytes, tall)| {
+            let line_per_em = super::fonts::line_per_em(bytes).unwrap_or(1.2);
+            (fonts.add(Font::from_bytes(bytes.to_vec())), *tall, line_per_em)
+        });
+    ui_fonts.set_source(&game_ui);
     info!(
         "game menu: GameUI look ({} entries, {} keyboard actions, {} option pages, {} map thumbnails, \
          {} main menu backgrounds, title {:?}{})",
@@ -1715,54 +1722,19 @@ fn after_load(w: &mut World) {
 // ---------------------------------------------------------------------------
 // Drawing.
 
-/// The menu's text faces: Tahoma (the GameUI scheme's face) and Verdana
-/// (its menu face) where installed, regular and bold, with the vgui
-/// module's fallbacks (DejaVu, Liberation, Noto) on Linux; Bevy's own
-/// when none is found.
-#[derive(Resource, Default)]
-struct MenuFonts {
-    tahoma: Option<Handle<Font>>,
-    tahoma_bold: Option<Handle<Font>>,
-    verdana: Option<Handle<Font>>,
-    verdana_bold: Option<Handle<Font>>,
-}
-
-fn load_fonts(mut fonts: ResMut<Assets<Font>>, mut commands: Commands) {
-    let mut find = |first: &str, rest: &[&str]| {
-        let names: Vec<&str> = std::iter::once(first).chain(rest.iter().copied()).collect();
-        super::vgui::system_font(&mut fonts, &names)
-    };
-    const REGULAR: [&str; 3] = ["DejaVuSans.ttf", "LiberationSans-Regular.ttf", "NotoSans-Regular.ttf"];
-    const BOLD: [&str; 3] = ["DejaVuSans-Bold.ttf", "LiberationSans-Bold.ttf", "NotoSans-Bold.ttf"];
-    let tahoma = find("tahoma.ttf", &REGULAR);
-    let tahoma_bold = find("tahomabd.ttf", &BOLD).or_else(|| tahoma.clone());
-    let verdana = find("verdana.ttf", &REGULAR).or_else(|| tahoma.clone());
-    let verdana_bold = find("verdanab.ttf", &BOLD).or_else(|| verdana.clone());
-    commands.insert_resource(MenuFonts {
-        tahoma,
-        tahoma_bold,
-        verdana,
-        verdana_bold,
-    });
-}
-
 #[derive(Component)]
 struct MenuRoot;
 
 /// Colours, sizes and fonts: the GameUI scheme's, else built in.
 struct Look<'a> {
     ui: Option<&'a GameUi>,
-    fonts: Option<&'a MenuFonts>,
+    fonts: &'a UiFonts,
     /// Pixels per scheme pixel (GameUI is drawn in screen pixels; larger
     /// windows scale it up).
     s: f32,
     height: f32,
     accent: Color,
 }
-
-/// Source font heights are a line's (ascent plus descent); Bevy sizes the
-/// em square.
-const EM_PER_LINE: f32 = 0.82;
 
 impl<'a> Look<'a> {
     fn color(&self, name: &str, fallback: [u8; 4]) -> Color {
@@ -1780,32 +1752,11 @@ impl<'a> Look<'a> {
         self.ui.is_some_and(|u| !u.colors.is_empty())
     }
 
-    /// A scheme font (`Default`, `UiBold`, `MenuLarge`) at this window's
-    /// size: `fallback` scheme pixels tall and bold when the scheme lacks
-    /// it.
+    /// A GameUI scheme font (`Default`, `UiBold`, `MenuLarge`) at this
+    /// window's size: `fallback` scheme pixels tall and bold when the
+    /// scheme lacks it.
     fn font(&self, name: &str, fallback: (f32, bool)) -> TextFont {
-        let size = self.ui.and_then(|u| u.fonts.get(name)).and_then(|sizes| {
-            let h = self.height.round() as u32;
-            sizes
-                .iter()
-                .find(|s| s.yres.is_some_and(|(lo, hi)| (lo..=hi).contains(&h)))
-                .or(sizes.first())
-        });
-        let (tall, bold, verdana) = match size {
-            Some(f) => (f.tall, f.weight >= 600, f.family.to_lowercase().contains("verdana")),
-            None => (fallback.0, fallback.1, name == "MenuLarge"),
-        };
-        let handle = self.fonts.and_then(|f| match (verdana, bold) {
-            (true, true) => f.verdana_bold.clone(),
-            (true, false) => f.verdana.clone(),
-            (false, true) => f.tahoma_bold.clone(),
-            (false, false) => f.tahoma.clone(),
-        });
-        TextFont {
-            font: handle.unwrap_or_default().into(),
-            font_size: FontSize::Px((tall * self.s * EM_PER_LINE).max(1.0)),
-            ..default()
-        }
+        self.fonts.source(name, self.height, self.s, fallback)
     }
 
     fn frame_bg(&self) -> Color {
@@ -1970,7 +1921,7 @@ fn button(
 #[allow(clippy::too_many_arguments)]
 fn draw(
     menu: Res<GameMenu>,
-    fonts: Option<Res<MenuFonts>>,
+    fonts: Res<UiFonts>,
     menu_ui: Option<Res<MenuUi>>,
     hud: Option<Res<crate::map::hud::ActiveHud>>,
     shown: Query<Entity, With<MenuRoot>>,
@@ -2000,7 +1951,7 @@ fn draw(
         .unwrap_or(Color::srgb_u8(255, 176, 0));
     let look = Look {
         ui: menu.ui.0.as_deref(),
-        fonts: fonts.as_deref(),
+        fonts: &fonts,
         s: (size.y / 720.0).clamp(0.6, 3.0),
         height: size.y,
         accent,
@@ -2150,7 +2101,7 @@ fn main_list(
     menu: &GameMenu,
     look: &Look,
     size: Vec2,
-    title_font: Option<(Handle<Font>, f32)>,
+    title_font: Option<(Handle<Font>, f32, f32)>,
 ) {
     let entries = menu.entries();
     let item_h = look.number("MainMenu.MenuItemHeight", 22.0);
@@ -2173,10 +2124,10 @@ fn main_list(
         None => vec!["MASHUP".into()],
     };
     let (title_text, line_h) = match title_font {
-        Some((handle, tall)) => (
+        Some((handle, tall, line_per_em)) => (
             TextFont {
                 font: handle.into(),
-                font_size: FontSize::Px((tall * look.s * EM_PER_LINE).max(1.0)),
+                font_size: FontSize::Px((tall * look.s / line_per_em).max(1.0)),
                 ..default()
             },
             tall,

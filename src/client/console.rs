@@ -24,7 +24,7 @@ use bevy::{
     window::CursorOptions,
 };
 
-use super::FirstPersonCamera;
+use super::{FirstPersonCamera, fonts::UiFonts};
 use crate::{
     console::{Console, ConsoleAppExt, Level, cfg_dir, parse, resource_cvar},
     core::{LocalPlayer, MovementState, SpawnPoint, Velocity},
@@ -155,11 +155,21 @@ struct ConsoleSuggest;
 #[derive(Component)]
 struct OverlayText;
 
-fn spawn_ui(mut commands: Commands) {
-    let font = |size: f32| TextFont {
-        font_size: FontSize::Px(size),
-        ..default()
-    };
+/// The console's text: GameUI's `ConsoleText` face (Lucida Console) at our
+/// sizes (the console is laid out by us, `ROW_HEIGHT`).
+fn console_font(fonts: &UiFonts, size: f32) -> TextFont {
+    fonts.source_face("ConsoleText", "Lucida Console", size)
+}
+
+/// The engine's overlay text (notify lines, `cl_showpos`, `snd_show`):
+/// GameUI's `DefaultFixedOutline` face.
+fn overlay_font(fonts: &UiFonts, size: f32) -> TextFont {
+    fonts.source_face("DefaultFixedOutline", "Lucida Console", size)
+}
+
+fn spawn_ui(mut commands: Commands, fonts: Res<UiFonts>) {
+    let font = |size: f32| console_font(&fonts, size);
+    let overlay = |size: f32| overlay_font(&fonts, size);
     commands
         .spawn((
             ConsoleRoot,
@@ -222,7 +232,7 @@ fn spawn_ui(mut commands: Commands) {
     commands.spawn((
         NotifyText,
         Text::default(),
-        font(14.0),
+        overlay(14.0),
         TextColor(Color::srgb(0.95, 0.95, 0.85)),
         Node {
             position_type: PositionType::Absolute,
@@ -237,7 +247,7 @@ fn spawn_ui(mut commands: Commands) {
     commands.spawn((
         OverlayText,
         Text::default(),
-        font(14.0),
+        overlay(14.0),
         TextColor(Color::srgb(0.9, 0.9, 0.9)),
         Node {
             position_type: PositionType::Absolute,
@@ -985,6 +995,7 @@ fn draw_console(
     window: Query<&Window, With<bevy::window::PrimaryWindow>>,
     mut commands: Commands,
     mut last: Local<(usize, usize, String, bool, f64, usize)>,
+    fonts: Res<UiFonts>,
 ) {
     // As many lines as fit at the window's current size.
     let fit = window.iter().next().map_or(DEFAULT_VISIBLE_LINES, |w| lines_for_height(w.height()));
@@ -1036,10 +1047,7 @@ fn draw_console(
                 c.spawn((
                     ConsoleRow(row),
                     Text::new(format!("{stamp}{}", l.text)),
-                    TextFont {
-                        font_size: FontSize::Px(OUTPUT_FONT),
-                        ..default()
-                    },
+                    console_font(&fonts, OUTPUT_FONT),
                     TextColor(color),
                     Interaction::default(),
                     BackgroundColor(Color::NONE),
@@ -1048,10 +1056,7 @@ fn draw_console(
             if ui.scroll > 0 {
                 c.spawn((
                     Text::new(format!("-- {} more below (PageDown) --", ui.scroll)),
-                    TextFont {
-                        font_size: FontSize::Px(14.0),
-                        ..default()
-                    },
+                    console_font(&fonts, OUTPUT_FONT),
                     TextColor(Color::srgb(0.5, 0.5, 0.5)),
                 ));
             }
@@ -1134,15 +1139,13 @@ fn overlay_text(world: &mut World) {
         let want = if shown { Visibility::Visible } else { Visibility::Hidden };
         v.set_if_neq(want);
         if world.resource::<ConsoleUi>().suggest_rows != rows {
+            let font = console_font(world.resource::<UiFonts>(), OUTPUT_FONT);
             world.entity_mut(e).despawn_related::<Children>();
             world.entity_mut(e).with_children(|c| {
                 for row in &rows {
                     c.spawn((
                         Text::default(),
-                        TextFont {
-                            font_size: FontSize::Px(OUTPUT_FONT),
-                            ..default()
-                        },
+                        font.clone(),
                         TextColor(Color::NONE),
                         Node {
                             padding: UiRect::horizontal(px(3.0)),
@@ -1158,10 +1161,7 @@ fn overlay_text(world: &mut World) {
                         for (text, color) in &row.runs {
                             t.spawn((
                                 TextSpan::new(text.clone()),
-                                TextFont {
-                                    font_size: FontSize::Px(OUTPUT_FONT),
-                                    ..default()
-                                },
+                                font.clone(),
                                 TextColor(*color),
                             ));
                         }
@@ -1483,6 +1483,7 @@ fn record_sounds(
     mut sounds: MessageReader<PlaySound>,
     o: Res<Overlays>,
     mut marks: ResMut<SoundMarks>,
+    fonts: Res<UiFonts>,
     mut commands: Commands,
 ) {
     for s in sounds.read() {
@@ -1494,10 +1495,7 @@ fn record_sounds(
             .spawn((
                 SoundMark,
                 Text::new(s.entry.clone()),
-                TextFont {
-                    font_size: FontSize::Px(13.0),
-                    ..default()
-                },
+                overlay_font(&fonts, 13.0),
                 TextColor(Color::srgb(0.5, 1.0, 0.6)),
                 Node {
                     position_type: PositionType::Absolute,
@@ -1794,7 +1792,7 @@ fn finish_map_load(w: &mut World) {
         };
         w.entity_mut(c).insert(t);
     }
-    crate::rules::respawn_everyone(w);
+    crate::rules::new_game(w);
     w.resource_mut::<Console>().info(summary);
     super::game_menu::entered_game(w);
 }
@@ -1826,7 +1824,7 @@ pub(super) fn load_greybox(w: &mut World) {
     for mut camera in skies.iter_mut(w) {
         camera.is_active = false;
     }
-    crate::rules::respawn_everyone(w);
+    crate::rules::new_game(w);
 }
 
 /// The greybox map's name for `map` and `--map`.

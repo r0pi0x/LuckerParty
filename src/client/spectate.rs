@@ -693,6 +693,7 @@ fn spectator_panel(
     who: Query<(Option<&Name>, Option<&Health>, Option<&Inventory>)>,
     weapons: Query<&Weapon>,
     mut panel: Query<(&mut Text, &mut TextFont, &mut Visibility), With<SpectatorPanel>>,
+    fonts: Res<super::fonts::UiFonts>,
     mut commands: Commands,
 ) {
     let Ok((mut text, mut font, mut vis)) = panel.single_mut() else {
@@ -749,9 +750,10 @@ fn spectator_panel(
     if text.0 != line {
         text.0 = line;
     }
-    let size = windows.iter().next().map_or(1.0, |w| w.height() / 480.0) * 12.0;
-    if font.font_size != FontSize::Px(size) {
-        font.font_size = FontSize::Px(size);
+    // The client scheme's Default.
+    let want = fonts.client("Default", windows.iter().next().map_or(480.0, |w| w.height()), 12.0);
+    if *font != want {
+        *font = want;
     }
 }
 

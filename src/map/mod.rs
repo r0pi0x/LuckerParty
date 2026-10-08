@@ -34,6 +34,7 @@ pub mod interp;
 pub mod hearing;
 pub mod live_sound;
 pub mod loose;
+pub mod merge;
 pub mod probe_lit;
 pub mod radio;
 pub mod nav;
@@ -1704,7 +1705,7 @@ impl Plugin for MapPlugin {
                     )
                         .chain(),
                     show_skybox_in_place,
-                    decal::place_decals,
+                    (decal::place_decals, decal::drop_brush_decals).chain(),
                     (
                         attach_bodies,
                         show_local_body,
@@ -1747,7 +1748,12 @@ impl Plugin for MapPlugin {
             .add_systems(
                 PostUpdate,
                 // From this frame's camera, before visibility propagates.
-                (tag_moved_brush_entities, vis::cull, vis::fade_windows)
+                (
+                    merge::sync_merged_brushes,
+                    tag_moved_brush_entities,
+                    vis::cull,
+                    vis::fade_windows,
+                )
                     .chain()
                     .after(bevy::transform::TransformSystems::Propagate)
                     .before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate),
@@ -1857,12 +1863,13 @@ fn spawn_map(
             let scale = data.entity_scale;
             let rotation = entities::entity_rotation(e.angles());
             let collider = entities::brush_collider(e, scale);
+            let home = Transform::from_translation(entities::entity_to_engine(e.origin(), scale))
+                .with_rotation(entities::rotation_to_engine(rotation));
             let mut node = commands.spawn((
                 Name::new(format!("Brush entity {i} ({})", e.classname())),
                 MapPart,
                 MapBrushEntity(i),
-                Transform::from_translation(entities::entity_to_engine(e.origin(), scale))
-                    .with_rotation(entities::rotation_to_engine(rotation)),
+                home,
                 Visibility::default(),
                 ChildOf(root),
             ));
@@ -1873,6 +1880,13 @@ fn spawn_map(
         })
         .collect();
     let parent_of = |m: &MapMesh| m.entity.and_then(|i| entity_nodes.get(i).copied().flatten()).unwrap_or(root);
+    // Where the map places each mover node (merged brush entities draw
+    // there, `merge`).
+    let node_home = |i: usize| {
+        let e = &data.entities[i];
+        Transform::from_translation(entities::entity_to_engine(e.origin(), data.entity_scale))
+            .with_rotation(entities::rotation_to_engine(entities::entity_rotation(e.angles())))
+    };
     // Areaportal windows' brushes fade in with distance (`vis::fade_windows`).
     if let Some(v) = data.visibility.as_deref() {
         for (portal, p) in v.areas.portals.iter().enumerate() {
@@ -2111,6 +2125,30 @@ fn spawn_map(
             .map(|v| v.areas.portals.iter().filter_map(|p| p.fade.and_then(|f| f.brush)).collect())
             .unwrap_or_default();
         let own = |m: &MapMesh| m.entity.filter(|e| window_brushes.contains(e));
+        // Brush entities' opaque meshes are drawn merged per material and
+        // chunk while they stay put (`merge`); their own meshes wait hidden.
+        let merging = merge::enabled();
+        let mut node_centres: HashMap<usize, (Vec3, Vec3)> = HashMap::new();
+        for m in data.meshes.iter().filter(|m| !m.skybox && parent_of(m) != root) {
+            let Some(i) = m.entity else { continue };
+            let b = node_centres.entry(i).or_insert((Vec3::MAX, Vec3::MIN));
+            for p in &m.positions {
+                b.0 = b.0.min(Vec3::from(*p));
+                b.1 = b.1.max(Vec3::from(*p));
+            }
+        }
+        let merge_spot = |m: &MapMesh| -> Option<(usize, Entity, Transform, Vec3)> {
+            let i = m.entity?;
+            let node = parent_of(m);
+            if !merging || node == root || own(m).is_some() || !merge::mergeable(m) {
+                return None;
+            }
+            let home = node_home(i);
+            let (lo, hi) = node_centres.get(&i)?;
+            Some((i, node, home, home.transform_point((*lo + *hi) / 2.0)))
+        };
+        let mut world_merger: merge::Merger<(Handle<WorldMaterial>, bool)> = merge::Merger::new(chunk_size);
+        let mut standard_merger: merge::Merger<(Handle<StandardMaterial>, bool)> = merge::Merger::new(chunk_size);
         let mut world_shared: HashMap<(bool, Option<usize>, String), Handle<WorldMaterial>> = HashMap::new();
         let mut standard_shared: HashMap<(bool, Option<usize>, String), Handle<StandardMaterial>> = HashMap::new();
         // Brush entity nodes' mesh bounds (node space), for culling them.
@@ -2239,6 +2277,10 @@ fn spawn_map(
                     .entry((m.skybox, own(m), format!("{material:?}")))
                     .or_insert_with(|| world_materials.add(material))
                     .clone();
+                let merged = merge_spot(m);
+                if let Some((_, node, home, centre)) = &merged {
+                    world_merger.add((material.clone(), blended), *node, home, *centre, m);
+                }
                 for (chunk, clusters, centre) in chunks {
                     let mut e = commands.spawn((
                         Name::new(chunk.material.clone()),
@@ -2257,6 +2299,9 @@ fn spawn_map(
                         Transform::from_translation(centre),
                         ChildOf(parent_of(m)),
                     ));
+                    if merged.is_some() {
+                        e.insert((merge::MergedPiece, Visibility::Hidden));
+                    }
                     tag(&mut e, clusters);
                 }
                 continue;
@@ -2266,6 +2311,10 @@ fn spawn_map(
                 .entry((m.skybox, own(m), format!("{material:?}")))
                 .or_insert_with(|| materials.add(material))
                 .clone();
+            let merged = merge_spot(m);
+            if let Some((_, node, home, centre)) = &merged {
+                standard_merger.add((material.clone(), lit.is_some()), *node, home, *centre, m);
+            }
             for (chunk, clusters, centre) in chunks {
                 let mut part = commands.spawn((
                     Name::new(chunk.material.clone()),
@@ -2283,8 +2332,80 @@ fn spawn_map(
                         bicubic_sampling: false,
                     });
                 }
+                if merged.is_some() {
+                    part.insert((merge::MergedPiece, Visibility::Hidden));
+                }
                 tag(&mut part, clusters);
             }
+        }
+        // The combined meshes, under the map's root (world space).
+        let mut node_chunks: HashMap<Entity, Vec<Entity>> = HashMap::new();
+        let mut spawn_chunk = |commands: &mut Commands,
+                               mesh: Handle<Mesh>,
+                               lightmap: Option<bevy::pbr::Lightmap>,
+                               name: &str,
+                               centre: Vec3,
+                               parts: Vec<(Entity, std::ops::Range<usize>)>,
+                               indices: Vec<u32>,
+                               clusters: Vec<u32>|
+         -> Entity {
+            let mut e = commands.spawn((
+                Name::new(format!("Merged brush entities ({name})")),
+                MapPart,
+                world_layer_of(false),
+                Mesh3d(mesh),
+                Transform::from_translation(centre),
+                Visibility::default(),
+                ChildOf(root),
+            ));
+            if let Some(l) = lightmap {
+                e.insert(l);
+            }
+            let id = e.id();
+            for (node, _) in &parts {
+                let list = node_chunks.entry(*node).or_default();
+                if list.last() != Some(&id) {
+                    list.push(id);
+                }
+            }
+            e.insert(merge::MergedChunk { parts, indices });
+            if visibility.is_some() && !clusters.is_empty() {
+                e.insert(vis::VisClusters::new(clusters));
+            }
+            id
+        };
+        for ((material, blended), chunk, centre, parts, clusters) in world_merger.finish(visibility) {
+            let mut mesh = build_mesh(&chunk, true);
+            if blended {
+                let colors: Vec<[f32; 4]> = chunk.blend_weights.iter().map(|w| [1.0, 1.0, 1.0, *w]).collect();
+                mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+            }
+            let mesh = meshes.add(mesh);
+            let e = spawn_chunk(&mut commands, mesh, None, &chunk.material, centre, parts, chunk.indices, clusters);
+            commands.entity(e).insert(MeshMaterial3d(material));
+        }
+        for ((material, lit), chunk, centre, parts, clusters) in standard_merger.finish(visibility) {
+            let lm = lightmap.as_ref().filter(|_| lit).map(|image| bevy::pbr::Lightmap {
+                image: image.clone(),
+                uv_rect: Rect::new(0.0, 0.0, 1.0, 1.0),
+                bicubic_sampling: false,
+            });
+            let mesh = meshes.add(build_mesh(&chunk, lit));
+            let e = spawn_chunk(&mut commands, mesh, lm, &chunk.material, centre, parts, chunk.indices, clusters);
+            commands.entity(e).insert(MeshMaterial3d(material));
+        }
+        let node_index: HashMap<Entity, usize> = entity_nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| n.map(|n| (n, i)))
+            .collect();
+        for (node, chunks) in node_chunks {
+            let Some(&i) = node_index.get(&node) else { continue };
+            commands.entity(node).insert(merge::MergedBrush {
+                home: node_home(i),
+                chunks,
+                merged: true,
+            });
         }
         for (node, (min, max)) in node_bounds {
             commands

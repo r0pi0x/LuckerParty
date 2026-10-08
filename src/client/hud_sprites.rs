@@ -71,7 +71,40 @@ fn image(hud: &ActiveHud, sprite: &HudSprite, color: Color) -> Option<ImageNode>
     })
 }
 
-fn build(hud: Res<ActiveHud>, old: Query<Entity, With<SpritePart>>, mut commands: Commands) {
+/// The damage indicators' sheet as CS:S draws it, additively: black is
+/// nothing. Drawn alpha blended here, so each texel's brightness becomes
+/// its coverage (colour divided by it); otherwise the sprite's black
+/// surround shows as a dark box. `None` if the image isn't 8-bit RGBA.
+fn additive_as_alpha(image: &Image) -> Option<Image> {
+    use bevy::render::render_resource::TextureFormat;
+    if !matches!(
+        image.texture_descriptor.format,
+        TextureFormat::Rgba8Unorm | TextureFormat::Rgba8UnormSrgb
+    ) {
+        return None;
+    }
+    let mut out = image.clone();
+    let data = out.data.as_mut()?;
+    for px in data.chunks_exact_mut(4) {
+        let peak = px[0].max(px[1]).max(px[2]);
+        if peak == 0 {
+            px.copy_from_slice(&[0, 0, 0, 0]);
+            continue;
+        }
+        for c in &mut px[..3] {
+            *c = ((*c as u32 * 255 + peak as u32 / 2) / peak as u32) as u8;
+        }
+        px[3] = ((px[3] as u32 * peak as u32 + 127) / 255) as u8;
+    }
+    Some(out)
+}
+
+fn build(
+    hud: Res<ActiveHud>,
+    old: Query<Entity, With<SpritePart>>,
+    mut images: ResMut<Assets<Image>>,
+    mut commands: Commands,
+) {
     for e in &old {
         commands.entity(e).despawn();
     }
@@ -81,9 +114,13 @@ fn build(hud: Res<ActiveHud>, old: Query<Entity, With<SpritePart>>, mut commands
     };
     commands.spawn((SpritePart, AmmoIcon, absolute(), Visibility::Hidden, GlobalZIndex(40)));
     for (i, name) in PAIN_NAMES.iter().enumerate() {
-        let Some(node) = hud.0.sprites.get(*name).and_then(|s| image(&hud, s, Color::srgba(1.0, 0.0, 0.0, 0.0))) else {
+        let Some(mut node) = hud.0.sprites.get(*name).and_then(|s| image(&hud, s, Color::srgba(1.0, 0.0, 0.0, 0.0)))
+        else {
             continue;
         };
+        if let Some(converted) = images.get(&node.image).and_then(additive_as_alpha) {
+            node.image = images.add(converted);
+        }
         commands.spawn((SpritePart, Pain(i, 0.0), node, absolute(), GlobalZIndex(41)));
     }
 }
@@ -97,7 +134,7 @@ fn teardown(parts: Query<Entity, With<SpritePart>>, mut commands: Commands) {
 /// Light the indicator on the side each hit on the local player came from.
 fn pain(
     mut damage: MessageReader<Damage>,
-    me: Option<Single<(Entity, &Intent), With<LocalPlayer>>>,
+    me: Option<Single<(Entity, &Intent, Has<crate::core::God>), With<LocalPlayer>>>,
     mut parts: Query<&mut Pain>,
     time: Res<Time>,
 ) {
@@ -109,9 +146,10 @@ fn pain(
         damage.clear();
         return;
     };
-    let (me, intent) = *me;
+    let (me, intent, god) = *me;
     for d in damage.read() {
-        if d.target != me {
+        // Nothing to show when the hit takes nothing (god mode).
+        if d.target != me || god {
             continue;
         }
         // A fall has no direction: every side lights (a guess; see
@@ -230,6 +268,26 @@ mod tests {
         assert_eq!(sides(Vec3::X, std::f32::consts::FRAC_PI_2), vec![0]);
         // Diagonal: front and right.
         assert_eq!(sides(Vec3::new(-1.0, 0.0, 1.0), 0.0), vec![0, 3]);
+    }
+
+    #[test]
+    fn additive_sprites_turn_black_into_transparency() {
+        use bevy::{
+            asset::RenderAssetUsages,
+            render::render_resource::{Extent3d, TextureDimension, TextureFormat},
+        };
+        let img = Image::new(
+            Extent3d { width: 3, height: 1, depth_or_array_layers: 1 },
+            TextureDimension::D2,
+            vec![0, 0, 0, 255, 128, 0, 0, 255, 255, 255, 255, 255],
+            TextureFormat::Rgba8UnormSrgb,
+            RenderAssetUsages::all(),
+        );
+        let out = additive_as_alpha(&img).unwrap();
+        let d = out.data.unwrap();
+        assert_eq!(&d[0..4], &[0, 0, 0, 0], "black is clear");
+        assert_eq!(&d[4..8], &[255, 0, 0, 128], "half-bright red is full red at half coverage");
+        assert_eq!(&d[8..12], &[255, 255, 255, 255], "white stays");
     }
 
     #[test]

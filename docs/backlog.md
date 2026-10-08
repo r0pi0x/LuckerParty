@@ -8,6 +8,20 @@ plan when work starts; delete them when done.
 
 ## 0. Playtest feedback (2026-10-07), top priority
 
+- Decals persist across rounds (bullet holes, blood). Probably faithful
+  (CS:S keeps them until the map changes; players bound `r_cleardecals`):
+  verify against the game, add `r_cleardecals` and an optional
+  `mashup_round_cleardecals 1` (off by default).
+- Motion steps at the 66.7 Hz tick on high-refresh screens (own crouch,
+  spectated bots): interpolate rendering between ticks (agent working).
+- Bots move during freeze time while the player can't (round start).
+- Shotguns (M3, XM1014) kick the view far too high and take too long to
+  settle; check against specs/cs_source/weapons.md (shotgun recoil is
+  listed as unmeasured) and measure on the probe server.
+- Bots throw grenades at the spot of the last dead enemy at round end.
+- Bots don't control recoil (no pulling down while spraying); CS:S bots
+  keep their aim on the target through the view punch.
+
 CS:S feel:
 - Optional `+use` pickup of dropped weapons (CS:GO's; CS:S has none): a
   cvar such as `mashup_usepickup`, off by default, reaching farther than
@@ -56,9 +70,9 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   in the depth prepass), packed materials whose names differ in case.
   The breakable-block room went from 11-17 fps to the vsync cap (about
   240 fps at 720p uncapped; docs/performance.md, "Many brush entities").
-  Open: impacts don't land on brush entities (its walls are
-  func_breakable blocks; `decal::place_decals` projects only onto the
-  world and props).
+  Impacts land on brush entities (doors, breakables) and go with them;
+  unbroken brush entities draw merged (`map::merge`: 1768 -> 58 meshes
+  at the blocks room).
 
 ## 2b. HUD and debug views
 
@@ -343,15 +357,6 @@ dithered fade bands. Left:
   (props touching clusters the roof can't see) before changing anything.
   cs_compound and de_port pass.
 - Measure on the Windows PC (`refcmp bench` there) and set a budget.
-- mg_lego_multigames_v2 `refcmp vischeck` views blocks_room and
-  blocks_room_right: a roof seen through a grate isn't in the PVS of the
-  camera's cluster (0.2% of the pixels). Same question as nuke's window:
-  do grates/translucent world brushes block the compiled PVS, and does
-  CS:S draw what's behind them?
-- Many brush entities: ~1770 meshes drawn at that view (a mesh per
-  material per breakable). Merge unbroken, unmoved brush entities that
-  share a material into combined meshes per chunk, split out when one
-  breaks or moves.
 - Frame-time follow-ups (performance.md, "Cheap wins found"): take
   before/after numbers on a quiet machine; props as hierarchies of their
   own (cheaper collider propagation) without changing how physics props
