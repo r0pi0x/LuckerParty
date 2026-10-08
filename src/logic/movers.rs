@@ -1590,6 +1590,53 @@ impl LogicWorld {
                 pm.moved = true;
             }
         }
+        // Model doors and loose physics props (doors_buttons.md
+        // prop_door_rotating, "Blocked"): the physics pushes a prop in the
+        // way; one that would be pushed into the world blocks the door,
+        // unless it is forceclosed: then it is pushed through, and a
+        // damageable one takes its full health as crush damage.
+        if physics_solid {
+            let forceclosed = self.get(id).is_some_and(|e| e.kv_i("forceclosed") != 0);
+            let mut crushed = Vec::new();
+            for (pid, centre, half) in super::props::door_props(self) {
+                if !moved.iter().any(|b| b.overlaps_box(centre, half, SOLID_SKIN)) {
+                    continue;
+                }
+                let motion = o_new + turn * (centre - o_old) - centre;
+                let side = |m: f32| if m > 0.0 { 1.0 } else if m < 0.0 { -1.0 } else { 0.0 };
+                let at = centre + half * Vec3::new(side(motion.x), side(motion.y), side(motion.z));
+                let push = o_new + turn * (at - o_old) - at;
+                let end = centre + push;
+                let stuck = col.solid(-half, half, end)
+                    || super::world::solid_brushes(self.mover_brushes(Some(id)), -half, half, end);
+                if !stuck {
+                    continue;
+                }
+                if !forceclosed {
+                    for (j, o, v) in &saved {
+                        self.players[*j].origin = *o;
+                        self.players[*j].view = *v;
+                    }
+                    return Err(Who::Ent(pid));
+                }
+                crushed.push((pid, centre, push));
+            }
+            for (pid, centre, push) in crushed {
+                let health = self.prop(pid).map_or(0, |p| p.health);
+                if health > 0 {
+                    let hit = super::prop_damage::Hit {
+                        amount: health as f32,
+                        kind: crate::core::DamageKind::Crush,
+                        attacker: Some(Who::Ent(id)),
+                        point: centre,
+                        dir: push.normalize_or_zero(),
+                        force: 0.0,
+                        direct: false,
+                    };
+                    self.prop_hit(pid, hit);
+                }
+            }
+        }
         Ok(())
     }
 

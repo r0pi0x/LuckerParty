@@ -36,6 +36,15 @@ pub const MAX_PANES_AXIS: usize = 16;
 pub const PANE_FULL_SUPPORT: f32 = 6.75;
 pub const PANE_BREAK_SUPPORT: f32 = 0.2;
 pub const PANE_BULLET_FORCE: f32 = 500.0;
+/// Shard sizes (units): a pane's own burst, a blast's large burst.
+pub const SMALL_SHARD: f32 = 4.0;
+pub const LARGE_SHARD: f32 = 7.0;
+/// CS:S blast shatter force per point of damage.
+pub const BLAST_FORCE: f32 = 3000.0;
+/// A falling pane piece spins up to this fast about each axis (deg/s).
+pub const PANE_PIECE_SPIN: f32 = 120.0;
+/// Glass breakables count this mass (kg) against physics impacts.
+pub const GLASS_IMPACT_MASS: f32 = 2.0;
 
 /// The "material" keyvalue.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -202,6 +211,27 @@ impl Window {
         self.corner + self.u * (c as f32 + 0.5) + self.v * (r as f32 + 0.5)
     }
 
+    /// Face the attack (spec "Window break" step 2): an attack from the
+    /// back (`dir`, local, travelling along the normal) turns the grid to
+    /// that side. Its reference corner becomes the old lower-right one,
+    /// moved 1 unit along the new normal, and the columns run the other
+    /// way, so panes are counted from the attacker's lower left.
+    pub fn face(&mut self, dir: Vec3) {
+        if dir.dot(self.normal) <= 0.0 {
+            return;
+        }
+        self.normal = -self.normal;
+        self.corner += self.u * self.cols as f32 + self.normal;
+        self.u = -self.u;
+        let cols = self.cols;
+        for row in self.broken.chunks_mut(cols) {
+            row.reverse();
+        }
+        for row in self.support.chunks_mut(cols) {
+            row.reverse();
+        }
+    }
+
     pub fn broken_count(&self) -> usize {
         self.broken.iter().filter(|b| **b).count()
     }
@@ -254,6 +284,9 @@ pub struct Breakable {
     pub damageable: bool,
     pub broken: bool,
     pub window: Option<Box<Window>>,
+    /// Break on pressure (flag 4): who stood on it; the break is
+    /// scheduled once someone did.
+    pub pressure: Option<Who>,
 }
 
 impl Breakable {
@@ -295,6 +328,7 @@ impl Breakable {
             damageable,
             broken: false,
             window,
+            pressure: None,
         }
     }
 }
@@ -530,6 +564,30 @@ impl LogicWorld {
         self.refresh_solid(id);
         self.fire_output(id, "OnBreak", breaker, Value::Void);
         self.think_in(id, REMOVE_DELAY);
+        // Explode on break (step 8): at the centre, as an exploding
+        // prop's (prop_damage.md 7.5: magnitude truncated, radius 0 →
+        // 2.5 × magnitude); ExplodeDamage/ExplodeRadius win over
+        // explodemagnitude.
+        let e = self.get(id).unwrap();
+        let damage = match e.kv_f("ExplodeDamage") {
+            d if d > 0.0 => d,
+            _ => e.kv_f("explodemagnitude"),
+        }
+        .trunc();
+        if damage > 0.0 {
+            let radius = match e.kv_f("ExplodeRadius").trunc() {
+                r if r > 0.0 => r,
+                _ => 2.5 * damage,
+            };
+            let at = origin + rot * ((lo + hi) / 2.0);
+            self.effects.push(Effect::Explosion {
+                at,
+                damage,
+                radius,
+                attacker: breaker,
+                inflictor: id,
+            });
+        }
     }
 
     /// Players standing on it lose their ground.
@@ -549,11 +607,70 @@ impl LogicWorld {
             let Class::Breakable(b) = &e.class else { continue };
             if b.window.as_ref().is_some_and(|w| w.window_broken) {
                 window_touch(self, id);
-            } else if b.window.is_none() && !b.broken && e.has_flag(2) {
-                break_on_touch(self, id);
+            } else if b.window.is_none() && !b.broken {
+                let pressure = e.has_flag(4) && b.pressure.is_none();
+                if e.has_flag(2) {
+                    break_on_touch(self, id);
+                }
+                if pressure {
+                    break_on_pressure(self, id);
+                }
             }
         }
     }
+
+    /// What physics impacts do to a breakable (None: nothing): the
+    /// impact table, energy scale (`physdamagescale`, 0 → 1) and the mass
+    /// it counts (kg), and whether the first impact breaks it (flag 512).
+    /// Glass counts 2 kg and uses the glass table; other materials count
+    /// their brush's box volume at 700 kg/m³ and use the default table
+    /// (both ours: the spec names neither).
+    pub fn breakable_impact(&self, id: EntId) -> Option<(super::prop_damage::ImpactTable, f32, f32, bool)> {
+        let e = self.get(id)?;
+        let Class::Breakable(b) = &e.class else { return None };
+        let window_broken = b.window.as_ref().is_some_and(|w| w.window_broken);
+        if (b.broken && !window_broken) || window_broken || e.has_flag(1024) {
+            return None;
+        }
+        if b.window.is_none() && (!b.damageable || b.material == Material::UnbreakableGlass) {
+            return None;
+        }
+        let scale = match e.kv_f("physdamagescale") {
+            s if s == 0.0 => 1.0,
+            s => s,
+        };
+        let (table, mass) = if b.material.is_glass() {
+            (super::prop_damage::GLASS_TABLE, GLASS_IMPACT_MASS)
+        } else {
+            let (lo, hi) = local_bounds(self, id);
+            let size = hi - lo;
+            let m3 = size.x * size.y * size.z * 0.0254f32.powi(3);
+            (super::prop_damage::DEFAULT_TABLE, (m3 * 700.0).clamp(1.0, 50000.0))
+        };
+        Some((table, scale, mass, b.window.is_none() && e.has_flag(512)))
+    }
+}
+
+/// Break on pressure (flag 4): a player standing on it plays its damage
+/// sound and breaks it after `PressureDelay` (spec "Touch flags").
+fn break_on_pressure(w: &mut LogicWorld, id: EntId) {
+    let Some(on) = w
+        .players
+        .iter()
+        .find(|p| p.alive && p.ground == Some(id))
+        .map(|p| Who::Player(p.entity))
+    else {
+        return;
+    };
+    let delay = w.get(id).map_or(0.0, |e| e.kv_f("PressureDelay")).max(0.0);
+    let Some(b) = breakable(w, id) else { return };
+    b.pressure = Some(on);
+    let material = b.material;
+    let coin = w.random() < 0.5;
+    if let Some(s) = material.damage_sound(coin) {
+        w.breakable_sound(id, s);
+    }
+    w.think_in(id, delay);
 }
 
 /// The world brushes of a breakable where it stands (it never moves).
@@ -656,10 +773,18 @@ fn window_hit(
                 }
             }
         }
-        DamageKind::Blast if glass => {
-            for r in 0..rows {
-                for c in 0..cols {
-                    shatter(w, id, c, r, local_dir * 3000.0 * amount);
+        DamageKind::Blast if glass => blast_shatter(w, id, local_dir, amount),
+        DamageKind::Blast => {
+            // Tile: a diamond of panes around the hit, |dx| + |dy| under
+            // 2..5, within 4 panes.
+            let at = w.window(id).map_or(Vec2::ZERO, |win| win.pane_at(local));
+            let (c, r) = (at.x.floor() as i32, at.y.floor() as i32);
+            let reach = 2 + w.random_int(4) as i32;
+            for dy in -4i32..=4 {
+                for dx in -4i32..=4 {
+                    if dx.abs() + dy.abs() < reach {
+                        shatter(w, id, c + dx, r + dy, local_dir * PANE_BULLET_FORCE);
+                    }
                 }
             }
         }
@@ -667,14 +792,17 @@ fn window_hit(
     }
 }
 
-/// Break the window entity (once): sound, OnBreak, non-solid.
-fn break_window(w: &mut LogicWorld, id: EntId, breaker: Option<Who>, _dir: Vec3) {
+/// Break the window entity (once): sound, OnBreak, non-solid; its panes
+/// face the attack (`dir`, entity space; zero: as placed).
+fn break_window(w: &mut LogicWorld, id: EntId, breaker: Option<Who>, dir: Vec3) {
+    let (_, rot) = pose(w, id);
     let Some(b) = breakable(w, id) else { return };
     let Some(win) = b.window.as_deref_mut() else { return };
     if win.window_broken {
         return;
     }
     win.window_broken = true;
+    win.face(rot.inverse() * dir);
     let tile = win.tile;
     b.health = 0;
     b.broken = true;
@@ -684,6 +812,61 @@ fn break_window(w: &mut LogicWorld, id: EntId, breaker: Option<Who>, _dir: Vec3)
     w.refresh_solid(id);
     let who = breaker.unwrap_or(Who::Ent(id));
     w.fire_output(id, "OnBreak", Some(who), Value::Void);
+}
+
+/// A blast or sonic hit on glass shatters every pane (spec "Taking a
+/// hit" 4): one large-shard burst for the whole window while under 10 %
+/// of its panes are broken, else a burst per column's run of unbroken
+/// panes; pushed along the normal on the attack's side, 3000 × damage.
+fn blast_shatter(w: &mut LogicWorld, id: EntId, local_dir: Vec3, amount: f32) {
+    let (origin, rot) = pose(w, id);
+    let Some(win) = window_mut(w, id) else { return };
+    let side = if win.normal.dot(local_dir) > 0.0 {
+        win.normal
+    } else {
+        -win.normal
+    };
+    let force = rot * side * BLAST_FORCE * amount;
+    let (cols, rows, u, v) = (win.cols, win.rows, win.u, win.v);
+    let mut bursts = Vec::new();
+    if (win.broken_count() as f32) < 0.1 * (cols * rows) as f32 {
+        let centre = win.corner + u * cols as f32 / 2.0 + v * rows as f32 / 2.0;
+        bursts.push((centre, Vec2::new(u.length() * cols as f32, v.length() * rows as f32)));
+    } else {
+        for c in 0..cols {
+            let mut r = 0;
+            while r < rows {
+                if win.broken[win.index(c, r)] {
+                    r += 1;
+                    continue;
+                }
+                let start = r;
+                while r < rows && !win.broken[win.index(c, r)] {
+                    r += 1;
+                }
+                let n = (r - start) as f32;
+                let centre = win.corner + u * (c as f32 + 0.5) + v * (start as f32 + n / 2.0);
+                bursts.push((centre, Vec2::new(u.length(), v.length() * n)));
+            }
+        }
+    }
+    if bursts.is_empty() {
+        return;
+    }
+    win.broken.fill(true);
+    win.support.fill(0.0);
+    let (normal, tile) = (rot * win.normal, win.tile);
+    for (centre, size) in bursts {
+        w.effects.push(Effect::PaneShatter {
+            at: origin + rot * centre,
+            normal,
+            size,
+            velocity: force * 0.01,
+            tile,
+            shard: LARGE_SHARD,
+        });
+    }
+    w.breakable_sound(id, "Breakable.MatGlass");
 }
 
 /// Shatter one pane (if there and unbroken): shards, the damage sound,
@@ -716,6 +899,7 @@ fn shatter(w: &mut LogicWorld, id: EntId, c: i32, r: i32, force: Vec3) -> bool {
         size,
         velocity: rot * force * 0.01,
         tile,
+        shard: SMALL_SHARD,
     });
     if sound {
         w.breakable_sound(id, "Breakable.MatGlass");
@@ -741,15 +925,24 @@ fn window_touch(w: &mut LogicWorld, id: EntId) {
     let Some(win) = w.window(id) else { return };
     let (cols, rows, tile) = (win.cols as i32, win.rows as i32, win.tile);
     let mut hits = Vec::new();
-    for p in &w.players {
-        if !p.alive {
-            continue;
-        }
-        let (lo, hi) = (p.origin + p.mins, p.origin + p.maxs);
+    // Players, and loose physics props (their speed isn't known here:
+    // they push no shards and never break tile).
+    let mut touchers: Vec<(Vec3, Vec3, Vec3)> = w
+        .players
+        .iter()
+        .filter(|p| p.alive)
+        .map(|p| (p.origin + p.mins, p.origin + p.maxs, p.velocity))
+        .collect();
+    touchers.extend(w.ids().into_iter().filter_map(|pid| {
+        let p = w.prop(pid)?;
+        let (lo, hi) = p.bounds?;
+        (p.physics && !p.frozen && !p.broken && p.solid).then_some((lo, hi, Vec3::ZERO))
+    }));
+    for (lo, hi, velocity) in touchers {
         if !brushes.iter().any(|b| box_touches(b, lo, hi)) {
             continue;
         }
-        if tile && p.velocity.length() < 500.0 {
+        if tile && velocity.length() < 500.0 {
             continue;
         }
         // The box's corners in pane units.
@@ -768,7 +961,7 @@ fn window_touch(w: &mut LogicWorld, id: EntId) {
         let c1 = (b.x.ceil() as i32).clamp(0, cols);
         let r0 = (a.y.floor() as i32).clamp(0, rows);
         let r1 = (b.y.ceil() as i32).clamp(0, rows);
-        hits.push((c0, c1, r0, r1, rot.inverse() * p.velocity * 5.0));
+        hits.push((c0, c1, r0, r1, rot.inverse() * velocity * 5.0));
     }
     for (c0, c1, r0, r1, force) in hits {
         for r in r0..r1 {
@@ -811,20 +1004,39 @@ fn support_pass(w: &mut LogicWorld, id: EntId) {
         }
     }
     for (c, r) in &fall {
-        // Half shatter where they are, half drop as a falling piece; both
-        // are shards here (no falling pane model yet).
+        // Half shatter where they are, half also drop a falling piece.
         let drop = w.random() < 0.5;
-        shatter(
-            w,
-            id,
-            *c,
-            *r,
-            if drop { Vec3::new(0.0, 0.0, -50.0) } else { Vec3::ZERO },
-        );
+        shatter(w, id, *c, *r, Vec3::ZERO);
+        if drop {
+            drop_piece(w, id, *c, *r);
+        }
     }
     if !fall.is_empty() {
         w.think_in(id, w.dt);
     }
+}
+
+/// A collapsing pane drops a falling piece (spec "Support pass" 3): the
+/// pane piece model in a random body, at the pane's reference corner in
+/// the window's orientation, spinning up to 120 °/s about each axis.
+fn drop_piece(w: &mut LogicWorld, id: EntId, c: i32, r: i32) {
+    let (origin, rot) = pose(w, id);
+    let Some(win) = w.window(id) else { return };
+    let at = win.corner + win.u * c as f32 + win.v * r as f32;
+    let (u, v, n) = (win.u.normalize_or_zero(), win.v.normalize_or_zero(), win.normal);
+    let size = Vec2::new(win.u.length(), win.v.length());
+    let body = w.random_int(crate::map::breakables::PANE_PIECE_BODIES);
+    let mut spin = Vec3::ZERO;
+    for k in 0..3 {
+        spin[k] = (w.random() * 2.0 - 1.0) * PANE_PIECE_SPIN;
+    }
+    w.effects.push(Effect::PaneFall {
+        at: origin + rot * at,
+        axes: [rot * u, rot * v, rot * n],
+        size,
+        body,
+        spin,
+    });
 }
 
 /// The Shatter input: (x, y, r) as fractions across the window and a
@@ -857,6 +1069,8 @@ pub(super) fn think(w: &mut LogicWorld, id: EntId) {
         support_pass(w, id);
     } else if b.broken {
         w.kill(id);
+    } else if let Some(breaker) = b.pressure {
+        w.break_entity(id, Some(breaker), Vec3::ZERO);
     }
 }
 

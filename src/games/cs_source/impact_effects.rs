@@ -1027,8 +1027,11 @@ pub fn glass_shards(
     // The pane's in-plane axes.
     let right = n.cross(Vec3::Y).try_normalize().unwrap_or(Vec3::X);
     let up = right.cross(n).normalize_or_zero();
+    // One shard per shard-size square of the burst's area (the large
+    // bursts of a blast cover a whole window).
+    let shard = (pane.shard / UNIT).max(1.0);
     let area = pane.size.x * pane.size.y / (UNIT * UNIT);
-    let count = ((area / 16.0) as i32).clamp(2, 12) + rng.int(0, 2);
+    let count = ((area / (shard * shard)) as i32).clamp(2, 48) + rng.int(0, 2);
     let lit = light.clamp(Vec3::ZERO, Vec3::ONE) * 0.7 + Vec3::splat(0.3);
     let color = Vec3::new(200.0, 200.0, 210.0) / 255.0 * lit;
     let planes = probe_planes(
@@ -1048,7 +1051,7 @@ pub fn glass_shards(
         }),
         ..default()
     });
-    let sigma = rng.float(2.0, 6.0);
+    let sigma = shard * rng.float(0.5, 1.5);
     for _ in 0..count {
         let Some(mat) = mats[rng.int(0, 1) as usize].or(mats[0]).or(mats[1]) else {
             continue;

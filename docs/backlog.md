@@ -296,20 +296,17 @@ docs/plans/active/sound.md.
   realignment, the spec's open questions on the probe server
   (Q1-Q14: damage types, gas-can ignition, player impact rules, client
   break sounds, round restarts of client props).
-- Model doors: the hardware's latch/lock sounds and the spec's open
-  question 8 (which entries the hardware and surface pick; we use the
-  model's `door_options` move/open/close), swing-side checks against the
-  world (only players are checked), forceclosed pushing physics props.
-- Breakables, remaining (vents and windows break: src/logic/breakables.rs,
-  tests/it/heavy/map_breakables.rs): the cracked look of a broken window's panes
-  (`$crackmaterial`, jagged edge pieces; spec open question 8), the
-  falling pane pieces (`models/brokenglass_piece.mdl`; collapsing panes
-  just shatter now), the GlassBreak/BulletProof decals, break-on-pressure
-  (flag 4), physics impact damage to breakables, explosions on break, the
-  window's flip to the attacked side, propdata templates, the spec's open
-  questions on the probe server (bullet/knife damage types, broken brush
-  visibility, shots after a window breaks). Needs a spec (public SDK) and
-  brush entities, which the world loader skips today.
+- Model doors: the spec's open question 8 on the probe server (which
+  entries the hardware and surface pick; we read the model's
+  `door_options` skin and `hardwareN` blocks, docs/tech-debt.md "Model
+  doors").
+- Breakables, remaining (src/logic/breakables.rs,
+  tests/it/heavy/map_breakables.rs): the GlassBreak/BulletProof decals,
+  propdata templates, the client's pane drawing (spec open question 8:
+  edge piece selection, which side draws, the piece's offset; ours in
+  docs/tech-debt.md "Breakables"), the spec's open questions on the probe
+  server (bullet/knife damage types, broken brush visibility, shots after
+  a window breaks).
 
 ## 8. Visual fidelity
 

@@ -270,7 +270,7 @@ fn window_first_hit_breaks_it_and_a_pane() {
     assert_eq!((g.cols, g.rows), (10, 8));
     assert!((g.u.length() - 12.0).abs() < 1e-4 && (g.v.length() - 12.0).abs() < 1e-4);
     assert!(w.mover_solid(win).is_some());
-    w.damage(win, 26.0, DamageKind::Bullet, None, office_point(4.5, 3.5), Vec3::Y);
+    w.damage(win, 26.0, DamageKind::Bullet, None, office_point(4.5, 3.5), Vec3::NEG_Y);
     let g = w.window(win).unwrap();
     assert!(g.window_broken);
     assert!(g.broken[g.index(4, 3)]);
@@ -394,4 +394,207 @@ fn walking_through_a_broken_window_shatters_panes() {
     let g = w.window(win).unwrap();
     assert!(g.broken_count() >= before + 3 * 6, "{} -> {}", before, g.broken_count());
     assert!(g.broken[g.index(5, 0)]);
+}
+
+/// The office window's front faces +Y (its corners' normal); a first hit
+/// from the back turns the panes to that side: counted from the
+/// attacker's lower left, the normal toward them (spec "Window break" 2).
+#[test]
+fn window_faces_the_attacked_side() {
+    let mut w = world();
+    let win = office_window(&mut w);
+    assert!((w.window(win).unwrap().normal - Vec3::Y).length() < 1e-5);
+    // From the back (travelling +Y): the pane hit in column 1 from the
+    // front's left is column 8 from the back's.
+    w.damage(win, 26.0, DamageKind::Bullet, None, office_point(1.5, 3.5), Vec3::Y);
+    let g = w.window(win).unwrap();
+    assert!((g.normal - Vec3::NEG_Y).length() < 1e-5, "{}", g.normal);
+    assert!(g.broken[g.index(8, 3)] && !g.broken[g.index(1, 3)]);
+    // Its reference corner: the front's lower right, 1 unit toward the
+    // attacker.
+    assert!((g.corner - Vec3::new(-628.0, -345.0, -148.0)).length() < 1e-4, "{}", g.corner);
+    // From the front nothing turns.
+    let mut w = world();
+    let win = office_window(&mut w);
+    w.damage(win, 26.0, DamageKind::Bullet, None, office_point(1.5, 3.5), Vec3::NEG_Y);
+    let g = w.window(win).unwrap();
+    assert!((g.normal - Vec3::Y).length() < 1e-5 && g.broken[g.index(1, 3)]);
+}
+
+/// A blast shatters a whole window as one large-shard burst pushed by
+/// 3000 × damage along the blast (spec test case: 100 damage → 300000).
+#[test]
+fn a_blast_shatters_the_whole_window_at_once() {
+    let mut w = world();
+    let win = office_window(&mut w);
+    w.damage(win, 100.0, DamageKind::Blast, None, office_point(5.0, 4.0), Vec3::NEG_Y);
+    let g = w.window(win).unwrap();
+    assert_eq!(g.broken_count(), 80);
+    let bursts: Vec<_> = w
+        .effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::PaneShatter {
+                size, velocity, shard, ..
+            } => Some((*size, *velocity, *shard)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(bursts.len(), 1, "{bursts:?}");
+    let (size, velocity, shard) = bursts[0];
+    assert!((size - Vec2::new(120.0, 96.0)).length() < 1e-3);
+    assert_eq!(shard, LARGE_SHARD);
+    // The push (units/s, 1 % of the force) along the blast.
+    assert!((velocity - Vec3::NEG_Y * 3000.0).length() < 1e-2, "{velocity}");
+
+    // With a fifth already gone: one burst per column's unbroken run.
+    let mut w = world();
+    let win = office_window(&mut w);
+    for c in 0..10 {
+        for r in [3, 4] {
+            shatter(&mut w, win, c, r, Vec3::ZERO);
+        }
+    }
+    w.effects.clear();
+    w.damage(win, 100.0, DamageKind::Blast, None, office_point(5.0, 4.0), Vec3::NEG_Y);
+    let n = w.effects.iter().filter(|e| matches!(e, Effect::PaneShatter { .. })).count();
+    assert_eq!(n, 20, "two runs in each of 10 columns");
+}
+
+/// Panes that lose their support collapse; half of them drop a falling
+/// piece at their corner in the window's plane.
+#[test]
+fn collapsing_panes_drop_falling_pieces() {
+    let mut w = world();
+    let win = office_window(&mut w);
+    // Keep every third pane both ways below the top row (the top edge
+    // holds a pane there up): each has no neighbour left.
+    for r in 0..8 {
+        for c in 0..10 {
+            if !(r % 3 == 1 && c % 3 == 1 && r < 6) {
+                shatter(&mut w, win, c, r, Vec3::ZERO);
+            }
+        }
+    }
+    w.effects.clear();
+    w.frame(&NoCollision);
+    assert_eq!(w.window(win).unwrap().broken_count(), 80, "every lone pane fell");
+    let falls: Vec<_> = w
+        .effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::PaneFall { at, axes, body, spin, .. } => Some((*at, *axes, *body, *spin)),
+            _ => None,
+        })
+        .collect();
+    // 6 lone panes, about half drop a piece.
+    assert!(!falls.is_empty() && falls.len() < 6, "{}", falls.len());
+    for (at, axes, body, spin) in falls {
+        // A pane corner: on the window's 12-unit grid from its lower left.
+        let c = (-508.0 - at.x) / 12.0;
+        let r = (at.z + 148.0) / 12.0;
+        assert!((c - c.round()).abs() < 1e-3 && (r - r.round()).abs() < 1e-3, "{at}");
+        assert!((at.y + 344.0).abs() < 1e-3);
+        assert!((axes[2] - Vec3::Y).length() < 1e-5);
+        assert!(body < crate::map::breakables::PANE_PIECE_BODIES);
+        assert!(spin.abs().max_element() <= PANE_PIECE_SPIN);
+    }
+}
+
+/// Break on pressure (flag 4): a player standing on it plays its damage
+/// sound, and it breaks `PressureDelay` later with them as breaker.
+#[test]
+fn breaks_under_pressure_after_its_delay() {
+    let mut w = world();
+    let b = breakable(
+        &mut w,
+        &[("material", "1"), ("health", "50"), ("spawnflags", "4"), ("PressureDelay", "0.3")],
+        Vec3::new(64.0, 64.0, 8.0),
+    );
+    let mut p = player(Vec3::new(0.0, 0.0, 4.0), Vec3::ZERO);
+    w.frame(&NoCollision);
+    assert!(matches!(&w.get(b).unwrap().class, Class::Breakable(x) if !x.broken));
+    p.ground = Some(b);
+    p.on_ground = true;
+    w.players = vec![p];
+    w.frame(&NoCollision);
+    assert!(sounds(&w).contains(&"Breakable.MatWood".to_string()), "{:?}", sounds(&w));
+    // 0.3 s = 20 ticks.
+    for _ in 0..18 {
+        w.frame(&NoCollision);
+    }
+    assert!(matches!(&w.get(b).unwrap().class, Class::Breakable(x) if !x.broken));
+    w.frame(&NoCollision);
+    w.frame(&NoCollision);
+    assert!(w.fired.iter().any(|(_, e, o)| *e == b && o == "OnBreak"));
+}
+
+/// explodemagnitude: an explosion at its centre when it breaks (radius
+/// 2.5 × magnitude without ExplodeRadius), the breaker its attacker.
+#[test]
+fn explodes_when_it_breaks() {
+    let mut w = world();
+    let b = breakable(
+        &mut w,
+        &[("material", "1"), ("health", "10"), ("explodemagnitude", "120")],
+        Vec3::splat(32.0),
+    );
+    let who = Who::Player(Entity::from_raw_u32(7).unwrap());
+    w.damage(b, 100.0, DamageKind::Bullet, Some(who), Vec3::ZERO, Vec3::X);
+    let x = w.effects.iter().find_map(|e| match e {
+        Effect::Explosion {
+            at,
+            damage,
+            radius,
+            attacker,
+            inflictor,
+        } => Some((*at, *damage, *radius, *attacker, *inflictor)),
+        _ => None,
+    });
+    assert_eq!(x, Some((Vec3::ZERO, 120.0, 300.0, Some(who), b)));
+    let mut w = world();
+    let b = breakable(
+        &mut w,
+        &[("material", "1"), ("health", "10"), ("ExplodeDamage", "50"), ("ExplodeRadius", "90")],
+        Vec3::splat(32.0),
+    );
+    w.deliver(Who::Ent(b), "Break", Value::Void, None, None);
+    assert!(
+        w.effects
+            .iter()
+            .any(|e| matches!(e, Effect::Explosion { damage, radius, .. } if *damage == 50.0 && *radius == 90.0))
+    );
+}
+
+/// What physics impacts do: glass counts 2 kg on the glass table; flag
+/// 1024 takes none; flag 512 breaks on the first impact; a crush hit
+/// breaks a window entity only, and a broken window takes none.
+#[test]
+fn physics_impact_rules() {
+    let mut w = world();
+    let glass = breakable(&mut w, &[("material", "0"), ("health", "1")], Vec3::new(64.0, 2.0, 64.0));
+    let (table, scale, mass, instant) = w.breakable_impact(glass).unwrap();
+    assert_eq!(
+        (table, scale, mass, instant),
+        (crate::logic::prop_damage::GLASS_TABLE, 1.0, 2.0, false)
+    );
+    let wood = breakable(
+        &mut w,
+        &[("material", "1"), ("health", "10"), ("spawnflags", "512"), ("physdamagescale", "0.5")],
+        Vec3::splat(16.0),
+    );
+    let (_, scale, _, instant) = w.breakable_impact(wood).unwrap();
+    assert_eq!((scale, instant), (0.5, true));
+    let none = breakable(
+        &mut w,
+        &[("material", "1"), ("health", "10"), ("spawnflags", "1024")],
+        Vec3::splat(16.0),
+    );
+    assert!(w.breakable_impact(none).is_none());
+    let win = office_window(&mut w);
+    assert!(w.breakable_impact(win).is_some());
+    w.damage(win, 5.0, DamageKind::Crush, None, office_point(1.0, 1.0), Vec3::Y);
+    let g = w.window(win).unwrap();
+    assert!(g.window_broken && g.broken_count() == 0, "crush breaks the window entity only");
+    assert!(w.breakable_impact(win).is_none());
 }

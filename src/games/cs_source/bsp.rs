@@ -86,6 +86,8 @@ pub fn load_level(mount: &Mount, name: &str, hdr_level: u8) -> Result<MapData, S
         mesh.surface = r.surfaceprop;
         mesh.envmap = r.envmap;
     }
+    // Broken windows' cracked and jagged-edge looks.
+    super::breakables::add_window_looks(&mut materials, &data.entities, &mut data.meshes);
     // Water surfaces (specs/cs_source/water.md), with the map's cheap
     // distances for their WaterLOD proxies.
     let lod_keys = bsp

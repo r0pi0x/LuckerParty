@@ -19,6 +19,7 @@ mod cs_guns;
 mod debug_ui;
 mod impact_effects;
 mod interpolation;
+mod logic_physics;
 mod map_logic;
 mod mount_cs_source;
 mod movement;

@@ -15,7 +15,7 @@ use bevy::{
     prelude::*,
 };
 
-use super::{LightField, MapData, MapDebugView, MapModel, MapPart, prop_material::PropMaterial};
+use super::{LightField, MapData, MapDebugView, MapModel, MapPart, PaneLook, prop_material::PropMaterial};
 
 /// A gib list: the models one break picks from, by name (Source: the
 /// propdata "BreakableModels" lists, "MetalChunks"...).
@@ -102,6 +102,10 @@ pub struct SpawnGibs {
     /// A broken prop's pieces: they fall at `MapGibPhysics::prop_gravity`.
     pub prop: bool,
     pub pieces: Vec<GibPiece>,
+    /// Pieces that shatter on the first thing they touch (falling window
+    /// panes, with `prop`): the pane's size and the shards' size
+    /// (meters).
+    pub shatters: Option<(Vec2, f32)>,
 }
 
 /// The most gibs alive at once (Source `cl_phys_props_max`); more are not
@@ -308,6 +312,7 @@ pub(super) fn break_props(
                 glass: false,
                 prop: true,
                 pieces,
+                shatters: None,
             });
         }
     }
@@ -322,7 +327,31 @@ pub struct GlassShatter {
     pub size: Vec2,
     pub velocity: Vec3,
     pub tile: bool,
+    /// The shards' size (meters): small for one pane, large for a blast's
+    /// burst.
+    pub shard: f32,
 }
+
+/// A collapsing pane drops a falling piece (Source: the pane piece
+/// model): the pane's reference corner, its axes (along the columns, the
+/// rows, the window's normal), its size (meters), the body variant (the
+/// `PANE_PIECES` gib list's model) and its spin (rad/s). The piece falls,
+/// and shatters (`GlassShatter`) on the first thing it touches.
+#[derive(Message, Clone, Debug)]
+pub struct FallingPane {
+    pub at: Vec3,
+    pub axes: [Vec3; 3],
+    pub size: Vec2,
+    pub body: usize,
+    pub spin: Vec3,
+    /// The shards' size when it shatters (meters).
+    pub shard: f32,
+}
+
+/// The gib list of falling pane pieces, one model per body variant.
+pub const PANE_PIECES: &str = "PanePieces";
+/// The falling pane piece's body variants (random body 0..2).
+pub const PANE_PIECE_BODIES: usize = 3;
 
 /// A bullet or club hit shattered the window pane it hit: the hit point
 /// and the trace normal (towards the shooter). Games draw the glass
@@ -400,7 +429,7 @@ pub(super) struct PaneSource(Handle<Mesh>);
 #[allow(clippy::type_complexity)]
 pub(super) fn update_panes(
     nodes: Query<(Entity, &BrushPanes, Option<&Children>), Changed<BrushPanes>>,
-    mut parts: Query<(&mut Mesh3d, Option<&PaneSource>)>,
+    mut parts: Query<(&mut Mesh3d, Option<&PaneSource>, Option<&PanePart>, &mut Visibility)>,
     meshes: Option<ResMut<Assets<Mesh>>>,
     mut commands: Commands,
 ) {
@@ -416,16 +445,29 @@ pub(super) fn update_panes(
                 .collect();
             commands
                 .entity(node)
-                .insert(Collider::compound(shapes))
+                .insert((
+                    Collider::compound(shapes),
+                    // Non-solid once broken: shots still hit the panes,
+                    // physics bodies pass (and shatter them by touch).
+                    CollisionLayers::new(LayerMask::DEFAULT, LayerMask::NONE),
+                ))
                 .remove::<ColliderDisabled>();
         }
         let (Some(meshes), Some(children)) = (meshes.as_mut(), children) else {
             continue;
         };
+        // With a broken look the face as placed gives way to it.
+        let looks: Vec<PaneLook> = children
+            .iter()
+            .filter_map(|c| parts.get(c).ok().map(|p| p.2.map_or(PaneLook::Whole, |l| l.0)))
+            .collect();
+        let cracked = looks.contains(&PaneLook::Cracked);
+        let edges = looks.iter().filter(|l| matches!(l, PaneLook::Edge(_))).count() as u8;
         for child in children.iter() {
-            let Ok((mut mesh3d, source)) = parts.get_mut(child) else {
+            let Ok((mut mesh3d, source, look, mut visibility)) = parts.get_mut(child) else {
                 continue;
             };
+            let look = look.map_or(PaneLook::Whole, |l| l.0);
             let source = match source {
                 Some(s) => s.0.clone(),
                 None => {
@@ -434,9 +476,23 @@ pub(super) fn update_panes(
                     s
                 }
             };
-            let Some(clipped) = meshes.get(&source).and_then(|m| clip_to_panes(m, panes)) else {
+            if look == PaneLook::Whole && cracked {
+                visibility.set_if_neq(Visibility::Hidden);
+                continue;
+            }
+            let Some(clipped) = meshes.get(&source).and_then(|m| match look {
+                PaneLook::Edge(k) => clip_to_rects(m, panes, &edge_strips(panes, k, edges)),
+                _ => clip_to_panes(m, panes),
+            }) else {
                 continue;
             };
+            // Nothing left of it: hidden (an empty mesh upsets the
+            // renderer's allocator).
+            if clipped.indices().is_none_or(|i| i.is_empty()) {
+                visibility.set_if_neq(Visibility::Hidden);
+                continue;
+            }
+            visibility.set_if_neq(Visibility::Inherited);
             let old = std::mem::replace(&mut mesh3d.0, meshes.add(clipped));
             if old != source {
                 meshes.remove(&old);
@@ -445,10 +501,120 @@ pub(super) fn update_panes(
     }
 }
 
+/// A window's broken look on one of its meshes (`MapMesh::pane_look`):
+/// hidden until the window breaks.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct PanePart(pub PaneLook);
+
+/// How far (in panes) a jagged edge piece reaches into the broken pane
+/// beside it (ours: the spec leaves edge pieces to the client).
+pub const EDGE_DEPTH: f32 = 0.5;
+
+/// A rectangle of pane space to cut a mesh to; `uv` maps a point `p` of
+/// it to texture coordinates ((p − o)·x, (p − o)·y) instead of
+/// interpolating the mesh's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PaneRect {
+    pub lo: Vec2,
+    pub hi: Vec2,
+    pub uv: Option<(Vec2, Vec2, Vec2)>,
+}
+
+/// The edge strips of edge material `k` of `kinds`: along each side of an
+/// unbroken pane whose neighbour inside the window broke, reaching
+/// `EDGE_DEPTH` into the neighbour; its texture's u runs along the side
+/// and its bottom (v = 1) lies on the pane. Each side picks one of the `kinds` edge
+/// materials by its place (ours).
+pub fn edge_strips(panes: &BrushPanes, k: u8, kinds: u8) -> Vec<PaneRect> {
+    let (cols, rows) = (panes.cols as i32, panes.rows as i32);
+    let broken = |c: i32, r: i32| c >= 0 && r >= 0 && c < cols && r < rows && !panes.whole(c as usize, r as usize);
+    let d = EDGE_DEPTH;
+    let mut out = Vec::new();
+    for r in 0..rows {
+        for c in 0..cols {
+            if !panes.whole(c as usize, r as usize) {
+                continue;
+            }
+            let (x, y) = (c as f32, r as f32);
+            // (neighbour, rect, origin, u axis, v axis)
+            let sides = [
+                (
+                    (c + 1, r),
+                    Vec2::new(x + 1.0, y),
+                    Vec2::new(x + 1.0 + d, y + 1.0),
+                    Vec2::new(x + 1.0 + d, y),
+                    Vec2::Y,
+                    Vec2::NEG_X / d,
+                ),
+                (
+                    (c - 1, r),
+                    Vec2::new(x - d, y),
+                    Vec2::new(x, y + 1.0),
+                    Vec2::new(x - d, y + 1.0),
+                    Vec2::NEG_Y,
+                    Vec2::X / d,
+                ),
+                (
+                    (c, r + 1),
+                    Vec2::new(x, y + 1.0),
+                    Vec2::new(x + 1.0, y + 1.0 + d),
+                    Vec2::new(x + 1.0, y + 1.0 + d),
+                    Vec2::NEG_X,
+                    Vec2::NEG_Y / d,
+                ),
+                (
+                    (c, r - 1),
+                    Vec2::new(x, y - d),
+                    Vec2::new(x + 1.0, y),
+                    Vec2::new(x, y - d),
+                    Vec2::X,
+                    Vec2::Y / d,
+                ),
+            ];
+            for (i, ((nc, nr), lo, hi, o, ux, vy)) in sides.into_iter().enumerate() {
+                if !broken(nc, nr) {
+                    continue;
+                }
+                let pick = (c as u32).wrapping_mul(7) ^ (r as u32).wrapping_mul(13) ^ (i as u32).wrapping_mul(5);
+                if kinds == 0 || (pick % kinds as u32) as u8 != k {
+                    continue;
+                }
+                out.push(PaneRect {
+                    lo,
+                    hi,
+                    uv: Some((o, ux, vy)),
+                });
+            }
+        }
+    }
+    out
+}
+
 /// The part of a triangle mesh over unbroken panes: every triangle
 /// clipped to each unbroken pane it overlaps (in the window's plane), its
 /// float attributes interpolated.
 pub fn clip_to_panes(mesh: &Mesh, panes: &BrushPanes) -> Option<Mesh> {
+    let mut rects = Vec::new();
+    for r in 0..panes.rows {
+        for c in 0..panes.cols {
+            if panes.whole(c, r) {
+                let lo = Vec2::new(c as f32, r as f32);
+                rects.push(PaneRect {
+                    lo,
+                    hi: lo + Vec2::ONE,
+                    uv: None,
+                });
+            }
+        }
+    }
+    clip_to_rects(mesh, panes, &rects)
+}
+
+/// A triangle mesh cut to rectangles of pane space: every triangle
+/// clipped to each rectangle it overlaps (in the window's plane), its
+/// float attributes interpolated, its texture coordinates the
+/// rectangle's own where it has them.
+pub fn clip_to_rects(mesh: &Mesh, panes: &BrushPanes, rects: &[PaneRect]) -> Option<Mesh> {
     let positions: Vec<Vec3> = match mesh.try_attribute(Mesh::ATTRIBUTE_POSITION).ok()? {
         VertexAttributeValues::Float32x3(v) => v.iter().map(|p| Vec3::from(*p)).collect(),
         _ => return None,
@@ -458,36 +624,33 @@ pub fn clip_to_panes(mesh: &Mesh, panes: &BrushPanes) -> Option<Mesh> {
         None => (0..positions.len() as u32).collect(),
     };
     let st: Vec<Vec2> = positions.iter().map(|p| panes.pane_at(*p)).collect();
-    // Output vertices as weights over a source triangle.
-    let mut out: Vec<([u32; 3], Vec3)> = Vec::new();
+    // Output vertices as weights over a source triangle, and their own
+    // texture coordinates.
+    let mut out: Vec<([u32; 3], Vec3, Option<Vec2>)> = Vec::new();
     let mut tris: Vec<[u32; 3]> = Vec::new();
     for t in indices.chunks_exact(3) {
         let tri = [t[0], t[1], t[2]];
         let pts = tri.map(|i| st[i as usize]);
         let lo = pts[0].min(pts[1]).min(pts[2]);
         let hi = pts[0].max(pts[1]).max(pts[2]);
-        let c0 = (lo.x.floor().max(0.0) as usize).min(panes.cols);
-        let c1 = (hi.x.ceil().max(0.0) as usize).min(panes.cols);
-        let r0 = (lo.y.floor().max(0.0) as usize).min(panes.rows);
-        let r1 = (hi.y.ceil().max(0.0) as usize).min(panes.rows);
-        for r in r0..r1 {
-            for c in c0..c1 {
-                if !panes.whole(c, r) {
-                    continue;
-                }
-                let poly = clip_triangle(
-                    pts,
-                    Vec2::new(c as f32, r as f32),
-                    Vec2::new(c as f32 + 1.0, r as f32 + 1.0),
-                );
-                if poly.len() < 3 {
-                    continue;
-                }
-                let base = out.len() as u32;
-                out.extend(poly.iter().map(|w| (tri, *w)));
-                for k in 1..poly.len() as u32 - 1 {
-                    tris.push([base, base + k, base + k + 1]);
-                }
+        for rect in rects {
+            if rect.hi.x <= lo.x || rect.lo.x >= hi.x || rect.hi.y <= lo.y || rect.lo.y >= hi.y {
+                continue;
+            }
+            let poly = clip_triangle(pts, rect.lo, rect.hi);
+            if poly.len() < 3 {
+                continue;
+            }
+            let base = out.len() as u32;
+            out.extend(poly.iter().map(|w| {
+                let uv = rect.uv.map(|(o, x, y)| {
+                    let p = pts[0] * w.x + pts[1] * w.y + pts[2] * w.z - o;
+                    Vec2::new(p.dot(x), p.dot(y))
+                });
+                (tri, *w, uv)
+            }));
+            for k in 1..poly.len() as u32 - 1 {
+                tris.push([base, base + k, base + k + 1]);
             }
         }
     }
@@ -495,7 +658,7 @@ pub fn clip_to_panes(mesh: &Mesh, panes: &BrushPanes) -> Option<Mesh> {
     for (attribute, values) in mesh.try_attributes().ok()? {
         let mix = |get: &dyn Fn(usize) -> Vec4| -> Vec<Vec4> {
             out.iter()
-                .map(|(t, w)| get(t[0] as usize) * w.x + get(t[1] as usize) * w.y + get(t[2] as usize) * w.z)
+                .map(|(t, w, _)| get(t[0] as usize) * w.x + get(t[1] as usize) * w.y + get(t[2] as usize) * w.z)
                 .collect()
         };
         let values: VertexAttributeValues = match values {
@@ -517,6 +680,10 @@ pub fn clip_to_panes(mesh: &Mesh, panes: &BrushPanes) -> Option<Mesh> {
             _ => continue,
         };
         clipped.insert_attribute(attribute.clone(), values);
+    }
+    if out.iter().any(|(_, _, uv)| uv.is_some()) {
+        let uvs: Vec<[f32; 2]> = out.iter().map(|(_, _, uv)| uv.unwrap_or_default().to_array()).collect();
+        clipped.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
     }
     clipped.insert_indices(Indices::U32(tris.into_iter().flatten().collect()));
     Some(clipped)
@@ -862,6 +1029,11 @@ pub(super) fn spawn_gibs(
                 if let Some(surface) = &b.surface {
                     gib.insert((crate::core::PropSurface(surface.clone()), PieceBody, CollisionEventsEnabled));
                 }
+                // Before its collider: the contact tree reads it when the
+                // collider joins.
+                if let Some((size, shard)) = ev.shatters {
+                    gib.insert((PanePiece { size, shard }, CollisionEventsEnabled));
+                }
                 gib.insert((
                     if piece.frozen {
                         RigidBody::Static
@@ -901,6 +1073,68 @@ pub(super) fn spawn_gibs(
                     }
                 }
             });
+        }
+    }
+}
+
+/// A falling window pane piece: it shatters on the first thing it
+/// touches (the pane's size and the shards', meters).
+#[derive(Component, Clone, Copy, Debug)]
+pub struct PanePiece {
+    pub size: Vec2,
+    pub shard: f32,
+}
+
+/// Seconds a falling pane piece lasts if it never touches anything.
+const PANE_PIECE_LIFE: f32 = 5.0;
+
+/// Falling panes become pane pieces: physics debris of the
+/// `PANE_PIECES` list in the pane's orientation, falling from its
+/// corner (the model's origin there) and spinning.
+pub(super) fn fall_panes(mut events: MessageReader<FallingPane>, mut gibs: MessageWriter<SpawnGibs>) {
+    for ev in events.read() {
+        let [u, v, n] = ev.axes.map(Vec3::normalize_or_zero);
+        // The piece model is a square in its own Y/Z plane (Source axes;
+        // engine -Z/Y), X its normal: those go onto the pane's axes.
+        let rotation = Quat::from_mat3(&Mat3::from_cols(n, v, -u));
+        let mut piece = GibPiece::thrown(ev.at, Vec3::ZERO, ev.spin, PANE_PIECE_LIFE);
+        piece.model = Some(ev.body);
+        piece.rotation = Some(rotation);
+        gibs.write(SpawnGibs {
+            set: PANE_PIECES.to_string(),
+            glass: false,
+            prop: true,
+            pieces: vec![piece],
+            shatters: Some((ev.size, ev.shard)),
+        });
+    }
+}
+
+/// Pane pieces that touched something shatter there.
+pub(super) fn shatter_pane_pieces(
+    mut started: MessageReader<CollisionStart>,
+    pieces: Query<(&PanePiece, &Position, &Rotation, &LinearVelocity)>,
+    mut shatter: MessageWriter<GlassShatter>,
+    mut commands: Commands,
+    mut done: Local<Vec<Entity>>,
+) {
+    done.clear();
+    for s in started.read() {
+        for e in [s.body1.unwrap_or(s.collider1), s.body2.unwrap_or(s.collider2)] {
+            let Ok((piece, at, rot, v)) = pieces.get(e) else { continue };
+            if done.contains(&e) {
+                continue;
+            }
+            done.push(e);
+            shatter.write(GlassShatter {
+                at: at.0,
+                normal: rot.0 * Vec3::X,
+                size: piece.size,
+                velocity: v.0,
+                tile: false,
+                shard: piece.shard,
+            });
+            commands.entity(e).try_despawn();
         }
     }
 }
@@ -1016,6 +1250,7 @@ fn make_whole(world: &mut World, node: Entity, index: usize) {
         .unwrap_or_default();
     let mut e = world.entity_mut(node);
     e.remove::<(BrushPanes, ColliderDisabled)>();
+    e.insert(CollisionLayers::default());
     if let Some(c) = collider {
         e.insert(c);
     }
@@ -1023,6 +1258,15 @@ fn make_whole(world: &mut World, node: Entity, index: usize) {
         let Some(source) = world.get::<PaneSource>(child).map(|s| s.0.clone()) else {
             continue;
         };
+        // The face as placed again, its broken looks hidden.
+        let want = if world.get::<PanePart>(child).is_some() {
+            Visibility::Hidden
+        } else {
+            Visibility::Inherited
+        };
+        if let Some(mut v) = world.get_mut::<Visibility>(child) {
+            v.set_if_neq(want);
+        }
         let old = world.get::<Mesh3d>(child).map(|m| m.0.clone());
         world
             .entity_mut(child)

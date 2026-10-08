@@ -18,7 +18,7 @@ use crate::core::{
     BaseVelocity, Damage, DamageKind, Damageable, EntityGravity, Explosion, Health, Hitgroup, Intent, LocalPlayer,
     MapBrush, MapBrushes, MapTerrain, MovementState, MovingSolid, RoundRestarts, SimSet, Team, Velocity,
 };
-use crate::map::breakables::{GibPiece, GlassImpact, GlassShatter, SpawnGibs};
+use crate::map::breakables::{FallingPane, GibPiece, GlassImpact, GlassShatter, SpawnGibs};
 use crate::map::entities::{engine_to_entity, entity_rotation, entity_to_engine, rotation_to_engine};
 use crate::map::vis::{LogicHidden, VisClusters};
 use crate::map::{
@@ -67,6 +67,7 @@ impl Plugin for LogicPlugin {
             .add_message::<SpawnGibs>()
             .add_message::<GlassShatter>()
             .add_message::<GlassImpact>()
+            .add_message::<FallingPane>()
             .configure_sets(
                 FixedUpdate,
                 (
@@ -860,6 +861,7 @@ fn apply_effects(world: &mut World, effects: Vec<Effect>, scale: f32) {
                     glass,
                     prop: false,
                     pieces,
+                    shatters: None,
                 });
             }
             Effect::PropBreak { id, sound, explode } => prop_broke(world, id, sound, explode, scale),
@@ -880,6 +882,7 @@ fn apply_effects(world: &mut World, effects: Vec<Effect>, scale: f32) {
                 size,
                 velocity,
                 tile,
+                shard,
             } => {
                 world.write_message(GlassShatter {
                     at: entity_to_engine(at, scale),
@@ -887,6 +890,46 @@ fn apply_effects(world: &mut World, effects: Vec<Effect>, scale: f32) {
                     size: size * scale,
                     velocity: entity_to_engine(velocity, scale),
                     tile,
+                    shard: shard * scale,
+                });
+            }
+            Effect::PaneFall {
+                at,
+                axes,
+                size,
+                body,
+                spin,
+            } => {
+                world.write_message(FallingPane {
+                    at: entity_to_engine(at, scale),
+                    axes: axes.map(|a| entity_to_engine(a, 1.0)),
+                    size: size * scale,
+                    body,
+                    spin: entity_to_engine(spin * std::f32::consts::PI / 180.0, 1.0),
+                    shard: super::breakables::SMALL_SHARD * scale,
+                });
+            }
+            Effect::Explosion {
+                at,
+                damage,
+                radius,
+                attacker,
+                inflictor,
+            } => {
+                let attacker = match attacker {
+                    Some(Who::Player(e)) => Some(e),
+                    Some(Who::Ent(e)) => entity_node(world, e),
+                    None => None,
+                };
+                let inflictor = entity_node(world, inflictor);
+                world.write_message(Explosion {
+                    origin: entity_to_engine(at, scale),
+                    damage: damage / 100.0,
+                    radius: radius * scale,
+                    attacker,
+                    inflictor,
+                    sound: None,
+                    weapon: None,
                 });
             }
             Effect::GlassImpact { at, normal } => {
@@ -1381,6 +1424,9 @@ fn record_velocities(mut pre: ResMut<PreStep>, bodies: Query<(Entity, &RigidBody
 
 /// A player's mass for impacts (kg; Source's player shadow).
 const PLAYER_MASS: f32 = 85.0;
+/// Damage (health points) that breaks any breakable: an impact on one
+/// that breaks on the first physics impact (flag 512).
+const BREAK_NOW: f32 = 1.0e6;
 /// An impact is measured over this many physics steps from its first
 /// contact: avian's contacts are speculative and soft, so a body is
 /// stopped over a few steps where Source's stops it in one.
@@ -1391,6 +1437,9 @@ const IMPACT_STEPS: u32 = 4;
 enum Receiver {
     /// A logic prop: its table, energy scale and mass.
     Prop(super::prop_damage::ImpactTable, f32, f32),
+    /// A breakable brush (static): its table, energy scale and mass, and
+    /// whether the first impact breaks it.
+    Breakable(super::prop_damage::ImpactTable, f32, f32, bool),
     Player,
 }
 
@@ -1458,6 +1507,13 @@ fn impacts(
                 && !characters.contains(other)
             {
                 Receiver::Prop(table, energy, mass.max(0.1))
+            } else if let Some((id, _)) = logic.nodes.iter().find(|(_, n)| *n == me)
+                && let Some((table, energy, mass, instant)) = logic.world.breakable_impact(*id)
+                // Only physics objects (players break them by touch).
+                && bodies.get(other).is_ok_and(|(rb, ..)| rb.is_dynamic())
+                && !characters.contains(other)
+            {
+                Receiver::Breakable(table, energy, mass, instant)
             } else if characters.get(me).is_ok_and(|s| s.ground != Some(other))
                 && bodies.get(other).is_ok_and(|(rb, _, _, prop)| rb.is_dynamic() && prop)
             {
@@ -1522,6 +1578,14 @@ fn impacts(
                 };
                 let amount = super::prop_damage::impact_damage(&table, energy, mine, theirs, false);
                 (amount, velocity(i.me) * m)
+            }
+            Receiver::Breakable(table, energy, m, instant) => {
+                // A static brush: its speed never changes.
+                let mine = super::prop_damage::Impactor { mass: m, ..default() };
+                let amount = super::prop_damage::impact_damage(&table, energy, mine, theirs, false);
+                // "Break immediately on physics": any impact is lethal.
+                let amount = if instant { amount.max(BREAK_NOW) } else { amount };
+                (amount, i.slowest[1] * theirs.mass)
             }
             Receiver::Player => {
                 let player = super::prop_damage::Impactor {

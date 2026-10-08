@@ -27,7 +27,9 @@ pub mod fog;
 pub use entities::{MapBrushEntity, MapEntities, MapEntity, MapHull};
 pub mod breakables;
 pub mod contact_filter;
-pub use breakables::{BreakProp, BrushPanes, GlassImpact, GlassShatter, MapBreak, MapBreakPiece, SpawnGibs};
+pub use breakables::{
+    BreakProp, BrushPanes, FallingPane, GlassImpact, GlassShatter, MapBreak, MapBreakPiece, PanePart, SpawnGibs,
+};
 mod dust;
 pub mod hud;
 pub mod interp;
@@ -239,6 +241,26 @@ pub struct MapMesh {
     /// several (part, choice): drawn only while the prop's body picks it
     /// (`MapModel::body_parts`).
     pub body: Option<(u16, u16)>,
+    /// What part of a breakable window's look it is (`PaneLook`).
+    pub pane_look: PaneLook,
+}
+
+/// A window's looks (meshes of a brush entity drawn as panes,
+/// `breakables::BrushPanes`): its face as placed, then, once it breaks,
+/// the face in its cracked material over the unbroken panes and jagged
+/// edge pieces where they meet broken ones.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum PaneLook {
+    /// Drawn while whole (every mesh but a window's broken looks).
+    #[default]
+    Whole,
+    /// The face in its broken material (Source `$crackmaterial`): the
+    /// same triangles, drawn over the unbroken panes once broken.
+    Cracked,
+    /// An edge material (one of several, numbered): the face's triangles
+    /// as a template, from which strips along the edges of unbroken panes
+    /// facing broken ones are cut (`breakables::edge_strips`).
+    Edge(u8),
 }
 
 /// How a model mesh looks under one skin family: the material fields of
@@ -1651,6 +1673,8 @@ impl Plugin for MapPlugin {
             .add_message::<prop_physics::PropAwakened>()
             .add_message::<GlassShatter>()
             .add_message::<GlassImpact>()
+            .add_message::<breakables::FallingPane>()
+            .add_message::<CollisionStart>()
             .init_resource::<particles::Particles>()
             .configure_sets(Update, particles::ParticleSet::Step.before(particles::ParticleSet::Draw))
             .init_resource::<tracer::MuzzleCache>()
@@ -1689,7 +1713,20 @@ impl Plugin for MapPlugin {
                     animate_props,
                 ),
             )
-            .add_systems(Update, (breakables::break_props, breakables::spawn_gibs, breakables::fly_gibs).chain())
+            .add_systems(
+                Update,
+                (
+                    breakables::break_props,
+                    breakables::fall_panes,
+                    breakables::spawn_gibs,
+                    breakables::fly_gibs,
+                )
+                    .chain(),
+            )
+            .add_systems(
+                FixedPostUpdate,
+                breakables::shatter_pane_pieces.after(PhysicsSystems::Writeback),
+            )
             // Before the physics step reads it (headless too).
             .add_systems(FixedUpdate, loose::attach_loose.before(crate::core::SimSet::Movement))
             .add_systems(
@@ -2134,6 +2171,14 @@ fn spawn_map(
         // Brush entities' opaque meshes are drawn merged per material and
         // chunk while they stay put (`merge`); their own meshes wait hidden.
         let merging = merge::enabled();
+        // Windows with broken looks switch meshes when they break: never
+        // merged.
+        let paned: std::collections::HashSet<usize> = data
+            .meshes
+            .iter()
+            .filter(|m| m.pane_look != PaneLook::Whole)
+            .filter_map(|m| m.entity)
+            .collect();
         let mut node_centres: HashMap<usize, (Vec3, Vec3)> = HashMap::new();
         for m in data.meshes.iter().filter(|m| !m.skybox && parent_of(m) != root) {
             let Some(i) = m.entity else { continue };
@@ -2146,7 +2191,7 @@ fn spawn_map(
         let merge_spot = |m: &MapMesh| -> Option<(usize, Entity, Transform, Vec3)> {
             let i = m.entity?;
             let node = parent_of(m);
-            if !merging || node == root || own(m).is_some() || !merge::mergeable(m) {
+            if !merging || node == root || own(m).is_some() || !merge::mergeable(m) || paned.contains(&i) {
                 return None;
             }
             let home = node_home(i);
@@ -2308,6 +2353,9 @@ fn spawn_map(
                     if merged.is_some() {
                         e.insert((merge::MergedPiece, Visibility::Hidden));
                     }
+                    if m.pane_look != PaneLook::Whole {
+                        e.insert((PanePart(m.pane_look), Visibility::Hidden));
+                    }
                     tag(&mut e, clusters);
                 }
                 continue;
@@ -2340,6 +2388,9 @@ fn spawn_map(
                 }
                 if merged.is_some() {
                     part.insert((merge::MergedPiece, Visibility::Hidden));
+                }
+                if m.pane_look != PaneLook::Whole {
+                    part.insert((PanePart(m.pane_look), Visibility::Hidden));
                 }
                 tag(&mut part, clusters);
             }
