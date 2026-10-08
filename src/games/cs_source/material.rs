@@ -528,7 +528,7 @@ impl<'a> MaterialLoader<'a> {
                 raw.as_chunks::<8>().0.iter().map(|p| [c(&p[0..]), c(&p[2..]), c(&p[4..])]).collect()
             }
             (true, _) => {
-                let image = vtf.highres_image.decode(0).map_err(|e| e.to_string())?.to_rgba8();
+                let image = decode_frame(&bytes, &vtf, 0)?;
                 image
                     .pixels()
                     .map(|p| {
@@ -595,7 +595,7 @@ impl<'a> MaterialLoader<'a> {
             let vtf = vtf::from_bytes(&bytes).map_err(|e| e.to_string())?;
             (0..vtf.header.frames.max(1) as u32)
                 .map(|f| {
-                    let image = vtf.highres_image.decode(f).map_err(|e| e.to_string())?.to_rgba8();
+                    let image = decode_frame(&bytes, &vtf, f)?;
                     Ok(MapTexture {
                         name: format!("{path}#{f}"),
                         srgb,
@@ -625,7 +625,7 @@ impl<'a> MaterialLoader<'a> {
     fn decode(&self, path: &str) -> Result<MapTexture, String> {
         let bytes = self.read(path).ok_or("not found")?;
         let vtf = vtf::from_bytes(&bytes).map_err(|e| e.to_string())?;
-        let image = vtf.highres_image.decode(0).map_err(|e| e.to_string())?.to_rgba8();
+        let image = decode_frame(&bytes, &vtf, 0)?;
         let mips = mip_levels(&bytes, &vtf.header).unwrap_or_default();
         Ok(MapTexture {
             name: path.to_string(),
@@ -651,33 +651,17 @@ fn mip_levels(bytes: &[u8], header: &vtf::header::VTFHeader) -> Option<Vec<Vec<u
 /// `mip_levels` of one frame of an animated texture (each level holds
 /// every frame in turn).
 fn frame_mip_levels(bytes: &[u8], header: &vtf::header::VTFHeader, frame: u32) -> Option<Vec<Vec<u8>>> {
-    use vtf::{image::VTFImage, resources::ResourceType};
+    use vtf::image::VTFImage;
 
     let frames = header.frames.max(1) as usize;
     if header.mipmap_count <= 1 || header.depth > 1 || frame as usize >= frames {
         return None;
     }
     let format = header.highres_image_format;
-    let lowres_offset = match header
-        .resources
-        .get_by_type(ResourceType::VTF_LEGACY_RSRC_LOW_RES_IMAGE)
-    {
-        Some(r) => r.data,
-        None => header.header_size,
-    };
-    let data_start = match header.resources.get_by_type(ResourceType::VTF_LEGACY_RSRC_IMAGE) {
-        Some(r) => r.data,
-        None => {
-            lowres_offset
-                + header
-                    .lowres_image_format
-                    .frame_size(header.lowres_image_width as u32, header.lowres_image_height as u32)
-                    .ok()?
-        }
-    } as usize;
+    let data_start = data_start(header)?;
     let size = |m: u32| -> Option<(u32, u32, usize)> {
         let (w, h) = ((header.width as u32 >> m).max(1), (header.height as u32 >> m).max(1));
-        Some((w, h, format.frame_size(w, h).ok()? as usize))
+        Some((w, h, raw_size(format, w, h)?))
     };
     let count = header.mipmap_count as u32;
     let mut out = Vec::new();
@@ -689,12 +673,93 @@ fn frame_mip_levels(bytes: &[u8], header: &vtf::header::VTFHeader, frame: u32) -
         }
         let (w, h, level_size) = size(m)?;
         offset += frame as usize * level_size;
+        if let Some(raw) = decode_raw(format, w, h, bytes.get(offset..offset + level_size)?) {
+            out.push(raw);
+            continue;
+        }
         let mut single = header.clone();
         single.mipmap_count = 1;
         let img = VTFImage::new(single, format, w as u16, h as u16, bytes, offset);
         out.push(img.decode(0).ok()?.to_rgba8().into_raw());
     }
     Some(out)
+}
+
+/// Where a VTF's high-resolution image data starts (after the low
+/// resolution thumbnail, or where the resource list says).
+fn data_start(header: &vtf::header::VTFHeader) -> Option<usize> {
+    use vtf::resources::ResourceType;
+    let lowres_offset = match header
+        .resources
+        .get_by_type(ResourceType::VTF_LEGACY_RSRC_LOW_RES_IMAGE)
+    {
+        Some(r) => r.data,
+        None => header.header_size,
+    };
+    Some(match header.resources.get_by_type(ResourceType::VTF_LEGACY_RSRC_IMAGE) {
+        Some(r) => r.data,
+        None => {
+            lowres_offset
+                + header
+                    .lowres_image_format
+                    .frame_size(header.lowres_image_width as u32, header.lowres_image_height as u32)
+                    .ok()?
+        }
+    } as usize)
+}
+
+/// Bytes of one `w` x `h` image in `format`; the `vtf` crate's sizes plus
+/// the 16-bit formats it lacks.
+fn raw_size(format: vtf::ImageFormat, w: u32, h: u32) -> Option<usize> {
+    use vtf::ImageFormat as F;
+    match format {
+        F::Bgra4444 | F::Ia88 => Some((w * h * 2) as usize),
+        f => f.frame_size(w, h).ok().map(|s| s as usize),
+    }
+}
+
+/// RGBA8 from formats the `vtf` crate doesn't decode (public VTF format
+/// list): IA88 (intensity then alpha, a byte each) and BGRA4444 (a
+/// little-endian 16-bit word: blue in the low nibble, then green, red,
+/// alpha). None for any other format.
+fn decode_raw(format: vtf::ImageFormat, w: u32, h: u32, raw: &[u8]) -> Option<Vec<u8>> {
+    use vtf::ImageFormat as F;
+    let n = (w * h) as usize;
+    let raw = raw.get(..n * 2)?;
+    let nibble = |v: u16, shift: u16| ((v >> shift) & 0xf) as u8 * 17;
+    match format {
+        F::Ia88 => Some(raw.chunks_exact(2).flat_map(|p| [p[0], p[0], p[0], p[1]]).collect()),
+        F::Bgra4444 => Some(
+            raw.chunks_exact(2)
+                .flat_map(|p| {
+                    let v = u16::from_le_bytes([p[0], p[1]]);
+                    [nibble(v, 8), nibble(v, 4), nibble(v, 0), nibble(v, 12)]
+                })
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
+/// Frame `frame` of a VTF's full-size image as RGBA8: the `vtf` crate's
+/// decoder, or `decode_raw` for the formats it lacks.
+fn decode_frame(bytes: &[u8], vtf: &vtf::vtf::VTF<'_>, frame: u32) -> Result<image::RgbaImage, String> {
+    let header = &vtf.header;
+    let format = header.highres_image_format;
+    let (w, h) = (header.width as u32, header.height as u32);
+    if !matches!(format, vtf::ImageFormat::Ia88 | vtf::ImageFormat::Bgra4444) {
+        return Ok(vtf.highres_image.decode(frame).map_err(|e| e.to_string())?.to_rgba8());
+    }
+    let frames = header.frames.max(1) as usize;
+    let mut offset = data_start(header).ok_or("bad VTF header")?;
+    for m in 1..header.mipmap_count.max(1) as u32 {
+        offset += raw_size(format, (w >> m).max(1), (h >> m).max(1)).ok_or("bad size")? * frames;
+    }
+    let size = raw_size(format, w, h).ok_or("bad size")?;
+    offset += frame as usize * size;
+    let raw = bytes.get(offset..offset + size).ok_or("VTF data truncated")?;
+    let rgba = decode_raw(format, w, h, raw).ok_or("bad VTF data")?;
+    image::RgbaImage::from_raw(w, h, rgba).ok_or_else(|| "bad VTF data".to_string())
 }
 
 /// Shaders the VMT parser doesn't know, read as the closest one it does.
@@ -930,6 +995,20 @@ pub fn sheet(bytes: &[u8]) -> Option<Vec<Vec<[f32; 4]>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ia88_and_bgra4444_decode() {
+        use vtf::ImageFormat as F;
+        // IA88: intensity, alpha.
+        assert_eq!(decode_raw(F::Ia88, 2, 1, &[10, 200, 255, 0]), Some(vec![10, 10, 10, 200, 255, 255, 255, 0]));
+        // BGRA4444 word 0xA4C2: alpha A, red 4, green C, blue 2 (x17 to 8 bits).
+        let word = 0xA4C2u16.to_le_bytes();
+        assert_eq!(decode_raw(F::Bgra4444, 1, 1, &word), Some(vec![0x44, 0xCC, 0x22, 0xAA]));
+        assert_eq!(raw_size(F::Bgra4444, 4, 2), Some(16));
+        // Too little data, or a format the vtf crate decodes itself.
+        assert_eq!(decode_raw(F::Ia88, 2, 2, &[0; 6]), None);
+        assert_eq!(decode_raw(F::Dxt1, 4, 4, &[0; 8]), None);
+    }
 
     #[test]
     fn colour_multipliers() {
