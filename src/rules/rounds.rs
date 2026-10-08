@@ -19,7 +19,7 @@ use bevy::prelude::*;
 
 use super::{Dead, put_at_spawn};
 use crate::{
-    console::resource_cvar,
+    console::{ConsoleAppExt, resource_cvar},
     core::{Died, Health, Intent, Team},
     objectives::{
         MapKind, MapObjectives, ObjectiveEvent, RoundOpen,
@@ -126,6 +126,8 @@ pub struct RoundState {
     pub wins: [u32; 2],
     /// Consecutive losses of attackers and defenders.
     losses: [u32; 2],
+    /// When `mp_restartgame` restarts the game (seconds since startup).
+    pub restart_at: Option<f64>,
 }
 
 impl Default for RoundState {
@@ -135,6 +137,7 @@ impl Default for RoundState {
             number: 0,
             wins: [0; 2],
             losses: [0; 2],
+            restart_at: None,
         }
     }
 }
@@ -225,12 +228,46 @@ pub(super) fn plugin(app: &mut App) {
     resource_cvar::<RoundSettings, u32>(app, "mp_startmoney", "Money each player starts with.", |r| {
         &mut r.start_money
     });
+    app.console_command(
+        "mp_restartgame",
+        "mp_restartgame <seconds>: restart the game that many seconds from now (scores, money and the round \
+         start over, everyone respawns; in deathmatch everyone respawns). 0 does nothing.",
+        |w, a| {
+            let secs = a
+                .first()
+                .and_then(|v| v.parse::<f64>().ok())
+                .ok_or("mp_restartgame <seconds>")?
+                .clamp(0.0, 60.0);
+            if secs == 0.0 {
+                return Ok(None);
+            }
+            let now = w.resource::<Time>().elapsed_secs_f64();
+            w.resource_mut::<RoundState>().restart_at = Some(now + secs);
+            Ok(Some(format!("Game will restart in {secs} seconds")))
+        },
+    );
+}
+
+/// `mp_restartgame` when its time comes: a fresh game (rounds), or
+/// everyone back at a spawn (deathmatch).
+fn restart_when_due(world: &mut World, rounds: bool, now: f64) {
+    if !world.resource::<RoundState>().restart_at.is_some_and(|t| now >= t) {
+        return;
+    }
+    if rounds {
+        // Phase::Off: the next step starts a game with the start money.
+        *world.resource_mut::<RoundState>() = RoundState::default();
+    } else {
+        world.resource_mut::<RoundState>().restart_at = None;
+        super::respawn_everyone(world);
+    }
 }
 
 /// Advance the round: start, freeze, play, decide, pause, restart.
 pub(super) fn run_rounds(world: &mut World) {
     let settings = world.resource::<RoundSettings>().clone();
     let now = world.resource::<Time>().elapsed_secs_f64();
+    restart_when_due(world, settings.enabled != 0, now);
     let phase = world.resource::<RoundState>().phase;
     // The dead drop their weapon in rounds, not in deathmatch.
     let drops = crate::weapon::drop::DeathDrops(settings.enabled != 0);

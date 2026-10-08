@@ -13,16 +13,6 @@ CS:S feel:
   cvar such as `mashup_usepickup`, off by default, reaching farther than
   the touch box.
 
-Console:
-- Clicking inside the open console captures the mouse.
-- The visible line count doesn't follow a resolution change.
-- Completion list: Up/Down highlight an entry, Enter takes it and adds a
-  space for the arguments.
-- More convenience: help for each argument while typing, and similar.
-
-Debug UI: a rich, tabbed debug interface (sliders and proper inputs) for
-the things most useful in playtesting and development.
-
 ## 1. Playtest essentials
 
 A (settings, health bars, third person), B (penetration and collaterals,
@@ -118,6 +108,11 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
 - Debug overlays: `mashup_drawhitboxes`, `mashup_healthbars`,
   `mashup_drawnav`, `mashup_drawbots` exist; add more as features need
   them (sound radii, triggers).
+- Debug UI (F2, `client/debug_ui.rs`) is in. Left: kicking or freezing
+  one bot (the bot commands act on all), clearing decals and turning fog
+  off (no such cvars yet), starting a trace from the running game (needs
+  the profile build), a fixed tick-rate control, a history graph per
+  render pass.
 
 ## 3. Weapons, remaining
 

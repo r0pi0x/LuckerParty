@@ -29,6 +29,11 @@ pub struct Cvar {
     /// Saved to config.cfg (Source's FCVAR_ARCHIVE): player preferences,
     /// not test or server settings.
     pub archive: bool,
+    /// Sensible bounds (Source's FCVAR min/max, here only a hint): the
+    /// console's argument help shows them, the debug UI's sliders use them.
+    pub range: Option<(f32, f32)>,
+    /// Takes whole numbers only (a field of an integer type).
+    pub integer: bool,
     pub get: GetFn,
     pub set: SetFn,
 }
@@ -91,6 +96,20 @@ impl Console {
     pub fn archive(&mut self, name: &str) {
         if let Some(c) = self.cvars.get_mut(&name.to_lowercase()) {
             c.archive = true;
+        }
+    }
+
+    /// Give a cvar a range for hints and sliders.
+    pub fn set_range(&mut self, name: &str, min: f32, max: f32) {
+        if let Some(c) = self.cvars.get_mut(&name.to_lowercase()) {
+            c.range = Some((min, max));
+        }
+    }
+
+    /// Give a command argument completion.
+    pub fn set_completion(&mut self, name: &str, complete: CompleteFn) {
+        if let Some(c) = self.commands.get_mut(&name.to_lowercase()) {
+            c.complete = Some(complete);
         }
     }
 
@@ -197,6 +216,73 @@ pub fn parse(line: &str) -> Vec<Vec<String>> {
         commands.push(words);
     }
     commands
+}
+
+/// Where the last command of a line starts (after its last `;` outside
+/// quotes, and the spaces after it): completion and argument help work
+/// on that command.
+pub fn last_command_start(line: &str) -> usize {
+    let mut quoted = false;
+    let mut start = 0;
+    for (i, c) in line.char_indices() {
+        match c {
+            '"' => quoted = !quoted,
+            ';' if !quoted => start = i + 1,
+            _ => {}
+        }
+    }
+    start + line[start..].len() - line[start..].trim_start().len()
+}
+
+/// Which argument of a command is being typed (0: the first after the
+/// name), or None while the name itself is.
+pub fn arg_position(command: &str) -> Option<usize> {
+    let words = command.split_whitespace().count();
+    let ends_space = command.ends_with(char::is_whitespace);
+    match (words, ends_space) {
+        (0, _) | (1, false) => None,
+        (n, true) => Some(n - 1),
+        (n, false) => Some(n - 2),
+    }
+}
+
+/// A command's usage from the start of its help, Source style
+/// (`"setpos <x> <y> <z>: move there"`): the argument words (brackets
+/// kept, so `[amount=100]` is optional) and the description after the
+/// colon. Help that doesn't start with the name has no usage.
+pub fn usage(name: &str, help: &str) -> (Vec<String>, String) {
+    let Some(rest) = help
+        .get(..name.len())
+        .filter(|h| h.eq_ignore_ascii_case(name))
+        .map(|_| &help[name.len()..])
+        .filter(|r| r.starts_with(' ') || r.starts_with(':'))
+    else {
+        return (Vec::new(), help.to_string());
+    };
+    let (mut args, mut word, mut depth) = (Vec::new(), String::new(), 0i32);
+    let mut chars = rest.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '<' | '[' | '(' | '{' => depth += 1,
+            '>' | ']' | ')' | '}' => depth -= 1,
+            _ => {}
+        }
+        if depth <= 0 && c == ':' && chars.peek().is_none_or(|(_, n)| n.is_whitespace()) {
+            if !word.is_empty() {
+                args.push(std::mem::take(&mut word));
+            }
+            return (args, rest[i + 1..].trim().to_string());
+        }
+        if depth <= 0 && c.is_whitespace() {
+            if !word.is_empty() {
+                args.push(std::mem::take(&mut word));
+            }
+        } else {
+            word.push(c);
+        }
+    }
+    // No colon: the help is all description.
+    (Vec::new(), help.to_string())
 }
 
 /// Quote a word if it needs it, for writing configs and echoing commands.
@@ -335,6 +421,8 @@ impl ConsoleAppExt for App {
                 Vec::new()
             },
             archive: false,
+            range: None,
+            integer: false,
             get: Arc::new(get),
             set: Arc::new(set),
         });
@@ -385,6 +473,16 @@ where
             Ok(())
         },
     );
+    // Whole numbers only: the type reads "1" but not "0.5". A fractional
+    // one isn't on/off even when its default is 0 or 1.
+    let integer = "1".parse::<T>().is_ok() && "0.5".parse::<T>().is_err();
+    let mut console = app.world_mut().resource_mut::<Console>();
+    if let Some(c) = console.cvars.get_mut(&name.to_lowercase()) {
+        c.integer = integer;
+        if "0.5".parse::<T>().is_ok() {
+            c.values.clear();
+        }
+    }
 }
 
 /// The core commands.
@@ -411,7 +509,9 @@ fn builtins(app: &mut App) {
             let c = w.resource::<Console>();
             let Some(name) = a.first() else {
                 return Ok(Some(
-                    "Type a command or cvar name. Tab completes, Up/Down for history, Ctrl+R searches it.\n\
+                    "Type a command or cvar name: suggestions and the arguments' help show as you type.\n\
+                     Up/Down pick a suggestion (or browse history with an empty line), Enter or Tab takes it, Esc hides them;\n\
+                     Tab completes and cycles, Ctrl+R searches history, Ctrl+L clears, Ctrl+V pastes.\n\
                      find <text> searches names and help; cvarlist / cmdlist list them; differences shows changed cvars."
                         .into(),
                 ));
@@ -420,7 +520,8 @@ fn builtins(app: &mut App) {
                 return Ok(Some(format!("{}: {}", cmd.name, cmd.help)));
             }
             if let Some(v) = c.cvar(name) {
-                return Ok(Some(format!("{} (cvar, default \"{}\"): {}", v.name, v.default, v.help)));
+                let range = v.range.map_or(String::new(), |(a, b)| format!(", range {a} to {b}"));
+                return Ok(Some(format!("{} (cvar, default \"{}\"{range}): {}", v.name, v.default, v.help)));
             }
             if let Some(body) = c.aliases.get(&name.to_lowercase()) {
                 return Ok(Some(format!("{name} is an alias for: {body}")));
@@ -691,6 +792,32 @@ pub fn config_text(w: &mut World) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usage_and_argument_positions() {
+        let (args, text) = usage("setpos", "setpos <x> <y> <z>: move there (CS:S units).");
+        assert_eq!(args, ["<x>", "<y>", "<z>"]);
+        assert_eq!(text, "move there (CS:S units).");
+        // Brackets keep their spaces and colons.
+        let (args, text) = usage(
+            "mashup_hurtme",
+            "mashup_hurtme <head|chest> [amount=100] [from yaw, degrees: 0 = front]: a hit on yourself.",
+        );
+        assert_eq!(args, ["<head|chest>", "[amount=100]", "[from yaw, degrees: 0 = front]"]);
+        assert_eq!(text, "a hit on yourself.");
+        // Help without a usage is all description.
+        assert_eq!(usage("god", "Toggle taking no damage."), (vec![], "Toggle taking no damage.".to_string()));
+        assert_eq!(usage("give", "Give the local player a weapon by ID (e.g. give x).").0, Vec::<String>::new());
+        // A name that only starts the help isn't a usage.
+        assert_eq!(usage("bot", "bot_add [team]: add a bot.").0, Vec::<String>::new());
+        assert_eq!(arg_position("setpos"), None);
+        assert_eq!(arg_position("setpos "), Some(0));
+        assert_eq!(arg_position("setpos 1"), Some(0));
+        assert_eq!(arg_position("setpos 1 2 "), Some(2));
+        assert_eq!(last_command_start("echo a; sv_gr"), 8);
+        assert_eq!(last_command_start("bind x \"+jump; say\" "), 0);
+        assert_eq!(last_command_start("noclip"), 0);
+    }
 
     #[test]
     fn parsing() {

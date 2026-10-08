@@ -170,7 +170,23 @@ pub const DEFAULT_BINDS: &[(&str, &str)] = &[
     ("mwheelup", "+jump"),
     ("mwheeldown", "+jump"),
     ("f9", "bug"),
+    ("f2", "debugui"),
 ];
+
+/// Defaults added since configs began listing every bind (`CONFIG_MARK`):
+/// `binddefaults new` (run after config.cfg) puts each on its key when
+/// the key is free and no key runs the command, so existing configs get
+/// them too.
+pub const ADDED_DEFAULTS: &[(&str, &str)] = &[(",", "buyammo1"), (".", "buyammo2"), ("f2", "debugui")];
+
+/// Put the added defaults on free keys (see `ADDED_DEFAULTS`).
+pub fn bind_added_defaults(binds: &mut BTreeMap<String, String>) {
+    for (key, command) in ADDED_DEFAULTS {
+        if !binds.contains_key(*key) && keys_for(binds, command).is_empty() {
+            binds.insert(key.to_string(), command.to_string());
+        }
+    }
+}
 
 /// Commands the systems that own them read from the held keys instead of
 /// the console running them (see the module docs).
@@ -361,12 +377,17 @@ pub const CONFIG_MARK: &str = "// binds: all";
 pub(super) fn commands(app: &mut App) {
     app.console_command(
         "binddefaults",
-        "binddefaults [missing]: put the default binds back (missing: only on free keys for unbound commands).",
+        "binddefaults [missing|new]: put the default binds back (missing: only on free keys for unbound commands; \
+         new: only the defaults added lately, likewise).",
         |w, a| {
-            let all = a.first().map(String::as_str) != Some("missing");
+            let mode = a.first().map(String::as_str);
             let mut c = w.resource_mut::<Console>();
             let before = c.binds.clone();
-            bind_defaults(&mut c.binds, all);
+            match mode {
+                Some("new") => bind_added_defaults(&mut c.binds),
+                Some("missing") => bind_defaults(&mut c.binds, false),
+                _ => bind_defaults(&mut c.binds, true),
+            }
             if c.binds != before {
                 c.dirty = true;
             }
@@ -409,12 +430,34 @@ mod tests {
             assert!(names.contains(k), "{k} is not a key name");
             // Console commands run by `console::run_binds`; the rest are
             // read by their systems.
-            assert!(is_polled(c) || ["noclip", "buyammo1", "buyammo2"].contains(c), "{c}: not polled and not a known console default");
+            assert!(
+                is_polled(c) || ["noclip", "debugui", "buyammo1", "buyammo2"].contains(c),
+                "{c}: not polled and not a known console default"
+            );
         }
         let mut keys: Vec<&str> = DEFAULT_BINDS.iter().map(|(k, _)| *k).collect();
         keys.sort();
         keys.dedup();
         assert_eq!(keys.len(), DEFAULT_BINDS.len());
+    }
+
+    #[test]
+    fn added_defaults_reach_old_configs_on_free_keys() {
+        // A config listing every bind, from before F2 opened the debug UI.
+        let mut b = binds(&[("w", "+forward")]);
+        bind_added_defaults(&mut b);
+        assert_eq!(b.get("f2").map(String::as_str), Some("debugui"));
+        // The key taken, or the command on another key: left alone.
+        let mut b = binds(&[("f2", "say hi")]);
+        bind_added_defaults(&mut b);
+        assert_eq!(b["f2"], "say hi");
+        assert!(keys_for(&b, "debugui").is_empty());
+        let mut b = binds(&[("f6", "debugui")]);
+        bind_added_defaults(&mut b);
+        assert_eq!(b.get("f2"), None);
+        for (k, c) in ADDED_DEFAULTS {
+            assert!(DEFAULT_BINDS.contains(&(*k, *c)), "{k} {c} is a default too");
+        }
     }
 
     #[test]

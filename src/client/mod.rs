@@ -8,6 +8,7 @@ pub mod capture;
 pub mod chat;
 pub mod console;
 pub mod debug;
+pub mod debug_ui;
 pub mod debug_views;
 pub mod effects;
 pub mod game_hud;
