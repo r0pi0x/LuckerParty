@@ -57,6 +57,11 @@ pub struct Resolved {
     /// `$color` x `$color2` (linear multiplier; the `srgb?` variants, which
     /// the game uses as it renders in sRGB, win).
     pub tint: Option<[f32; 3]>,
+    /// `$basetexturetransform`, or the TextureScroll proxy driving it.
+    pub base_transform: crate::map::MapUvTransform,
+    /// `$selfillum` (kept only when the base texture has alpha, or a
+    /// model's `$selfillummask` is set).
+    pub selfillum: Option<crate::map::MapSelfIllum>,
 }
 
 /// A packfile's entries by lower-case name (with `/` separators).
@@ -197,6 +202,8 @@ impl<'a> MaterialLoader<'a> {
                     surfaceprop: None,
                     envmap: None,
                     tint: None,
+                    base_transform: Default::default(),
+                    selfillum: None,
                 }
             }
         }
@@ -216,6 +223,8 @@ impl<'a> MaterialLoader<'a> {
             surfaceprop: None,
             envmap: None,
             tint: None,
+            base_transform: Default::default(),
+            selfillum: None,
         };
         let vmt_path = format!("materials/{}.vmt", normalize(name));
         let Some(text) = self.read_text(&vmt_path) else {
@@ -250,7 +259,8 @@ impl<'a> MaterialLoader<'a> {
         };
         // `$additive` (light glows and beams): the parser keeps it only for
         // SpriteCard, so read it from the text (and patch materials' keys).
-        let additive = self.keys(&text, 0).get("$additive").is_some_and(|v| v.trim() != "0");
+        let keys = self.keys(&text, 0);
+        let additive = keys.get("$additive").is_some_and(|v| v.trim() != "0");
         let alpha = if additive {
             MapAlpha::Add
         } else if material.translucent() {
@@ -292,7 +302,11 @@ impl<'a> MaterialLoader<'a> {
                 | vmt_parser::material::Material::VertexLitGeneric(_)
                 | vmt_parser::material::Material::UnlitGeneric(_)
         );
-        if generic && base.is_none() && texture.is_none() && self.keys(&text, 0).contains_key("$envmap") {
+        // `$emissiveblend*` (surf_demise's glowing banners and credits:
+        // additive VertexLitGeneric on brushes, no `$basetexture`, envmap
+        // tint 0) isn't in the spec (shaders.md open question 17): drawn as
+        // the black additive surface the spec's rules give, i.e. not seen.
+        if generic && base.is_none() && texture.is_none() && keys.contains_key("$envmap") {
             texture = Some(self.solid([0.0; 3]));
         }
         let normal_map = bump.and_then(|t| self.texture(t, false));
@@ -305,48 +319,50 @@ impl<'a> MaterialLoader<'a> {
                 texture: self.texture(&m.base_texture2, true),
                 normal_map: m.bump_map2.as_deref().and_then(|t| self.texture(t, false)),
                 mask: m.blend_modulate_texture.as_deref().and_then(|t| self.texture(t, false)),
+                transform: keys
+                    .get("$basetexturetransform2")
+                    .and_then(|v| crate::map::MapUvTransform::parse(v))
+                    .unwrap_or_default(),
             }),
             _ => None,
         };
-        // The parser defaults a missing $detailblendmode to 1; the game's
-        // default is 0 (mod2x), so read the mode from the text.
-        // WorldTwoTextureBlend (specs/cs_source/shaders_two_texture_blend.md):
-        // mode 3 lerps the detail over the base, mode 4 is the "2x grime
-        // mask" (`$detail_alpha_mask_base_texture 1`, every stock aztec wall).
-        let detail_mode = match stand_in {
-            Some(StandIn::TwoTextureBlend) => {
-                if material_key::<u32>(&text, "$detail_alpha_mask_base_texture") == Some(1) {
-                    4
-                } else {
-                    3
-                }
-            }
-            _ => detail_blend_mode(&text),
+        let model_shader = matches!(
+            material,
+            vmt_parser::material::Material::VertexLitGeneric(_) | vmt_parser::material::Material::UnlitGeneric(_)
+        );
+        let detail = if stand_in == Some(StandIn::ShatteredGlass) {
+            None
+        } else {
+            self.detail(&keys, stand_in == Some(StandIn::TwoTextureBlend), model_shader)
         };
-        let detail_source = match &material {
-            vmt_parser::material::Material::LightMappedGeneric(m) => m
-                .detail
-                .as_deref()
-                .map(|d| (d.to_string(), m.detail_scale.0, m.detail_blend_factor)),
-            vmt_parser::material::Material::WorldVertexTransition(m) => m
-                .detail
-                .as_deref()
-                .map(|d| (d.to_string(), m.detail_scale.0, m.detail_blend_factor)),
-            _ => None,
+        let base_transform = self.base_transform(&text, &keys);
+        // $selfillum (shaders.md 2 and 4): kept only when the base texture
+        // has an alpha channel (or a model names its own mask). With it the
+        // base alpha is the mask, not opacity, and alpha testing is off.
+        let flag = |k: &str| keys.get(k).is_some_and(|v| v.trim() != "0" && !v.trim().is_empty());
+        let world_blend = matches!(material, vmt_parser::material::Material::WorldVertexTransition(_));
+        let selfillum = if (generic || world_blend) && flag("$selfillum") {
+            let mask = keys
+                .get("$selfillummask")
+                .filter(|_| model_shader)
+                .and_then(|m| self.texture(m, false));
+            let base_alpha = base.is_some_and(|b| self.texture_has_alpha(b));
+            let raw = keys.get("$selfillumtint").and_then(|v| vector(v)).unwrap_or([1.0; 3]);
+            // WorldTwoTextureBlend converts the tint from gamma
+            // (shaders_two_texture_blend.md 6); the others use it raw.
+            let tint = if stand_in == Some(StandIn::TwoTextureBlend) {
+                raw.map(crate::map::parameter_gamma_to_linear)
+            } else {
+                raw
+            };
+            (mask.is_some() || base_alpha).then_some(crate::map::MapSelfIllum { tint, mask })
+        } else {
+            None
         };
-        let detail = detail_source
-            .filter(|_| detail_mode <= 4 && stand_in != Some(StandIn::ShatteredGlass))
-            .and_then(|(name, scale, factor)| {
-                // Mod2x and WorldTwoTextureBlend use the texel as stored;
-                // additive and translucent decode sRGB.
-                let texture = self.texture(&name, matches!(detail_mode, 1 | 2))?;
-                Some(crate::map::MapDetail {
-                    texture,
-                    scale,
-                    factor,
-                    mode: detail_mode as u8,
-                })
-            });
+        let alpha = match alpha {
+            MapAlpha::Mask(_) if selfillum.is_some() => MapAlpha::Opaque,
+            a => a,
+        };
         Resolved {
             texture,
             alpha,
@@ -358,8 +374,137 @@ impl<'a> MaterialLoader<'a> {
             unlit: matches!(material, vmt_parser::material::Material::UnlitGeneric(_)),
             surfaceprop: material.surface_prop().map(str::to_lowercase),
             envmap: self.envmap(&text, normal_map.is_some()),
-            tint: tint(&self.keys(&text, 0)),
+            tint: tint(&keys),
+            base_transform,
+            selfillum,
         }
+    }
+
+    /// `$detail` and its parameters (specs/cs_source/shaders.md 2,
+    /// "$detail"; 4 for models): the texture sRGB-decoded only for mode 1
+    /// on world shaders and for every mode but 0 on model shaders;
+    /// `$detailtint` raw on world shaders, gamma-converted on models.
+    /// Modes 5 and 6 add after lighting, which only the model shaders do;
+    /// modes 10 and 11 (automatic for self-shadowed bump details) and
+    /// unknown modes draw no detail. WorldTwoTextureBlend has its own two
+    /// modes (shaders_two_texture_blend.md) and no tint.
+    fn detail(
+        &mut self,
+        keys: &HashMap<String, String>,
+        two_texture: bool,
+        model: bool,
+    ) -> Option<crate::map::MapDetail> {
+        use crate::map::DetailMode;
+        let name = keys.get("$detail")?.trim().to_string();
+        if name.is_empty() {
+            return None;
+        }
+        let numbers = |k: &str| -> Vec<f32> {
+            keys.get(k)
+                .map(|v| {
+                    v.trim()
+                        .trim_matches(|c| c == '[' || c == ']' || c == '{' || c == '}' || c == '"')
+                        .split_whitespace()
+                        .filter_map(|x| x.parse().ok())
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let scale = match numbers("$detailscale").as_slice() {
+            [a] => [*a, *a],
+            [a, b, ..] => [*a, *b],
+            _ => [4.0, 4.0],
+        };
+        let factor = numbers("$detailblendfactor").first().copied().unwrap_or(1.0);
+        let mode = if two_texture {
+            if numbers("$detail_alpha_mask_base_texture").first() == Some(&1.0) {
+                DetailMode::TwoTextureMask
+            } else {
+                DetailMode::TwoTextureOver
+            }
+        } else {
+            match numbers("$detailblendmode").first().map_or(0, |m| *m as u8) {
+                m @ (0..=4 | 7..=9) => DetailMode::Source(m),
+                m @ (5 | 6) if model => DetailMode::Source(m),
+                _ => return None,
+            }
+        };
+        let srgb = match mode {
+            DetailMode::Source(0) => false,
+            DetailMode::Source(1) => true,
+            DetailMode::Source(_) => model,
+            _ => false,
+        };
+        let raw_tint = match numbers("$detailtint").as_slice() {
+            [a] => [*a; 3],
+            [a, b, c, ..] => [*a, *b, *c],
+            _ => [1.0; 3],
+        };
+        let tint = match (two_texture, model) {
+            (true, _) => [1.0; 3],
+            (false, true) => raw_tint.map(crate::map::parameter_gamma_to_linear),
+            (false, false) => raw_tint,
+        };
+        let texture = self.texture(&name, srgb)?;
+        Some(crate::map::MapDetail {
+            texture,
+            scale,
+            factor,
+            mode,
+            tint,
+        })
+    }
+
+    /// `$basetexturetransform`, unless a TextureScroll proxy writes it
+    /// (then the scroll replaces it, as for water's `$bumptransform`,
+    /// specs/cs_source/water.md). Other proxies on it (TextureTransform
+    /// fed by other variables) aren't modelled (shaders.md open question 16).
+    fn base_transform(&self, text: &str, keys: &HashMap<String, String>) -> crate::map::MapUvTransform {
+        use crate::map::MapUvTransform;
+        let mut t = keys
+            .get("$basetexturetransform")
+            .and_then(|v| MapUvTransform::parse(v))
+            .unwrap_or_default();
+        let proxies = super::water::resolve(text, &|p| self.read_text(p), 0)
+            .map(|(_, body)| super::water::keys_and_proxies(&body).1)
+            .unwrap_or_default();
+        for (name, p) in &proxies {
+            let var = p.get("texturescrollvar").map(|v| v.trim().to_ascii_lowercase());
+            if name == "texturescroll" && var.as_deref() == Some("$basetexturetransform") {
+                let n = |k: &str, d: f32| p.get(k).and_then(|v| v.trim().parse::<f32>().ok()).unwrap_or(d);
+                t = MapUvTransform::scrolling(
+                    n("texturescrollrate", 0.0),
+                    n("texturescrollangle", 0.0),
+                    n("texturescale", 1.0),
+                );
+            }
+        }
+        t
+    }
+
+    /// Whether a texture's format has an alpha channel (what `$selfillum`
+    /// needs to be kept, shaders.md 2).
+    fn texture_has_alpha(&self, name: &str) -> bool {
+        use vtf::ImageFormat as F;
+        let path = format!("materials/{}.vtf", normalize(name).trim_end_matches(".vtf"));
+        let Some(bytes) = self.read(&path) else { return false };
+        let Ok(vtf) = vtf::from_bytes(&bytes) else { return false };
+        matches!(
+            vtf.header.highres_image_format,
+            F::Rgba8888
+                | F::Abgr8888
+                | F::Ia88
+                | F::A8
+                | F::Argb8888
+                | F::Bgra8888
+                | F::Dxt3
+                | F::Dxt5
+                | F::Bgra4444
+                | F::Dxt1Onebitalpha
+                | F::Bgra5551
+                | F::Rgba16161616f
+                | F::Rgba16161616
+        )
     }
 
     /// A material's text parsed, patches resolved through their included
@@ -548,10 +693,10 @@ impl<'a> MaterialLoader<'a> {
             }
             return out;
         }
-        // shader { key value ... }: the first block's own keys, then the
-        // DirectX 9 fallback block's (`<shader>_dx9`), which LDR CS:S uses
-        // at DX level 90 and up; other nested blocks (proxies, HDR) are
-        // skipped.
+        // shader { key value ... }: the first block's own keys, then those
+        // of blocks that apply at DirectX 9 (`<shader>_dx9` fallbacks and
+        // `">=DX90"` conditions, which LDR CS:S uses); other nested blocks
+        // (proxies, HDR, older levels) are skipped.
         let mut level = 0;
         let mut i = 0;
         let mut dx9 = HashMap::new();
@@ -567,7 +712,7 @@ impl<'a> MaterialLoader<'a> {
                 }
                 key if level == 1 && t.get(i + 1).is_some_and(|v| v == "{") => {
                     let k = key.to_lowercase();
-                    in_dx9 = k.ends_with("_dx9") && !k.contains("hdr");
+                    in_dx9 = dx_block_applies(&k) == Some(true);
                 }
                 key if t.get(i + 1).is_some_and(|v| v != "{" && v != "}") => {
                     if level == 1 {
@@ -1072,6 +1217,31 @@ fn dx_variant_of(shader: &str) -> Option<&'static str> {
     PARSER_SHADERS.iter().copied().find(|s| *s == base)
 }
 
+/// Whether a block in the shader's block applies at DirectX level 9
+/// (Some(true): its keys count; Some(false): dropped; None: kept).
+fn dx_block_applies(name: &str) -> Option<bool> {
+    const LEVEL: u32 = 95;
+    let n = name.to_ascii_lowercase();
+    let ops: [(&str, fn(u32, u32) -> bool); 4] = [
+        (">=dx", |l, x| l >= x),
+        ("<=dx", |l, x| l <= x),
+        (">dx", |l, x| l > x),
+        ("<dx", |l, x| l < x),
+    ];
+    for (op, holds) in ops {
+        if let Some(level) = n.strip_prefix(op).and_then(|x| x.parse::<u32>().ok()) {
+            return Some(holds(LEVEL, level));
+        }
+    }
+    let (_, level) = n.rsplit_once("_dx")?;
+    match level {
+        _ if n.contains("hdr") => Some(false),
+        "9" | "90" | "95" => Some(true),
+        l if !l.is_empty() && l.bytes().all(|b| b.is_ascii_digit()) => Some(false),
+        _ => None,
+    }
+}
+
 /// A material's text rewritten the way the game reads what the VMT parser
 /// refuses (community maps' materials, found by the map sweep):
 /// - unbalanced braces: missing `}` at the end are added, extra ones and
@@ -1119,30 +1289,6 @@ fn lenient_vmt(text: &str) -> String {
             }
         }
         out
-    }
-    /// Whether a block in the shader's block applies at DirectX level 9
-    /// (Some(true): its keys count; Some(false): dropped; None: kept).
-    fn applies(name: &str) -> Option<bool> {
-        const LEVEL: u32 = 95;
-        let n = name.to_ascii_lowercase();
-        let ops: [(&str, fn(u32, u32) -> bool); 4] = [
-            (">=dx", |l, x| l >= x),
-            ("<=dx", |l, x| l <= x),
-            (">dx", |l, x| l > x),
-            ("<dx", |l, x| l < x),
-        ];
-        for (op, holds) in ops {
-            if let Some(level) = n.strip_prefix(op).and_then(|x| x.parse::<u32>().ok()) {
-                return Some(holds(LEVEL, level));
-            }
-        }
-        let (_, level) = n.rsplit_once("_dx")?;
-        match level {
-            _ if n.contains("hdr") => Some(false),
-            "9" | "90" | "95" => Some(true),
-            l if !l.is_empty() && l.bytes().all(|b| b.is_ascii_digit()) => Some(false),
-            _ => None,
-        }
     }
     fn numbers(v: &str) -> Vec<f32> {
         v.trim()
@@ -1213,7 +1359,7 @@ fn lenient_vmt(text: &str) -> String {
         let mut body = Vec::new();
         for kid in kids {
             match kid {
-                Node::Block(name, inner) => match applies(&name) {
+                Node::Block(name, inner) => match dx_block_applies(&name) {
                     Some(true) => body.extend(inner),
                     Some(false) => {}
                     None => body.push(Node::Block(name, inner)),
@@ -1229,11 +1375,6 @@ fn lenient_vmt(text: &str) -> String {
         emit(vec![Node::Block(shader, body)], &mut out);
     }
     out
-}
-
-/// `$detailblendmode` from a material's text (0 when absent).
-fn detail_blend_mode(text: &str) -> u32 {
-    material_key(text, "$detailblendmode").unwrap_or(0)
 }
 
 /// `$color` x `$color2` from a material's keys, preferring their `srgb?`

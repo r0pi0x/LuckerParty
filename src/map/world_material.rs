@@ -13,6 +13,10 @@ pub struct WorldParams {
     pub bumped: f32,
     pub normal_g_sign: f32,
     pub alpha_cutoff: f32,
+    /// `$basetexturetransform` rows (m0, m1, m2, scroll), see
+    /// `MapUvTransform::shader_rows`; world_prepass.wgsl reads them too.
+    pub base_uv_u: Vec4,
+    pub base_uv_v: Vec4,
     pub debug_view: f32,
     pub normal_x_sign: f32,
     /// Multiplier on sampled lightmap values (decodes Source's LDR encoding).
@@ -23,7 +27,8 @@ pub struct WorldParams {
     pub blend_masked: f32,
     /// 1 when the second layer has its own normal map.
     pub blend_normal: f32,
-    /// Detail texture: 0 none, 1 mod2x, 2 additive, 3 alpha blend.
+    /// Detail texture: 0 none, 1 + Source's `$detailblendmode`, 20 and 21
+    /// WorldTwoTextureBlend's modes (`DetailMode::shader_value`).
     pub detail: f32,
     pub detail_factor: f32,
     pub detail_scale: Vec2,
@@ -56,6 +61,38 @@ pub struct WorldParams {
     /// the fudge); start, end (meters), max density in xyz.
     pub water_fog_color: Vec4,
     pub water_fog_range: Vec4,
+    /// `$basetexturetransform2` rows (the second layer's coordinates).
+    pub base2_uv_u: Vec4,
+    pub base2_uv_v: Vec4,
+    /// `$detailtint` (linear multiplier on the detail texel).
+    pub detail_tint: Vec4,
+    /// 1 with `$selfillum`: the base alpha lerps toward `selfillum_tint` x
+    /// albedo, unlit.
+    pub selfillum: f32,
+    pub selfillum_tint: Vec4,
+    /// 1: drawn at the texture's own brightness times `unlit_tint` (an
+    /// UnlitGeneric material on a brush, or the `$emissiveblend` stand-in),
+    /// not lit by the lightmap.
+    pub unlit: f32,
+    pub unlit_tint: Vec4,
+}
+
+impl WorldParams {
+    /// Identity texture transforms and a white detail tint, for params
+    /// built field by field.
+    pub fn identity_uv() -> Self {
+        let [u, v] = super::MapUvTransform::IDENTITY.shader_rows();
+        Self {
+            base_uv_u: u,
+            base_uv_v: v,
+            base2_uv_u: u,
+            base2_uv_v: v,
+            detail_tint: Vec4::ONE,
+            selfillum_tint: Vec4::ONE,
+            unlit_tint: Vec4::ONE,
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]

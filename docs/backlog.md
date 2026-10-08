@@ -356,8 +356,11 @@ docs/plans/active/sound.md.
   our probe on average (self-shadowing, or a different scale?). Compare
   a prop on kz_ancient_ruins or surf_demise with CS:S.
 - **More refcmp views** across dust2 (mid, long, B, spawns) and other maps.
-- Detail blend modes other than 0 and 1;
-  `$basetexturetransform` (unused on dust2).
+- **Material effects, open questions** for a spec session
+  (specs/cs_source/shaders.md 16-19): texture transform composition and
+  the TextureTransform proxy, `$emissiveblend*` (surf_demise's glowing
+  banners aren't drawn), `$selfillummask`'s channel and
+  `$selfillum_envmapmask_alpha`, detail modes 10/11.
 
 ## 9. Performance
 

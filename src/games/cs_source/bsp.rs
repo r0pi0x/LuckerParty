@@ -81,6 +81,14 @@ pub fn load_level(mount: &Mount, name: &str, hdr_level: u8) -> Result<MapData, S
         mesh.normal_map = r.normal_map;
         mesh.blend = r.blend;
         mesh.detail = r.detail;
+        mesh.base_transform = r.base_transform;
+        mesh.selfillum = r.selfillum;
+        // UnlitGeneric brushes (neon signs) draw at their own brightness
+        // times $color; lightmapped ones ignore the tint for now.
+        mesh.unlit = r.unlit;
+        if r.unlit {
+            mesh.tint = r.tint;
+        }
         if mesh.blend.is_none() {
             mesh.blend_weights.clear();
         }

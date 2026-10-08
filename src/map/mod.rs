@@ -38,6 +38,8 @@ pub mod hearing;
 pub mod live_sound;
 pub mod loose;
 pub mod loading;
+pub mod material_fx;
+pub use material_fx::{DetailMode, MapSelfIllum, MapUvTransform};
 pub mod merge;
 pub mod probe_lit;
 pub mod radio;
@@ -223,6 +225,11 @@ pub struct MapMesh {
     pub blend_weights: Vec<f32>,
     /// A detail texture tiled over the base texture.
     pub detail: Option<MapDetail>,
+    /// `$basetexturetransform` (or a TextureScroll proxy driving it): the
+    /// base texture's coordinates, and the detail's before `$detailscale`.
+    pub base_transform: MapUvTransform,
+    /// `$selfillum`: glows with its own colour where the mask says.
+    pub selfillum: Option<MapSelfIllum>,
     /// Drawn at the texture's own brightness, ignoring lighting (Source's
     /// UnlitGeneric).
     pub unlit: bool,
@@ -280,6 +287,9 @@ pub struct MapMeshLook {
     pub unlit: bool,
     pub envmap: Option<MapEnvmap>,
     pub tint: Option<[f32; 3]>,
+    pub detail: Option<MapDetail>,
+    pub base_transform: MapUvTransform,
+    pub selfillum: Option<MapSelfIllum>,
 }
 
 impl MapMeshLook {
@@ -293,6 +303,9 @@ impl MapMeshLook {
             unlit: self.unlit,
             envmap: self.envmap.clone(),
             tint: self.tint,
+            detail: self.detail,
+            base_transform: self.base_transform,
+            selfillum: self.selfillum,
             ..m.clone()
         }
     }
@@ -354,15 +367,18 @@ pub struct MapEnvmap {
 /// and combined with the base color (specs/cs_source/shaders.md).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MapDetail {
-    /// Index into `MapData::textures` (linear for mode 0, sRGB otherwise).
+    /// Index into `MapData::textures` (sRGB-decoded or raw as the mode and
+    /// shader want: shaders.md section 1).
     pub texture: usize,
     pub scale: [f32; 2],
     pub factor: f32,
-    /// 0: multiply by 2 x detail ("mod2x"); 1: add; 2: blend the detail
-    /// over the base by its alpha; 3 and 4: WorldTwoTextureBlend (detail
-    /// over base, and the 2x grime mask), which also light the surface
-    /// their own way (specs/cs_source/shaders_two_texture_blend.md).
-    pub mode: u8,
+    /// Source's `$detailblendmode`, or one of WorldTwoTextureBlend's own
+    /// modes, which also light the surface their own way
+    /// (specs/cs_source/shaders_two_texture_blend.md).
+    pub mode: DetailMode,
+    /// `$detailtint`, linear as the shader uses it (raw on world
+    /// surfaces, gamma-converted on models).
+    pub tint: [f32; 3],
 }
 
 /// The second layer of a two-texture surface. Indices into
@@ -374,6 +390,8 @@ pub struct MapBlend {
     /// Shapes the blend: green moves the transition point, red sets its
     /// softness (linear texture).
     pub mask: Option<usize>,
+    /// `$basetexturetransform2`: the second texture's coordinates.
+    pub transform: MapUvTransform,
 }
 
 /// Baked lighting atlas: linear RGB, where 1.0 shows a texture at its own
@@ -1448,6 +1466,10 @@ pub struct MapFog {
 #[derive(Clone, Debug)]
 pub struct MapSky {
     pub faces: [(usize, u8); 6],
+    /// Each face material's `$basetexturetransform` (specs/cs_source/
+    /// shaders.md 6: the face coordinates go through it; community skies
+    /// use "scale 1 2" to show a half-height texture above the horizon).
+    pub transforms: [MapUvTransform; 6],
     /// HDR versions of the faces (same order and orientations), shown
     /// instead when the map loads in HDR.
     pub hdr: Option<Arc<[MapHdrImage; 6]>>,
@@ -2401,9 +2423,20 @@ fn spawn_map(
                         blend: if blended { 1.0 } else { 0.0 },
                         blend_masked: if blend.mask.is_some() { 1.0 } else { 0.0 },
                         blend_normal: if bumped && blend.normal_map.is_some() { 1.0 } else { 0.0 },
-                        detail: m.detail.map_or(0.0, |d| d.mode as f32 + 1.0),
+                        detail: m.detail.map_or(0.0, |d| d.mode.shader_value()),
                         detail_factor: m.detail.map_or(0.0, |d| d.factor),
                         detail_scale: m.detail.map_or(Vec2::ONE, |d| Vec2::from_array(d.scale)),
+                        detail_tint: m.detail.map_or(Vec4::ONE, |d| Vec3::from_array(d.tint).extend(1.0)),
+                        base_uv_u: m.base_transform.shader_rows()[0],
+                        base_uv_v: m.base_transform.shader_rows()[1],
+                        base2_uv_u: blend.transform.shader_rows()[0],
+                        base2_uv_v: blend.transform.shader_rows()[1],
+                        selfillum: if m.selfillum.is_some() { 1.0 } else { 0.0 },
+                        unlit: if m.unlit { 1.0 } else { 0.0 },
+                        unlit_tint: m.tint.map_or(Vec4::ONE, |t| Vec3::from_array(t).extend(1.0)),
+                        selfillum_tint: m
+                            .selfillum
+                            .map_or(Vec4::ONE, |s| Vec3::from_array(s.tint).extend(1.0)),
                         fog_color: fog_color(data.fog.as_ref().filter(|_| view == MapDebugView::Normal && !m.skybox)),
                         fog_range: fog_range(data.fog.as_ref()),
                         bumped: if bumped { 1.0 } else { 0.0 },
@@ -2438,7 +2471,7 @@ fn spawn_map(
                         envmap_saturation: m.envmap.map_or(1.0, |e| e.saturation),
                         envmap_fresnel: m.envmap.map_or(1.0, |e| e.fresnel),
                         envmap_tint: m.envmap.map_or(Vec4::ONE, |e| Vec3::from_array(e.tint).extend(1.0)),
-                        ..default()
+                        ..WorldParams::identity_uv()
                     },
                     base: m.texture.map(|i| textures[i].clone()),
                     // Bound for radiosity bump lighting, and for reflections
@@ -3509,7 +3542,7 @@ fn clamp_edges(image: &mut Image) {
 
 /// Source's parameter gamma-to-linear table (specs/cs_source/shaders.md
 /// Quirks): rounded to 1/255; 0.95 and up become 1; above 1 unchanged.
-fn gamma_to_linear(v: f32) -> f32 {
+pub fn parameter_gamma_to_linear(v: f32) -> f32 {
     if v > 1.0 {
         return v;
     }
@@ -3746,11 +3779,33 @@ fn lit_prop_material(
             } else {
                 1.0
             },
+            base_uv_u: m.base_transform.shader_rows()[0],
+            base_uv_v: m.base_transform.shader_rows()[1],
+            detail: m
+                .detail
+                .filter(|_| !lighting_only)
+                .map_or(0.0, |d| d.mode.shader_value()),
+            detail_factor: m.detail.map_or(0.0, |d| d.factor),
+            detail_scale: m.detail.map_or(Vec2::ONE, |d| Vec2::from_array(d.scale)),
+            detail_tint: m.detail.map_or(Vec4::ONE, |d| Vec3::from_array(d.tint).extend(1.0)),
+            selfillum: match m.selfillum {
+                Some(MapSelfIllum { mask: Some(_), .. }) => 2.0,
+                Some(_) => 1.0,
+                None => 0.0,
+            },
+            selfillum_tint: m
+                .selfillum
+                .map_or(Vec4::ONE, |s| Vec3::from_array(s.tint).extend(1.0)),
             ..default()
         },
         base: m.texture.filter(|_| !lighting_only).map(|i| textures[i].clone()),
         envmap: None,
         envmap_mask: None,
+        detail: m
+            .detail
+            .filter(|_| !lighting_only)
+            .map(|d| textures[d.texture].clone()),
+        selfillum_mask: m.selfillum.and_then(|s| s.mask).map(|i| textures[i].clone()),
         alpha_mode: m.alpha.shader_alpha_mode(),
         double_sided: m.double_sided,
         cull_front: false,
@@ -3771,7 +3826,7 @@ fn set_prop_envmap(material: &mut PropMaterial, env: &MapEnvmap, cube: Handle<Im
     }
     material.params.envmap_contrast = env.contrast;
     material.params.envmap_saturation = env.saturation;
-    material.params.envmap_tint = Vec3::from_array(env.tint.map(gamma_to_linear)).extend(1.0);
+    material.params.envmap_tint = Vec3::from_array(env.tint.map(parameter_gamma_to_linear)).extend(1.0);
 }
 
 /// A simulated physics prop: how players interact with it, its mass (kg)
@@ -4450,7 +4505,7 @@ fn sky_image(sky: &MapSky, textures: &[MapTexture]) -> Image {
         let t = &textures[tex];
         for y in 0..size {
             for x in 0..size {
-                let (sx, sy) = sky_texel(x, y, size, turns, t.width, t.height);
+                let (sx, sy) = sky_texel(x, y, size, turns, &sky.transforms[face], t.width, t.height);
                 let i = ((sy * t.width + sx) * 4) as usize;
                 data.extend_from_slice(&t.rgba8[i..i + 4]);
             }
@@ -4460,8 +4515,9 @@ fn sky_image(sky: &MapSky, textures: &[MapTexture]) -> Image {
 }
 
 /// Which texel of a `w` x `h` sky face lands at (x, y) of a `size` cube
-/// face.
-fn sky_texel(x: u32, y: u32, size: u32, turns: u8, w: u32, h: u32) -> (u32, u32) {
+/// face, the face's coordinates through its material's `transform`
+/// (clamped to the texture, as the sky samples it).
+fn sky_texel(x: u32, y: u32, size: u32, turns: u8, transform: &MapUvTransform, w: u32, h: u32) -> (u32, u32) {
     // Rotate clockwise by `turns` quarter turns: sample the source
     // pixel that lands at (x, y).
     let (mut u, mut v) = (x, y);
@@ -4476,20 +4532,26 @@ fn sky_texel(x: u32, y: u32, size: u32, turns: u8, w: u32, h: u32) -> (u32, u32)
     // a black row) that the game never shows, while a cube map
     // blends them in at every seam.
     let inner = |p: u32, n: u32| 1 + (p as u64 * n.saturating_sub(2) as u64 / size as u64) as u32;
-    (inner(u, w).min(w - 1), inner(v, h).min(h - 1))
+    if transform.is_identity() {
+        return (inner(u, w).min(w - 1), inner(v, h).min(h - 1));
+    }
+    let face_uv = Vec2::new((u as f32 + 0.5) / size as f32, (v as f32 + 0.5) / size as f32);
+    let t = transform.apply(face_uv, 0.0).clamp(Vec2::ZERO, Vec2::ONE);
+    let texel = |c: f32, n: u32| ((c * n.saturating_sub(2) as f32) as u32 + 1).min(n.saturating_sub(2).max(1));
+    (texel(t.x, w).min(w - 1), texel(t.y, h).min(h - 1))
 }
 
 /// The HDR sky (`MapSky::hdr`) as a linear half-float cube map.
 fn hdr_sky_image(sky: &MapSky, faces: &[MapHdrImage; 6]) -> Image {
     let size = faces.iter().map(|f| f.width.max(f.height)).max().unwrap_or(1).max(1);
     let mut data = Vec::with_capacity((size * size * 8 * 6) as usize);
-    for (face, (_, turns)) in faces.iter().zip(sky.faces) {
+    for ((face, (_, turns)), transform) in faces.iter().zip(sky.faces).zip(&sky.transforms) {
         for y in 0..size {
             for x in 0..size {
                 let [r, g, b] = if face.width == 0 || face.height == 0 {
                     [0.0; 3]
                 } else {
-                    let (sx, sy) = sky_texel(x, y, size, turns, face.width, face.height);
+                    let (sx, sy) = sky_texel(x, y, size, turns, transform, face.width, face.height);
                     face.rgb[(sy * face.width + sx) as usize]
                 };
                 for c in [r, g, b, 1.0] {
