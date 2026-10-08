@@ -77,6 +77,12 @@ fn egui_takes_its_input(mut settings: ResMut<EguiGlobalSettings>) {
 fn spawn_ui_camera(mut commands: Commands) {
     commands.spawn((
         Name::new("UI camera"),
+        UiCamera,
+        // It draws over the 3D cameras' finished image: no tonemapping of
+        // its own (`hdr::hdr_cameras` gives it `Hdr` with theirs, so they
+        // share one target; with a different format it would replace the
+        // world with its own empty image).
+        bevy::core_pipeline::tonemapping::Tonemapping::None,
         Camera2d,
         Camera {
             order: UI_CAMERA_ORDER,
@@ -87,6 +93,10 @@ fn spawn_ui_camera(mut commands: Commands) {
         PrimaryEguiContext,
     ));
 }
+
+/// The camera that draws the UI and egui over everything (`spawn_ui_camera`).
+#[derive(Component)]
+pub struct UiCamera;
 
 /// Above every 3D camera (the view model's is the first person's + 1).
 const UI_CAMERA_ORDER: isize = 100;
