@@ -9,10 +9,11 @@ use avian3d::prelude::{
 };
 use bevy::{ecs::message::MessageCursor, prelude::*};
 
+use super::classes::ServerLine;
 use super::hud::HudMessages;
 use super::prop_damage::{Hit, Motion, PropExplosion};
 use super::world::{Collision, Effect, EntId, LogicWorld, Player, SOLID_SKIN, SWEEP_EPS, Who};
-use crate::console::{Console, ConsoleAppExt};
+use crate::console::{Console, ConsoleAppExt, Level};
 use crate::core::{
     BaseVelocity, Damage, DamageKind, Damageable, EntityGravity, Explosion, Health, Hitgroup, Intent, LocalPlayer,
     MapBrush, MapBrushes, MapTerrain, MovementState, MovingSolid, RoundRestarts, SimSet, Team, Velocity,
@@ -481,6 +482,8 @@ fn restore_settings(world: &mut World) {
     };
     if let Some(mut c) = world.get_resource_mut::<Console>() {
         for (name, value) in restore {
+            info!("point_servercommand: map unloaded, {name} back to {value}");
+            c.info(format!("point_servercommand: map unloaded, {name} back to {value}"));
             c.submit(format!("{name} {}", crate::console::quote(&value)));
         }
     }
@@ -968,27 +971,54 @@ fn entity_node(world: &mut World, id: EntId) -> Option<Entity> {
         .map(|(e, _)| e)
 }
 
-/// An allowed server command: `say` prints; settings remember their old
-/// value (put back at the next map) and run through the console.
-fn server_command(world: &mut World, line: &str) {
+/// Game commands a map may run as if they were settings: cvars in Source,
+/// console commands here. They change nothing to put back.
+const SETTING_COMMANDS: &[&str] = &["mp_restartgame"];
+
+/// A server command that passed `classes::check_server_command`: `say`
+/// prints; a setting our console has as a cvar remembers its value from
+/// before the map first changed it (put back when the map unloads,
+/// `restore_settings`) and runs through the console; anything else is
+/// logged and ignored. Each outcome prints a console line.
+fn server_command(world: &mut World, line: &ServerLine) {
     let Some(mut console) = world.get_resource_mut::<Console>() else {
         return;
     };
-    if let Some(text) = line.strip_prefix("say ") {
-        console.info(format!("Console: {text}"));
-        return;
-    }
-    let name = line.split_whitespace().next().unwrap_or("").to_string();
-    let cvar = console.cvar(&name).cloned();
-    console.submit(line.to_string());
-    if let Some(cvar) = cvar {
-        let old = (cvar.get)(world).unwrap_or_default();
-        if let Some(mut l) = world.get_resource_mut::<Logic>()
-            && !l.restore.iter().any(|(n, _)| *n == name)
-        {
-            l.restore.push((name, old));
+    let (name, value) = match line {
+        ServerLine::Say(text) => {
+            console.info(format!("Console: {text}"));
+            return;
         }
+        ServerLine::Set { name, value } => (name.clone(), value.clone()),
+    };
+    let run = format!("{name} {}", crate::console::quote(&value));
+    let Some(cvar) = console.cvar(&name).cloned() else {
+        if SETTING_COMMANDS.contains(&name.as_str()) && console.command(&name).is_some() {
+            console.info(format!("point_servercommand: {name} {value}"));
+            console.submit(run);
+        } else {
+            let what = if console.command(&name).is_some() { "a command, not a setting" } else { "no such setting" };
+            console.print(Level::Warn, format!("point_servercommand: ignored '{name} {value}' ({what})"));
+            warn!("point_servercommand: ignored '{name} {value}' ({what})");
+        }
+        return;
+    };
+    console.submit(run);
+    // The line runs from the queue later, so this is still the value
+    // before the map's.
+    let old = (cvar.get)(world).unwrap_or_default();
+    let mut first = false;
+    if let Some(mut l) = world.get_resource_mut::<Logic>()
+        && !l.restore.iter().any(|(n, _)| *n == name)
+    {
+        l.restore.push((name.clone(), old.clone()));
+        first = true;
     }
+    let was = if first { format!(" (was {old})") } else { String::new() };
+    info!("point_servercommand: {name} {value}{was}");
+    world
+        .resource_mut::<Console>()
+        .info(format!("point_servercommand: {name} {value}{was}"));
 }
 
 /// Run one logic phase with the players and the static world.
@@ -1027,6 +1057,13 @@ fn run_phase(world: &mut World, phase: impl FnOnce(&mut LogicWorld, &dyn Collisi
     for line in logic.world.log.drain(..) {
         if line.contains("refused") {
             warn!("{line}");
+            // What a map's server and client commands were refused shows
+            // in the console too.
+            if line.starts_with("point_")
+                && let Some(mut c) = world.get_resource_mut::<Console>()
+            {
+                c.print(Level::Warn, line);
+            }
         } else {
             debug!("{line}");
         }

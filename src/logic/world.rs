@@ -204,8 +204,9 @@ pub enum Effect {
         to: Option<Entity>,
         message: super::hud::HudMessage,
     },
-    /// An allowed server command (point_servercommand), already checked.
-    ServerCommand(String),
+    /// A server command (point_servercommand) that passed
+    /// `classes::check_server_command`.
+    ServerCommand(super::classes::ServerLine),
     /// An allowed client command for one player (point_clientcommand).
     ClientCommand { player: Entity, command: String },
     /// Gibs thrown by a breaking brush: a gib list name (propdata
