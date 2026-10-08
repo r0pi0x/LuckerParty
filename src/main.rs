@@ -9,7 +9,7 @@ use mashup::{
 fn main() {
     let args = client::Args::parse();
     let mut app = App::new();
-    match &args.map {
+    match args.game_map() {
         // At the HDR level the console will start with (mat_hdr_level).
         Some(id) => match games::load_map_level(id, client::hdr::startup_level(&args.console)) {
             Ok(data) => {
@@ -45,7 +45,9 @@ fn main() {
             }
         },
         None => {
-            // Map systems without a map, so `map <name>` can load one.
+            // The greybox (behind the main menu unless the run starts
+            // playing), and map systems without a map, so `map <name>` can
+            // load one.
             app.add_plugins((greybox::GreyboxMapPlugin, MapPlugin::empty()));
         }
     }
@@ -96,7 +98,7 @@ fn main() {
         mashup::map::particles::ParticleMaterialPlugin,
     ))
     // A game's maps run at that game's server tick.
-    .insert_resource(match args.map.as_deref() {
+    .insert_resource(match args.game_map() {
         Some(id) if id.starts_with("cs_source:") => {
             Time::<Fixed>::from_seconds(mashup::games::cs_source::TICK_INTERVAL)
         }

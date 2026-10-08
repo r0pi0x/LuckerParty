@@ -1,5 +1,8 @@
-//! The in-game menu (Esc, or `menu [page]`), drawn as CS:S's GameUI draws
-//! its game menu: the entries at the left over the darkened game, each
+//! The main menu and the in-game menu (Esc, or `menu [page]`), one menu
+//! drawn as CS:S's GameUI draws it. Out of a game (startup without a map,
+//! after `disconnect`) it is the main menu: always open, over the game's
+//! background picture, the game's title over its entries, in-game entries
+//! hidden. In a game: the entries at the left over the darkened game, each
 //! dialog a frame in the middle of the screen (title bar, raised borders,
 //! the options' tabs), in the install's GameUI scheme (`map::hud::GameUi`:
 //! `SourceScheme.res` colours, numbers and fonts, `GameMenu.res` entries
@@ -42,7 +45,7 @@ impl Plugin for GameMenuPlugin {
             .init_resource::<AfterLoad>()
             .init_resource::<RegrabCursor>()
             .init_resource::<MenuUi>()
-            .add_systems(Startup, (load_fonts, start_loading_ui))
+            .add_systems(Startup, (load_fonts, start_loading_ui, start_session))
             .add_systems(
                 Update,
                 (
@@ -83,8 +86,12 @@ impl Plugin for GameMenuPlugin {
             open_menu(w, Page::Main);
             Ok(None)
         })
-        .console_command("gameui_hide", "Close the game menu.", |w, _| {
-            w.resource_mut::<GameMenu>().open = false;
+        .console_command("gameui_hide", "Close the game menu (in a game).", |w, _| {
+            let mut menu = w.resource_mut::<GameMenu>();
+            if !menu.in_game {
+                return Err("the main menu stays open out of a game".into());
+            }
+            menu.open = false;
             w.resource_mut::<RegrabCursor>().0 = true;
             Ok(None)
         });
@@ -155,24 +162,52 @@ impl Default for NewGame {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MainItem {
     Resume,
+    /// Leave the game for the main menu (`disconnect`).
+    Disconnect,
+    /// The server browser: greyed until mashup has networking.
+    FindServers,
+    /// The game's "Create Server": our new game page.
     NewGame,
     Bots,
     Team,
     Options,
     BugReport,
     Quit,
+    /// Ours: a rounds game on `QUICK_MAP` with bots, at once.
+    QuickStart,
+    /// Ours: mashup's greybox test map (`map greybox`).
+    Greybox,
+    /// Ours: open the console (`toggleconsole`).
+    Console,
 }
 
-/// The entries without the game's menu file: ours, in our order.
-pub const MAIN: [(MainItem, &str); 7] = [
-    (MainItem::Resume, "Resume Game"),
-    (MainItem::NewGame, "New Game"),
-    (MainItem::Bots, "Bots"),
-    (MainItem::Team, "Team"),
-    (MainItem::Options, "Options"),
-    (MainItem::BugReport, "Report a Bug"),
-    (MainItem::Quit, "Quit"),
+/// The game's entries without its menu file, in CS:S's order and words:
+/// item, text, shown only in a game.
+pub const MAIN: [(MainItem, &str, bool); 7] = [
+    (MainItem::Resume, "Resume Game", true),
+    (MainItem::Disconnect, "Disconnect", true),
+    (MainItem::FindServers, "Find Servers", false),
+    (MainItem::NewGame, "Create Server", false),
+    (MainItem::BugReport, "Report a Bug", false),
+    (MainItem::Options, "Options", false),
+    (MainItem::Quit, "Quit", false),
 ];
+
+/// Ours, after the game's entries (and a gap): item, text, shown only in a
+/// game.
+pub const OURS: [(MainItem, &str, bool); 5] = [
+    (MainItem::QuickStart, "Quick Start", false),
+    (MainItem::Greybox, "Greybox Test Map", false),
+    (MainItem::Bots, "Bots", true),
+    (MainItem::Team, "Team", true),
+    (MainItem::Console, "Console", false),
+];
+
+/// The map a quick start plays (rounds, `QUICK_BOTS` normal bots per
+/// team: terrorists, counter-terrorists besides you); the first map when
+/// the install lacks it.
+pub const QUICK_MAP: &str = "de_dust2";
+const QUICK_BOTS: (u8, u8) = (5, 4);
 
 impl MainItem {
     fn page(self) -> Option<Page> {
@@ -187,72 +222,99 @@ impl MainItem {
 }
 
 /// A left-hand entry: what it does, its text, whether a gap comes before
-/// it.
+/// it (only in a game: `gap_in_game_only`), whether it shows only in a
+/// game, and whether it can be pressed.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MainEntry {
     pub item: MainItem,
     pub label: String,
     pub gap: bool,
+    pub gap_in_game_only: bool,
+    pub in_game_only: bool,
+    pub enabled: bool,
 }
 
-/// The left-hand entries: the game's (`GameMenu.res`) that mashup can do,
-/// in its order and words, with ours (bots, team) after its new game;
-/// ours alone without the game's file. Entries mashup can't do (find
-/// servers, achievements ...) are left out.
-pub fn main_entries(ui: Option<&GameUi>) -> Vec<MainEntry> {
-    let ours = |item: MainItem, gap: bool| MainEntry {
-        item,
-        label: MAIN.iter().find(|(m, _)| *m == item).map_or("", |(_, l)| l).to_uppercase(),
-        gap,
-    };
-    let Some(ui) = ui.filter(|u| !u.menu.is_empty()) else {
-        return MAIN
-            .iter()
-            .map(|(item, _)| ours(*item, *item == MainItem::BugReport))
-            .collect();
-    };
-    let mut out: Vec<MainEntry> = Vec::new();
-    let mut gap = false;
-    for e in &ui.menu {
-        if e.label.trim().is_empty() && e.command.trim().is_empty() {
-            gap = !out.is_empty();
-            continue;
-        }
-        let command = e.command.trim().to_lowercase();
-        let item = match command.as_str() {
-            "resumegame" => MainItem::Resume,
-            "opennewgamedialog" | "opencreatemultiplayergamedialog" => MainItem::NewGame,
-            "openoptionsdialog" => MainItem::Options,
-            "quit" | "quitnoconfirm" => MainItem::Quit,
-            "engine bug" => MainItem::BugReport,
-            _ => continue,
-        };
-        if out.iter().any(|m| m.item == item) {
-            continue;
-        }
-        let label = match item {
-            // A new game is the game's "new game", not its server dialog.
-            MainItem::NewGame => ui.string("#GameUI_GameMenu_NewGame").unwrap_or("NEW GAME").to_string(),
-            _ => e.label.clone(),
-        };
-        out.push(MainEntry { item, label, gap });
-        gap = false;
-        if item == MainItem::NewGame {
-            out.push(ours(MainItem::Bots, false));
-            out.push(ours(MainItem::Team, false));
+impl MainEntry {
+    fn new(item: MainItem, label: &str, in_game_only: bool) -> Self {
+        Self {
+            item,
+            label: label.to_uppercase(),
+            gap: false,
+            gap_in_game_only: false,
+            in_game_only,
+            // Until mashup has networking.
+            enabled: item != MainItem::FindServers,
         }
     }
-    // Whatever the file lacks, where ours has it.
-    for (i, (item, _)) in MAIN.iter().enumerate() {
-        if out.iter().any(|m| m.item == *item) {
-            continue;
+}
+
+/// Every left-hand entry, shown or not: the game's (`GameMenu.res`) that
+/// mashup has, in its order and words (built-in ones in CS:S's order
+/// without the file), Find Servers greyed; then, after a gap, ours (quick
+/// start, the greybox, bots, team, console). Entries mashup can't do
+/// (player list, achievements, benchmark ...) are left out.
+/// `GameMenu::entries` picks those shown in or out of a game.
+pub fn main_entries(ui: Option<&GameUi>) -> Vec<MainEntry> {
+    let builtin = |item: MainItem| {
+        let (_, label, in_game) = MAIN.iter().find(|(m, ..)| *m == item).copied().unwrap_or((item, "", false));
+        MainEntry::new(item, label, in_game)
+    };
+    let mut out: Vec<MainEntry> = Vec::new();
+    match ui.filter(|u| !u.menu.is_empty()) {
+        None => {
+            out.extend(MAIN.iter().map(|(item, ..)| builtin(*item)));
+            // CS:S's gap under Disconnect, shown in a game.
+            out[2].gap = true;
+            out[2].gap_in_game_only = true;
         }
-        let at = if i == 0 {
-            0
-        } else {
-            out.iter().position(|m| m.item == MainItem::Quit).unwrap_or(out.len())
-        };
-        out.insert(at, ours(*item, false));
+        Some(ui) => {
+            let mut gap: Option<bool> = None;
+            for e in &ui.menu {
+                if e.label.trim().is_empty() && e.command.trim().is_empty() {
+                    if !out.is_empty() {
+                        gap = Some(e.in_game_only);
+                    }
+                    continue;
+                }
+                let item = match e.command.trim().to_lowercase().as_str() {
+                    "resumegame" => MainItem::Resume,
+                    "disconnect" => MainItem::Disconnect,
+                    "openserverbrowser" => MainItem::FindServers,
+                    "opennewgamedialog" | "opencreatemultiplayergamedialog" => MainItem::NewGame,
+                    "openoptionsdialog" => MainItem::Options,
+                    "quit" | "quitnoconfirm" => MainItem::Quit,
+                    "engine bug" => MainItem::BugReport,
+                    _ => continue,
+                };
+                if out.iter().any(|m| m.item == item) {
+                    continue;
+                }
+                let mut entry = MainEntry::new(item, "", e.in_game_only || builtin(item).in_game_only);
+                entry.label = e.label.clone();
+                if let Some(in_game) = gap.take() {
+                    entry.gap = true;
+                    entry.gap_in_game_only = in_game;
+                }
+                out.push(entry);
+            }
+            // Whatever the file lacks, where CS:S has it.
+            for (i, (item, ..)) in MAIN.iter().enumerate() {
+                if out.iter().any(|m| m.item == *item) {
+                    continue;
+                }
+                let at = match i {
+                    0 => 0,
+                    1 => out.iter().position(|m| m.item == MainItem::Resume).map_or(0, |p| p + 1),
+                    _ => out.iter().position(|m| m.item == MainItem::Quit).unwrap_or(out.len()),
+                };
+                out.insert(at, builtin(*item));
+            }
+        }
+    }
+    for (k, (item, label, in_game)) in OURS.iter().enumerate() {
+        let mut e = MainEntry::new(*item, label, *in_game);
+        e.gap = k == 0;
+        out.push(e);
     }
     out
 }
@@ -388,6 +450,13 @@ impl std::fmt::Debug for UiText {
 #[derive(Resource, Clone, Debug, Default, PartialEq)]
 pub struct GameMenu {
     pub open: bool,
+    /// A map is loaded and played: false at the main menu (startup with no
+    /// map, after `disconnect`), where the menu stays open over the game's
+    /// background and in-game entries are hidden.
+    pub in_game: bool,
+    /// A map the main menu started is loading (its name): the menu shows
+    /// that and takes no input until the map is in.
+    pub loading: Option<String>,
     pub page: Page,
     /// The focused row of the page (of `main` on the main page).
     pub focus: usize,
@@ -602,13 +671,70 @@ impl GameMenu {
         binds::is_polled(line) || self.known.contains(&first)
     }
 
-    /// The left-hand entries.
+    /// The left-hand entries shown: in a game all, at the main menu those
+    /// not only for a game; gaps resolved likewise.
     pub fn entries(&self) -> Vec<MainEntry> {
-        if self.main.is_empty() {
+        let all = if self.main.is_empty() {
             main_entries(self.ui.0.as_deref())
         } else {
             self.main.clone()
+        };
+        let mut shown: Vec<MainEntry> = Vec::new();
+        for mut e in all.into_iter().filter(|e| self.in_game || !e.in_game_only) {
+            e.gap = e.gap && !shown.is_empty() && (self.in_game || !e.gap_in_game_only);
+            shown.push(e);
         }
+        shown
+    }
+
+    /// A map is in: playing it. Closes the menu (the main menu's, or a
+    /// load's); true if it was open.
+    pub fn enter_game(&mut self) -> bool {
+        self.in_game = true;
+        self.loading = None;
+        let was_open = self.open;
+        self.open = false;
+        self.capture = None;
+        was_open
+    }
+
+    /// Out of the game: the main menu, on its first entry.
+    pub fn leave_game(&mut self) {
+        self.in_game = false;
+        self.loading = None;
+        self.open = true;
+        self.page = Page::Main;
+        self.capture = None;
+        self.scroll = 0;
+        self.focus = self.first_focusable_from(0, 1);
+    }
+
+    /// Start the new game set up on the new game page: from a game, close
+    /// (the old map plays until the new one is in); from the main menu,
+    /// show it loading.
+    fn start(&mut self, out: &mut Outcome) {
+        let Some((lines, after)) = self.start_lines() else {
+            return;
+        };
+        out.lines = lines;
+        out.after_load = after;
+        if self.in_game {
+            self.close(out);
+        } else {
+            self.loading = self.maps.get(self.new_game.map).cloned();
+        }
+    }
+
+    /// The quick start's settings on the new game page.
+    fn quick_setup(&mut self) {
+        let map = self.maps.iter().position(|m| m == QUICK_MAP).unwrap_or(0);
+        self.new_game = NewGame {
+            map,
+            mode: Mode::Rounds,
+            bots_t: QUICK_BOTS.0,
+            bots_ct: QUICK_BOTS.1,
+            difficulty: NORMAL,
+        };
     }
 
     /// The rows of the open page (the left-hand entries on the main page).
@@ -629,7 +755,11 @@ impl GameMenu {
             Page::Main => self
                 .entries()
                 .iter()
-                .map(|e| button(&e.label, Action::Main(e.item)))
+                .map(|e| Row::Button {
+                    label: e.label.clone(),
+                    action: Action::Main(e.item),
+                    enabled: e.enabled,
+                })
                 .collect(),
             Page::NewGame => vec![
                 value(
@@ -747,7 +877,7 @@ impl GameMenu {
     /// Apply an input; the console lines it produces.
     pub fn handle(&mut self, input: Input) -> Outcome {
         let mut out = Outcome::default();
-        if !self.open {
+        if !self.open || self.loading.is_some() {
             return out;
         }
         if let Some(command) = self.capture.clone() {
@@ -767,6 +897,8 @@ impl GameMenu {
         }
         let rows = self.rows();
         match input {
+            // The main menu stays: Esc only closes its dialogs.
+            Input::Close if !self.in_game => self.back(),
             Input::Close => self.close(&mut out),
             Input::Back => self.back(),
             Input::Up => self.focus = self.first_focusable_from(self.focus + rows.len() - 1, -1),
@@ -785,7 +917,7 @@ impl GameMenu {
             }
             Input::Activate => self.activate(self.focus, 0, &mut out),
             Input::Hover(Target::Main(i)) => {
-                if self.page == Page::Main && i < rows.len() {
+                if self.page == Page::Main && rows.get(i).is_some_and(Row::focusable) {
                     self.focus = i;
                 }
             }
@@ -798,7 +930,7 @@ impl GameMenu {
             }
             Input::Hover(_) => {}
             Input::Click(Target::Main(i), _) => {
-                if let Some(e) = self.entries().get(i) {
+                if let Some(e) = self.entries().get(i).filter(|e| e.enabled) {
                     if self.page == Page::Main {
                         self.focus = i;
                     }
@@ -947,13 +1079,32 @@ impl GameMenu {
         }
         match item {
             MainItem::Resume => self.close(out),
+            MainItem::Disconnect => {
+                out.lines.push("disconnect".into());
+                self.leave_game();
+            }
             MainItem::BugReport => {
-                // Closed first, so the screenshot shows the game.
-                self.close(out);
+                // Closed first in a game, so the screenshot shows it.
+                if self.in_game {
+                    self.close(out);
+                }
                 out.lines.push("bugreport".into());
             }
             MainItem::Quit => out.lines.push("quit".into()),
-            _ => {}
+            MainItem::QuickStart => {
+                self.quick_setup();
+                self.start(out);
+            }
+            MainItem::Greybox => {
+                out.lines.push(format!("map {}", super::console::GREYBOX));
+                if self.in_game {
+                    self.close(out);
+                } else {
+                    self.loading = Some(super::console::GREYBOX.into());
+                }
+            }
+            MainItem::Console => out.lines.push("toggleconsole".into()),
+            MainItem::FindServers | MainItem::NewGame | MainItem::Bots | MainItem::Team | MainItem::Options => {}
         }
     }
 
@@ -990,13 +1141,7 @@ impl GameMenu {
                         self.close(out);
                     }
                 }
-                Action::Start => {
-                    if let Some((lines, after)) = self.start_lines() {
-                        out.lines = lines;
-                        out.after_load = after;
-                        self.close(out);
-                    }
-                }
+                Action::Start => self.start(out),
                 Action::EditKey => {
                     if let Some(Row::Bind { command, .. }) = self.key_row.and_then(|r| self.rows().into_iter().nth(r)) {
                         self.capture = Some(command);
@@ -1125,6 +1270,39 @@ struct MenuUi {
     ui: Option<Arc<GameUi>>,
     /// By map: the picture and its height over its width.
     thumbs: HashMap<String, (Handle<Image>, f32)>,
+    /// The main menu's backgrounds: 4:3, widescreen.
+    backgrounds: [Option<Handle<Image>>; 2],
+    /// The title's font and height in scheme pixels.
+    title_font: Option<(Handle<Font>, f32)>,
+}
+
+impl MenuUi {
+    /// The main menu background for a screen of this size.
+    fn background(&self, size: Vec2) -> Option<Handle<Image>> {
+        let ui = self.ui.as_ref()?;
+        let pic = ui.background_for(size.x / size.y.max(1.0))?;
+        let i = ui.background_wide.as_ref().is_some_and(|w| std::ptr::eq(w, pic)) as usize;
+        self.backgrounds[i].clone()
+    }
+}
+
+/// A decoded picture as a UI image.
+fn ui_image(pic: &crate::map::hud::UiImage, images: &mut Assets<Image>) -> Handle<Image> {
+    use bevy::{
+        asset::RenderAssetUsages,
+        render::render_resource::{Extent3d, TextureDimension, TextureFormat},
+    };
+    images.add(Image::new(
+        Extent3d {
+            width: pic.width,
+            height: pic.height,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        pic.rgba8.clone(),
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    ))
 }
 
 /// Read the GameUI files on a thread (the install's archives).
@@ -1144,7 +1322,12 @@ fn start_loading_ui(mut ui: ResMut<MenuUi>) {
 }
 
 /// Take the GameUI look once read.
-fn ui_loaded(mut ui: ResMut<MenuUi>, mut menu: ResMut<GameMenu>, mut images: ResMut<Assets<Image>>) {
+fn ui_loaded(
+    mut ui: ResMut<MenuUi>,
+    mut menu: ResMut<GameMenu>,
+    mut images: ResMut<Assets<Image>>,
+    mut fonts: ResMut<Assets<Font>>,
+) {
     let Some(slot) = ui.loading.clone() else { return };
     let Some(loaded) = slot.lock().ok().and_then(|mut s| s.take()) else {
         return;
@@ -1155,30 +1338,25 @@ fn ui_loaded(mut ui: ResMut<MenuUi>, mut menu: ResMut<GameMenu>, mut images: Res
         return;
     };
     for (map, pic) in &game_ui.thumbnails {
-        use bevy::{
-            asset::RenderAssetUsages,
-            render::render_resource::{Extent3d, TextureDimension, TextureFormat},
-        };
-        let image = Image::new(
-            Extent3d {
-                width: pic.width,
-                height: pic.height,
-                depth_or_array_layers: 1,
-            },
-            TextureDimension::D2,
-            pic.rgba8.clone(),
-            TextureFormat::Rgba8UnormSrgb,
-            RenderAssetUsages::RENDER_WORLD,
-        );
+        let handle = ui_image(pic, &mut images);
         ui.thumbs
-            .insert(map.clone(), (images.add(image), pic.height as f32 / pic.width.max(1) as f32));
+            .insert(map.clone(), (handle, pic.height as f32 / pic.width.max(1) as f32));
     }
+    ui.backgrounds = [&game_ui.background, &game_ui.background_wide].map(|p| p.as_ref().map(|p| ui_image(p, &mut images)));
+    ui.title_font = game_ui
+        .title_font
+        .as_ref()
+        .map(|(bytes, tall)| (fonts.add(Font::from_bytes(bytes.to_vec())), *tall));
     info!(
-        "game menu: GameUI look ({} entries, {} keyboard actions, {} option pages, {} map thumbnails)",
+        "game menu: GameUI look ({} entries, {} keyboard actions, {} option pages, {} map thumbnails, \
+         {} main menu backgrounds, title {:?}{})",
         game_ui.menu.len(),
         game_ui.actions.len(),
         game_ui.options.len(),
-        game_ui.thumbnails.len()
+        game_ui.thumbnails.len(),
+        ui.backgrounds.iter().flatten().count(),
+        game_ui.title,
+        if ui.title_font.is_some() { " in its font" } else { "" },
     );
     let game_ui = Arc::new(game_ui);
     ui.ui = Some(game_ui.clone());
@@ -1244,6 +1422,40 @@ fn open_menu(w: &mut World, page: Page) {
         r.0 = None;
     }
     w.resource_mut::<RegrabCursor>().0 = false;
+}
+
+/// A map is in (`map`, `map greybox`): playing it, the menu closed.
+pub(super) fn entered_game(w: &mut World) {
+    let Some(mut menu) = w.get_resource_mut::<GameMenu>() else { return };
+    if menu.enter_game()
+        && let Some(mut regrab) = w.get_resource_mut::<RegrabCursor>()
+    {
+        regrab.0 = true;
+    }
+}
+
+/// Out of the game (`disconnect`): the main menu.
+pub(super) fn left_game(w: &mut World) {
+    let Some(mut menu) = w.get_resource_mut::<GameMenu>() else { return };
+    menu.in_game = false;
+    menu.loading = None;
+    open_menu(w, Page::Main);
+}
+
+/// A `map` load failed: the main menu takes input again.
+pub(super) fn map_load_failed(w: &mut World) {
+    if let Some(mut menu) = w.get_resource_mut::<GameMenu>() {
+        menu.loading = None;
+    }
+}
+
+/// At startup: playing when the command line gives a map or places the
+/// player (`Args::starts_in_game`), else the main menu.
+fn start_session(args: Option<Res<super::ClientArgs>>, mut menu: ResMut<GameMenu>, mut commands: Commands) {
+    menu.in_game = args.is_some_and(|a| a.0.starts_in_game());
+    if !menu.in_game {
+        commands.queue(|w: &mut World| open_menu(w, Page::Main));
+    }
 }
 
 /// Run an input through the model; apply what it asks for.
@@ -1325,7 +1537,7 @@ fn keys(
         return;
     }
     if !menu.open {
-        if keys.just_pressed(KeyCode::Escape) {
+        if keys.just_pressed(KeyCode::Escape) && menu.loading.is_none() {
             commands.queue(|w: &mut World| open_menu(w, Page::Main));
         }
         return;
@@ -1794,7 +2006,12 @@ fn draw(
         accent,
     };
     let thumbs = menu_ui.as_ref().map(|u| &u.thumbs);
-    let backdrop = if look.has_scheme() {
+    // In a game the game shows through, darkened (GameUI's backdrop); at
+    // the main menu the game's background picture covers the screen (or
+    // black without it).
+    let backdrop = if !menu.in_game {
+        Color::BLACK
+    } else if look.has_scheme() {
         look.color("MainMenu.Backdrop", [0, 0, 0, 156])
     } else {
         Color::srgba(0.0, 0.0, 0.0, 0.35)
@@ -1809,10 +2026,34 @@ fn draw(
                 ..default()
             },
             BackgroundColor(backdrop),
-            GlobalZIndex(45),
+            // Over the HUD (40-45), under the scoreboard and the console.
+            GlobalZIndex(46),
         ))
         .id();
-    main_list(&mut commands, root, &menu, &look, size);
+    if !menu.in_game
+        && let Some(image) = menu_ui.as_ref().and_then(|u| u.background(size))
+    {
+        commands.spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                width: percent(100.0),
+                height: percent(100.0),
+                ..default()
+            },
+            ImageNode {
+                image,
+                image_mode: NodeImageMode::Stretch,
+                ..default()
+            },
+            ChildOf(root),
+        ));
+    }
+    let title_font = menu_ui.as_ref().and_then(|u| u.title_font.clone());
+    if let Some(map) = &menu.loading {
+        loading_frame(&mut commands, root, &menu, &look, size, map);
+        return;
+    }
+    main_list(&mut commands, root, &menu, &look, size, title_font);
     if menu.page == Page::Main {
         return;
     }
@@ -1823,7 +2064,7 @@ fn draw(
     };
     let title = match menu.page {
         Page::Main => String::new(),
-        Page::NewGame => menu.text("#GameUI_GameMenu_NewGame", "New Game"),
+        Page::NewGame => menu.text("#GameUI_CreateServer", "Create Server"),
         Page::Maps => "Choose a Map".into(),
         Page::Bots => "Bots".into(),
         Page::Team => "Choose a Team".into(),
@@ -1901,8 +2142,16 @@ fn label_of(row: &Row) -> String {
 
 /// The left-hand entries, as GameUI's game menu: at the left inset, one
 /// entry per `MainMenu.MenuItemHeight`, the bottom one a fixed distance up
-/// from the screen's foot.
-fn main_list(commands: &mut Commands, root: Entity, menu: &GameMenu, look: &Look, size: Vec2) {
+/// from the screen's foot, the game's title over them (its title font,
+/// else the menu's); greyed entries in the disabled colour.
+fn main_list(
+    commands: &mut Commands,
+    root: Entity,
+    menu: &GameMenu,
+    look: &Look,
+    size: Vec2,
+    title_font: Option<(Handle<Font>, f32)>,
+) {
     let entries = menu.entries();
     let item_h = look.number("MainMenu.MenuItemHeight", 22.0);
     let inset = look.number("MainMenu.Inset", 32.0);
@@ -1918,20 +2167,43 @@ fn main_list(commands: &mut Commands, root: Entity, menu: &GameMenu, look: &Look
         look.accent
     };
     let current_color = look.color("MainMenu.DepressedTextColor", [192, 186, 80, 255]);
-    // The title over the entries.
-    label(
-        commands,
-        root,
-        look,
-        (inset, top - 64.0, 400.0, 48.0),
-        "MASHUP",
-        TextFont {
-            font_size: FontSize::Px(34.0 * look.s),
-            ..look.font("MenuLarge", (12.0, true))
-        },
-        normal,
-        -1,
-    );
+    // The title over the entries: the game's lines, bottom one last.
+    let lines: Vec<String> = match menu.ui.0.as_ref().filter(|u| !u.title.is_empty()) {
+        Some(ui) => ui.title.clone(),
+        None => vec!["MASHUP".into()],
+    };
+    let (title_text, line_h) = match title_font {
+        Some((handle, tall)) => (
+            TextFont {
+                font: handle.into(),
+                font_size: FontSize::Px((tall * look.s * EM_PER_LINE).max(1.0)),
+                ..default()
+            },
+            tall,
+        ),
+        None => (
+            TextFont {
+                font_size: FontSize::Px(34.0 * look.s),
+                ..look.font("MenuLarge", (12.0, true))
+            },
+            48.0,
+        ),
+    };
+    // Lines after the first sit close under it (a subtitle).
+    let step = line_h * 0.6;
+    let title_top = top - item_h - line_h - step * (lines.len() as f32 - 1.0);
+    for (k, line) in lines.iter().enumerate() {
+        label(
+            commands,
+            root,
+            look,
+            (inset, title_top + k as f32 * step, size.x / look.s - inset, line_h),
+            line,
+            title_text.clone(),
+            normal,
+            -1,
+        );
+    }
     let mut y = top;
     for (i, e) in entries.iter().enumerate() {
         if e.gap {
@@ -1939,9 +2211,11 @@ fn main_list(commands: &mut Commands, root: Entity, menu: &GameMenu, look: &Look
         }
         let main_page = menu.page == Page::Main;
         let current = !main_page && e.item.page() == Some(menu.page);
-        let focused = main_page && menu.focus == i;
+        let focused = main_page && menu.focus == i && e.enabled;
         // GameUI lights the entry under the mouse in its armed colour.
-        let color = if current {
+        let color = if !e.enabled {
+            look.disabled()
+        } else if current {
             current_color
         } else if focused {
             armed
@@ -1965,6 +2239,24 @@ fn main_list(commands: &mut Commands, root: Entity, menu: &GameMenu, look: &Look
         label(commands, e_node, look, (4.0, 0.0, 256.0, item_h), &e.label.to_uppercase(), font.clone(), color, -1);
         y += item_h;
     }
+}
+
+/// A map the main menu started is loading: GameUI's loading dialog, the
+/// map's name in it, the menu's entries hidden.
+fn loading_frame(commands: &mut Commands, root: Entity, menu: &GameMenu, look: &Look, size: Vec2, map: &str) {
+    let (w, h) = (300.0, 90.0);
+    let title = menu.text("#GameUI_Loading", "Loading...");
+    let f = frame(commands, root, look, size, (w, h), &title);
+    label(
+        commands,
+        f,
+        look,
+        (16.0, 40.0, w - 32.0, 24.0),
+        map,
+        look.font("Default", (16.0, false)),
+        look.text(),
+        -1,
+    );
 }
 
 /// A GameUI frame centred on the screen: its background, raised borders,
@@ -2514,8 +2806,12 @@ mod tests {
     use super::*;
     use crate::map::hud::GameUiItem;
 
+    /// The menu opened in a game (Esc).
     fn menu() -> GameMenu {
-        let mut m = GameMenu::default();
+        let mut m = GameMenu {
+            in_game: true,
+            ..default()
+        };
         let cvars = [
             ("sensitivity", "3"),
             ("m_pitch", "0.022"),
@@ -2535,6 +2831,28 @@ mod tests {
             |n| cvars.iter().find(|(k, _)| *k == n).map(|(_, v)| v.to_string()),
         );
         m
+    }
+
+    /// The menu at startup: the main menu, out of a game.
+    fn main_menu() -> GameMenu {
+        let mut m = GameMenu::default();
+        m.open(Page::Main, vec!["cs_office".into(), "de_dust2".into(), "de_nuke".into()], None, |_| None);
+        m
+    }
+
+    /// A shown entry's index.
+    fn at(m: &GameMenu, item: MainItem) -> usize {
+        m.entries().iter().position(|e| e.item == item).unwrap()
+    }
+
+    /// Click a shown entry.
+    fn click(m: &mut GameMenu, item: MainItem) -> Outcome {
+        let i = at(m, item);
+        press(m, &[Input::Click(Target::Main(i), 0)])
+    }
+
+    fn shown(m: &GameMenu) -> Vec<MainItem> {
+        m.entries().iter().map(|e| e.item).collect()
     }
 
     fn press(m: &mut GameMenu, inputs: &[Input]) -> Outcome {
@@ -2571,7 +2889,149 @@ mod tests {
         assert_eq!(m.new_game.difficulty, NORMAL);
         // No crosshair colour cvar given: shown as not available.
         assert_eq!(m.values[setting("cl_crosshaircolor")], None);
-        assert_eq!(m.entries().len(), MAIN.len());
+        assert_eq!(m.entries().len(), MAIN.len() + OURS.len());
+    }
+
+    #[test]
+    fn in_game_entries_show_only_in_a_game() {
+        use MainItem::*;
+        let m = menu();
+        assert_eq!(
+            shown(&m),
+            [Resume, Disconnect, FindServers, NewGame, BugReport, Options, Quit, QuickStart, Greybox, Bots, Team, Console]
+        );
+        let e = m.entries();
+        assert!(e[2].gap && !e[2].enabled, "a gap under Disconnect; Find Servers greyed");
+        assert!(e[7].gap, "ours after a gap");
+        let m = main_menu();
+        assert_eq!(shown(&m), [FindServers, NewGame, BugReport, Options, Quit, QuickStart, Greybox, Console]);
+        let e = m.entries();
+        assert!(!e[0].gap, "no gap over the first entry");
+        assert_eq!(m.focus, 1, "the first entry that can be pressed: Create Server");
+        assert_eq!(e[1].label, "CREATE SERVER");
+    }
+
+    #[test]
+    fn greyed_entries_ignore_the_mouse_and_keys() {
+        let mut m = main_menu();
+        let find = at(&m, MainItem::FindServers);
+        let o = press(&mut m, &[Input::Hover(Target::Main(find)), Input::Click(Target::Main(find), 0)]);
+        assert_eq!(o, Outcome::default());
+        assert_ne!(m.focus, find);
+        // Up from Create Server skips it, wrapping to Console.
+        press(&mut m, &[Input::Up]);
+        assert_eq!(m.entries()[m.focus].item, MainItem::Console);
+    }
+
+    #[test]
+    fn the_main_menu_stays_open() {
+        let mut m = main_menu();
+        let o = press(&mut m, &[Input::Close]);
+        assert!(!o.close && m.open && m.page == Page::Main, "Esc does nothing there");
+        // Esc closes a dialog, back to the main menu.
+        click(&mut m, MainItem::Options);
+        assert_eq!(m.page, Page::Settings);
+        let o = press(&mut m, &[Input::Close]);
+        assert!(!o.close && m.open && m.page == Page::Main);
+        // A bug report from it keeps it open.
+        let o = click(&mut m, MainItem::BugReport);
+        assert_eq!(o.lines, ["bugreport"]);
+        assert!(m.open && !o.close);
+        // The console entry opens the console over it.
+        let o = click(&mut m, MainItem::Console);
+        assert_eq!(o.lines, ["toggleconsole"]);
+        assert!(m.open);
+    }
+
+    #[test]
+    fn create_server_starts_a_map_from_the_main_menu() {
+        let mut m = main_menu();
+        click(&mut m, MainItem::NewGame);
+        assert_eq!(m.page, Page::NewGame);
+        let start = m.rows().iter().position(|r| matches!(r, Row::Button { action: Action::Start, .. })).unwrap();
+        let o = press(&mut m, &[Input::Click(Target::Row(start), 0)]);
+        assert_eq!(o.lines.last().map(String::as_str), Some("map cs_office"));
+        // The menu stays up, loading, and takes no input until the map is in.
+        assert!(!o.close && m.open);
+        assert_eq!(m.loading.as_deref(), Some("cs_office"));
+        assert_eq!(press(&mut m, &[Input::Close, Input::Activate]), Outcome::default());
+        assert!(m.enter_game(), "the load closes the open menu");
+        assert!(m.in_game && !m.open && m.loading.is_none());
+        // Esc now opens the in-game menu, with Resume.
+        m.open(Page::Main, vec!["cs_office".into()], Some("cs_office"), |_| None);
+        assert_eq!(m.entries()[m.focus].item, MainItem::Resume);
+    }
+
+    #[test]
+    fn quick_start_and_the_greybox() {
+        let mut m = main_menu();
+        let o = click(&mut m, MainItem::QuickStart);
+        assert_eq!(
+            o.lines,
+            ["bot_kick", "mashup_rounds 1", "bot_reaction 0.35", "bot_aim_error 2.5", "bot_turn_rate 360", "map de_dust2"]
+        );
+        assert_eq!(o.after_load.len(), (QUICK_BOTS.0 + QUICK_BOTS.1) as usize);
+        assert_eq!(m.loading.as_deref(), Some(QUICK_MAP));
+        let mut m = main_menu();
+        let o = click(&mut m, MainItem::Greybox);
+        assert_eq!(o.lines, ["map greybox"]);
+        assert_eq!(m.loading.as_deref(), Some("greybox"));
+        // From a game, the greybox closes the menu at once.
+        let mut m = menu();
+        let o = click(&mut m, MainItem::Greybox);
+        assert!(o.close && !m.open && o.lines == ["map greybox"]);
+    }
+
+    /// `disconnect` and `map greybox` on a world (headless): the map gives
+    /// way to the greybox, the menu follows.
+    #[test]
+    fn disconnect_and_the_greybox_on_the_world() {
+        let mut app = App::new();
+        app.add_plugins(crate::console::ConsolePlugin)
+            .insert_resource(GameMenu {
+                in_game: true,
+                ..default()
+            })
+            .init_resource::<RegrabCursor>()
+            .insert_resource(crate::map::LoadedMapName("cs_source:de_dust2".into()));
+        let w = app.world_mut();
+        super::super::console::load_greybox(w);
+        left_game(w);
+        let parts = w
+            .query_filtered::<(), With<crate::greybox::GreyboxPart>>()
+            .iter(w)
+            .count();
+        assert!(parts > 0, "the greybox is back behind the main menu");
+        assert_eq!(w.resource::<crate::map::LoadedMapName>().0, "greybox");
+        let m = w.resource::<GameMenu>();
+        assert!(m.open && !m.in_game && m.page == Page::Main);
+        assert!(!shown(m).contains(&MainItem::Resume));
+        // The greybox from the main menu: in a game, the menu closed and
+        // the mouse grabbed again.
+        w.resource_mut::<GameMenu>().loading = Some("greybox".into());
+        entered_game(w);
+        let m = w.resource::<GameMenu>();
+        assert!(m.in_game && !m.open && m.loading.is_none());
+        assert!(w.resource::<RegrabCursor>().0);
+        // A failed load gives the main menu back.
+        let mut m = w.resource_mut::<GameMenu>();
+        m.leave_game();
+        m.loading = Some("nope".into());
+        map_load_failed(w);
+        assert!(w.resource::<GameMenu>().loading.is_none());
+    }
+
+    #[test]
+    fn disconnect_returns_to_the_main_menu() {
+        let mut m = menu();
+        let o = click(&mut m, MainItem::Disconnect);
+        assert_eq!(o.lines, ["disconnect"]);
+        assert!(!o.close && m.open && !m.in_game && m.page == Page::Main);
+        assert!(!shown(&m).contains(&MainItem::Resume) && !shown(&m).contains(&MainItem::Disconnect));
+        assert!(m.entries()[m.focus].enabled);
+        // Esc no longer leaves the menu.
+        press(&mut m, &[Input::Close]);
+        assert!(m.open);
     }
 
     #[test]
@@ -2596,15 +3056,15 @@ mod tests {
     #[test]
     fn keys_move_through_pages_and_back() {
         let mut m = menu();
-        press(&mut m, &[Input::Down, Input::Down, Input::Activate]);
+        click(&mut m, MainItem::Bots);
         assert_eq!(m.page, Page::Bots);
         // The info line can't be focused.
         assert_eq!(m.focus, 1);
         press(&mut m, &[Input::Up]);
         assert_eq!(m.focus, 4, "wraps past the info line to OK");
         press(&mut m, &[Input::Back]);
-        assert_eq!((m.page, m.focus), (Page::Main, 2), "back on its entry");
-        // Up from the top wraps to Quit.
+        assert_eq!((m.page, m.focus), (Page::Main, at(&m, MainItem::Bots)), "back on its entry");
+        // Up past ours to Quit.
         press(&mut m, &[Input::Up, Input::Up, Input::Up]);
         assert_eq!(m.entries()[m.focus].item, MainItem::Quit);
         assert_eq!(press(&mut m, &[Input::Activate]).lines, ["quit"]);
@@ -2613,7 +3073,7 @@ mod tests {
     #[test]
     fn bots_and_team_pages_run_their_commands() {
         let mut m = menu();
-        press(&mut m, &[Input::Click(Target::Main(2), 0)]);
+        click(&mut m, MainItem::Bots);
         assert_eq!(m.page, Page::Bots);
         let o = press(
             &mut m,
@@ -2628,7 +3088,7 @@ mod tests {
         // Info rows ignore clicks.
         assert!(press(&mut m, &[Input::Click(Target::Row(0), 0)]).lines.is_empty());
 
-        press(&mut m, &[Input::Click(Target::Main(3), 0)]);
+        click(&mut m, MainItem::Team);
         assert_eq!(m.page, Page::Team);
         let o = press(&mut m, &[Input::Down, Input::Activate]);
         assert_eq!(o.lines, ["jointeam 3"]);
@@ -2637,14 +3097,14 @@ mod tests {
         // Auto-assign joins the smaller team.
         let mut m = menu();
         m.set_counts([0, 0], [3, 1]);
-        press(&mut m, &[Input::Click(Target::Main(3), 0)]);
+        click(&mut m, MainItem::Team);
         assert_eq!(press(&mut m, &[Input::Click(Target::Row(2), 0)]).lines, ["jointeam 3"]);
     }
 
     #[test]
     fn a_new_game_loads_the_map_then_adds_bots() {
         let mut m = menu();
-        press(&mut m, &[Input::Click(Target::Main(1), 0)]);
+        click(&mut m, MainItem::NewGame);
         assert_eq!(m.page, Page::NewGame);
         // Map: one to the right (de_nuke); mode back to deathmatch; 2 T,
         // 1 CT; hard.
@@ -2692,7 +3152,7 @@ mod tests {
     #[test]
     fn bot_counts_and_difficulty_stay_in_range() {
         let mut m = menu();
-        press(&mut m, &[Input::Click(Target::Main(1), 0)]);
+        click(&mut m, MainItem::NewGame);
         for _ in 0..3 {
             press(&mut m, &[Input::Click(Target::Row(2), -1), Input::Click(Target::Row(4), -1)]);
         }
@@ -2706,7 +3166,7 @@ mod tests {
     #[test]
     fn the_map_list_picks_by_key_letter_and_click() {
         let mut m = menu();
-        press(&mut m, &[Input::Click(Target::Main(1), 0), Input::Activate]);
+        { click(&mut m, MainItem::NewGame); press(&mut m, &[Input::Activate]) };
         assert_eq!((m.page, m.focus), (Page::Maps, 1), "on the chosen map");
         press(&mut m, &[Input::Char('c'), Input::Activate]);
         assert_eq!((m.page, m.new_game.map), (Page::NewGame, 0));
@@ -2758,7 +3218,7 @@ mod tests {
     #[test]
     fn settings_set_their_cvars_at_once() {
         let mut m = menu();
-        press(&mut m, &[Input::Click(Target::Main(4), 0)]);
+        click(&mut m, MainItem::Options);
         assert_eq!((m.page, m.tab), (Page::Settings, Tab::Keyboard));
         press(&mut m, &[Input::NextTab(1)]);
         assert_eq!((m.tab, m.focus), (Tab::Mouse, 0));
@@ -2801,7 +3261,7 @@ mod tests {
         let mut b = BTreeMap::new();
         binds::bind_defaults(&mut b, true);
         m.set_binds(b, BTreeSet::from(["bugreport".to_string()]));
-        press(&mut m, &[Input::Click(Target::Main(4), 0)]);
+        click(&mut m, MainItem::Options);
         m
     }
 
@@ -2894,23 +3354,17 @@ mod tests {
         };
         let e = main_entries(Some(&ui));
         let items: Vec<MainItem> = e.iter().map(|e| e.item).collect();
+        use MainItem::*;
         assert_eq!(
             items,
-            [
-                MainItem::Resume,
-                MainItem::NewGame,
-                MainItem::Bots,
-                MainItem::Team,
-                MainItem::BugReport,
-                MainItem::Options,
-                MainItem::Quit
-            ]
+            [Resume, Disconnect, FindServers, NewGame, BugReport, Options, Quit, QuickStart, Greybox, Bots, Team, Console]
         );
-        assert_eq!(e[1].label, "NEW GAME");
-        assert!(e[1].gap, "the file's blank entry");
+        assert_eq!(e[3].label, "CREATE SERVER", "the game's words");
+        assert!(e[2].gap && !e[2].gap_in_game_only, "the file's blank entry");
+        assert!(e[0].in_game_only && e[1].in_game_only, "resume and disconnect only in a game");
         assert_eq!(e[4].label, "REPORT BUG");
-        // Without the file: ours.
-        assert_eq!(main_entries(None).len(), MAIN.len());
+        // Without the file: CS:S's entries, ours.
+        assert_eq!(main_entries(None).len(), MAIN.len() + OURS.len());
         let mut m = menu();
         m.set_ui(Some(Arc::new(ui)));
         press(&mut m, &[Input::Click(Target::Main(5), 0)]);
@@ -2920,10 +3374,44 @@ mod tests {
     }
 
     #[test]
+    fn the_install_menu_file_hides_its_gap_out_of_a_game() {
+        let item = |label: &str, command: &str, in_game_only: bool| GameUiItem {
+            label: label.into(),
+            command: command.into(),
+            in_game_only,
+        };
+        // As CS:S's GameMenu.res: the blank entry is only for a game.
+        let ui = GameUi {
+            menu: vec![
+                item("RESUME GAME", "ResumeGame", true),
+                item("DISCONNECT", "Disconnect", true),
+                item("PLAYERS", "OpenPlayerListDialog", true),
+                item("", "", true),
+                item("FIND SERVERS", "OpenServerBrowser", false),
+                item("CREATE SERVER", "OpenCreateMultiplayerGameDialog", false),
+                item("ACHIEVEMENTS", "OpenCSAchievementsDialog", false),
+                item("QUIT", "Quit", false),
+            ],
+            ..default()
+        };
+        let mut m = main_menu();
+        m.set_ui(Some(Arc::new(ui)));
+        let e = m.entries();
+        assert_eq!(e[0].item, MainItem::FindServers);
+        assert!(!e[0].gap);
+        m.in_game = true;
+        let e = m.entries();
+        assert_eq!(e[2].item, MainItem::FindServers);
+        assert!(e[2].gap);
+        assert!(!e.iter().any(|e| e.label == "ACHIEVEMENTS" || e.label == "PLAYERS"), "what mashup lacks is left out");
+    }
+
+    #[test]
     fn hover_moves_focus_only_on_its_page() {
         let mut m = menu();
-        press(&mut m, &[Input::Hover(Target::Main(4))]);
-        assert_eq!(m.focus, 4);
+        let options = at(&m, MainItem::Options);
+        press(&mut m, &[Input::Hover(Target::Main(options))]);
+        assert_eq!(m.focus, options);
         press(&mut m, &[Input::Activate, Input::NextTab(1)]);
         assert_eq!(m.page, Page::Settings);
         // The left-hand list doesn't take the focus from the dialog.
@@ -2939,7 +3427,10 @@ mod tests {
             .init_resource::<super::super::console::ConsoleUi>()
             .init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<ButtonInput<MouseButton>>()
-            .init_resource::<GameMenu>()
+            .insert_resource(GameMenu {
+                in_game: true,
+                ..default()
+            })
             .init_resource::<AfterLoad>()
             .init_resource::<RegrabCursor>()
             .add_systems(
@@ -3004,7 +3495,10 @@ mod tests {
         app.add_plugins(crate::console::ConsolePlugin)
             .init_resource::<super::super::console::ConsoleUi>()
             .init_resource::<ButtonInput<KeyCode>>()
-            .init_resource::<GameMenu>()
+            .insert_resource(GameMenu {
+                in_game: true,
+                ..default()
+            })
             .init_resource::<AfterLoad>()
             .init_resource::<RegrabCursor>()
             .add_systems(Update, keys.before(super::super::console::toggle))
@@ -3053,7 +3547,7 @@ mod tests {
     #[test]
     fn bug_report_closes_first() {
         let mut m = menu();
-        let o = press(&mut m, &[Input::Click(Target::Main(5), 0)]);
+        let o = click(&mut m, MainItem::BugReport);
         assert_eq!(o.lines, ["bugreport"]);
         assert!(o.close && !m.open);
     }

@@ -8,20 +8,24 @@ plan when work starts; delete them when done.
 
 ## 0. Playtest feedback (2026-10-07), top priority
 
+- Decals persist across rounds (bullet holes, blood). Probably faithful
+  (CS:S keeps them until the map changes; players bound `r_cleardecals`):
+  verify against the game, add `r_cleardecals` and an optional
+  `mashup_round_cleardecals 1` (off by default).
+- Motion steps at the 66.7 Hz tick on high-refresh screens (own crouch,
+  spectated bots): interpolate rendering between ticks (agent working).
+- Bots move during freeze time while the player can't (round start).
+- Shotguns (M3, XM1014) kick the view far too high and take too long to
+  settle; check against specs/cs_source/weapons.md (shotgun recoil is
+  listed as unmeasured) and measure on the probe server.
+- Bots throw grenades at the spot of the last dead enemy at round end.
+- Bots don't control recoil (no pulling down while spraying); CS:S bots
+  keep their aim on the target through the view punch.
+
 CS:S feel:
 - Optional `+use` pickup of dropped weapons (CS:GO's; CS:S has none): a
   cvar such as `mashup_usepickup`, off by default, reaching farther than
   the touch box.
-
-Console:
-- Clicking inside the open console captures the mouse.
-- The visible line count doesn't follow a resolution change.
-- Completion list: Up/Down highlight an entry, Enter takes it and adds a
-  space for the arguments.
-- More convenience: help for each argument while typing, and similar.
-
-Debug UI: a rich, tabbed debug interface (sliders and proper inputs) for
-the things most useful in playtesting and development.
 
 ## 1. Playtest essentials
 
@@ -103,12 +107,26 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   tabs' controls where their `OptionsSub*.res` put them (ours are a
   column), OK / Cancel / Apply (changes apply at once now), dragging
   frames, the keyboard tab's "Advanced" dialog, binds for the actions
-  greyed in it (`invprev`, `+voicerecord`, `autobuy`, ...), the game's
-  logo over the entries, comparing the look with CS:S's (refcmp has no
-  menu views).
+  greyed in it (`invprev`, `+voicerecord`, `autobuy`, ...), comparing
+  the look with CS:S's (refcmp has no menu views).
+- The main menu is in: startup without a map shows CS:S's (its
+  background picture, the title in its logo font, `GameMenu.res`'s
+  entries; Resume and Disconnect only in a game, Find Servers greyed),
+  the same menu over the game on Esc, `disconnect` back to it, and ours
+  after CS:S's (quick start, greybox, bots, team, console). Left: the
+  title's exact place and the entries' spacing checked against CS:S at a
+  few resolutions, menu music and sounds (`ui/buttonrollover`), a
+  loading bar with progress instead of the map name, the player list,
+  the server browser (needs networking), a mashup debug-options page
+  (the overlay cvars as check boxes).
 - Debug overlays: `mashup_drawhitboxes`, `mashup_healthbars`,
   `mashup_drawnav`, `mashup_drawbots` exist; add more as features need
   them (sound radii, triggers).
+- Debug UI (F2, `client/debug_ui.rs`) is in. Left: kicking or freezing
+  one bot (the bot commands act on all), clearing decals and turning fog
+  off (no such cvars yet), starting a trace from the running game (needs
+  the profile build), a fixed tick-rate control, a history graph per
+  render pass.
 
 ## 3. Weapons, remaining
 

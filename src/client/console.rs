@@ -66,7 +66,7 @@ impl Plugin for ConsoleUiPlugin {
                 )
                     .chain(),
             )
-            .add_systems(Update, overlay_text)
+            .add_systems(Update, (overlay_text, watch_text))
             .add_systems(Last, save_on_exit);
         overlay_cvars(app);
         client_commands(app);
@@ -92,16 +92,54 @@ pub struct ConsoleUi {
     scroll: usize,
     pub filter: String,
     pub timestamps: bool,
+    /// `toggleconsole` asked to open or close it (next frame).
+    toggle_request: bool,
     /// The output lines on screen, and a selection of them (first and
     /// last row, in the order dragged) made with the mouse.
     shown: Vec<String>,
     selection: Option<(usize, usize)>,
     dragging: bool,
+    /// The suggestion picked with Up/Down (an index into all of them).
+    highlight: Option<usize>,
+    /// The input the suggestions were hidden at with Esc (they come back
+    /// when it changes).
+    dismissed: Option<String>,
+    /// Whether the suggestion list was shown last frame (Esc then hides
+    /// it instead of closing the console).
+    list_shown: bool,
+    /// Output lines that fit the console at the window's size.
+    visible_lines: usize,
+    /// What the suggestion box shows, to rebuild it only on change.
+    suggest_rows: Vec<SuggestRow>,
 }
 
 const HISTORY_MAX: usize = 1000;
-const VISIBLE_LINES: usize = 28;
+/// Output lines before the window's size is known.
+const DEFAULT_VISIBLE_LINES: usize = 28;
 const SUGGESTIONS: usize = 8;
+/// Output text size and the height of one of its rows (pixels).
+const OUTPUT_FONT: f32 = 14.0;
+const ROW_HEIGHT: f32 = 17.0;
+
+impl ConsoleUi {
+    fn page(&self) -> usize {
+        (self.visible_lines.max(2)) / 2
+    }
+}
+
+/// One row of the suggestion box: coloured runs, and whether it is the
+/// highlighted suggestion.
+#[derive(Clone, Debug, PartialEq)]
+struct SuggestRow {
+    runs: Vec<(String, Color)>,
+    highlight: bool,
+}
+
+/// Output lines that fit a console half the window tall (padding, the
+/// input line and the "more below" line taken off).
+fn lines_for_height(window_height: f32) -> usize {
+    (((window_height * 0.5 - 16.0 - 26.0) / ROW_HEIGHT).floor() as isize - 1).max(4) as usize
+}
 
 #[derive(Component)]
 pub(super) struct ConsoleRoot;
@@ -143,9 +181,15 @@ fn spawn_ui(mut commands: Commands) {
         .with_children(|c| {
             c.spawn((
                 ConsoleOutput,
+                // Fills the console above the input line and clips at its
+                // top, whatever the window's size.
                 Node {
                     overflow: Overflow::clip(),
                     flex_direction: FlexDirection::Column,
+                    justify_content: JustifyContent::FlexEnd,
+                    flex_grow: 1.0,
+                    flex_shrink: 1.0,
+                    min_height: px(0.0),
                     ..default()
                 },
             ));
@@ -162,13 +206,13 @@ fn spawn_ui(mut commands: Commands) {
         });
     commands.spawn((
         ConsoleSuggest,
-        Text::default(),
-        font(14.0),
         Node {
             position_type: PositionType::Absolute,
             top: percent(50.0),
             left: px(8.0),
+            max_width: percent(96.0),
             padding: UiRect::all(px(6.0)),
+            flex_direction: FlexDirection::Column,
             ..default()
         },
         BackgroundColor(Color::srgba(0.1, 0.1, 0.14, 0.95)),
@@ -211,9 +255,12 @@ pub(super) fn toggle(
     mut root: Single<&mut Visibility, With<ConsoleRoot>>,
     mut cursor: Single<&mut CursorOptions>,
     menu: Option<Res<super::game_menu::GameMenu>>,
+    debug_ui: Option<Res<super::debug_ui::DebugUi>>,
 ) {
-    let close = ui.open && keys.just_pressed(KeyCode::Escape) && ui.search.is_none();
-    if keys.just_pressed(KeyCode::Backquote) || close {
+    // Esc hides the suggestions first (`edit`), then closes.
+    let close = ui.open && keys.just_pressed(KeyCode::Escape) && ui.search.is_none() && !ui.list_shown;
+    let requested = std::mem::take(&mut ui.toggle_request);
+    if keys.just_pressed(KeyCode::Backquote) || close || requested {
         ui.open = !ui.open;
         **root = if ui.open {
             Visibility::Visible
@@ -224,17 +271,21 @@ pub(super) fn toggle(
             // Typing shouldn't move the player: the game reads input only
             // while the mouse is grabbed.
             super::input::release_cursor(&mut cursor);
-        } else if !close && !menu.is_some_and(|m| m.open) {
+        } else if !close && !menu.is_some_and(|m| m.open) && !debug_ui.is_some_and(|d| d.open) {
             // Closed with the console key: straight back to playing, unless
-            // the game menu is open under it. (Escape leaves the mouse free.)
+            // the game menu or the debug UI is open under it. (Escape
+            // leaves the mouse free.)
             super::input::capture_cursor(&mut cursor);
         }
     }
 }
 
 /// Every completion candidate for the current input: names when on the
-/// first word, else the command's arguments.
+/// first word, else the command's arguments (the argument being typed
+/// decides which). Works on the line's last command (after `;`).
 fn candidates(world: &mut World, input: &str) -> (String, Vec<(String, String)>) {
+    let at = crate::console::last_command_start(input);
+    let (prefix, input) = input.split_at(at);
     let ends_space = input.ends_with(' ');
     let words: Vec<&str> = input.split_whitespace().collect();
     let (head, token) = if words.len() <= 1 && !ends_space {
@@ -248,8 +299,10 @@ fn candidates(world: &mut World, input: &str) -> (String, Vec<(String, String)>)
         let keep = if ends_space { words.len() } else { words.len() - 1 };
         (format!("{} ", words[..keep].join(" ")), token)
     };
+    let arg = crate::console::arg_position(input).unwrap_or(0);
     let console = world.resource::<Console>();
     let mut out: Vec<(String, String)> = Vec::new();
+    let plain = |v: &[&str]| v.iter().map(|x| (x.to_string(), String::new())).collect::<Vec<_>>();
     if head.is_empty() {
         for v in console.cvars() {
             out.push((v.name.clone(), v.help.clone()));
@@ -262,17 +315,28 @@ fn candidates(world: &mut World, input: &str) -> (String, Vec<(String, String)>)
         }
     } else {
         let cmd = words[0].to_lowercase();
-        if let Some(v) = console.cvar(&cmd) {
+        if let Some(v) = console.cvar(&cmd)
+            && arg == 0
+        {
             out.extend(v.values.iter().map(|x| (x.clone(), String::new())));
+            // A small whole-number range: each value.
+            if let Some((a, b)) = v.range
+                && v.integer
+                && b - a <= 8.0
+            {
+                out.extend((a as i32..=b as i32).map(|x| (x.to_string(), String::new())));
+            }
             out.push((v.default.clone(), "default".into()));
         }
+        let bound = |n: &str| console.binds.get(n).map_or(String::new(), |v| format!("bound to \"{v}\""));
         match cmd.as_str() {
-            "help" | "reset" | "toggle" | "incrementvar" | "watch" | "unwatch" => {
+            "help" | "reset" | "toggle" | "incrementvar" | "watch" | "unwatch" | "cvarlist" | "find" if arg == 0 => {
                 out.extend(console.cvars().map(|v| (v.name.clone(), v.help.clone())));
-                if cmd == "help" {
+                if cmd == "help" || cmd == "find" {
                     out.extend(console.commands().map(|c| (c.name.clone(), c.help.clone())));
                 }
             }
+            "cmdlist" if arg == 0 => out.extend(console.commands().map(|c| (c.name.clone(), c.help.clone()))),
             "exec" | "execifexists" => {
                 if let Some(dir) = cfg_dir()
                     && let Ok(files) = std::fs::read_dir(dir)
@@ -284,29 +348,69 @@ fn candidates(world: &mut World, input: &str) -> (String, Vec<(String, String)>)
                     }));
                 }
             }
-            "bind" | "unbind" if words.len() <= 2 && !(words.len() == 2 && ends_space) => {
-                out.extend(super::binds::KEY_NAMES.iter().map(|(_, n)| (n.to_string(), String::new())));
+            "unbind" if arg == 0 => {
+                out.extend(console.binds.iter().map(|(k, v)| (k.clone(), format!("bound to \"{v}\""))));
+            }
+            "bind" if arg == 0 => {
                 out.extend(
-                    [
-                        "mouse1",
-                        "mouse2",
-                        "mouse3",
-                        "mouse4",
-                        "mouse5",
-                        "mwheelup",
-                        "mwheeldown",
-                    ]
-                    .map(|n| (n.to_string(), String::new())),
+                    super::binds::KEY_NAMES
+                        .iter()
+                        .map(|(_, n)| *n)
+                        .chain(super::binds::MOUSE_NAMES.iter().map(|(_, n)| *n))
+                        .chain([super::binds::WHEEL_UP, super::binds::WHEEL_DOWN])
+                        .map(|n| (n.to_string(), bound(n))),
                 );
             }
             "bind" => {
                 out.extend(ACTIONS.iter().map(|a| (format!("+{a}"), String::new())));
                 out.extend(console.commands().map(|c| (c.name.clone(), c.help.clone())));
             }
-            "map" => out.extend(map_names().iter().map(|m| (m.clone(), String::new()))),
-            "noclip" | "movement" => {}
+            "map" | "maps" if arg == 0 => out.extend(map_names().iter().map(|m| (m.clone(), String::new()))),
+            "jointeam" if arg == 0 => {
+                out.push(("2".into(), "terrorists".into()));
+                out.push(("3".into(), "counter-terrorists".into()));
+            }
+            "bot_add" if arg == 0 => {
+                out.push(("1".into(), "terrorists".into()));
+                out.push(("2".into(), "counter-terrorists".into()));
+            }
+            "mashup_hurtme" if arg == 0 => out.extend(plain(&[
+                "head", "chest", "stomach", "leftarm", "rightarm", "leftleg", "rightleg", "generic",
+            ])),
+            "menu" if arg == 0 => out.extend(plain(&[
+                "main",
+                "newgame",
+                "maps",
+                "bots",
+                "team",
+                "options",
+                "keyboard",
+                "mouse",
+                "audio",
+                "video",
+                "multiplayer",
+            ])),
+            "debugui" if arg == 0 => {
+                out.extend(super::debug_ui::Tab::ALL.iter().map(|t| (t.name().to_string(), t.title().to_string())));
+                out.push(("close".into(), String::new()));
+            }
+            "bot_give" if arg == 0 => {
+                if let Some(r) = world.get_resource::<crate::weapon::WeaponRegistry>() {
+                    out.extend(r.0.iter().map(|d| (d.id.to_string(), String::new())));
+                }
+            }
+            "mashup_watch" if arg == 0 => {
+                out.push(("0".into(), "back to your own view".into()));
+                out.extend(bot_names(world).into_iter().filter_map(|n| {
+                    let number = n.strip_prefix("Bot ")?.to_string();
+                    Some((number, n))
+                }));
+            }
+            "ent_fire" if arg == 0 => out.extend(logic_names(world)),
+            "ent_fire" if arg == 1 => out.extend(plain(ENT_INPUTS)),
             _ => {}
         }
+        let console = world.resource::<Console>();
         if let Some(c) = console.command(&cmd).cloned()
             && let Some(complete) = c.complete
         {
@@ -319,7 +423,180 @@ fn candidates(world: &mut World, input: &str) -> (String, Vec<(String, String)>)
         .collect();
     ranked.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
     ranked.dedup_by(|a, b| a.1 == b.1);
-    (head, ranked.into_iter().map(|(_, n, h)| (n, h)).collect())
+    (format!("{prefix}{head}"), ranked.into_iter().map(|(_, n, h)| (n, h)).collect())
+}
+
+/// Inputs most map entities take, offered for `ent_fire`.
+const ENT_INPUTS: &[&str] = &[
+    "Open",
+    "Close",
+    "Toggle",
+    "Lock",
+    "Unlock",
+    "Press",
+    "Use",
+    "Enable",
+    "Disable",
+    "Trigger",
+    "Kill",
+    "Break",
+    "SetHealth",
+    "TurnOn",
+    "TurnOff",
+    "Skin",
+    "FireUser1",
+    "FireUser2",
+    "PlaySound",
+    "StopSound",
+    "Start",
+    "Stop",
+    "Wake",
+    "Sleep",
+    "EnableMotion",
+    "Ignite",
+    "Extinguish",
+    "AddOutput",
+];
+
+/// The bots' names ("Bot 3"), in order.
+pub(super) fn bot_names(world: &World) -> Vec<String> {
+    let Some(mut q) = world.try_query_filtered::<&Name, With<crate::bot::Bot>>() else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = q.iter(world).map(|n| n.to_string()).collect();
+    names.sort_by_key(|n| n.strip_prefix("Bot ").and_then(|b| b.parse::<u32>().ok()).unwrap_or(u32::MAX));
+    names
+}
+
+/// The loaded map's named entities and their classes, then the classes
+/// (`ent_fire` takes either).
+pub(super) fn logic_names(world: &World) -> Vec<(String, String)> {
+    let Some(logic) = world.get_resource::<crate::logic::Logic>() else {
+        return Vec::new();
+    };
+    let mut named = Vec::new();
+    let mut classes = std::collections::BTreeSet::new();
+    for id in logic.world.ids() {
+        if let Some(e) = logic.world.get(id) {
+            if !e.targetname.is_empty() {
+                named.push((e.targetname.clone(), e.classname.clone()));
+            }
+            classes.insert(e.classname.clone());
+        }
+    }
+    named.sort();
+    named.dedup();
+    named.extend(classes.into_iter().map(|c| (c, "class".to_string())));
+    named
+}
+
+/// The help line for what is being typed: the command (or cvar) and its
+/// arguments with the one being typed marked, and a description (a
+/// cvar's value, default, range and values).
+#[derive(Clone, Debug, PartialEq)]
+struct ArgHelp {
+    name: String,
+    args: Vec<String>,
+    current: Option<usize>,
+    detail: String,
+}
+
+fn arg_help(world: &mut World, input: &str) -> Option<ArgHelp> {
+    let line = &input[crate::console::last_command_start(input)..];
+    let arg = crate::console::arg_position(line)?;
+    let name = line.split_whitespace().next()?.to_lowercase();
+    let console = world.resource::<Console>();
+    if let Some(c) = console.command(&name) {
+        let (args, text) = crate::console::usage(&c.name, &c.help);
+        // Past the last argument: still on it when it takes the rest of
+        // the line (a bind's command, an echo's text).
+        let current = match args.len() {
+            0 => None,
+            n if arg < n => Some(arg),
+            n if args[n - 1].contains("command") || args[n - 1].contains("text") || args[n - 1].contains("...") => {
+                Some(n - 1)
+            }
+            _ => None,
+        };
+        return Some(ArgHelp {
+            name: c.name.clone(),
+            args,
+            current,
+            detail: text,
+        });
+    }
+    if let Some(v) = console.cvar(&name).cloned() {
+        let now = (v.get)(world).unwrap_or_default();
+        let mut detail = format!("= \"{now}\"");
+        if now != v.default {
+            detail += &format!(" (default \"{}\")", v.default);
+        }
+        if let Some((a, b)) = v.range {
+            detail += &format!("  range {a} to {b}");
+        }
+        if v.values.iter().any(|x| x != "0" && x != "1") {
+            detail += &format!("  values: {}", v.values.join(" "));
+        }
+        if !v.help.is_empty() {
+            detail += &format!("  - {}", v.help);
+        }
+        let kind = if v.integer { "<whole number>" } else { "<value>" };
+        return Some(ArgHelp {
+            name: v.name.clone(),
+            args: vec![kind.to_string()],
+            current: (arg == 0).then_some(0),
+            detail,
+        });
+    }
+    if let Some(body) = console.aliases.get(&name) {
+        return Some(ArgHelp {
+            name: name.clone(),
+            args: Vec::new(),
+            current: None,
+            detail: format!("alias: {body}"),
+        });
+    }
+    None
+}
+
+/// The suggestions to show for the console's input, with the text they
+/// complete (None: no list: nothing typed, browsing history, searching,
+/// or hidden with Esc).
+fn suggestions(world: &mut World) -> Option<(String, Vec<(String, String)>)> {
+    let ui = world.resource::<ConsoleUi>();
+    if !ui.open
+        || ui.search.is_some()
+        || ui.browsing.is_some()
+        || ui.input.trim().is_empty()
+        || ui.dismissed.as_ref() == Some(&ui.input)
+    {
+        return None;
+    }
+    let input = ui.input.clone();
+    let (head, list) = candidates(world, &input);
+    (!list.is_empty()).then_some((head, list))
+}
+
+/// Up/Down through `len` suggestions: Down from none starts at the top,
+/// Up from none at the bottom; both wrap.
+fn step_highlight(current: Option<usize>, len: usize, up: bool) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    Some(match (current, up) {
+        (None, false) => 0,
+        (None, true) => len - 1,
+        (Some(i), false) => (i + 1) % len,
+        (Some(i), true) => (i + len - 1) % len,
+    })
+}
+
+/// The first suggestion shown so the highlighted one is in view.
+fn suggestion_window(highlight: Option<usize>, len: usize) -> usize {
+    match highlight {
+        Some(h) if h >= SUGGESTIONS => (h + 1 - SUGGESTIONS).min(len.saturating_sub(SUGGESTIONS)),
+        _ => 0,
+    }
 }
 
 /// Fuzzy rank (lower is better): prefix, then substring, then the letters
@@ -374,156 +651,233 @@ fn edit(world: &mut World) {
         if e.key_code == KeyCode::Backquote {
             continue;
         }
-        let mut ui = world.resource_mut::<ConsoleUi>();
-        // Reverse search mode.
-        if let Some((query, back)) = ui.search.clone() {
-            match (&e.logical_key, e.key_code) {
-                (_, KeyCode::KeyR) if ctrl => ui.search = Some((query, back + 1)),
-                (_, KeyCode::Escape) => ui.search = None,
-                (_, KeyCode::Enter) | (_, KeyCode::ArrowLeft) | (_, KeyCode::ArrowRight) | (_, KeyCode::Tab) => {
-                    let found = search(&ui.history, &query, back);
-                    ui.search = None;
-                    if let Some(found) = found {
-                        ui.cursor = found.chars().count();
-                        ui.input = found;
-                    }
-                    if e.key_code == KeyCode::Enter {
-                        submit(world);
-                    }
-                }
-                (_, KeyCode::Backspace) => {
-                    let mut q = query;
-                    q.pop();
-                    ui.search = Some((q, 0));
-                }
-                (Key::Character(s), _) if !ctrl => ui.search = Some((format!("{query}{s}"), 0)),
-                (Key::Space, _) => ui.search = Some((format!("{query} "), 0)),
-                _ => {}
-            }
-            continue;
-        }
-        let chars: Vec<char> = ui.input.chars().collect();
-        let cur = ui.cursor.min(chars.len());
-        let mut reset_cycle = true;
+        edit_key(world, &e, ctrl, shift);
+    }
+}
+
+/// One key pressed in the open console.
+fn edit_key(world: &mut World, e: &KeyboardInput, ctrl: bool, shift: bool) {
+    let mut ui = world.resource_mut::<ConsoleUi>();
+    // Reverse search mode.
+    if let Some((query, back)) = ui.search.clone() {
         match (&e.logical_key, e.key_code) {
-            (_, KeyCode::Enter) | (_, KeyCode::NumpadEnter) => {
-                submit(world);
-                continue;
-            }
-            (_, KeyCode::KeyR) if ctrl => ui.search = Some((String::new(), 0)),
-            (_, KeyCode::KeyL) if ctrl => {
-                world.resource_mut::<Console>().output.clear();
-                continue;
-            }
-            (_, KeyCode::KeyU) if ctrl => {
-                ui.input = chars[cur..].iter().collect();
-                ui.cursor = 0;
-            }
-            (_, KeyCode::KeyW) if ctrl => {
-                let mut start = cur;
-                while start > 0 && chars[start - 1] == ' ' {
-                    start -= 1;
+            (_, KeyCode::KeyR) if ctrl => ui.search = Some((query, back + 1)),
+            (_, KeyCode::Escape) => ui.search = None,
+            (_, KeyCode::Enter) | (_, KeyCode::ArrowLeft) | (_, KeyCode::ArrowRight) | (_, KeyCode::Tab) => {
+                let found = search(&ui.history, &query, back);
+                ui.search = None;
+                if let Some(found) = found {
+                    ui.cursor = found.chars().count();
+                    ui.input = found;
                 }
-                while start > 0 && chars[start - 1] != ' ' {
-                    start -= 1;
-                }
-                ui.input = chars[..start].iter().chain(&chars[cur..]).collect();
-                ui.cursor = start;
-            }
-            (_, KeyCode::KeyA) if ctrl => ui.cursor = 0,
-            (_, KeyCode::KeyE) if ctrl => ui.cursor = chars.len(),
-            (_, KeyCode::Backspace) if cur > 0 => {
-                ui.input = chars[..cur - 1].iter().chain(&chars[cur..]).collect();
-                ui.cursor = cur - 1;
-            }
-            (_, KeyCode::Delete) if cur < chars.len() => {
-                ui.input = chars[..cur].iter().chain(&chars[cur + 1..]).collect();
-            }
-            (_, KeyCode::ArrowLeft) if ctrl => {
-                let mut c = cur;
-                while c > 0 && chars[c - 1] == ' ' {
-                    c -= 1;
-                }
-                while c > 0 && chars[c - 1] != ' ' {
-                    c -= 1;
-                }
-                ui.cursor = c;
-            }
-            (_, KeyCode::ArrowRight) if ctrl => {
-                let mut c = cur;
-                while c < chars.len() && chars[c] != ' ' {
-                    c += 1;
-                }
-                while c < chars.len() && chars[c] == ' ' {
-                    c += 1;
-                }
-                ui.cursor = c;
-            }
-            (_, KeyCode::ArrowLeft) => ui.cursor = cur.saturating_sub(1),
-            (_, KeyCode::ArrowRight) => ui.cursor = (cur + 1).min(chars.len()),
-            (_, KeyCode::Home) => ui.cursor = 0,
-            (_, KeyCode::End) => ui.cursor = chars.len(),
-            (_, KeyCode::PageUp) => ui.scroll += VISIBLE_LINES / 2,
-            (_, KeyCode::PageDown) => ui.scroll = ui.scroll.saturating_sub(VISIBLE_LINES / 2),
-            (_, KeyCode::ArrowUp) | (_, KeyCode::ArrowDown) => {
-                if ui.history.is_empty() {
-                    continue;
-                }
-                let n = ui.history.len();
-                let next = match (ui.browsing, e.key_code == KeyCode::ArrowUp) {
-                    (None, true) => Some(n - 1),
-                    (None, false) => None,
-                    (Some(i), true) => Some(i.saturating_sub(1)),
-                    (Some(i), false) if i + 1 < n => Some(i + 1),
-                    (Some(_), false) => None,
-                };
-                ui.browsing = next;
-                ui.input = next.map(|i| ui.history[i].clone()).unwrap_or_default();
-                ui.cursor = ui.input.chars().count();
-            }
-            (_, KeyCode::Tab) => {
-                reset_cycle = false;
-                let input = ui.input.clone();
-                let step = if shift { -1 } else { 1 };
-                if let Some((list, i, base)) = ui.cycle.clone()
-                    && !list.is_empty()
-                {
-                    let next = (i as i64 + step).rem_euclid(list.len() as i64) as usize;
-                    let (head, _) = split_last(&base);
-                    ui.input = format!("{head}{}", list[next]);
-                    ui.cursor = ui.input.chars().count();
-                    ui.cycle = Some((list, next, base));
-                } else {
-                    let (head, list) = candidates(world, &input);
-                    let mut ui = world.resource_mut::<ConsoleUi>();
-                    if let Some(first) = list.first() {
-                        // One match completes and adds a space.
-                        let single = list.len() == 1;
-                        ui.input = format!("{head}{}{}", first.0, if single { " " } else { "" });
-                        ui.cursor = ui.input.chars().count();
-                        ui.cycle = (!single).then(|| (list.into_iter().map(|x| x.0).collect(), 0, input));
-                    }
+                if e.key_code == KeyCode::Enter {
+                    submit(world);
                 }
             }
-            (Key::Character(s), _) if !ctrl => {
-                let mut c = chars.clone();
-                let ins: Vec<char> = s.chars().collect();
-                c.splice(cur..cur, ins.iter().copied());
-                ui.input = c.into_iter().collect();
-                ui.cursor = cur + ins.len();
+            (_, KeyCode::Backspace) => {
+                let mut q = query;
+                q.pop();
+                ui.search = Some((q, 0));
             }
-            (Key::Space, _) => {
-                let mut c = chars.clone();
-                c.insert(cur, ' ');
-                ui.input = c.into_iter().collect();
-                ui.cursor = cur + 1;
-            }
-            _ => continue,
+            (Key::Character(s), _) if !ctrl => ui.search = Some((format!("{query}{s}"), 0)),
+            (Key::Space, _) => ui.search = Some((format!("{query} "), 0)),
+            _ => {}
         }
-        if reset_cycle {
-            world.resource_mut::<ConsoleUi>().cycle = None;
+        return;
+    }
+    // The suggestion list, when one shows: Up/Down pick, Enter or Tab
+    // take the pick, Esc hides it.
+    let list_keys = matches!(
+        e.key_code,
+        KeyCode::ArrowUp | KeyCode::ArrowDown | KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Tab | KeyCode::Escape
+    );
+    if list_keys && let Some((head, list)) = suggestions(world) {
+        let mut ui = world.resource_mut::<ConsoleUi>();
+        match (e.key_code, ui.highlight) {
+            (KeyCode::ArrowUp | KeyCode::ArrowDown, h) => {
+                ui.highlight = step_highlight(h, list.len(), e.key_code == KeyCode::ArrowUp);
+                return;
+            }
+            (KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Tab, Some(h)) if h < list.len() => {
+                ui.input = accept(&head, &list[h].0);
+                ui.cursor = ui.input.chars().count();
+                ui.highlight = None;
+                ui.cycle = None;
+                return;
+            }
+            (KeyCode::Escape, _) => {
+                ui.dismissed = Some(ui.input.clone());
+                ui.highlight = None;
+                return;
+            }
+            _ => {}
         }
     }
+    let mut ui = world.resource_mut::<ConsoleUi>();
+    let before = ui.input.clone();
+    let chars: Vec<char> = ui.input.chars().collect();
+    let cur = ui.cursor.min(chars.len());
+    // Where the word before the cursor starts, and where the one after it
+    // ends (Ctrl+Backspace, Ctrl+W, Ctrl+Delete, Ctrl+arrows).
+    let word_start = {
+        let mut c = cur;
+        while c > 0 && chars[c - 1] == ' ' {
+            c -= 1;
+        }
+        while c > 0 && chars[c - 1] != ' ' {
+            c -= 1;
+        }
+        c
+    };
+    let word_end = {
+        let mut c = cur;
+        while c < chars.len() && chars[c] == ' ' {
+            c += 1;
+        }
+        while c < chars.len() && chars[c] != ' ' {
+            c += 1;
+        }
+        c
+    };
+    let mut reset_cycle = true;
+    match (&e.logical_key, e.key_code) {
+        (_, KeyCode::Enter) | (_, KeyCode::NumpadEnter) => {
+            submit(world);
+            return;
+        }
+        (_, KeyCode::KeyR) if ctrl => ui.search = Some((String::new(), 0)),
+        (_, KeyCode::KeyL) if ctrl => {
+            world.resource_mut::<Console>().output.clear();
+            return;
+        }
+        (_, KeyCode::KeyU) if ctrl => {
+            ui.input = chars[cur..].iter().collect();
+            ui.cursor = 0;
+        }
+        (_, KeyCode::KeyK) if ctrl => ui.input = chars[..cur].iter().collect(),
+        (_, KeyCode::KeyW) | (_, KeyCode::Backspace) if ctrl => {
+            ui.input = chars[..word_start].iter().chain(&chars[cur..]).collect();
+            ui.cursor = word_start;
+        }
+        (_, KeyCode::Delete) if ctrl => {
+            ui.input = chars[..cur].iter().chain(&chars[word_end..]).collect();
+        }
+        (_, KeyCode::KeyV) if ctrl => {
+            // Paste (one line: newlines become command separators).
+            let text = arboard::Clipboard::new().and_then(|mut c| c.get_text()).unwrap_or_default();
+            let text = text.trim_end().replace("\r\n", "; ").replace('\n', "; ");
+            let ins: Vec<char> = text.chars().collect();
+            let mut c = chars.clone();
+            c.splice(cur..cur, ins.iter().copied());
+            ui.input = c.into_iter().collect();
+            ui.cursor = cur + ins.len();
+        }
+        (_, KeyCode::KeyA) if ctrl => ui.cursor = 0,
+        (_, KeyCode::KeyE) if ctrl => ui.cursor = chars.len(),
+        (_, KeyCode::Backspace) if cur > 0 => {
+            ui.input = chars[..cur - 1].iter().chain(&chars[cur..]).collect();
+            ui.cursor = cur - 1;
+        }
+        (_, KeyCode::Delete) if cur < chars.len() => {
+            ui.input = chars[..cur].iter().chain(&chars[cur + 1..]).collect();
+        }
+        (_, KeyCode::ArrowLeft) if ctrl => ui.cursor = word_start,
+        (_, KeyCode::ArrowRight) if ctrl => {
+            let mut c = cur;
+            while c < chars.len() && chars[c] != ' ' {
+                c += 1;
+            }
+            while c < chars.len() && chars[c] == ' ' {
+                c += 1;
+            }
+            ui.cursor = c;
+        }
+        (_, KeyCode::ArrowLeft) => ui.cursor = cur.saturating_sub(1),
+        (_, KeyCode::ArrowRight) => ui.cursor = (cur + 1).min(chars.len()),
+        // Ctrl+Home / Ctrl+End: the top and bottom of the output.
+        (_, KeyCode::Home) if ctrl => ui.scroll = usize::MAX / 2,
+        (_, KeyCode::End) if ctrl => ui.scroll = 0,
+        (_, KeyCode::Home) => ui.cursor = 0,
+        (_, KeyCode::End) => ui.cursor = chars.len(),
+        (_, KeyCode::PageUp) => {
+            let page = ui.page();
+            ui.scroll += page;
+        }
+        (_, KeyCode::PageDown) => {
+            let page = ui.page();
+            ui.scroll = ui.scroll.saturating_sub(page);
+        }
+        (_, KeyCode::ArrowUp) | (_, KeyCode::ArrowDown) => {
+            if ui.history.is_empty() {
+                return;
+            }
+            let n = ui.history.len();
+            let next = match (ui.browsing, e.key_code == KeyCode::ArrowUp) {
+                (None, true) => Some(n - 1),
+                (None, false) => None,
+                (Some(i), true) => Some(i.saturating_sub(1)),
+                (Some(i), false) if i + 1 < n => Some(i + 1),
+                (Some(_), false) => None,
+            };
+            ui.browsing = next;
+            ui.input = next.map(|i| ui.history[i].clone()).unwrap_or_default();
+            ui.cursor = ui.input.chars().count();
+            return;
+        }
+        (_, KeyCode::Tab) => {
+            reset_cycle = false;
+            let input = ui.input.clone();
+            let step = if shift { -1 } else { 1 };
+            if let Some((list, i, base)) = ui.cycle.clone()
+                && !list.is_empty()
+            {
+                let next = (i as i64 + step).rem_euclid(list.len() as i64) as usize;
+                let (head, _) = split_last(&base);
+                ui.input = format!("{head}{}", list[next]);
+                ui.cursor = ui.input.chars().count();
+                ui.cycle = Some((list, next, base));
+            } else {
+                let (head, list) = candidates(world, &input);
+                let mut ui = world.resource_mut::<ConsoleUi>();
+                if let Some(first) = list.first() {
+                    // One match completes and adds a space.
+                    let single = list.len() == 1;
+                    ui.input = format!("{head}{}{}", first.0, if single { " " } else { "" });
+                    ui.cursor = ui.input.chars().count();
+                    ui.cycle = (!single).then(|| (list.into_iter().map(|x| x.0).collect(), 0, input));
+                }
+            }
+        }
+        (Key::Character(s), _) if !ctrl => {
+            let mut c = chars.clone();
+            let ins: Vec<char> = s.chars().collect();
+            c.splice(cur..cur, ins.iter().copied());
+            ui.input = c.into_iter().collect();
+            ui.cursor = cur + ins.len();
+        }
+        (Key::Space, _) => {
+            let mut c = chars.clone();
+            c.insert(cur, ' ');
+            ui.input = c.into_iter().collect();
+            ui.cursor = cur + 1;
+        }
+        _ => return,
+    }
+    let mut ui = world.resource_mut::<ConsoleUi>();
+    if reset_cycle {
+        ui.cycle = None;
+    }
+    // Typing starts a new line: out of the history, the pick gone.
+    if ui.input != before {
+        ui.browsing = None;
+        ui.highlight = None;
+    }
+}
+
+/// The input after taking a suggestion: the text it completes, the
+/// suggestion and a space for what comes next.
+fn accept(head: &str, suggestion: &str) -> String {
+    format!("{head}{} ", crate::console::quote(suggestion))
 }
 
 /// Split off the token being completed.
@@ -545,6 +899,7 @@ fn submit(world: &mut World) {
     ui.cursor = 0;
     ui.browsing = None;
     ui.cycle = None;
+    ui.highlight = None;
     ui.scroll = 0;
     if !line.trim().is_empty() && ui.history.last() != Some(&line) {
         ui.history.push(line.clone());
@@ -563,6 +918,10 @@ fn history_path() -> Option<std::path::PathBuf> {
 }
 
 fn save_history(history: &[String]) {
+    // Unit tests type into the console: never into the player's history.
+    if cfg!(test) {
+        return;
+    }
     if let Some(p) = history_path() {
         let _ = std::fs::create_dir_all(p.parent().unwrap());
         let _ = std::fs::write(p, history.join("\n"));
@@ -591,6 +950,8 @@ fn autoexec(
     if !marked {
         console.submit("binddefaults missing");
     }
+    // Defaults added since the config was written (F2: the debug UI).
+    console.submit("binddefaults new");
     console.submit("execifexists autoexec.cfg");
     for line in &args.0.console {
         console.submit(line.clone());
@@ -621,17 +982,19 @@ fn draw_console(
     mut ui: ResMut<ConsoleUi>,
     output: Single<Entity, With<ConsoleOutput>>,
     mut input: Single<&mut Text, (With<ConsoleInput>, Without<ConsoleOutput>)>,
-    mut suggest: Single<
-        (&mut Text, &mut Visibility),
-        (With<ConsoleSuggest>, Without<ConsoleInput>, Without<ConsoleOutput>),
-    >,
+    window: Query<&Window, With<bevy::window::PrimaryWindow>>,
     mut commands: Commands,
-    mut last: Local<(usize, usize, String, bool, f64)>,
+    mut last: Local<(usize, usize, String, bool, f64, usize)>,
 ) {
+    // As many lines as fit at the window's current size.
+    let fit = window.iter().next().map_or(DEFAULT_VISIBLE_LINES, |w| lines_for_height(w.height()));
+    if ui.visible_lines != fit {
+        ui.visible_lines = fit;
+    }
     if !ui.open {
-        *suggest.1 = Visibility::Hidden;
         return;
     }
+    let visible = ui.visible_lines;
     // Output, filtered and scrolled, coloured by severity (rebuilt on change).
     let first_time = console.output.first().map_or(0.0, |l| l.time);
     let key = (
@@ -640,6 +1003,7 @@ fn draw_console(
         ui.filter.clone(),
         ui.timestamps,
         first_time,
+        visible,
     );
     if *last != key {
         *last = key;
@@ -648,10 +1012,10 @@ fn draw_console(
             .iter()
             .filter(|l| ui.filter.is_empty() || l.text.to_lowercase().contains(&ui.filter.to_lowercase()))
             .collect();
-        let max_scroll = lines.len().saturating_sub(VISIBLE_LINES);
+        let max_scroll = lines.len().saturating_sub(visible);
         ui.scroll = ui.scroll.min(max_scroll);
         let end = lines.len() - ui.scroll;
-        let start = end.saturating_sub(VISIBLE_LINES);
+        let start = end.saturating_sub(visible);
         ui.shown = lines[start..end].iter().map(|l| l.text.clone()).collect();
         ui.selection = None;
         ui.dragging = false;
@@ -673,7 +1037,7 @@ fn draw_console(
                     ConsoleRow(row),
                     Text::new(format!("{stamp}{}", l.text)),
                     TextFont {
-                        font_size: FontSize::Px(14.0),
+                        font_size: FontSize::Px(OUTPUT_FONT),
                         ..default()
                     },
                     TextColor(color),
@@ -757,49 +1121,128 @@ fn select_rows(
     }
 }
 
-/// Suggestions under the console as you type (needs the world to read
-/// cvar values).
+/// The suggestion box under the console as you type: the help line for
+/// the command being typed (its arguments, the one being typed marked),
+/// then the suggestions with the picked one highlighted (needs the world
+/// to read cvar values).
 fn overlay_text(world: &mut World) {
-    let (open, input, searching) = {
-        let ui = world.resource::<ConsoleUi>();
-        (ui.open, ui.input.clone(), ui.search.is_some())
-    };
-    let mut text = String::new();
-    if open && !searching && !input.trim().is_empty() {
-        let (_, list) = candidates(world, &input);
-        let console_cvars: Vec<_> = list
-            .iter()
-            .take(SUGGESTIONS)
-            .map(|(n, h)| {
-                let value = world.resource::<Console>().cvar(n).cloned();
-                (n.clone(), h.clone(), value)
-            })
-            .collect();
-        for (n, h, cvar) in console_cvars {
-            let value = cvar.and_then(|v| {
-                let now = (v.get)(world)?;
-                Some(if now != v.default {
-                    format!(" = {now} *")
-                } else {
-                    format!(" = {now}")
-                })
+    let rows = suggest_rows(world);
+    let shown = !rows.is_empty();
+    world.resource_mut::<ConsoleUi>().list_shown = shown && suggestions(world).is_some();
+    let mut q = world.query_filtered::<(Entity, &mut Visibility), With<ConsoleSuggest>>();
+    if let Ok((e, mut v)) = q.single_mut(world) {
+        let want = if shown { Visibility::Visible } else { Visibility::Hidden };
+        v.set_if_neq(want);
+        if world.resource::<ConsoleUi>().suggest_rows != rows {
+            world.entity_mut(e).despawn_related::<Children>();
+            world.entity_mut(e).with_children(|c| {
+                for row in &rows {
+                    c.spawn((
+                        Text::default(),
+                        TextFont {
+                            font_size: FontSize::Px(OUTPUT_FONT),
+                            ..default()
+                        },
+                        TextColor(Color::NONE),
+                        Node {
+                            padding: UiRect::horizontal(px(3.0)),
+                            ..default()
+                        },
+                        BackgroundColor(if row.highlight {
+                            Color::srgba(0.3, 0.45, 0.8, 0.6)
+                        } else {
+                            Color::NONE
+                        }),
+                    ))
+                    .with_children(|t| {
+                        for (text, color) in &row.runs {
+                            t.spawn((
+                                TextSpan::new(text.clone()),
+                                TextFont {
+                                    font_size: FontSize::Px(OUTPUT_FONT),
+                                    ..default()
+                                },
+                                TextColor(*color),
+                            ));
+                        }
+                    });
+                }
             });
-            let help: String = h.chars().take(70).collect();
-            text += &format!("{n}{}   {help}\n", value.unwrap_or_default());
-        }
-        if list.len() > SUGGESTIONS {
-            text += &format!("... {} more (Tab cycles)", list.len() - SUGGESTIONS);
+            world.resource_mut::<ConsoleUi>().suggest_rows = rows;
         }
     }
-    let mut q = world.query_filtered::<(&mut Text, &mut Visibility), With<ConsoleSuggest>>();
-    if let Ok((mut t, mut v)) = q.single_mut(world) {
-        *v = if text.is_empty() {
-            Visibility::Hidden
-        } else {
-            Visibility::Visible
-        };
-        t.0 = text.trim_end().to_string();
+}
+
+/// The suggestion box's rows (none: hidden).
+fn suggest_rows(world: &mut World) -> Vec<SuggestRow> {
+    let (open, input, searching, highlight) = {
+        let ui = world.resource::<ConsoleUi>();
+        (ui.open, ui.input.clone(), ui.search.is_some(), ui.highlight)
+    };
+    let mut rows = Vec::new();
+    if !open || searching || input.trim().is_empty() {
+        return rows;
     }
+    let (name_c, arg_c, current_c, text_c, value_c, more_c) = (
+        Color::srgb(1.0, 0.95, 0.6),
+        Color::srgb(0.6, 0.6, 0.65),
+        Color::srgb(0.5, 1.0, 0.6),
+        Color::srgb(0.75, 0.75, 0.8),
+        Color::srgb(0.6, 0.8, 1.0),
+        Color::srgb(0.5, 0.5, 0.5),
+    );
+    if let Some(help) = arg_help(world, &input) {
+        let mut runs = vec![(help.name.clone(), name_c)];
+        for (i, a) in help.args.iter().enumerate() {
+            runs.push((format!(" {a}"), if help.current == Some(i) { current_c } else { arg_c }));
+        }
+        if !help.detail.is_empty() {
+            let detail: String = help.detail.chars().take(160).collect();
+            runs.push((format!("   {detail}"), text_c));
+        }
+        rows.push(SuggestRow { runs, highlight: false });
+    }
+    let Some((_, list)) = suggestions(world) else {
+        return rows;
+    };
+    let first = suggestion_window(highlight, list.len());
+    if first > 0 {
+        rows.push(SuggestRow {
+            runs: vec![(format!("... {first} more above"), more_c)],
+            highlight: false,
+        });
+    }
+    for (i, (n, h)) in list.iter().enumerate().skip(first).take(SUGGESTIONS) {
+        let cvar = world.resource::<Console>().cvar(n).cloned();
+        let value = cvar.and_then(|v| {
+            let now = (v.get)(world)?;
+            Some(if now != v.default { format!(" = {now} *") } else { format!(" = {now}") })
+        });
+        let help: String = h.chars().take(90).collect();
+        let mut runs = vec![(n.clone(), name_c)];
+        if let Some(v) = value {
+            runs.push((v, value_c));
+        }
+        if !help.is_empty() {
+            runs.push((format!("   {help}"), text_c));
+        }
+        rows.push(SuggestRow {
+            runs,
+            highlight: highlight == Some(i),
+        });
+    }
+    let below = list.len().saturating_sub(first + SUGGESTIONS);
+    if below > 0 {
+        rows.push(SuggestRow {
+            runs: vec![(format!("... {below} more (Up/Down, Tab)"), more_c)],
+            highlight: false,
+        });
+    }
+    rows
+}
+
+/// Watched cvars' values for the overlay (`watch`).
+fn watch_text(world: &mut World) {
     // Watches: each watched cvar's value.
     let watches = world.resource::<Console>().watches.clone();
     let mut lines = Vec::new();
@@ -1325,6 +1768,7 @@ fn finish_map_load(w: &mut World) {
         Err(e) => {
             w.resource_mut::<Console>()
                 .print(crate::console::Level::Error, format!("map {id}: {e}"));
+            super::game_menu::map_load_failed(w);
             return;
         }
     };
@@ -1352,7 +1796,41 @@ fn finish_map_load(w: &mut World) {
     }
     crate::rules::respawn_everyone(w);
     w.resource_mut::<Console>().info(summary);
+    super::game_menu::entered_game(w);
 }
+
+/// The greybox map in place of whatever map is loaded (`map greybox`, and
+/// `disconnect`, which leaves it behind the main menu), everyone respawned
+/// on it at the default tick.
+pub(super) fn load_greybox(w: &mut World) {
+    w.remove_resource::<MapLoad>();
+    crate::map::unload_map(w);
+    crate::greybox::unload(w);
+    crate::greybox::respawn(w);
+    w.remove_resource::<crate::map::ActiveMapLook>();
+    w.insert_resource(crate::map::LoadedMapName(GREYBOX.into()));
+    w.insert_resource(Time::<Fixed>::from_hz(crate::DEFAULT_TICK_HZ));
+    let cams: Vec<Entity> = w
+        .query_filtered::<Entity, With<super::FirstPersonCamera>>()
+        .iter(w)
+        .collect();
+    for c in cams {
+        let mut e = w.entity_mut(c);
+        e.insert(bevy::core_pipeline::tonemapping::Tonemapping::default());
+        // The map's sky drew under the view (no clear); the greybox has none.
+        if let Some(mut camera) = e.get_mut::<Camera>() {
+            camera.clear_color = ClearColorConfig::Default;
+        }
+    }
+    let mut skies = w.query_filtered::<&mut Camera, With<crate::map::SkyboxCamera>>();
+    for mut camera in skies.iter_mut(w) {
+        camera.is_active = false;
+    }
+    crate::rules::respawn_everyone(w);
+}
+
+/// The greybox map's name for `map` and `--map`.
+pub const GREYBOX: &str = "greybox";
 
 fn local_player(w: &mut World) -> Result<Entity, String> {
     let mut q = w.query_filtered::<Entity, With<LocalPlayer>>();
@@ -1568,9 +2046,15 @@ fn client_commands(app: &mut App) {
     )
     .console_command(
         "map",
-        "map <name>: load a CS:S map (Tab lists the install's maps).",
+        "map <name>: load a CS:S map (Tab lists the install's maps); map greybox: mashup's test map.",
         |w, a| {
             let name = a.first().ok_or("map <name>")?;
+            if name.eq_ignore_ascii_case(GREYBOX) {
+                w.resource_mut::<Console>().submit("bot_kick");
+                load_greybox(w);
+                super::game_menu::entered_game(w);
+                return Ok(Some("loaded the greybox".into()));
+            }
             if !map_names().is_empty() && !map_names().iter().any(|m| m == name) {
                 return Err(format!("no map \"{name}\" in the install"));
             }
@@ -1588,6 +2072,20 @@ fn client_commands(app: &mut App) {
             Ok(Some(format!("loading {id}...")))
         },
     )
+    .console_command(
+        "disconnect",
+        "Leave the game: bots kicked, the map unloaded, back to the main menu.",
+        |w, _| {
+            w.resource_mut::<Console>().submit("bot_kick");
+            load_greybox(w);
+            super::game_menu::left_game(w);
+            Ok(None)
+        },
+    )
+    .console_command("toggleconsole", "Open or close the console.", |w, _| {
+        w.resource_mut::<ConsoleUi>().toggle_request = true;
+        Ok(None)
+    })
     .console_command("quit", "Quit (binds and changed cvars are saved).", |w, _| {
         w.write_message(AppExit::Success);
         Ok(None)
@@ -1596,6 +2094,28 @@ fn client_commands(app: &mut App) {
         w.write_message(AppExit::Success);
         Ok(None)
     })
+    .console_command(
+        "con_input",
+        "con_input \"<text>\" [n]: open the console with text on its input line and its nth suggestion picked \
+         (1: the first), as typing and Down would (for screenshots of the console).",
+        |w, a| {
+            let text = a.first().cloned().unwrap_or_default();
+            let pick = a.get(1).and_then(|n| n.parse::<usize>().ok()).filter(|n| *n > 0);
+            let mut ui = w.resource_mut::<ConsoleUi>();
+            ui.open = true;
+            ui.cursor = text.chars().count();
+            ui.input = text;
+            ui.highlight = pick.map(|n| n - 1);
+            ui.browsing = None;
+            ui.dismissed = None;
+            ui.cycle = None;
+            let mut roots = w.query_filtered::<&mut Visibility, With<ConsoleRoot>>();
+            for mut v in roots.iter_mut(w) {
+                *v = Visibility::Visible;
+            }
+            Ok(None)
+        },
+    )
     .console_command(
         "con_filter",
         "con_filter [text]: show only lines containing text (none: all).",
@@ -1764,6 +2284,145 @@ mod tests {
         // Commands registered by the client are names too.
         let (_, list) = candidates(w, "noc");
         assert_eq!(list[0].0, "noclip");
+    }
+
+    /// A console with its editing system, open, and keys typed into it.
+    fn typing_app() -> App {
+        let mut app = App::new();
+        app.add_plugins(ConsolePlugin)
+            .init_resource::<HeldActions>()
+            .init_resource::<ConsoleUi>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .add_message::<KeyboardInput>()
+            .add_message::<MouseWheel>()
+            .init_resource::<Overlays>()
+            .add_systems(Update, edit);
+        client_commands(&mut app);
+        overlay_cvars(&mut app);
+        app.console_cvar("sv_gravity", "Gravity.", "800", |_| Some("800".into()), |_, _| Ok(()));
+        app.world_mut().resource_mut::<Console>().set_range("sv_gravity", 0.0, 2000.0);
+        app.world_mut().resource_mut::<ConsoleUi>().open = true;
+        app
+    }
+
+    fn press(app: &mut App, key_code: KeyCode, logical_key: Key) {
+        app.world_mut().write_message(KeyboardInput {
+            key_code,
+            logical_key,
+            state: ButtonState::Pressed,
+            text: None,
+            repeat: false,
+            window: Entity::PLACEHOLDER,
+        });
+        app.update();
+    }
+
+    fn type_text(app: &mut App, text: &str) {
+        for c in text.chars() {
+            if c == ' ' {
+                press(app, KeyCode::Space, Key::Space);
+            } else {
+                press(app, KeyCode::KeyQ, Key::Character(c.to_string().into()));
+            }
+        }
+    }
+
+    fn input(app: &App) -> String {
+        app.world().resource::<ConsoleUi>().input.clone()
+    }
+
+    #[test]
+    fn enter_on_a_picked_suggestion_takes_it_and_leaves_room_for_arguments() {
+        let mut app = typing_app();
+        type_text(&mut app, "sv_grav");
+        let (_, list) = suggestions(app.world_mut()).expect("a list shows");
+        assert_eq!(list[0].0, "sv_gravity");
+        // Down picks the first, Up from there wraps to the last.
+        press(&mut app, KeyCode::ArrowDown, Key::ArrowDown);
+        assert_eq!(app.world().resource::<ConsoleUi>().highlight, Some(0));
+        press(&mut app, KeyCode::ArrowUp, Key::ArrowUp);
+        assert_eq!(app.world().resource::<ConsoleUi>().highlight, Some(list.len() - 1));
+        press(&mut app, KeyCode::ArrowDown, Key::ArrowDown);
+        let before = app.world().resource::<Console>().output.len();
+        press(&mut app, KeyCode::Enter, Key::Enter);
+        assert_eq!(input(&app), "sv_gravity ", "taken, with a space for the value");
+        assert_eq!(app.world().resource::<Console>().output.len(), before, "nothing ran");
+        // Now the help is for its value, and the list offers values.
+        let typed = input(&app);
+        let help = arg_help(app.world_mut(), &typed).unwrap();
+        assert_eq!((help.name.as_str(), help.current), ("sv_gravity", Some(0)));
+        assert!(help.detail.contains("= \"800\"") && help.detail.contains("range 0 to 2000"), "{}", help.detail);
+        // Esc hides the list; Enter then runs the line.
+        press(&mut app, KeyCode::Escape, Key::Escape);
+        assert!(suggestions(app.world_mut()).is_none());
+        press(&mut app, KeyCode::Enter, Key::Enter);
+        let out = &app.world().resource::<Console>().output;
+        assert!(out.iter().any(|l| l.text == "] sv_gravity "), "{:?}", out.last());
+        assert_eq!(input(&app), "");
+    }
+
+    #[test]
+    fn tab_takes_the_pick_and_up_browses_history_without_a_list() {
+        let mut app = typing_app();
+        app.world_mut().resource_mut::<ConsoleUi>().history = vec!["noclip".into(), "god".into()];
+        // Nothing typed: no list, Up is history.
+        press(&mut app, KeyCode::ArrowUp, Key::ArrowUp);
+        assert_eq!(input(&app), "god");
+        press(&mut app, KeyCode::ArrowUp, Key::ArrowUp);
+        assert_eq!(input(&app), "noclip");
+        // Typing leaves the history; the list is back and Tab takes a pick.
+        type_text(&mut app, "; setp");
+        press(&mut app, KeyCode::ArrowDown, Key::ArrowDown);
+        press(&mut app, KeyCode::Tab, Key::Tab);
+        assert_eq!(input(&app), "noclip; setpos ");
+        let help = arg_help(app.world_mut(), "noclip; setpos 10 ").unwrap();
+        assert_eq!(help.args, ["<x>", "<y>", "<z>"]);
+        assert_eq!(help.current, Some(1));
+        // Ctrl+Backspace deletes a word.
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::ControlLeft);
+        press(&mut app, KeyCode::Backspace, Key::Backspace);
+        assert_eq!(input(&app), "noclip; ");
+    }
+
+    #[test]
+    fn highlight_steps_and_window() {
+        assert_eq!(step_highlight(None, 5, false), Some(0));
+        assert_eq!(step_highlight(None, 5, true), Some(4));
+        assert_eq!(step_highlight(Some(4), 5, false), Some(0));
+        assert_eq!(step_highlight(Some(0), 5, true), Some(4));
+        assert_eq!(step_highlight(None, 0, false), None);
+        assert_eq!(suggestion_window(Some(3), 20), 0);
+        assert_eq!(suggestion_window(Some(SUGGESTIONS), 20), 1);
+        assert_eq!(suggestion_window(Some(19), 20), 20 - SUGGESTIONS);
+        assert_eq!(accept("bind f ", "+jump"), "bind f +jump ");
+        assert_eq!(accept("", "say hi"), "\"say hi\" ");
+    }
+
+    #[test]
+    fn argument_completion_follows_the_argument() {
+        let mut app = typing_app();
+        let w = app.world_mut();
+        let (_, teams) = candidates(w, "jointeam ");
+        assert_eq!(teams.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), ["2", "3"]);
+        let (_, hits) = candidates(w, "mashup_hurtme he");
+        assert_eq!(hits[0].0, "head");
+        // After the hitgroup, no more hitgroups.
+        let (_, after) = candidates(w, "mashup_hurtme head ");
+        assert!(after.iter().all(|a| a.0 != "chest"));
+        let (head, tabs) = candidates(w, "echo x; debugui pe");
+        assert_eq!((head.as_str(), tabs[0].0.as_str()), ("echo x; debugui ", "perf"));
+        // A cvar with a small whole range offers each value.
+        let (_, values) = candidates(w, "con_timestamps ");
+        assert!(values.iter().any(|v| v.0 == "1"));
+    }
+
+    #[test]
+    fn the_console_fits_the_window() {
+        assert!(lines_for_height(1080.0) > lines_for_height(720.0));
+        assert!(lines_for_height(720.0) >= 15, "{}", lines_for_height(720.0));
+        assert_eq!(lines_for_height(10.0), 4);
     }
 
     #[test]
