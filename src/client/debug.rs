@@ -1,12 +1,16 @@
-//! Developer tools. F1: entity inspector. F3: collision shapes.
-//! V: cycle the local player's Movement implementation.
+//! Developer tools. F1: entity inspector. F2: the debug UI (`debug_ui`).
+//! F3: collision shapes (`mashup_drawcollision`).
 
 use avian3d::prelude::*;
 use bevy::{input::common_conditions::input_toggle_active, prelude::*, window::CursorOptions};
-use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
+use bevy_inspector_egui::{
+    bevy_egui::{EguiGlobalSettings, EguiPlugin, PrimaryEguiContext},
+    quick::WorldInspectorPlugin,
+};
 
 use crate::{
     client::input::release_cursor,
+    console::ConsoleAppExt,
     core::{LocalPlayer, MovementState, Velocity},
     slots::MovementSlot,
 };
@@ -19,10 +23,11 @@ impl Plugin for DebugPlugin {
             EguiPlugin::default(),
             WorldInspectorPlugin::default().run_if(input_toggle_active(false, KeyCode::F1)),
             PhysicsDebugPlugin,
+            super::debug_ui::DebugUiPlugin,
         ))
         .init_resource::<DrawHitboxes>()
         .init_resource::<DrawPhys>()
-        .add_systems(Startup, (spawn_hud, hide_physics_gizmos))
+        .add_systems(Startup, (spawn_hud, hide_physics_gizmos, egui_takes_its_input, spawn_ui_camera))
         .add_systems(Update, (keys, update_hud, draw_hitboxes, draw_phys));
         crate::console::resource_cvar::<DrawHitboxes, u8>(
             app,
@@ -38,8 +43,53 @@ impl Plugin for DebugPlugin {
              they touch) and list the props nearest you (mass, mode, state) on the debug HUD.",
             |d| &mut d.0,
         );
+        app.console_cvar(
+            "mashup_drawcollision",
+            "1: draw every collision shape (avian's debug gizmos; F3 toggles it).",
+            "0",
+            |w| {
+                w.get_resource::<GizmoConfigStore>()
+                    .map(|s| (s.config::<PhysicsGizmos>().0.enabled as u8).to_string())
+            },
+            |w, v| {
+                let on = v.trim() != "0";
+                let mut store = w.get_resource_mut::<GizmoConfigStore>().ok_or("no gizmos")?;
+                store.config_mut::<PhysicsGizmos>().0.enabled = on;
+                Ok(())
+            },
+        );
     }
 }
+
+/// Keys typed into an egui field (the debug UI, the inspector) and clicks
+/// on its windows go to egui only: binds and the game don't see them.
+fn egui_takes_its_input(mut settings: ResMut<EguiGlobalSettings>) {
+    settings.enable_absorb_bevy_input_system = true;
+    // `spawn_ui_camera` holds the context.
+    settings.auto_create_primary_context = false;
+}
+
+/// A camera over all the others that draws only Bevy's UI and then egui
+/// (egui draws after the UI on the camera holding its context): the HUD
+/// stays over the world and view model, the debug UI and inspector over
+/// the HUD. Without it the UI would go on the highest 3D camera (the view
+/// model's) and egui on the first one, under the HUD.
+fn spawn_ui_camera(mut commands: Commands) {
+    commands.spawn((
+        Name::new("UI camera"),
+        Camera2d,
+        Camera {
+            order: UI_CAMERA_ORDER,
+            clear_color: ClearColorConfig::None,
+            ..default()
+        },
+        IsDefaultUiCamera,
+        PrimaryEguiContext,
+    ));
+}
+
+/// Above every 3D camera (the view model's is the first person's + 1).
+const UI_CAMERA_ORDER: isize = 100;
 
 #[derive(Resource, Default)]
 struct DrawPhys(u8);
@@ -207,7 +257,7 @@ fn update_hud(
     let speed = Vec2::new(vel.x, vel.z).length();
     let mut text = format!(
         "movement: {}\nspeed: {speed:.2} m/s  vertical: {:.2}\nground: {}  crouch: {}  sprint: {}\n\n\
-         click: capture mouse  esc: menu\nV: noclip  F1: inspector  F3: collision",
+         click: capture mouse  esc: menu\nV: noclip  F1: inspector  F2: debug UI  F3: collision",
         slot.0, vel.y, state.on_ground, state.crouching, state.sprinting,
     );
     if phys.0 != 0 {

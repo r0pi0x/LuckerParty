@@ -73,7 +73,8 @@ impl Plugin for LogicPlugin {
                     LogicSet::Damage.after(SimSet::Weapons),
                 ),
             )
-            .add_systems(FixedUpdate, (load, pre).chain().in_set(LogicSet::Pre))
+            .init_resource::<LogicRecord>()
+            .add_systems(FixedUpdate, (load, apply_record, pre).chain().in_set(LogicSet::Pre))
             .add_systems(FixedUpdate, post.in_set(LogicSet::Post))
             .add_systems(FixedUpdate, (damage, fire_outputs).in_set(LogicSet::Damage))
             .add_message::<crate::map::entities::FireEntityOutput>()
@@ -112,6 +113,13 @@ impl Plugin for LogicPlugin {
                 info!("ent_fire {target} {input} {value:?}");
                 Ok(None)
             },
+        );
+        crate::console::resource_cvar::<LogicRecord, u8>(
+            app,
+            "mashup_logic_record",
+            "1: record the outputs map entities fire and the inputs they get (the latest few hundred; \
+             the debug UI's Logic tab lists them).",
+            |r| &mut r.0,
         );
     }
 }
@@ -1092,6 +1100,39 @@ fn sync_fires(world: &mut World, logic: &Logic) {
     let want = MapFires { fires, flames };
     if world.get_resource::<MapFires>() != Some(&want) {
         world.insert_resource(want);
+    }
+}
+
+/// `mashup_logic_record 1`: the logic world records the outputs it fires
+/// and the inputs it delivers (the debug UI's Logic tab lists them),
+/// keeping the latest `RECORD_KEEP`.
+#[derive(Resource, Default)]
+struct LogicRecord(u8);
+
+const RECORD_KEEP: usize = 256;
+
+fn apply_record(rec: Res<LogicRecord>, logic: Option<ResMut<Logic>>, mut last: Local<u8>) {
+    let Some(mut logic) = logic else { return };
+    // Turned off: stop (tests that record by hand leave the cvar at 0).
+    if rec.0 != *last {
+        *last = rec.0;
+        logic.world.record = rec.0 != 0;
+    }
+    if rec.0 == 0 {
+        return;
+    }
+    if !logic.world.record {
+        logic.world.record = true;
+    }
+    for len in [logic.world.fired.len(), logic.world.deliveries.len()] {
+        if len > RECORD_KEEP * 2 {
+            let w = &mut logic.world;
+            let fired = w.fired.len().saturating_sub(RECORD_KEEP);
+            w.fired.drain(..fired);
+            let delivered = w.deliveries.len().saturating_sub(RECORD_KEEP);
+            w.deliveries.drain(..delivered);
+            break;
+        }
     }
 }
 

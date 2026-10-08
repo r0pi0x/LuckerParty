@@ -124,6 +124,27 @@ fn the_dead_are_not_solid_until_the_next_round() {
     assert!(sim.app.world().get::<avian3d::prelude::ColliderDisabled>(t).is_none());
 }
 
+/// `mp_restartgame n` (the debug UI's "Restart game") starts the game
+/// over n seconds later: round 1, no wins, the start money.
+#[test]
+fn restartgame_starts_over_after_its_delay() {
+    let (mut sim, t, ct, ct2) = setup();
+    sim.seconds(1.2);
+    kill(&mut sim, t, ct);
+    kill(&mut sim, t, ct2);
+    assert_eq!(sim.app.world().resource::<RoundState>().wins, [1, 0]);
+    assert_ne!(money(&sim, t), 800);
+    sim.app.world_mut().resource_mut::<Console>().submit("mp_restartgame 1");
+    sim.seconds(0.5);
+    assert_eq!(sim.app.world().resource::<RoundState>().wins, [1, 0], "not yet");
+    sim.seconds(0.7);
+    let state = sim.app.world().resource::<RoundState>().clone();
+    assert_eq!((state.number, state.wins, state.restart_at), (1, [0, 0], None));
+    assert!(matches!(state.phase, Phase::Freeze { .. }), "{:?}", state.phase);
+    assert_eq!(money(&sim, t), 800);
+    assert!(sim.app.world().get::<mashup::rules::Dead>(ct).is_none(), "everyone is back");
+}
+
 /// Ammo in rounds (CS:S): the spawn pistol carries two more clips, a
 /// bought gun only its clip, and ammo is bought by the box (`primammo`,
 /// `secammo` fill; `buyammo1` buys one) up to the type's maximum; bots buy

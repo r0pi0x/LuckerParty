@@ -122,12 +122,22 @@ pub(super) fn grab_cursor(
     mut focus: MessageReader<bevy::window::WindowFocused>,
     menu: Option<Res<super::game_menu::GameMenu>>,
     vgui: Option<Res<super::vgui::VguiOpen>>,
+    (console, debug_ui, egui): (
+        Option<Res<super::console::ConsoleUi>>,
+        Option<Res<super::debug_ui::DebugUi>>,
+        Option<Res<bevy_inspector_egui::bevy_egui::input::EguiWantsInput>>,
+    ),
 ) {
     // The game menu and the game-look buy and team menus own the mouse
     // while open (Esc opens and closes the game menu), and the click that
-    // closes one isn't a click to grab.
-    let in_menu =
-        menu.as_ref().is_some_and(|m| m.open || m.is_changed()) || vgui.as_ref().is_some_and(|v| v.any() || v.is_changed());
+    // closes one isn't a click to grab. So do the console (clicks there
+    // select and scroll its text), the debug UI, and any egui window
+    // under the pointer (the inspector).
+    let in_menu = menu.as_ref().is_some_and(|m| m.open || m.is_changed())
+        || vgui.as_ref().is_some_and(|v| v.any() || v.is_changed())
+        || console.is_some_and(|c| c.open)
+        || debug_ui.is_some_and(|d| d.open || d.is_changed())
+        || egui.is_some_and(|e| e.wants_any_pointer_input());
     // Losing focus (alt-tab) ends the grab: Windows drops the cursor clip
     // then, and a grab we still believed in would keep turning the view
     // while the real cursor wanders off and clicks other windows. Clicking

@@ -253,7 +253,23 @@ Only `Reflect`-registered types are visible; register new core components in
 - Configs live in `~/.local/share/mashup/cfg` (Windows `%APPDATA%\mashup\cfg`):
   config.cfg (written on quit when binds/cvars changed; every bind, as
   `bind` lines after `unbindall`), autoexec.cfg,
-  history.txt; `exec name` runs name.cfg from there.
+  history.txt, bookmarks.txt (the debug UI's places); `exec name` runs
+  name.cfg from there.
+- Typing in the console: suggestions show under it as you type, with a
+  help line for the command being typed (its arguments from the help
+  text, the one being typed in green; a cvar's value, default, range and
+  values). Up/Down pick a suggestion (with an empty line they browse
+  history), Enter or Tab takes it and adds a space, Esc hides the list
+  (a second Esc closes the console). Completion knows each command's
+  arguments (keys and what they are bound to, maps, `ent_fire` targets
+  and inputs, teams, hitgroups, debug UI tabs, bot numbers, weapons) and
+  works on the last command of a `;` line. `help <name>` prints the
+  same; Ctrl+Backspace / Ctrl+Delete delete a word, Ctrl+V pastes,
+  Ctrl+L clears, Ctrl+Home / Ctrl+End jump through the output. Its
+  logic is tested headless in `client::console` (keys typed into the
+  editing system). For a screenshot of it, `con_input "<text>" [n]`
+  opens the console with that input and suggestion n picked:
+  `--window 1280x720 --screenshot con.png +con_input "sv_a" 2`.
 
 ## 3c. Performance
 
@@ -322,6 +338,52 @@ Details and baseline numbers: [performance.md](performance.md).
   `--features bevy/trace_tracy` and the Tracy profiler (not set up on the
   dev box). CPU sampling (`perf record -g`, `cargo flamegraph`) works on
   any optimized build on Linux; `perf` isn't installed on the dev box.
+
+## 3d. The debug UI
+
+F2 (a bind: `debugui`) opens a tabbed window; `debugui <tab>` opens it
+on a tab (`player`, `world`, `movement`, `bots`, `rendering`, `perf`,
+`audio`, `logic`, `rounds`, `cvars`), `debugui close` closes it, e.g.
+`--window 1280x720 --screenshot ui.png +debugui perf` photographs one.
+Every control runs a console line (hover a button for it), so anything
+done there can be typed, bound or scripted too; the window only reads
+state. The mouse stays free while it is open (the game ignores input),
+and keys typed into its fields don't reach binds.
+
+- Player: position, angles, velocity, movement state, team; god, noclip,
+  respawn, `impulse 101`; health, armour and money sliders
+  (`mashup_sethealth`, `mashup_setarmor <n> [helmet]`,
+  `mashup_setmoney`); weapons held (clip/reserve), give any registered
+  weapon, drop; teleport to each spawn point; bookmarks (saved places,
+  kept in bookmarks.txt).
+- World: the map and a map list to load, tick and game time, entity
+  counts, map logic, time scale presets, `host_timescale`, `sv_gravity`.
+- Movement: every CS:S movement cvar with its range and a reset, all
+  back to defaults, surf preset, the mouse cvars.
+- Bots: add T / CT, kick, back to orders, skill presets (the new game
+  page's), the bot cvars (`bot_stop` freezes them), a table of each
+  bot's team, health, role and activity with watch (`mashup_watch`) and
+  go-to buttons.
+- Rendering: the overlays (`cl_showpos`, `net_graph`,
+  `mashup_drawhitboxes`, `mashup_drawcollision` (= F3),
+  `mashup_drawphys`, `mashup_drawnav`, `mashup_drawbots`, ...), culling
+  (`r_novis`, `r_portalsopenall`, `r_occlusion`, with the vis readout),
+  HDR, water, view model and effect cvars, third person and free camera.
+- Perf: a frame-time graph of the last 300 frames (white frame, green
+  main-world CPU, 60 and 30 fps lines), the `mashup_perf` readout,
+  `mashup_perf`, `mashup_perf_log`, how to take a trace.
+- Audio: volume, DSP, `snd_show`, the soundscape and room readout.
+- Logic: the map's entities (filter by name or class), an entity's
+  keyvalues and output connections, fire an input at it (`ent_fire`);
+  `mashup_logic_record 1` lists the outputs fired (latest 40 shown) and
+  the logic's messages.
+- Rounds: the round, its phase and score; restart (`mp_restartgame 1`),
+  rounds on or off, the round cvars.
+- Cvars: every cvar, searchable, "changed only", edited in place (Enter
+  sets it), reset to default; matching commands with their help.
+
+Headless: `tests/debug_ui.rs` opens it, walks the tabs and runs the
+lines its tabs run in a `Sim` (`DebugUiStatePlugin`).
 
 ## 4. Logs
 
