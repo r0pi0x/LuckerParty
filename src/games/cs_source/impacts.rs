@@ -1,7 +1,6 @@
 //! Impact sounds (specs/cs_source/sounds.md 4): bullet impacts by the hit
 //! surface, and physics impacts by both touching surfaces and the impact
-//! speed. Scrapes are not done yet (the physics engine's friction energy
-//! that drives them is engine-side; spec open question 8).
+//! speed. Scrapes (looping friction sounds) are `scrapes.rs`.
 
 use std::collections::HashMap;
 
@@ -40,7 +39,8 @@ pub struct ImpactSoundsPlugin;
 
 impl Plugin for ImpactSoundsPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<LastContact>()
+        app.add_plugins(super::scrapes::ScrapePlugin)
+            .init_resource::<LastContact>()
             .add_message::<PlaySound>()
             .add_message::<WeaponEvent>()
             .add_message::<PlaceDecal>()
@@ -354,6 +354,7 @@ fn physics_impacts(
             break;
         }
         play.write(PlaySound {
+            pitch: None,
             entry: entry.to_string(),
             at: Some(q.at),
             volume: Some(script_volume(sounds, entry) * q.volume.min(1.0)),

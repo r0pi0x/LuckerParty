@@ -598,3 +598,100 @@ fn physics_impact_rules() {
     assert!(g.window_broken && g.broken_count() == 0, "crush breaks the window entity only");
     assert!(w.breakable_impact(win).is_none());
 }
+
+/// (entry, volume, pitch) of the sounds asked for.
+fn drawn_sounds(w: &LogicWorld) -> Vec<(String, Option<f32>, Option<f32>)> {
+    w.effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::Sound {
+                entry, volume, pitch, ..
+            } => Some((entry.clone(), *volume, *pitch)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn damage_sounds_draw_the_spec_volume_and_pitch() {
+    // Spec "Damage" 6: volume U(0.75, 1), pitch 100 two times in three,
+    // else 95 + I(0, 34).
+    let mut pitches = Vec::new();
+    let mut w = world();
+    let crate_ = breakable(&mut w, &[("material", "1"), ("health", "100000")], Vec3::splat(32.0));
+    for _ in 0..600 {
+        w.effects.clear();
+        w.damage(crate_, 2.0, DamageKind::Bullet, None, Vec3::ZERO, Vec3::X);
+        let s = drawn_sounds(&w);
+        assert_eq!(s.len(), 1);
+        let (entry, volume, pitch) = &s[0];
+        assert_eq!(entry, "Breakable.MatWood");
+        let (volume, pitch) = (volume.unwrap(), pitch.unwrap());
+        assert!((0.75..=1.0).contains(&volume), "{volume}");
+        assert!((95.0..=129.0).contains(&pitch), "{pitch}");
+        assert_eq!(pitch.fract(), 0.0);
+        pitches.push(pitch);
+    }
+    let normal = pitches.iter().filter(|p| **p == 100.0).count() as f32 / pitches.len() as f32;
+    assert!((0.62..0.78).contains(&normal), "pitch 100 share {normal}");
+    assert!(pitches.iter().any(|p| *p > 102.0), "some drawn pitches");
+}
+
+#[test]
+fn break_sounds_draw_the_spec_volume_and_pitch() {
+    // Spec "Breaking" 1: pitch 95 + I(0, 29), 98-102 snapped to 100;
+    // volume U(0.85, 1) + |health| / 100, at most 1.
+    let mut seen = Vec::new();
+    for (health, damage, floor) in [("1", 26.0, 0.97), ("10", 60.0, 1.0)] {
+        for _ in 0..60 {
+            let mut w = world();
+            let vent = breakable(&mut w, &[("material", "2"), ("health", health)], Vec3::splat(32.0));
+            // Different draws per run.
+            for _ in 0..seen.len() % 7 {
+                w.random();
+            }
+            w.damage(vent, damage, DamageKind::Bullet, None, Vec3::ZERO, Vec3::X);
+            let s = drawn_sounds(&w);
+            let (entry, volume, pitch) = s.last().unwrap();
+            assert_eq!(entry, "Breakable.Metal");
+            let (volume, pitch) = (volume.unwrap(), pitch.unwrap());
+            assert!((95.0..=124.0).contains(&pitch), "{pitch}");
+            assert!(pitch == 100.0 || !(98.0..=102.0).contains(&pitch), "{pitch}");
+            assert_eq!(pitch.fract(), 0.0);
+            // Health 1 - 13 = -12: at least 0.85 + 0.12; -20: full.
+            assert!(volume <= 1.0 && volume >= floor - 1e-5, "{volume}");
+            seen.push(pitch);
+        }
+    }
+    assert!(seen.iter().any(|p| *p != 100.0));
+}
+
+#[test]
+fn window_break_plays_as_scripted_and_panes_draw() {
+    // The window's break is its surface's physics break sound (scripted);
+    // a shattered pane plays the damage sound with the draws.
+    let mut w = world();
+    let win = office_window(&mut w);
+    w.damage(win, 26.0, DamageKind::Bullet, None, office_point(4.5, 3.5), Vec3::NEG_Y);
+    let s = drawn_sounds(&w);
+    assert!(s.iter().any(|(e, v, p)| e == "Glass.Break" && v.is_none() && p.is_none()), "{s:?}");
+    assert!(
+        s.iter().any(|(e, v, p)| e == "Breakable.MatGlass" && v.is_some() && p.is_some()),
+        "{s:?}"
+    );
+}
+
+#[test]
+fn gibs_carry_their_bounce_sound() {
+    let mut w = world();
+    let vent = breakable(&mut w, &[("material", "2"), ("health", "1")], Vec3::new(64.0, 8.0, 32.0));
+    w.damage(vent, 26.0, DamageKind::Bullet, None, Vec3::ZERO, Vec3::X);
+    assert!(
+        w.effects
+            .iter()
+            .any(|e| matches!(e, Effect::Gibs { bounce: Some("Bounce.Metal"), .. }))
+    );
+    assert_eq!(Material::Glass.bounce_sound(), Some("Bounce.Glass"));
+    assert_eq!(Material::Rocks.bounce_sound(), Some("Bounce.Concrete"));
+    assert_eq!(Material::None.bounce_sound(), None);
+}

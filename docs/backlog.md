@@ -268,15 +268,16 @@ The console and overlays are in (src/console.rs, src/client/console.rs).
 
 docs/plans/active/sound.md.
 
-- Scrapes (looping friction sounds): needs a stand-in for Source's
-  friction energy (spec open question 8); breakables' spec pitch/volume
-  rules (we play the entries as scripted) and gib bounce sounds.
+- Scrapes by ear: tune `games::cs_source::scrapes::friction_energy`
+  against CS:S (a crate shoved across concrete, a ragdoll sliding down a
+  ramp) once spec open question 8 is measured.
 - Room DSP by ear: tune `map::room::PRESETS` against CS:S (dust2's
-  tunnels, nuke's halls); soundscape `dsp_player`/`soundmixer`,
-  env_soundscape_proxy and env_soundscape Enable/Disable.
+  tunnels, nuke's halls); soundscape `dsp_player` and `soundmixer` are
+  read but not played (engine-side effects).
 - Stock ambient_generics the bomb starts (de_nuke's alarm, dust2's
   fires) now play when it explodes (`BombExplode`); check them by ear. (Prop outputs are in: de_nuke's steam, cs_office's
-  projector.) de_nuke's env_steam jets themselves aren't drawn.
+  projector.) env_steam's JetLength/SpreadSpeed/Speed inputs and heat-wave
+  jets (Type 1) are not done.
 - Measure ambient_generic's level for script entries vs raw waves (spec
   open question 11).
 - Measure on the probe server: the distance curves (replace the H1/H2

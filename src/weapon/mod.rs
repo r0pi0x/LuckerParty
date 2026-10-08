@@ -977,6 +977,7 @@ fn select_weapons(
 /// A sound from the weapon's owner at `at`.
 fn owner_sound(entry: String, owner: Entity, at: Vec3, channel: u8) -> PlaySound {
     PlaySound {
+        pitch: None,
         entry,
         at: Some(at),
         volume: None,

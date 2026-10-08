@@ -121,6 +121,50 @@ impl Material {
     pub fn is_glass(self) -> bool {
         matches!(self, Self::Glass | Self::UnbreakableGlass)
     }
+
+    /// The sound entry its gibs make when they bounce (the spec's break
+    /// flag: glass, wood, metal, flesh or concrete; the entry names and
+    /// ceiling tiles' flag are ours, docs/tech-debt.md).
+    pub fn bounce_sound(self) -> Option<&'static str> {
+        Some(match self {
+            Self::Glass | Self::UnbreakableGlass => "Bounce.Glass",
+            Self::Wood => "Bounce.Wood",
+            Self::Metal | Self::Computer => "Bounce.Metal",
+            Self::Flesh | Self::Web => "Bounce.Flesh",
+            Self::Rocks | Self::CinderBlock | Self::CeilingTile => "Bounce.Concrete",
+            Self::None => return None,
+        })
+    }
+}
+
+/// A damage sound's volume and pitch (spec "Damage" 6): volume U(0.75, 1);
+/// pitch 100 two times in three, else 95 + I(0, 34). `random` draws
+/// uniformly in 0..1.
+pub fn damage_sound_draw(mut random: impl FnMut() -> f32) -> (f32, f32) {
+    let volume = 0.75 + 0.25 * random();
+    let pitch = if pick(random(), 3) != 0 {
+        100.0
+    } else {
+        95.0 + pick(random(), 35) as f32
+    };
+    (volume, pitch)
+}
+
+/// A func_breakable's break sound volume and pitch (spec "Breaking" 1):
+/// pitch 95 + I(0, 29), 98..102 snapped to 100; volume U(0.85, 1) +
+/// |health| / 100, at most 1.
+pub fn break_sound_draw(health: i32, mut random: impl FnMut() -> f32) -> (f32, f32) {
+    let mut pitch = 95.0 + pick(random(), 30) as f32;
+    if (98.0..=102.0).contains(&pitch) {
+        pitch = 100.0;
+    }
+    let volume = (0.85 + 0.15 * random() + health.unsigned_abs() as f32 / 100.0).min(1.0);
+    (volume, pitch)
+}
+
+/// I(0, n - 1) from a uniform draw in 0..1.
+fn pick(u: f32, n: usize) -> usize {
+    ((u * n as f32) as usize).min(n - 1)
 }
 
 /// One gib thrown by a break (entity space).
@@ -446,7 +490,7 @@ impl LogicWorld {
         } else {
             let coin = self.random() < 0.5;
             if let Some(s) = material.damage_sound(coin) {
-                self.breakable_sound(id, s);
+                self.play_damage_sound(id, s);
             }
         }
         true
@@ -473,16 +517,27 @@ impl LogicWorld {
         }
     }
 
-    fn breakable_sound(&mut self, id: EntId, entry: &str) {
-        let Some(e) = self.get(id) else { return };
+    /// A sound at the breakable's centre: the entry's own volume and
+    /// pitch unless given.
+    fn breakable_sound(&mut self, id: EntId, entry: &str, draw: Option<(f32, f32)>) {
+        if self.get(id).is_none() {
+            return;
+        }
         let (lo, hi) = local_bounds(self, id);
-        let _ = e;
         let (origin, rot) = pose(self, id);
         let at = origin + rot * ((lo + hi) / 2.0);
         self.effects.push(Effect::Sound {
             entry: entry.to_string(),
             at,
+            volume: draw.map(|d| d.0),
+            pitch: draw.map(|d| d.1),
         });
+    }
+
+    /// The material's damage sound with the spec's volume and pitch draws.
+    fn play_damage_sound(&mut self, id: EntId, entry: &str) {
+        let draw = damage_sound_draw(|| self.random());
+        self.breakable_sound(id, entry, Some(draw));
     }
 
     /// Break a func_breakable now (spec "Breaking"); `dir` is the
@@ -500,7 +555,8 @@ impl LogicWorld {
         let health = b.health;
         b.broken = true;
         if let Some(s) = material.break_sound() {
-            self.breakable_sound(id, s);
+            let draw = break_sound_draw(health, || self.random());
+            self.breakable_sound(id, s, Some(draw));
         }
         let e = self.get(id).unwrap();
         let (origin, rot) = pose(self, id);
@@ -552,6 +608,7 @@ impl LogicWorld {
                 set,
                 glass: material.is_glass(),
                 pieces,
+                bounce: material.bounce_sound(),
             });
         }
         self.unground_riders(id);
@@ -668,7 +725,7 @@ fn break_on_pressure(w: &mut LogicWorld, id: EntId) {
     let material = b.material;
     let coin = w.random() < 0.5;
     if let Some(s) = material.damage_sound(coin) {
-        w.breakable_sound(id, s);
+        w.play_damage_sound(id, s);
     }
     w.think_in(id, delay);
 }
@@ -807,7 +864,8 @@ fn break_window(w: &mut LogicWorld, id: EntId, breaker: Option<Who>, dir: Vec3) 
     b.health = 0;
     b.broken = true;
     b.attach.push.solid = false;
-    w.breakable_sound(id, if tile { "Tile.Break" } else { "Glass.Break" });
+    // The surface's physics break sound: as scripted.
+    w.breakable_sound(id, if tile { "Tile.Break" } else { "Glass.Break" }, None);
     w.unground_riders(id);
     w.refresh_solid(id);
     let who = breaker.unwrap_or(Who::Ent(id));
@@ -866,7 +924,7 @@ fn blast_shatter(w: &mut LogicWorld, id: EntId, local_dir: Vec3, amount: f32) {
             shard: LARGE_SHARD,
         });
     }
-    w.breakable_sound(id, "Breakable.MatGlass");
+    w.play_damage_sound(id, "Breakable.MatGlass");
 }
 
 /// Shatter one pane (if there and unbroken): shards, the damage sound,
@@ -902,7 +960,7 @@ fn shatter(w: &mut LogicWorld, id: EntId, c: i32, r: i32, force: Vec3) -> bool {
         shard: SMALL_SHARD,
     });
     if sound {
-        w.breakable_sound(id, "Breakable.MatGlass");
+        w.play_damage_sound(id, "Breakable.MatGlass");
     }
     if !tile {
         // The support pass runs with the entity's next think: this tick's

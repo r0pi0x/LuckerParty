@@ -287,6 +287,7 @@ fn buy_ammo(world: &mut World, owner: Entity, slot: u8, fill: bool) -> Result<St
     if let Some(entry) = sound.filter(|_| world.contains_resource::<Messages<crate::map::PlaySound>>()) {
         let at = world.get::<Transform>(owner).map(|t| t.translation);
         world.write_message(crate::map::PlaySound {
+            pitch: None,
             entry,
             at,
             volume: None,

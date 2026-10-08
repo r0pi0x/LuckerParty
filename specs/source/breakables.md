@@ -376,3 +376,12 @@ tilebroken_* for tile). Details of edge selection are not specced here.
 8. **Glass pane render details** (edge piece selection, crack material,
    back-face) for the client: needs a separate pass on the client glass
    code.
+9. **Gib bounce sounds**: which sound entries the break flags pick
+   (implementation uses `Bounce.Glass`, `Bounce.Wood`, `Bounce.Metal`,
+   `Bounce.Flesh`, `Bounce.Concrete`, ceiling tiles as concrete), and
+   whether the temporary-entity rule specced for shells
+   (specs/cs_source/view_models.md 8: one bounce in 6, volume by vertical
+   speed / 450, random pitch one time in 4) applies to break gibs.
+   Measure: `sv_soundemitter_trace 1` on the client (gibs are
+   client-side) while breaking de_nuke's metal vents and a wooden crate
+   brush; count bounce emits per gib.

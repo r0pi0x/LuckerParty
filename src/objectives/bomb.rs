@@ -364,6 +364,7 @@ fn arm(world: &mut World) {
                 {
                     let at = world.get::<Transform>(e).map(|t| t.translation);
                     world.write_message(PlaySound {
+                        pitch: None,
                         entry: s.clone(),
                         at,
                         volume: None,
@@ -577,6 +578,7 @@ fn defuse(
             commands.entity(e).insert(Defusing);
             if let Some(s) = &rules.sounds.defuse_start {
                 play.write(PlaySound {
+                    pitch: None,
                     entry: s.clone(),
                     at: Some(bt.translation),
                     volume: None,
@@ -665,6 +667,7 @@ fn tick_bomb(
             bomb.next_beep = now + beep_interval(remaining, bomb.timer) as f64;
             if let Some(s) = &rules.sounds.beep {
                 play.write(PlaySound {
+                    pitch: None,
                     entry: s.clone(),
                     at: Some(at),
                     volume: None,

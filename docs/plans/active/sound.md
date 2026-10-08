@@ -38,8 +38,17 @@ Started 2026-10-05, from specs/cs_source/sounds.md.
    wading counter quirk shared by all players.
 3. [x] Bullet impacts (hit surface's bulletimpact, pellet grouping) and
    physics impacts (avian's pre-solve approach speed, soft/hard choice,
-   per-frame queue and merging), `games/cs_source/impacts.rs`. Scrapes are
-   left: they need the engine's friction energy (spec open question 8).
+   per-frame queue and merging), `games/cs_source/impacts.rs`. Scrapes
+   (`games/cs_source/scrapes.rs`): the spec's rule (thresholds, rough or
+   smooth, slots, 0.1 s ramps and timeout, the server's 0.5 s update)
+   on a stand-in for Source's friction energy (spec open question 8):
+   the friction work of one 0.015 s tick at the hardest-sliding contact,
+   friction × normal force (avian's normal impulse / dt) × sliding speed,
+   in kg·in²/s²; one loop per sliding body (props, pieces, ragdolls),
+   following it. Breakables (specs/source/breakables.md): damage and
+   break sounds draw the spec's volume and pitch; brush gibs bounce with
+   their material's `Bounce.*` entry by the shared temporary-entity rule
+   (1 in 6, volume by vertical speed, pitch drawn 1 in 4).
 4. [x] Soundscapes: scripts flattened (nesting, volumes, position
    overrides), trigger_soundscape zones (most recent wins) and
    env_soundscape points, 3 s loop crossfades with reuse, random
@@ -53,8 +62,14 @@ Started 2026-10-05, from specs/cs_source/sounds.md.
    (Source's are engine-side), played by one shared reverb bus that every
    clip sends into (more with distance; `#` waves and interface sounds
    dry); `dsp_off`, `dsp_volume`; `snd_show 1` shows the soundscape and
-   preset. Not yet: dsp_player, soundmixer, the trace budget,
-   env_soundscape_proxy and Enable/Disable inputs.
+   preset. "dsp_volume" overrides the user's room level while its
+   soundscape plays; "dsp_player" and "soundmixer" are read and shown,
+   not played (their effects are engine-side). env_soundscape_proxy
+   plays its main env_soundscape's soundscape and positions from its own
+   place; Enable/Disable/ToggleEnabled go through the logic
+   (`map::SoundscapeSwitches`): a disabled current one gives way to the
+   next that qualifies; OnPlay fires when one becomes current. Not yet:
+   the trace budget (not needed: one listener).
 6. [x] ambient_generic (`logic/ambient.rs` on `map/live_sound.rs`):
    the logic keeps the entity's state (spawn keys, inputs, ramps and LFO
    at 5 Hz) and asks for long-lived sounds by entity (`Effect::Ambient*`

@@ -50,6 +50,51 @@ fn sprites_show_hide_toggle_and_die() {
 }
 
 #[test]
+fn steam_turns_on_off_and_toggles() {
+    // env_steam: InitialState 1 starts it on; TurnOn, TurnOff, Toggle.
+    let entities = vec![
+        map_entity(&[("classname", "env_steam"), ("targetname", "steam"), ("InitialState", "0")]),
+        map_entity(&[("classname", "env_steamjet"), ("InitialState", "1")]),
+    ];
+    let mut w = world();
+    w.load_map(&entities);
+    assert_eq!(part(&w, 0), Some((PartKind::Steam, false)));
+    assert_eq!(part(&w, 1), Some((PartKind::Steam, true)));
+    w.queue_input("steam", "TurnOn", Value::Void, 0.0, None);
+    run_to(&mut w, 1);
+    assert_eq!(part(&w, 0), Some((PartKind::Steam, true)));
+    w.queue_input("steam", "Toggle", Value::Void, 0.0, None);
+    run_to(&mut w, 2);
+    assert_eq!(part(&w, 0), Some((PartKind::Steam, false)));
+    w.queue_input("steam", "Toggle", Value::Void, 0.0, None);
+    w.queue_input("steam", "TurnOff", Value::Void, 0.0, None);
+    run_to(&mut w, 3);
+    assert_eq!(part(&w, 0), Some((PartKind::Steam, false)));
+}
+
+#[test]
+fn soundscapes_enable_disable_and_toggle() {
+    // env_soundscape(_proxy): StartDisabled; Enable, Disable,
+    // ToggleEnabled (specs/cs_source/sounds.md 6).
+    let entities = vec![
+        map_entity(&[("classname", "env_soundscape"), ("targetname", "a"), ("StartDisabled", "1")]),
+        map_entity(&[("classname", "env_soundscape_proxy"), ("targetname", "b")]),
+    ];
+    let mut w = world();
+    w.load_map(&entities);
+    assert_eq!(part(&w, 0), Some((PartKind::Soundscape, false)));
+    assert_eq!(part(&w, 1), Some((PartKind::Soundscape, true)));
+    w.queue_input("a", "Enable", Value::Void, 0.0, None);
+    w.queue_input("b", "Disable", Value::Void, 0.0, None);
+    run_to(&mut w, 1);
+    assert_eq!(part(&w, 0), Some((PartKind::Soundscape, true)));
+    assert_eq!(part(&w, 1), Some((PartKind::Soundscape, false)));
+    w.queue_input("a", "ToggleEnabled", Value::Void, 0.0, None);
+    run_to(&mut w, 2);
+    assert_eq!(part(&w, 0), Some((PartKind::Soundscape, false)));
+}
+
+#[test]
 fn dust_turns_on_and_off() {
     // de_train's bomb-site dust clouds start disabled.
     let entities = vec![

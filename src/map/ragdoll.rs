@@ -702,6 +702,9 @@ pub fn spawn_ragdoll(
                         // keeps the listed pairs.
                         CollisionLayers::new(RAGDOLL_LAYER, LayerMask::DEFAULT | RAGDOLL_LAYER),
                         ActiveCollisionHooks::FILTER_PAIRS,
+                        // Its surface (scrape sounds; what it sounds like
+                        // to what touches it).
+                        crate::core::PropSurface(body.surfaceprop.clone()),
                     ),
                 ))
                 .id(),

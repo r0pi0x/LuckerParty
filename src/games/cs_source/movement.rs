@@ -2091,6 +2091,7 @@ fn step(
             // "Landing").
             if !god.contains(entity) && health.get(entity).is_ok_and(|h| h.current > 0.0) {
                 play.write(PlaySound {
+                    pitch: None,
                     entry: "Player.FallDamage".into(),
                     at: Some(to_engine(feet)),
                     volume: None,
@@ -2102,6 +2103,7 @@ fn step(
         }
         for (entry, at, volume) in mover.sounds.drain(..) {
             play.write(PlaySound {
+                pitch: None,
                 entry,
                 at: Some(to_engine(at)),
                 volume,
