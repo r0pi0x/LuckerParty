@@ -24,7 +24,7 @@ source/              Source engine formats and shared Source behaviour:
                      BSP/VPK/VTF/VMT/MDL/PHY, entity I/O and logic classes,
                      soundscapes, Source materials and shaders
 games/cs_source/     CS:S: library (plugins) + standalone app
-games/combat_arms/   Combat Arms: library + standalone app (private)
+games/combat_arms/   Combat Arms: library + standalone app (local, git-ignored for now)
 games/originals/     Lucker Party's own games and assets
 minigames/           minigame definitions + rule modules that mix games
 apps/mashup/         dev sandbox: any game, any map, all debug tools
@@ -69,30 +69,18 @@ Rules:
 
 ## Repo
 
-- One private monorepo holding everything: engine, Source, all games,
-  minigames, both apps, specs and the private workflow docs.
-- Collaborators (friends on Lucker Party, other groups' games) get access
-  by invite. While the repo holds the Combat Arms specs and the private
-  workflow docs it stays private; keep those in clearly separate folders
-  (`games/combat_arms/`, `docs/private/` or similar) so publishing parts
-  later stays easy.
-- If a part ever goes public, it starts from one clean commit of a
-  checked tree (no old history: old commits carry content the current
-  files don't, and commit metadata).
+- One monorepo holding everything, developed in the open: engine,
+  Source, games, minigames, both apps, specs and docs.
+- Combat Arms (loader and specs) is developed locally and git-ignored for
+  now, and was removed from the history (2026-10-07). It builds with
+  `--features combat_arms` where the folder exists.
 
-## If anything goes public later
+## Developing in the open
 
-- No game assets, extracted files or keys (tests enforce this; check by
-  hand too).
-- Specs are sorted by where they came from: anything written from Combat
-  Arms material stays private; each Source/CS:S spec is listed with its
-  source for the owner to decide.
-- Docs describing the private workflow (CLAUDE.md, plans, backlog, Windows
-  spec sessions, probe server) stay private; public repos get their own
-  README and contributor guide.
-- Scan for personal traces (names, usernames, machine paths, Discord ids,
-  emails); commit only under the new identity; pick a licence
-  (e.g. MIT/Apache-2.0).
+- Never commit game assets, extracted files, keys, or personal traces
+  (names, personal emails, machine paths, Discord ids); commit as
+  `r0pi0x` in UTC (CLAUDE.md, "Commit identity").
+- A licence is still to be chosen.
 
 ## Order
 
@@ -118,5 +106,5 @@ Rules:
 | `src/logic` | source | Source entity I/O and classes (func_door, triggers, ...) |
 | `src/map` | split | neutral runtime (MapData, culling, particles) vs Source materials/shaders (world.wgsl, water) |
 | `src/games/cs_source` | split | formats (bsp, vpk, material, mdl, phy, wav, sound) to source; CS:S rules, weapons, HUD, bots' CS:S parts stay |
-| `src/games/combat_arms` | games/combat_arms | private |
+| `src/games/combat_arms` | games/combat_arms | local, git-ignored |
 | `specs/` | split | `source/` to source (after review), `cs_source/` to cs_source, `combat_arms/` private |

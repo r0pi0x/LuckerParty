@@ -15,7 +15,7 @@ This file is a map. Follow the links for detail; keep it short.
 | Design decisions and why (slots, mounts, weapon model, legal rules) | [README.md](README.md) |
 | Code layout, layers, data flow | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | How to check your work (tests, screenshots, live ECS queries) | [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md) |
-| Current plan and progress | [docs/plans/active/](docs/plans/active/mvp-combat-arms-slice.md) |
+| Current plan and progress | [docs/plans/active/](docs/plans/active/engine-split.md) |
 | What to build next (to-do list) | [docs/backlog.md](docs/backlog.md) |
 | Known shortcuts in existing code | [docs/tech-debt.md](docs/tech-debt.md) |
 | Writing behavior specs from original source | [specs/README.md](specs/README.md) |

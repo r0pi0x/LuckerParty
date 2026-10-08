@@ -44,11 +44,11 @@ instead of guessing.
 ## Layout
 
 ```
-specs/<game>/<topic>.md      e.g. specs/combat_arms/movement.md
+specs/<game>/<topic>.md      e.g. specs/cs_source/movement.md
 ```
 
-Suggested first topics for Combat Arms: `movement`, `weapon_<one rifle>`,
-`hit_zones`, `rez_archive` (format only, no key), `world_format`.
+Combat Arms specs (`specs/combat_arms/`) are kept locally and git-ignored
+for now, with the Combat Arms loader.
 
 ## Template
 
@@ -102,7 +102,7 @@ Start Claude Code in a checkout of this repo on the machine that has the
 source, then give it:
 
 > Read specs/README.md and follow its rules exactly. Write
-> specs/combat_arms/<topic>.md from the source at <path to source folder>.
+> specs/<game>/<topic>.md from the source at <path to source folder>.
 > Do not copy code, identifier names or comments into the spec. Describe
 > behavior as constants, math, per-tick order, edge cases, quirks and test
 > cases with concrete expected numbers. Do not write implementation code.

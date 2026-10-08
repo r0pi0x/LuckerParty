@@ -3,7 +3,7 @@
 Things to build, **in priority order** (top first; reprioritized
 2026-10-06). Shortcuts already in the code live in
 [tech-debt.md](tech-debt.md); the MVP plan is in
-[plans/active/](plans/active/mvp-combat-arms-slice.md). Move items into a
+[plans/active/](plans/active/engine-split.md). Move items into a
 plan when work starts; delete them when done.
 
 ## 1. Playtest essentials

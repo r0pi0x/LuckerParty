@@ -232,9 +232,7 @@ uses mounted; the server checks this before a match.
   plain spec (formats, values, rules, edge cases), then implement from the spec
   in this project's ECS architecture rather than mirroring the original's
   structure.
-- Never commit decompiled or leaked code itself. Leaked source (Combat Arms)
-  also carries trade-secret risk, so apply the same workflow with extra care.
-- Keep this repository private.
+- Never commit decompiled or leaked code itself.
 
 ### Per-game notes
 
@@ -246,27 +244,10 @@ uses mounted; the server checks this before a match.
   VTF/VMT) are well documented. Valve's public Source SDK 2013 includes the
   shared movement code. Weapon stats live in `weapon_*.txt` scripts. Faithful
   rendering needs BSP lightmaps and Source material rules.
-- **Combat Arms.** LithTech Jupiter: `.rez` archives and LithTech model/world
-  formats. Thin community tooling; expect format reverse engineering from
-  installed files. Now operated by Valofe. Supported source: Steam app
-  1263550, "Combat Arms: the Classic", Windows build (downloadable on Linux
-  with SteamCMD). Tested build 25595979: 108 `.rez` archives in `Game/`.
-  - Format: specs/combat_arms/rez_archive.md. Header and directory are
-    always plaintext, so every archive lists its files. The header title
-    marks payload encryption: 4 archives V1
-    (ATTRIBUTES, XML, GMS, Language_Pack), 36 V2 (models,
-    textures, UI images, WORLDS/WORLDS4/WORLDS5), 68 plain.
-  - Readable today without keys: all plain archives, including 33 maps in
-    WORLDS2 and WORLDS3 (LithTech world format version 85).
-  - The archives are encrypted, and the key lives in a packed
-    executable. The mount takes keys as input from the gitignored
-    `mashup.local.toml`, as a list keyed by an install fingerprint, so a key
-    rotation is a config change. The mount doctor reports which key matched.
-    Keys are never committed. How a public build would obtain keys is an open
-    question that needs legal advice (anti-circumvention law), not a technical
-    decision.
-  - The leaked client/server source is used only through specs (see
-    [specs/README.md](specs/README.md)). It stays outside this repository.
+- **Combat Arms.** LithTech Jupiter (`.rez` archives, LithTech model and
+  world formats). Its loader is developed locally and not part of this
+  repository for now (`src/games/combat_arms/` is git-ignored; build it with
+  `--features combat_arms` where the folder exists).
 
 ## Specs
 

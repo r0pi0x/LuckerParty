@@ -12,13 +12,5 @@ path = "~/games/counter-strike-source"
 # path = "~/games/css-ds"
 
 [games.combat_arms]
-# Folder containing Game/*.rez. Steam app 1263550 (Combat Arms: the Classic).
+# Folder containing the game (only with the local Combat Arms loader).
 path = "~/games/combat-arms-classic"
-
-# Combat Arms payload keys, by the scheme named in each archive's header
-# title (V1 -> V1, V2 -> V2). the archive cipher key as
-# 64 hex characters, IV as 32 hex characters (specs/combat_arms/rez_archive.md).
-# Without a key, those archives still list their files but don't extract.
-# [games.combat_arms.keys.V1]
-# key = "<64 hex characters>"
-# iv = "<32 hex characters>"

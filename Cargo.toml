@@ -19,13 +19,17 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 toml = "1.1.6"
-twofish = "0.8"
+twofish = { version = "0.8", optional = true }
 vbsp = "0.9"
 vmdl = "0.2"
 vmt-parser = "0.2"
 vtf = "0.4"
 
 [features]
+# Combat Arms loader: developed locally, git-ignored (src/games/combat_arms/).
+# Enable with --features combat_arms where that folder exists.
+combat_arms = ["dep:twofish"]
+
 # Faster iteration: link Bevy as a dynamic library. Use with
 # `cargo run --features dev`. Never enable for release builds.
 dev = ["bevy/dynamic_linking", "bevy/bevy_remote"]

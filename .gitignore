@@ -16,3 +16,10 @@
 
 # Agent worktrees (Claude Code).
 /.claude/worktrees/
+
+# Combat Arms: developed locally, not in the repository for now.
+/src/games/combat_arms/
+/specs/combat_arms/
+/tests/rez_format.rs
+/tests/mount_combat_arms.rs
+/docs/plans/active/mvp-combat-arms-slice.md

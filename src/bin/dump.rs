@@ -10,7 +10,7 @@ use std::{
 
 use bevy::math::Vec3;
 use mashup::{
-    games::{combat_arms, cs_source},
+    games::cs_source,
     mount::{
         Mount,
         config::{LocalConfig, default_dump_dir},
@@ -110,7 +110,8 @@ fn run(args: &Args) -> Result<(), String> {
     let install = install_path(args)?;
     match args.game.as_str() {
         cs_source::GAME => dump_cs_source(args, &install),
-        combat_arms::GAME => dump_combat_arms(args, &install),
+        #[cfg(feature = "combat_arms")]
+        mashup::games::combat_arms::GAME => dump_combat_arms(args, &install),
         other => Err(format!("unknown game `{other}`; expected cs_source or combat_arms")),
     }
 }
@@ -132,7 +133,9 @@ fn dump_cs_source(args: &Args, install: &Path) -> Result<(), String> {
     report(args, &mount, &[])
 }
 
+#[cfg(feature = "combat_arms")]
 fn dump_combat_arms(args: &Args, install: &Path) -> Result<(), String> {
+    use mashup::games::combat_arms;
     let keys = combat_arms::rez::keys_from_config(&LocalConfig::load()?)?;
     let (mount, locked) = combat_arms::mount::open(install, &keys).map_err(|e| e.to_string())?;
     if args.archives {
