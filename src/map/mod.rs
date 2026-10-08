@@ -2732,6 +2732,11 @@ fn spawn_map(
                 atlas: built.atlas,
                 atlas_image: atlas_handle,
                 material,
+                built: built
+                    .cells
+                    .iter()
+                    .map(|c| (c.prop, (data.props[c.prop].translation, data.props[c.prop].rotation)))
+                    .collect(),
                 cells: built.cells.into_iter().map(|c| (c.prop, c)).collect(),
                 entities,
                 root,
@@ -3734,11 +3739,18 @@ struct ShadowState {
     cells: std::collections::HashMap<usize, shadows::Cell>,
     entities: std::collections::HashMap<usize, Entity>,
     root: Entity,
+    /// Where each caster was when its shadow was last drawn.
+    built: std::collections::HashMap<usize, (Vec3, Quat)>,
 }
 
 /// Redraw the shadows of physics props that moved (silhouette and mesh);
 /// a prop the logic hid (broken, killed) hides its shadow until it shows
-/// again (a round restart).
+/// again (a round restart). Props that only jitter in place (resting
+/// physics props that never fall asleep: seven on cs_office, every frame)
+/// keep their shadow until they have moved by a quarter of a shadow texel
+/// (`shadows::moved_visibly`), and a redrawn cell updates only its part of
+/// the atlas image: with seven props rebuilt and the whole atlas converted
+/// every frame this cost 16 ms a frame there.
 #[allow(clippy::type_complexity)]
 fn update_prop_shadows(
     mut commands: Commands,
@@ -3771,11 +3783,18 @@ fn update_prop_shadows(
                 .insert(if on { Visibility::Inherited } else { Visibility::Hidden });
         }
     }
-    let mut atlas_dirty = false;
+    let mut redrawn: Vec<shadows::Cell> = Vec::new();
     for (index, t) in &moved {
         let Some(cell) = state.cells.get(&index.0).copied() else {
             continue;
         };
+        let model = &state.data.models[state.data.props[index.0].model];
+        if let Some(&from) = state.built.get(&index.0)
+            && !shadows::moved_visibly(model.bounds, cell.size, from, (t.translation, t.rotation))
+        {
+            continue;
+        }
+        state.built.insert(index.0, (t.translation, t.rotation));
         let mesh = shadows::rebuild(
             &state.data,
             &state.settings,
@@ -3785,7 +3804,7 @@ fn update_prop_shadows(
             t.translation,
             t.rotation,
         );
-        atlas_dirty = true;
+        redrawn.push(cell);
         match (mesh, state.entities.get(&index.0).copied()) {
             (Some(mesh), Some(e)) => {
                 commands.entity(e).insert(Mesh3d(meshes.add(mesh)));
@@ -3812,8 +3831,17 @@ fn update_prop_shadows(
             (None, None) => {}
         }
     }
-    if atlas_dirty && let Some(mut image) = images.get_mut(&state.atlas_image) {
-        image.data = Some(state.atlas.bytes());
+    if !redrawn.is_empty()
+        && let Some(mut image) = images.get_mut(&state.atlas_image)
+    {
+        match image.data.as_mut() {
+            Some(bytes) => {
+                for cell in &redrawn {
+                    state.atlas.write_bytes(bytes, cell.at, cell.size);
+                }
+            }
+            None => image.data = Some(state.atlas.bytes()),
+        }
     }
 }
 

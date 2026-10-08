@@ -372,7 +372,7 @@ walks every tree holding a collider each tick in
 load): a dust2 physics prop then settled differently
 (`physics_props_settle_and_get_pushed`), so it is left for later.
 
-## Frame time pass (executors, dynamic meshes, posing, resolution)
+## Frame time pass (executors, dynamic meshes, posing, prop shadows, resolution)
 
 Goal: frame rates near a 240 Hz monitor's at 4K. Measured with
 `refcmp bench` (playtest build, vsync off) on de_dust2 (six `survey_*`
@@ -418,6 +418,19 @@ two spawns), plus traces of a `--features profile` build.
   bounds, not the joints. Ragdolls and body turns write only real
   changes (a ragdoll at rest no longer dirties ~50 joints a frame).
   `map::pose_tests` checks it.
+- **Prop shadows of physics props that never sleep.** Seven props on
+  cs_office rock by a tenth of a millimetre and a hundredth of a degree
+  forever (avian never puts them to sleep), so every frame
+  `update_prop_shadows` redrew their shadows: silhouettes (0.8 ms for a
+  1074-triangle desk in a 256-texel cell), meshes, and then the whole
+  shadow atlas converted from floats to bytes and uploaded again: 16 ms a
+  frame (timed in the system). Now a prop's shadow is redrawn only once
+  it has moved by a quarter of one of its shadow texels since the last
+  redraw (`shadows::moved_visibly`; a desk's texel is 7.5 mm, and the
+  receiver blurs over several), and a redrawn cell writes only its part
+  of the atlas image, which stays in the main world for that: 1.0 ms a
+  frame (2.7 ms when all seven redraw). mg_kommando has 74 props a frame
+  riding its train and rotators, which do move.
 - **Resolution** barely matters on the dev box's RTX 3080: GPU time for
   the survey views 0.37 ms at 1280x720, 0.40 at 1920x1080, 0.49 at
   2560x1440, 0.53 at 3840x2160 (`--view-size`), frame times unchanged
@@ -465,22 +478,33 @@ main / render = each world's time, CPU = process CPU over all threads.
 | | new | 19.9 (10.4) | 18.7 (10.0) | 11.2 (4.7) | 27.7 (17.0) |
 
 The bot rounds differ run to run (who is alive, where), so read that row
-loosely. Pictures are unchanged: refcmp mean abs diff de_dust2 0.0308
+loosely. With the prop shadow fix (then + shadows; old and new as above,
+three interleaved rounds at load 17-33):
+
+| map (views, rounds) | build | frame ms | main ms | render ms | CPU ms |
+|---|---|---|---|---|---|
+| cs_office (23, 3) | old | 19.7 (15.1) | 19.0 (13.5) | | 37.0 (26.1) |
+| | new | 13.1 (12.9) | 12.5 (12.0) | 6.8 (6.5) | 22.1 (21.2) |
+| | + shadows | 9.8 (5.7) | 6.1 (2.7) | 8.6 (4.6) | 16.8 (9.3) |
+| mg_kommando (8, 3) | old | 28.4 (11.5) | 27.2 (11.1) | | 35.2 (22.5) |
+| | new | 33.2 (11.6) | 31.5 (11.1) | 17.1 (5.8) | 33.7 (19.9) |
+| | + shadows | 13.9 (7.8) | 10.6 (5.1) | 11.4 (6.7) | 20.2 (14.8) |
+ Pictures are unchanged: refcmp mean abs diff de_dust2 0.0308
 (32 views), de_nuke 0.0248 (27); dust2 captures of the old and new
 builds differ by at most 662 pixels a view, less than two runs of the
 old build differ from each other (dust motes, glows: up to 845).
 
-Left: cs_office and mg_kommando stay main-world bound (10-12 ms at
-best) by per-tick work: at 2-3 ticks a frame the logic bridge's sync
-(`logic: sync to the ECS`, ~0.27 ms a call, twice a tick) and transform
-propagation twice a tick (avian's and Bevy's, each walking the map
-root's thousands of children whenever a prop under it moved: 7 props a
-frame on cs_office). Props as hierarchies of their own is the backlog
-item; it changed how a dust2 prop settled last time. On a quiet machine
-(load 3) the old build drew dust2's 32 views at 4.9 ms a frame (main
-world 4.3): the per-frame cost a 240 Hz monitor (4.2 ms) has to beat;
-new numbers on a quiet machine and on the Windows PC are still to be
-taken.
+Left: per-tick work matters once frames are slow (2-3 ticks a frame):
+the logic bridge's sync (`logic: sync to the ECS`, ~0.27 ms a call on
+cs_office, twice a tick) and transform propagation twice a tick (ours
+after restoring eased transforms, and avian's), each walking the map
+root's thousands of children when a prop under it moved. Props as
+hierarchies of their own is the backlog item; it changed how a dust2
+prop settled last time. Physics props that never sleep (cs_office) are
+worth a look on the physics side. On a quiet machine (load 3) the old
+build drew dust2's 32 views at 4.9 ms a frame (main world 4.3): the
+per-frame cost a 240 Hz monitor (4.2 ms) has to beat; new numbers on a
+quiet machine and on the Windows PC are still to be taken.
 
 ## Test cycle
 

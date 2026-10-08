@@ -368,7 +368,10 @@ dithered fade bands. Left:
   model camera runs its passes and an MSAA copy even with nothing on its
   layer; shells and the under-water overlay draw there too); a render
   scale (`mat_render_scale`) only if a GPU turns out to be the limit (the
-  dev box's RTX 3080 draws dust2 at 4K in about 1.5 ms).
+  dev box's RTX 3080 draws dust2 at 4K in about 1.5 ms); seven physics
+  props on cs_office never fall asleep (they rock by a tenth of a
+  millimetre forever: transform propagation and shadow checks every
+  frame).
 
 ## 10. Long tail
 
