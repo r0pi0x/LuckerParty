@@ -26,6 +26,8 @@ impl Plugin for PerfPlugin {
             .init_resource::<FrameTimes>()
             .init_resource::<MeshTriangles>()
             .init_resource::<Churn>()
+            .init_resource::<PerfLog>()
+            .init_resource::<PerfReport>()
             .insert_resource(HostTimescale(1.0))
             .add_systems(PreStartup, timescale_from_command_line)
             .add_systems(First, apply_timescale.after(bevy::time::TimeSystems))
@@ -33,8 +35,14 @@ impl Plugin for PerfPlugin {
             .add_systems(First, start_frame)
             .add_systems(
                 Last,
-                (record_triangles, count_churn, end_frame, draw_overlay.run_if(|p: Res<Perf>| p.show > 0), hide_overlay).chain(),
+                (record_triangles, count_churn, end_frame, perf_report, draw_overlay, hide_overlay).chain(),
             );
+        resource_cvar::<PerfLog, u8>(
+            app,
+            "mashup_perf_log",
+            "1: log the mashup_perf readout as text once a second (bugreport's report.txt always has the latest).",
+            |p| &mut p.0,
+        );
         resource_cvar::<Perf, u8>(
             app,
             "mashup_perf",
@@ -318,6 +326,7 @@ struct Churn {
 #[allow(clippy::too_many_arguments)]
 fn count_churn(
     perf: Res<Perf>,
+    log: Res<PerfLog>,
     mut churn: ResMut<Churn>,
     changed: Query<Entity, Changed<Transform>>,
     parents: Query<&ChildOf>,
@@ -329,6 +338,7 @@ fn count_churn(
     mut sprites: MessageReader<AssetEvent<crate::map::sprite_material::SpriteMaterial>>,
     mut particles: MessageReader<AssetEvent<crate::map::particles::ParticleDrawMaterial>>,
     mut decals: MessageReader<AssetEvent<crate::map::decal::DecalMaterial>>,
+    mut world: MessageReader<AssetEvent<crate::map::world_material::WorldMaterial>>,
 ) {
     fn modified<A: Asset>(events: &mut MessageReader<AssetEvent<A>>) -> u32 {
         events.read().filter(|e| matches!(e, AssetEvent::Modified { .. })).count() as u32
@@ -338,8 +348,9 @@ fn count_churn(
         + modified(&mut standard)
         + modified(&mut sprites)
         + modified(&mut particles)
-        + modified(&mut decals);
-    if perf.show == 0 {
+        + modified(&mut decals)
+        + modified(&mut world);
+    if perf.show == 0 && log.0 == 0 {
         churn.started = None;
         return;
     }
@@ -392,18 +403,58 @@ fn count_churn(
     churn.started = Some(now);
 }
 
+/// `mashup_perf_log 1`: log the readout once a second.
+#[derive(Resource, Default)]
+struct PerfLog(u8);
+
+/// The latest `mashup_perf` readout as text lines: refreshed every frame
+/// while the overlay or the log is on, else once a second (for
+/// `bugreport`).
+#[derive(Resource, Default)]
+pub struct PerfReport {
+    pub lines: Vec<String>,
+    at: Option<Instant>,
+    logged: Option<Instant>,
+}
+
 #[allow(clippy::too_many_arguments)]
-fn draw_overlay(
+fn perf_report(
     churn: Res<Churn>,
     perf: Res<Perf>,
+    log: Res<PerfLog>,
     times: Res<FrameTimes>,
     diagnostics: Res<DiagnosticsStore>,
     vis: Res<VisStats>,
     parts: Query<(), With<VisClusters>>,
     meshes: Query<(&Mesh3d, &ViewVisibility), With<Aabb>>,
     assets: Res<MeshTriangles>,
-    mut text: Single<(&mut Text, &mut Visibility), With<PerfText>>,
+    mut report: ResMut<PerfReport>,
 ) {
+    let now = Instant::now();
+    let due = report.at.is_none_or(|t| (now - t).as_secs_f32() >= 1.0);
+    if perf.show == 0 && log.0 == 0 && !due {
+        return;
+    }
+    report.at = Some(now);
+    report.lines = perf_lines(perf.show.max(log.0), &churn, &times, &diagnostics, &vis, parts.iter().count(), &meshes, &assets);
+    if log.0 != 0 && report.logged.is_none_or(|t| (now - t).as_secs_f32() >= 1.0) {
+        report.logged = Some(now);
+        info!("mashup_perf: {}", report.lines.join(" | "));
+    }
+}
+
+/// The readout's lines (`show` 2 or more: every render pass).
+#[allow(clippy::too_many_arguments)]
+fn perf_lines(
+    show: u8,
+    churn: &Churn,
+    times: &FrameTimes,
+    diagnostics: &DiagnosticsStore,
+    vis: &VisStats,
+    tagged_parts: usize,
+    meshes: &Query<(&Mesh3d, &ViewVisibility), With<Aabb>>,
+    assets: &MeshTriangles,
+) -> Vec<String> {
     let (avg, p95, max, cpu) = times.summary();
     let mut lines = vec![
         format!("{:.0} fps  frame {avg:.2} ms (p95 {p95:.2}, max {max:.2})", 1e3 / avg.max(1e-3)),
@@ -424,9 +475,9 @@ fn draw_overlay(
     }
     passes.sort_by(|a, b| b.1.total_cmp(&a.1));
     if !passes.is_empty() {
-        let gpu = gpu_ms(&diagnostics).unwrap_or(0.0);
+        let gpu = gpu_ms(diagnostics).unwrap_or(0.0);
         lines.push(format!("GPU {gpu:.2} ms (top-level passes)"));
-        let shown = if perf.show > 1 { passes.len() } else { 6 };
+        let shown = if show > 1 { passes.len() } else { 6 };
         for (pass, g, c) in passes.iter().take(shown) {
             lines.push(format!("  {pass}: gpu {g:.2} cpu {c:.2}"));
         }
@@ -435,7 +486,7 @@ fn draw_overlay(
         .get(&EntityCountDiagnosticsPlugin::ENTITY_COUNT)
         .and_then(|d| d.value())
         .unwrap_or(0.0);
-    let (total, drawn, triangles) = mesh_counts(&meshes, &assets);
+    let (total, drawn, triangles) = mesh_counts(meshes, assets);
     lines.push(format!("entities {entities:.0}  meshes {drawn}/{total} drawn, {}k triangles", triangles / 1000));
     let [t, m, meshes_changed, materials] = churn.shown;
     lines.push(format!(
@@ -458,11 +509,22 @@ fn draw_overlay(
             "vis: cluster {c}, sees {}/{} clusters, {}/{} map parts",
             vis.visible_clusters, vis.clusters, vis.visible_parts, vis.parts
         )),
-        None if vis.clusters > 0 => lines.push(format!("vis: off or outside the map ({} parts all drawn)", parts.iter().count())),
+        None if vis.clusters > 0 => lines.push(format!("vis: off or outside the map ({tagged_parts} parts all drawn)")),
         None => lines.push("vis: map has no visibility data".into()),
     }
+    lines
+}
+
+fn draw_overlay(
+    perf: Res<Perf>,
+    report: Res<PerfReport>,
+    mut text: Single<(&mut Text, &mut Visibility), With<PerfText>>,
+) {
+    if perf.show == 0 {
+        return;
+    }
     let (text, visibility) = &mut *text;
-    text.0 = lines.join("\n");
+    text.0 = report.lines.join("\n");
     visibility.set_if_neq(Visibility::Inherited);
 }
 

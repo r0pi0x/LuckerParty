@@ -1739,7 +1739,8 @@ impl Plugin for MapPlugin {
             .add_systems(
                 PostUpdate,
                 // From this frame's camera, before visibility propagates.
-                (vis::cull, vis::fade_windows)
+                (tag_moved_brush_entities, vis::cull, vis::fade_windows)
+                    .chain()
                     .after(bevy::transform::TransformSystems::Propagate)
                     .before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate),
             );
@@ -2074,11 +2075,37 @@ fn spawn_map(
             }
         };
         let chunk_size = vis::chunk_size();
+        // One material asset per distinct material (brush entities have a
+        // mesh per material each): meshes sharing one are drawn in batches
+        // (one bind group, multi-draw) instead of one draw call apiece.
+        // Keyed by the material's whole description, and by whether it is
+        // in the 3D skybox (water fog skips skybox materials).
+        // Areaportal windows' brushes keep materials of their own:
+        // `vis::fade_windows` changes their alpha per brush.
+        let window_brushes: std::collections::HashSet<usize> = data
+            .visibility
+            .as_deref()
+            .map(|v| v.areas.portals.iter().filter_map(|p| p.fade.and_then(|f| f.brush)).collect())
+            .unwrap_or_default();
+        let own = |m: &MapMesh| m.entity.filter(|e| window_brushes.contains(e));
+        let mut world_shared: HashMap<(bool, Option<usize>, String), Handle<WorldMaterial>> = HashMap::new();
+        let mut standard_shared: HashMap<(bool, Option<usize>, String), Handle<StandardMaterial>> = HashMap::new();
+        // Brush entity nodes' mesh bounds (node space), for culling them.
+        let mut node_bounds: HashMap<Entity, (Vec3, Vec3)> = HashMap::new();
         for m in &data.meshes {
             if water_drawn && m.water.is_some() {
                 continue;
             }
             let own_node = parent_of(m) != root;
+            if own_node && visibility.is_some() && !m.skybox {
+                let b = node_bounds
+                    .entry(parent_of(m))
+                    .or_insert((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)));
+                for p in &m.positions {
+                    b.0 = b.0.min(Vec3::from(*p));
+                    b.1 = b.1.max(Vec3::from(*p));
+                }
+            }
             let mesh_vis = visibility.filter(|_| !own_node);
             // Chunks are placed at their centre (vertices relative to it,
             // small numbers), each a map part of its own.
@@ -2185,7 +2212,10 @@ fn spawn_map(
                     // Map overlays and infodecals (see WorldMaterial::decal).
                     decal: m.material.starts_with("decal:") && m.alpha != MapAlpha::Opaque,
                 };
-                let material = world_materials.add(material);
+                let material = world_shared
+                    .entry((m.skybox, own(m), format!("{material:?}")))
+                    .or_insert_with(|| world_materials.add(material))
+                    .clone();
                 for (chunk, clusters, centre) in chunks {
                     let mut e = commands.spawn((
                         Name::new(chunk.material.clone()),
@@ -2208,7 +2238,11 @@ fn spawn_map(
                 }
                 continue;
             }
-            let material = materials.add(build_material(m, &textures, view, data.look.light_scale));
+            let material = build_material(m, &textures, view, data.look.light_scale);
+            let material = standard_shared
+                .entry((m.skybox, own(m), format!("{material:?}")))
+                .or_insert_with(|| materials.add(material))
+                .clone();
             for (chunk, clusters, centre) in chunks {
                 let mut part = commands.spawn((
                     Name::new(chunk.material.clone()),
@@ -2228,6 +2262,11 @@ fn spawn_map(
                 }
                 tag(&mut part, clusters);
             }
+        }
+        for (node, (min, max)) in node_bounds {
+            commands
+                .entity(node)
+                .insert((BrushEntityBounds { min, max }, vis::VisClusters::new(Vec::new())));
         }
         model_parts = data
             .models
@@ -3721,6 +3760,45 @@ fn switch_parts(
             }
         } else {
             commands.entity(e).insert((vis::LogicHidden, Visibility::Hidden));
+        }
+    }
+}
+
+/// A brush entity node's (mover, breakable) mesh bounds in its own space:
+/// its `VisClusters` follow it as it moves (`tag_moved_brush_entities`).
+#[derive(Component, Clone, Copy, Debug)]
+pub struct BrushEntityBounds {
+    pub min: Vec3,
+    pub max: Vec3,
+}
+
+/// Brush entities that moved (and every one on its first frame): the
+/// clusters their world bounds touch, for visibility culling. A door or
+/// breakable is then hidden like the world around it.
+fn tag_moved_brush_entities(
+    vis: Option<Res<vis::ActiveVisibility>>,
+    mut nodes: Query<(&GlobalTransform, &BrushEntityBounds, &mut vis::VisClusters), Changed<GlobalTransform>>,
+) {
+    let Some(vis) = vis else { return };
+    let mut clusters = Vec::new();
+    for (at, b, mut tag) in &mut nodes {
+        let aabb = bevy::camera::primitives::Aabb::from_min_max(b.min, b.max);
+        let centre = at.transform_point(aabb.center.into());
+        let m = at.affine().matrix3;
+        let half = Vec3::from(aabb.half_extents);
+        let extent = Vec3::new(
+            m.row(0).abs().dot(half.into()),
+            m.row(1).abs().dot(half.into()),
+            m.row(2).abs().dot(half.into()),
+        );
+        clusters.clear();
+        vis.0.clusters_in_box(centre - extent, centre + extent, &mut clusters);
+        clusters.sort_unstable();
+        clusters.dedup();
+        // A box in solid only (no clusters) would be drawn always; keep
+        // what it had.
+        if !clusters.is_empty() && *tag.clusters != clusters[..] {
+            tag.clusters = clusters.clone().into_boxed_slice();
         }
     }
 }

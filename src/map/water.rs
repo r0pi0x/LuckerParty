@@ -889,24 +889,32 @@ fn crossed_surface(
 }
 
 /// The reflecting surface the reflection camera mirrors: the nearest
-/// water volume below the eye whose surface reflects (spec: one water
-/// volume's views per frame). Its height and material.
+/// water volume below the eye whose surface reflects and that the camera
+/// can see (spec: one water volume's views per frame, for the volume the
+/// camera can see; `visible` by volume index). Its height and material.
 fn reflection_plane(
     eye: Vec3,
     volumes: &[crate::core::MapWaterVolume],
     surfaces: &[WaterSurface],
     reflects: &dyn Fn(usize) -> bool,
-) -> Option<(f32, usize)> {
+    visible: &dyn Fn(usize) -> bool,
+) -> Option<(f32, usize, usize)> {
     volumes
         .iter()
-        .filter(|v| !v.slime && v.brush.max.y < eye.y)
-        .filter_map(|v| {
+        .enumerate()
+        .filter(|(i, v)| !v.slime && v.brush.max.y < eye.y && visible(*i))
+        .filter_map(|(i, v)| {
             let (m, h) = volume_surface(v, surfaces)?;
-            reflects(m).then(|| (box_distance(eye, v.brush.min, v.brush.max), h, m))
+            reflects(m).then(|| (box_distance(eye, v.brush.min, v.brush.max), h, m, i))
         })
         .min_by(|a, b| a.0.total_cmp(&b.0))
-        .map(|(_, h, m)| (h, m))
+        .map(|(_, h, m, i)| (h, m, i))
 }
+
+/// On the reflection camera: the clusters around its water surface (the
+/// reflection shows what is potentially visible from them; `vis::cull`).
+#[derive(Component, Clone, PartialEq)]
+pub struct ReflectionClusters(pub Vec<u32>);
 
 type MainCameraFilter = (
     With<Camera3d>,
@@ -964,9 +972,16 @@ pub fn update_water(
             &Projection,
             &Camera,
             Option<&bevy::core_pipeline::tonemapping::Tonemapping>,
+            Option<&bevy::camera::primitives::Frustum>,
         ),
         MainCameraFilter,
     >,
+    vis: (Option<Res<super::vis::ActiveVisibility>>, Option<Res<super::vis::NoVis>>),
+    (mut volume_clusters, mut volume_key, mut last_surface): (
+        Local<Option<Vec<Vec<u32>>>>,
+        Local<Option<(usize, usize)>>,
+        Local<Option<ReflectionClusters>>,
+    ),
     mut reflection: Query<
         (
             Entity,
@@ -988,7 +1003,9 @@ pub fn update_water(
         return;
     };
     let settings = settings.map(|s| *s).unwrap_or_default();
-    let Some((eye_tf, projection, main_camera, main_tonemapping)) = main.iter().find(|(_, _, c, _)| c.is_active) else {
+    let Some((eye_tf, projection, main_camera, main_tonemapping, frustum)) =
+        main.iter().find(|(_, _, c, _, _)| c.is_active)
+    else {
         return;
     };
     let eye = eye_tf.translation();
@@ -1052,9 +1069,43 @@ pub fn update_water(
             ) = want;
         }
     }
-    // The reflection: the nearest reflecting top surface below the eye.
+    // The reflection: the nearest reflecting top surface below the eye
+    // that the camera can see: in its view frustum and potentially visible
+    // from its cluster (each volume's clusters found once). Rendering a
+    // reflection of water out of sight would cost a second view of the
+    // scene, and its mirrored eye (often in solid) would turn visibility
+    // culling off.
     let reflects = |m: usize| surface_mode(&render.materials[m], &settings, 0.0).reflect;
-    let plane = reflection_plane(eye, volumes, &list, &reflects);
+    let (map_vis, novis) = vis;
+    let pvs = map_vis.filter(|_| novis.is_none_or(|n| n.0 == 0));
+    // Found again for another map (its visibility is another allocation).
+    let map_key = pvs.as_ref().map(|v| (std::sync::Arc::as_ptr(&v.0) as usize, volumes.len()));
+    if let Some(v) = &pvs
+        && *volume_key != map_key
+    {
+        *volume_key = map_key;
+        *volume_clusters = Some(
+            volumes
+                .iter()
+                // Up to just above the surface: the leaves a reflected
+                // ray leaves the surface into.
+                .map(|w| super::vis::box_clusters(&v.0, w.brush.min, w.brush.max + Vec3::Y * 0.1))
+                .collect(),
+        );
+    }
+    let eye_cluster = pvs.as_ref().and_then(|v| v.0.cluster_at(eye));
+    let visible = |i: usize| {
+        let w = &volumes[i];
+        let in_view = frustum.is_none_or(|f| {
+            f.intersects_obb_identity(&bevy::camera::primitives::Aabb::from_min_max(w.brush.min, w.brush.max))
+        });
+        let in_pvs = match (&pvs, eye_cluster, volume_clusters.as_ref()) {
+            (Some(v), Some(c), Some(clusters)) => clusters.get(i).is_none_or(|cl| v.0.sees_any(c, cl)),
+            _ => true,
+        };
+        in_view && in_pvs
+    };
+    let plane = reflection_plane(eye, volumes, &list, &reflects, &visible);
     let Ok((entity, mut tf, mut global, mut proj, mut camera, has_sky, tonemapping, mut layers)) =
         reflection.single_mut()
     else {
@@ -1068,7 +1119,19 @@ pub fn update_water(
     if camera.order != order {
         camera.order = order;
     }
-    let entities = plane.is_some_and(|(_, m)| reflects_entities(&render.materials[m], &settings));
+    // What the reflection may show, for visibility culling.
+    let surface = plane
+        .filter(|_| active)
+        .and_then(|(_, _, i)| volume_clusters.as_ref()?.get(i).cloned())
+        .map(ReflectionClusters);
+    if *last_surface != surface {
+        match &surface {
+            Some(s) => commands.entity(entity).insert(s.clone()),
+            None => commands.entity(entity).remove::<ReflectionClusters>(),
+        };
+        *last_surface = surface;
+    }
+    let entities = plane.is_some_and(|(_, m, _)| reflects_entities(&render.materials[m], &settings));
     let want_layers = if entities {
         world_layers()
     } else {
@@ -1089,7 +1152,7 @@ pub fn update_water(
     {
         commands.entity(entity).insert(*t);
     }
-    let (Some((height, _)), Projection::Perspective(main_p)) = (plane, projection) else {
+    let (Some((height, _, _)), Projection::Perspective(main_p)) = (plane, projection) else {
         return;
     };
     *tf = reflection_transform(eye_tf, height);
@@ -1372,6 +1435,32 @@ mod tests {
 
     fn close(a: f32, b: f32, eps: f32) -> bool {
         (a - b).abs() < eps
+    }
+
+    /// The reflection mirrors the nearest reflecting volume below the eye
+    /// that the camera can see; water out of sight gets no reflection view.
+    #[test]
+    fn reflection_only_for_water_in_sight() {
+        let volume = |x: f32, top: f32| crate::core::MapWaterVolume {
+            brush: crate::core::MapBrush::from_box(Vec3::new(x, top - 2.0, 0.0), Vec3::new(x + 4.0, top, 4.0)),
+            slime: false,
+        };
+        let surface = |x: f32, top: f32| WaterSurface {
+            material: 0,
+            min: Vec3::new(x, top, 0.0),
+            max: Vec3::new(x + 4.0, top, 4.0),
+            below: false,
+            skybox: false,
+        };
+        let volumes = [volume(0.0, 1.0), volume(20.0, -3.0)];
+        let surfaces = [surface(0.0, 1.0), surface(20.0, -3.0)];
+        let eye = Vec3::new(2.0, 3.0, 2.0);
+        let all = |_: usize| true;
+        let plane = reflection_plane(eye, &volumes, &surfaces, &all, &all);
+        assert_eq!(plane, Some((1.0, 0, 0)), "the nearest");
+        let second = |i: usize| i == 1;
+        assert_eq!(reflection_plane(eye, &volumes, &surfaces, &all, &second), Some((-3.0, 0, 1)));
+        assert_eq!(reflection_plane(eye, &volumes, &surfaces, &all, &|_| false), None);
     }
 
     #[test]

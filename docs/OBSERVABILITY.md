@@ -267,6 +267,11 @@ Details and baseline numbers: [performance.md](performance.md).
   assets modified). `mashup_perf 3` also logs each second which entities
   (by name) write transforms: anything writing every frame for nothing
   costs transform propagation and GPU re-preparation.
+- `mashup_perf_log 1` logs the same readout as one text line a second
+  (`mashup_perf: 60 fps  frame 16.67 ms ... | vis: cluster ...`), so runs
+  can be compared without reading screenshots (`--frames N ... 2>&1 |
+  grep mashup_perf:`); `bugreport` saves the latest readout in
+  report.txt whether or not the overlay is on.
 - `refcmp bench --views tools/refcmp/<map>.toml` times 200 frames at each
   view (vsync off) and prints a table (frame, main-world CPU, process CPU
   and GPU ms; with pipelined rendering a frame takes the longer of the
@@ -291,9 +296,32 @@ Details and baseline numbers: [performance.md](performance.md).
   geometry seen through sky brushes, which culling hides as the game
   does; see performance.md). `cargo test --test map_vis` checks the same with rays from
   ~300 player positions per map (`MASHUP_VIS_FULL=1`: every nav area).
-- `cargo run --profile playtest --features profile` writes a Chrome trace
-  (`trace-*.json`) with every system's CPU time; open it in
-  https://ui.perfetto.dev.
+- `REFCMP_OUT=<dir> refcmp ...` writes mashup's captures, reports, bench
+  and vischeck output under `<dir>/<map>` (references are still read from
+  the shared dump folder): use a folder in your own `target/` when other
+  sessions may be using the shared captures.
+- Traces: a `--features profile` build (Bevy's `trace_chrome`) writes a
+  Chrome trace with every system, schedule and render pass as a span;
+  `TRACE_CHROME=<file>` names it (else `trace-*.json` in the working
+  directory). Keep runs short (`--frames 400`: about 1.5 GB) and the
+  file in your `target/`. `tracesum <file> [--skip N] [--top N]
+  [--filter text] [--by-total]` (`src/bin/tracesum.rs`) prints the main
+  world's (`main app`) and render world's (`sub app: name=RenderApp`)
+  time per frame and the spans with the most self time per frame, by
+  thread (systems run on the `workers`); open the file in
+  https://ui.perfetto.dev for timelines. Our exclusive systems carry
+  their own spans where Bevy's per-system ones say too little (the
+  logic bridge: `logic: phase`, `logic: sync to the ECS`, `logic:
+  sync_movers`). Example (performance.md has real output):
+  `cargo build --profile playtest --features profile`, then
+  `TRACE_CHROME=target/t.json target/playtest/mashup --map cs_source:de_dust2 --frames 400`,
+  then `cargo build --profile playtest --bin tracesum` and
+  `target/playtest/tracesum target/t.json --skip 200`.
+  The profile build replaces `target/playtest/mashup`: copy it aside
+  or rebuild without the feature before benchmarking. Tracy instead:
+  `--features bevy/trace_tracy` and the Tracy profiler (not set up on the
+  dev box). CPU sampling (`perf record -g`, `cargo flamegraph`) works on
+  any optimized build on Linux; `perf` isn't installed on the dev box.
 
 ## 4. Logs
 

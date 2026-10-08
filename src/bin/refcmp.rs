@@ -43,7 +43,8 @@ usage: refcmp [all|capture-ref|capture-ours|report|fit|skyconv|bench|vischeck] [
   --only <name>  only views whose name contains <name>
   --out <dir>    write our captures, reports, bench and vischeck output under
                  <dir>/<map> instead of the shared dump folder (reference
-                 captures are still read from there)
+                 captures are still read from there; REFCMP_OUT=<dir> does
+                 the same), so parallel sessions don't overwrite each other
   --keep-running leave CS:S running after capturing (faster next time)";
 
 const RCON_PASSWORD: &str = "mashup-refcmp";
@@ -119,7 +120,7 @@ fn run(args: &Args) -> Result<(), String> {
     let shared = default_dump_dir("refcmp")
         .ok_or("no per-user data folder")?
         .join(&file.map);
-    let out = match &args.out {
+    let out = match args.out.clone().or_else(|| std::env::var_os("REFCMP_OUT").map(PathBuf::from)) {
         Some(o) => o.join(&file.map),
         None => shared.clone(),
     };

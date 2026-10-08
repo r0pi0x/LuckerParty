@@ -195,9 +195,7 @@ fn attach_nodes(world: &mut World, logic: &LogicWorld, ids: &[EntId]) -> Vec<(En
         );
         let mut e = world.entity_mut(node);
         e.remove::<(ColliderDisabled, MovingSolid)>();
-        if e.get::<Visibility>().is_some_and(|v| *v == Visibility::Hidden) {
-            e.insert(Visibility::Inherited);
-        }
+        set_node_shown(&mut e, true);
         if breakable {
             e.insert(Damageable);
         } else {
@@ -217,8 +215,26 @@ fn hide_node(world: &mut World, node: Entity) {
         if !e.contains::<ColliderDisabled>() {
             e.insert(ColliderDisabled);
         }
-        e.insert((Visibility::Hidden, MovingSolid::default()))
-            .remove::<Damageable>();
+        set_node_shown(&mut e, false);
+        e.insert(MovingSolid::default()).remove::<Damageable>();
+    }
+}
+
+/// Show or hide a mover node for the logic (`LogicHidden`): shown, it is
+/// drawn when visibility culling (`VisClusters`, by its bounds) allows.
+fn set_node_shown(e: &mut EntityWorldMut, visible: bool) {
+    let hidden = e.contains::<LogicHidden>();
+    if visible {
+        let culled = e.get::<VisClusters>().is_some_and(|v| !v.potentially_visible);
+        if hidden {
+            e.remove::<LogicHidden>();
+        }
+        let want = if culled { Visibility::Hidden } else { Visibility::Inherited };
+        if e.get::<Visibility>() != Some(&want) {
+            e.insert(want);
+        }
+    } else if !hidden || e.get::<Visibility>() != Some(&Visibility::Hidden) {
+        e.insert((LogicHidden, Visibility::Hidden));
     }
 }
 
@@ -687,8 +703,9 @@ fn sync_movers(world: &mut World, logic: &mut Logic) {
         alive
     });
     let logic = &*logic;
+    let nodes: std::collections::HashMap<EntId, Entity> = logic.nodes.iter().copied().collect();
     for (id, origin, angles, velocity, visible, solid) in logic.world.mover_poses() {
-        let Some((_, node)) = logic.nodes.iter().find(|(m, _)| *m == id) else {
+        let Some(node) = nodes.get(&id) else {
             continue;
         };
         let shootable = logic.world.shootable(id);
@@ -717,36 +734,37 @@ fn sync_movers(world: &mut World, logic: &mut Logic) {
                 broken: w.broken.clone(),
             }
         });
-        let brushes: Vec<MapBrush> = logic
-            .world
-            .mover_solid(id)
-            .map(|b| b.iter().map(|b| brush_to_engine(b, logic.scale)).collect())
-            .unwrap_or_default();
         let Ok(mut e) = world.get_entity_mut(*node) else {
             continue;
         };
         let transform = Transform::from_translation(entity_to_engine(origin, logic.scale))
             .with_rotation(rotation_to_engine(entity_rotation(angles)));
+        let mut moved = true;
         if let Some(mut t) = e.get_mut::<Transform>() {
-            if *t != transform {
+            moved = *t != transform;
+            if moved {
                 *t = transform;
             }
         }
-        if let Some(mut v) = e.get_mut::<Visibility>() {
-            let want = if visible {
-                Visibility::Inherited
-            } else {
-                Visibility::Hidden
-            };
-            if *v != want {
-                *v = want;
-            }
+        set_node_shown(&mut e, visible);
+        // Its brushes follow its pose: rebuilt (and the component written,
+        // which movement reads) only when it moved or changed.
+        let solids = logic.world.mover_solid(id);
+        let velocity = entity_to_engine(velocity, logic.scale);
+        let same = !moved
+            && e.get::<MovingSolid>().is_some_and(|m| {
+                m.solid == solid && m.velocity == velocity && m.brushes.len() == solids.map_or(0, |b| b.len())
+            });
+        if !same {
+            let brushes: Vec<MapBrush> = solids
+                .map(|b| b.iter().map(|b| brush_to_engine(b, logic.scale)).collect())
+                .unwrap_or_default();
+            e.insert(MovingSolid {
+                brushes,
+                velocity,
+                solid,
+            });
         }
-        e.insert(MovingSolid {
-            brushes,
-            velocity: entity_to_engine(velocity, logic.scale),
-            solid,
-        });
         // Shots and physics pass what is not there (a broken breakable,
         // a disabled func_brush); a broken window keeps its panes.
         if let Some(p) = panes {
@@ -984,15 +1002,19 @@ fn run_phase(world: &mut World, phase: impl FnOnce(&mut LogicWorld, &dyn Collisi
             terrain: world.get_resource::<MapTerrain>(),
             scale: logic.scale,
         };
+        let _span = info_span!("logic: phase").entered();
         phase(&mut logic.world, &col);
     }
+    // Spans for traces (docs/performance.md): this exclusive system's parts.
+    let span = info_span!("logic: sync to the ECS").entered();
     sync_fires(world, &logic);
     let after = std::mem::take(&mut logic.world.players);
     write_back(world, logic.scale, &players, &after);
-    sync_movers(world, &mut logic);
+    info_span!("logic: sync_movers").in_scope(|| sync_movers(world, &mut logic));
     sync_props(world, &mut logic);
     sync_visuals(world, &logic);
     sync_soundscapes(world, &logic);
+    drop(span);
     let effects = std::mem::take(&mut logic.world.effects);
     for line in logic.world.log.drain(..) {
         if line.contains("refused") {

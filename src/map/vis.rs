@@ -853,11 +853,17 @@ pub(crate) fn cull(
     portal_states: Option<Res<AreaPortalStates>>,
     (occlusion, occluder_states): (Option<Res<Occlusion>>, Option<Res<OccluderStates>>),
     cameras: Query<
-        (&GlobalTransform, &Camera, Option<&Projection>, Has<super::water::WaterReflectionCamera>),
+        (
+            &GlobalTransform,
+            &Camera,
+            Option<&Projection>,
+            Has<super::water::WaterReflectionCamera>,
+            Option<&super::water::ReflectionClusters>,
+        ),
         (With<Camera3d>, Without<super::SkyboxCamera>, Without<super::ViewModelCamera>),
     >,
     mut queries: ParamSet<(
-        Query<(), Added<VisClusters>>,
+        Query<(), Changed<VisClusters>>,
         Query<(
             &mut VisClusters,
             Option<&mut Visibility>,
@@ -874,17 +880,17 @@ pub(crate) fn cull(
     // Every view that draws the map: the main one and, while it draws, the
     // water's mirrored reflection camera (whole areas: its projection is
     // mirrored).
-    let active: Vec<(Vec3, Option<Mat4>, bool)> = cameras
+    let active: Vec<(Vec3, Option<Mat4>, bool, Option<&[u32]>)> = cameras
         .iter()
-        .filter(|(_, c, _, _)| c.is_active)
-        .map(|(t, _, projection, reflection)| {
+        .filter(|(_, c, _, _, _)| c.is_active)
+        .map(|(t, _, projection, reflection, surface)| {
             let clip = projection
                 .filter(|_| !reflection)
                 .map(|p| p.get_clip_from_view() * Mat4::from(t.affine().inverse()));
-            (t.translation(), clip, reflection)
+            (t.translation(), clip, reflection, surface.map(|s| &s.0[..]))
         })
         .collect();
-    let eye = active.iter().find(|(_, _, r)| !r).map(|(p, _, _)| *p);
+    let eye = active.iter().find(|(_, _, r, _)| !r).map(|(p, _, _, _)| *p);
     let window_eye = eye.unwrap_or_else(|| active.first().map_or(Vec3::ZERO, |a| a.0));
     let default_states = AreaPortalStates::default();
     let states = portal_states.as_deref().unwrap_or(&default_states);
@@ -896,7 +902,20 @@ pub(crate) fn cull(
         (Some(v), 0) if !active.is_empty() => {
             let mut union = vec![0u64; v.0.cluster_count.div_ceil(64)];
             let mut inside = true;
-            for (p, clip, reflection) in &active {
+            for (p, clip, reflection, surface) in &active {
+                // A reflection shows what its water surface sees: the
+                // clusters potentially visible from the surface's (its
+                // mirrored eye is below the surface, often in solid).
+                if let Some(surface) = surface.filter(|s| !s.is_empty()) {
+                    for &c in surface {
+                        if let Some(row) = v.0.visible.get(c as usize) {
+                            for (u, w) in union.iter_mut().zip(row) {
+                                *u |= w;
+                            }
+                        }
+                    }
+                    continue;
+                }
                 let Some((row, area, areas)) = camera_clusters(&v.0, *p, window_eye, *clip, states, open_all) else {
                     inside = false;
                     break;
@@ -945,7 +964,7 @@ pub(crate) fn cull(
     stats.occluders = occluders.len();
     stats.active_occluders = occluders.iter().filter(is_active).count();
     let main_clip = match active.as_slice() {
-        [(p, Some(clip), false)] if occlusion.as_ref().is_none_or(|o| o.0 != 0) => Some((*p, *clip)),
+        [(p, Some(clip), false, _)] if occlusion.as_ref().is_none_or(|o| o.0 != 0) => Some((*p, *clip)),
         _ => None,
     };
     let in_sight: Vec<ScreenOccluder> = match main_clip {

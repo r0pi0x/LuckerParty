@@ -1,0 +1,28 @@
+# Performance views on a community minigame map (578 func_breakable, 170
+# func_door): `refcmp bench --views tools/refcmp/mg_lego_multigames_v2.toml`.
+# Only coordinates; see docs/performance.md.
+# Positions are eye positions in Source units; angles are [pitch, yaw].
+
+map = "mg_lego_multigames_v2"
+camera = "cam1"
+
+# Toward the room with the breakable blocks (a user's slow view).
+[[view]]
+name = "blocks_room"
+position = [110.02, -795.16, -76.17]
+angles = [1.12, 153.31]
+
+[[view]]
+name = "blocks_room_back"
+position = [110.02, -795.16, -76.17]
+angles = [1.12, 333.31]
+
+[[view]]
+name = "blocks_room_left"
+position = [110.02, -795.16, -76.17]
+angles = [1.12, 63.31]
+
+[[view]]
+name = "blocks_room_right"
+position = [110.02, -795.16, -76.17]
+angles = [1.12, 243.31]

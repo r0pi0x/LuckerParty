@@ -8,7 +8,8 @@ Performance").
 
 - `mashup_perf 1` in the console: frame times, main-world CPU, GPU time
   per render pass (Vulkan/DX12 timestamps), entities, meshes and
-  triangles drawn, the camera's visibility cluster.
+  triangles drawn, the camera's visibility cluster. `mashup_perf_log 1`
+  logs it as text once a second; `bugreport` saves it in report.txt.
 - `refcmp bench --views tools/refcmp/<map>.toml`: 200 frames per view
   after settling, vsync off, offscreen at 1280x720; prints avg/p95/max
   frame ms, drawn meshes/total, triangles drawn, map parts potentially
@@ -17,9 +18,13 @@ Performance").
 - A/B: `-- +r_novis 1` (no PVS culling) or `MASHUP_MERGED_WORLD=1` (the
   world as one mesh per material, nothing culled: the code before
   chunking).
-- Per-system CPU time: `cargo run --profile playtest --features profile`
-  writes `trace-*.json` (Bevy's Chrome tracing) to the working directory;
-  open it in https://ui.perfetto.dev.
+- Per-system CPU time: a `--features profile` build writes a Chrome
+  trace (`TRACE_CHROME=<file>`, else `trace-*.json` in the working
+  directory); `tracesum <file> --skip 200` prints the main and render
+  worlds' time per frame and the top spans by self time (OBSERVABILITY.md
+  3c has the commands); https://ui.perfetto.dev shows the timeline.
+- `REFCMP_OUT=<dir>` keeps refcmp's captures and reports in your own
+  folder (the CS:S references stay shared).
 
 Frame times move with machine load (other builds on the dev box): compare
 runs taken back to back, and trust ratios more than absolute numbers.
@@ -43,12 +48,21 @@ potentially visible from anywhere inside it (PVS, run-length encoded).
   when it changes it shows the tagged parts whose clusters are potentially
   visible and hides the rest. In solid or outside the map (no cluster),
   or with `r_novis 1`, everything is drawn.
-- While the water's reflection camera draws (`map::water`), parts
-  potentially visible from its cluster are drawn too (it's a mirror
-  image under the surface; outside the map it draws everything). The
+- The water's reflection camera (`map::water`) draws only for a
+  reflecting volume the main camera can see (in its frustum and in its
+  cluster's PVS; the spec renders the views of the volume the camera
+  sees). While it draws, parts potentially visible from the clusters
+  around its surface are drawn too (`water::ReflectionClusters`: what is
+  reflected is seen from the surface). Its mirrored eye is under the
+  surface, often in solid: looking it up there turned culling off for the
+  whole map whenever any reflecting water lay below the eye. The
   view-model and sky cameras draw only their own layers and are ignored.
-- Meshes of entities with their own node (movers, breakables) stay whole
-  and are never culled, nor props riding them.
+- Meshes of entities with their own node (movers, breakables) stay whole;
+  the node is tagged by the clusters its meshes' bounds touch, found again
+  whenever it moves (`map::tag_moved_brush_entities`, from its
+  `BrushEntityBounds` and `GlobalTransform`), so doors and breakables are
+  culled like the world around them (props riding them with them). The
+  logic hides removed ones with `LogicHidden`, as for props.
 - Not culled: the 3D skybox (drawn by the sky camera only where the
   camera's leaf sees sky), physics props and their shadows (they move),
   characters, runtime decals, particles.
@@ -204,6 +218,76 @@ cs_compound, up to 73% of a view). With props only, `refcmp vischeck`
 (unculled run: `r_novis 1`, `r_occlusion 0`) passes on cs_compound (19
 of 320 views differ, at most a few hundred pixels) and de_port (2 of
 312); cs_assault differs with occluders off too (backlog).
+
+## Many brush entities (mg_lego_multigames_v2)
+
+A community minigame map (BSP v20, 578 func_breakable, 170 func_door, 937
+brush models, 32k triangles, reflecting water). Looking into its room of
+breakable blocks (`tools/refcmp/mg_lego_multigames_v2.toml`, view
+`blocks_room`) it ran at 11-17 fps. Text readouts (`mashup_perf_log 1`,
+window 1920x1080, playtest build):
+
+| | fps | frame ms | main world ms | GPU ms | meshes drawn | vis |
+|---|---|---|---|---|---|---|
+| before | 14 | 70-72 | 12.2-14.2 | 4.6 (bin_unpacking 4.2) | 1964/4737 | off (2539 parts all drawn) |
+| after | 60 (vsync) | 16.7 | 4.2-6.1 | 0.5-0.9 | 1767/4737 | cluster 1088, 626/3306 parts |
+
+Root causes, from a trace of that view (`tracesum`, 200 frames):
+
+- Every brush entity's mesh had a material asset of its own (a mesh per
+  material per entity: 2209 WorldMaterials for 14 distinct materials), so
+  nothing batched: each mesh its own bin, bind group and draw. Render
+  world 59 ms a frame: `write_binned_instance_buffers` 13.4 ms (opaque)
+  + 5.9 ms (prepass), `prepare_preprocess_bind_groups` 6.5, `unpack_bins`
+  6.3, `queue_submit` 6.9. Now meshes with the same material description
+  share one asset (`spawn_map` keys them by the material's full
+  description and the skybox flag): 14 assets, render world about 5 ms
+  plus waiting for vsync.
+- Visibility culling was off: the map has visibility, and the camera's
+  cluster was found, but the water reflection camera (active whenever a
+  reflecting volume lay anywhere below the eye) had its mirrored eye in
+  solid, which drew everything. Fixed as above (reflection only for water
+  in sight; its culling from its surface's clusters).
+- Brush entities were never culled; now by their bounds' clusters.
+- The main world paid for the slow frames: at 15 fps each frame ran four
+  fixed ticks (logic, movement, physics). In the logic bridge,
+  `sync_movers` looked each mover's node up in a list (quadratic in
+  movers) and rebuilt and re-inserted every mover's `MovingSolid` brushes
+  each call (twice a tick); now a map lookup, and the brushes only when
+  the mover moved or changed (`logic: sync_movers` span 0.19 ms a call).
+
+`refcmp bench` (offscreen 1280x720, vsync off, playtest build), mean of
+the file's 4 views, back-to-back runs at load 8-14 on 12 cores:
+
+| build | blocks_room ms | mean frame ms | main world ms | GPU ms | meshes drawn (mean) |
+|---|---|---|---|---|---|
+| before | 59.4 / 59.5 | 25.8 / 25.7 | 5.9 / 6.0 | 1.97 / 1.81 | 1471 |
+| after | 4.2 (one loaded run: 16) | 3.1 | 1.8 | 0.22 | 512 |
+
+So about 240 fps at blocks_room and 320 fps on average at 720p here
+(the GPU does under 0.5 ms; frames are CPU bound). No regression on the
+stock maps (same runs, mean over each file's views; noise between runs
+is larger than the difference):
+
+| map | before frame ms | after frame ms | meshes drawn before -> after |
+|---|---|---|---|
+| de_dust2 (32 views) | 4.07 / 4.80 | 5.32 / 3.78 | 248 -> 248 |
+| de_nuke (27 views) | 8.35 / 10.58 | 7.90 / 14.03 (loaded) | 548 -> 489 (its doors culled) |
+
+Pictures are unchanged: refcmp report mean abs diff de_dust2 0.0308
+(32 views), de_nuke 0.0250 (27), de_aztec 0.0409 (13), each view within
+0.0005 of the shared captures; de_port's 24 views (reflecting water)
+differ from the old build by at most 28 pixels. `refcmp vischeck` on the
+lego map: 48 views, two differ by 1732 and 1965 pixels (0.2%): a roof
+seen through a grate, which the map's PVS doesn't list from that
+cluster (with or without areaportals; backlog section 9, like de_nuke's
+nav1627_90).
+
+What is left at that view: about 1770 meshes drawn (the wall of blocks is
+~580 breakables, a mesh per material each); main world ~2-5 ms of mostly
+Bevy's per-entity work (visibility checks, transform and collider
+propagation over the map's tree). Merging unbroken breakables into
+shared meshes would cut entities further.
 
 ## Cheap wins found
 

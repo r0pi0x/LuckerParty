@@ -373,6 +373,14 @@ fn report_text(w: &mut World, note: &str) -> String {
             out += &format!("health: {:.0}\n", h.current * 100.0);
         }
     }
+    if let Some(p) = w.get_resource::<super::perf::PerfReport>()
+        && !p.lines.is_empty()
+    {
+        out += "\nperformance (mashup_perf, last second):\n";
+        for l in &p.lines {
+            out += &format!("{l}\n");
+        }
+    }
     if let Some(c) = w.get_resource::<Console>() {
         out += "\nlast console lines:\n";
         let n = c.output.len();
