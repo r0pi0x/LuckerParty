@@ -174,6 +174,22 @@ Generic, by maps affected (counts from the sweep after the fixes):
 10. **Server commands** maps send that we refuse: SourceMod/Mani admin
     commands (ma_say, sm_say: chat text) on 4 maps.
 
+Specs for items 1–5 (written 2026-10-08 from the public Source SDK 2013,
+draft, to be reviewed before implementation):
+[visual_entities.md](../../../specs/source/visual_entities.md)
+(point_spotlight, env_laser, env_beam, env_spritetrail, env_lightglow,
+env_steam, env_spark),
+[viewcontrol_and_templates.md](../../../specs/source/viewcontrol_and_templates.md)
+(point_viewcontrol, point_template, env_entity_maker),
+[physics_brushes.md](../../../specs/source/physics_brushes.md)
+(func_physbox and _multiplayer, phys_thruster, phys_keepupright,
+prop_ragdoll),
+[game_entities.md](../../../specs/source/game_entities.md)
+(player_speedmod, game_ui, env_fade, game_score, env_hudhint,
+env_explosion, func_wall_toggle, func_conveyor). Each lists the CS:S
+differences to measure under "Open questions". Not yet specced:
+info_particle_system, env_smokestack, phys_constraint/ballsocket.
+
 Spawns: every map has spawn points; 14 have only one team's (bhop_, kz_,
 some mg_: the game puts everyone on the team that has spawns).
 
