@@ -361,12 +361,30 @@ confirmed: compare them with the server's state at the same tick
 client runs ahead). `cargo test --features dev --test it net_prediction
 -- --nocapture` prints the numbers per latency, jitter and loss.
 
+Interpolation and movers (`tests/it/net_interp.rs`, at 240 frames a
+second with `NetSim::set_frame(1.0 / 240.0)`): `net::interp::InterpClock`
+has the render tick others are drawn at (fractional, server ticks) and
+the delay; `net::interp::Snapshots<NetBody>` on another player's character
+(and `<NetMover>`, `<NetProp>` on the mover and prop proxies) holds what
+arrived, by server tick. To check a drawn path, record the server's
+position per `SimTick` and compare the client's drawn `Transform` with
+the server's between the two ticks around the render tick; `NetGraph`
+counts frames extrapolated or held past the newest snapshot and
+teleports snapped, and `carried` (ticks the client's mover step pushed
+its own player). `cargo test --features dev --test it net_interp --
+--nocapture` prints the off-path, per-frame step and error numbers.
+
 In a game: the perf overlay (`mashup_perf 1`) and the F2 Perf tab show,
 while connected, `net:` (ping, loss, KB/s), `cmds:` (lead in ticks and
 its target, the clock's speed nudge and jumps, the server's buffer of
-our commands, missed and late) and `prediction:` (errors per second and
+our commands, missed and late), `prediction:` (errors per second and
 their worst, totals, commands replayed, the view's correction still
-being eased out); `status` on a client prints the prediction line too,
+being eased out) and `interp:` (how far in the past others are drawn,
+the update interval, characters drawn, snapshots buffered ahead of the
+render time and how far ahead the newest is, frames extrapolated or
+held, snaps, movers stepped and ticks the player was carried);
+`cl_interp` (0.1 s), `cl_interp_ratio` (2), `cl_extrapolate` (1) and
+`cl_extrapolate_amount` (0.25 s) set the drawing; `status` on a client prints the prediction and interp lines too,
 on a server each player's buffered and missed commands. `cl_showerror 1`
 logs every prediction error (tick, metres, which components differed)
 and clock jump. `cl_smoothtime` (0.1 s) eases corrections out of the

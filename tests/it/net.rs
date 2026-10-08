@@ -101,7 +101,9 @@ fn clients_join_and_see_each_other_move() {
         .get_mut::<mashup::core::Intent>(a_local)
         .unwrap()
         .move_axis = Vec2::ZERO;
-    sim.ticks(40);
+    // Stopped (friction), and others are drawn 0.1 s and the latency in
+    // the past (`net::interp`).
+    sim.ticks(80);
     let moved = pos(sim.server.app.world(), a).distance(start_server);
     assert!(moved > 2.0, "the server moved client 1's character {moved} m");
     let end_server = pos(sim.server.app.world(), a);
@@ -119,7 +121,7 @@ fn clients_join_and_see_each_other_move() {
     sim.server.intent(host).move_axis = Vec2::X;
     sim.ticks(64);
     sim.server.intent(host).move_axis = Vec2::ZERO;
-    sim.ticks(40);
+    sim.ticks(80);
     let host_end = pos(sim.server.app.world(), host);
     assert!(host_end.distance(host_start) > 2.0);
     for viewer in 0..2 {

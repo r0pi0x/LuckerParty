@@ -238,7 +238,7 @@ fn hide_node(world: &mut World, node: Entity) {
 
 /// Show or hide a mover node for the logic (`LogicHidden`): shown, it is
 /// drawn when visibility culling (`VisClusters`, by its bounds) allows.
-fn set_node_shown(e: &mut EntityWorldMut, visible: bool) {
+pub(crate) fn set_node_shown(e: &mut EntityWorldMut, visible: bool) {
     let hidden = e.contains::<LogicHidden>();
     if visible {
         let culled = e.get::<VisClusters>().is_some_and(|v| !v.potentially_visible);
@@ -608,7 +608,7 @@ fn static_collision(world: &World, scale: f32) -> Option<std::sync::Arc<dyn Coll
 }
 
 /// An entity-space brush in engine space.
-fn brush_to_engine(b: &MapBrush, scale: f32) -> MapBrush {
+pub fn brush_to_engine(b: &MapBrush, scale: f32) -> MapBrush {
     let planes = b
         .planes
         .iter()
@@ -642,48 +642,147 @@ type CharacterQuery<'a> = (
 /// is slot 1), then by entity.
 fn snapshot(world: &mut World, logic: &Logic) -> Vec<Player> {
     let scale = logic.scale;
+    let ground_of = |g: Entity| {
+        logic
+            .nodes
+            .iter()
+            .chain(&logic.props)
+            .find(|(_, n)| *n == g)
+            .map(|(id, _)| *id)
+    };
     let mut list: Vec<(bool, Player)> = world
         .query::<CharacterQuery>()
         .iter(world)
-        .map(|(e, t, v, state, intent, health, team, base, gravity, local, aabb)| {
-            let origin = engine_to_entity(t.translation, scale);
-            let (lo, hi) = if state.hull_min != state.hull_max {
-                (state.hull_min, state.hull_max)
-            } else if let Some(a) = aabb {
-                (a.min - t.translation, a.max - t.translation)
-            } else {
-                (Vec3::splat(-0.4), Vec3::splat(0.4))
-            };
-            let (a, b) = (engine_to_entity(lo, scale), engine_to_entity(hi, scale));
-            let mut p = Player::new(e, origin);
-            p.mins = a.min(b);
-            p.maxs = a.max(b);
-            p.eye = engine_to_entity(state.eye_offset, scale);
-            p.velocity = engine_to_entity(v.0, scale);
-            if let Some(b) = base {
-                p.base_velocity = engine_to_entity(b.velocity, scale);
-                p.base_touched = b.touched;
-            }
-            p.on_ground = state.on_ground;
-            p.ground = state.ground.and_then(|g| {
-                logic
-                    .nodes
-                    .iter()
-                    .chain(&logic.props)
-                    .find(|(_, n)| *n == g)
-                    .map(|(id, _)| *id)
-            });
-            p.view = Vec3::new(-intent.pitch.to_degrees(), intent.yaw.to_degrees() + 90.0, 0.0);
-            p.alive = health.is_none_or(|h| h.current > 0.0);
-            // Our teams 1 and 2 are Source's 2 (T) and 3 (CT).
-            p.team = team.map_or(0, |t| if t.0 == 0 { 0 } else { t.0 + 1 });
-            p.gravity = gravity.map_or(1.0, |g| g.0);
-            p.use_key = intent.use_key;
-            (local.is_some(), p)
-        })
+        .map(|row| (row.9.is_some(), as_player(row, scale, ground_of)))
         .collect();
     list.sort_by_key(|(local, p)| (!*local, p.entity));
     list.into_iter().map(|(_, p)| p).collect()
+}
+
+/// A character as a logic player; `ground_of` names the logic entity of
+/// what it stands on.
+fn as_player(
+    (e, t, v, state, intent, health, team, base, gravity, _, aabb): bevy::ecs::query::QueryItem<'_, '_, CharacterQuery<'static>>,
+    scale: f32,
+    ground_of: impl Fn(Entity) -> Option<EntId>,
+) -> Player {
+    let origin = engine_to_entity(t.translation, scale);
+    let (lo, hi) = if state.hull_min != state.hull_max {
+        (state.hull_min, state.hull_max)
+    } else if let Some(a) = aabb {
+        (a.min - t.translation, a.max - t.translation)
+    } else {
+        (Vec3::splat(-0.4), Vec3::splat(0.4))
+    };
+    let (a, b) = (engine_to_entity(lo, scale), engine_to_entity(hi, scale));
+    let mut p = Player::new(e, origin);
+    p.mins = a.min(b);
+    p.maxs = a.max(b);
+    p.eye = engine_to_entity(state.eye_offset, scale);
+    p.velocity = engine_to_entity(v.0, scale);
+    if let Some(b) = base {
+        p.base_velocity = engine_to_entity(b.velocity, scale);
+        p.base_touched = b.touched;
+    }
+    p.on_ground = state.on_ground;
+    p.ground = state.ground.and_then(ground_of);
+    p.view = Vec3::new(-intent.pitch.to_degrees(), intent.yaw.to_degrees() + 90.0, 0.0);
+    p.alive = health.is_none_or(|h| h.current > 0.0);
+    // Our teams 1 and 2 are Source's 2 (T) and 3 (CT).
+    p.team = team.map_or(0, |t| if t.0 == 0 { 0 } else { t.0 + 1 });
+    p.gravity = gravity.map_or(1.0, |g| g.0);
+    p.use_key = intent.use_key;
+    p
+}
+
+/// A mover a network client moves itself this tick (`net::movers`), as
+/// the server's logic steps it: where it was (entity space, angles in
+/// degrees) and how far it moves and turns.
+#[derive(Clone, Copy, Debug)]
+pub struct CarriedMover<'a> {
+    pub node: Entity,
+    /// Its map entity index (`map::MapBrushEntity`).
+    pub index: u32,
+    /// Its hulls (`map::MapEntity::hulls`, entity space).
+    pub hulls: &'a [crate::map::MapHull],
+    pub origin: Vec3,
+    pub angles: Vec3,
+    pub d: Vec3,
+    pub da: Vec3,
+    pub solid: bool,
+    pub physics_solid: bool,
+    pub unblockable: bool,
+}
+
+/// A mover's world brushes at a pose (entity space), as the logic keeps
+/// them.
+pub fn mover_brushes_at(hulls: &[crate::map::MapHull], origin: Vec3, angles: Vec3) -> Vec<MapBrush> {
+    let rot = entity_rotation(angles);
+    hulls.iter().map(|h| super::world::place_hull(h, rot, origin)).collect()
+}
+
+/// A network client predicting its own player (`net::movers`): the push
+/// of this tick's mover steps (`movers`, in map order) on `player`, as
+/// the server's logic does it before movement (riders carried, players in
+/// the way shoved; `movers::push_players`, the same code). A step the
+/// player would block is left out (the server's mover would stop or
+/// reverse: the next correction says how). Returns whether it moved.
+pub fn carry_player(world: &mut World, player: Entity, scale: f32, movers: &[CarriedMover]) -> bool {
+    let ground_of = |g: Entity| {
+        movers.iter().find(|m| m.node == g).map(|m| EntId {
+            index: m.index,
+            generation: 0,
+        })
+    };
+    let before = {
+        let mut q = world.query::<CharacterQuery>();
+        let Ok(row) = q.get(world, player) else {
+            return false;
+        };
+        as_player(row, scale, ground_of)
+    };
+    let mut players = vec![before.clone()];
+    let mut solids: Vec<Option<Vec<MapBrush>>> = movers
+        .iter()
+        .map(|m| m.solid.then(|| mover_brushes_at(m.hulls, m.origin, m.angles)))
+        .collect();
+    {
+        let col = WorldCollision {
+            brushes: world.get_resource::<MapBrushes>(),
+            terrain: world.get_resource::<MapTerrain>(),
+            scale,
+        };
+        for (k, m) in movers.iter().enumerate() {
+            let (o_new, a_new) = (m.origin + m.d, m.angles + m.da);
+            if m.solid && (m.d != Vec3::ZERO || m.da != Vec3::ZERO) {
+                let moved = mover_brushes_at(m.hulls, o_new, a_new);
+                let others: Vec<&MapBrush> = solids
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, _)| *j != k)
+                    .filter_map(|(_, b)| b.as_ref())
+                    .flatten()
+                    .collect();
+                let step = super::movers::PushStep {
+                    id: EntId {
+                        index: m.index,
+                        generation: 0,
+                    },
+                    origin: m.origin,
+                    angles: m.angles,
+                    d: m.d,
+                    da: m.da,
+                    physics_solid: m.physics_solid,
+                    unblockable: m.unblockable,
+                };
+                let _ = super::movers::push_players(&mut players, &step, &moved, &others, &col);
+                solids[k] = Some(moved);
+            }
+        }
+    }
+    let moved = players[0].moved;
+    write_back(world, scale, std::slice::from_ref(&before), &players);
+    moved
 }
 
 /// Write back what the logic changed on players.

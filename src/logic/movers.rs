@@ -1340,6 +1340,128 @@ fn blocked(w: &mut LogicWorld, id: EntId, blocker: Who) {
     }
 }
 
+/// One pusher step as `push_players` takes it (entity space; angles in
+/// degrees): the mover, where it was, how far it moves and turns.
+#[derive(Clone, Copy, Debug)]
+pub struct PushStep {
+    /// What a player stands on to ride it (`Player::ground`).
+    pub id: EntId,
+    pub origin: Vec3,
+    pub angles: Vec3,
+    pub d: Vec3,
+    pub da: Vec3,
+    /// Model doors: a rotation pushes by the box's leading corner.
+    pub physics_solid: bool,
+    /// Players are moved through rather than blocking (trains flag 512).
+    pub unblockable: bool,
+}
+
+/// The players part of a pusher's step (doors_buttons.md, "Pushing,
+/// riding and blocking"): riders (standing on it) and players its moved
+/// brushes (`moved`) overlap are carried or shoved, swept against the
+/// world (`col`) and the other movers' brushes (`others`). Ok: the players
+/// it moved, as they were (index, origin, view), for a caller that undoes
+/// the step; Err(blocker): a player stopped it and everyone is back.
+/// Shared by the logic and a network client predicting its own player on
+/// a mover (`logic::carry_player`).
+pub fn push_players(
+    players: &mut [super::world::Player],
+    step: &PushStep,
+    moved: &[MapBrush],
+    others: &[&MapBrush],
+    col: &dyn Collision,
+) -> Result<Vec<(usize, Vec3, Vec3)>, Entity> {
+    let PushStep {
+        id,
+        origin,
+        angles,
+        d,
+        da,
+        physics_solid,
+        unblockable,
+    } = *step;
+    let (q_old, q_new) = (entity_rotation(angles), entity_rotation(angles + da));
+    let (o_old, o_new) = (origin, origin + d);
+    let overlaps = |pl: &super::world::Player| {
+        let (half, centre) = ((pl.maxs - pl.mins) / 2.0, pl.origin + (pl.mins + pl.maxs) / 2.0);
+        moved.iter().any(|b| b.overlaps_box(centre, half, SOLID_SKIN))
+    };
+    let candidates: Vec<usize> = (0..players.len())
+        .filter(|i| {
+            let pl = &players[*i];
+            pl.alive && (pl.ground == Some(id) || overlaps(pl))
+        })
+        .collect();
+    let saved: Vec<(usize, Vec3, Vec3)> = candidates
+        .iter()
+        .map(|i| (*i, players[*i].origin, players[*i].view))
+        .collect();
+    let turn = q_new * q_old.inverse();
+    for &i in candidates.iter().rev() {
+        let pl = players[i].clone();
+        let centre = pl.origin + (pl.mins + pl.maxs) / 2.0;
+        let push = if da == Vec3::ZERO {
+            d
+        } else {
+            let mut at = centre;
+            if physics_solid {
+                let motion = o_new + turn * (centre - o_old) - centre;
+                let half = (pl.maxs - pl.mins) / 2.0;
+                let side = |m: f32| if m > 0.0 { 1.0 } else if m < 0.0 { -1.0 } else { 0.0 };
+                at += half * Vec3::new(side(motion.x), side(motion.y), side(motion.z));
+            }
+            o_new + turn * (at - o_old) - at
+        };
+        let to = pl.origin + push;
+        let frac = col.sweep(pl.mins, pl.maxs, pl.origin, to).min(super::world::sweep_brushes(
+            others.iter().copied(),
+            pl.mins,
+            pl.maxs,
+            pl.origin,
+            to,
+        ));
+        let end = pl.origin + push * frac;
+        let mut accepted = frac >= 1.0 && da == Vec3::ZERO;
+        if !accepted {
+            let stuck = col.solid(pl.mins, pl.maxs, end)
+                || super::world::solid_brushes(others.iter().copied().chain(moved.iter()), pl.mins, pl.maxs, end);
+            accepted = !stuck;
+            if stuck && unblockable {
+                players[i].origin = to;
+                players[i].moved = true;
+                continue;
+            }
+        }
+        if !accepted {
+            for (j, o, v) in &saved {
+                players[*j].origin = *o;
+                players[*j].view = *v;
+            }
+            return Err(pl.entity);
+        }
+        let pm = &mut players[i];
+        if push.length_squared() > 0.0 {
+            pm.origin = end;
+            pm.moved = true;
+        }
+        if da != Vec3::ZERO && pm.ground == Some(id) {
+            pm.view.y += da.y;
+            pm.moved = true;
+        }
+    }
+    Ok(saved)
+}
+
+/// Movers' world brushes (`LogicWorld::solids`), except `skip`'s.
+fn other_brushes(solids: &[Option<Vec<MapBrush>>], skip: Option<EntId>) -> impl Iterator<Item = &MapBrush> {
+    solids
+        .iter()
+        .enumerate()
+        .filter(move |(i, _)| skip.is_none_or(|s| s.index as usize != *i))
+        .filter_map(|(_, b)| b.as_ref())
+        .flatten()
+}
+
 impl LogicWorld {
     /// Recompute a mover's world brushes after it moved.
     pub(super) fn refresh_solid(&mut self, id: EntId) {
@@ -1360,12 +1482,7 @@ impl LogicWorld {
 
     /// Movers' brushes where they are now, except `skip`.
     fn mover_brushes(&self, skip: Option<EntId>) -> impl Iterator<Item = &MapBrush> {
-        self.solids
-            .iter()
-            .enumerate()
-            .filter(move |(i, _)| skip.is_none_or(|s| s.index as usize != *i))
-            .filter_map(|(_, b)| b.as_ref())
-            .flatten()
+        other_brushes(&self.solids, skip)
     }
 
     /// Mover brush entities in entity order: (id, pose, visible, solid).
@@ -1526,71 +1643,23 @@ impl LogicWorld {
         let (q_old, q_new) = (entity_rotation(p.angles), entity_rotation(p.angles + da));
         let (o_old, o_new) = (p.origin, p.origin + d);
         let moved: Vec<MapBrush> = hulls.iter().map(|h| place_hull(h, q_new, o_new)).collect();
-        let overlaps = |pl: &super::world::Player| {
-            let (half, centre) = ((pl.maxs - pl.mins) / 2.0, pl.origin + (pl.mins + pl.maxs) / 2.0);
-            moved.iter().any(|b| b.overlaps_box(centre, half, SOLID_SKIN))
-        };
-        let candidates: Vec<usize> = (0..self.players.len())
-            .filter(|i| {
-                let pl = &self.players[*i];
-                pl.alive && (pl.ground == Some(id) || overlaps(pl))
-            })
-            .collect();
-        let saved: Vec<(usize, Vec3, Vec3)> = candidates
-            .iter()
-            .map(|i| (*i, self.players[*i].origin, self.players[*i].view))
-            .collect();
         let turn = q_new * q_old.inverse();
         // Model doors are physics-solid pushers: a rotation pushes by the
         // corner of the box facing the motion, not its centre.
         let physics_solid = matches!(self.get(id).map(|e| &e.class), Some(Class::PropDoor(_)));
-        for &i in candidates.iter().rev() {
-            let pl = self.players[i].clone();
-            let centre = pl.origin + (pl.mins + pl.maxs) / 2.0;
-            let push = if da == Vec3::ZERO {
-                d
-            } else {
-                let mut at = centre;
-                if physics_solid {
-                    let motion = o_new + turn * (centre - o_old) - centre;
-                    let half = (pl.maxs - pl.mins) / 2.0;
-                    let side = |m: f32| if m > 0.0 { 1.0 } else if m < 0.0 { -1.0 } else { 0.0 };
-                    at += half * Vec3::new(side(motion.x), side(motion.y), side(motion.z));
-                }
-                o_new + turn * (at - o_old) - at
+        let saved;
+        {
+            let others: Vec<&MapBrush> = other_brushes(&self.solids, Some(id)).collect();
+            let step = PushStep {
+                id,
+                origin: p.origin,
+                angles: p.angles,
+                d,
+                da,
+                physics_solid,
+                unblockable: p.unblockable,
             };
-            let to = pl.origin + push;
-            let frac = col
-                .sweep(pl.mins, pl.maxs, pl.origin, to)
-                .min(super::world::sweep_brushes(self.mover_brushes(Some(id)), pl.mins, pl.maxs, pl.origin, to));
-            let end = pl.origin + push * frac;
-            let mut accepted = frac >= 1.0 && da == Vec3::ZERO;
-            if !accepted {
-                let stuck = col.solid(pl.mins, pl.maxs, end)
-                    || super::world::solid_brushes(self.mover_brushes(Some(id)).chain(moved.iter()), pl.mins, pl.maxs, end);
-                accepted = !stuck;
-                if stuck && p.unblockable {
-                    self.players[i].origin = to;
-                    self.players[i].moved = true;
-                    continue;
-                }
-            }
-            if !accepted {
-                for (j, o, v) in &saved {
-                    self.players[*j].origin = *o;
-                    self.players[*j].view = *v;
-                }
-                return Err(Who::Player(pl.entity));
-            }
-            let pm = &mut self.players[i];
-            if push.length_squared() > 0.0 {
-                pm.origin = end;
-                pm.moved = true;
-            }
-            if da != Vec3::ZERO && pm.ground == Some(id) {
-                pm.view.y += da.y;
-                pm.moved = true;
-            }
+            saved = push_players(&mut self.players, &step, &moved, &others, col).map_err(Who::Player)?;
         }
         // Model doors and loose physics props (doors_buttons.md
         // prop_door_rotating, "Blocked"): the physics pushes a prop in the
