@@ -400,7 +400,10 @@ Details and baseline numbers: [performance.md](performance.md).
   or rebuild without the feature before benchmarking. Tracy instead:
   `--features bevy/trace_tracy` and the Tracy profiler (not set up on the
   dev box). CPU sampling (`perf record -g`, `cargo flamegraph`) works on
-  any optimized build on Linux; `perf` isn't installed on the dev box.
+  any optimized build on Linux; `perf` isn't installed on the dev box:
+  sample the dev build under gdb instead (performance.md, "Community
+  maps' slow first views"). A main-thread schedule with much self time
+  in `tracesum` is waiting for workers (or descheduled under load).
 
 ## 3d. The debug UI
 
