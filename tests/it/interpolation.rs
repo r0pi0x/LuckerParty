@@ -4,8 +4,8 @@
 //! the camera's eye (position plus eased eye offset) moves every frame
 //! instead of standing still and then jumping once a tick.
 //!
-//! `cargo test --test interpolation -- --nocapture` prints the per-frame
-//! camera numbers.
+//! `cargo test --features dev --test it interpolation:: -- --nocapture`
+//! prints the per-frame camera numbers.
 
 use std::time::Duration;
 

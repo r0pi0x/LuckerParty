@@ -18,6 +18,7 @@ mod cs_grenades;
 mod cs_guns;
 mod debug_ui;
 mod impact_effects;
+mod interpolation;
 mod map_logic;
 mod mount_cs_source;
 mod movement;

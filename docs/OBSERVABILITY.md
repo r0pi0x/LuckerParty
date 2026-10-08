@@ -334,8 +334,8 @@ Details and baseline numbers: [performance.md](performance.md).
   (`Time<Fixed>` overstep fraction), ticks run that frame and teleport
   snaps so far; the F2 Perf tab shows it live every frame.
   `cl_interpolate 0` draws the latest tick instead (stepping at the tick
-  rate), for A/B. `cargo test --test interpolation -- --nocapture`
-  prints a walking, ducking camera eye per frame at 240 fps on the CS:S
+  rate), for A/B. `cargo test --features dev --test it interpolation::
+  -- --nocapture` prints a walking, ducking camera eye per frame at 240 fps on the CS:S
   tick with it on and off.
 - `refcmp bench --views tools/refcmp/<map>.toml` times 200 frames at each
   view (vsync off) and prints a table (frame, main-world CPU, process CPU
