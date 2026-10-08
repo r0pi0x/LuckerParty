@@ -8,6 +8,15 @@ plan when work starts; delete them when done.
 
 ## 0. Playtest feedback (2026-10-07), top priority
 
+- HUD parity pass at pixel level: health, armour, ammo and money digits
+  and icons look slightly off-centre against CS:S; the weapon selection
+  (inventory) panel doesn't match CS:S's (layout, box sizes, which icons
+  and fonts, highlight, fade). Method: capture the real HUD with refcmp
+  (coordinator: reference client) at 1280x720, 1920x1080 and 4:3, overlay
+  and diff ours per panel (`HudLayout.res` positions, `xpos`/`ypos` with
+  `r`/`c` anchors, proportional scaling, digit and icon offsets), fix
+  until each panel lines up, and keep the captures' diff as a test.
+
 - Decals persist across rounds (bullet holes, blood), as we believe CS:S
   does (players bind `r_cleardecals`, now there; `mashup_round_cleardecals
   1` clears them each round). Left: confirm the game keeps them.
