@@ -17,6 +17,7 @@ pub mod hdr;
 pub mod hud_sprites;
 pub mod hud;
 pub mod input;
+pub mod interp;
 pub mod objectives_hud;
 pub mod options;
 pub mod perf;
@@ -236,6 +237,7 @@ impl Plugin for ClientPlugin {
                 radar::RadarPlugin,
                 effects::ShotEffectsPlugin,
                 view::ViewPlugin,
+                interp::ClientInterpPlugin,
             ))
             .add_plugins((
                 buy_menu::BuyMenuPlugin,
@@ -396,6 +398,7 @@ fn follow_eye(
             &MovementState,
             &Children,
             Option<&crate::weapon::ViewPunch>,
+            Option<&crate::map::interp::RenderedView>,
         ),
         (With<LocalPlayer>, Without<FirstPersonCamera>),
     >,
@@ -408,33 +411,47 @@ fn follow_eye(
     characters: Query<Entity, With<Intent>>,
     watch: Res<view::Watch>,
     spectating: Res<spectate::SpecView>,
-    others: Query<(&Name, &Transform, &Intent, &MovementState), (Without<LocalPlayer>, Without<FirstPersonCamera>)>,
+    others: Query<
+        (&Name, &Transform, &Intent, &MovementState, Option<&crate::map::interp::RenderedView>),
+        (Without<LocalPlayer>, Without<FirstPersonCamera>),
+    >,
 ) {
+    // Positions (`Transform`), eyes and other characters' looks are the
+    // ones drawn this frame, eased between ticks (`map::interp`); the
+    // local player's look is this frame's mouse.
     // The watched character, if any: a chase camera behind it (world space).
     let watched = (watch.0 > 0)
         .then(|| format!("Bot {}", watch.0))
         .and_then(|name| others.iter().find(|(n, ..)| n.as_str() == name))
-        .map(|(_, t, i, s)| {
+        .map(|(_, t, i, s, v)| {
             let chase = view::CameraMode {
                 third_person: true,
                 ..*mode
             };
-            let look = view::camera_look(&chase, Quat::from_euler(EulerRot::YXZ, i.yaw, i.pitch, 0.0));
-            let offset = view::camera_offset(&chase, t.translation, s.eye_offset, look, &spatial, &characters);
+            let eye = crate::map::interp::eye_view(v, i, s);
+            let look = view::camera_look(&chase, Quat::from_euler(EulerRot::YXZ, eye.yaw, eye.pitch, 0.0));
+            let offset = view::camera_offset(&chase, t.translation, eye.eye_offset, look, &spatial, &characters);
             (t.translation + offset, look)
         });
-    for (at, intent, state, children, punch) in &players {
+    for (at, intent, state, children, punch, view) in &players {
+        let eye = match view {
+            Some(v) => v.now,
+            None => crate::map::interp::EyeView {
+                punch: punch.map_or(Vec2::ZERO, |p| p.0),
+                ..crate::map::interp::EyeView::of(intent, state)
+            },
+        };
         // Recoil kicks the view (pitch up, yaw left).
-        let p = punch.map_or(Vec2::ZERO, |p| p.0);
+        let p = eye.punch;
         // A hard landing rolls it (Source's roll turns it clockwise).
         let look = Quat::from_euler(
             EulerRot::YXZ,
             intent.yaw + p.y + free.yaw,
             intent.pitch + p.x + free.pitch,
-            -state.view_roll,
+            -eye.view_roll,
         );
         let look = view::camera_look(&mode, look);
-        let offset = view::camera_offset(&mode, at.translation, state.eye_offset, look, &spatial, &characters);
+        let offset = view::camera_offset(&mode, at.translation, eye.eye_offset, look, &spatial, &characters);
         // Detached: starts where the camera is; placed in the world (the
         // camera is the player's child, so undo the player's transform).
         // Spectating while dead comes first; then the debug cameras.

@@ -551,6 +551,7 @@ fn drive(
         &MovementState,
         Option<&Health>,
         Option<&Inventory>,
+        Option<&crate::map::interp::RenderedView>,
     ), Without<crate::objectives::hostages::Hostage>>,
     weapons: Query<(&Weapon, Option<&crate::weapon::grenade::Throwable>)>,
     loading: Query<(Option<&crate::weapon::ShellReload>, Option<&crate::weapon::Magazine>)>,
@@ -593,7 +594,7 @@ fn drive(
     }
     let find = |list: &[(Entity, &'static str)], e: Entity| list.iter().rev().find(|(o, _)| *o == e).map(|(_, p)| *p);
     let (dt, now) = (time.delta_secs(), time.elapsed_secs_f64());
-    for (e, mut animator, state, intent, velocity, movement, health, inventory) in &mut characters {
+    for (e, mut animator, state, intent, velocity, movement, health, inventory, view) in &mut characters {
         let Some(mut state) = state else {
             commands.entity(e).insert(PlayerAnim::default());
             continue;
@@ -604,11 +605,14 @@ fn drive(
         }
         let jumped = state.was_on_ground && !movement.on_ground && velocity.y > 0.0;
         state.was_on_ground = movement.on_ground;
-        // Our axes to the game's: forward at yaw 0 is -Z (+X there), left
-        // is -X (+Y there).
+        // The look as drawn (eased between ticks, `map::interp`), as the
+        // client's animation state takes it (specs/cs_source/animation.md
+        // 12). Our axes to the game's: forward at yaw 0 is -Z (+X there),
+        // left is -X (+Y there).
+        let look = crate::map::interp::eye_view(view, intent, movement);
         let inputs = Inputs {
-            eye_yaw: intent.yaw.to_degrees(),
-            eye_pitch: -intent.pitch.to_degrees(),
+            eye_yaw: look.yaw.to_degrees(),
+            eye_pitch: -look.pitch.to_degrees(),
             velocity: Vec2::new(-velocity.z, -velocity.x) / UNIT,
             ducked: movement.crouching,
             on_ground: movement.on_ground,

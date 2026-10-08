@@ -299,6 +299,14 @@ Details and baseline numbers: [performance.md](performance.md).
   can be compared without reading screenshots (`--frames N ... 2>&1 |
   grep mashup_perf:`); `bugreport` saves the latest readout in
   report.txt whether or not the overlay is on.
+- Drawing between ticks (`map::interp`): the readout's `interpolation:`
+  line gives the tick rate, the frame's blend between the last two ticks
+  (`Time<Fixed>` overstep fraction), ticks run that frame and teleport
+  snaps so far; the F2 Perf tab shows it live every frame.
+  `cl_interpolate 0` draws the latest tick instead (stepping at the tick
+  rate), for A/B. `cargo test --test interpolation -- --nocapture`
+  prints a walking, ducking camera eye per frame at 240 fps on the CS:S
+  tick with it on and off.
 - `refcmp bench --views tools/refcmp/<map>.toml` times 200 frames at each
   view (vsync off) and prints a table (frame, main-world CPU, process CPU
   and GPU ms; with pipelined rendering a frame takes the longer of the
@@ -381,8 +389,9 @@ and keys typed into its fields don't reach binds.
   (`r_novis`, `r_portalsopenall`, `r_occlusion`, with the vis readout),
   HDR, water, view model and effect cvars, third person and free camera.
 - Perf: a frame-time graph of the last 300 frames (white frame, green
-  main-world CPU, 60 and 30 fps lines), the `mashup_perf` readout,
-  `mashup_perf`, `mashup_perf_log`, how to take a trace.
+  main-world CPU, 60 and 30 fps lines), the live interpolation line, the
+  `mashup_perf` readout, `mashup_perf`, `mashup_perf_log`,
+  `cl_interpolate`, how to take a trace.
 - Audio: volume, DSP, `snd_show`, the soundscape and room readout.
 - Logic: the map's entities (filter by name or class), an entity's
   keyvalues and output connections, fire an input at it (`ent_fire`);

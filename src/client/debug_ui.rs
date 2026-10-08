@@ -988,6 +988,13 @@ fn perf_tab(ui: &mut egui::Ui, world: &mut World, state: &mut DebugUi) {
         frames.len()
     ));
     frame_graph(ui, &frames);
+    // Live, every frame (the readout below is once a second).
+    if let (Some(i), Some(f)) = (
+        world.get_resource::<crate::map::interp::Interpolation>(),
+        world.get_resource::<Time<Fixed>>(),
+    ) {
+        ui.monospace(super::perf::interp_line(i, f));
+    }
     if let Some(r) = world.get_resource::<super::perf::PerfReport>() {
         for l in &r.lines {
             ui.monospace(l);
@@ -999,7 +1006,7 @@ fn perf_tab(ui: &mut egui::Ui, world: &mut World, state: &mut DebugUi) {
         world,
         state,
         "perf_cvars",
-        &["mashup_perf", "mashup_perf_log", "host_timescale", "mat_vsync", "r_novis"],
+        &["mashup_perf", "mashup_perf_log", "host_timescale", "mat_vsync", "r_novis", "cl_interpolate"],
     );
     ui.horizontal(|ui| {
         command_button(ui, world, "Log particles", "mashup_particles");

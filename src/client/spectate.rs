@@ -19,7 +19,11 @@ use super::view::{CameraMode, FreeCam, camera_offset};
 use crate::{
     console::{ConsoleAppExt, resource_cvar},
     core::{Died, Health, Intent, LocalPlayer, MovementState, Team},
-    map::{ViewModelAnchor, ViewModelSource, ragdoll::Ragdoll},
+    map::{
+        ViewModelAnchor, ViewModelSource,
+        interp::{EyeView, RenderedView},
+        ragdoll::Ragdoll,
+    },
     objectives::hostages::Hostage,
     rules::Dead,
     weapon::{Inventory, ViewPunch, Weapon, Zoomed},
@@ -467,7 +471,21 @@ type Watched<'a> = (
     &'a Intent,
     &'a MovementState,
     Option<&'a ViewPunch>,
+    Option<&'a RenderedView>,
 );
+
+/// Where a character is drawn this frame and its eye (eased between
+/// ticks, `map::interp`; the simulation's when not eased).
+fn drawn((t, i, s, punch, view): (&Transform, &Intent, &MovementState, Option<&ViewPunch>, Option<&RenderedView>)) -> (Vec3, EyeView) {
+    let eye = match view {
+        Some(v) => v.now,
+        None => EyeView {
+            punch: punch.map_or(Vec2::ZERO, |p| p.0),
+            ..EyeView::of(i, s)
+        },
+    };
+    (t.translation, eye)
+}
 
 /// Where the spectator camera goes this frame.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -476,7 +494,7 @@ fn place_camera(
     spec: Res<Spectator>,
     mut view: ResMut<SpecView>,
     mut chase: ResMut<ChaseOrbit>,
-    local: Option<Single<(Entity, &Transform, &Intent, &MovementState), With<LocalPlayer>>>,
+    local: Option<Single<(Entity, &Transform, &Intent, &MovementState, Option<&RenderedView>), With<LocalPlayer>>>,
     watched: Query<Watched>,
     ragdolls: Query<&Ragdoll>,
     bodies: Query<&GlobalTransform>,
@@ -497,7 +515,8 @@ fn place_camera(
         view.set_if_neq(SpecView::default());
         return;
     };
-    let (me, at, intent, state) = *local;
+    let (me, at, intent, state, own_view) = *local;
+    let own = crate::map::interp::eye_view(own_view, intent, state);
     let (keys, motion, settings, cursor, mouse, console) = controls;
     let grabbed = cursor.is_some_and(|c| super::input::cursor_grabbed(&c));
     let turn = match (grabbed, motion, settings) {
@@ -509,14 +528,14 @@ fn place_camera(
     let pose = match spec.phase {
         SpecPhase::Alive => None,
         SpecPhase::DeathCam { since, killer } => {
-            let eye = at.translation + state.eye_offset;
+            let eye = at.translation + own.eye_offset;
             let start = Quat::from_euler(EulerRot::YXZ, intent.yaw, intent.pitch, 0.0);
-            let killer = killer.filter(|k| *k != me).and_then(|k| watched.get(k).ok());
+            let killer = killer.filter(|k| *k != me).and_then(|k| watched.get(k).ok()).map(drawn);
             // Back from the body, away from the killer (or behind where
             // you faced), and up; looking at the killer or the body.
             let (away, focus) = match killer {
-                Some((t, _, s, _)) => {
-                    let focus = t.translation + s.eye_offset;
+                Some((t, e)) => {
+                    let focus = t + e.eye_offset;
                     ((eye - focus).with_y(0.0).normalize_or(start * Vec3::Z), focus)
                 }
                 None => {
@@ -537,12 +556,12 @@ fn place_camera(
             Some((p, start.slerp(end, s)))
         }
         SpecPhase::Watching => {
-            let target = spec.target.and_then(|t| watched.get(t).ok());
+            let target = spec.target.and_then(|t| watched.get(t).ok()).map(drawn);
             let set_for = spec.target.map(|t| (t, mode));
             if set_for != chase.set_for {
                 // A new target or mode: the orbit starts behind its view.
-                if let Some((_, i, ..)) = target {
-                    chase.orbit = Vec2::new(i.yaw, CHASE_PITCH.to_radians());
+                if let Some((_, e)) = target {
+                    chase.orbit = Vec2::new(e.yaw, CHASE_PITCH.to_radians());
                 }
                 chase.set_for = set_for;
             }
@@ -550,14 +569,14 @@ fn place_camera(
                 chase.roam.at = None;
             }
             match (mode, target) {
-                (SpecMode::InEye, Some((t, i, s, punch))) => {
-                    let p = punch.map_or(Vec2::ZERO, |p| p.0);
-                    let look = Quat::from_euler(EulerRot::YXZ, i.yaw + p.y, i.pitch + p.x, 0.0);
+                (SpecMode::InEye, Some((t, e))) => {
+                    let p = e.punch;
+                    let look = Quat::from_euler(EulerRot::YXZ, e.yaw + p.y, e.pitch + p.x, 0.0);
                     let fp = CameraMode::default();
-                    let offset = camera_offset(&fp, t.translation, s.eye_offset, look, &spatial, &characters);
-                    Some((t.translation + offset, look))
+                    let offset = camera_offset(&fp, t, e.eye_offset, look, &spatial, &characters);
+                    Some((t + offset, look))
                 }
-                (SpecMode::Chase, Some((t, _, s, _))) => {
+                (SpecMode::Chase, Some((t, e))) => {
                     chase.orbit.x = (chase.orbit.x + turn.x).rem_euclid(std::f32::consts::TAU);
                     chase.orbit.y = (chase.orbit.y + turn.y).clamp(-PITCH_LIMIT, PITCH_LIMIT);
                     let look = Quat::from_euler(EulerRot::YXZ, chase.orbit.x, chase.orbit.y, 0.0);
@@ -566,15 +585,15 @@ fn place_camera(
                         ideal_dist: CHASE_DISTANCE,
                         ideal_yaw: 0.0,
                     };
-                    let offset = camera_offset(&third, t.translation, s.eye_offset, look, &spatial, &characters);
-                    Some((t.translation + offset, look))
+                    let offset = camera_offset(&third, t, e.eye_offset, look, &spatial, &characters);
+                    Some((t + offset, look))
                 }
                 _ => {
                     // Roaming: from wherever the camera was.
                     if chase.roam.at.is_none() {
                         let (p, q) = view
                             .pose
-                            .unwrap_or((at.translation + state.eye_offset, Quat::from_euler(EulerRot::YXZ, intent.yaw, intent.pitch, 0.0)));
+                            .unwrap_or((at.translation + own.eye_offset, Quat::from_euler(EulerRot::YXZ, intent.yaw, intent.pitch, 0.0)));
                         let (yaw, pitch, _) = q.to_euler(EulerRot::YXZ);
                         chase.roam.at = Some((p, yaw, pitch));
                     }

@@ -671,7 +671,6 @@ pub fn spawn_ragdoll(
                         // keeps the listed pairs.
                         CollisionLayers::new(RAGDOLL_LAYER, LayerMask::DEFAULT | RAGDOLL_LAYER),
                         ActiveCollisionHooks::FILTER_PAIRS,
-                        TransformInterpolation,
                     ),
                 ))
                 .id(),
