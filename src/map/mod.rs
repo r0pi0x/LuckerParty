@@ -27,10 +27,13 @@ pub mod fog;
 pub use entities::{MapBrushEntity, MapEntities, MapEntity, MapHull};
 pub mod breakables;
 pub mod contact_filter;
-pub use breakables::{BreakProp, BrushPanes, GlassImpact, GlassShatter, MapBreak, MapBreakPiece, SpawnGibs};
+pub use breakables::{
+    BreakProp, BrushPanes, FallingPane, GlassImpact, GlassShatter, MapBreak, MapBreakPiece, PanePart, SpawnGibs,
+};
 mod dust;
 pub mod hud;
 pub mod interp;
+mod light_styles;
 pub mod hearing;
 pub mod live_sound;
 pub mod loose;
@@ -239,6 +242,30 @@ pub struct MapMesh {
     /// several (part, choice): drawn only while the prop's body picks it
     /// (`MapModel::body_parts`).
     pub body: Option<(u16, u16)>,
+    /// Model meshes: each vertex's index in the model's own vertex list
+    /// (Source `.vvd` order), for light baked per vertex of the model
+    /// (`MapProp::vertex_light`). Empty otherwise.
+    pub source_vertices: Vec<u32>,
+    /// What part of a breakable window's look it is (`PaneLook`).
+    pub pane_look: PaneLook,
+}
+
+/// A window's looks (meshes of a brush entity drawn as panes,
+/// `breakables::BrushPanes`): its face as placed, then, once it breaks,
+/// the face in its cracked material over the unbroken panes and jagged
+/// edge pieces where they meet broken ones.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum PaneLook {
+    /// Drawn while whole (every mesh but a window's broken looks).
+    #[default]
+    Whole,
+    /// The face in its broken material (Source `$crackmaterial`): the
+    /// same triangles, drawn over the unbroken panes once broken.
+    Cracked,
+    /// An edge material (one of several, numbered): the face's triangles
+    /// as a template, from which strips along the edges of unbroken panes
+    /// facing broken ones are cut (`breakables::edge_strips`).
+    Edge(u8),
 }
 
 /// How a model mesh looks under one skin family: the material fields of
@@ -360,13 +387,14 @@ pub struct MapLightmap {
     /// per basis direction of radiosity normal mapping. Surfaces without
     /// them repeat `rgb`.
     pub bumped: Option<[Vec<[f32; 3]>; 3]>,
-    /// Switchable light styles: what each adds where it lights, so they
-    /// can be turned on and off (`LightStyles`). `rgb` and `bumped` hold
-    /// the lighting at map start (styles with `on` included).
+    /// Light styles that change: what each adds where it lights, so they
+    /// can be turned on and off (`LightStyles`) or animate (`pattern`).
+    /// `rgb` and `bumped` hold the lighting at map start (switchable
+    /// styles with `on` and animated ones at brightness 1 included).
     pub styles: Vec<MapLightStyle>,
 }
 
-/// One switchable light style's share of the lightmap atlas.
+/// One light style's share of the lightmap atlas.
 #[derive(Clone, Debug, Default)]
 pub struct MapLightStyle {
     pub style: u8,
@@ -378,21 +406,47 @@ pub struct MapLightStyle {
     pub rgb: Vec<[f32; 3]>,
     /// What it adds to each directional page, per texel.
     pub bumped: Option<[Vec<[f32; 3]>; 3]>,
+    /// An animated style's brightness per step (1 = as baked), at
+    /// `LIGHT_STYLE_STEPS` steps a second, looping; empty for a style that
+    /// only switches.
+    pub pattern: Vec<f32>,
+    /// The atlas rectangles it lights, one per face block (x, y, width,
+    /// height, padding included), in the order `texels` lists them.
+    pub rects: Vec<[u32; 4]>,
+}
+
+/// Steps a second of animated light styles' patterns (Quake's and
+/// Source's light style rate: ten characters a second).
+pub const LIGHT_STYLE_STEPS: f32 = 10.0;
+
+impl MapLightStyle {
+    /// Its brightness in `MapLightmap::rgb` (map start).
+    pub fn start(&self) -> f32 {
+        if !self.pattern.is_empty() || self.on { 1.0 } else { 0.0 }
+    }
+
+    /// An animated style's brightness `t` seconds in.
+    pub fn at(&self, t: f32) -> f32 {
+        if self.pattern.is_empty() {
+            return self.start();
+        }
+        let step = (t.max(0.0) * LIGHT_STYLE_STEPS) as usize;
+        self.pattern[step % self.pattern.len()]
+    }
 }
 
 impl MapLightmap {
-    /// The atlas (flat and directional pages) with each style lit as
-    /// `lit(style)` says.
+    /// The atlas (flat and directional pages) with each style at the
+    /// brightness `level(style)` gives (switchable: 0 or 1).
     #[allow(clippy::type_complexity)]
-    pub fn relit(&self, lit: &dyn Fn(u8) -> bool) -> (Vec<[f32; 3]>, Option<[Vec<[f32; 3]>; 3]>) {
+    pub fn relit(&self, level: &dyn Fn(&MapLightStyle) -> f32) -> (Vec<[f32; 3]>, Option<[Vec<[f32; 3]>; 3]>) {
         let mut rgb = self.rgb.clone();
         let mut bumped = self.bumped.clone();
         for s in &self.styles {
-            let sign = match (s.on, lit(s.style)) {
-                (false, true) => 1.0,
-                (true, false) => -1.0,
-                _ => continue,
-            };
+            let sign = level(s) - s.start();
+            if sign == 0.0 {
+                continue;
+            }
             let add = |dst: &mut [f32; 3], v: [f32; 3]| {
                 for k in 0..3 {
                     dst[k] = (dst[k] + sign * v[k]).max(0.0);
@@ -957,6 +1011,11 @@ pub struct MapProp {
     pub skybox: bool,
     /// Baked lighting; lit by the scene's lights when absent.
     pub lighting: Option<LightProbe>,
+    /// Light baked per vertex for this placement (Source static props
+    /// compiled with per-vertex lighting), by the model's own vertex index
+    /// (`MapMesh::source_vertices`), linear lightmap units: replaces
+    /// `lighting` for the meshes' colours.
+    pub vertex_light: Option<Arc<Vec<[f32; 3]>>>,
     /// Casts a dynamic shadow onto the world (Source: entity props, not
     /// static props, whose shadows are baked into lightmaps).
     pub casts_shadow: bool,
@@ -1420,6 +1479,45 @@ pub struct MapHdr {
     pub exposure: Option<(f32, f32)>,
     /// Bloom strength, 1 = the game's default (Source's bloom scale).
     pub bloom_scale: f32,
+    /// How fast exposure adapts, 1 = the default (Source's tone-map rate).
+    pub rate: f32,
+}
+
+/// Auto exposure bounds without a controller: Source's
+/// mat_autoexposure_min and mat_autoexposure_max cvars at their public
+/// defaults.
+pub const DEFAULT_AUTO_EXPOSURE: (f32, f32) = (0.5, 2.0);
+
+/// What the map's env_tonemap_controller inputs set while it runs (the
+/// logic layer writes it): each set field replaces the map's look
+/// (`MapHdr`), which holds what the map sets at its start.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct TonemapInputs {
+    pub exposure_min: Option<f32>,
+    pub exposure_max: Option<f32>,
+    pub bloom_scale: Option<f32>,
+    pub rate: Option<f32>,
+    /// UseDefaultAutoExposure: bounds back at `DEFAULT_AUTO_EXPOSURE`
+    /// (until set again).
+    pub default_exposure: bool,
+}
+
+impl TonemapInputs {
+    /// `hdr` with these inputs applied.
+    pub fn apply(&self, hdr: &MapHdr) -> MapHdr {
+        let mut out = hdr.clone();
+        if let Some((lo, hi)) = out.exposure {
+            let (lo, hi) = if self.default_exposure { DEFAULT_AUTO_EXPOSURE } else { (lo, hi) };
+            out.exposure = Some((self.exposure_min.unwrap_or(lo), self.exposure_max.unwrap_or(hi)));
+        }
+        if let Some(b) = self.bloom_scale {
+            out.bloom_scale = b;
+        }
+        if let Some(r) = self.rate {
+            out.rate = r;
+        }
+        out
+    }
 }
 
 impl Default for MapLook {
@@ -1640,6 +1738,7 @@ impl Plugin for MapPlugin {
                 .insert_resource(ActiveMapLook(data.look.clone()));
         }
         ragdoll::plugin(app);
+        app.add_plugins(light_styles::LightStylesPlugin);
         app.add_plugins(sound::SoundPlugin)
             .init_resource::<ShowLocalBody>()
             .init_resource::<vis::NoVis>()
@@ -1655,6 +1754,8 @@ impl Plugin for MapPlugin {
             .add_message::<prop_physics::PropAwakened>()
             .add_message::<GlassShatter>()
             .add_message::<GlassImpact>()
+            .add_message::<breakables::FallingPane>()
+            .add_message::<CollisionStart>()
             .init_resource::<particles::Particles>()
             .configure_sets(Update, particles::ParticleSet::Step.before(particles::ParticleSet::Draw))
             .init_resource::<tracer::MuzzleCache>()
@@ -1688,12 +1789,25 @@ impl Plugin for MapPlugin {
                 Update,
                 (
                     switch_parts.before(glow_visibility).before(dust::update_dust),
-                    relight,
+                    (light_styles::relight, light_styles::animate).chain(),
                     apply_prop_looks,
                     animate_props,
                 ),
             )
-            .add_systems(Update, (breakables::break_props, breakables::spawn_gibs, breakables::fly_gibs).chain())
+            .add_systems(
+                Update,
+                (
+                    breakables::break_props,
+                    breakables::fall_panes,
+                    breakables::spawn_gibs,
+                    breakables::fly_gibs,
+                )
+                    .chain(),
+            )
+            .add_systems(
+                FixedPostUpdate,
+                breakables::shatter_pane_pieces.after(PhysicsSystems::Writeback),
+            )
             // Before the physics step reads it (headless too).
             .add_systems(FixedUpdate, loose::attach_loose.before(crate::core::SimSet::Movement))
             .add_systems(
@@ -2070,16 +2184,16 @@ fn spawn_map(
         let world_lightmap = built.as_ref().map(|b| images.add(b.world.clone()));
         let bumped_lightmaps: Option<[Handle<Image>; 3]> =
             built.and_then(|b| b.bumped).map(|pages| pages.map(|p| images.add(p)));
-        // Switchable light styles relight these images (`relight`).
+        // Switchable and animated light styles relight these images
+        // (`light_styles`).
         if let Some(l) = data.lightmap.as_ref().filter(|l| !l.styles.is_empty()) {
-            commands.insert_resource(SwitchableLightmaps {
-                atlas: Arc::new(l.clone()),
+            commands.insert_resource(light_styles::StyledLightmaps::new(
+                Arc::new(l.clone()),
                 source_ldr,
-                plain: lightmap.clone(),
-                world: world_lightmap.clone(),
-                bumped: bumped_lightmaps.clone(),
-                applied: l.styles.iter().map(|s| s.on).collect(),
-            });
+                lightmap.clone(),
+                world_lightmap.clone(),
+                bumped_lightmaps.clone(),
+            ));
         }
         let mut sky_handle = None;
         if let Some(sky) = &data.sky
@@ -2153,6 +2267,14 @@ fn spawn_map(
         // Brush entities' opaque meshes are drawn merged per material and
         // chunk while they stay put (`merge`); their own meshes wait hidden.
         let merging = merge::enabled();
+        // Windows with broken looks switch meshes when they break: never
+        // merged.
+        let paned: std::collections::HashSet<usize> = data
+            .meshes
+            .iter()
+            .filter(|m| m.pane_look != PaneLook::Whole)
+            .filter_map(|m| m.entity)
+            .collect();
         let mut node_centres: HashMap<usize, (Vec3, Vec3)> = HashMap::new();
         for m in data.meshes.iter().filter(|m| !m.skybox && parent_of(m) != root) {
             let Some(i) = m.entity else { continue };
@@ -2165,7 +2287,7 @@ fn spawn_map(
         let merge_spot = |m: &MapMesh| -> Option<(usize, Entity, Transform, Vec3)> {
             let i = m.entity?;
             let node = parent_of(m);
-            if !merging || node == root || own(m).is_some() || !merge::mergeable(m) {
+            if !merging || node == root || own(m).is_some() || !merge::mergeable(m) || paned.contains(&i) {
                 return None;
             }
             let home = node_home(i);
@@ -2327,6 +2449,9 @@ fn spawn_map(
                     if merged.is_some() {
                         e.insert((merge::MergedPiece, Visibility::Hidden));
                     }
+                    if m.pane_look != PaneLook::Whole {
+                        e.insert((PanePart(m.pane_look), Visibility::Hidden));
+                    }
                     tag(&mut e, clusters);
                 }
                 continue;
@@ -2359,6 +2484,9 @@ fn spawn_map(
                 }
                 if merged.is_some() {
                     part.insert((merge::MergedPiece, Visibility::Hidden));
+                }
+                if m.pane_look != PaneLook::Whole {
+                    part.insert((PanePart(m.pane_look), Visibility::Hidden));
                 }
                 tag(&mut part, clusters);
             }
@@ -2915,14 +3043,24 @@ fn spawn_map(
                     }
                     spawned_materials.push(material.clone());
                     let layer = layer_of(prop.skybox);
+                    // Light baked per vertex when the prop has it (and it
+                    // covers the mesh), else the probe on each normal.
+                    let baked = prop
+                        .vertex_light
+                        .as_ref()
+                        .filter(|v| m.source_vertices.len() == m.normals.len() && m.source_vertices.iter().all(|&i| (i as usize) < v.len()));
                     let colors: Vec<[f32; 4]> = m
                         .normals
                         .iter()
-                        .map(|n| {
+                        .enumerate()
+                        .map(|(i, n)| {
                             if m.unlit {
                                 return [1.0, 1.0, 1.0, 1.0];
                             }
-                            let l = probe.eval(prop.rotation * Vec3::from(*n)) * probe_scale;
+                            let l = match baked {
+                                Some(v) => Vec3::from(v[m.source_vertices[i] as usize]),
+                                None => probe.eval(prop.rotation * Vec3::from(*n)),
+                            } * probe_scale;
                             [l.x, l.y, l.z, 1.0]
                         })
                         .collect();
@@ -3133,6 +3271,7 @@ pub fn unload_map(world: &mut World) {
         world.entity_mut(c).remove::<bevy::light::Skybox>();
     }
     world.remove_resource::<PendingMap>();
+    world.remove_resource::<light_styles::StyledLightmaps>();
     world.remove_resource::<MapSkybox>();
     world.remove_resource::<PlayableArea>();
     world.remove_resource::<SkyCameraInfo>();
@@ -3327,11 +3466,7 @@ fn cube_image(c: &MapCubemap) -> Image {
 /// A lighting atlas layer in Source's LDR encoding (see
 /// `SOURCE_LIGHTMAP_SCALE`): 8-bit sRGB, decoded by the sampler.
 fn source_lightmap_image(rgb: &[[f32; 3]], width: u32, height: u32) -> Image {
-    let mut data = Vec::with_capacity(rgb.len() * 4);
-    for [r, g, b] in rgb {
-        data.extend([source_ldr_texel(*r), source_ldr_texel(*g), source_ldr_texel(*b), 255]);
-    }
-    srgb8_image(data, width, height)
+    srgb8_image(light_styles::source_ldr_texels(rgb), width, height)
 }
 
 /// RGBA8 sRGB texels as a linearly filtered lightmap layer.
@@ -3372,14 +3507,7 @@ impl LightmapLayers {
         let pages = bumped.map(|b| {
             if source_ldr {
                 // The game encodes the three pages together, against the flat one.
-                let mut texels: [Vec<u8>; 3] = std::array::from_fn(|_| Vec::with_capacity(rgb.len() * 4));
-                for (i, flat) in rgb.iter().enumerate() {
-                    let pages = source_ldr_bump_texels(*flat, [b[0][i], b[1][i], b[2][i]]);
-                    for (t, [r, g, b]) in texels.iter_mut().zip(pages) {
-                        t.extend([r, g, b, 255]);
-                    }
-                }
-                texels.map(|t| srgb8_image(t, width, height))
+                light_styles::source_ldr_page_texels(rgb, b).map(|t| srgb8_image(t, width, height))
             } else {
                 std::array::from_fn(|i| world_layer(&b[i]))
             }
@@ -3392,84 +3520,8 @@ impl LightmapLayers {
     }
 }
 
-/// The lightmap images of a map with switchable light styles, and the
-/// styles they show.
-#[derive(Resource)]
-struct SwitchableLightmaps {
-    atlas: Arc<MapLightmap>,
-    source_ldr: bool,
-    plain: Option<Handle<Image>>,
-    world: Option<Handle<Image>>,
-    bumped: Option<[Handle<Image>; 3]>,
-    /// Whether each of the atlas's styles is lit in the images now.
-    applied: Vec<bool>,
-}
-
-/// Rebuild the lightmap images when switchable light styles change
-/// (`LightStyles`): the atlas at map start, plus or minus each style
-/// switched since (Source lights' TurnOn/TurnOff).
-fn relight(
-    styles: Option<Res<LightStyles>>,
-    maps: Option<ResMut<SwitchableLightmaps>>,
-    images: Option<ResMut<Assets<Image>>>,
-    world_materials: Option<ResMut<Assets<world_material::WorldMaterial>>>,
-    standard: Option<ResMut<Assets<StandardMaterial>>>,
-) {
-    let (Some(styles), Some(mut maps), Some(mut images)) = (styles, maps, images) else {
-        return;
-    };
-    if !styles.is_changed() {
-        return;
-    }
-    let l = maps.atlas.clone();
-    let lit = |style: u8| {
-        styles.styles.iter().find(|(s, _)| *s == style).map_or_else(
-            || l.styles.iter().find(|s| s.style == style).is_some_and(|s| s.on),
-            |(_, on)| *on,
-        )
-    };
-    let want: Vec<bool> = l.styles.iter().map(|s| lit(s.style)).collect();
-    if maps.applied == want {
-        return;
-    }
-    maps.applied = want;
-    let (rgb, bumped) = l.relit(&lit);
-    let built = LightmapLayers::build(&rgb, bumped.as_ref(), l.width, l.height, maps.source_ldr);
-    let mut put = |handle: &Option<Handle<Image>>, image: Image| {
-        if let Some(h) = handle {
-            let _ = images.insert(h.id(), image);
-        }
-    };
-    put(&maps.plain, built.plain);
-    put(&maps.world, built.world);
-    if let (Some(handles), Some(pages)) = (&maps.bumped, built.bumped) {
-        for (h, p) in handles.iter().zip(pages) {
-            let _ = images.insert(h.id(), p);
-        }
-    }
-    // Materials bound to the old images are prepared again.
-    if let Some(mut m) = world_materials {
-        let ids: Vec<_> = m.ids().collect();
-        for id in ids {
-            let _ = m.get_mut(id);
-        }
-    }
-    if let Some(mut m) = standard {
-        let ids: Vec<_> = m.ids().collect();
-        for id in ids {
-            let _ = m.get_mut(id);
-        }
-    }
-    info!("lightmaps relit: {:?}", styles.styles);
-}
-
 fn lightmap_image(rgb: &[[f32; 3]], width: u32, height: u32) -> Image {
-    let mut data = Vec::with_capacity(rgb.len() * 8);
-    for [r, g, b] in rgb {
-        for c in [*r, *g, *b, 1.0] {
-            data.extend_from_slice(&half::f16::from_f32(c).to_le_bytes());
-        }
-    }
+    let data = light_styles::f16_texels(rgb);
     let mut image = Image::new(
         Extent3d {
             width,
@@ -4582,18 +4634,19 @@ mod switch_tests {
                     on: true,
                     texels: vec![0],
                     rgb: vec![[0.75; 3]],
-                    bumped: None,
+                    ..default()
                 },
                 MapLightStyle {
                     style: 33,
                     on: false,
                     texels: vec![1],
                     rgb: vec![[0.25; 3]],
-                    bumped: None,
+                    ..default()
                 },
             ],
         };
-        assert_eq!(l.relit(&|s| s == 32).0, l.rgb);
-        assert_eq!(l.relit(&|s| s == 33).0, vec![[0.25; 3], [0.75; 3]]);
+        let lit = |on: u8| move |s: &MapLightStyle| if s.style == on { 1.0 } else { 0.0 };
+        assert_eq!(l.relit(&lit(32)).0, l.rgb);
+        assert_eq!(l.relit(&lit(33)).0, vec![[0.25; 3], [0.75; 3]]);
     }
 }

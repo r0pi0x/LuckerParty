@@ -351,6 +351,7 @@ fn restored_prop_contacts_join_islands_once() {
         solid: PropSolid::Mesh,
         skybox: false,
         lighting: None,
+        vertex_light: None,
         casts_shadow: false,
         physics: Some(MapPhysics {
             mass: 20.0,

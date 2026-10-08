@@ -244,6 +244,29 @@ pub enum Effect {
         size: Vec2,
         velocity: Vec3,
         tile: bool,
+        /// The shards' size (units).
+        shard: f32,
+    },
+    /// A collapsing window pane drops a falling piece (the pane piece
+    /// model, body `body`): its reference corner and axes (along the
+    /// columns, the rows, the window's normal; entity space), the pane's
+    /// size (units) and its spin (deg/s about each axis).
+    PaneFall {
+        at: Vec3,
+        axes: [Vec3; 3],
+        size: Vec2,
+        body: usize,
+        spin: Vec3,
+    },
+    /// An explosion (a breakable's `explodemagnitude`): radius damage
+    /// `damage` within `radius` units of `at` (entity space); `inflictor`
+    /// (what exploded) takes none of it.
+    Explosion {
+        at: Vec3,
+        damage: f32,
+        radius: f32,
+        attacker: Option<Who>,
+        inflictor: EntId,
     },
     /// A bullet or club hit shattered the pane it hit: the glass-impact
     /// burst at the hit point with the trace normal (entity space;
@@ -445,6 +468,8 @@ pub struct LogicWorld {
     pub round: u32,
     /// Switchable light styles and whether each is lit (`visuals`).
     pub(super) light_styles: Vec<(u8, bool)>,
+    /// What env_tonemap_controller inputs set (`visuals::tonemap_input`).
+    pub(super) tonemap: crate::map::TonemapInputs,
     /// Global states (env_global): name (lower case), state, counter.
     /// They outlive round restarts.
     pub globals: Vec<(String, GlobalState, i32)>,
@@ -511,6 +536,7 @@ impl LogicWorld {
             use_presses: Vec::new(),
             round: 0,
             light_styles: Vec::new(),
+            tonemap: Default::default(),
             globals: Vec::new(),
             collision: None,
             burning_players: Vec::new(),
@@ -553,6 +579,9 @@ impl LogicWorld {
         fresh.record = self.record;
         fresh.round = self.round + 1;
         fresh.globals = std::mem::take(&mut self.globals);
+        // The camera's tone-map settings stay (the map's own outputs set
+        // them again).
+        fresh.tonemap = self.tonemap.clone();
         fresh.collision = self.collision.clone();
         fresh.players = std::mem::take(&mut self.players);
         fresh.player_names = std::mem::take(&mut self.player_names);

@@ -545,6 +545,6 @@ The defaults for mat_specular, mat_bumpmap and mat_reducefillrate live in the en
 14. **$phong on props** (the skin shader) is not specified. Specify it if any CS:S content we load uses it.
 15. **Shaders community maps use that this spec doesn't cover** (found by the map sweep, 2026-10-08; mashup draws stand-ins until they are specified):
     - WindowImposter (surf_ maps' "fake sky" windows: `$envmap` a cubemap, `$color`, `$nofog`): drawn as the cubemap in the view direction, unlit, unfogged, as if infinitely far. The real shader may offset the lookup (parallax inside a box); to check against the game.
-    - ShatteredGlass (func_breakable_surf windows): drawn as LightmappedGeneric with its `$basetexture`, `$translucent` and `$envmap`; the crack overlay (`$crackmaterial`) is not modelled.
+    - ShatteredGlass (func_breakable_surf windows' `$crackmaterial`): drawn as a translucent LightmappedGeneric showing its crack texture; the per-pane proxy is not modelled.
     - LightmappedReflective (reflective glass without a base texture: `$refracttint`, `$reflecttint`, `$minreflectivity`, `$maxreflectivity`): drawn as an opaque lightmapped surface of its `$refracttint`; the real-time reflection and refraction are not modelled.
     - DirectX-level shader names (`Refract_DX90`): read as the base shader.

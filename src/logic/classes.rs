@@ -64,6 +64,8 @@ pub enum Class {
     AreaPortal(super::visuals::AreaPortal),
     /// func_occluder.
     Occluder(super::visuals::Occluder),
+    /// env_tonemap_controller: the HDR camera's exposure and bloom.
+    Tonemap,
     /// game_player_equip (what it gives, by Use) and player_weaponstrip
     /// (gives nothing, strips).
     Equip(Equip),
@@ -158,7 +160,7 @@ pub struct Filter {
 /// ignored. Everything else (other commands: quit, exec, bind, connect,
 /// rcon, changelevel, map, kick, writing configs, plugin commands such
 /// as `sm_say`; several commands on one line) is refused.
-pub const SETTING_PREFIXES: &[&str] = &["sv_", "mp_", "phys_", "bot_", "ammo_"];
+pub const SETTING_PREFIXES: &[&str] = crate::console::SERVER_PREFIXES;
 
 /// Parts of names a map may never set although their prefix fits:
 /// passwords, remote control, downloads and uploads, logging, bans,
@@ -405,6 +407,7 @@ impl Class {
             }
             "func_occluder" => super::visuals::spawn_occluder(w, id).map_or(Class::None, Class::Occluder),
             "light" | "light_spot" => Class::Light(super::visuals::spawn_light(w, id)),
+            "env_tonemap_controller" => Class::Tonemap,
             "env_global" => Class::Global(global_spawn(w, id)),
             "env_fire" => Class::Fire(Box::new(super::fire::spawn_fire(w, id))),
             "env_firesource" => Class::FireSource(super::fire::spawn_source(w, id)),
@@ -970,6 +973,7 @@ pub(super) fn class_input(
         Class::Fire(_) | Class::FireSource(_) | Class::FireSensor(_) => return super::fire::input(w, id, input, value),
         Class::AreaPortal(_) => return super::visuals::area_portal_input(w, id, input),
         Class::Occluder(_) => return super::visuals::occluder_input(w, id, input),
+        Class::Tonemap => return super::visuals::tonemap_input(w, input, value),
         Class::Equip(equip) => match input {
             // player_weaponstrip: Strip (the activator), StripWeaponsAndSuit.
             "strip" | "stripweaponsandsuit" => equip_player(w, &equip, activator),

@@ -163,6 +163,117 @@ fn surf_boreas_lighting_and_ramps() {
         })
         .count();
     assert!(ramps >= 19, "{ramps} props over 90 m (the ramps)");
+
+    // A snow cave whose displacement folds back over itself: from inside
+    // it (the "transition" soundscape, Source 10446 8619 9860), the floor
+    // ahead must face the eye. Re-winding each triangle to the base face's
+    // normal turned the folded ones inside out (culled: holes to the sky).
+    let engine = |x: f32, y: f32, z: f32| Vec3::new(x, z, -y) * 0.0254;
+    let eye = engine(10446.0, 8619.0, 9860.0);
+    for dir in [Vec3::new(-0.526, -0.728, -0.44), Vec3::new(-0.876, 0.163, -0.454)] {
+        let dir = Vec3::new(dir.x, dir.z, -dir.y).normalize();
+        let hit = first_hit(&map, eye, dir).expect("the cave floor is drawn there");
+        assert!(hit.1.dot(dir) < 0.0, "the nearest drawn triangle faces away from the eye: {hit:?}");
+        assert!((7.0..13.0).contains(&hit.0), "the floor 8-12 m away, not further: {hit:?}");
+    }
+}
+
+/// The nearest world triangle on a ray (distance, its front normal by
+/// winding: counter-clockwise faces the viewer), skybox meshes left out.
+fn first_hit(map: &MapData, o: Vec3, d: Vec3) -> Option<(f32, Vec3)> {
+    let mut best: Option<(f32, Vec3)> = None;
+    for m in map.meshes.iter().filter(|m| !m.skybox) {
+        for t in m.indices.chunks_exact(3) {
+            let [a, b, c] = [0, 1, 2].map(|k| Vec3::from_array(m.positions[t[k] as usize]));
+            let (e1, e2) = (b - a, c - a);
+            let h = d.cross(e2);
+            let det = e1.dot(h);
+            if det.abs() < 1e-9 {
+                continue;
+            }
+            let s = o - a;
+            let u = s.dot(h) / det;
+            let q = s.cross(e1);
+            let v = d.dot(q) / det;
+            let t = e2.dot(q) / det;
+            if u >= 0.0 && v >= 0.0 && u + v <= 1.0 && t > 0.0 && best.is_none_or(|(bt, _)| t < bt) {
+                best = Some((t, e1.cross(e2).normalize()));
+            }
+        }
+    }
+    best
+}
+
+/// Static props compiled with per-vertex lighting (`sp_<n>.vhv` in the
+/// pakfile) take it instead of the light probe, and it agrees with the
+/// probe in colour (same lighting, same units, same channel order).
+#[test]
+fn baked_prop_vertex_light() {
+    for name in ["mg_lt_galaxy_v5", "surf_nebula", "kz_ancient_ruins", "surf_demise"] {
+        let Some(map) = load(name) else { continue };
+        let statics: Vec<_> = map.props.iter().filter(|p| p.entity.is_none()).collect();
+        let baked: Vec<_> = statics.iter().filter(|p| p.vertex_light.is_some()).collect();
+        // Per prop: the mean baked light over the mean probe light, per
+        // channel; the median of each.
+        let mut ratios: [Vec<f32>; 3] = Default::default();
+        for p in &baked {
+            let v = p.vertex_light.as_ref().unwrap();
+            let (mut sum_v, mut sum_p) = (Vec3::ZERO, Vec3::ZERO);
+            for m in &map.models[p.model].meshes {
+                for (i, n) in m.normals.iter().enumerate() {
+                    sum_v += Vec3::from(v[m.source_vertices[i] as usize]);
+                    sum_p += p.lighting.as_ref().unwrap().eval(p.rotation * Vec3::from(*n));
+                }
+            }
+            if sum_p.min_element() > 1e-3 {
+                for c in 0..3 {
+                    ratios[c].push(sum_v[c] / sum_p[c]);
+                }
+            }
+        }
+        let median = |v: &mut Vec<f32>| {
+            v.sort_by(f32::total_cmp);
+            v.get(v.len() / 2).copied().unwrap_or(0.0)
+        };
+        let m = ratios.each_mut().map(median);
+        let unfit: Vec<_> = map.warnings.iter().filter(|w| w.contains("per-vertex")).collect();
+        eprintln!(
+            "{name}: {} of {} static props baked; median baked/probe light per channel {m:?}; {unfit:?}",
+            baked.len(),
+            statics.len(),
+        );
+        assert!(baked.len() * 10 >= statics.len() * 9, "{name}: most static props baked");
+        assert!(unfit.is_empty(), "{name}: {unfit:?}");
+        // Same hue as the probe (the files' B, G, R order), somewhat
+        // darker (self-shadowing; docs/backlog.md's open question).
+        let (lo, hi) = (m.iter().copied().fold(f32::MAX, f32::min), m.iter().copied().fold(0.0, f32::max));
+        assert!(hi < 1.3 * lo, "{name}: channels {m:?}");
+        assert!((0.3..1.5).contains(&lo), "{name}: brightness {m:?}");
+    }
+}
+
+/// Animated light styles (1-31) keep their faces' share apart with their
+/// pattern: bhop_myztek's flickering (style 1) and second flicker (6)
+/// lights, mg_jacks_multigames_v1's candle (3) and fluorescent flicker
+/// (10) next to its switchable styles.
+#[test]
+fn animated_light_styles_keep_their_pattern() {
+    for (name, want) in [("bhop_myztek", vec![1u8, 6]), ("mg_jacks_multigames_v1", vec![1, 3, 6, 10])] {
+        let Some(map) = load(name) else { continue };
+        let l = map.lightmap.as_ref().expect("lightmap");
+        let animated: Vec<u8> = l.styles.iter().filter(|s| !s.pattern.is_empty()).map(|s| s.style).collect();
+        for style in &want {
+            let s = l.styles.iter().find(|s| s.style == *style).unwrap_or_else(|| panic!("{name}: style {style}"));
+            assert_eq!(s.pattern, cs_source::lightmap::style_pattern(*style, None), "{name}: style {style}");
+            assert!(!s.rects.is_empty() && s.rgb.iter().any(|c| c[0] > 0.01), "{name}: style {style} lights something");
+            let texels: u32 = s.rects.iter().map(|r| r[2] * r[3]).sum();
+            assert_eq!(texels as usize, s.texels.len());
+        }
+        assert!(animated.iter().all(|s| *s < 32), "{animated:?}");
+        if name == "mg_jacks_multigames_v1" {
+            assert!(l.styles.iter().any(|s| s.style >= 32 && s.pattern.is_empty()), "switchable styles too");
+        }
+    }
 }
 
 /// Materials the VMT parser refused (the map sweep: 32 over 10 maps) read

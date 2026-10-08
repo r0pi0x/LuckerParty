@@ -10,7 +10,9 @@ use super::movers::{Done, DoorState, Pusher};
 use super::triggers::forward;
 use super::value::Value;
 use super::world::{Effect, EntId, LogicWorld, SOLID_SKIN, Who, place_hull};
-use crate::map::entities::{DOOR_CLOSE_KEY, DOOR_MOVE_KEY, DOOR_OPEN_KEY, entity_rotation};
+use crate::map::entities::{
+    DOOR_CLOSE_KEY, DOOR_LOCKED_KEY, DOOR_MOVE_KEY, DOOR_OPEN_KEY, DOOR_UNLOCKED_KEY, entity_rotation,
+};
 
 pub use super::prop_damage::{Prop, PropState, is_prop_class};
 pub(super) use super::prop_damage::prop_input;
@@ -103,8 +105,8 @@ impl PropDoor {
             move_sound: sound(&["soundmoveoverride", DOOR_MOVE_KEY]),
             open_sound: sound(&["soundopenoverride", DOOR_OPEN_KEY]),
             close_sound: sound(&["soundcloseoverride", DOOR_CLOSE_KEY]),
-            locked_sound: sound(&["soundlockedoverride"]),
-            unlocked_sound: sound(&["soundunlockedoverride"]),
+            locked_sound: sound(&["soundlockedoverride", DOOR_LOCKED_KEY]),
+            unlocked_sound: sound(&["soundunlockedoverride", DOOR_UNLOCKED_KEY]),
         };
         // Spawn position: 1 open forward, 2 open back, 3 ajar; the "starts
         // open" flag opens it forward.
@@ -159,21 +161,81 @@ fn origin_of(w: &LogicWorld, who: Who) -> Option<Vec3> {
     }
 }
 
-/// Whether a living player is in the way of the door turning from where
-/// it is to `goal` (sampled every 15 degrees).
+/// Physics props' boxes are shrunk this much (units) sideways and up and
+/// down before testing them against a door: their world box is a bound,
+/// and a resting prop's box touches the floor.
+pub const PROP_BOX_SHRINK: Vec3 = Vec3::new(0.5, 0.5, 2.0);
+/// A door leaf's sample points are pulled this fraction toward its
+/// centre before testing them against the world, so its frame and hinge
+/// don't count.
+const LEAF_SHRINK: f32 = 0.2;
+
+/// Loose physics props a door can push or be blocked by: id, box centre
+/// and (shrunk) half size, entity space.
+pub(super) fn door_props(w: &LogicWorld) -> Vec<(EntId, Vec3, Vec3)> {
+    w.ids()
+        .into_iter()
+        .filter_map(|id| {
+            let p = w.prop(id)?;
+            let (lo, hi) = p.bounds?;
+            (p.physics && !p.frozen && !p.broken && p.solid).then(|| {
+                let half = ((hi - lo) / 2.0 - PROP_BOX_SHRINK).max(Vec3::splat(0.25));
+                (id, (lo + hi) / 2.0, half)
+            })
+        })
+        .collect()
+}
+
+/// Whether a door's leaf (its hulls placed at `rot`, `origin`) runs into
+/// the static world: its points, edge midpoints and centre, pulled
+/// toward its centre, tested as small boxes.
+fn leaf_in_world(w: &LogicWorld, hulls: &[crate::map::MapHull], rot: Quat, origin: Vec3) -> bool {
+    let Some(col) = w.collision.as_deref() else {
+        return false;
+    };
+    let tiny = Vec3::splat(0.5);
+    hulls.iter().any(|h| {
+        if h.points.is_empty() {
+            return false;
+        }
+        let centre = h.points.iter().copied().sum::<Vec3>() / h.points.len() as f32;
+        let mut samples = vec![centre];
+        for (i, a) in h.points.iter().enumerate() {
+            samples.push(*a);
+            for b in &h.points[i + 1..] {
+                samples.push((*a + *b) / 2.0);
+            }
+        }
+        samples.into_iter().any(|p| {
+            let p = centre + (p - centre) * (1.0 - LEAF_SHRINK);
+            col.solid(-tiny, tiny, origin + rot * p)
+        })
+    })
+}
+
+/// Whether something is in the way of the door turning from where it is
+/// to `goal` (sampled every 15 degrees): a living player, a loose physics
+/// prop, or the static world.
 fn swing_blocked(w: &LogicWorld, id: EntId, goal: Vec3) -> bool {
     let Some(e) = w.get(id) else { return false };
     let Class::PropDoor(d) = &e.class else { return false };
     let from = d.push.angles;
     let steps = ((goal - from).length() / 15.0).ceil().max(1.0) as usize;
+    let props = door_props(w);
     (1..=steps).any(|k| {
         let a = from + (goal - from) * (k as f32 / steps as f32);
         let rot = entity_rotation(a);
         let brushes: Vec<_> = e.hulls.iter().map(|h| place_hull(h, rot, d.push.origin)).collect();
-        w.players.iter().filter(|p| p.alive).any(|p| {
+        let player = w.players.iter().filter(|p| p.alive).any(|p| {
             let (half, centre) = ((p.maxs - p.mins) / 2.0, p.origin + (p.mins + p.maxs) / 2.0);
             brushes.iter().any(|b| b.overlaps_box(centre, half, SOLID_SKIN))
-        })
+        });
+        let prop = || {
+            props
+                .iter()
+                .any(|(_, c, half)| brushes.iter().any(|b| b.overlaps_box(*c, *half, SOLID_SKIN)))
+        };
+        player || prop() || leaf_in_world(w, &e.hulls, rot, d.push.origin)
     })
 }
 

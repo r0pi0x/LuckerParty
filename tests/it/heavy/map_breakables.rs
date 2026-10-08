@@ -281,6 +281,153 @@ fn office_windows_lose_shot_panes() {
     assert!(done, "no window could be shot");
 }
 
+/// cs_office's windows load their broken looks: the face again in its
+/// `$crackmaterial` (glass/offwndwb_break), and the glass edge pieces.
+#[test]
+fn office_windows_have_their_broken_looks() {
+    use mashup::map::PaneLook;
+    let Some(map) = load("cs_office") else { return };
+    let windows: Vec<usize> = map
+        .entities
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.classname() == "func_breakable_surf")
+        .map(|(i, _)| i)
+        .collect();
+    for &win in &windows {
+        let looks: Vec<_> = map.meshes.iter().filter(|m| m.entity == Some(win)).collect();
+        let cracked: Vec<_> = looks.iter().filter(|m| m.pane_look == PaneLook::Cracked).collect();
+        assert!(!cracked.is_empty(), "window {win} has a cracked look");
+        assert!(cracked.iter().all(|m| m.texture.is_some() && m.material.contains("break")));
+        let edges = looks.iter().filter(|m| matches!(m.pane_look, PaneLook::Edge(_))).count();
+        assert_eq!(edges % 12, 0, "window {win}: the 12 glass edge materials per face");
+        assert!(edges > 0);
+    }
+    // The falling pane piece's three bodies.
+    let pieces = map
+        .gibs
+        .iter()
+        .find(|g| g.name == mashup::map::breakables::PANE_PIECES)
+        .expect("pane pieces");
+    assert_eq!(pieces.models.len(), 3);
+    assert!(pieces.models.iter().all(|m| !m.meshes.is_empty()));
+}
+
+/// The logic id of map entity `index`.
+fn id_of(sim: &Sim, index: usize) -> mashup::logic::EntId {
+    let logic = sim.app.world().resource::<Logic>();
+    logic
+        .world
+        .ids()
+        .into_iter()
+        .find(|id| logic.world.get(*id).unwrap().map_index == Some(index))
+        .expect("entity")
+}
+
+/// A cs_office window carved into lone panes: they collapse, about half
+/// dropping a pane piece, a physics body that falls and shatters on the
+/// floor (gone well before its 5 s life).
+#[test]
+fn office_window_panes_fall_and_shatter() {
+    use mashup::map::breakables::PanePiece;
+    let Some(map) = load("cs_office") else { return };
+    let win = map
+        .entities
+        .iter()
+        .position(|e| e.classname() == "func_breakable_surf")
+        .unwrap();
+    let mut sim = sim(map);
+    sim.ticks(2);
+    let id = id_of(&sim, win);
+    let (cols, rows) = {
+        let logic = sim.app.world().resource::<Logic>();
+        let w = logic.world.window(id).unwrap();
+        (w.cols, w.rows)
+    };
+    // Shatter every pane but every third one both ways (below the top
+    // row, which its edge holds up), pane by pane.
+    {
+        let mut logic = sim.app.world_mut().resource_mut::<Logic>();
+        for r in 0..rows {
+            for c in 0..cols {
+                if r % 3 == 1 && c % 3 == 1 && r + 1 < rows {
+                    continue;
+                }
+                let at = Vec3::new((c as f32 + 0.5) / cols as f32, (r as f32 + 0.5) / rows as f32, 1.0);
+                logic.world.deliver(
+                    mashup::logic::Who::Ent(id),
+                    "Shatter",
+                    mashup::logic::Value::Vector(at),
+                    None,
+                    None,
+                );
+            }
+        }
+    }
+    let mut most = 0;
+    for _ in 0..20 {
+        sim.ticks(1);
+        let world = sim.app.world_mut();
+        most = most.max(world.query::<&PanePiece>().iter(world).count());
+    }
+    let logic = sim.app.world().resource::<Logic>();
+    let w = logic.world.window(id).unwrap();
+    assert_eq!(w.broken_count(), cols * rows, "the lone panes fell");
+    assert!(most > 0, "some dropped a piece");
+    sim.seconds(1.0);
+    let world = sim.app.world_mut();
+    assert_eq!(world.query::<&PanePiece>().iter(world).count(), 0, "shattered on landing");
+}
+
+/// An explosion next to a cs_office window shatters every pane, and one
+/// next to a de_nuke vent breaks it (blast damage reaches breakables).
+#[test]
+fn explosions_break_windows_and_vents() {
+    let Some(map) = load("cs_office") else { return };
+    let win = map
+        .entities
+        .iter()
+        .position(|e| e.classname() == "func_breakable_surf")
+        .unwrap();
+    let (centre, sides) = approaches(&map.entities[win], 40.0);
+    let mut office = sim(map);
+    office.ticks(2);
+    office.app.world_mut().write_message(mashup::core::Explosion {
+        origin: to_engine(sides[0]),
+        damage: 1.0,
+        radius: 350.0 * 0.0254,
+        attacker: None,
+        inflictor: None,
+        sound: None,
+        weapon: None,
+    });
+    office.ticks(3);
+    let id = id_of(&office, win);
+    let logic = office.app.world().resource::<Logic>();
+    let w = logic.world.window(id).unwrap();
+    assert!(w.window_broken, "the blast breaks the window ({centre})");
+    assert_eq!(w.broken_count(), w.cols * w.rows, "and every pane");
+
+    let Some(map) = load("de_nuke") else { return };
+    let vent = vents(&map)[0];
+    let (_, sides) = approaches(&map.entities[vent], 24.0);
+    let mut nuke = sim(map);
+    nuke.ticks(2);
+    for side in sides {
+        nuke.app.world_mut().write_message(mashup::core::Explosion {
+            origin: to_engine(side),
+            damage: 1.0,
+            radius: 350.0 * 0.0254,
+            attacker: None,
+            inflictor: None,
+            sound: None,
+            weapon: None,
+        });
+    }
+    nuke.ticks(3);
+    assert!(broken(&nuke, vent), "the blast breaks the vent");
+}
+
 /// How far (Source units, along the approach) a crouched player starting
 /// `dist` units out on each open side of a vent walks toward its centre
 /// in a second; the side's start and the distance.

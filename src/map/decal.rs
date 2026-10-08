@@ -177,6 +177,7 @@ impl TriSet {
         for m in meshes {
             if m.skybox
                 || m.entity.is_some() != entity
+                || m.pane_look != super::PaneLook::Whole
                 || m.unlit
                 || m.material.starts_with("decal:")
                 || matches!(m.alpha, super::MapAlpha::Blend | super::MapAlpha::Add)

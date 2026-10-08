@@ -327,6 +327,116 @@ fn model_door_never_turns_through_a_player() {
     assert!(!leaf.overlaps_box(centre, half, SOLID_SKIN), "not inside the player");
 }
 
+/// The hardware's handle sounds (the model's `door_options`
+/// "hardwareN", loaded into the door's keys): locked on a locked use,
+/// unlocked before an unlocked one opens it; the map's overrides win.
+#[test]
+fn model_door_plays_its_hardware_sounds() {
+    use crate::map::entities::{DOOR_LOCKED_KEY, DOOR_UNLOCKED_KEY};
+    let hardware = [
+        ("spawnflags", "2048"),
+        (DOOR_LOCKED_KEY, "DoorHandles.Locked1"),
+        (DOOR_UNLOCKED_KEY, "DoorHandles.Unlocked1"),
+    ];
+    let mut w = world();
+    let d = assault_door(&mut w, &hardware);
+    w.activate();
+    let p = player_at(&mut w, 0, Vec3::new(40.0, 26.0, 0.0));
+    w.queue_input("door", "Use", Value::Void, 0.0, Some(Who::Player(p)));
+    run_to(&mut w, 0);
+    assert_eq!(sounds(&mut w), vec!["DoorHandles.Locked1"]);
+    assert_eq!(fired(&w, d, "OnLockedUse"), vec![0]);
+    assert_eq!(state(&w, d), DoorState::Closed);
+    w.queue_input("door", "Unlock", Value::Void, 0.0, None);
+    w.queue_input("door", "Use", Value::Void, 0.0, Some(Who::Player(p)));
+    run_to(&mut w, 1);
+    assert_eq!(sounds(&mut w), vec!["DoorHandles.Unlocked1", "Doors.Move1"]);
+
+    let mut w = world();
+    let mut keys = hardware.to_vec();
+    keys.push(("soundlockedoverride", "Custom.Locked"));
+    assault_door(&mut w, &keys);
+    w.activate();
+    let p = player_at(&mut w, 0, Vec3::new(40.0, 26.0, 0.0));
+    w.queue_input("door", "Use", Value::Void, 0.0, Some(Who::Player(p)));
+    run_to(&mut w, 0);
+    assert_eq!(sounds(&mut w), vec!["Custom.Locked"]);
+}
+
+/// A player opening a model door whose way (back, away from them) the
+/// world or a loose physics prop blocks gets it opening the other way.
+#[test]
+fn model_door_swings_the_other_way_past_the_world_and_props() {
+    use std::sync::Arc;
+    // The back swing turns the leaf from +Y to -X through x < 0, y > 0.
+    let wall = MapBrush::from_box(Vec3::new(-60.0, 10.0, 0.0), Vec3::new(-10.0, 60.0, 100.0));
+    // Out of the forward swing's reach (the leaf is 52 long).
+    let user = Vec3::new(80.0, 26.0, 0.0);
+    let mut w = world();
+    w.collision = Some(Arc::new(BrushCollision(vec![wall])));
+    let d = assault_door(&mut w, &[]);
+    w.activate();
+    let p = player_at(&mut w, 0, user);
+    w.queue_input("door", "Use", Value::Void, 0.0, Some(Who::Player(p)));
+    run_to(&mut w, 70);
+    assert_eq!(angles_of(&w, d).y, -90.0, "forward, past the wall");
+
+    let mut w = world();
+    let d = assault_door(&mut w, &[]);
+    let c = wood_crate(&mut w, &[]);
+    w.activate();
+    w.set_prop_bounds(c, (Vec3::new(-40.0, 10.0, 0.0), Vec3::new(-20.0, 30.0, 20.0)));
+    let p = player_at(&mut w, 0, user);
+    w.queue_input("door", "Use", Value::Void, 0.0, Some(Who::Player(p)));
+    run_to(&mut w, 70);
+    assert_eq!(angles_of(&w, d).y, -90.0, "forward, past the crate");
+
+    // Nothing in the way: back, away from the user.
+    let mut w = world();
+    let d = assault_door(&mut w, &[]);
+    w.activate();
+    let p = player_at(&mut w, 0, user);
+    w.queue_input("door", "Use", Value::Void, 0.0, Some(Who::Player(p)));
+    run_to(&mut w, 70);
+    assert_eq!(angles_of(&w, d).y, 90.0);
+}
+
+/// A model door closing on a loose physics prop that has nowhere to go
+/// (the world behind it) is blocked by it; forceclosed pushes it through
+/// and crushes it for its full health.
+#[test]
+fn model_door_is_blocked_by_a_pinned_prop_unless_forceclosed() {
+    // Open back (+90: the leaf along -X); closing turns it to +Y, pushing
+    // the crate (x -40..-20, y 10..34) toward +X+Y into the wall above it.
+    let wall = MapBrush::from_box(Vec3::new(-60.0, 34.0, 0.0), Vec3::new(-5.0, 60.0, 100.0));
+    let col = BrushCollision(vec![wall]);
+    let run = |extra: &[(&str, &str)]| {
+        let mut w = world();
+        let mut keys = vec![("spawnpos", "2"), ("returndelay", "-1")];
+        keys.extend_from_slice(extra);
+        let d = assault_door(&mut w, &keys);
+        let c = wood_crate(&mut w, &[]);
+        w.activate();
+        w.set_prop_bounds(c, (Vec3::new(-40.0, 10.0, 0.0), Vec3::new(-20.0, 34.0, 20.0)));
+        assert_eq!(angles_of(&w, d).y, 90.0);
+        w.queue_input("door", "Close", Value::Void, 0.0, None);
+        run_to_with(&mut w, 150, &col);
+        (w, d, c)
+    };
+    let (w, d, c) = run(&[]);
+    let a = angles_of(&w, d).y;
+    assert!(a > 10.0 && a < 80.0, "stopped at the crate: {a}");
+    assert_eq!(state(&w, d), DoorState::Closing);
+    assert_eq!(fired(&w, d, "OnBlockedClosing").len(), 1);
+    assert!(w.prop(c).is_some_and(|p| !p.broken));
+
+    let (w, d, c) = run(&[("forceclosed", "1")]);
+    assert_eq!(angles_of(&w, d).y, 0.0, "pushed through");
+    assert_eq!(state(&w, d), DoorState::Closed);
+    assert!(fired(&w, d, "OnBlockedClosing").is_empty());
+    assert!(w.get(c).is_none_or(|_| w.prop(c).is_some_and(|p| p.broken)), "crushed");
+}
+
 // ---------------------------------------------------------------- props
 // specs/source/prop_damage.md, its test cases.
 

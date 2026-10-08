@@ -45,7 +45,13 @@ impl Plugin for BotPlugin {
             .init_resource::<radio::TeamCalls>()
             .init_resource::<Tactics>()
             .add_message::<crate::core::Radio>();
-        app.add_systems(FixedUpdate, radio::speak.after(crate::core::apply_damage));
+        // Bots are the server's (`core::authoritative`).
+        app.add_systems(
+            FixedUpdate,
+            radio::speak
+                .after(crate::core::apply_damage)
+                .run_if(crate::core::authoritative),
+        );
         app.add_systems(
             FixedUpdate,
             (hear, tactics::update, radio::obey, objectives::goals, think, objectives::act)
@@ -53,7 +59,8 @@ impl Plugin for BotPlugin {
                 // Before the rules: they hold everyone's intents in the
                 // freeze time and the dead's (`rules::rounds::hold_frozen`).
                 .before(SimSet::Rules)
-                .before(crate::weapon::SelectWeapons),
+                .before(crate::weapon::SelectWeapons)
+                .run_if(crate::core::authoritative),
         );
         resource_cvar::<BotConfig, u8>(app, "bot_stop", "1: bots stand still.", |c| &mut c.stop);
         resource_cvar::<BotConfig, u8>(app, "bot_dont_shoot", "1: bots never fire.", |c| &mut c.dont_shoot);

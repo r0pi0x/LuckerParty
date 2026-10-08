@@ -7,10 +7,11 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 
 use super::{
+    random::Rng,
     Armor, DamageEffect, Hitscan, PassMaterials, Penetration, SpreadShape, Swing, WeaponEvent, WeaponEventKind,
 };
 use crate::{
-    core::{Damage, DamageKind, Damageable, Health, Hitboxes, Hitgroup, Intent, SOLID_LAYERS},
+    core::{Damage, DamageKind, Damageable, FirstTimePredicted, Health, Hitboxes, Hitgroup, Intent, SOLID_LAYERS},
     map::{
         PlaySound, PropSurface,
         sound::{SoundBank, SurfaceGrid},
@@ -47,7 +48,17 @@ pub(super) struct World<'w, 's> {
     grid: Option<Res<'w, SurfaceGrid>>,
     materials: Res<'w, PassMaterials>,
     pub events: MessageWriter<'w, WeaponEvent>,
-    pub play: MessageWriter<'w, PlaySound>,
+    play: MessageWriter<'w, PlaySound>,
+    first: Res<'w, FirstTimePredicted>,
+}
+
+impl World<'_, '_> {
+    /// Play a sound, the first time this command runs only.
+    pub fn sound(&mut self, sound: PlaySound) {
+        if self.first.0 {
+            self.play.write(sound);
+        }
+    }
 }
 
 /// Everything one firing call needs.
@@ -399,6 +410,10 @@ impl Shot<'_, '_, '_> {
         kind: DamageKind,
         force: Vec3,
     ) {
+        // Damage is dealt once, not again when a command is re-run.
+        if !self.w.first.0 {
+            return;
+        }
         let mut amount = quantize(raw, quantum);
         if let Some(ratio) = armor_ratio
             && let Ok(mut armor) = self.w.armor.get_mut(target)
@@ -433,7 +448,7 @@ impl Shot<'_, '_, '_> {
 
     /// Give a dynamic body an impulse at a point.
     fn push(&mut self, body: Entity, at: Vec3, impulse: Vec3) {
-        if impulse == Vec3::ZERO {
+        if impulse == Vec3::ZERO || !self.w.first.0 {
             return;
         }
         if let Ok((rb, mut forces)) = self.w.bodies.get_mut(body)
@@ -492,7 +507,7 @@ impl Shot<'_, '_, '_> {
         });
         let Some(hit) = hit else {
             if let Some(s) = &swing.sound_miss {
-                self.w.play.write(PlaySound::at(s.clone(), self.eye));
+                self.w.sound(PlaySound::at(s.clone(), self.eye));
             }
             return false;
         };
@@ -523,7 +538,7 @@ impl Shot<'_, '_, '_> {
             &swing.sound_hit_world
         };
         if let Some(s) = sound {
-            self.w.play.write(PlaySound::at(s.clone(), hit.point));
+            self.w.sound(PlaySound::at(s.clone(), hit.point));
         }
         if alive || object {
             let group = match aabb.filter(|_| swing.hitgroups && alive) {
@@ -603,30 +618,6 @@ pub fn hitgroup_at(b: &ColliderAabb, point: Vec3) -> Hitgroup {
     }
 }
 
-/// Small deterministic generator for spread (Source's own generator is
-/// not reproduced yet: spec Q1).
-struct Rng(u64);
-
-impl Rng {
-    fn new(seed: u32) -> Self {
-        Self(seed as u64 ^ 0x9E37_79B9_7F4A_7C15)
-    }
-
-    fn next(&mut self) -> f32 {
-        // splitmix64
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^= z >> 31;
-        (z >> 40) as f32 / (1u64 << 24) as f32
-    }
-
-    fn range(&mut self, lo: f32, hi: f32) -> f32 {
-        lo + (hi - lo) * self.next()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -656,12 +647,5 @@ mod tests {
         assert_eq!(hitgroup_at(&b, Vec3::new(0.0, 1.0, 0.1)), Hitgroup::Stomach);
         assert_eq!(hitgroup_at(&b, Vec3::new(0.0, 0.5, 0.1)), Hitgroup::LeftLeg);
         assert_eq!(hitgroup_at(&b, Vec3::new(0.39, 1.2, 0.0)), Hitgroup::LeftArm);
-    }
-
-    #[test]
-    fn rng_is_uniform_enough() {
-        let mut r = Rng::new(7);
-        let mean = (0..10000).map(|_| r.next()).sum::<f32>() / 10000.0;
-        assert!((mean - 0.5).abs() < 0.02);
     }
 }

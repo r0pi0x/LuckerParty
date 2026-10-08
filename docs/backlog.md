@@ -296,20 +296,17 @@ docs/plans/active/sound.md.
   realignment, the spec's open questions on the probe server
   (Q1-Q14: damage types, gas-can ignition, player impact rules, client
   break sounds, round restarts of client props).
-- Model doors: the hardware's latch/lock sounds and the spec's open
-  question 8 (which entries the hardware and surface pick; we use the
-  model's `door_options` move/open/close), swing-side checks against the
-  world (only players are checked), forceclosed pushing physics props.
-- Breakables, remaining (vents and windows break: src/logic/breakables.rs,
-  tests/it/heavy/map_breakables.rs): the cracked look of a broken window's panes
-  (`$crackmaterial`, jagged edge pieces; spec open question 8), the
-  falling pane pieces (`models/brokenglass_piece.mdl`; collapsing panes
-  just shatter now), the GlassBreak/BulletProof decals, break-on-pressure
-  (flag 4), physics impact damage to breakables, explosions on break, the
-  window's flip to the attacked side, propdata templates, the spec's open
-  questions on the probe server (bullet/knife damage types, broken brush
-  visibility, shots after a window breaks). Needs a spec (public SDK) and
-  brush entities, which the world loader skips today.
+- Model doors: the spec's open question 8 on the probe server (which
+  entries the hardware and surface pick; we read the model's
+  `door_options` skin and `hardwareN` blocks, docs/tech-debt.md "Model
+  doors").
+- Breakables, remaining (src/logic/breakables.rs,
+  tests/it/heavy/map_breakables.rs): the GlassBreak/BulletProof decals,
+  propdata templates, the client's pane drawing (spec open question 8:
+  edge piece selection, which side draws, the piece's offset; ours in
+  docs/tech-debt.md "Breakables"), the spec's open questions on the probe
+  server (bullet/knife damage types, broken brush visibility, shots after
+  a window breaks).
 
 ## 8. Visual fidelity
 
@@ -335,9 +332,26 @@ docs/plans/active/sound.md.
   (Bevy's histogram, 3/1 stops/s), the bloom filter and strength (Bevy's
   `OLD_SCHOOL` at 0.05 x bloom scale), whether bloom precedes exposure,
   HDR cubemaps/envmaps (still LDR), the `<sky>_hdr` material lookup rule,
-  controller inputs fired after map start (`SetTonemapRate`,
-  `UseDefaultAutoExposure`, triggers) and `mat_hdr_level` 1's exact look.
-  Then refcmp captures at mat_hdr_level 2.
+  `mat_hdr_level` 1's exact look, and the controller's inputs (followed
+  through the logic as they fire, `map::TonemapInputs`): what
+  `SetTonemapRate` scales (taken as a multiplier on the adaptation speed),
+  whether `UseDefaultAutoExposure` means the cvars' 0.5/2 bounds, and
+  `SetBloomScaleRange`, `SetTonemapScale`, `BlendTonemapScale` (accepted,
+  ignored; no cached map uses them). Then refcmp captures at
+  mat_hdr_level 2.
+- **Light styles and baked prop light, open questions** for a spec
+  session: animated styles step ten pattern letters a second, unblended,
+  'm' = as baked, scaling the style's lightmap share in linear light
+  (Quake's convention; the engine's rate, interpolation and scaling space
+  aren't specced), styles 13-31 without a light `pattern` stay steady,
+  and props' probes ignore them. Baked per-vertex prop light (`.vhv`,
+  `games/cs_source/vhv.rs`): its decode is taken as the spec's
+  (2v)^2.2 (shaders.md 4) for both `sp_` and `sp_hdr_` files (the HDR
+  files in the cached maps hold the same bytes as the LDR ones), each set
+  falls back to the other, and a file whose checksum or vertex count
+  doesn't fit the model is skipped; it comes out at about 0.45-0.75 of
+  our probe on average (self-shadowing, or a different scale?). Compare
+  a prop on kz_ancient_ruins or surf_demise with CS:S.
 - **More refcmp views** across dust2 (mid, long, B, spawns) and other maps.
 - Detail blend modes other than 0 and 1;
   `$basetexturetransform` (unused on dust2).
@@ -383,7 +397,3 @@ Counts are from de_dust2's entity lump and static prop lump.
   func_brush) move through the logic layer, breakables break; render modes other than normal and 10 (translucent func_brush) aren't
   applied.
 - **Fire** (specs/source/fire.md) is in: env_fire (heat, growth, burn damage box with line of sight, fuel, Extinguish, outputs, re-created unlit each round, Q4), env_firesource/env_firesensor, entity flames (Ignite inputs, burning props, the gas can), the `env_fire_large_smoke` and `burning_character` looks (docs/tech-debt.md "Fire"). Next: compare a lit de_dust2 fire with CS:S's (Q1, Q10 operator meanings), and the probe-server questions: burn vs armour, the kill icon and score (Q2), player ignition (Q3), the radius damage of a burning can (Q6), burning-prop light (Q7), buried fires (Q9), floors on de_dust/de_train (Q5).
-- **Lightmap styles**: animated styles (1-31) at their pattern (they're
-  baked at normal brightness); switchable ones (32+) switch.
-- **Baked per-vertex prop lighting (`.vhv`)** for maps that ship it (dust2
-  doesn't; its props use the per-prop light probe, as in the game).

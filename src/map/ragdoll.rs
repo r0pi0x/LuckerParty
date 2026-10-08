@@ -121,8 +121,9 @@ pub struct MapRagdollJoint {
 
 /// Bone velocities look this far back (spec 2.2: 0.05 s for players).
 const BONE_DT: f64 = 0.05;
-/// How much pose history characters keep, s.
-const HISTORY: f64 = 0.25;
+/// How much pose history characters keep, s: as far back as lag
+/// compensation may rewind (Source's `sv_maxunlag`, spec weapons.md 4.6).
+const HISTORY: f64 = 1.0;
 /// The killing hit's push, kg·m/s: CS:S's ammo impulses are unknown (spec
 /// Open question 2); this is the SDK template's .50 AE value, 2400
 /// kg·in/s, the same one our guns give props.
@@ -169,6 +170,8 @@ impl Default for RagdollSettings {
 #[derive(Clone, Debug)]
 pub struct PoseFrame {
     pub time: f64,
+    /// The simulation tick (`core::SimTick`) it was kept on.
+    pub tick: u64,
     /// Skeleton space to world (the model's `root` at the feet, turned by
     /// the body's yaw).
     pub root: Transform,
@@ -183,10 +186,19 @@ impl PoseFrame {
     }
 }
 
-/// A character's recent skeleton poses, oldest first (alive only).
+/// A character's recent skeleton poses, oldest first (alive only), one per
+/// tick for `HISTORY`: lag compensation will rewind hitboxes with them.
 #[derive(Component, Clone, Debug, Default)]
 pub struct SkeletonPose {
     pub frames: VecDeque<PoseFrame>,
+}
+
+impl SkeletonPose {
+    /// The pose as it was on `tick`: the newest frame kept on or before
+    /// it (None when the history doesn't reach that far back).
+    pub fn at_tick(&self, tick: u64) -> Option<&PoseFrame> {
+        self.frames.iter().rev().find(|f| f.tick <= tick)
+    }
 }
 
 /// On a character whose body is a ragdoll now.
@@ -437,6 +449,7 @@ fn globals(m: &MapCharacterModel, local: &[(Quat, Vec3)]) -> Vec<(Quat, Vec3)> {
 #[allow(clippy::type_complexity)]
 pub(super) fn record_poses(
     time: Res<Time>,
+    tick: Res<crate::core::SimTick>,
     models: Option<Res<CharacterModels>>,
     mut characters: Query<(
         Entity,
@@ -466,6 +479,7 @@ pub(super) fn record_poses(
         let feet = Transform::from_translation(t.translation - Vec3::Y * half).with_rotation(Quat::from_rotation_y(yaw));
         let frame = PoseFrame {
             time: now,
+            tick: tick.0,
             root: feet * m.root,
             bones: globals(m, &local),
         };
@@ -568,6 +582,7 @@ fn spawn_ragdolls(
                     (side, frame),
                     PoseFrame {
                         time: b1.time,
+                        tick: b1.tick,
                         root: b1.root,
                         bones,
                     },

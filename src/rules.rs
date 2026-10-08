@@ -24,7 +24,9 @@ impl Plugin for DeathmatchPlugin {
                     .chain()
                     .in_set(SimSet::Rules),
                 (count_deaths, rounds::kill_rewards, rounds::objective_money).after(SimSet::Weapons),
-            ),
+            )
+                // The rules are the server's.
+                .run_if(crate::core::authoritative),
         );
         rounds::plugin(app);
         resource_cvar::<Deathmatch, f32>(app, "mp_respawn_delay", "Seconds before the dead respawn.", |d| {

@@ -86,6 +86,8 @@ pub fn load_level(mount: &Mount, name: &str, hdr_level: u8) -> Result<MapData, S
         mesh.surface = r.surfaceprop;
         mesh.envmap = r.envmap;
     }
+    // Broken windows' cracked and jagged-edge looks.
+    super::breakables::add_window_looks(&mut materials, &data.entities, &mut data.meshes);
     // Water surfaces (specs/cs_source/water.md), with the map's cheap
     // distances for their WaterLOD proxies.
     let lod_keys = bsp
@@ -131,7 +133,7 @@ pub fn load_level(mount: &Mount, name: &str, hdr_level: u8) -> Result<MapData, S
         &shadow_hulls(&bsp, &super::ambient::raw_leaves(&bytes)),
         (&data.collision_positions, &data.collision_indices),
     );
-    super::props::add_static_props(&bsp, &mut materials, &lighting, &occluders, &mut data);
+    super::props::add_static_props(&bsp, &mut materials, &lighting, &occluders, &mut data, hdr_level >= 2);
     super::ropes::add_ropes(&bsp, &mut materials, &lighting, &occluders, &mut data);
     // The same query at run time, for view models (spec view_models.md 9).
     if let Some(tree) = data.sky_vis.clone() {
@@ -368,6 +370,15 @@ pub fn face_triangles_blend(face: &vbsp::Handle<'_, vbsp::Face>) -> Vec<[(vbsp::
         let base = lerp(lerp(corners[0], corners[1], fx), lerp(corners[3], corners[2], fx), fy);
         (base + offsets[x * n + y], Vec2::new(fy, fx) * size, alphas[x * n + y])
     };
+    // Every triangle below runs the grid's way round (x, then y). The
+    // whole surface faces the side the base face does, decided once from
+    // the undisplaced grid: a sculpted surface folds over (a cave's
+    // ceiling curling back from its wall) and those triangles face away
+    // from the base normal, which is right: re-winding them one by one
+    // turned them inside out (culled: holes in surf_boreas's caves).
+    let v3 = |v: vbsp::Vector| Vec3::new(v.x, v.y, v.z);
+    let grid_normal = (v3(corners[1]) - v3(corners[0])).cross(v3(corners[3]) - v3(corners[0]));
+    let flip = grid_normal.dot(v3(face.normal())) < 0.0;
     let mut out = Vec::with_capacity(steps * steps * 2);
     // Each grid square splits along alternating diagonals (checkerboard).
     // Measured with movecmp: with this split, landing on dust2's CT spawn
@@ -381,6 +392,11 @@ pub fn face_triangles_blend(face: &vbsp::Handle<'_, vbsp::Face>) -> Vec<[(vbsp::
                 out.push([grid(x, y), grid(x + 1, y), grid(x, y + 1)]);
                 out.push([grid(x + 1, y), grid(x + 1, y + 1), grid(x, y + 1)]);
             }
+        }
+    }
+    if flip {
+        for t in &mut out {
+            t.swap(1, 2);
         }
     }
     out
@@ -499,12 +515,13 @@ pub fn convert_level(bsp: &Bsp, bytes: &[u8], name: &str, hdr: bool) -> (MapData
             None => to_engine_dir(face.normal()),
         };
         let displaced_face = face.displacement().is_some();
-        // Re-wind triangles to face the plane normal.
+        // Re-wind triangles to face the plane normal (displacements come
+        // wound per surface, folds included: `face_triangles_blend`).
         let tris: Vec<[(vbsp::Vector, Vec2, f32); 3]> = face_triangles_blend(&face)
             .into_iter()
             .map(|t| {
                 let [a, b, c] = t.map(|(v, _, _)| to_engine(place(v)));
-                if (b - a).cross(c - a).dot(face_normal) < 0.0 {
+                if !displaced_face && (b - a).cross(c - a).dot(face_normal) < 0.0 {
                     [t[0], t[2], t[1]]
                 } else {
                     t
@@ -531,15 +548,15 @@ pub fn convert_level(bsp: &Bsp, bytes: &[u8], name: &str, hdr: bool) -> (MapData
                 dark_styles.contains(&style)
             });
         let slot = flat.map(|s| atlas.add_bumped(s, bumped));
-        // Switchable styles kept apart too, so lights can switch.
+        // Animated and switchable styles kept apart too, so lights can
+        // flicker and switch.
         if let Some(slot) = slot {
-            let styles: Vec<_> =
-                lightmap::face_switchable_styles(lighting, &face, flags.contains(TextureFlags::BUMPLIGHT))
-                    .into_iter()
-                    .map(|s| {
-                        let on = !dark_styles.contains(&s.style);
-                        (s, on)
-                    })
+            let styles: Vec<_> = lightmap::face_extra_styles(lighting, &face, flags.contains(TextureFlags::BUMPLIGHT))
+                .into_iter()
+                .map(|s| {
+                    let on = s.style < 32 || !dark_styles.contains(&s.style);
+                    (s, on)
+                })
                     .collect();
             if !styles.is_empty() {
                 atlas.set_styles(slot, styles);
@@ -593,7 +610,18 @@ pub fn convert_level(bsp: &Bsp, bytes: &[u8], name: &str, hdr: bool) -> (MapData
     data.entities = map_entities(bsp, &leaves);
     data.entity_scale = METERS_PER_UNIT;
 
-    let (lightmap, placements, white) = atlas.build();
+    let (mut lightmap, placements, white) = atlas.build();
+    // Animated styles' patterns: a light's custom `pattern` for its
+    // style, else the style's preset.
+    for s in lightmap.styles.iter_mut().filter(|s| s.style < 32) {
+        let custom = bsp
+            .entities
+            .iter()
+            .filter(|e| e.prop("classname").is_some_and(|c| c.starts_with("light")))
+            .filter(|e| e.prop("style").and_then(|v| v.trim().parse::<u8>().ok()) == Some(s.style))
+            .find_map(|e| e.prop("pattern").filter(|p| !p.trim().is_empty()));
+        s.pattern = lightmap::style_pattern(s.style, custom);
+    }
     for (material, mesh) in by_material.iter_mut() {
         mesh.lightmap_uvs = pending_lm[material]
             .iter()
@@ -1166,6 +1194,7 @@ pub fn source_look_level(hdr_level: u8, entities: &[crate::map::MapEntity]) -> c
     look.hdr = Some(crate::map::MapHdr {
         exposure: (hdr_level >= 2).then_some((t.exposure_min, t.exposure_max)),
         bloom_scale: t.bloom_scale,
+        rate: 1.0,
     });
     if hdr_level >= 2 {
         look.source_ldr_lightmaps = false;
@@ -1185,15 +1214,16 @@ pub struct TonemapController {
 /// mat_autoexposure_min 0.5, mat_autoexposure_max 2 and mat_bloomscale 1
 /// (their public defaults).
 pub const DEFAULT_TONEMAP: TonemapController = TonemapController {
-    exposure_min: 0.5,
-    exposure_max: 2.0,
+    exposure_min: crate::map::DEFAULT_AUTO_EXPOSURE.0,
+    exposure_max: crate::map::DEFAULT_AUTO_EXPOSURE.1,
     bloom_scale: 1.0,
 };
 
 /// The tone-map settings an `env_tonemap_controller` gets from map-start
 /// outputs (`OnMapSpawn` of `logic_auto`, how every stock map sets them):
-/// SetAutoExposureMin, SetAutoExposureMax and SetBloomScale. Other inputs
-/// and outputs fired later aren't followed.
+/// SetAutoExposureMin, SetAutoExposureMax and SetBloomScale: the look the
+/// map starts with. The logic layer then follows every controller input
+/// as it fires (`map::TonemapInputs`), these included.
 pub fn tonemap_controller(entities: &[crate::map::MapEntity]) -> TonemapController {
     let names: Vec<&str> = entities
         .iter()
@@ -1709,7 +1739,8 @@ mod tonemap_tests {
             hdr.hdr,
             Some(crate::map::MapHdr {
                 exposure: Some((0.5, 1.0)),
-                bloom_scale: 1.0
+                bloom_scale: 1.0,
+                rate: 1.0,
             })
         );
     }

@@ -97,6 +97,17 @@ impl<'a> MaterialLoader<'a> {
         }
     }
 
+    /// A file from the map's pakfile only (any case).
+    pub fn read_packed(&self, path: &str) -> Option<Vec<u8>> {
+        let path = normalize(path);
+        if let Ok(Some(data)) = self.bsp.pack.get(&path) {
+            return Some(data);
+        }
+        self.pack_names
+            .get(&path.to_lowercase())
+            .and_then(|n| self.bsp.pack.get(n).ok().flatten())
+    }
+
     pub fn read(&self, path: &str) -> Option<Vec<u8>> {
         let path = normalize(path);
         if let Ok(Some(data)) = self.bsp.pack.get(&path) {
@@ -211,7 +222,7 @@ impl<'a> MaterialLoader<'a> {
             self.missing.push(format!("{vmt_path}: not found"));
             return fallback;
         };
-        let (text, stand_in) = stand_in_shader(&text);
+        let (text, mut stand_in) = stand_in_shader(&text);
         match stand_in {
             Some(StandIn::WindowImposter) => return self.window_imposter(&vmt_path, &text, fallback),
             Some(StandIn::Reflective) => return self.reflective(&text, fallback),
@@ -221,7 +232,15 @@ impl<'a> MaterialLoader<'a> {
         // the way the game reads it (`lenient_vmt`).
         let material = self
             .parse_vmt(&text, false)
-            .or_else(|e| self.parse_vmt(&text, true).map_err(|_| e));
+            .or_else(|e| self.parse_vmt(&text, true).map_err(|_| e))
+            .map(|(m, included)| {
+                // A patch of a ShatteredGlass material (a window's
+                // cubemap-patched `$crackmaterial`) reads as one.
+                if included == Some(StandIn::ShatteredGlass) {
+                    stand_in = included;
+                }
+                m
+            });
         let material = match material {
             Ok(m) => m,
             Err(e) => {
@@ -316,7 +335,7 @@ impl<'a> MaterialLoader<'a> {
             _ => None,
         };
         let detail = detail_source
-            .filter(|_| detail_mode <= 4)
+            .filter(|_| detail_mode <= 4 && stand_in != Some(StandIn::ShatteredGlass))
             .and_then(|(name, scale, factor)| {
                 // Mod2x and WorldTwoTextureBlend use the texel as stored;
                 // additive and translucent decode sRGB.
@@ -344,16 +363,24 @@ impl<'a> MaterialLoader<'a> {
     }
 
     /// A material's text parsed, patches resolved through their included
-    /// material (whose unknown shader gets its stand-in too); `lenient`:
-    /// both texts through `lenient_vmt` first.
-    fn parse_vmt(&self, text: &str, lenient: bool) -> Result<vmt_parser::material::Material, VmtError> {
+    /// material (whose unknown shader gets its stand-in too, returned);
+    /// `lenient`: both texts through `lenient_vmt` first.
+    fn parse_vmt(
+        &self,
+        text: &str,
+        lenient: bool,
+    ) -> Result<(vmt_parser::material::Material, Option<StandIn>), VmtError> {
         let fix = |t: &str| if lenient { lenient_vmt(t) } else { t.to_string() };
-        vmt_parser::from_str(&fix(text)).map_err(VmtError::from).and_then(|m| {
+        let included_stand_in = std::cell::Cell::new(None);
+        let material = vmt_parser::from_str(&fix(text)).map_err(VmtError::from).and_then(|m| {
             m.resolve(|include: &str| {
                 let included = self.read_text(include).ok_or(VmtError::Missing(include.to_string()))?;
-                Ok(fix(&stand_in_shader(&included).0))
+                let (included, stand_in) = stand_in_shader(&included);
+                included_stand_in.set(stand_in);
+                Ok(fix(&included))
             })
-        })
+        })?;
+        Ok((material, included_stand_in.get()))
     }
 
     /// WindowImposter ("fake sky" windows on surf maps): the `$envmap`
@@ -483,6 +510,13 @@ impl<'a> MaterialLoader<'a> {
                 DecalBlend::Alpha
             },
         })
+    }
+
+    /// A key of material `name` (as `resolve` takes it), e.g.
+    /// `$crackmaterial`: lower-case key, the value as written.
+    pub fn material_value(&self, name: &str, key: &str) -> Option<String> {
+        let text = self.read_text(&format!("materials/{}.vmt", normalize(name)))?;
+        self.keys(&text, 0).remove(&key.to_lowercase())
     }
 
     fn keys(&self, text: &str, depth: u32) -> HashMap<String, String> {
@@ -951,9 +985,11 @@ enum StandIn {
     /// (DecalBaseTimesLightmapAlphaBlendSelfIllum on de_nuke): a translucent
     /// LightmappedGeneric decal. Self-illumination isn't modelled.
     Decal,
-    /// ShatteredGlass (func_breakable_surf windows): its base texture and
-    /// `$envmap` as LightmappedGeneric. The crack overlay isn't modelled.
-    Glass,
+    /// ShatteredGlass (a breakable window's `$crackmaterial`): a
+    /// translucent LightmappedGeneric showing its crack texture (`$detail`,
+    /// the same image as its "dummy" base in stock materials) as the base;
+    /// its per-pane proxy isn't modelled (the panes are cut from the mesh).
+    ShatteredGlass,
     /// LightmappedReflective (reflective glass, no base texture): drawn by
     /// `MaterialLoader::reflective`.
     Reflective,
@@ -999,10 +1035,10 @@ fn stand_in_shader(text: &str) -> (std::borrow::Cow<'_, str>, Option<StandIn>) {
     let (stand_in, extra) = match shader.as_str() {
         "worldtwotextureblend" => (StandIn::TwoTextureBlend, ""),
         "eyes" | "teeth" => (StandIn::Model, ""),
+        "shatteredglass" => (StandIn::ShatteredGlass, ""),
         s if s.starts_with("decalbasetimeslightmap") => {
             (StandIn::Decal, "\n\"$decal\" \"1\"\n\"$translucent\" \"1\"\n")
         }
-        "shatteredglass" => (StandIn::Glass, ""),
         "lightmappedreflective" => (StandIn::Reflective, ""),
         "windowimposter" => (StandIn::WindowImposter, ""),
         s if dx_variant_of(s).is_some() => (StandIn::DxVariant, ""),
@@ -1434,7 +1470,7 @@ mod tests {
 
         let glass = "\"ShatteredGlass\" { \"$basetexture\" \"glass/x\" \"$envmap\" \"env_cubemap\" }";
         let (text, s) = stand_in_shader(glass);
-        assert_eq!(s, Some(StandIn::Glass));
+        assert_eq!(s, Some(StandIn::ShatteredGlass));
         assert_eq!(vmt_parser::from_str(&text).expect("parses").base_texture(), Some("glass/x"));
 
         let refract = "\"Refract_DX90\" { \"$normalmap\" \"w/n\" \"$refractamount\" \"0.05\" }";

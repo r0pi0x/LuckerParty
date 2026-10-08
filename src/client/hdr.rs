@@ -7,6 +7,11 @@
 //! the map's `env_tonemap_controller` bounds, then a linear scale-and-clamp
 //! tone map (hdr_tonemap.wgsl).
 //!
+//! The controller's inputs fired while the map runs (SetAutoExposureMin,
+//! SetAutoExposureMax, SetBloomScale, SetTonemapRate,
+//! UseDefaultAutoExposure) come through the logic layer as
+//! `map::TonemapInputs` and apply over the map's look.
+//!
 //! Not specified (no spec yet; open questions in docs/backlog.md): the
 //! game's exposure target and adaptation speed, its metering, and its
 //! bloom filter. The values here are stand-ins.
@@ -42,7 +47,7 @@ use bevy::{
 use super::FirstPersonCamera;
 use crate::{
     console::{Console, resource_cvar},
-    map::{ActiveMapLook, MapHdr, SkyboxCamera, ViewModelCamera},
+    map::{ActiveMapLook, MapHdr, SkyboxCamera, TonemapInputs, ViewModelCamera},
 };
 
 /// Source's `mat_hdr_level`: 0 LDR, 1 bloom, 2 HDR lighting with auto
@@ -160,9 +165,10 @@ pub fn compensation_points(target: f32, lo: f32, hi: f32) -> Vec<Vec2> {
     xs.into_iter().map(|x| Vec2::new(x, f(x))).collect()
 }
 
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn hdr_cameras(
     look: Option<Res<ActiveMapLook>>,
+    inputs: Option<Res<TonemapInputs>>,
     first_person: Query<(Entity, &Camera, Option<&Children>), With<FirstPersonCamera>>,
     view_models: Query<&Camera, With<ViewModelCamera>>,
     cameras: Query<
@@ -178,7 +184,10 @@ fn hdr_cameras(
     args: Option<Res<super::ClientArgs>>,
     mut commands: Commands,
 ) {
-    let hdr = look.and_then(|l| l.0.hdr.clone());
+    // The map's look, with what its tone-map controller was told since.
+    let hdr = look
+        .and_then(|l| l.0.hdr.clone())
+        .map(|h| inputs.as_ref().map_or(h.clone(), |i| i.apply(&h)));
     // Captures (--views, --screenshot) settle within their few frames:
     // exposure closes most of the gap every frame instead of adapting at
     // the eye's pace, so a view's capture doesn't depend on frame times.
@@ -247,6 +256,11 @@ fn hdr_cameras(
                     compensation_curve,
                     ..default()
                 };
+                // SetTonemapRate: the adaptation speed scaled from the
+                // default (rate 1).
+                let rate = hdr.rate.max(0.0);
+                exposure.speed_brighten *= rate;
+                exposure.speed_darken *= rate;
                 if capture {
                     exposure.speed_brighten = 20.0;
                     exposure.speed_darken = 20.0;

@@ -6,8 +6,8 @@
 
 use super::material::MaterialLoader;
 use crate::map::{
-    MapEntity,
-    breakables::{MapGibPhysics, MapGibSet},
+    MapEntity, MapMesh, MapModel, PaneLook,
+    breakables::{MapGibPhysics, MapGibSet, PANE_PIECES},
 };
 
 const UNIT: f32 = 0.0254;
@@ -61,10 +61,126 @@ pub fn breakable_models(text: &str) -> Vec<(String, Vec<String>)> {
         .collect()
 }
 
+/// The falling piece a collapsing window pane drops (specs/source/
+/// breakables.md "Support pass"), one model per body (0..2).
+pub const PANE_PIECE_MODEL: &str = "models/brokenglass_piece.mdl";
+
+/// The jagged edge materials a broken glass window draws where unbroken
+/// panes meet broken ones (the spec names "glassbroken_*"; these are the
+/// install's edge textures, a shard rising from the texture's bottom).
+pub const GLASS_EDGES: [&str; 12] = [
+    "models/brokenglass/glassbroken_01a",
+    "models/brokenglass/glassbroken_01b",
+    "models/brokenglass/glassbroken_01c",
+    "models/brokenglass/glassbroken_01d",
+    "models/brokenglass/glassbroken_02a",
+    "models/brokenglass/glassbroken_02b",
+    "models/brokenglass/glassbroken_02c",
+    "models/brokenglass/glassbroken_02d",
+    "models/brokenglass/glassbroken_03a",
+    "models/brokenglass/glassbroken_03b",
+    "models/brokenglass/glassbroken_03c",
+    "models/brokenglass/glassbroken_03d",
+];
+
+/// Each window's broken looks (`MapMesh::pane_look`): its face again in
+/// the face material's `$crackmaterial`, and, for glass, the face as a
+/// template for each edge material. Both are double sided (the spec
+/// leaves which side the client draws open).
+pub fn add_window_looks(materials: &mut MaterialLoader, entities: &[MapEntity], meshes: &mut Vec<MapMesh>) {
+    let windows: Vec<(usize, bool)> = entities
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.classname() == "func_breakable_surf")
+        .map(|(i, e)| (i, e.get("surfacetype") == Some("1")))
+        .collect();
+    if windows.is_empty() {
+        return;
+    }
+    let mut extra = Vec::new();
+    for m in meshes.iter() {
+        let Some(&(_, tile)) = m.entity.and_then(|i| windows.iter().find(|(w, _)| *w == i)) else {
+            continue;
+        };
+        if m.pane_look != PaneLook::Whole || m.texture.is_none() {
+            continue;
+        }
+        if let Some(crack) = materials.material_value(&m.material, "$crackmaterial") {
+            let crack = crack.replace('\\', "/");
+            let r = materials.resolve(&crack);
+            if r.texture.is_some() {
+                extra.push(MapMesh {
+                    material: crack,
+                    texture: r.texture,
+                    normal_map: r.normal_map,
+                    detail: r.detail,
+                    alpha: r.alpha,
+                    double_sided: true,
+                    envmap: r.envmap,
+                    tint: r.tint,
+                    unlit: r.unlit,
+                    pane_look: PaneLook::Cracked,
+                    ..m.clone()
+                });
+            }
+        }
+        if tile {
+            continue;
+        }
+        for (k, name) in GLASS_EDGES.iter().enumerate() {
+            let r = materials.resolve(name);
+            if r.texture.is_none() {
+                continue;
+            }
+            extra.push(MapMesh {
+                material: name.to_string(),
+                texture: r.texture,
+                normal_map: None,
+                detail: None,
+                blend: None,
+                alpha: r.alpha,
+                double_sided: true,
+                envmap: None,
+                tint: None,
+                unlit: r.unlit,
+                // Drawn by its own texture's light (UnlitGeneric).
+                lightmap_uvs: Vec::new(),
+                pane_look: PaneLook::Edge(k as u8),
+                ..m.clone()
+            });
+        }
+    }
+    meshes.extend(extra);
+}
+
+/// The falling pane piece's models, one per body.
+fn pane_pieces(materials: &mut MaterialLoader) -> Result<Vec<MapModel>, String> {
+    let model = super::props::load_shell(materials, PANE_PIECE_MODEL)?;
+    Ok((0..crate::map::breakables::PANE_PIECE_BODIES as i32)
+        .map(|body| {
+            let mut m = model.clone();
+            m.meshes
+                .retain(|mesh| mesh.body.is_none_or(|(part, choice)| model.body_choice(body, part as usize) == choice));
+            m.body_parts.clear();
+            m
+        })
+        .collect())
+}
+
 /// Load the gib lists the map's breakables can use.
 pub fn load_gibs(materials: &mut MaterialLoader, entities: &[MapEntity], warnings: &mut Vec<String>) -> Vec<MapGibSet> {
     if !entities.iter().any(|e| CLASSES.contains(&e.classname())) {
         return Vec::new();
+    }
+    let mut out = Vec::new();
+    if entities.iter().any(|e| e.classname() == "func_breakable_surf") {
+        match pane_pieces(materials) {
+            Ok(models) => out.push(MapGibSet {
+                name: PANE_PIECES.to_string(),
+                models,
+            }),
+            Err(e) => warnings.push(e),
+        }
     }
     let lists = materials
         .read("scripts/propdata.txt")
@@ -78,7 +194,6 @@ pub fn load_gibs(materials: &mut MaterialLoader, entities: &[MapEntity], warning
             wanted.push(g.to_string());
         }
     }
-    let mut out = Vec::new();
     for name in wanted {
         // A list name, or a single model.
         let paths: Vec<String> = match lists.iter().find(|(n, _)| n.eq_ignore_ascii_case(&name)) {

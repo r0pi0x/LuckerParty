@@ -35,6 +35,11 @@ pub struct Intent {
     /// The use key (Source `+use`, E): doors, buttons. Held level; the
     /// logic layer acts on presses.
     pub use_key: bool,
+    /// This tick's command number (Source's usercmd `command_number`):
+    /// shared randoms (shot spread, recoil) are seeded from it. Stamped
+    /// every tick after the rules (`SimSet::Commands`, `number_commands`);
+    /// intent sources needn't set it.
+    pub command: u32,
 }
 
 impl Intent {
@@ -371,6 +376,177 @@ pub struct LocalPlayer;
 #[reflect(Resource)]
 pub struct SimTick(pub u64);
 
+/// The clock of the simulation step running now: Source's `curtime`
+/// (tickbase × tick interval) and the tick's length. Code that prediction
+/// runs again (`Predict`: weapon selection, movement, the weapon frame)
+/// reads time from here, never from `Time`, so a replayed command sees the
+/// time it first ran at. Every fixed tick starts by copying `Time<Fixed>`
+/// into it (the same values `Time` gives in `FixedUpdate`); a prediction
+/// replay sets it per command.
+#[derive(Resource, Default, Clone, Copy, Debug, PartialEq)]
+pub struct SimClock {
+    /// The tick (`SimTick`) this time belongs to.
+    pub tick: u64,
+    /// Seconds since the simulation started.
+    pub now: f64,
+    /// Length of this tick.
+    pub delta: std::time::Duration,
+}
+
+impl SimClock {
+    /// Length of this tick, s.
+    pub fn dt(&self) -> f32 {
+        self.delta.as_secs_f32()
+    }
+}
+
+/// What this process is in a game (docs/plans/active/multiplayer.md):
+/// standalone (single player: everything runs, as a listen server with no
+/// remote clients), the server, or a client of a remote server.
+/// Server-only systems (bots, rules, damage, logic, objectives) run under
+/// `authoritative`.
+#[derive(Resource, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NetRole {
+    #[default]
+    Standalone,
+    Server,
+    Client,
+}
+
+/// Run condition: this process owns the game's outcome (standalone or
+/// server; not a client, which only predicts its own player and draws
+/// what the server sends).
+pub fn authoritative(role: Option<Res<NetRole>>) -> bool {
+    role.is_none_or(|r| *r != NetRole::Client)
+}
+
+/// Whether the commands running now run for the first time (Source's
+/// `IsFirstTimePredicted`). A client re-running commands after a server
+/// correction sets it false: side effects (sounds, damage, pushes) happen
+/// only the first time. True outside a replay.
+#[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FirstTimePredicted(pub bool);
+
+impl Default for FirstTimePredicted {
+    fn default() -> Self {
+        Self(true)
+    }
+}
+
+/// The parts of a tick prediction runs for a client's own player, as
+/// schedules: weapon selection, movement and the weapon frame. A fixed tick
+/// runs each from its place in `FixedUpdate` (`weapon::SelectWeapons`,
+/// `SimSet::Movement`, `weapon::WeaponFrame`); a replay runs them in order
+/// per command (`predict`). Their systems read time from `SimClock`,
+/// write side effects only under `FirstTimePredicted`, and act on every
+/// entity with the components they need (on a client, only its own player
+/// will have them; others are drawn from snapshots).
+#[derive(bevy::ecs::schedule::ScheduleLabel, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Predict {
+    Select,
+    Movement,
+    Weapons,
+}
+
+impl Predict {
+    pub const ALL: [Predict; 3] = [Predict::Select, Predict::Movement, Predict::Weapons];
+}
+
+/// An exclusive system that runs the `stage` schedule, placed in
+/// `FixedUpdate` where that stage belongs.
+pub fn run_predicted(stage: Predict) -> impl FnMut(&mut World) {
+    move |world: &mut World| {
+        let _ = world.try_run_schedule(stage);
+    }
+}
+
+/// Run one command's predicted tick (every `Predict` stage, in order) with
+/// the intents, clock and flag already set.
+pub fn predict(world: &mut World) {
+    for stage in Predict::ALL {
+        let _ = world.try_run_schedule(stage);
+    }
+}
+
+/// The components prediction re-simulates (`PredictedAppExt::predicted`),
+/// saved and restored for the entities a client predicts (its player and
+/// the weapons it carries): restore the server's state, then replay the
+/// commands since.
+#[derive(Resource, Default)]
+pub struct PredictedComponents(Vec<PredictedComponent>);
+
+type SavedComponent = Option<Box<dyn std::any::Any + Send + Sync>>;
+
+struct PredictedComponent {
+    name: &'static str,
+    save: fn(&World, Entity) -> SavedComponent,
+    restore: fn(&mut World, Entity, &SavedComponent),
+}
+
+/// Some entities' predicted components as they were
+/// (`PredictedComponents::save`).
+#[derive(Default)]
+pub struct PredictedSnapshot(Vec<(Entity, Vec<SavedComponent>)>);
+
+impl PredictedComponents {
+    /// The registered components' type names, in order.
+    pub fn names(&self) -> Vec<&'static str> {
+        self.0.iter().map(|c| c.name).collect()
+    }
+
+    pub fn save(&self, world: &World, entities: &[Entity]) -> PredictedSnapshot {
+        PredictedSnapshot(
+            entities
+                .iter()
+                .map(|e| (*e, self.0.iter().map(|c| (c.save)(world, *e)).collect()))
+                .collect(),
+        )
+    }
+
+    /// Put each saved entity's predicted components back as they were
+    /// (removing the ones it didn't have). Entities gone since are skipped.
+    pub fn restore(&self, world: &mut World, snapshot: &PredictedSnapshot) {
+        for (e, saved) in &snapshot.0 {
+            if world.get_entity(*e).is_err() {
+                continue;
+            }
+            for (c, value) in self.0.iter().zip(saved) {
+                (c.restore)(world, *e, value);
+            }
+        }
+    }
+}
+
+pub trait PredictedAppExt {
+    /// Register a component prediction saves and restores.
+    fn predicted<C: Component<Mutability = bevy::ecs::component::Mutable> + Clone>(&mut self) -> &mut Self;
+}
+
+impl PredictedAppExt for App {
+    fn predicted<C: Component<Mutability = bevy::ecs::component::Mutable> + Clone>(&mut self) -> &mut Self {
+        let name = std::any::type_name::<C>();
+        let mut registry = self.world_mut().get_resource_or_init::<PredictedComponents>();
+        if !registry.0.iter().any(|c| c.name == name) {
+            registry.0.push(PredictedComponent {
+                name,
+                save: |w, e| {
+                    w.get::<C>(e)
+                        .map(|c| Box::new(c.clone()) as Box<dyn std::any::Any + Send + Sync>)
+                },
+                restore: |w, e, v| match v.as_ref().and_then(|v| v.downcast_ref::<C>()) {
+                    Some(c) => {
+                        w.entity_mut(e).insert(c.clone());
+                    }
+                    None => {
+                        w.entity_mut(e).remove::<C>();
+                    }
+                },
+            });
+        }
+        self
+    }
+}
+
 /// Round restarts so far (the rules count one up when a new round
 /// starts). Each count puts the map's entities back as they spawned:
 /// the logic layer re-creates its world, the map layer makes broken
@@ -566,8 +742,33 @@ pub enum SimSet {
     /// Match rules (rounds, respawns), before everything that acts on
     /// them this tick.
     Rules,
+    /// Intents are final for the tick: each gets its command number.
+    Commands,
     Movement,
     Weapons,
+}
+
+/// Stamp each intent with this tick's command number: the tick, offset by
+/// the character's `Seed` (Source clients number their commands from
+/// their own start, so two players firing on the same tick don't share a
+/// spread pattern). Never from entity ids.
+pub fn number_commands(tick: Res<SimTick>, mut intents: Query<(&mut Intent, Option<&Seed>)>) {
+    for (mut intent, seed) in &mut intents {
+        let n = (tick.0 as u32).wrapping_add(seed.map_or(0, |s| s.0 as u32));
+        if intent.command != n {
+            intent.command = n;
+        }
+    }
+}
+
+/// Count the tick and set the clock (`SimClock`) from `Time<Fixed>`.
+fn start_tick(mut tick: ResMut<SimTick>, mut clock: ResMut<SimClock>, time: Res<Time<Fixed>>) {
+    tick.0 += 1;
+    *clock = SimClock {
+        tick: tick.0,
+        now: time.elapsed_secs_f64(),
+        delta: time.delta(),
+    };
 }
 
 pub struct CorePlugin;
@@ -592,15 +793,32 @@ impl Plugin for CorePlugin {
             .add_message::<Died>()
             .add_message::<Radio>()
             .init_resource::<FriendlyFire>()
-            .add_systems(FixedUpdate, apply_damage.after(SimSet::Weapons))
+            .add_systems(FixedUpdate, apply_damage.after(SimSet::Weapons).run_if(authoritative))
             .register_type::<SpawnPoint>()
             .register_type::<LocalPlayer>()
             .register_type::<SimTick>()
             .init_resource::<SimTick>()
-            .add_systems(FixedFirst, |mut tick: ResMut<SimTick>| tick.0 += 1)
+            .init_resource::<SimClock>()
+            .init_resource::<NetRole>()
+            .init_resource::<FirstTimePredicted>()
+            .init_resource::<PredictedComponents>()
+            .add_systems(FixedFirst, start_tick)
             .init_resource::<RoundRestarts>()
             .init_resource::<FreezeTime>()
-            .configure_sets(FixedUpdate, (SimSet::Rules, SimSet::Movement, SimSet::Weapons).chain());
+            .configure_sets(
+                FixedUpdate,
+                (SimSet::Rules, SimSet::Commands, SimSet::Movement, SimSet::Weapons).chain(),
+            )
+            .add_systems(FixedUpdate, number_commands.in_set(SimSet::Commands))
+            .add_systems(FixedUpdate, run_predicted(Predict::Movement).in_set(SimSet::Movement))
+            .predicted::<Transform>()
+            .predicted::<Velocity>()
+            .predicted::<MovementState>()
+            .predicted::<BaseVelocity>()
+            .predicted::<MaxSpeed>();
+        for stage in Predict::ALL {
+            app.init_schedule(stage);
+        }
     }
 }
 
