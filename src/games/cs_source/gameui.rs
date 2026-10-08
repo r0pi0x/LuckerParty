@@ -5,7 +5,12 @@
 //! options pages (`resource/OptionsSub*.res`), the keyboard page's actions
 //! (`scripts/kb_act.lst`), strings from `gameui_english.txt`,
 //! `valve_english.txt` and `cstrike_english.txt`, and the new game
-//! dialog's map thumbnails (`materials/vgui/maps/menu_thumb_<map>.vtf`).
+//! dialog's map thumbnails (`materials/vgui/maps/menu_thumb_<map>.vtf`),
+//! and the main menu's look: its background (`materials/console/
+//! background01.vtf` and `background01_widescreen.vtf`, stretched over the
+//! screen) and the game's title (`gameinfo.txt`'s `title` and `title2`) in
+//! the client scheme's `ClientTitleFont` (`resource/clientscheme.res`, its
+//! font file from `CustomFontFiles`).
 //!
 //! The scheme has platform conditionals (`[$WIN32]`, `[!$OSX]`,
 //! `[$X360]`): entries are kept as the Windows PC game reads them.
@@ -202,6 +207,85 @@ const OPTION_PAGES: [(&str, &str); 5] = [
 
 const THUMB_PREFIX: &str = "materials/vgui/maps/menu_thumb_";
 
+/// The main menu's backgrounds: 4:3, widescreen.
+const BACKGROUNDS: [&str; 2] = [
+    "materials/console/background01.vtf",
+    "materials/console/background01_widescreen.vtf",
+];
+
+/// The game's title lines from `gameinfo.txt` (`title`, then `title2`).
+pub(crate) fn game_title(gameinfo: &str) -> Vec<String> {
+    let kv = parse_pc(gameinfo);
+    let Some((_, root)) = kv.items().iter().find(|(_, v)| matches!(v, Kv::Block(_))) else {
+        return Vec::new();
+    };
+    ["title", "title2"]
+        .iter()
+        .filter_map(|k| root.str(k))
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+/// The title font in a client scheme: `ClientTitleFont`'s family and
+/// height (its first size), and the scheme's font files to find it in.
+pub(crate) fn title_font(scheme: &Kv) -> Option<(String, f32, Vec<String>)> {
+    let font = scheme.get("Fonts")?.get("ClientTitleFont")?;
+    let (_, first) = font.items().iter().find(|(_, v)| matches!(v, Kv::Block(_)))?;
+    let family = first.str("name")?.trim().to_string();
+    let tall = first.str("tall")?.trim().parse().ok()?;
+    let files = scheme
+        .get("CustomFontFiles")
+        .map(Kv::items)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|(_, v)| match v {
+            Kv::Value(path) => Some(path.clone()),
+            Kv::Block(_) => v.str("font").map(String::from),
+        })
+        .collect();
+    Some((family, tall, files))
+}
+
+/// A VTF's first frame as RGBA8.
+fn decode_vtf(bytes: &[u8]) -> Option<UiImage> {
+    let image = vtf::from_bytes(bytes)
+        .ok()
+        .and_then(|v| v.highres_image.decode(0).ok())
+        .map(|i| i.to_rgba8())?;
+    Some(UiImage {
+        width: image.width(),
+        height: image.height(),
+        rgba8: image.into_raw(),
+    })
+}
+
+/// The main menu's look: backgrounds, title and title font.
+fn main_menu_look(mount: &Mount, ui: &mut GameUi) {
+    let [four_three, wide] = BACKGROUNDS.map(|p| mount.read(p).ok().and_then(|b| decode_vtf(&b)));
+    ui.background = four_three;
+    ui.background_wide = wide;
+    if let Ok(info) = mount.read("gameinfo.txt") {
+        ui.title = game_title(&String::from_utf8_lossy(&info));
+    }
+    let mut read = |p: &str| mount.read(p).ok().map(|b| super::radio::decode(&b));
+    let Some((family, tall, files)) = read_res_pc(&mut read, "resource/clientscheme.res")
+        .as_ref()
+        .and_then(title_font)
+    else {
+        return;
+    };
+    for file in files {
+        let path = file.replace('\\', "/").to_lowercase();
+        let Ok(bytes) = mount.read(&path) else { continue };
+        if super::hud::family_name(&bytes).is_some_and(|f| f.eq_ignore_ascii_case(&family)) {
+            ui.title_font = Some((std::sync::Arc::new(bytes), tall));
+            return;
+        }
+    }
+}
+
 /// The GameUI look from a mounted install (None without its scheme and
 /// menu files).
 pub fn load(mount: &Mount) -> Option<GameUi> {
@@ -242,6 +326,7 @@ pub fn load(mount: &Mount) -> Option<GameUi> {
         }
     }
     ui.strings = strings;
+    main_menu_look(mount, &mut ui);
     // Thumbnails: small pictures, decoded once.
     for (entry, _) in mount.entries() {
         let Some(map) = entry
@@ -380,6 +465,32 @@ mod tests {
         let px = [[1, 2, 3, 255], [4, 5, 6, 255], [7, 8, 9, 255], [1, 1, 1, 255], [255; 4], [255; 4], [255; 4], [255; 4]];
         let pic = crop_padding(2, 4, px.concat());
         assert_eq!((pic.width, pic.height, pic.rgba8.len()), (2, 2, 16));
+    }
+
+    #[test]
+    fn title_lines_from_gameinfo() {
+        let info = "\"GameInfo\"\n{\n\tgame\t\"Some Game\"\n\ttitle\t\"SOME GAME'\"\n\ttitle2\t\"two\"\n\
+                    \ttype multiplayer_only\n\tFileSystem { SteamAppId 1 }\n}\n";
+        assert_eq!(game_title(info), ["SOME GAME'", "two"]);
+        assert!(game_title("GameInfo { title \"\" }").is_empty());
+        assert!(game_title("").is_empty());
+    }
+
+    #[test]
+    fn title_font_and_its_files() {
+        let kv = parse_pc(
+            r#"Scheme {
+                Fonts {
+                    ClientTitleFont { "1" { "name" "Title Face" "tall" "60" "weight" "0" } }
+                }
+                CustomFontFiles { "1" "resource/a.ttf" "2" { "font" "resource/b.ttf" "name" "B" } }
+            }"#,
+        );
+        let scheme = &kv.items()[0].1;
+        let (family, tall, files) = title_font(scheme).unwrap();
+        assert_eq!((family.as_str(), tall), ("Title Face", 60.0));
+        assert_eq!(files, ["resource/a.ttf", "resource/b.ttf"]);
+        assert!(title_font(&parse_pc("Scheme { Fonts { } }").items()[0].1).is_none());
     }
 
     #[test]

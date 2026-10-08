@@ -86,9 +86,18 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   tabs' controls where their `OptionsSub*.res` put them (ours are a
   column), OK / Cancel / Apply (changes apply at once now), dragging
   frames, the keyboard tab's "Advanced" dialog, binds for the actions
-  greyed in it (`invprev`, `+voicerecord`, `autobuy`, ...), the game's
-  logo over the entries, comparing the look with CS:S's (refcmp has no
-  menu views).
+  greyed in it (`invprev`, `+voicerecord`, `autobuy`, ...), comparing
+  the look with CS:S's (refcmp has no menu views).
+- The main menu is in: startup without a map shows CS:S's (its
+  background picture, the title in its logo font, `GameMenu.res`'s
+  entries; Resume and Disconnect only in a game, Find Servers greyed),
+  the same menu over the game on Esc, `disconnect` back to it, and ours
+  after CS:S's (quick start, greybox, bots, team, console). Left: the
+  title's exact place and the entries' spacing checked against CS:S at a
+  few resolutions, menu music and sounds (`ui/buttonrollover`), a
+  loading bar with progress instead of the map name, the player list,
+  the server browser (needs networking), a mashup debug-options page
+  (the overlay cvars as check boxes).
 - Debug overlays: `mashup_drawhitboxes`, `mashup_healthbars`,
   `mashup_drawnav`, `mashup_drawbots` exist; add more as features need
   them (sound radii, triggers).

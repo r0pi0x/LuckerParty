@@ -354,7 +354,8 @@ pub struct ActiveHud(pub Arc<GameHud>, pub HashMap<usize, Handle<Image>>);
 /// A game's own game menu and options dialog look (Source's GameUI), read
 /// from the install once, independent of the map: the scheme's colours,
 /// numbers and fonts, the menu's entries, the options pages' layouts and
-/// the keyboard page's action list, localised strings and map thumbnails.
+/// the keyboard page's action list, localised strings, map thumbnails, and
+/// the main menu's background pictures and title.
 #[derive(Clone, Debug, Default)]
 pub struct GameUi {
     /// Named colours and the base settings that name them (`Frame.BgColor`).
@@ -374,6 +375,14 @@ pub struct GameUi {
     pub actions: Vec<KeyAction>,
     /// Map thumbnails by lower-case map name.
     pub thumbnails: HashMap<String, UiImage>,
+    /// The main menu's background for 4:3 screens and for wider ones,
+    /// drawn stretched over the whole screen.
+    pub background: Option<UiImage>,
+    pub background_wide: Option<UiImage>,
+    /// The game's title over the main menu's entries, one line each.
+    pub title: Vec<String>,
+    /// The title's font: a TrueType file and its height in scheme pixels.
+    pub title_font: Option<(Arc<Vec<u8>>, f32)>,
 }
 
 impl GameUi {
@@ -386,6 +395,18 @@ impl GameUi {
     /// A scheme colour by name.
     pub fn color(&self, name: &str) -> Option<[u8; 4]> {
         self.colors.get(name).copied()
+    }
+
+    /// The main menu background for a screen this wide over its height:
+    /// the widescreen one past 4:3, else the 4:3 one (either when the
+    /// other is missing).
+    pub fn background_for(&self, aspect: f32) -> Option<&UiImage> {
+        let (four_three, wide) = (self.background.as_ref(), self.background_wide.as_ref());
+        if aspect > 4.0 / 3.0 + 0.01 {
+            wide.or(four_three)
+        } else {
+            four_three.or(wide)
+        }
     }
 }
 
@@ -448,6 +469,28 @@ mod tests {
         assert_eq!(r.min, Vec2::new(260.0, 90.0));
         let info = UiControl::new("price", UiKind::Label, 140.0, 134.0, 150.0, 24.0);
         assert_eq!(info.rect(r, 2.0).min, Vec2::new(260.0 + 280.0, 90.0 + 268.0));
+    }
+
+    #[test]
+    fn widescreen_background_past_four_three() {
+        let pic = |w| UiImage {
+            width: w,
+            height: 1,
+            rgba8: vec![0; w as usize * 4],
+        };
+        let mut ui = GameUi {
+            background: Some(pic(4)),
+            background_wide: Some(pic(16)),
+            ..Default::default()
+        };
+        assert_eq!(ui.background_for(16.0 / 9.0).map(|p| p.width), Some(16));
+        assert_eq!(ui.background_for(16.0 / 10.0).map(|p| p.width), Some(16));
+        assert_eq!(ui.background_for(4.0 / 3.0).map(|p| p.width), Some(4));
+        assert_eq!(ui.background_for(5.0 / 4.0).map(|p| p.width), Some(4));
+        ui.background_wide = None;
+        assert_eq!(ui.background_for(16.0 / 9.0).map(|p| p.width), Some(4));
+        ui.background = None;
+        assert!(ui.background_for(1.0).is_none());
     }
 
     #[test]

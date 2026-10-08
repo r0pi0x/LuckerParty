@@ -26,6 +26,11 @@ cargo run --features dev -- --screenshot shot.png --frames 90 \
     --spawn 0,1,12 --look 30,-10 --movement mashup:noclip
 ```
 
+With no `--map` the game starts at CS:S's main menu (the greybox loaded
+unseen behind it), unless `--spawn`, `--look`, `--movement` or `--views`
+is given: those start playing on the greybox, as above. `--map greybox`
+starts on the greybox too. So `--window 1280x720 --screenshot menu.png`
+photographs the main menu.
 Add `--map cs_source:de_dust2` to load a real map (noclip plus
 `--spawn x,75,z --look 0,-89` gives a top-down view). `--lightmap-only`
 renders surfaces white so only baked lighting shows: misoriented lightmaps
@@ -82,10 +87,16 @@ Only `Reflect`-registered types are visible; register new core components in
   menu.png +menu options`; `menu keyboard` (or `mouse`, `audio`, `video`,
   `multiplayer`) opens the options on that tab. Cvars it shows are read
   when it opens: put `+cl_crosshaircolor 3` before `+menu`. The log
-  line `game menu: GameUI look (...)` says the install's look loaded
-  (else the built-in one is drawn). Its logic is unit-tested in
+  line `game menu: GameUI look (...)` says the install's look loaded,
+  with how many main menu backgrounds and the title it found (else the
+  built-in one is drawn). Its logic is unit-tested in
   `client::game_menu` (keys and clicks in, console lines out; rebinding
-  with real key presses headless).
+  with real key presses headless; which entries show in and out of a
+  game; `disconnect` and `map greybox` on a world). The main menu over
+  a map: `--map cs_source:de_dust2 --screenshot m.png +wait 30 +menu`;
+  back to the main menu: `+disconnect`; `map greybox` plays the greybox
+  from anywhere; `toggleconsole` opens the console as the menu's
+  Console entry does.
 - Binds: `bindlist` lists them; every game key is one (`client::binds`),
   `binddefaults` puts the defaults back.
 - `buymenu [n]` and `chooseteam` open the buy menu (on category n) and

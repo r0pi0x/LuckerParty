@@ -78,7 +78,7 @@ fn color(text: &str) -> Option<[u8; 4]> {
 }
 
 /// A TrueType file's family name (name table, ID 1).
-fn family_name(ttf: &[u8]) -> Option<String> {
+pub(crate) fn family_name(ttf: &[u8]) -> Option<String> {
     let u16_at = |o: usize| ttf.get(o..o + 2).map(|b| u16::from_be_bytes([b[0], b[1]]));
     let u32_at = |o: usize| ttf.get(o..o + 4).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]));
     let tables = u16_at(4)? as usize;

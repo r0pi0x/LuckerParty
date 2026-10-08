@@ -87,6 +87,8 @@ pub struct ConsoleUi {
     scroll: usize,
     pub filter: String,
     pub timestamps: bool,
+    /// `toggleconsole` asked to open or close it (next frame).
+    toggle_request: bool,
     /// The output lines on screen, and a selection of them (first and
     /// last row, in the order dragged) made with the mouse.
     shown: Vec<String>,
@@ -208,7 +210,8 @@ pub(super) fn toggle(
     menu: Option<Res<super::game_menu::GameMenu>>,
 ) {
     let close = ui.open && keys.just_pressed(KeyCode::Escape) && ui.search.is_none();
-    if keys.just_pressed(KeyCode::Backquote) || close {
+    let requested = std::mem::take(&mut ui.toggle_request);
+    if keys.just_pressed(KeyCode::Backquote) || close || requested {
         ui.open = !ui.open;
         **root = if ui.open {
             Visibility::Visible
@@ -1320,6 +1323,7 @@ fn finish_map_load(w: &mut World) {
         Err(e) => {
             w.resource_mut::<Console>()
                 .print(crate::console::Level::Error, format!("map {id}: {e}"));
+            super::game_menu::map_load_failed(w);
             return;
         }
     };
@@ -1347,7 +1351,41 @@ fn finish_map_load(w: &mut World) {
     }
     crate::rules::respawn_everyone(w);
     w.resource_mut::<Console>().info(summary);
+    super::game_menu::entered_game(w);
 }
+
+/// The greybox map in place of whatever map is loaded (`map greybox`, and
+/// `disconnect`, which leaves it behind the main menu), everyone respawned
+/// on it at the default tick.
+pub(super) fn load_greybox(w: &mut World) {
+    w.remove_resource::<MapLoad>();
+    crate::map::unload_map(w);
+    crate::greybox::unload(w);
+    crate::greybox::respawn(w);
+    w.remove_resource::<crate::map::ActiveMapLook>();
+    w.insert_resource(crate::map::LoadedMapName(GREYBOX.into()));
+    w.insert_resource(Time::<Fixed>::from_hz(crate::DEFAULT_TICK_HZ));
+    let cams: Vec<Entity> = w
+        .query_filtered::<Entity, With<super::FirstPersonCamera>>()
+        .iter(w)
+        .collect();
+    for c in cams {
+        let mut e = w.entity_mut(c);
+        e.insert(bevy::core_pipeline::tonemapping::Tonemapping::default());
+        // The map's sky drew under the view (no clear); the greybox has none.
+        if let Some(mut camera) = e.get_mut::<Camera>() {
+            camera.clear_color = ClearColorConfig::Default;
+        }
+    }
+    let mut skies = w.query_filtered::<&mut Camera, With<crate::map::SkyboxCamera>>();
+    for mut camera in skies.iter_mut(w) {
+        camera.is_active = false;
+    }
+    crate::rules::respawn_everyone(w);
+}
+
+/// The greybox map's name for `map` and `--map`.
+pub const GREYBOX: &str = "greybox";
 
 fn local_player(w: &mut World) -> Result<Entity, String> {
     let mut q = w.query_filtered::<Entity, With<LocalPlayer>>();
@@ -1563,9 +1601,15 @@ fn client_commands(app: &mut App) {
     )
     .console_command(
         "map",
-        "map <name>: load a CS:S map (Tab lists the install's maps).",
+        "map <name>: load a CS:S map (Tab lists the install's maps); map greybox: mashup's test map.",
         |w, a| {
             let name = a.first().ok_or("map <name>")?;
+            if name.eq_ignore_ascii_case(GREYBOX) {
+                w.resource_mut::<Console>().submit("bot_kick");
+                load_greybox(w);
+                super::game_menu::entered_game(w);
+                return Ok(Some("loaded the greybox".into()));
+            }
             if !map_names().is_empty() && !map_names().iter().any(|m| m == name) {
                 return Err(format!("no map \"{name}\" in the install"));
             }
@@ -1583,6 +1627,20 @@ fn client_commands(app: &mut App) {
             Ok(Some(format!("loading {id}...")))
         },
     )
+    .console_command(
+        "disconnect",
+        "Leave the game: bots kicked, the map unloaded, back to the main menu.",
+        |w, _| {
+            w.resource_mut::<Console>().submit("bot_kick");
+            load_greybox(w);
+            super::game_menu::left_game(w);
+            Ok(None)
+        },
+    )
+    .console_command("toggleconsole", "Open or close the console.", |w, _| {
+        w.resource_mut::<ConsoleUi>().toggle_request = true;
+        Ok(None)
+    })
     .console_command("quit", "Quit (binds and changed cvars are saved).", |w, _| {
         w.write_message(AppExit::Success);
         Ok(None)

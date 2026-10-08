@@ -52,7 +52,8 @@ pub struct Args {
     pub spawn: Option<Vec3>,
     /// Initial look direction: yaw and pitch in degrees.
     pub look: Option<Vec2>,
-    /// Map ID such as `cs_source:de_dust2`; the greybox map when absent.
+    /// Map ID such as `cs_source:de_dust2`, or `greybox`. Without it the
+    /// greybox is loaded behind the main menu (see `starts_in_game`).
     pub map: Option<String>,
     /// Debug view: white surfaces, only baked lighting.
     pub lightmap_only: bool,
@@ -84,7 +85,9 @@ usage: mashup [options]
   --movement <id>           movement implementation for the local player
   --spawn <x,y,z>           spawn position in meters
   --look <yaw,pitch>        initial look angles in degrees (yaw 0 = -Z)
-  --map <game:name>         load a game's map, e.g. cs_source:de_dust2 (default: greybox)
+  --map <game:name>         load a game's map, e.g. cs_source:de_dust2, or greybox (mashup's
+                            test map). Without it the game starts at the main menu, unless
+                            --spawn, --look, --movement or --views is given (then: greybox)
   --cvar <name=value>       set a movement console variable, e.g. sv_airaccelerate=150
                             (repeatable; cs_source: sv_accelerate, sv_airaccelerate,
                             sv_friction, sv_stopspeed, sv_gravity, sv_maxspeed,
@@ -106,6 +109,21 @@ usage: mashup [options]
                             ++attack holds an action, e.g. to fire in a --screenshot run)";
 
 impl Args {
+    /// Whether the run starts playing (a map given, or the player placed
+    /// or its movement or views chosen: the greybox then) rather than at
+    /// the main menu.
+    pub fn starts_in_game(&self) -> bool {
+        self.map.is_some() || self.spawn.is_some() || self.look.is_some() || self.movement.is_some() || self.views.is_some()
+    }
+
+    /// The game map to load at startup: `--map` unless it names the
+    /// greybox (`greybox` or `mashup:greybox`), which is there anyway.
+    pub fn game_map(&self) -> Option<&str> {
+        self.map
+            .as_deref()
+            .filter(|m| !matches!(m.to_lowercase().as_str(), "greybox" | "mashup:greybox"))
+    }
+
     pub fn parse() -> Self {
         Self::parse_from(std::env::args().skip(1)).unwrap_or_else(|e| {
             eprintln!("{e}\n\n{USAGE}");
@@ -442,5 +460,27 @@ fn follow_eye(
             cam.translation = offset;
             cam.rotation = look;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(line: &str) -> Args {
+        Args::parse_from(line.split_whitespace().map(String::from)).unwrap()
+    }
+
+    #[test]
+    fn the_main_menu_unless_the_run_starts_playing() {
+        assert!(!args("").starts_in_game());
+        assert!(!args("--screenshot a.png --window 1280x720 +menu options").starts_in_game());
+        assert!(args("--map cs_source:de_dust2").starts_in_game());
+        assert!(args("--spawn 0,1,12").starts_in_game());
+        assert!(args("--movement mashup:noclip").starts_in_game());
+        // The greybox is a map name; no game map to load for it.
+        let a = args("--map greybox");
+        assert!(a.starts_in_game() && a.game_map().is_none());
+        assert_eq!(args("--map cs_source:de_nuke").game_map(), Some("cs_source:de_nuke"));
     }
 }

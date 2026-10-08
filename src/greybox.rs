@@ -45,6 +45,17 @@ pub fn unload(world: &mut World) {
     world.remove_resource::<MapWater>();
 }
 
+/// Spawn the greybox map again (after another map was unloaded).
+pub fn respawn(world: &mut World) {
+    world.insert_resource(GlobalAmbientLight {
+        brightness: 400.0,
+        ..default()
+    });
+    if let Err(e) = world.run_system_cached(spawn) {
+        error!("spawning the greybox: {e}");
+    }
+}
+
 struct Block {
     name: String,
     size: Vec3,
