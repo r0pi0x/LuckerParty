@@ -105,6 +105,15 @@ fn cs_assault_model_doors_open_away_on_use() {
         let e = &map.entities[i];
         assert!(e.mover && !e.hulls.is_empty(), "door {i} has a node and volumes");
         assert_eq!(e.get(mashup::map::entities::DOOR_MOVE_KEY), Some("Doors.Move1"), "skin 5's door_options");
+        // Its hardware's handle sounds ("hardwareN" in door_options).
+        let hardware = e.get("hardware").unwrap_or("0");
+        let locked = e.get(mashup::map::entities::DOOR_LOCKED_KEY);
+        eprintln!("door {i}: hardware {hardware}, locked sound {locked:?}");
+        let want = match hardware {
+            "0" => "DoorSound.Null".to_string(),
+            n => format!("DoorHandles.Locked{n}"),
+        };
+        assert_eq!(locked, Some(want.as_str()));
         // The door model rides its own node.
         assert!(map.props.iter().any(|p| p.entity == Some(i) && p.parent == Some(i)));
     }

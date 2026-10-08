@@ -88,6 +88,10 @@ pub const PROP_MASS_KEY: &str = "mashup_prop_mass";
 pub const DOOR_MOVE_KEY: &str = "mashup_door_move";
 pub const DOOR_OPEN_KEY: &str = "mashup_door_open";
 pub const DOOR_CLOSE_KEY: &str = "mashup_door_close";
+/// A model door's handle sounds for its `hardware` type (Source
+/// `door_options` "hardwareN"): used while locked, and unlocked.
+pub const DOOR_LOCKED_KEY: &str = "mashup_door_locked";
+pub const DOOR_UNLOCKED_KEY: &str = "mashup_door_unlocked";
 
 /// "x y z" (or "[x y z]") as a vector; missing or bad parts are 0.
 pub fn parse_vector(s: &str) -> Vec3 {

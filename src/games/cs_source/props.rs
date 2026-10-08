@@ -15,7 +15,7 @@ use super::{
 use crate::map::{
     LightProbe, MapBone, MapCollision, MapConvex, MapData, MapMesh, MapMeshLook, MapModel, MapPhysics, MapProp, MapRig,
     PropSolid, PushAway,
-    entities::{DOOR_CLOSE_KEY, DOOR_MOVE_KEY, DOOR_OPEN_KEY},
+    entities::{DOOR_CLOSE_KEY, DOOR_LOCKED_KEY, DOOR_MOVE_KEY, DOOR_OPEN_KEY, DOOR_UNLOCKED_KEY},
 };
 
 /// Source rotation (pitch about Y, yaw about Z, roll about X; degrees) in
@@ -1108,6 +1108,11 @@ fn place_props(
                     extra.push((DOOR_OPEN_KEY.to_string(), open));
                     extra.push((DOOR_CLOSE_KEY.to_string(), close));
                 }
+                let hardware = data.entities[index].get("hardware").map_or(0, |h| h.trim().parse().unwrap_or(0));
+                if let Some((locked, unlocked)) = key_values.get(&model).and_then(|kv| door_hardware(kv, hardware)) {
+                    extra.push((DOOR_LOCKED_KEY.to_string(), locked));
+                    extra.push((DOOR_UNLOCKED_KEY.to_string(), unlocked));
+                }
                 let hulls = door_hulls(&data.models[model]);
                 let e = &mut data.entities[index];
                 e.hulls = hulls;
@@ -1406,6 +1411,29 @@ fn prop_keys(
 }
 
 /// A door model's (move, open, close) sound entries from its
+/// A door model's handle sounds for its `hardware` type: (locked,
+/// unlocked) from the `door_options` block "hardwareN" (stock door
+/// models: hardware0 "DoorSound.Null", hardware1/2 "DoorHandles.Locked1",
+/// "DoorHandles.Unlocked1"...). The spec leaves which entries the
+/// hardware picks open (doors_buttons.md Q8): this is our reading of the
+/// model data.
+fn door_hardware(text: &str, hardware: i32) -> Option<(String, String)> {
+    use super::hud::Kv;
+    fn find<'a>(kv: &'a Kv, name: &str) -> Option<&'a Kv> {
+        kv.items().iter().find_map(|(k, v)| {
+            if k.eq_ignore_ascii_case(name) {
+                Some(v)
+            } else {
+                find(v, name)
+            }
+        })
+    }
+    let kv = super::hud::parse(text);
+    let block = find(&kv, "door_options")?.get(&format!("hardware{hardware}"))?;
+    let s = |k: &str| block.str(k).unwrap_or("").to_string();
+    Some((s("locked"), s("unlocked")))
+}
+
 /// `door_options` key values: the block for its skin ("skinN"), else
 /// "default".
 fn door_options(text: &str, skin: i32) -> Option<(String, String, String)> {

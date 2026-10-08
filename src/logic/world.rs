@@ -244,6 +244,29 @@ pub enum Effect {
         size: Vec2,
         velocity: Vec3,
         tile: bool,
+        /// The shards' size (units).
+        shard: f32,
+    },
+    /// A collapsing window pane drops a falling piece (the pane piece
+    /// model, body `body`): its reference corner and axes (along the
+    /// columns, the rows, the window's normal; entity space), the pane's
+    /// size (units) and its spin (deg/s about each axis).
+    PaneFall {
+        at: Vec3,
+        axes: [Vec3; 3],
+        size: Vec2,
+        body: usize,
+        spin: Vec3,
+    },
+    /// An explosion (a breakable's `explodemagnitude`): radius damage
+    /// `damage` within `radius` units of `at` (entity space); `inflictor`
+    /// (what exploded) takes none of it.
+    Explosion {
+        at: Vec3,
+        damage: f32,
+        radius: f32,
+        attacker: Option<Who>,
+        inflictor: EntId,
     },
     /// A bullet or club hit shattered the pane it hit: the glass-impact
     /// burst at the hit point with the trace normal (entity space;

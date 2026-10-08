@@ -187,10 +187,25 @@ impl<'a> MaterialLoader<'a> {
             self.missing.push(format!("{vmt_path}: not found"));
             return fallback;
         };
-        let (text, stand_in) = stand_in_shader(&text);
+        let (text, mut stand_in) = stand_in_shader(&text);
+        // A patch of a ShatteredGlass material (a window's cubemap-patched
+        // `$crackmaterial`) parses through its stand-in too.
+        let patched_glass = std::cell::Cell::new(false);
         let material = vmt_parser::from_str(&text).map_err(VmtError::from).and_then(|m| {
-            m.resolve(|include: &str| self.read_text(include).ok_or(VmtError::Missing(include.to_string())))
+            m.resolve(|include: &str| {
+                let inner = self.read_text(include).ok_or(VmtError::Missing(include.to_string()))?;
+                Ok(match stand_in_shader(&inner) {
+                    (std::borrow::Cow::Owned(s), Some(StandIn::ShatteredGlass)) => {
+                        patched_glass.set(true);
+                        s
+                    }
+                    _ => inner,
+                })
+            })
         });
+        if patched_glass.get() {
+            stand_in = Some(StandIn::ShatteredGlass);
+        }
         let material = match material {
             Ok(m) => m,
             Err(e) => {
@@ -273,7 +288,7 @@ impl<'a> MaterialLoader<'a> {
             _ => None,
         };
         let detail = detail_source
-            .filter(|_| detail_mode <= 4)
+            .filter(|_| detail_mode <= 4 && stand_in != Some(StandIn::ShatteredGlass))
             .and_then(|(name, scale, factor)| {
                 // Mod2x and WorldTwoTextureBlend use the texel as stored;
                 // additive and translucent decode sRGB.
@@ -382,6 +397,13 @@ impl<'a> MaterialLoader<'a> {
                 DecalBlend::Alpha
             },
         })
+    }
+
+    /// A key of material `name` (as `resolve` takes it), e.g.
+    /// `$crackmaterial`: lower-case key, the value as written.
+    pub fn material_value(&self, name: &str, key: &str) -> Option<String> {
+        let text = self.read_text(&format!("materials/{}.vmt", normalize(name)))?;
+        self.keys(&text, 0).remove(&key.to_lowercase())
     }
 
     fn keys(&self, text: &str, depth: u32) -> HashMap<String, String> {
@@ -834,6 +856,11 @@ enum StandIn {
     /// (DecalBaseTimesLightmapAlphaBlendSelfIllum on de_nuke): a translucent
     /// LightmappedGeneric decal. Self-illumination isn't modelled.
     Decal,
+    /// ShatteredGlass (a breakable window's `$crackmaterial`): a
+    /// translucent LightmappedGeneric showing its crack texture (`$detail`,
+    /// the same image as its "dummy" base in stock materials) as the base;
+    /// its per-pane proxy isn't modelled (the panes are cut from the mesh).
+    ShatteredGlass,
 }
 
 /// `text` with an unknown shader name replaced by its stand-in.
@@ -850,6 +877,7 @@ fn stand_in_shader(text: &str) -> (std::borrow::Cow<'_, str>, Option<StandIn>) {
     let (stand_in, extra) = match shader.as_str() {
         "worldtwotextureblend" => (StandIn::TwoTextureBlend, ""),
         "eyes" | "teeth" => (StandIn::Model, ""),
+        "shatteredglass" => (StandIn::ShatteredGlass, ""),
         s if s.starts_with("decalbasetimeslightmap") => {
             (StandIn::Decal, "\n\"$decal\" \"1\"\n\"$translucent\" \"1\"\n")
         }
