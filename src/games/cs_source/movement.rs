@@ -19,7 +19,7 @@ use bevy::prelude::*;
 use crate::{
     core::{
         BaseVelocity, Damage, EntityGravity, Health, Hitgroup, Intent, MapBrush, MaxSpeed, MovementState, MovingSolid,
-        SimSet, Velocity,
+        PredictedAppExt, Velocity,
     },
     map::{
         MapBrushCollider, MapBrushTree, MapBrushes, MapTerrain, MapTerrainCollider, MapWater, PhysicsProp, PlaySound, PropSurface,
@@ -503,7 +503,8 @@ impl Plugin for SourceMovementPlugin {
             );
         }
         app.register_movement::<SourceMovement>(ID)
-            .add_systems(FixedUpdate, step.in_set(SimSet::Movement))
+            .add_systems(crate::core::Predict::Movement, step)
+            .predicted::<SourceMovement>()
             .add_plugins((super::pushaway::PushAwayPlugin, super::shadow::ShadowPlugin));
     }
 }
@@ -1938,11 +1939,11 @@ fn step(
     mut play: MessageWriter<PlaySound>,
     mut damage: MessageWriter<Damage>,
     cfg: Res<SourceMovementConfig>,
-    time: Res<Time>,
+    (clock, first): (Res<crate::core::SimClock>, Res<crate::core::FirstTimePredicted>),
     other_characters: Query<(Entity, &ColliderAabb, Option<&Health>), (With<Intent>, Without<SourceMovement>)>,
     (health, god): (Query<&Health>, Query<(), With<crate::core::God>>),
 ) {
-    let dt = time.delta_secs();
+    let dt = clock.dt();
     // Every living character's box: Source hulls for Source movers, else
     // the collider's bounds.
     let alive = |e: Entity| health.get(e).is_ok_and(|h| h.current > 0.0) || health.get(e).is_err();
@@ -2068,7 +2069,11 @@ fn step(
                 **b = new;
             }
         }
-        if mover.fall_damage > 0.0 {
+        // Damage and sounds only the first time a command runs.
+        if !first.0 {
+            mover.sounds.clear();
+        }
+        if mover.fall_damage > 0.0 && first.0 {
             // Health is normalized: 1.0 = 100 points. No attacker, no
             // armour (measured: armour doesn't absorb it).
             damage.write(Damage {

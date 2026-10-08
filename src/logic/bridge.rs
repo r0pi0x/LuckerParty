@@ -74,7 +74,9 @@ impl Plugin for LogicPlugin {
                     LogicSet::Pre.after(SimSet::Rules).before(SimSet::Movement),
                     LogicSet::Post.after(SimSet::Movement).before(SimSet::Weapons),
                     LogicSet::Damage.after(SimSet::Weapons),
-                ),
+                )
+                    // Map logic is the server's.
+                    .run_if(crate::core::authoritative),
             )
             .init_resource::<LogicRecord>()
             .add_systems(FixedUpdate, (load, apply_record, pre).chain().in_set(LogicSet::Pre))

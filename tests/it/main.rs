@@ -26,6 +26,7 @@ mod movement;
 mod nav;
 mod objectives;
 mod phy_spec;
+mod prediction;
 mod radio;
 mod ragdoll;
 mod ragdoll_spec;

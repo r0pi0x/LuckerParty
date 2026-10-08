@@ -143,7 +143,8 @@ pub(super) fn plugin(app: &mut App) {
                     .before(SimSet::Movement),
                 rescue.after(SimSet::Movement).before(SimSet::Weapons),
                 hurt.after(crate::core::apply_damage),
-            ),
+            )
+                .run_if(crate::core::authoritative),
         );
     resource_cvar::<HostageRules, u32>(
         app,

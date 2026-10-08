@@ -160,7 +160,7 @@ pub struct Filter {
 /// ignored. Everything else (other commands: quit, exec, bind, connect,
 /// rcon, changelevel, map, kick, writing configs, plugin commands such
 /// as `sm_say`; several commands on one line) is refused.
-pub const SETTING_PREFIXES: &[&str] = &["sv_", "mp_", "phys_", "bot_", "ammo_"];
+pub const SETTING_PREFIXES: &[&str] = crate::console::SERVER_PREFIXES;
 
 /// Parts of names a map may never set although their prefix fits:
 /// passwords, remote control, downloads and uploads, logging, bans,

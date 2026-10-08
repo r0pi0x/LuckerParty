@@ -1,6 +1,7 @@
 # Plan: multiplayer
 
-Status: research and design (2026-10-08). Nothing built. Recommendation:
+Status: slice 0 done but per-tick server hitbox poses (moved to slice 4;
+2026-10-08); no networking yet. Recommendation:
 **bevy_replicon + renet (netcode over UDP)** for transport and
 replication; **our own Source-style prediction, interpolation and lag
 compensation** on top. Slices below; slice 0 is refactoring that pays off
@@ -374,6 +375,44 @@ with tests passing and something to see.
    per-tick hitbox poses from simulation values. Tests: existing ones
    unchanged; a replay test (save state, run 20 commands, restore, rerun:
    identical).
+   Progress (2026-10-08):
+   - [x] `core::NetRole { Standalone, Server, Client }` and the
+     `core::authoritative` run condition on bots, rules (rounds included),
+     `core::apply_damage`, the logic sets and objectives (bomb, hostages).
+   - [x] `Intent::command`, stamped in a new `SimSet::Commands` (after the
+     rules, before movement): the tick plus the character's `Seed`.
+     **Changed from §1:** Source numbers commands per client, and seeds
+     come from the command number while curtime comes from the tickbase;
+     with "command number == tick" for everyone, all players firing on the
+     same tick would share one spread pattern. So command numbers are
+     offset per character, and time stays the tick's (`core::SimClock`).
+     Slice 2 maps a client's command numbers to ticks with that offset.
+   - [x] Weapon timers on `core::SimClock` (set from `Time<Fixed>` at the
+     start of every tick, bit-identical to what `Time` gave; a replay sets
+     it per command), also movement's `dt`, punch decay, recoil reset.
+   - [x] Spread seed from the command number (spec 4.2: MD5, `& 255`,
+     pellets at `seed + 1 + i`; T1/T1b unit tests in
+     `weapon::random`); recoil rolls by the spec's CRC32 shared-random rule
+     (label and extra ours). The generator stays ours (Q1).
+   - [x] `core::Predict` schedules (`Select`, `Movement`, `Weapons`) run
+     from their places in `FixedUpdate`; `core::predict` runs a command
+     through all three. `core::FirstTimePredicted` gates sounds, damage,
+     armour and pushes. `core::PredictedComponents` saves and restores the
+     registered predicted components. Not yet: `WeaponEvent`s are still
+     written on a replay (recoil reads them); slice 4 marks or drops them
+     for the effects that read them. "One entity" holds because on a
+     client only the local player will carry movement/weapon components.
+   - [x] Cvar ownership: `console::CvarScope` (Local, Server, Replicated)
+     from the name (`SERVER_PREFIXES`); not acted on yet.
+   - [x] Pose history keyed by tick (`PoseFrame::tick`,
+     `SkeletonPose::at_tick`), kept 1 s (`sv_maxunlag`).
+   - [ ] Hitboxes posed per tick from simulation values (not the drawn,
+     client-rate animation): moved to slice 4 with lag compensation; it
+     means driving body animation in the fixed tick.
+   - [x] Tests: `tests/it/prediction.rs` (100 commands of walking,
+     jumping, ducking, an AK-47 spray and weapon switches replayed through
+     `core::predict` from saved state: bit-identical, no sounds or damage;
+     a client runs no damage or bots; pose history by tick).
 1. **[ ] Transport, connect/disconnect, replicated characters on the
    greybox** (M, medium risk: the library choice is proven here). `net`
    module and layering rule, renet + replicon, `connect`/`disconnect`/
@@ -392,6 +431,7 @@ with tests passing and something to see.
    eased, other players' bodies animating from replicated state.
 4. **[ ] Weapons** (L, high). Inventory and weapon state for the owner,
    predicted firing (timing, ammo, spread, punch, effects first time),
+   hitboxes posed per tick from simulation values (from slice 0),
    server hit detection with lag compensation, shot events to others with
    seeds, impacts and tracers for others' shots, damage/death/kill feed
    from the server, grenades thrown server-side and interpolated,

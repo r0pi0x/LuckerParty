@@ -226,7 +226,9 @@ pub(super) fn plugin(app: &mut App) {
                     .after(WeaponFrame)
                     .in_set(SimSet::Weapons),
                 on_death.after(SimSet::Weapons),
-            ),
+            )
+                // Objectives are the server's.
+                .run_if(crate::core::authoritative),
         );
     resource_cvar::<BombRules, f32>(
         app,
