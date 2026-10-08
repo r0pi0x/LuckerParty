@@ -479,6 +479,9 @@ fn mesh_look(materials: &mut MaterialLoader, dirs: &[String], name: &str) -> Map
         unlit: r.unlit,
         envmap: r.envmap,
         tint: r.tint,
+        detail: r.detail,
+        base_transform: r.base_transform,
+        selfillum: r.selfillum,
     }
 }
 
@@ -623,6 +626,9 @@ fn convert_model_in(
                             unlit: m.unlit,
                             envmap: m.envmap,
                             tint: m.tint,
+                            detail: m.detail,
+                            base_transform: m.base_transform,
+                            selfillum: m.selfillum,
                         },
                     })
                     .collect()

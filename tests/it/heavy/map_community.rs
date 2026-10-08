@@ -383,3 +383,41 @@ fn envmap_only_ramps_reflect_their_sky() {
         assert!(m.envmap.is_some_and(|e| e.cubemap.is_some()), "{}: its sky cubemap", m.material);
     }
 }
+
+/// Material effects community maps use (specs/cs_source/shaders.md 2, 4,
+/// 6 and open questions 16 and 18): detail blend modes past 0 and 1,
+/// `$selfillum`, `$basetexturetransform` and its TextureScroll proxy, sky
+/// faces' half-height transform.
+#[test]
+fn material_effects() {
+    use mashup::map::{DetailMode, MapMesh};
+    fn meshes(map: &MapData) -> impl Iterator<Item = &MapMesh> {
+        map.meshes.iter().chain(map.models.iter().flat_map(|m| &m.meshes))
+    }
+    if let Some(map) = load("kz_ancient_ruins") {
+        // A temple prop's moss: detail mode 2 (model shader: decoded).
+        let moss = meshes(&map)
+            .find(|m| m.material.contains("doorways_moss"))
+            .expect("the doorway moss");
+        let d = moss.detail.expect("its detail");
+        assert_eq!(d.mode, DetailMode::Source(2));
+        assert!(map.textures[d.texture].srgb, "model detail other than mod2x is sRGB-decoded");
+        // Self-lit props (base alpha masks).
+        assert!(meshes(&map).any(|m| m.selfillum.is_some()), "a self-illuminated surface");
+        // A scrolling texture (TextureScroll on $basetexturetransform).
+        assert!(
+            meshes(&map).any(|m| m.base_transform.scroll != [0.0, 0.0]),
+            "a scrolling base texture"
+        );
+    }
+    if let Some(map) = load("surf_demise") {
+        if let Some(bone) = meshes(&map).find(|m| m.material.contains("bonecolor")) {
+            assert_eq!(bone.detail.map(|d| d.mode), Some(DetailMode::Source(8)));
+        }
+    }
+    if let Some(map) = load("bhop_flatzone") {
+        // Half-height sky faces: "center 0 0 scale 1 2" on the sides.
+        let sky = map.sky.as_ref().expect("a sky");
+        assert!(sky.transforms.iter().any(|t| !t.is_identity()), "sky face transforms");
+    }
+}

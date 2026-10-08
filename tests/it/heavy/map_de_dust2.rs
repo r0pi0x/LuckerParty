@@ -847,7 +847,7 @@ fn detail_textures() {
         .find(|m| m.material.contains("ducrtlrgsd"))
         .expect("crate side has a detail texture");
     let d = crate_mesh.detail.unwrap();
-    assert_eq!((d.mode, d.scale, d.factor), (0, [4.0, 4.0], 1.0));
+    assert_eq!((d.mode, d.scale, d.factor), (mashup::map::DetailMode::Source(0), [4.0, 4.0], 1.0));
     for m in &with {
         let c = m.positions.iter().fold(Vec3::ZERO, |a, p| a + Vec3::from(*p)) / m.positions.len() as f32;
         println!(
