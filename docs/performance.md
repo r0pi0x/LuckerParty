@@ -17,7 +17,7 @@ Performance").
   or `cargo build --profile playtest` and run `target/playtest/refcmp`).
 - A/B: `-- +r_novis 1` (no PVS culling) or `MASHUP_MERGED_WORLD=1` (the
   world as one mesh per material, nothing culled: the code before
-  chunking).
+  chunking); `MASHUP_MERGE_BRUSHES=0` (brush entities not merged).
 - Per-system CPU time: a `--features profile` build writes a Chrome
   trace (`TRACE_CHROME=<file>`, else `trace-*.json` in the working
   directory); `tracesum <file> --skip 200` prints the main and render
@@ -278,16 +278,59 @@ Pictures are unchanged: refcmp report mean abs diff de_dust2 0.0308
 (32 views), de_nuke 0.0250 (27), de_aztec 0.0409 (13), each view within
 0.0005 of the shared captures; de_port's 24 views (reflecting water)
 differ from the old build by at most 28 pixels. `refcmp vischeck` on the
-lego map: 48 views, two differ by 1732 and 1965 pixels (0.2%): a roof
-seen through a grate, which the map's PVS doesn't list from that
-cluster (with or without areaportals; backlog section 9, like de_nuke's
-nav1627_90).
+lego map: 48 views, two differ by 1732 and 1965 pixels (0.2%):
+blocks_room and blocks_room_right, a roof and walls seen through a
+ladder grate (`boharox/simpsons/{sewerladder`, alpha-tested) in a world
+brush. That brush was compiled as solid: rays from the eye through the
+grate cross a solid leaf (no cluster) and every cluster behind it is
+missing from the eye cluster's PVS (cluster 1088: 1299, 1300, 773 are
+listed, then solid, then 746, 749, 750, 752 are not; every culled hit
+lies behind solid). So the map's compiler let the grate block
+visibility, and CS:S, which draws only the leaves in the PVS, doesn't
+draw what lies behind it either. Our culling uses the map's PVS as it
+is and computes no visibility of its own, so there is nothing for
+see-through brushes to block or not; the difference stays (like sky
+brushes, see "Checks").
 
-What is left at that view: about 1770 meshes drawn (the wall of blocks is
-~580 breakables, a mesh per material each); main world ~2-5 ms of mostly
-Bevy's per-entity work (visibility checks, transform and collider
-propagation over the map's tree). Merging unbroken breakables into
-shared meshes would cut entities further.
+At that view about 1770 meshes were still drawn: the wall of blocks is
+~580 breakables, a mesh per material each.
+
+Brush entities drawn merged (`map::merge`): while a brush entity is
+where the map put it, whole and shown, its opaque and alpha-tested
+meshes are drawn through combined meshes per material and 512-unit
+chunk under the map's root, culled by the clusters their parts touch;
+its own meshes stay spawned but hidden. When it moves (doors, trains),
+breaks or is removed or turned off (`LogicHidden`: func_brush toggles),
+or shows broken panes, its triangles leave the combined meshes (their
+index buffers are rewritten without its ranges) and its own meshes are
+drawn; back home and shown (a shut door, a round restart) it rejoins.
+Blended meshes, the 3D skybox, water and areaportal window brushes
+(whose alpha changes per brush) stay on their own. The logic doesn't
+change brush entities' render mode or colour at run time; if it ever
+does, that must split the entity out too. On the lego map 767 brush
+entities go into 136 combined meshes; de_nuke 22 in 41; de_dust2 has
+none.
+
+`refcmp bench` (playtest build, 1280x720, vsync off, two interleaved
+runs, `MASHUP_MERGE_BRUSHES=0` for the unmerged runs, load 7-9 on 12
+cores):
+
+| map (views) | merged | blocks_room ms | mean frame ms | main ms | meshes drawn (blocks_room / mean) |
+|---|---|---|---|---|---|
+| lego (4) | no | 4.33 / 3.60 | 3.57 / 3.82 | 2.10 / 2.44 | 1768 / 512 |
+| lego (4) | yes | 4.46 / 3.69 | 3.61 / 3.42 | 2.11 / 1.96 | 58 / 28 |
+| de_nuke (27) | no | | 10.29 / 10.42 | 8.00 / 8.12 | 489 |
+| de_nuke (27) | yes | | 10.39 / 10.15 | 8.07 / 7.86 | 486 |
+| de_dust2 (32) | no | | 8.55 / 8.69 | 6.80 / 6.94 | 248 |
+| de_dust2 (32) | yes | | 8.81 / 8.67 | 7.08 / 6.93 | 248 |
+
+Draws at blocks_room fall 30-fold, frame times don't move: at 720p this
+view was no longer bound by draws (GPU 0.2-0.3 ms) but by the main
+world's per-entity work, which hidden meshes still cost a little
+(visibility checks skip them early). Pictures are unchanged: captures of
+the lego and de_nuke views with and without merging are identical
+except 11 pixels in one de_nuke view (smoke); `refcmp vischeck` on the
+lego map gives the same two views as before.
 
 ## Cheap wins found
 

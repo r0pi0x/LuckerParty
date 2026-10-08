@@ -2,7 +2,10 @@
 //! render assets the map spawns: brush entities' meshes with the same
 //! material share one material asset (so they draw in batches), and they
 //! are culled by the map's visibility like the world, following them as
-//! they move (docs/performance.md). On the minigame map
+//! they move (docs/performance.md); while they stay put and whole they
+//! are drawn merged per material and chunk (`map::merge`), and drawn on
+//! their own again once they move, break or are removed. On the minigame
+//! map
 //! `mg_lego_multigames_v2` (578 func_breakable, 170 func_door; skipped
 //! when it isn't in the content cache) and de_nuke (skipped without an
 //! install).
@@ -13,8 +16,11 @@ use bevy::prelude::*;
 use mashup::{
     games::{self, cs_source},
     harness::Sim,
+    core::RoundRestarts,
+    logic::{Logic, Value},
     map::{
         BrushEntityBounds, MapBrushEntity, MapData, MapPlugin,
+        merge::{MergedBrush, MergedChunk, MergedPiece},
         prop_material::PropMaterial,
         rope_material::RopeMaterial,
         sprite_material::SpriteMaterial,
@@ -179,4 +185,138 @@ fn brush_entities_are_culled_and_follow_movers() {
         }
     }
     assert!(moved > 0, "a brush entity moved");
+}
+
+/// Every combined mesh draws exactly the triangles of its merged nodes,
+/// and every node's own meshes are hidden exactly while it is merged.
+/// Returns (merged nodes, split nodes, combined meshes).
+fn check_merged(sim: &mut Sim) -> (usize, usize, usize) {
+    let world = sim.app.world_mut();
+    let nodes: HashMap<Entity, bool> = world
+        .query::<(Entity, &MergedBrush)>()
+        .iter(world)
+        .map(|(e, m)| (e, m.merged))
+        .collect();
+    let chunks: Vec<(Entity, MergedChunk, Handle<Mesh>, bool)> = world
+        .query::<(Entity, &MergedChunk, &Mesh3d, Has<LogicHidden>)>()
+        .iter(world)
+        .map(|(e, c, m, h)| (e, c.clone(), m.0.clone(), h))
+        .collect();
+    let meshes = world.resource::<Assets<Mesh>>();
+    for (e, c, mesh, hidden) in &chunks {
+        let want: Vec<u32> = c
+            .parts
+            .iter()
+            .filter(|(n, _)| nodes[n])
+            .flat_map(|(_, r)| c.indices[r.clone()].iter().copied())
+            .collect();
+        if want.is_empty() {
+            assert!(hidden, "chunk {e} has nothing merged and is hidden");
+            continue;
+        }
+        assert!(!hidden, "chunk {e} with merged nodes is drawn");
+        let got: Vec<u32> = meshes.get(mesh).unwrap().indices().unwrap().iter().map(|i| i as u32).collect();
+        assert_eq!(got, want, "chunk {e} draws its merged nodes' triangles");
+    }
+    let mut q = world.query_filtered::<(&Visibility, &ChildOf), With<MergedPiece>>();
+    for (v, parent) in q.iter(world) {
+        let merged = nodes[&parent.parent()];
+        assert_eq!(*v == Visibility::Hidden, merged, "a node's own mesh shows exactly when it is not merged");
+    }
+    let merged = nodes.values().filter(|m| **m).count();
+    (merged, nodes.len() - merged, chunks.len())
+}
+
+fn merged(sim: &mut Sim, index: usize) -> bool {
+    merge_state(sim, index).expect("a merged brush entity")
+}
+
+/// Whether map entity `index` is drawn merged; None when it never is.
+fn merge_state(sim: &mut Sim, index: usize) -> Option<bool> {
+    let world = sim.app.world_mut();
+    world
+        .query::<(&MapBrushEntity, &MergedBrush)>()
+        .iter(world)
+        .find(|(b, _)| b.0 == index)
+        .map(|(_, m)| m.merged)
+}
+
+fn input(sim: &mut Sim, target: &str, input: &str) {
+    sim.app
+        .world_mut()
+        .resource_mut::<Logic>()
+        .world
+        .queue_input(target, input, Value::Void, 0.0, None);
+}
+
+#[test]
+fn brush_entities_draw_merged_until_they_change() {
+    if let Some(map) = load("mg_lego_multigames_v2") {
+        let breakables = map.entities.iter().filter(|e| e.classname() == "func_breakable").count();
+        let mut sim = Sim::new((render_assets, MapPlugin::new(map)));
+        sim.set_tick_interval(cs_source::TICK_INTERVAL);
+        sim.ticks(2);
+        let (merged, split, chunks) = check_merged(&mut sim);
+        eprintln!("lego: {merged} merged, {split} split (movers), {chunks} combined meshes");
+        assert!(merged >= breakables / 2, "the blocks are merged ({merged} of {breakables} breakables)");
+        let own = {
+            let world = sim.app.world_mut();
+            world.query_filtered::<(), With<MergedPiece>>().iter(world).count()
+        };
+        assert!(chunks * 4 < own, "{chunks} combined meshes for {own} brush entity meshes");
+        // Break them all: each leaves its combined mesh.
+        input(&mut sim, "func_breakable", "Break");
+        sim.seconds(1.0);
+        let (after, _, _) = check_merged(&mut sim);
+        assert!(after + breakables / 2 <= merged, "broken blocks left: {merged} -> {after}");
+        sim.app.world_mut().resource_mut::<RoundRestarts>().0 += 1;
+        sim.ticks(3);
+        let (back, _, _) = check_merged(&mut sim);
+        assert!(back >= merged, "a new round merges them again: {back} of {merged}");
+    }
+
+    let Some(map) = load("de_nuke") else { return };
+    let vents: Vec<usize> = map
+        .entities
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.classname() == "func_breakable" && e.get("material") == Some("2"))
+        .map(|(i, _)| i)
+        .collect();
+    let doors: Vec<(usize, String)> = map
+        .entities
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.classname() == "func_door_rotating" && e.get("targetname").is_some_and(|n| !n.is_empty()))
+        .map(|(i, e)| (i, e.get("targetname").unwrap().to_string()))
+        .collect();
+    let mut sim = Sim::new((render_assets, MapPlugin::new(map)));
+    sim.set_tick_interval(cs_source::TICK_INTERVAL);
+    sim.ticks(2);
+    let (start, _, chunks) = check_merged(&mut sim);
+    eprintln!("de_nuke: {start} merged brush entities in {chunks} combined meshes");
+    // Meshes that are blended (see-through grates) stay on their own.
+    let vents: Vec<usize> = vents.into_iter().filter(|v| merge_state(&mut sim, *v).is_some()).collect();
+    assert!(!vents.is_empty(), "some vents are drawn merged");
+    assert!(vents.iter().all(|v| merged(&mut sim, *v)), "the vents start merged");
+    let door = doors
+        .into_iter()
+        .find(|(i, _)| merge_state(&mut sim, *i).is_some())
+        .expect("a merged named door");
+    assert!(merged(&mut sim, door.0), "the door starts merged");
+
+    // Broken vents leave; an opening door leaves and rejoins once shut.
+    input(&mut sim, "func_breakable", "Break");
+    input(&mut sim, &door.1, "Open");
+    sim.seconds(0.3);
+    check_merged(&mut sim);
+    assert!(vents.iter().all(|v| !merged(&mut sim, *v)), "broken vents are split out");
+    assert!(!merged(&mut sim, door.0), "a moving door is split out");
+    sim.seconds(6.0);
+    check_merged(&mut sim);
+    assert!(merged(&mut sim, door.0), "the door shut again rejoins");
+    sim.app.world_mut().resource_mut::<RoundRestarts>().0 += 1;
+    sim.ticks(3);
+    let (back, _, _) = check_merged(&mut sim);
+    assert_eq!(back, start, "a new round merges the vents again");
 }
