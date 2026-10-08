@@ -2073,22 +2073,6 @@ fn spawn_map(
                 e.insert(vis::VisClusters::new(clusters));
             }
         };
-        // World chunks also hide behind occluders, by their bounds.
-        let tag_chunk = |e: &mut EntityCommands, clusters: Vec<u32>, chunk: &MapMesh, centre: Vec3| {
-            if visibility.is_some_and(|v| !v.occluders.is_empty()) && !clusters.is_empty() {
-                let (lo, hi) = chunk
-                    .positions
-                    .iter()
-                    .fold((Vec3::MAX, Vec3::MIN), |(a, b), p| (a.min(Vec3::from(*p)), b.max(Vec3::from(*p))));
-                if lo.x <= hi.x {
-                    e.insert(vis::Occludee {
-                        min: lo + centre,
-                        max: hi + centre,
-                    });
-                }
-            }
-            tag(e, clusters);
-        };
         let chunk_size = vis::chunk_size();
         for m in &data.meshes {
             if water_drawn && m.water.is_some() {
@@ -2220,7 +2204,7 @@ fn spawn_map(
                         Transform::from_translation(centre),
                         ChildOf(parent_of(m)),
                     ));
-                    tag_chunk(&mut e, clusters, &chunk, centre);
+                    tag(&mut e, clusters);
                 }
                 continue;
             }
@@ -2242,7 +2226,7 @@ fn spawn_map(
                         bicubic_sampling: false,
                     });
                 }
-                tag_chunk(&mut part, clusters, &chunk, centre);
+                tag(&mut part, clusters);
             }
         }
         model_parts = data

@@ -288,6 +288,12 @@ dithered fade bands. Left:
   only right after view nav1627_0 (the door window's glass draws
   differently, even with game time running). Find what a previous view
   leaves behind in the capture (performance.md, Checks).
+- cs_assault `refcmp vischeck` (first run there) fails with occluders
+  off too: 56 of 312 views differ, up to 34k pixels (nav1371_90 on the
+  roof: the water tower and far buildings over the walls are culled by
+  the PVS). Check against a CS:S capture whether the game hides them too
+  (props touching clusters the roof can't see) before changing anything.
+  cs_compound and de_port pass.
 - Measure on the Windows PC (`refcmp bench` there) and set a budget.
 - Frame-time follow-ups (performance.md, "Cheap wins found"): take
   before/after numbers on a quiet machine; props as hierarchies of their

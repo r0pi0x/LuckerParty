@@ -75,8 +75,11 @@ potentially visible from anywhere inside it (PVS, run-length encoded).
   its polygons (indices into the vertex lump); the entity's
   `occludernumber` names it, `StartActive` and Activate/Deactivate/Toggle
   switch it (`vis::OccluderStates`). Each frame, while the main view has
-  active occluder polygons in sight (wholly in front of the eye), world
-  chunks and static props (`vis::Occludee`, their bounds) are hidden when
+  active occluder polygons in sight (wholly in front of the eye), static
+  props and prop entities that stay put (`vis::Occludee`, their bounds;
+  not world chunks: occluders are documented as hiding models, and
+  stock occluders stick out of walls over windows, so hiding chunks
+  showed holes) are hidden when
   the bounds lie wholly behind a polygon's plane and their screen
   rectangle lies inside its projected outline (conservative: no merging
   of neighbouring occluders). Not while the water reflection draws.
@@ -180,22 +183,27 @@ previous view drew changes how the glass draws next (backlog).
 
 Occluders (playtest build, `refcmp bench` over each map's 24 spawn views
 in `tools/refcmp/`, two back-to-back pairs with `+r_occlusion 1` and `0`;
-load 15-30 on 12 cores, so frame times are noise; the counts are exact):
+load 8-15 on 12 cores, so frame times are noise; the counts are exact):
 
 | map | occluders | frame ms avg (runs) | meshes drawn | triangles drawn | map parts drawn (mean) |
 |---|---|---|---|---|---|
-| cs_assault | on | 20.8 / 20.0 | 350 | 36k | 762 |
-| cs_assault | off | 18.0 / 24.9 | 369 | 39k | 784 |
-| cs_compound | on | 31.5 / 18.9 | 327 | 28k | 1016 |
-| cs_compound | off | 28.3 / 23.5 | 458 | 40k | 1168 |
-| de_port | on | 32.0 / 14.9 | 1162 | 69k | 3192 |
-| de_port | off | 22.1 / 23.3 | 1162 | 69k | 3192 |
+| cs_assault | on | 9.9 / 8.2 | 364 | 37k | 778 |
+| cs_assault | off | 6.9 / 8.8 | 369 | 39k | 784 |
+| cs_compound | on | 32.0 / 19.2 | 439 | 29k | 1149 |
+| cs_compound | off | 14.7 / 21.1 | 458 | 40k | 1168 |
+| de_port | on | 14.1 / 19.6 | 1162 | 69k | 3192 |
+| de_port | off | 14.9 / 15.2 | 1162 | 69k | 3192 |
 
-cs_compound's spawn views look along occluded walls (29% fewer meshes,
-30% fewer triangles); de_port's occluders guard views its spawns don't
-have. de_aztec's occluders have no polygons. Whether occluders draw
-anything that culling then hides: `refcmp vischeck` (off: `r_novis 1`,
-`r_occlusion 0`) on the maps with occluders, below.
+Props only (see above). cs_compound's spawn views look along occluded
+walls (27% fewer triangles: the hidden props are detailed); de_port's
+occluders guard views its spawns don't have; de_aztec's have no
+polygons. A first version also hid world chunks (cs_compound: 327
+meshes, 28k triangles) but showed holes through windows in walls whose
+occluder brushes stick out of them (`refcmp vischeck` on cs_assault and
+cs_compound, up to 73% of a view). With props only, `refcmp vischeck`
+(unculled run: `r_novis 1`, `r_occlusion 0`) passes on cs_compound (19
+of 320 views differ, at most a few hundred pixels) and de_port (2 of
+312); cs_assault differs with occluders off too (backlog).
 
 ## Cheap wins found
 

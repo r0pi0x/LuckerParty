@@ -446,9 +446,10 @@ impl AreaPortalStates {
 #[derive(Resource, Default, Clone, Copy)]
 pub struct PortalsOpenAll(pub u8);
 
-/// An occluder (Source's func_occluder): polygons that hide map parts
-/// lying fully behind them, while it is active. Mappers place them inside
-/// opaque geometry, so what they hide couldn't be seen anyway.
+/// An occluder (Source's func_occluder): polygons that hide props lying
+/// fully behind them, while it is active (even where the
+/// polygon sticks out of the wall it sits in: world surfaces aren't
+/// hidden, so a window there still shows the room, without its props).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Occluder {
     /// What map logic calls it by (Source: `occludernumber`).
@@ -477,8 +478,8 @@ impl Default for Occlusion {
     }
 }
 
-/// A map part's bounds (engine space, under the map's root): hidden while
-/// they lie fully behind an active occluder.
+/// A prop's bounds (engine space, under the map's root): hidden while
+/// they lie fully behind an active occluder. World chunks don't get one.
 #[derive(Component, Clone, Copy, Debug)]
 pub struct Occludee {
     pub min: Vec3,
