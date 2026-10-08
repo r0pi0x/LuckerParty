@@ -353,7 +353,7 @@ pub(super) fn fly(
     let Some(assets) = assets else { return };
     let p = assets.physics;
     let dt = time.delta_secs();
-    let filter = SpatialQueryFilter::from_excluded_entities(characters.iter());
+    let filter = SpatialQueryFilter::from_excluded_entities(characters.iter()).with_mask(crate::core::NOT_SHADOW);
     let projection = anchors.iter().next().and_then(|a| projection_of(a, &vm_cameras));
     for (e, mut shell, mut transform, children) in &mut shells {
         let s = &mut shell.state;

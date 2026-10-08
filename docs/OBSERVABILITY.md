@@ -162,6 +162,11 @@ Only `Reflect`-registered types are visible; register new core components in
   by hitgroup, where shots test them (e.g. `+bot_stop 1 +bot_add 2
   +mashup_drawhitboxes 1` with `--screenshot` to check they follow the
   animated body).
+- `mashup_drawphys 1` outlines physics props by state (green moving,
+  blue asleep, grey still or frozen; multiplayer props darker) and
+  players' physics shadows (white, a yellow line to each prop the shadow
+  touches), and lists the props nearest the local player (distance, mass,
+  push mode, state) on the debug HUD.
 - `mashup_ragdoll_debug 1` draws ragdoll bodies (bounds, axes) and
   joints (yellow to the anchor on the parent; a red dot when the child
   drifted from it). `cl_ragdoll_physics_enable 0` turns ragdolls off,

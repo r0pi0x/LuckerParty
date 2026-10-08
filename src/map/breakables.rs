@@ -70,6 +70,10 @@ pub struct GibPiece {
     pub rotation: Option<Quat>,
     /// Stays where it is (a piece the prop holds in place).
     pub frozen: bool,
+    /// Its skin family (one its model lacks shows skin 0).
+    pub skin: i32,
+    /// Fades out between these distances from the view (meters).
+    pub fade_dist: Option<(f32, f32)>,
 }
 
 impl GibPiece {
@@ -83,6 +87,8 @@ impl GibPiece {
             model: None,
             rotation: None,
             frozen: false,
+            skin: 0,
+            fade_dist: None,
         }
     }
 }
@@ -117,6 +123,8 @@ pub enum MapBreak {
         life: (f32, f32),
         /// Each list model's bounds centre (its model space).
         centres: Vec<Vec3>,
+        /// The chunks' skin family (prop data `breakable_skin`).
+        skin: i32,
     },
 }
 
@@ -134,6 +142,9 @@ pub struct MapBreakPiece {
     /// Outward speed added (m/s).
     pub burst: f32,
     pub frozen: bool,
+    /// Fades out between these distances from the view (meters; the
+    /// break block's `fademindist`, `fademaxdist`).
+    pub fade_dist: Option<(f32, f32)>,
 }
 
 /// A prop broke: throw what its model breaks into (`MapModel::breaks`)
@@ -144,11 +155,16 @@ pub struct BreakProp {
     pub prop: usize,
     pub transform: Transform,
     pub velocity: Vec3,
+    /// Angular velocity (rad/s, an axis times its rate).
+    pub spin: Vec3,
+    /// Its skin family now (None: the one it was placed with).
+    pub skin: Option<i32>,
 }
 
-/// Every prop's break pieces and bounds, from its model (also headless).
+/// Every prop's break pieces, bounds and placed skin, from its model
+/// (also headless).
 #[derive(Resource, Default)]
-pub(super) struct PropBreaks(Vec<(Option<MapBreak>, (Vec3, Vec3))>);
+pub(super) struct PropBreaks(Vec<(Option<MapBreak>, (Vec3, Vec3), i32)>);
 
 pub(super) fn prop_breaks(data: &MapData) -> PropBreaks {
     PropBreaks(
@@ -156,7 +172,7 @@ pub(super) fn prop_breaks(data: &MapData) -> PropBreaks {
             .iter()
             .map(|p| {
                 let m = &data.models[p.model];
-                (m.breaks.clone(), m.bounds)
+                (m.breaks.clone(), m.bounds, p.skin)
             })
             .collect(),
     )
@@ -168,15 +184,19 @@ const CHUNK_BURST: f32 = 100.0 * 0.0254;
 const PIECE_JITTER: f32 = 0.025;
 
 /// The pieces a broken prop throws (prop_damage.md 7.3, the client
-/// branch): its model's break pieces at its pose, moving with it (±2.5 %)
-/// plus their burst outward, or chunks at random points of its box (the
-/// smallest axis at its middle) flying out at 100 units/s. `random` gives
-/// uniform numbers in [0, 1).
+/// branch): its model's break pieces at its pose, in its skin, moving
+/// with it (±2.5 %) plus their burst outward and spinning as it spun, or
+/// chunks (in the prop data's skin, not spinning) at random points of its
+/// box (the smallest axis at its middle) flying out at 100 units/s.
+/// `random` gives uniform numbers in [0, 1).
+#[allow(clippy::too_many_arguments)]
 pub fn break_pieces(
     breaks: &MapBreak,
     bounds: (Vec3, Vec3),
     transform: &Transform,
     velocity: Vec3,
+    spin: Vec3,
+    skin: i32,
     random: &mut dyn FnMut() -> f32,
 ) -> Vec<GibPiece> {
     let origin = transform.translation;
@@ -201,11 +221,13 @@ pub fn break_pieces(
                 GibPiece {
                     position: at,
                     velocity: v,
-                    spin: Vec3::ZERO,
+                    spin: if p.frozen { Vec3::ZERO } else { spin },
                     life: p.life,
                     model: Some(p.model),
                     rotation: Some(rot),
                     frozen: p.frozen,
+                    skin,
+                    fade_dist: p.fade_dist,
                 }
             })
             .collect(),
@@ -214,6 +236,7 @@ pub fn break_pieces(
             size_limit,
             life,
             centres,
+            skin: chunk_skin,
             ..
         } => {
             let (lo, hi) = bounds;
@@ -246,6 +269,8 @@ pub fn break_pieces(
                         model: Some(pick),
                         rotation: Some(rot),
                         frozen: false,
+                        skin: *chunk_skin,
+                        fade_dist: None,
                     }
                 })
                 .collect()
@@ -269,13 +294,14 @@ pub(super) fn break_props(
         (*dice >> 8) as f32 / (1u32 << 24) as f32
     };
     for ev in events.read() {
-        let Some((Some(b), bounds)) = breaks.0.get(ev.prop) else {
+        let Some((Some(b), bounds, placed_skin)) = breaks.0.get(ev.prop) else {
             continue;
         };
         let set = match b {
             MapBreak::Pieces { set, .. } | MapBreak::Chunks { set, .. } => set.clone(),
         };
-        let pieces = break_pieces(b, *bounds, &ev.transform, ev.velocity, &mut random);
+        let skin = ev.skin.unwrap_or(*placed_skin);
+        let pieces = break_pieces(b, *bounds, &ev.transform, ev.velocity, ev.spin, skin, &mut random);
         if !pieces.is_empty() {
             gibs.write(SpawnGibs {
                 set,
@@ -529,11 +555,13 @@ pub(super) struct GibAssets {
     light_scale: f32,
 }
 
-/// A gib model's meshes (none headless), its bounds' centre, its
-/// smallest half size (model space), and the body a prop's piece gets:
-/// its collider about the centre, mass (kg) and damping.
+/// A gib model's meshes (none headless), each skin family's materials
+/// for them when it has several, its bounds' centre, its smallest half
+/// size (model space), and the body a prop's piece gets: its collider
+/// about the centre, mass (kg), damping and surface.
 struct GibModel {
     parts: Vec<(Handle<Mesh>, Handle<PropMaterial>)>,
+    skins: Vec<Vec<Handle<PropMaterial>>>,
     centre: Vec3,
     radius: f32,
     body: GibBody,
@@ -544,6 +572,8 @@ struct GibBody {
     collider: Collider,
     mass: f32,
     damping: (f32, f32),
+    /// Surface property (impact sounds).
+    surface: Option<String>,
 }
 
 /// A piece's body: its collision model's convex pieces (Source's client
@@ -570,6 +600,11 @@ fn gib_body(model: &MapModel) -> GibBody {
         collider,
         mass: c.map_or(1.0, |c| c.mass).max(0.1),
         damping: c.map_or((0.0, 0.0), |c| (c.damping, c.rotdamping)),
+        surface: c
+            .map(|c| c.surfaceprop.clone())
+            .or_else(|| model.surfaceprop.clone())
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty()),
     }
 }
 
@@ -603,9 +638,30 @@ pub(super) fn build_assets(
                             .collect(),
                         None => Vec::new(),
                     };
+                    let skins = match render.as_mut() {
+                        Some((_, materials)) => model
+                            .skins
+                            .iter()
+                            .map(|looks| {
+                                model
+                                    .meshes
+                                    .iter()
+                                    .zip(looks)
+                                    .map(|(m, look)| {
+                                        let mut material =
+                                            super::lit_prop_material(&look.apply(m), textures, data, view, false);
+                                        material.params.dynamic = 0.0;
+                                        materials.add(material)
+                                    })
+                                    .collect()
+                            })
+                            .collect(),
+                        None => Vec::new(),
+                    };
                     let (lo, hi) = model.bounds;
                     GibModel {
                         parts,
+                        skins,
                         centre: (lo + hi) / 2.0,
                         radius: ((hi - lo) / 2.0).min_element().max(0.0),
                         body: gib_body(model),
@@ -621,6 +677,11 @@ pub(super) fn build_assets(
         light_scale: data.look.light_scale,
     })
 }
+
+/// A broken prop's piece with a surface: a client-side physics object
+/// whose contacts make impact sounds.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct PieceBody;
 
 /// A flying (or resting) gib.
 #[derive(Component)]
@@ -737,9 +798,12 @@ pub(super) fn spawn_gibs(
                 Vec3::ZERO
             };
             let mut own = Vec::with_capacity(parts.len());
+            // Its skin's materials (a skin it lacks shows skin 0).
+            let skin = usize::try_from(piece.skin).ok().and_then(|s| model.skins.get(s));
             if let Some(materials) = materials.as_mut() {
                 let probe = light_field.as_ref().map(|f| (f.0.0)(centre));
-                for (_, m) in parts {
+                for (i, (_, m)) in parts.iter().enumerate() {
+                    let m = skin.and_then(|s| s.get(i)).unwrap_or(m);
                     let Some(mut material) = materials.get(m).cloned() else {
                         continue;
                     };
@@ -784,6 +848,11 @@ pub(super) fn spawn_gibs(
             ));
             if body {
                 let b = &model.body;
+                // Its contacts make impact sounds (a client-side physics
+                // object's, specs/cs_source/sounds.md 4).
+                if let Some(surface) = &b.surface {
+                    gib.insert((crate::core::PropSurface(surface.clone()), PieceBody, CollisionEventsEnabled));
+                }
                 gib.insert((
                     if piece.frozen {
                         RigidBody::Static
@@ -804,16 +873,25 @@ pub(super) fn spawn_gibs(
                     MaxAngularSpeed(3600f32.to_radians()),
                 ));
             }
+            // Fade distances from the break block (a band dithers out;
+            // equal ones pop).
+            let range = piece.fade_dist.map(|(near, far)| {
+                super::vis::fade_band(near, far)
+                    .unwrap_or_else(|| bevy::camera::visibility::VisibilityRange::abrupt(0.0, far))
+            });
             gib.with_children(|g| {
-                    for ((mesh, _), material) in parts.iter().zip(own) {
-                        g.spawn((
-                            Mesh3d(mesh.clone()),
-                            MeshMaterial3d(material),
-                            Transform::from_translation(offset),
-                            bevy::light::NotShadowCaster,
-                        ));
+                for ((mesh, _), material) in parts.iter().zip(own) {
+                    let mut c = g.spawn((
+                        Mesh3d(mesh.clone()),
+                        MeshMaterial3d(material),
+                        Transform::from_translation(offset),
+                        bevy::light::NotShadowCaster,
+                    ));
+                    if let Some(range) = &range {
+                        c.insert(range.clone());
                     }
-                });
+                }
+            });
         }
     }
 }
@@ -831,7 +909,7 @@ pub(super) fn fly_gibs(
     let Some(assets) = assets else { return };
     let p = assets.physics;
     let dt = time.delta_secs().min(0.1);
-    let filter = SpatialQueryFilter::from_excluded_entities(characters.iter());
+    let filter = SpatialQueryFilter::from_excluded_entities(characters.iter()).with_mask(crate::core::NOT_SHADOW);
     for (e, mut gib, mut transform) in &mut gibs {
         if gib.body {
             // Its body moves it; it only fades.

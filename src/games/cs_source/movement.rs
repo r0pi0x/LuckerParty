@@ -491,7 +491,7 @@ impl Plugin for SourceMovementPlugin {
         }
         app.register_movement::<SourceMovement>(ID)
             .add_systems(FixedUpdate, step.in_set(SimSet::Movement))
-            .add_plugins(super::pushaway::PushAwayPlugin);
+            .add_plugins((super::pushaway::PushAwayPlugin, super::shadow::ShadowPlugin));
     }
 }
 
@@ -874,6 +874,12 @@ struct Mover<'a, 'b, 'w, 's> {
     gravity_scale: f32,
     /// Moving solids' velocities (Source units/s), for riders.
     mover_velocity: &'a dyn Fn(Entity) -> Vec3,
+    /// Physics colliders the move ran into this tick, the one stood on,
+    /// and the wish velocity (units/s): the physics shadow's inputs
+    /// (physics_props.md 4.1).
+    touched: Vec<Entity>,
+    ground_collider: Option<Entity>,
+    wish: Vec3,
 }
 
 impl Mover<'_, '_, '_, '_> {
@@ -917,6 +923,9 @@ impl Mover<'_, '_, '_, '_> {
         }
         self.me.on_ground = on;
         self.me.ground_entity = if on { owner } else { None };
+        if !on {
+            self.ground_collider = None;
+        }
     }
 
     fn friction(&mut self) {
@@ -991,6 +1000,11 @@ impl Mover<'_, '_, '_, '_> {
             }
             if !tr.hit() {
                 break;
+            }
+            if let Some(HitSurface::Collider(e)) = tr.surface
+                && !self.touched.contains(&e)
+            {
+                self.touched.push(e);
             }
             time_left -= time_left * tr.fraction;
             if planes.len() >= MAX_CLIP_PLANES {
@@ -1098,6 +1112,7 @@ impl Mover<'_, '_, '_, '_> {
 
     fn walk(&mut self, f: f32, s: f32, forward: Vec3, right: Vec3, max_speed: f32) {
         let (dir, speed) = self.wish(f, s, forward, right, max_speed);
+        self.wish = dir * speed;
         if self.me.stamina > 0.0 {
             let r = 1.0 - self.cfg.stamina_ground_scale * self.me.stamina;
             self.v.x *= r;
@@ -1126,6 +1141,7 @@ impl Mover<'_, '_, '_, '_> {
 
     fn air(&mut self, f: f32, s: f32, forward: Vec3, right: Vec3, max_speed: f32) {
         let (dir, speed) = self.wish(f, s, forward, right, max_speed);
+        self.wish = dir * speed;
         self.air_accelerate(dir, speed, self.cfg.airaccelerate);
         let base = Vec3::new(self.base.x, self.base.y, 0.0);
         self.v += base;
@@ -1159,6 +1175,10 @@ impl Mover<'_, '_, '_, '_> {
                 });
             }
             self.set_ground(ground.is_some(), ground.and_then(|g| g.owner));
+            self.ground_collider = match ground.and_then(|g| g.surface) {
+                Some(HitSurface::Collider(e)) => Some(e),
+                _ => None,
+            };
             if let Some(tr) = ground {
                 self.me.ground_normal = tr.normal;
                 self.v.z = 0.0;
@@ -1859,16 +1879,18 @@ fn step(
         Option<&MaxSpeed>,
         Option<&mut BaseVelocity>,
         Option<&EntityGravity>,
+        Option<&mut super::shadow::PhysicsTouch>,
     )>,
     query: SpatialQuery,
     brushes: Option<Res<MapBrushes>>,
     water: Option<Res<MapWater>>,
     brush_colliders: Query<Entity, With<MapBrushCollider>>,
-    (terrain, terrain_colliders, movers, tree): (
+    (terrain, terrain_colliders, movers, tree, shadow_props): (
         Option<Res<MapTerrain>>,
         Query<Entity, With<MapTerrainCollider>>,
         Query<(Entity, &MovingSolid)>,
         Option<Res<MapBrushTree>>,
+        super::shadow::ShadowProps,
     ),
     // Props that are there: a broken or killed one (body and collider
     // disabled until a round restart) neither blocks nor pushes back.
@@ -1928,7 +1950,7 @@ fn step(
         .flat_map(|(e, m)| m.brushes.iter().map(move |b| (e, b.clone())))
         .collect();
     let mover_velocity = |e: Entity| movers.get(e).map_or(Vec3::ZERO, |(_, m)| to_source(m.velocity));
-    for (entity, intent, mut me, mut transform, mut vel, mut state, weapon_speed, mut base, gravity) in &mut q {
+    for (entity, intent, mut me, mut transform, mut vel, mut state, weapon_speed, mut base, gravity, touch) in &mut q {
         let mut others: Vec<MapBrush> = boxes
             .iter()
             .filter(|(e, _)| *e != entity)
@@ -1992,9 +2014,16 @@ fn step(
             unground: base.as_ref().is_some_and(|b| b.unground),
             gravity_scale: gravity.map_or(1.0, |g| g.0),
             mover_velocity: &mover_velocity,
+            touched: Vec::new(),
+            ground_collider: None,
+            wish: Vec3::ZERO,
         };
+        let start = mover.feet;
         mover.tick(intent);
         let (feet, v) = (mover.feet, mover.v);
+        if let Some(mut touch) = touch {
+            *touch = shadow_props.touch(&mover.touched, mover.ground_collider, start, feet, mover.wish, dt);
+        }
         if let Some(b) = base.as_mut() {
             let new = BaseVelocity {
                 velocity: to_engine(mover.base),

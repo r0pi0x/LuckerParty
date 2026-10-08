@@ -1133,6 +1133,7 @@ fn model_breaks(
                     life: if p.fadetime > 0.0 { p.fadetime } else { f32::INFINITY },
                     burst: p.burst * METERS_PER_UNIT,
                     frozen: p.motion_disabled,
+                    fade_dist: p.fade_dist.map(|(a, b)| (a * METERS_PER_UNIT, b * METERS_PER_UNIT)),
                 });
                 models.push(m);
             }
@@ -1186,6 +1187,7 @@ fn model_breaks(
             size_limit: super::propdata::chunk_size_limit(Vec3::new(s.x, s.z, s.y)),
             life: CHUNK_LIFE,
             centres,
+            skin: pd.breakable_skin,
         });
     }
     count as usize

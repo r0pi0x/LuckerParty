@@ -12,6 +12,7 @@ use crate::{
     core::{Intent, MapWater},
     map::{
         PhysicsProp, PlaySound, PropSurface,
+        breakables::PieceBody,
         decal::{DecalGroup, PlaceDecal},
         sound::{MapSounds, MapSurface, SoundBank, SurfaceGrid},
     },
@@ -25,6 +26,9 @@ const IMPACT_MIN_SPEED: f32 = 70.0;
 const IMPACT_FULL_SPEED: f32 = 320.0;
 /// A pair's contacts closer together than this make one sound, s.
 const IMPACT_MIN_DT: f64 = 0.05;
+/// The same for client-side physics objects (a broken prop's pieces): a
+/// sound needs strictly more than this since the pair's last contact.
+const IMPACT_MIN_DT_CLIENT: f64 = 0.1;
 /// After this many queued impacts in a frame, new ones merge into the last.
 const IMPACT_MERGE_AFTER: usize = 4;
 /// One shot's pellets skip an identical impact sound within this, units.
@@ -234,7 +238,7 @@ struct Queued {
 fn physics_impacts(
     mut started: MessageReader<CollisionStart>,
     collisions: Collisions,
-    bodies: Query<(&RigidBody, Option<&PhysicsProp>)>,
+    bodies: Query<(&RigidBody, Option<&PhysicsProp>, Has<PieceBody>)>,
     props: Query<&PropSurface>,
     characters: Query<(), With<Intent>>,
     bank: Option<Res<SoundBank>>,
@@ -256,7 +260,15 @@ fn physics_impacts(
         };
         let key = (pair.collider1.min(pair.collider2), pair.collider1.max(pair.collider2));
         let previous = last.0.insert(key, now);
-        if previous.is_some_and(|t| now - t < IMPACT_MIN_DT) {
+        let piece = |b: Option<Entity>| b.and_then(|b| bodies.get(b).ok()).is_some_and(|(.., p)| p);
+        let client = piece(pair.body1) || piece(pair.body2);
+        if previous.is_some_and(|t| {
+            if client {
+                now - t <= IMPACT_MIN_DT_CLIENT
+            } else {
+                now - t < IMPACT_MIN_DT
+            }
+        }) {
             continue;
         }
         // Approach speed before the solver, in u/s.
@@ -274,7 +286,7 @@ fn physics_impacts(
         }
         let simulated = |b: Option<Entity>| {
             b.and_then(|b| bodies.get(b).ok())
-                .is_some_and(|(rb, prop)| rb.is_dynamic() && prop.is_some())
+                .is_some_and(|(rb, prop, piece)| rb.is_dynamic() && (prop.is_some() || piece))
         };
         let sides = [
             (pair.collider1, pair.body1, pair.collider2, pair.body2),
@@ -284,7 +296,7 @@ fn physics_impacts(
             continue;
         }
         let names = sides.map(|(c, ..)| {
-            let world = bodies.get(c).is_ok_and(|(rb, _)| rb.is_static()) && !props.contains(c);
+            let world = bodies.get(c).is_ok_and(|(rb, ..)| rb.is_static()) && !props.contains(c);
             surface_of((!world).then_some(c), at, &props, &characters, grid.as_deref())
         });
         // Silent materials (game material X).

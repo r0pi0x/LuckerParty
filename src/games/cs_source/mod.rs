@@ -26,6 +26,7 @@ pub mod props;
 pub mod pushaway;
 pub mod radio;
 pub mod ropes;
+pub mod shadow;
 pub mod sky;
 pub mod sound;
 pub mod soundscape;

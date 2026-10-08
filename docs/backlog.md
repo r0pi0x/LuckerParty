@@ -229,10 +229,16 @@ docs/plans/active/sound.md.
 
 ## 7. Physics props, remaining
 
-- The player physics shadow for `prop_physics` (dust2 has none).
+- Player physics shadow (src/games/cs_source/shadow.rs, tests/map_physics_shadow.rs)
+  follow-ups (docs/tech-debt.md "Physics shadow"): the push speed limit
+  (spec Q7), the shadow's weight on a prop stood on, the controller's
+  velocity target when not touching (spec 4.1 step 5), measuring the push
+  feel against CS:S on cs_militia/de_inferno crates. CS:S has no +use
+  pickup of props (no physgun; +use pushes only under `sv_turbophysics 1`,
+  spec 4.2.4, not done).
 - Prop damage follow-ups (docs/tech-debt.md "Prop damage"): stress crush, the
-  velocity restore after an impact breaks a prop, pieces as real avian
-  bodies with their skin, the spec's open questions on the probe server
+  velocity restore after an impact breaks a prop, the chunks' 90°
+  realignment, the spec's open questions on the probe server
   (Q1-Q14: damage types, gas-can ignition, player impact rules, client
   break sounds, round restarts of client props).
 - Model doors: the hardware's latch/lock sounds and the spec's open

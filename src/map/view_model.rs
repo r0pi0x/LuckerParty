@@ -935,7 +935,7 @@ fn spawn_flash_light(
     let from = at - forward * BACK;
     let mut position = at;
     if let Ok(dir) = Dir3::new(forward) {
-        let filter = SpatialQueryFilter::from_excluded_entities(characters.iter());
+        let filter = SpatialQueryFilter::from_excluded_entities(characters.iter()).with_mask(crate::core::NOT_SHADOW);
         if let Some(hit) = spatial.cast_ray(from, dir, BACK + CLEARANCE, true, &filter) {
             position = from + forward * (hit.distance - CLEARANCE).clamp(0.0, BACK);
         }
