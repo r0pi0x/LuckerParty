@@ -314,7 +314,9 @@ Details and baseline numbers: [performance.md](performance.md).
   hide.
 - `r_novis 1` draws every map part (no visibility culling);
   `MASHUP_MERGED_WORLD=1` spawns the world as one mesh per material with no
-  culling, as before chunking (A/B comparisons).
+  culling, as before chunking (A/B comparisons); `MASHUP_MERGE_BRUSHES=0`
+  draws every brush entity from its own meshes (no merged combined
+  meshes, `map::merge`).
 - `refcmp vischeck --views tools/refcmp/<map>.toml` renders the views
   plus views from spawns and nav areas with culling off (`r_novis 1`,
   `r_occlusion 0`) and on (game time

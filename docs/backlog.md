@@ -70,9 +70,9 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   in the depth prepass), packed materials whose names differ in case.
   The breakable-block room went from 11-17 fps to the vsync cap (about
   240 fps at 720p uncapped; docs/performance.md, "Many brush entities").
-  Open: impacts don't land on brush entities (its walls are
-  func_breakable blocks; `decal::place_decals` projects only onto the
-  world and props).
+  Impacts land on brush entities (doors, breakables) and go with them;
+  unbroken brush entities draw merged (`map::merge`: 1768 -> 58 meshes
+  at the blocks room).
 
 ## 2b. HUD and debug views
 
@@ -357,15 +357,6 @@ dithered fade bands. Left:
   (props touching clusters the roof can't see) before changing anything.
   cs_compound and de_port pass.
 - Measure on the Windows PC (`refcmp bench` there) and set a budget.
-- mg_lego_multigames_v2 `refcmp vischeck` views blocks_room and
-  blocks_room_right: a roof seen through a grate isn't in the PVS of the
-  camera's cluster (0.2% of the pixels). Same question as nuke's window:
-  do grates/translucent world brushes block the compiled PVS, and does
-  CS:S draw what's behind them?
-- Many brush entities: ~1770 meshes drawn at that view (a mesh per
-  material per breakable). Merge unbroken, unmoved brush entities that
-  share a material into combined meshes per chunk, split out when one
-  breaks or moves.
 - Frame-time follow-ups (performance.md, "Cheap wins found"): take
   before/after numbers on a quiet machine; props as hierarchies of their
   own (cheaper collider propagation) without changing how physics props
