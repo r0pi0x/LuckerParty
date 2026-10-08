@@ -285,3 +285,20 @@ never waits on asset formats.
 - Which third game tests the interfaces best: MW2 or Minecraft?
 - How do players pick loadouts: fixed per minigame, chosen in a lobby, rolled
   by dice, or a mix?
+
+## License
+
+The code in this repository is licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](LICENSE-MIT))
+
+at your option. Unless you explicitly state otherwise, any contribution
+you submit for inclusion is dual licensed as above, without any additional
+terms or conditions.
+
+This license covers this repository's own code and documents only. No game
+files are included: maps, models, textures and sounds are loaded at run time
+from your own installs of the games. Game names are trademarks of their
+owners; this project is not affiliated with or endorsed by Valve or any
+other game publisher.

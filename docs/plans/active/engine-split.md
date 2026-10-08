@@ -80,7 +80,8 @@ Rules:
 - Never commit game assets, extracted files, keys, or personal traces
   (names, personal emails, machine paths, Discord ids); commit as
   `r0pi0x` in UTC (CLAUDE.md, "Commit identity").
-- A licence is still to be chosen.
+- Licence: MIT OR Apache-2.0 for the code (LICENSE-MIT, LICENSE-APACHE);
+  original game assets may get their own licence per folder later.
 
 ## Order
 
