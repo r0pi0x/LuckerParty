@@ -1066,7 +1066,23 @@ fn physics_props_settle_and_get_pushed() {
     assert!(solid > 0, "some solid-mode props");
 
     let mut sim = Sim::new((MapPlugin::new(map.clone()), SourceMovementPlugin));
+    // Settled within 12 s. Most are still at 4 s; an oil drum stood a
+    // degree off upright (828 797 1) rocks on its rim for a while, and
+    // how long depends on the solver's order across the whole world (a
+    // change to far-away collision triangles changes it).
     sim.seconds(4.0);
+    for _ in 0..16 {
+        let moving = sim
+            .app
+            .world_mut()
+            .query_filtered::<&avian3d::prelude::LinearVelocity, With<PhysicsProp>>()
+            .iter(sim.app.world())
+            .any(|v| v.0.length() >= 0.2);
+        if !moving {
+            break;
+        }
+        sim.seconds(0.5);
+    }
     let mut q = sim
         .app
         .world_mut()

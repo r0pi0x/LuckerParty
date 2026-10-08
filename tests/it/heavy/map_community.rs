@@ -1,6 +1,7 @@
 //! Community maps from the user's content cache (never in the repo),
 //! headless; each test is skipped when its map isn't cached.
 
+use bevy::math::Vec3;
 use mashup::{
     games::{self, cs_source},
     map::MapData,
@@ -52,4 +53,43 @@ fn surf_boreas_lighting_and_ramps() {
         })
         .count();
     assert!(ramps >= 19, "{ramps} props over 90 m (the ramps)");
+
+    // A snow cave whose displacement folds back over itself: from inside
+    // it (the "transition" soundscape, Source 10446 8619 9860), the floor
+    // ahead must face the eye. Re-winding each triangle to the base face's
+    // normal turned the folded ones inside out (culled: holes to the sky).
+    let engine = |x: f32, y: f32, z: f32| Vec3::new(x, z, -y) * 0.0254;
+    let eye = engine(10446.0, 8619.0, 9860.0);
+    for dir in [Vec3::new(-0.526, -0.728, -0.44), Vec3::new(-0.876, 0.163, -0.454)] {
+        let dir = Vec3::new(dir.x, dir.z, -dir.y).normalize();
+        let hit = first_hit(&map, eye, dir).expect("the cave floor is drawn there");
+        assert!(hit.1.dot(dir) < 0.0, "the nearest drawn triangle faces away from the eye: {hit:?}");
+        assert!((7.0..13.0).contains(&hit.0), "the floor 8-12 m away, not further: {hit:?}");
+    }
+}
+
+/// The nearest world triangle on a ray (distance, its front normal by
+/// winding: counter-clockwise faces the viewer), skybox meshes left out.
+fn first_hit(map: &MapData, o: Vec3, d: Vec3) -> Option<(f32, Vec3)> {
+    let mut best: Option<(f32, Vec3)> = None;
+    for m in map.meshes.iter().filter(|m| !m.skybox) {
+        for t in m.indices.chunks_exact(3) {
+            let [a, b, c] = [0, 1, 2].map(|k| Vec3::from_array(m.positions[t[k] as usize]));
+            let (e1, e2) = (b - a, c - a);
+            let h = d.cross(e2);
+            let det = e1.dot(h);
+            if det.abs() < 1e-9 {
+                continue;
+            }
+            let s = o - a;
+            let u = s.dot(h) / det;
+            let q = s.cross(e1);
+            let v = d.dot(q) / det;
+            let t = e2.dot(q) / det;
+            if u >= 0.0 && v >= 0.0 && u + v <= 1.0 && t > 0.0 && best.is_none_or(|(bt, _)| t < bt) {
+                best = Some((t, e1.cross(e2).normalize()));
+            }
+        }
+    }
+    best
 }
