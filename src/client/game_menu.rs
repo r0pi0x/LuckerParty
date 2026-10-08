@@ -2767,7 +2767,7 @@ mod tests {
             ("sensitivity", "3"),
             ("m_pitch", "0.022"),
             ("zoom_sensitivity_ratio", "1.2"),
-            ("volume", "0.5"),
+            ("volume", "1"),
             ("viewmodel_fov", "54"),
             ("cl_righthand", "1"),
             ("cl_showfps", "0"),
