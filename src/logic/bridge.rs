@@ -802,6 +802,7 @@ fn apply_effects(world: &mut World, effects: Vec<Effect>, scale: f32) {
                     volume: None,
                     pitch: None,
                     level: None,
+                    ..Default::default()
                 }));
             }
             Effect::Gibs { set, glass, pieces } => {
@@ -883,6 +884,7 @@ fn apply_effects(world: &mut World, effects: Vec<Effect>, scale: f32) {
                     volume,
                     pitch,
                     level: level.map(SoundLevel::Db),
+                    ..Default::default()
                 }));
             }
             Effect::AmbientChange { id, volume, pitch } => {

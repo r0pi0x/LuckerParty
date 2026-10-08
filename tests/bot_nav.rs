@@ -62,6 +62,54 @@ fn trace_every() -> u64 {
     std::env::var("MASHUP_BOT_TRACE").ok().and_then(|v| v.parse().ok()).unwrap_or(5)
 }
 
+/// The floor at `p` (feet), if above it: a mesh area's height can be
+/// below the real floor, inside a curved train roof.
+fn floor_under(sim: &mut Sim, p: Vec3, skip: Entity) -> Vec3 {
+    use avian3d::prelude::{SpatialQuery, SpatialQueryFilter};
+    let world = sim.app.world_mut();
+    let mut state = bevy::ecs::system::SystemState::<SpatialQuery>::new(world);
+    let q = state.get(world).unwrap();
+    let filter = SpatialQueryFilter::from_excluded_entities([skip]).with_mask(mashup::core::SOLID_LAYERS);
+    [0.6, 0.4, 0.2]
+        .into_iter()
+        .find_map(|up| {
+            let hit = q.cast_ray(p + Vec3::Y * up, Dir3::NEG_Y, up + 0.3, true, &filter)?;
+            (hit.distance > 0.0).then(|| p + Vec3::Y * (up - hit.distance))
+        })
+        // (Only ever up: physics' world colliders can sit a little below
+        // the brushes movement walks on.)
+        .map_or(p, |f| f.max(p))
+}
+
+/// The nearest spot to `p` (feet) where a standing box isn't inside a
+/// brush, within 0.5 m (else `p`): a mesh area can be narrower than a
+/// body against a wall (de_piranesi's ledge at a ladder's top).
+fn clear_spot(sim: &Sim, p: Vec3) -> Vec3 {
+    let Some(brushes) = sim.app.world().get_resource::<mashup::core::MapBrushes>() else {
+        return p;
+    };
+    let half = Vec3::new(16.0, 36.0, 16.0) * 0.0254;
+    let solid = |feet: Vec3| {
+        let c = feet + Vec3::Y * (half.y + 0.06);
+        brushes.0.iter().any(|b| {
+            b.max.cmpgt(c - half).all()
+                && b.min.cmplt(c + half).all()
+                && b.planes.iter().all(|(n, d)| n.dot(c) - (d + n.abs().dot(half)) < -0.01)
+        })
+    };
+    if !solid(p) {
+        return p;
+    }
+    (1..=10)
+        .flat_map(|r| (0..16).map(move |k| (r, k)))
+        .map(|(r, k)| {
+            let a = k as f32 * std::f32::consts::TAU / 16.0;
+            p + Vec3::new(a.cos(), 0.0, a.sin()) * (r as f32 * 0.05)
+        })
+        .find(|q| !solid(*q))
+        .unwrap_or(p)
+}
+
 /// One bot from `from` to `to` (feet, engine meters): the seconds it took,
 /// or None if it didn't get there (on the ground, within 1 m and `dy` m
 /// of its height) within `limit`.
@@ -69,6 +117,8 @@ fn walk(sim: &mut Sim, from: Vec3, to: Vec3, limit: f64, dy: f32, trace: bool) -
     let bot = mashup::bot::add_bot(sim.app.world_mut(), Team(1)).expect("bot");
     sim.app.world_mut().resource_mut::<BotConfig>().grenades = 0;
     sim.ticks(1);
+    let from = floor_under(sim, from, bot);
+    let from = clear_spot(sim, from);
     {
         let w = sim.app.world_mut();
         w.get_mut::<Transform>(bot).unwrap().translation = from + Vec3::Y * (HALF + 0.05);
@@ -178,7 +228,8 @@ fn nuke_vent_ladders_are_climbable() {
 }
 
 /// Every ladder on a map's mesh, up and down: a bot from inside the area
-/// at one end to inside the area at the other. The ones that fail.
+/// at one end to inside the area at the other (`walk` puts it on the real
+/// floor there, clear of walls). The ones that fail.
 fn every_ladder(map: &str) -> Vec<String> {
     let mut sim = sim(map);
     let trace = std::env::var("MASHUP_BOT_TRACE").is_ok();
@@ -210,6 +261,11 @@ fn every_ladder(map: &str) -> Vec<String> {
                 continue;
             }
             // (Mesh heights at a ladder's ends can be half a metre off.)
+            // MASHUP_BOT_TRACE_CASE: trace only that one, running the rest
+            // (earlier cases change what a later one meets: stuck reports,
+            // broken grilles).
+            let trace = trace
+                && std::env::var("MASHUP_BOT_TRACE_CASE").map_or(true, |c| c == name);
             let took = walk(&mut sim, from, to, 12.0, 0.6, trace);
             eprintln!("{map}, ladder {k} {what} ({from:.2} to {to:.2}): {took:?}");
             if took.is_none() {
@@ -326,6 +382,15 @@ fn nav_near() {
         let c = (b.min + b.max) / 2.0;
         if (c - at).xz().length() < 4.0 {
             eprintln!("ladder brush {:.2}..{:.2}", b.min, b.max);
+        }
+    }
+    // MASHUP_NAV_BRUSHES=r: every collision brush within r m of the point
+    // (its box), with its index (the tie order between flush faces).
+    if let Some(r) = std::env::var("MASHUP_NAV_BRUSHES").ok().and_then(|r| r.parse::<f32>().ok()) {
+        for (i, b) in data.collision_brushes.iter().enumerate() {
+            if (at.clamp(b.min, b.max) - at).length() < r {
+                eprintln!("brush {i} {:.2}..{:.2}{}", b.min, b.max, if b.ladder { " ladder" } else { "" });
+            }
         }
     }
     for (i, l) in nav.ladders.iter().enumerate() {

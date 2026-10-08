@@ -45,6 +45,7 @@ pub use ragdoll::{MapCollisionHooks, MapRagdoll, MapRagdollBody, MapRagdollJoint
 pub mod rope_material;
 pub mod shadows;
 pub mod sound;
+pub mod room;
 pub mod soundscape;
 pub use live_sound::{LiveSounds, SoundControl, SoundKey, StartSound};
 pub use sound::{MapSoundClip, MapSoundEntry, MapSounds, MapSurface, PlaySound, SoundLevel};

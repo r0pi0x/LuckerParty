@@ -159,16 +159,20 @@ a first bot are in.
 ## 4. Bots
 
 - Ladders on other maps (`tests/bot_nav.rs::ladders_climb_both_ways`,
-  ignored; de_nuke's all pass, and 81 of 128 climbs on cs_office,
+  ignored; de_nuke's all pass): 118 of 128 climbs on cs_office,
   de_train, de_port, de_cbble, cs_militia, cs_assault, de_piranesi and
-  de_prodigy, up from 62): de_train's ladders on the train cars start
-  about 1.5 m above the floor and bots circle or pace under them without
-  getting on (33 of 70 climbs fail there); the rest (cs_militia 0 down,
-  2-3 up; de_cbble 0/4/5 down; cs_assault 0/5 down; de_prodigy 0/5 down;
-  de_port 0 down; cs_office 1 up; de_piranesi 0) mostly get stuck on
-  boxes or ledges beside the ladder's top, or the test's start spot is
-  awkward. Look at each with `MASHUP_BOT_CASE="ladder 3 up"` and the
-  trace.
+  de_prodigy (2026-10-07, up from 81; per map before/after: cs_office
+  3/4 to 4/4, de_train 37/70 to 63/70, de_port 1/2 to 2/2, de_cbble
+  11/14 to 14/14, cs_militia 7/10 to 9/10, cs_assault 14/16 to 15/16,
+  de_piranesi 0/2 to 2/2, de_prodigy 8/10 to 9/10). Left: de_train 6,
+  18, 23 up and 24 down (the foot on a ledge 0.7 m above the pit floor
+  by the tracks: bots drop into the pit beside it and jump about under
+  the ledge), 11 and 34 up (wander off on another route after a stuck
+  report from an earlier case), 37 up (flung onto a roof beside the top
+  when an approach from the side catches the ladder early);
+  cs_militia 2 up, cs_assault 5 down, de_prodigy 1 up (not looked at).
+  Look at each with `MASHUP_BOT_CASE="ladder 3 up"` and the trace, or
+  `MASHUP_BOT_TRACE_CASE` to trace one inside the whole map's run.
 - A CS:S bot behaviour spec (nav spec open questions 2-4) to check our
   team play against: path costs, how bots pick sites, hold and rotate,
   what they say. Ours (`bot::tactics`) plants and defuses only through
@@ -209,8 +213,9 @@ docs/plans/active/sound.md.
 - Scrapes (looping friction sounds): needs a stand-in for Source's
   friction energy (spec open question 8); breakables' spec pitch/volume
   rules (we play the entries as scripted) and gib bounce sounds.
-- Soundscape DSP presets (room reverb), env_soundscape visibility
-  checks; soundscape loops onto `map::live_sound` (intro, live panning).
+- Room DSP by ear: tune `map::room::PRESETS` against CS:S (dust2's
+  tunnels, nuke's halls); soundscape `dsp_player`/`soundmixer`,
+  env_soundscape_proxy and env_soundscape Enable/Disable.
 - Stock ambient_generics the bomb starts (de_nuke's alarm, dust2's
   fires) now play when it explodes (`BombExplode`); check them by ear. (Prop outputs are in: de_nuke's steam, cs_office's
   projector.) de_nuke's env_steam jets themselves aren't drawn.

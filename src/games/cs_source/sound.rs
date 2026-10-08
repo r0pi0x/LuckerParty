@@ -157,10 +157,17 @@ fn channel(text: &str) -> u8 {
     }
 }
 
+const WAVE_PREFIXES: [char; 10] = ['*', '#', ')', '^', '<', '>', '@', '}', '!', '?'];
+
 /// A wave path as a file: prefix characters stripped, under `sound/`.
 pub(super) fn wave_file(wave: &str) -> String {
-    let path = wave.trim_start_matches(['*', '#', ')', '^', '<', '>', '@', '}', '!', '?']);
+    let path = wave.trim_start_matches(WAVE_PREFIXES);
     format!("sound/{}", path.replace('\\', "/"))
+}
+
+/// A wave marked `#` among its prefix characters bypasses the room DSP.
+pub(super) fn wave_dry(wave: &str) -> bool {
+    wave.chars().take_while(|c| WAVE_PREFIXES.contains(c)).any(|c| c == '#')
 }
 
 /// Entries the movement and world use, beyond the surfaces' steps.
@@ -347,6 +354,7 @@ pub fn load(materials: &mut MaterialLoader, map: &str, surfaces: &SurfaceProps, 
                 pitch,
                 level,
                 channel: keys.get("channel").map_or(0, |c| channel(c)),
+                dry: !raw.waves.is_empty() && raw.waves.iter().all(|w| wave_dry(w)),
             },
         );
     }
@@ -363,12 +371,14 @@ pub fn load(materials: &mut MaterialLoader, map: &str, surfaces: &SurfaceProps, 
             failed += 1;
             continue;
         };
+        let dry = wave_dry(&name);
         out.entries.entry(name).or_insert(MapSoundEntry {
             waves: vec![index],
             volume: Interval::fixed(1.0),
             pitch: Interval::fixed(100.0),
             level: SoundLevel::Db(75.0),
             channel: 6,
+            dry,
         });
     }
     if failed > 0 {
@@ -380,6 +390,15 @@ pub fn load(materials: &mut MaterialLoader, map: &str, surfaces: &SurfaceProps, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hash_prefix_marks_dry_waves() {
+        assert!(wave_dry("#music/hl2_song1.wav"));
+        assert!(wave_dry(")#weapons/x.wav"));
+        assert!(!wave_dry(")weapons/ak47/ak47-1.wav"));
+        assert!(!wave_dry("ambient/a#b.wav"));
+        assert_eq!(wave_file("*#music/a.wav"), "sound/music/a.wav");
+    }
 
     #[test]
     fn intervals_and_names() {
