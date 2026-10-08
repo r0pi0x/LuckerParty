@@ -204,6 +204,13 @@ pub enum Effect {
         to: Option<Entity>,
         message: super::hud::HudMessage,
     },
+    /// A player's damage filter (`SetDamageFilter`): the damage-type bits
+    /// a filter_damage_type tests and its Negated flag (damage passes when
+    /// its bits equal `bits`, inverted when negated); None clears it.
+    DamageFilter { target: Entity, filter: Option<(u32, bool)> },
+    /// Give a player items (game_player_equip: names and counts), after
+    /// taking all its weapons when `strip` (also player_weaponstrip).
+    Equip { target: Entity, items: Vec<(String, u32)>, strip: bool },
     /// A server command (point_servercommand) that passed
     /// `classes::check_server_command`.
     ServerCommand(super::classes::ServerLine),
@@ -1032,12 +1039,32 @@ impl LogicWorld {
             }
             "addoutput" => {
                 let Some(s) = self.need_str(&value, input) else { return };
-                if let Some((k, v)) = s.split_once(' ')
-                    && k.eq_ignore_ascii_case("targetname")
-                {
-                    self.player_names.retain(|(e, _)| *e != p);
-                    self.player_names.push((p, v.trim().to_string()));
-                }
+                let Some((k, v)) = s.split_once(' ') else { return };
+                self.player_keyvalue(p, &k.to_ascii_lowercase(), v.trim());
+            }
+            "setdamagefilter" => {
+                let name = match &value {
+                    Value::Void => String::new(),
+                    v => self.need_str(v, input).unwrap_or_default(),
+                };
+                let filter = if name.is_empty() {
+                    None
+                } else {
+                    let found = self.find(&name).and_then(|f| match self.get(f).map(|e| (&e.class, e)) {
+                        Some((super::classes::Class::Filter(filter), e))
+                            if matches!(filter.kind, super::classes::FilterKind::DamageType) =>
+                        {
+                            Some((e.kv_i("damagetype") as u32, filter.negated))
+                        }
+                        _ => None,
+                    });
+                    if found.is_none() {
+                        self.log.push(format!("player: damage filter '{name}' is not a filter_damage_type (ignored)"));
+                        return;
+                    }
+                    found
+                };
+                self.effects.push(Effect::DamageFilter { target: p, filter });
             }
             "kill" | "killhierarchy" => {
                 // Players are never removed; a kill input kills them.
@@ -1051,6 +1078,50 @@ impl LogicWorld {
                 super::fire::ignite_input(self, Who::Player(p), input, &value);
             }
             _ => self.log.push(format!("player: unhandled input {input}")),
+        }
+    }
+
+    /// A keyvalue set on a player through AddOutput (entity_io.md:
+    /// AddOutput sets any field the class reads from a keyvalue). The
+    /// ones maps use on `!activator`: its name, gravity, a base velocity
+    /// (bhop and surf boosters: added to the velocity once, as no trigger
+    /// keeps it up), health, origin (a teleport).
+    fn player_keyvalue(&mut self, p: Entity, key: &str, v: &str) {
+        let num = super::value::atof;
+        match key {
+            "targetname" => {
+                self.player_names.retain(|(e, _)| *e != p);
+                self.player_names.push((p, v.to_string()));
+            }
+            "gravity" => {
+                if let Some(pl) = self.player_mut(p) {
+                    pl.gravity = num(v);
+                }
+            }
+            "basevelocity" => {
+                let push = crate::map::entities::parse_vector(v);
+                if let Some(pl) = self.player_mut(p) {
+                    pl.velocity += push;
+                    if push.z > 0.0 {
+                        pl.on_ground = false;
+                        pl.unground = true;
+                    }
+                }
+            }
+            "health" => self.effects.push(Effect::SetHealth {
+                target: p,
+                health: num(v),
+            }),
+            "origin" => {
+                let at = crate::map::entities::parse_vector(v);
+                if let Some(pl) = self.player_mut(p) {
+                    pl.origin = at;
+                    pl.on_ground = false;
+                    pl.unground = true;
+                    pl.teleported = true;
+                }
+            }
+            _ => self.log.push(format!("player: AddOutput {key} not supported")),
         }
     }
 

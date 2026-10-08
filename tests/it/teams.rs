@@ -55,6 +55,37 @@ fn teammates_do_not_hurt_each_other_unless_friendly_fire() {
     assert!(health(&sim, a) < before, "friendly fire on, no damage");
 }
 
+/// A map's damage filter on a character (bhop and surf maps' no-fall
+/// filter, `SetDamageFilter` through the logic) blocks the kinds it lists.
+#[test]
+fn damage_filters_block_their_kinds() {
+    use mashup::core::{DamageFilter, DamageKind};
+    let mut sim = Sim::new(());
+    let a = sim.spawn_character(Vec3::new(0.0, 1.0, 0.0), placeholder::ID);
+    sim.app.world_mut().entity_mut(a).insert(DamageFilter {
+        blocked: vec![DamageKind::Fall],
+    });
+    let full = health(&sim, a);
+    let hurt = |sim: &mut Sim, kind: DamageKind| {
+        sim.app.world_mut().write_message(Damage {
+            force: Vec3::ZERO,
+            target: a,
+            attacker: None,
+            amount: 0.2,
+            point: Vec3::ZERO,
+            dir: Vec3::NEG_Y,
+            hitgroup: Hitgroup::Generic,
+            kind,
+            weapon: None,
+        });
+        sim.ticks(1);
+    };
+    hurt(&mut sim, DamageKind::Fall);
+    assert_eq!(health(&sim, a), full, "no fall damage");
+    hurt(&mut sim, DamageKind::Bullet);
+    assert!(health(&sim, a) < full, "other damage still counts");
+}
+
 #[test]
 fn no_team_is_nobodys_teammate() {
     let mut sim = Sim::new(());

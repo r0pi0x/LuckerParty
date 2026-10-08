@@ -7,7 +7,10 @@
 //! A hit prop or brush entity (door, breakable, func_brush) takes the decal
 //! on its own triangles, as its child: it moves with it, and goes when the
 //! entity is removed or broken (and at a round restart, which re-creates
-//! brush entities). Characters take no decals yet.
+//! brush entities). Characters take no decals yet. They stay until the
+//! map changes, as in the game; `ClearDecals` (the `r_cleardecals`
+//! command) removes them all, and `DecalSettings::round_clear`
+//! (`mashup_round_cleardecals 1`) at every round start.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -116,6 +119,18 @@ pub(super) struct DecalSurfaces {
     props: Vec<usize>,
     /// Map entity index -> its brush model's triangles.
     entities: HashMap<usize, TriSet>,
+}
+
+/// Remove every runtime decal (`r_cleardecals`).
+#[derive(Message, Clone, Copy, Debug, Default)]
+pub struct ClearDecals;
+
+/// Decal options: `round_clear` (`mashup_round_cleardecals`, default 0)
+/// removes every runtime decal at each round start. The game keeps them
+/// until the map changes.
+#[derive(Resource, Default)]
+pub struct DecalSettings {
+    pub round_clear: u8,
 }
 
 /// A placed runtime decal (its colour part; the depth-only copy is its
@@ -507,6 +522,31 @@ pub(super) fn drop_brush_decals(
     }
     if let Some(mut assets) = assets.filter(|_| !removed.is_empty()) {
         assets.placed.retain(|e| !removed.contains(e));
+    }
+}
+
+/// `ClearDecals`, and round starts with `DecalSettings::round_clear` on:
+/// every runtime decal goes (world, props and brush entities alike).
+pub(super) fn clear_decals(
+    mut asks: MessageReader<ClearDecals>,
+    settings: Option<Res<DecalSettings>>,
+    restarts: Option<Res<crate::core::RoundRestarts>>,
+    mut seen: Local<Option<u32>>,
+    decals: Query<Entity, With<RuntimeDecal>>,
+    assets: Option<ResMut<DecalAssets>>,
+    mut commands: Commands,
+) {
+    let count = restarts.map_or(0, |r| r.0);
+    let restart = seen.replace(count).is_some_and(|s| s != count);
+    let asked = asks.read().count() > 0;
+    if !asked && !(restart && settings.is_some_and(|s| s.round_clear != 0)) {
+        return;
+    }
+    for e in &decals {
+        commands.entity(e).try_despawn();
+    }
+    if let Some(mut assets) = assets {
+        assets.placed.clear();
     }
 }
 

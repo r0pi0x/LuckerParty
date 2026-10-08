@@ -111,7 +111,7 @@ impl Builder<'_, '_> {
         let clip = self
             .materials
             .read(&file)
-            .and_then(|b| super::wav::decode(&b).ok())
+            .and_then(|b| super::wav::decode_any(&b).ok())
             .map(|c| {
                 self.sounds.clips.push(c);
                 self.sounds.clips.len() - 1

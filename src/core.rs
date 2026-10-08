@@ -225,6 +225,23 @@ pub enum DamageKind {
     Burn,
 }
 
+/// Give a character items a map names (`weapon_ak47`, `item_kevlar`, with
+/// counts), after taking all its weapons when `strip`: the logic layer's
+/// game_player_equip and player_weaponstrip; the weapon layer gives them.
+#[derive(Message, Clone, Debug, PartialEq)]
+pub struct Equip {
+    pub target: Entity,
+    pub items: Vec<(String, u32)>,
+    pub strip: bool,
+}
+
+/// Damage kinds a character takes none of (a map's damage filter on it:
+/// bhop and surf maps turn fall damage off this way).
+#[derive(Component, Clone, Debug, Default, PartialEq, Eq)]
+pub struct DamageFilter {
+    pub blocked: Vec<DamageKind>,
+}
+
 /// Takes `Damage` without having `Health`: something else (the logic
 /// layer's breakables) reads the messages aimed at it. Weapons hit it as
 /// a plain object (no hitgroups, no flesh sounds).
@@ -515,11 +532,15 @@ pub fn apply_damage(
     mut damage: MessageReader<Damage>,
     mut health: Query<&mut Health, Without<God>>,
     teams: Query<&Team>,
+    filters: Query<&DamageFilter>,
     friendly_fire: Option<Res<FriendlyFire>>,
     mut died: MessageWriter<Died>,
 ) {
     for d in damage.read() {
         if refused_by_team(d, &teams, friendly_fire.as_deref()) {
+            continue;
+        }
+        if filters.get(d.target).is_ok_and(|f| f.blocked.contains(&d.kind)) {
             continue;
         }
         let Ok(mut h) = health.get_mut(d.target) else { continue };
@@ -565,6 +586,7 @@ impl Plugin for CorePlugin {
             .register_type::<Hitboxes>()
             .register_type::<Damageable>()
             .add_message::<Damage>()
+            .add_message::<Equip>()
             .add_message::<Explosion>()
             .add_message::<Deafened>()
             .add_message::<Died>()

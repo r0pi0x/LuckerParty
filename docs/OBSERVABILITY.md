@@ -474,6 +474,29 @@ Encrypted Combat Arms archives list but skip extraction until their scheme's
 key is in `mashup.local.toml`. Extraction goes to `~/.local/share/mashup/dump/<game>/` (or `--out`) and
 refuses any folder inside the repository.
 
+### Sweeping every cached map (mapsweep)
+
+`mapsweep` loads every map in mashup's content cache
+(`~/.local/share/mashup/content/cs_source/maps/`) headless, each under
+`catch_unwind`, runs its map logic for a few seconds, and writes
+`report.md` (problems ranked by how many maps they affect, then one row
+per map), `report.csv` and `warnings.txt` (every warning and logic line)
+to `target/mapsweep/` (or `--out`). Load warnings are grouped by kind
+(missing or unreadable materials, textures, models, sounds; decals and
+overlays without a surface), plus entity classes nothing handles, classes
+handled only as static brushes, and logic complaints (refused server
+commands, unhandled inputs). With `--shots <mashup build>` it also runs
+that build per map for a 1280x720 screenshot from the first spawn and the
+last `mashup_perf_log` line (needs a display).
+
+```
+cargo run --features dev --bin mapsweep                      # every cached map
+cargo run --features dev --bin mapsweep -- --filter surf_     # some of them
+cargo run --features dev --bin mapsweep -- --shots target/playtest/mashup --filter mg_
+```
+
+The committed summary is in docs/plans/active/community-maps.md.
+
 ## 6. Comparing with the real game (refcmp)
 
 `refcmp` captures the same camera views in real CS:S and in mashup and

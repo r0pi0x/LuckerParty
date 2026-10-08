@@ -108,6 +108,22 @@ impl<'a> MaterialLoader<'a> {
         self.mount.read(&path).ok()
     }
 
+    /// A packed file under `materials/maps/<any folder>/` named `file`
+    /// (lower case): a renamed map's own files sit under its original
+    /// name. The path without `materials/` and the extension.
+    pub fn packed_map_file(&self, file: &str) -> Option<String> {
+        let mut found: Vec<&String> = self
+            .pack_names
+            .keys()
+            .filter(|k| k.starts_with("materials/maps/") && k.rsplit('/').next() == Some(file))
+            .collect();
+        found.sort();
+        found
+            .first()
+            .and_then(|k| k.strip_prefix("materials/"))
+            .map(|k| k.trim_end_matches(".vtf").to_string())
+    }
+
     pub(crate) fn read_text(&self, path: &str) -> Option<String> {
         self.read(path).map(|b| String::from_utf8_lossy(&b).into_owned())
     }
@@ -528,7 +544,7 @@ impl<'a> MaterialLoader<'a> {
                 raw.as_chunks::<8>().0.iter().map(|p| [c(&p[0..]), c(&p[2..]), c(&p[4..])]).collect()
             }
             (true, _) => {
-                let image = vtf.highres_image.decode(0).map_err(|e| e.to_string())?.to_rgba8();
+                let image = decode_rgba8(&vtf.highres_image, 0)?;
                 image
                     .pixels()
                     .map(|p| {
@@ -595,7 +611,7 @@ impl<'a> MaterialLoader<'a> {
             let vtf = vtf::from_bytes(&bytes).map_err(|e| e.to_string())?;
             (0..vtf.header.frames.max(1) as u32)
                 .map(|f| {
-                    let image = vtf.highres_image.decode(f).map_err(|e| e.to_string())?.to_rgba8();
+                    let image = decode_full(&bytes, &vtf, f)?;
                     Ok(MapTexture {
                         name: format!("{path}#{f}"),
                         srgb,
@@ -625,7 +641,7 @@ impl<'a> MaterialLoader<'a> {
     fn decode(&self, path: &str) -> Result<MapTexture, String> {
         let bytes = self.read(path).ok_or("not found")?;
         let vtf = vtf::from_bytes(&bytes).map_err(|e| e.to_string())?;
-        let image = vtf.highres_image.decode(0).map_err(|e| e.to_string())?.to_rgba8();
+        let image = decode_full(&bytes, &vtf, 0)?;
         let mips = mip_levels(&bytes, &vtf.header).unwrap_or_default();
         Ok(MapTexture {
             name: path.to_string(),
@@ -636,6 +652,101 @@ impl<'a> MaterialLoader<'a> {
             rgba8: image.into_raw(),
         })
     }
+}
+
+/// One frame of a VTF image as RGBA8: the `vtf` crate's decoders, plus the
+/// uncompressed formats it leaves out (community maps use them: ABGR8888,
+/// ARGB8888, BGRX8888, I8, IA88, A8, the 16-bit packed formats and the
+/// "bluescreen" ones, whose pure blue texels are transparent). Channel
+/// orders follow the public VTF format description.
+pub fn decode_rgba8(img: &vtf::image::VTFImage<'_>, frame: u32) -> Result<image::RgbaImage, String> {
+    match img.decode(frame) {
+        Ok(i) => return Ok(i.to_rgba8()),
+        Err(vtf::Error::UnsupportedImageFormat(_)) => {}
+        Err(e) => return Err(e.to_string()),
+    }
+    let bytes = img.get_frame(frame).map_err(|e| e.to_string())?;
+    let (w, h) = (img.width as u32, img.height as u32);
+    let rgba = convert_texels(img.format, bytes).ok_or_else(|| format!("Decoding {} images is not supported", img.format))?;
+    image::RgbaImage::from_raw(w, h, rgba).ok_or_else(|| "bad image size".to_string())
+}
+
+/// Bytes per texel of the uncompressed formats whose size the `vtf` crate
+/// doesn't know (so it can't find their data).
+fn extra_texel_bytes(format: vtf::ImageFormat) -> Option<usize> {
+    use vtf::ImageFormat as F;
+    match format {
+        F::Bgrx8888 => Some(4),
+        F::Rgb888Bluescreen | F::Bgr888Bluescreen => Some(3),
+        F::Bgr565 | F::Bgrx5551 | F::Bgra4444 | F::Bgra5551 => Some(2),
+        _ => None,
+    }
+}
+
+/// A frame of a VTF's full-size image as RGBA8 (`decode_rgba8`), also for
+/// the formats the `vtf` crate can't locate: their data found here, as in
+/// `frame_mip_levels` (smaller levels first, each holding every frame).
+fn decode_full(bytes: &[u8], vtf: &vtf::vtf::VTF<'_>, frame: u32) -> Result<image::RgbaImage, String> {
+    let header = &vtf.header;
+    let format = header.highres_image_format;
+    let Some(texel) = extra_texel_bytes(format).filter(|_| header.depth <= 1) else {
+        return decode_rgba8(&vtf.highres_image, frame);
+    };
+    let start = match header
+        .resources
+        .get_by_type(vtf::resources::ResourceType::VTF_LEGACY_RSRC_IMAGE)
+    {
+        Some(r) => r.data as usize,
+        None => {
+            header.header_size as usize
+                + header
+                    .lowres_image_format
+                    .frame_size(header.lowres_image_width as u32, header.lowres_image_height as u32)
+                    .unwrap_or(0) as usize
+        }
+    };
+    let (w, h) = (header.width as usize, header.height as usize);
+    let level = |m: usize| (w >> m).max(1) * (h >> m).max(1) * texel;
+    let frames = header.frames.max(1) as usize;
+    let at = start + (1..header.mipmap_count.max(1) as usize).map(|m| level(m) * frames).sum::<usize>() + frame as usize * level(0);
+    let data = bytes.get(at..at + level(0)).ok_or("image data truncated")?;
+    let rgba = convert_texels(format, data).ok_or("unreadable format")?;
+    image::RgbaImage::from_raw(w as u32, h as u32, rgba).ok_or_else(|| "bad image size".to_string())
+}
+
+/// Uncompressed VTF texels to RGBA8 (None: a format this doesn't read).
+pub fn convert_texels(format: vtf::ImageFormat, bytes: &[u8]) -> Option<Vec<u8>> {
+    use vtf::ImageFormat as F;
+    let five = |v: u16| ((v & 31) as u32 * 255 / 31) as u8;
+    let six = |v: u16| ((v & 63) as u32 * 255 / 63) as u8;
+    let four = |v: u16| ((v & 15) as u32 * 17) as u8;
+    let words = || bytes.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]]));
+    let out: Vec<[u8; 4]> = match format {
+        F::Abgr8888 => bytes.chunks_exact(4).map(|p| [p[3], p[2], p[1], p[0]]).collect(),
+        F::Argb8888 => bytes.chunks_exact(4).map(|p| [p[1], p[2], p[3], p[0]]).collect(),
+        F::Bgrx8888 => bytes.chunks_exact(4).map(|p| [p[2], p[1], p[0], 255]).collect(),
+        F::I8 => bytes.iter().map(|&l| [l, l, l, 255]).collect(),
+        F::Ia88 => bytes.chunks_exact(2).map(|p| [p[0], p[0], p[0], p[1]]).collect(),
+        F::A8 => bytes.iter().map(|&a| [0, 0, 0, a]).collect(),
+        F::Rgb888Bluescreen | F::Bgr888Bluescreen => bytes
+            .chunks_exact(3)
+            .map(|p| {
+                let (r, g, b) = if format == F::Rgb888Bluescreen { (p[0], p[1], p[2]) } else { (p[2], p[1], p[0]) };
+                if (r, g, b) == (0, 0, 255) { [0, 0, 0, 0] } else { [r, g, b, 255] }
+            })
+            .collect(),
+        F::Rgb565 => words().map(|v| [five(v), six(v >> 5), five(v >> 11), 255]).collect(),
+        F::Bgr565 => words().map(|v| [five(v >> 11), six(v >> 5), five(v), 255]).collect(),
+        F::Bgra4444 => words().map(|v| [four(v >> 8), four(v >> 4), four(v), four(v >> 12)]).collect(),
+        F::Bgrx5551 | F::Bgra5551 => words()
+            .map(|v| {
+                let a = if format == F::Bgrx5551 || v & 0x8000 != 0 { 255 } else { 0 };
+                [five(v >> 10), five(v >> 5), five(v), a]
+            })
+            .collect(),
+        _ => return None,
+    };
+    Some(out.into_iter().flatten().collect())
 }
 
 /// The VTF's own smaller mip levels (1..n), decoded to RGBA8. VTF stores
@@ -692,7 +803,7 @@ fn frame_mip_levels(bytes: &[u8], header: &vtf::header::VTFHeader, frame: u32) -
         let mut single = header.clone();
         single.mipmap_count = 1;
         let img = VTFImage::new(single, format, w as u16, h as u16, bytes, offset);
-        out.push(img.decode(0).ok()?.to_rgba8().into_raw());
+        out.push(decode_rgba8(&img, 0).ok()?.into_raw());
     }
     Some(out)
 }
@@ -859,7 +970,7 @@ fn cube_faces(bytes: &[u8]) -> Result<(u32, [Vec<u8>; 6]), String> {
             bytes,
             offset + k * face_size,
         );
-        Ok(img.decode(0).map_err(|e| e.to_string())?.to_rgba8().into_raw())
+        Ok(decode_rgba8(&img, 0)?.into_raw())
     };
     Ok((w, [face(0)?, face(1)?, face(2)?, face(3)?, face(4)?, face(5)?]))
 }
@@ -930,6 +1041,28 @@ pub fn sheet(bytes: &[u8]) -> Option<Vec<Vec<[f32; 4]>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Uncompressed formats the `vtf` crate leaves out (community maps'
+    /// textures, found by the map sweep), by the public format's channel
+    /// orders.
+    #[test]
+    fn uncompressed_formats_convert() {
+        use vtf::ImageFormat as F;
+        assert_eq!(convert_texels(F::Abgr8888, &[4, 3, 2, 1]), Some(vec![1, 2, 3, 4]));
+        assert_eq!(convert_texels(F::Argb8888, &[4, 1, 2, 3]), Some(vec![1, 2, 3, 4]));
+        assert_eq!(convert_texels(F::Bgrx8888, &[3, 2, 1, 0]), Some(vec![1, 2, 3, 255]));
+        assert_eq!(convert_texels(F::I8, &[7]), Some(vec![7, 7, 7, 255]));
+        assert_eq!(convert_texels(F::Ia88, &[7, 9]), Some(vec![7, 7, 7, 9]));
+        assert_eq!(
+            convert_texels(F::Bgr888Bluescreen, &[255, 0, 0, 1, 2, 3]),
+            Some(vec![0, 0, 0, 0, 3, 2, 1, 255])
+        );
+        // BGR565: red in the top five bits.
+        assert_eq!(convert_texels(F::Bgr565, &0xF800u16.to_le_bytes()), Some(vec![255, 0, 0, 255]));
+        assert_eq!(convert_texels(F::Bgra5551, &0x801Fu16.to_le_bytes()), Some(vec![0, 0, 255, 255]));
+        assert_eq!(convert_texels(F::Bgra4444, &0xF0F0u16.to_le_bytes()), Some(vec![0, 255, 0, 255]));
+        assert_eq!(convert_texels(F::Uv88, &[1, 2]), None);
+    }
 
     #[test]
     fn colour_multipliers() {

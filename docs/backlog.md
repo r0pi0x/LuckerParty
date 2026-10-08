@@ -8,10 +8,9 @@ plan when work starts; delete them when done.
 
 ## 0. Playtest feedback (2026-10-07), top priority
 
-- Decals persist across rounds (bullet holes, blood). Probably faithful
-  (CS:S keeps them until the map changes; players bound `r_cleardecals`):
-  verify against the game, add `r_cleardecals` and an optional
-  `mashup_round_cleardecals 1` (off by default).
+- Decals persist across rounds (bullet holes, blood), as we believe CS:S
+  does (players bind `r_cleardecals`, now there; `mashup_round_cleardecals
+  1` clears them each round). Left: confirm the game keeps them.
 
 ## 1. Playtest essentials
 
@@ -59,6 +58,10 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   Impacts land on brush entities (doors, breakables) and go with them;
   unbroken brush entities draw merged (`map::merge`: 1768 -> 58 meshes
   at the blocks room).
+
+- The user's ~89 community maps (surf_, bhop_, kz_, gg_, mg_): swept with
+  `mapsweep` ([plans/active/community-maps.md](plans/active/community-maps.md),
+  results and what's left, ranked).
 
 ## 2b. HUD and debug views
 

@@ -81,7 +81,30 @@ impl Plugin for PerfPlugin {
             );
         }
         water_cvars(app);
+        decal_cvars(app);
     }
+}
+
+/// `r_cleardecals` and `mashup_round_cleardecals` (`map::decal`).
+fn decal_cvars(app: &mut App) {
+    use crate::{
+        console::ConsoleAppExt,
+        map::decal::{ClearDecals, DecalSettings},
+    };
+    app.init_resource::<DecalSettings>().add_message::<ClearDecals>();
+    app.console_command("r_cleardecals", "Remove every bullet hole, slash and blood decal.", |w, _| {
+        w.write_message(ClearDecals);
+        Ok(None)
+    });
+    resource_cvar::<DecalSettings, u8>(
+        app,
+        "mashup_round_cleardecals",
+        "1: remove every impact decal at each round start (the game keeps them until the map changes).",
+        |s| &mut s.round_clear,
+    );
+    app.world_mut()
+        .resource_mut::<crate::console::Console>()
+        .archive("mashup_round_cleardecals");
 }
 
 /// Source's water settings (specs/cs_source/water.md section 1) on

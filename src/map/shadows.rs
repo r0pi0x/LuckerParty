@@ -149,6 +149,11 @@ pub fn silhouette(
             }
             let lo = pts[0].min(pts[1]).min(pts[2]).floor().max(Vec2::ZERO);
             let hi = pts[0].max(pts[1]).max(pts[2]).ceil().min(Vec2::splat(scale - 1.0));
+            // Wholly outside the cell (a caster bigger than its box: some
+            // community props), or not a number.
+            if !(lo.x <= hi.x && lo.y <= hi.y) {
+                continue;
+            }
             for py in lo.y as u32..=hi.y.max(lo.y) as u32 {
                 for px in lo.x as u32..=hi.x.max(lo.x) as u32 {
                     let c = Vec2::new(px as f32 + 0.5, py as f32 + 0.5);

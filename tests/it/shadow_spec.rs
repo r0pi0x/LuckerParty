@@ -53,3 +53,31 @@ fn receiver_colour() {
     close(0.5 * c.x, 0.17686, 1e-4, "full");
     close(1.0 + 0.5 * (c.x - 1.0), 0.67686, 1e-4, "half");
 }
+
+/// A caster with triangles far outside its shadow box (some community
+/// props, found by the map sweep) draws what falls inside and skips the
+/// rest instead of writing past the cell.
+#[test]
+fn silhouette_skips_triangles_outside_the_cell() {
+    use mashup::map::{MapMesh, MapModel, shadows::silhouette};
+    let bounds = (Vec3::splat(-0.5), Vec3::splat(0.5));
+    let down = Vec3::NEG_Y;
+    let f = ShadowFrame::new(bounds, Vec3::ZERO, Quat::IDENTITY, down, 50.0 * M);
+    let tri = |o: Vec3| [o, o + Vec3::X * 0.2, o + Vec3::Z * 0.2].map(|p| p.to_array());
+    let mut positions = Vec::new();
+    positions.extend(tri(Vec3::ZERO));
+    positions.extend(tri(Vec3::new(40.0, 0.0, 40.0)));
+    positions.extend(tri(Vec3::new(-40.0, 0.0, -40.0)));
+    let model = MapModel {
+        meshes: vec![MapMesh {
+            indices: (0..9).collect(),
+            positions,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let n = 64;
+    let cover = silhouette(&model, &[], &f, Vec3::ZERO, Quat::IDENTITY, n);
+    assert_eq!(cover.len(), (n * n) as usize);
+    assert!(cover.iter().any(|c| *c > 0.0), "the inside triangle draws");
+}

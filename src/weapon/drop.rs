@@ -154,7 +154,7 @@ pub fn drop_this(world: &mut World, owner: Entity, weapon: Entity, thrown: bool)
         .id();
     // Too many lying around: the oldest go.
     let mut all: Vec<(Entity, f64, Entity)> = world
-        .query::<(Entity, &Loose)>()
+        .query_filtered::<(Entity, &Loose), Without<super::equip::MapWeapon>>()
         .iter(world)
         .map(|(e, l)| (e, l.since, l.weapon))
         .collect();
