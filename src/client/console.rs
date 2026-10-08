@@ -46,10 +46,15 @@ impl Plugin for ConsoleUiPlugin {
                 (
                     toggle,
                     edit.run_if(|ui: Res<ConsoleUi>| ui.open),
-                    // Not in the game menu either: keys there drive it.
-                    run_binds.run_if(|ui: Res<ConsoleUi>, menu: Option<Res<super::game_menu::GameMenu>>| {
-                        !ui.open && !menu.is_some_and(|m| m.open)
-                    }),
+                    // Not in the game menu or while typing chat either:
+                    // keys there drive those.
+                    run_binds.run_if(
+                        |ui: Res<ConsoleUi>,
+                         menu: Option<Res<super::game_menu::GameMenu>>,
+                         chat: Option<Res<super::chat::ChatInput>>| {
+                            !ui.open && !menu.is_some_and(|m| m.open) && !chat.is_some_and(|c| c.open.is_some())
+                        },
+                    ),
                     drain_log,
                     record_sounds,
                     draw_console,
@@ -1392,7 +1397,7 @@ fn client_commands(app: &mut App) {
             let current = w.get::<MovementSlot>(p).map(|s| s.0).ok_or("no movement")?;
             let back = w.get_resource::<NoclipBack>().map(|b| b.0);
             let next = if current == crate::movement::noclip::ID {
-                back.unwrap_or(crate::movement::placeholder::ID)
+                back.unwrap_or(crate::games::cs_source::movement::ID)
             } else {
                 w.insert_resource(NoclipBack(current));
                 crate::movement::noclip::ID

@@ -164,6 +164,7 @@ pub const DEFAULT_BINDS: &[(&str, &str)] = &[
     ("y", "messagemode"),
     ("u", "messagemode2"),
     ("alt", "+freelook"),
+    ("v", "noclip"),
     ("mwheelup", "+jump"),
     ("mwheeldown", "+jump"),
     ("f9", "bug"),
@@ -404,7 +405,9 @@ mod tests {
             .collect();
         for (k, c) in DEFAULT_BINDS {
             assert!(names.contains(k), "{k} is not a key name");
-            assert!(is_polled(c), "{c}: defaults are all read by their systems");
+            // Console commands run by `console::run_binds`; the rest are
+            // read by their systems.
+            assert!(is_polled(c) || ["noclip"].contains(c), "{c}: not polled and not a known console default");
         }
         let mut keys: Vec<&str> = DEFAULT_BINDS.iter().map(|(k, _)| *k).collect();
         keys.sort();
