@@ -1,9 +1,17 @@
 //! What bots say on the team radio (`core::Radio`): "Enemy spotted" when
 //! an enemy first comes into sight, "Enemy down" after a kill, "Need
-//! backup" when hurt badly. Each call has its own cooldown per bot, and a
-//! bot stays quiet when a teammate said the same thing a moment ago. The
-//! calls are CS:S bots' radio habits as seen in play; the numbers are
-//! ours (docs/tech-debt.md).
+//! backup" when hurt badly, and on their own: the attackers' leader's
+//! "Go go go" or "Stick together team" as the round opens and "Follow
+//! me" when it leads the group onto the site, "Cover me" while planting
+//! or defusing, "Sector clear" a while after a fight, "In position" when
+//! holding, "Regroup team" when most of the team is down. Each call has
+//! its own cooldown per bot (commands: once a round), a bot stays quiet
+//! when a teammate said the same thing a moment ago, and a team's bots
+//! start one call per `TEAM_GAP` at most. The calls are CS:S bots' radio
+//! habits as seen in play; when and how often are ours
+//! (docs/tech-debt.md). The install's radio script has the bomb only in
+//! the round's announcements (`Event.BombPlanted`), no team call about
+//! it, so bots don't call it.
 //!
 //! What bots do with teammates' radio commands (`obey`): one or two of
 //! the nearest answer "Roger that" / "Affirmative" (or "Negative" when
@@ -22,18 +30,53 @@ use bevy::prelude::*;
 use super::Bot;
 use crate::{
     character::CAPSULE_HEIGHT,
-    core::{Died, Health, Intent, Radio, SpawnPoint, Team},
+    core::{Died, Health, Intent, Radio, RoundRestarts, SpawnPoint, Team},
+    objectives::bomb::PlantedBomb,
 };
 
 /// Seconds before a bot repeats a call.
 pub const COOLDOWN: f64 = 12.0;
 /// Seconds a teammate's call keeps the rest of the team from repeating it.
 pub const TEAM_QUIET: f64 = 4.0;
+/// Seconds between two calls bots of one team start (answers to commands
+/// aren't counted).
+pub const TEAM_GAP: f64 = 3.0;
 /// Health share at or below which a hurt bot asks for backup.
 pub const BACKUP_HEALTH: f32 = 0.4;
+/// What happened (enemy spotted or down, need backup) waits this long
+/// for the team's `TEAM_GAP`, s.
+pub const PENDING_FOR: f64 = 3.0;
+/// The attackers' leader calls the round's start ("Go go go" or "Stick
+/// together team") this long after the round opens, s; not after the
+/// window's end.
+pub const ROUND_CALL_AT: f64 = 1.0;
+pub const ROUND_CALL_WINDOW: f64 = 10.0;
+/// Share of round starts the leader says "Go go go" rather than "Stick
+/// together team".
+pub const GO_SHARE: f32 = 1.0 / 3.0;
+/// "Sector clear": this long after the last enemy seen or heard
+/// following a fight, s.
+pub const CLEAR_AFTER: f64 = 5.0;
+/// "Regroup team": once a team (of at least `REGROUP_TEAM` bots) is down
+/// to this share of its bots, with someone left to regroup with.
+pub const REGROUP_SHARE: f32 = 0.34;
+pub const REGROUP_TEAM: usize = 3;
+/// What bots say on their own (not answers): the cooldowns above apply.
+pub const CALLS: &[&str] = &[
+    "enemydown",
+    "enemyspot",
+    "needbackup",
+    "coverme",
+    "regroup",
+    "go",
+    "sticktog",
+    "followme",
+    "sectorclear",
+    "inposition",
+];
 
 /// A bot's radio memory: when each call may be said again, what it saw
-/// last tick and its health then.
+/// last tick and its health then, and the last thing it said.
 #[derive(Clone, Debug, Default)]
 pub struct BotRadio {
     next: Vec<(&'static str, f64)>,
@@ -41,6 +84,18 @@ pub struct BotRadio {
     health: Option<f32>,
     /// An answer to a teammate's command, said at that time.
     pub(super) reply: Option<(&'static str, f64)>,
+    /// A call for something that happened, and when, waiting for the
+    /// team's turn (`PENDING_FOR`).
+    pending: Option<(&'static str, f64)>,
+    /// Planting or defusing now (`objectives::act`).
+    pub(super) at_objective: bool,
+    /// Fought since its last "Sector clear".
+    fought: bool,
+    /// Calls said once a round, and which round that is.
+    said: Vec<&'static str>,
+    round: u32,
+    /// The last call (answers too) and when.
+    last: Option<(&'static str, f64)>,
 }
 
 impl BotRadio {
@@ -57,6 +112,24 @@ impl BotRadio {
                 true
             }
         }
+    }
+
+    /// Keep `call` for when the team's turn comes, unless a more urgent
+    /// one (earlier in `CALLS`) waits already.
+    fn hold(&mut self, call: &'static str, now: f64) {
+        let rank = |c: &str| CALLS.iter().position(|x| *x == c).unwrap_or(CALLS.len());
+        if self.pending.is_none_or(|(c, _)| rank(call) <= rank(c)) {
+            self.pending = Some((call, now));
+        }
+    }
+
+    /// Whether `call` was said in `round` already.
+    fn said_in(&mut self, call: &'static str, round: u32) -> bool {
+        if self.round != round {
+            self.round = round;
+            self.said.clear();
+        }
+        self.said.contains(&call)
     }
 }
 
@@ -78,23 +151,91 @@ pub fn observe(radio: &mut BotRadio, has_target: bool, health: f32) -> Option<&'
     }
 }
 
-/// Recent calls per team, for `TEAM_QUIET`.
-#[derive(Resource, Default)]
-pub(super) struct TeamCalls(Vec<(Team, &'static str, f64)>);
+/// Whether a call is said once a round by one bot of the team (else once
+/// a round per bot, or on cooldown).
+fn once_per_team(call: &str) -> bool {
+    matches!(call, "go" | "sticktog" | "regroup" | "inposition")
+}
 
-#[allow(clippy::type_complexity)]
+fn once_per_bot(call: &str) -> bool {
+    matches!(call, "followme" | "coverme")
+}
+
+/// The leader's round start call: "Go go go" for `GO_SHARE` of rounds,
+/// else "Stick together team", from the team's plan seed and the round.
+pub fn round_call(seed: u64, round: u32) -> &'static str {
+    let r = super::path::hash64(seed ^ 0x60_60_60, round as usize);
+    if ((r >> 40) as f32 / (1u64 << 24) as f32) < GO_SHARE {
+        "go"
+    } else {
+        "sticktog"
+    }
+}
+
+/// Recent calls per team, for `TEAM_QUIET` and `TEAM_GAP`; calls said
+/// once a round per team; when the round opened.
+#[derive(Resource, Default)]
+pub(super) struct TeamCalls {
+    recent: Vec<(Team, &'static str, f64)>,
+    last: Vec<(Team, f64)>,
+    once: Vec<(Team, &'static str, u32)>,
+    /// The round and when it opened (planting allowed: after the freeze).
+    opened: Option<(u32, f64)>,
+}
+
+impl TeamCalls {
+    fn gap_ok(&self, team: Team, now: f64) -> bool {
+        self.last.iter().all(|(t, at)| *t != team || now - at >= TEAM_GAP)
+    }
+}
+
+/// A living bot: team, feet, whom it follows, number.
+type Mate = (Entity, Team, Vec3, Option<Entity>, u32);
+
+type SpeakBots<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static mut Bot,
+        &'static Health,
+        &'static Team,
+        &'static Transform,
+    ),
+>;
+
+#[allow(clippy::too_many_arguments)]
 pub(super) fn speak(
-    mut bots: Query<(Entity, &mut Bot, &Health, &Team)>,
+    mut bots: SpeakBots,
     teams: Query<&Team>,
     mut died: MessageReader<Died>,
     mut radio: MessageWriter<Radio>,
-    mut recent: ResMut<TeamCalls>,
+    mut calls: ResMut<TeamCalls>,
+    tactics: Res<super::Tactics>,
+    open: Option<Res<crate::objectives::RoundOpen>>,
+    restarts: Option<Res<RoundRestarts>>,
+    planted: Query<&PlantedBomb>,
     cfg: Res<super::BotConfig>,
     time: Res<Time>,
 ) {
     let now = time.elapsed_secs_f64();
-    recent.0.retain(|(_, _, at)| now - at < TEAM_QUIET);
-    let mut wanted: Vec<(Entity, &'static str)> = Vec::new();
+    let round = restarts.map_or(0, |r| r.0);
+    let open = open.is_none_or(|o| o.0);
+    if !open {
+        calls.opened = None;
+    } else if calls.opened.map(|o| o.0) != Some(round) {
+        calls.opened = Some((round, now));
+    }
+    let since_open = calls.opened.map(|(_, at)| now - at);
+    calls.recent.retain(|(_, _, at)| now - at < TEAM_QUIET);
+    calls.once.retain(|(.., r)| *r == round);
+    let bomb_planted = planted.iter().any(|b| !b.defused);
+    // (priority, bot number, bot, call): said in this order.
+    let mut wanted: Vec<(usize, u32, Entity, &'static str)> = Vec::new();
+    let mut want = |e: Entity, number: u32, call: &'static str| {
+        let p = CALLS.iter().position(|c| *c == call).unwrap_or(CALLS.len());
+        wanted.push((p, number, e, call));
+    };
     for d in died.read() {
         let Some(killer) = d.attacker.filter(|a| *a != d.entity) else {
             continue;
@@ -103,25 +244,97 @@ pub(super) fn speak(
             (Ok(a), Ok(b)) => a != b,
             _ => true,
         };
-        if enemies && bots.contains(killer) {
-            wanted.push((killer, "enemydown"));
+        if enemies && let Ok((_, mut bot, ..)) = bots.get_mut(killer) {
+            bot.radio.hold("enemydown", now);
         }
     }
-    for (e, mut bot, health, _) in &mut bots {
+    let feet_of = |t: &Transform| t.translation - Vec3::Y * CAPSULE_HEIGHT / 2.0;
+    // Living bots per team (position, following whom), and how many the
+    // team has.
+    let living: Vec<Mate> = bots
+        .iter()
+        .filter(|b| b.2.current > 0.0)
+        .map(|(e, b, _, team, t)| {
+            let leader = b.order.and_then(|o| match o.order {
+                Order::Follow { leader, .. } => Some(leader),
+                _ => None,
+            });
+            (e, *team, feet_of(t), leader, b.number)
+        })
+        .collect();
+    let all: Vec<Team> = bots.iter().map(|b| *b.3).collect();
+    let team_size = |team: Team| all.iter().filter(|t| **t == team).count();
+    for (e, mut bot, health, &team, t) in &mut bots {
         let has_target = bot.target.is_some();
+        let alive = health.current > 0.0;
         if let Some(call) = observe(&mut bot.radio, has_target, health.current) {
-            wanted.push((e, call));
+            bot.radio.hold(call, now);
+        }
+        match bot.radio.pending {
+            Some((_, at)) if now - at > PENDING_FOR => bot.radio.pending = None,
+            Some((call, _)) => want(e, bot.number, call),
+            None => {}
+        }
+        if !alive {
+            bot.radio.fought = false;
+            continue;
+        }
+        if has_target {
+            bot.radio.fought = true;
+        }
+        let feet = feet_of(t);
+        let mates_near: Vec<&Mate> = living
+            .iter()
+            .filter(|m| m.0 != e && m.1 == team && m.2.distance(feet) <= ORDER_RANGE)
+            .collect();
+        let plan = tactics.team(team);
+        let leads = plan.is_some_and(|p| p.role == super::Role::Attack && p.leader == Some(e));
+        // Round start: the attackers' leader.
+        if leads
+            && since_open.is_some_and(|s| (ROUND_CALL_AT..ROUND_CALL_AT + ROUND_CALL_WINDOW).contains(&s))
+            && !mates_near.is_empty()
+            && let Some(p) = plan
+        {
+            want(e, bot.number, round_call(p.seed, round));
+        }
+        // Leading the group onto the site.
+        if leads && plan.is_some_and(|p| p.staged) && !bomb_planted && mates_near.iter().any(|m| m.3 != Some(e)) {
+            want(e, bot.number, "followme");
+        }
+        // Planting or defusing with a teammate near.
+        if bot.radio.at_objective && !mates_near.is_empty() {
+            want(e, bot.number, "coverme");
+        }
+        if !has_target && bot.radio.fought && now - bot.contact >= CLEAR_AFTER {
+            want(e, bot.number, "sectorclear");
+        }
+        if bot.activity == super::Activity::Holding && bot.order.is_none() {
+            want(e, bot.number, "inposition");
+        }
+        // Most of the team down: the lowest numbered of the rest calls
+        // the others together (not with a bomb down).
+        let mates: Vec<&Mate> = living.iter().filter(|m| m.1 == team).collect();
+        let size = team_size(team);
+        if size >= REGROUP_TEAM
+            && mates.len() >= 2
+            && mates.len() as f32 <= size as f32 * REGROUP_SHARE + 0.01
+            && !bomb_planted
+            && !has_target
+            && mates.iter().map(|m| m.4).min() == Some(bot.number)
+        {
+            want(e, bot.number, "regroup");
         }
     }
     // Answers to teammates' commands, when due (no cooldown: every
     // command gets its answer).
-    for (e, mut bot, health, _) in &mut bots {
+    for (e, mut bot, health, ..) in &mut bots {
         let Some((call, at)) = bot.radio.reply else { continue };
         if now < at {
             continue;
         }
         bot.radio.reply = None;
         if cfg.radio != 0 && health.current > 0.0 {
+            bot.radio.last = Some((call, now));
             radio.write(Radio {
                 sender: e,
                 command: call.into(),
@@ -131,17 +344,42 @@ pub(super) fn speak(
     if cfg.radio == 0 {
         return;
     }
-    for (e, call) in wanted {
-        let Ok((_, mut bot, health, team)) = bots.get_mut(e) else {
+    wanted.sort_by_key(|w| (w.0, w.1));
+    for (_, _, e, call) in wanted {
+        let Ok((_, mut bot, health, &team, _)) = bots.get_mut(e) else {
             continue;
         };
         if health.current <= 0.0 && call != "enemydown" {
             continue;
         }
-        if recent.0.iter().any(|(t, c, _)| t == team && *c == call) || !bot.radio.ready(call, now) {
+        if !calls.gap_ok(team, now) || calls.recent.iter().any(|(t, c, _)| *t == team && *c == call) {
             continue;
         }
-        recent.0.push((*team, call, now));
+        if once_per_team(call) && calls.once.iter().any(|(t, c, _)| *t == team && *c == call) {
+            continue;
+        }
+        if once_per_bot(call) && bot.radio.said_in(call, round) {
+            continue;
+        }
+        if !bot.radio.ready(call, now) {
+            continue;
+        }
+        if once_per_team(call) {
+            calls.once.push((team, call, round));
+        }
+        if once_per_bot(call) {
+            bot.radio.said.push(call);
+        }
+        if call == "sectorclear" {
+            bot.radio.fought = false;
+        }
+        if bot.radio.pending.is_some_and(|(c, _)| c == call) {
+            bot.radio.pending = None;
+        }
+        calls.recent.push((team, call, now));
+        calls.last.retain(|(t, _)| *t != team);
+        calls.last.push((team, now));
+        bot.radio.last = Some((call, now));
         radio.write(Radio {
             sender: e,
             command: call.into(),
@@ -272,6 +510,11 @@ impl Bot {
     /// Pressing on after "Go go go" (no waiting for the group).
     pub fn urgent(&self, now: f64) -> bool {
         now < self.urgent_until
+    }
+
+    /// The last thing it said on the radio (a command name), and when.
+    pub fn last_call(&self) -> Option<(&'static str, f64)> {
+        self.radio.last
     }
 
     /// The answer it is about to say on the radio.
@@ -550,6 +793,33 @@ mod tests {
         assert!(!r.ready("enemyspot", COOLDOWN - 0.1));
         assert!(r.ready("enemydown", 1.0), "each call has its own");
         assert!(r.ready("enemyspot", COOLDOWN));
+    }
+
+    #[test]
+    fn round_calls_come_from_the_seed() {
+        let calls: Vec<&str> = (0..30).map(|r| round_call(42, r)).collect();
+        assert_eq!(calls, (0..30).map(|r| round_call(42, r)).collect::<Vec<_>>());
+        let go = calls.iter().filter(|c| **c == "go").count();
+        assert!((3..20).contains(&go), "{go} of 30 rounds start with go");
+        assert!(calls.iter().all(|c| CALLS.contains(c)));
+    }
+
+    #[test]
+    fn a_team_starts_one_call_per_gap() {
+        let mut t = TeamCalls::default();
+        t.last.push((Team(1), 10.0));
+        assert!(!t.gap_ok(Team(1), 10.0 + TEAM_GAP - 0.1));
+        assert!(t.gap_ok(Team(2), 10.5), "per team");
+        assert!(t.gap_ok(Team(1), 10.0 + TEAM_GAP));
+    }
+
+    #[test]
+    fn commands_once_a_round() {
+        let mut r = BotRadio::default();
+        assert!(!r.said_in("coverme", 1));
+        r.said.push("coverme");
+        assert!(r.said_in("coverme", 1));
+        assert!(!r.said_in("coverme", 2), "a new round");
     }
 
     #[test]

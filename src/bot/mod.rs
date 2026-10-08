@@ -70,7 +70,7 @@ impl Plugin for BotPlugin {
         resource_cvar::<BotConfig, u8>(
             app,
             "bot_radio",
-            "1: bots use the team radio (enemy spotted, enemy down, need backup).",
+            "1: bots use the team radio (enemy spotted and down, need backup, commands such as follow me and cover me, sector clear, in position).",
             |c| &mut c.radio,
         );
         resource_cvar::<BotConfig, f32>(app, "bot_aim_error", "Bot aim wobble, degrees.", |c| &mut c.aim_error);
