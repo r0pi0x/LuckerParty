@@ -752,3 +752,77 @@ fn the_dead_drop_weapons_only_in_rounds_and_draw_nothing() {
         }
     }
 }
+
+/// Picking up (specs/cs_source/weapons.md 3.9): a dropped gun is touched
+/// within its box grown 36 units sideways, by anyone, only from 1 s after
+/// the drop; with the slot free it is taken; carrying the same type takes
+/// only its ammo (up to the reserve's max) and leaves the rest lying.
+#[test]
+fn dropped_weapons_are_touched_in_the_grown_box_after_a_second() {
+    use mashup::weapon::drop::{Loose, TOUCH_DELAY, drop_this, drop_weapon};
+    let mut sim = sim();
+    let at = |x: f32| Vec3::new(x, greybox::SPAWNS[0].y, greybox::SPAWNS[0].z);
+    let dropper = sim.spawn_character(at(-8.0), placeholder::ID);
+    let taker = sim.spawn_character(at(0.0), placeholder::ID);
+    let owner = sim.spawn_character(at(8.0), placeholder::ID);
+    sim.ticks(2);
+    // The taker has no primary: its AK goes.
+    let theirs = active(&sim, taker);
+    assert_eq!(sim.app.world().get::<Weapon>(theirs).unwrap().id, AK47);
+    sim.app.world_mut().get_mut::<Inventory>(taker).unwrap().weapons.retain(|w| *w != theirs);
+    sim.app.world_mut().despawn(theirs);
+    let ak = active(&sim, dropper);
+    let loose = drop_weapon(sim.app.world_mut(), dropper, true).expect("dropped");
+    // Lying 1.2 m from the taker's centre: past the old 0.6 m reach,
+    // within the grown box (0.4 m half width + 0.91 m + its own half).
+    let hold = |sim: &mut Sim, to: Vec3| {
+        if let Some(mut t) = sim.app.world_mut().get_mut::<Transform>(loose) {
+            t.translation = to;
+        }
+    };
+    let spot = sim.position(taker) + Vec3::new(1.2, -0.75, 0.0);
+    let ticks = |s: f64| (s / TICK_INTERVAL).round() as u32;
+    for _ in 0..ticks(TOUCH_DELAY - 0.1) {
+        hold(&mut sim, spot);
+        sim.ticks(1);
+    }
+    assert!(sim.app.world().get_entity(loose).is_ok(), "touchable only after a second");
+    for _ in 0..ticks(0.2) {
+        hold(&mut sim, spot);
+        sim.ticks(1);
+    }
+    assert!(sim.app.world().get_entity(loose).is_err(), "taken");
+    assert!(sim.app.world().get::<Inventory>(taker).unwrap().weapons.contains(&ak));
+    // Out of reach: 2 m away stays lying.
+    let loose = drop_this(sim.app.world_mut(), taker, ak, true).expect("dropped");
+    let far = sim.position(taker) + Vec3::new(-2.0, -0.75, 0.0);
+    for _ in 0..ticks(TOUCH_DELAY + 0.3) {
+        if let Some(mut t) = sim.app.world_mut().get_mut::<Transform>(loose) {
+            t.translation = far;
+        }
+        sim.ticks(1);
+    }
+    assert!(sim.app.world().get_entity(loose).is_ok(), "out of reach");
+    // The owner carries an AK 10 rounds short: it takes 10 and the gun
+    // stays with the rest.
+    let mine = active(&sim, owner);
+    let max = {
+        let mut m = sim.app.world_mut().get_mut::<Magazine>(mine).unwrap();
+        m.reserve = m.reserve_max - 10;
+        m.reserve_max
+    };
+    let before = sim.app.world().get::<Magazine>(ak).unwrap().clone();
+    assert!(before.clip > 10);
+    let near_owner = sim.position(owner) + Vec3::new(0.5, -0.75, 0.0);
+    for _ in 0..ticks(0.3) {
+        if let Some(mut t) = sim.app.world_mut().get_mut::<Transform>(loose) {
+            t.translation = near_owner;
+        }
+        sim.ticks(1);
+    }
+    assert_eq!(sim.app.world().get::<Magazine>(mine).unwrap().reserve, max);
+    assert!(sim.app.world().get_entity(loose).is_ok(), "the rest stays lying");
+    assert_eq!(sim.app.world().get::<Magazine>(ak).unwrap().clip, before.clip - 10);
+    assert!(!sim.app.world().get::<Inventory>(owner).unwrap().weapons.contains(&ak));
+    let _ = sim.app.world().get::<Loose>(loose).unwrap();
+}

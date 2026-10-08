@@ -3,7 +3,6 @@ use bevy::prelude::*;
 use mashup::{
     SimPlugins, client, games, greybox,
     map::{MapDebugView, MapPlugin},
-    movement,
     slots::Loadout,
 };
 
@@ -107,7 +106,7 @@ fn main() {
     })
     .insert_resource(movement_config(&args))
     .insert_resource(Loadout {
-        movement: movement::placeholder::ID,
+        movement: mashup::games::cs_source::movement::ID,
     })
     .add_plugins(client::ClientPlugin { args })
     .run();

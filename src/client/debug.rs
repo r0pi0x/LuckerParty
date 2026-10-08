@@ -8,7 +8,7 @@ use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
 use crate::{
     client::input::release_cursor,
     core::{LocalPlayer, MovementState, Velocity},
-    slots::{MovementRegistry, MovementSlot, set_movement},
+    slots::MovementSlot,
 };
 
 pub struct DebugPlugin;
@@ -155,11 +155,8 @@ fn hide_physics_gizmos(mut store: ResMut<GizmoConfigStore>) {
 
 fn keys(
     keys: Res<ButtonInput<KeyCode>>,
-    mut commands: Commands,
     mut cursor: Single<&mut CursorOptions>,
     mut store: ResMut<GizmoConfigStore>,
-    player: Single<(Entity, &MovementSlot), With<LocalPlayer>>,
-    registry: Res<MovementRegistry>,
     console: Option<Res<super::console::ConsoleUi>>,
 ) {
     // Typing in the console isn't a shortcut.
@@ -172,12 +169,6 @@ fn keys(
     if keys.just_pressed(KeyCode::F3) {
         let config = store.config_mut::<PhysicsGizmos>().0;
         config.enabled = !config.enabled;
-    }
-    if keys.just_pressed(KeyCode::KeyV) {
-        let (entity, slot) = *player;
-        if let Some(next) = registry.next_after(slot.0) {
-            commands.queue(set_movement(entity, next.id));
-        }
     }
 }
 
@@ -216,7 +207,7 @@ fn update_hud(
     let speed = Vec2::new(vel.x, vel.z).length();
     let mut text = format!(
         "movement: {}\nspeed: {speed:.2} m/s  vertical: {:.2}\nground: {}  crouch: {}  sprint: {}\n\n\
-         click: capture mouse  esc: menu\nV: next movement  F1: inspector  F3: collision",
+         click: capture mouse  esc: menu\nV: noclip  F1: inspector  F3: collision",
         slot.0, vel.y, state.on_ground, state.crouching, state.sprinting,
     );
     if phys.0 != 0 {

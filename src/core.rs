@@ -73,6 +73,9 @@ pub struct MovementState {
     pub ground: Option<Entity>,
     /// Climbing a ladder (movements that have them).
     pub on_ladder: bool,
+    /// The eye's roll from a view punch (radians; positive tilts the view
+    /// clockwise, Source's roll): hard landings kick it.
+    pub view_roll: f32,
 }
 
 /// A velocity that moves a character without being part of its own

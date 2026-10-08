@@ -8,8 +8,10 @@
 //! character's `Transform` (engine meters, Y up) is the centre of the
 //! standing box, so feet = origin - 36 units. Ladders and water (swimming,
 //! water jumps) follow the spec's sections. Not implemented yet: base
-//! velocity (conveyors, water currents), view punch. Hard landings deal
-//! fall damage (specs/cs_source/fall_damage.md).
+//! velocity (conveyors, water currents). Landings and wall slams roll the
+//! view (the punch angle's roll, `MovementState::view_roll`); hard
+//! landings deal fall damage (specs/cs_source/fall_damage.md) and play
+//! its sound.
 
 use avian3d::prelude::*;
 use bevy::prelude::*;
@@ -309,6 +311,11 @@ const HALF_WIDTH: f32 = 16.0;
 /// The transform sits this far above the feet (a fixed convention, the
 /// shared code's standing-box centre), whatever the hull sizes.
 const ORIGIN_ABOVE_FEET: f32 = 36.0;
+/// Landing view roll per unit/s of fall speed (degrees), and the punch
+/// spring's damping and constant (movement spec).
+const LAND_PUNCH_SCALE: f32 = 0.013;
+const PUNCH_DAMPING: f32 = 9.0;
+const PUNCH_SPRING: f32 = 65.0;
 
 const AIR_WISH_CAP: f32 = 30.0;
 const WALKABLE_NORMAL_Z: f32 = 0.7;
@@ -430,6 +437,10 @@ pub struct SourceMovement {
     step_left: bool,
     pub surface: Option<String>,
     swim_timer: f32,
+    /// The punch angle's roll (degrees) and its velocity: hard landings
+    /// and wall slams kick it (movement spec, "Falling and landing").
+    pub punch_roll: f32,
+    punch_roll_vel: f32,
 }
 
 impl Default for SourceMovement {
@@ -462,6 +473,8 @@ impl Default for SourceMovement {
             step_left: false,
             surface: None,
             swim_timer: 0.0,
+            punch_roll: 0.0,
+            punch_roll_vel: 0.0,
         }
     }
 }
@@ -1294,6 +1307,9 @@ impl Mover<'_, '_, '_, '_> {
             return;
         }
         self.me.step_timer = 400.0;
+        // The view rolls by the current fall speed (a wall slam's is
+        // usually 0).
+        self.me.punch_roll = self.me.fall_speed * LAND_PUNCH_SCALE;
         if let Some(s) = self.me.surface.clone() {
             self.play_step(&s, volume);
         }
@@ -1705,6 +1721,7 @@ impl Mover<'_, '_, '_, '_> {
         self.me.duck_timer = (self.me.duck_timer - 1000.0 * self.dt).max(0.0);
         self.me.stamina = (self.me.stamina - 1000.0 * self.dt).max(0.0);
         self.me.swim_timer = (self.me.swim_timer - 1000.0 * self.dt).max(0.0);
+        self.decay_punch();
 
         // Intent yaw 0 looks down engine -Z, which is Source yaw 90.
         let yaw = std::f32::consts::FRAC_PI_2 + intent.yaw;
@@ -1856,6 +1873,23 @@ impl Mover<'_, '_, '_, '_> {
         self.me.last_feet = Some(self.feet);
     }
 
+    /// The punch angle's spring (movement spec, "Punch angle decay"), for
+    /// its roll: the only part movement sets (recoil is the weapons').
+    fn decay_punch(&mut self) {
+        let (p, v) = (self.me.punch_roll, self.me.punch_roll_vel);
+        if p * p <= 0.001 && v * v <= 0.001 {
+            self.me.punch_roll = 0.0;
+            self.me.punch_roll_vel = 0.0;
+            return;
+        }
+        let dt = self.dt;
+        let p = p + v * dt;
+        let v = v * (1.0 - PUNCH_DAMPING * dt).max(0.0);
+        let v = v - p * (PUNCH_SPRING * dt).clamp(0.0, 2.0);
+        self.me.punch_roll = p.clamp(-89.0, 89.0);
+        self.me.punch_roll_vel = v;
+    }
+
     /// Entering or leaving water this tick splashes.
     fn water_sound(&mut self, before: u8) {
         if (before == 0) != (self.me.water_level == 0) {
@@ -1906,7 +1940,7 @@ fn step(
     cfg: Res<SourceMovementConfig>,
     time: Res<Time>,
     other_characters: Query<(Entity, &ColliderAabb, Option<&Health>), (With<Intent>, Without<SourceMovement>)>,
-    health: Query<&Health>,
+    (health, god): (Query<&Health>, Query<(), With<crate::core::God>>),
 ) {
     let dt = time.delta_secs();
     // Every living character's box: Source hulls for Source movers, else
@@ -2048,6 +2082,18 @@ fn step(
                 kind: crate::core::DamageKind::Fall,
                 weapon: None,
             });
+            // Taking it plays the damage sound at the player (sound spec,
+            // "Landing").
+            if !god.contains(entity) && health.get(entity).is_ok_and(|h| h.current > 0.0) {
+                play.write(PlaySound {
+                    entry: "Player.FallDamage".into(),
+                    at: Some(to_engine(feet)),
+                    volume: None,
+                    source: Some(entity),
+                    // The script's own (CHAN_BODY).
+                    channel: None,
+                });
+            }
         }
         for (entry, at, volume) in mover.sounds.drain(..) {
             play.write(PlaySound {
@@ -2085,6 +2131,7 @@ fn step(
             },
             ground: me.ground_entity,
             on_ladder: me.ladder.is_some(),
+            view_roll: me.punch_roll.to_radians(),
         };
     }
 }

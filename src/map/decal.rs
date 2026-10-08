@@ -13,7 +13,7 @@ use bevy::{
     mesh::{Indices, PrimitiveTopology},
     prelude::*,
     reflect::TypePath,
-    render::render_resource::{AsBindGroup, BlendComponent, BlendFactor, BlendOperation, BlendState},
+    render::render_resource::{AsBindGroup, BlendComponent, BlendFactor, BlendOperation, BlendState, ColorWrites},
     shader::ShaderRef,
 };
 
@@ -90,6 +90,10 @@ const REACH: f32 = 0.1;
 /// Lift off the surface (meters): above the map's own decals (0.15 units)
 /// and overlays (up to 0.25 units), so impacts draw on top of them.
 const LIFT: f32 = 0.35 * 0.0254;
+/// How far below the decal its depth-only copy lies (meters): that copy
+/// (0.30 units up) keeps overlays (up to 0.25) off impacts while every
+/// impact's colour (0.35) still passes over every other impact's depth.
+const DEPTH_DROP: f32 = 0.05 * 0.0254;
 const CELL: f32 = 1.0;
 
 /// Triangles (corners and normal) in a uniform grid.
@@ -275,7 +279,8 @@ pub(super) struct DecalAssets {
     pub(super) data: MapDecals,
     /// Every map texture, by `MapData::textures` index.
     pub(super) textures: Vec<Handle<Image>>,
-    materials: HashMap<usize, Handle<DecalMaterial>>,
+    /// (decal index, depth only) -> material.
+    materials: HashMap<(usize, bool), Handle<DecalMaterial>>,
     placed: VecDeque<Entity>,
     rng: u64,
 }
@@ -374,7 +379,7 @@ pub(super) fn place_decals(
         let Some(texture) = assets.textures.get(decal.texture).cloned() else {
             continue;
         };
-        let material = match assets.materials.get(&index) {
+        let mut material = |depth_only: bool| match assets.materials.get(&(index, depth_only)) {
             Some(m) => m.clone(),
             None => {
                 let m = materials.add(DecalMaterial {
@@ -388,20 +393,37 @@ pub(super) fn place_decals(
                         0.0,
                         0.0,
                     ),
-                    texture,
+                    texture: texture.clone(),
                     fog: fog.as_ref().map_or_else(Default::default, |f| f.0),
+                    depth_only,
                 });
-                assets.materials.insert(index, m.clone());
+                assets.materials.insert((index, depth_only), m.clone());
                 m
             }
         };
+        let (colour, depth) = (material(false), material(true));
+        let mesh = meshes.add(mesh);
+        // The decal's surface normal where it lies (the prop's space for
+        // decals on props).
+        let drop = match prop {
+            Some((_, _, to_local)) => to_local.transform_vector3(ask.normal).normalize_or_zero(),
+            None => ask.normal.normalize_or_zero(),
+        } * -DEPTH_DROP;
         let mut decal_entity = commands.spawn((
             Name::new("Decal"),
-            Mesh3d(meshes.add(mesh)),
-            MeshMaterial3d(material),
+            Mesh3d(mesh.clone()),
+            MeshMaterial3d(colour),
             Transform::default(),
             Visibility::default(),
             MapPart,
+            children![(
+                Name::new("Decal depth"),
+                Mesh3d(mesh),
+                MeshMaterial3d(depth),
+                Transform::from_translation(drop),
+                Visibility::default(),
+                MapPart,
+            )],
         ));
         if let Some(p) = parent {
             decal_entity.insert(ChildOf(p));
@@ -416,7 +438,10 @@ pub(super) fn place_decals(
     }
 }
 
+/// Each decal is drawn twice (see `DecalMaterial::specialize`): its
+/// colour, and a depth-only copy just below it.
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+#[bind_group_data(DecalMaterialKey)]
 pub struct DecalMaterial {
     /// x: 1 for modulate 2x, 0 for a stain.
     #[uniform(0)]
@@ -428,6 +453,21 @@ pub struct DecalMaterial {
     /// neutral.
     #[uniform(3)]
     pub fog: super::fog::FogUniform,
+    /// Writes depth only (no colour): the copy that keeps overlays off.
+    pub depth_only: bool,
+}
+
+/// Pipeline key data: the depth-only copy has its own pipeline.
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DecalMaterialKey {
+    depth_only: bool,
+}
+
+impl From<&DecalMaterial> for DecalMaterialKey {
+    fn from(m: &DecalMaterial) -> Self {
+        Self { depth_only: m.depth_only }
+    }
 }
 
 impl Material for DecalMaterial {
@@ -454,16 +494,22 @@ impl Material for DecalMaterial {
         false
     }
 
-    /// The framebuffer times twice the shader's output. Depth is written
-    /// where the decal shows (the shader discards neutral texels), so the
+    /// The framebuffer times twice the shader's output, without depth
+    /// writes: every impact's colour passes over every other's, and the
+    /// product doesn't depend on the order they are drawn in, which is the
+    /// game's result of applying them in creation order (they all
+    /// multiply). The depth-only copy (0.05 units lower, discarding the
+    /// same neutral texels) writes depth where the decal shows, so the
     /// map's overlays and decals (lifted less) never draw over an impact,
-    /// whichever draws first.
+    /// whichever draws first. (Impacts writing depth themselves made
+    /// overlapping ones hide each other by draw order, which flickered.)
     fn specialize(
         _pipeline: &bevy::pbr::MaterialPipeline,
         descriptor: &mut bevy::render::render_resource::RenderPipelineDescriptor,
         _layout: &bevy::mesh::MeshVertexBufferLayoutRef,
-        _key: bevy::pbr::MaterialPipelineKey<Self>,
+        key: bevy::pbr::MaterialPipelineKey<Self>,
     ) -> Result<(), bevy::render::render_resource::SpecializedMeshPipelineError> {
+        let depth_only = key.bind_group_data.depth_only;
         // src x dst + dst x src = 2 x src x dst.
         let multiply = BlendComponent {
             src_factor: BlendFactor::Dst,
@@ -481,10 +527,13 @@ impl Material for DecalMaterial {
                     color: multiply,
                     alpha: keep,
                 });
+                if depth_only {
+                    target.write_mask = ColorWrites::empty();
+                }
             }
         }
         if let Some(depth) = descriptor.depth_stencil.as_mut() {
-            depth.depth_write_enabled = Some(true);
+            depth.depth_write_enabled = Some(depth_only);
         }
         Ok(())
     }

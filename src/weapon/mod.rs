@@ -166,6 +166,19 @@ impl Plugin for WeaponPlugin {
                 economy::buy(w, player, &name).map(Some)
             },
         );
+        // CS:S's ammo commands (`,` and `.` run buyammo1/2 by default);
+        // `buy primammo`/`buy secammo` fill the reserve instead.
+        for (name, slot, _) in economy::AMMO_BUYS.into_iter().filter(|(_, _, fill)| !fill) {
+            let gun = if slot == 0 { "primary" } else { "secondary" };
+            app.console_command(
+                name,
+                &format!("Buy a box of ammo for your {gun} weapon (in a buy zone, in the buy time)."),
+                move |w, _| {
+                    let player = local_player(w)?;
+                    economy::buy(w, player, name).map(Some)
+                },
+            );
+        }
     }
 }
 

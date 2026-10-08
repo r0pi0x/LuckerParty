@@ -6,6 +6,23 @@ Things to build, **in priority order** (top first; reprioritized
 [plans/active/](plans/active/engine-split.md). Move items into a
 plan when work starts; delete them when done.
 
+## 0. Playtest feedback (2026-10-07), top priority
+
+CS:S feel:
+- Optional `+use` pickup of dropped weapons (CS:GO's; CS:S has none): a
+  cvar such as `mashup_usepickup`, off by default, reaching farther than
+  the touch box.
+
+Console:
+- Clicking inside the open console captures the mouse.
+- The visible line count doesn't follow a resolution change.
+- Completion list: Up/Down highlight an entry, Enter takes it and adds a
+  space for the arguments.
+- More convenience: help for each argument while typing, and similar.
+
+Debug UI: a rich, tabbed debug interface (sliders and proper inputs) for
+the things most useful in playtesting and development.
+
 ## 1. Playtest essentials
 
 A (settings, health bars, third person), B (penetration and collaterals,

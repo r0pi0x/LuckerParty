@@ -1915,10 +1915,25 @@ fn spawn_map(
         commands.insert_resource(gibs);
     }
     if let (Some(meshes), Some(materials), Some(images)) = (meshes.as_mut(), materials.as_mut(), images.as_mut()) {
+        // HUD pictures are clamped at their edges: wrapped, the scope
+        // ring's outer edge blends with its clear centre and lets the
+        // scene through at the screen's edges.
+        let hud: std::collections::HashSet<usize> = data
+            .hud
+            .iter()
+            .flat_map(|h| h.sprites.values().map(|s| s.texture))
+            .collect();
         let textures: Vec<Handle<Image>> = data
             .textures
             .iter()
-            .map(|t| images.add(to_image(t, &data.look)))
+            .enumerate()
+            .map(|(i, t)| {
+                let mut image = to_image(t, &data.look);
+                if hud.contains(&i) {
+                    clamp_edges(&mut image);
+                }
+                images.add(image)
+            })
             .collect();
         let cubemaps: Vec<Handle<Image>> = data.cubemaps.iter().map(|c| images.add(cube_image(c))).collect();
         cubemap_handles = cubemaps.clone();
@@ -3097,6 +3112,14 @@ fn to_image(t: &MapTexture, look: &MapLook) -> Image {
         ..default()
     });
     image
+}
+
+/// Sample `image` clamped to its edges (pictures drawn once, not tiled).
+fn clamp_edges(image: &mut Image) {
+    if let ImageSampler::Descriptor(d) = &mut image.sampler {
+        d.address_mode_u = ImageAddressMode::ClampToEdge;
+        d.address_mode_v = ImageAddressMode::ClampToEdge;
+    }
 }
 
 /// Source's parameter gamma-to-linear table (specs/cs_source/shaders.md
