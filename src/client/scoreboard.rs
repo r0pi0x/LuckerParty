@@ -1,15 +1,23 @@
-//! The scoreboard, CS:S style: held with Tab (or `+showscores`), two team
-//! columns (Terrorists, Counter-Terrorists, then anyone else) listing each
-//! player's name, kills, deaths, latency (0 until networking) and status:
-//! dead (the row greyed), or to teammates "BOMB" by the bomb carrier and
-//! "DEFUSER" by a player with a defusal kit (spec objectives.md: CS:S's
-//! bomb and defuser icons, the bomb for Ts only); the local player
-//! highlighted.
+//! The scoreboard, CS:S style: held with Tab (or `+showscores`). With the
+//! game's layout (`map::hud::GameMenus::scoreboard`, CS:S's
+//! `resource/ui/scoreboard.res`) it is drawn in the game's look: its
+//! background picture, the map name, each team's name, players alive and
+//! rounds won, the column headings, and a row per player placed on the
+//! layout's first-row cells (`CTPlayerName0`, `TPlayerStatus0`, ...),
+//! counter-terrorists left and terrorists right; the status column shows
+//! the game's own icons (`hud/scoreboard_dead`, and to teammates
+//! `scoreboard_bomb` by the carrier and `scoreboard_defuser` by a player
+//! with a kit; spec objectives.md: the bomb for Ts only), the latency
+//! column "BOT" for bots and 0 for players (no networking yet), the local
+//! player's row lit with `scoreboard-select`. Without the layout: two
+//! plain team columns with the status in words.
 
 use bevy::prelude::*;
 
+use super::vgui::{Painter, Shown, VguiMenu};
 use crate::{
     core::{Intent, LocalPlayer, Team},
+    map::hud::{ActiveHud, GameMenus, UiControl},
     objectives::bomb::C4,
     rules::{Dead, Score},
     weapon::{Weapon, economy::DefuseKit},
@@ -26,11 +34,19 @@ impl Plugin for ScoreboardPlugin {
 #[derive(Component)]
 struct Board;
 
+/// The game-look scoreboard's root (the whole window).
+#[derive(Component)]
+struct GameBoard;
+
 #[derive(Component)]
 struct Column(u8);
 
 const T_RED: Color = Color::srgb(1.0, 0.25, 0.25);
 const CT_BLUE: Color = Color::srgb(0.6, 0.8, 1.0);
+/// Virtual units from one player row to the next. The layout gives only
+/// the first row (14 tall); 16 fills its 272-unit player area with 16
+/// rows (a guess, not measured).
+pub const ROW_PITCH: f32 = 16.0;
 
 fn spawn(mut commands: Commands) {
     let board = commands
@@ -64,6 +80,17 @@ fn spawn(mut commands: Commands) {
             ChildOf(board),
         ));
     }
+    commands.spawn((
+        GameBoard,
+        Node {
+            position_type: PositionType::Absolute,
+            width: percent(100.0),
+            height: percent(100.0),
+            ..default()
+        },
+        GlobalZIndex(60),
+        Visibility::Hidden,
+    ));
 }
 
 /// One row: name, kills, deaths, latency, status; the first cell in
@@ -106,19 +133,76 @@ fn row(
     }
 }
 
-/// A scoreboard row: column (team), name, kills, deaths, dead, local,
-/// status.
-type Row = (u8, String, u32, u32, bool, bool, &'static str);
+/// What the status column shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Status {
+    None,
+    Dead,
+    Bomb,
+    Defuser,
+}
 
-/// The status column: "DEAD", else for a teammate "BOMB" (carrying the
-/// bomb) or "DEFUSER" (has a kit); the other team's are hidden.
-fn marker(dead: bool, carrier: bool, kit: bool, teammate: bool) -> &'static str {
-    match (dead, teammate && carrier, teammate && kit) {
-        (true, ..) => "DEAD",
-        (_, true, _) => "BOMB",
-        (_, _, true) => "DEFUSER",
-        _ => "",
+impl Status {
+    /// The plain board's word.
+    fn word(self) -> &'static str {
+        match self {
+            Status::None => "",
+            Status::Dead => "DEAD",
+            Status::Bomb => "BOMB",
+            Status::Defuser => "DEFUSER",
+        }
     }
+
+    /// The game's icon (a `GameHud::sprites` key).
+    pub fn icon(self) -> Option<&'static str> {
+        match self {
+            Status::None => None,
+            Status::Dead => Some("scoreboard_dead"),
+            Status::Bomb => Some("scoreboard_bomb"),
+            Status::Defuser => Some("scoreboard_defuser"),
+        }
+    }
+}
+
+/// The status column: dead, else for a teammate the bomb (carrying it) or
+/// the defuser (has a kit); the other team's are hidden.
+pub fn status(dead: bool, carrier: bool, kit: bool, teammate: bool) -> Status {
+    match (dead, teammate && carrier, teammate && kit) {
+        (true, ..) => Status::Dead,
+        (_, true, _) => Status::Bomb,
+        (_, _, true) => Status::Defuser,
+        _ => Status::None,
+    }
+}
+
+/// The latency column: "BOT" for bots (as CS:S shows them), else the
+/// player's ping (0: everyone is local until networking).
+pub fn latency(bot: bool) -> String {
+    if bot { "BOT".into() } else { "0".into() }
+}
+
+/// A scoreboard row.
+#[derive(Clone, Debug, PartialEq)]
+struct Row {
+    /// 1 terrorists, 2 counter-terrorists (and anyone else).
+    column: u8,
+    name: String,
+    kills: u32,
+    deaths: u32,
+    dead: bool,
+    local: bool,
+    bot: bool,
+    status: Status,
+}
+
+/// What the board shows; redrawn when it changes.
+#[derive(Clone, Debug, PartialEq)]
+struct Shot {
+    rows: Vec<Row>,
+    wins: Option<[u32; 2]>,
+    map: String,
+    size: Vec2,
+    game_look: bool,
 }
 
 #[allow(clippy::type_complexity)]
@@ -127,8 +211,8 @@ fn update(
     (binds, mouse): (Option<Res<crate::console::Console>>, Option<Res<ButtonInput<MouseButton>>>),
     held: Res<super::console::HeldActions>,
     console: Option<Res<super::console::ConsoleUi>>,
-    mut board: Single<&mut Visibility, With<Board>>,
-    columns: Query<(Entity, &Column)>,
+    mut boards: Query<(&mut Visibility, Has<GameBoard>), Or<(With<Board>, With<GameBoard>)>>,
+    roots: (Query<Entity, With<GameBoard>>, Query<(Entity, &Column)>),
     players: Query<
         (
             Entity,
@@ -138,14 +222,19 @@ fn update(
             Has<Dead>,
             Has<LocalPlayer>,
             Has<DefuseKit>,
+            Has<crate::bot::Bot>,
         ),
         With<Intent>,
     >,
     bombs: Query<&Weapon, With<C4>>,
     windows: Query<&Window>,
-    fonts: Res<super::fonts::UiFonts>,
+    (fonts, hud, map): (
+        Res<super::fonts::UiFonts>,
+        Option<Res<ActiveHud>>,
+        Option<Res<crate::map::LoadedMapName>>,
+    ),
     rounds: Option<Res<crate::rules::rounds::RoundState>>,
-    mut last: Local<Option<(Vec<Row>, Option<[u32; 2]>)>>,
+    mut last: Local<Option<Shot>>,
     mut commands: Commands,
 ) {
     let typing = console.is_some_and(|c| c.open);
@@ -154,11 +243,18 @@ fn update(
         _ => false,
     };
     let show = (tab && !typing) || held.showscores;
-    **board = if show {
-        Visibility::Inherited
-    } else {
-        Visibility::Hidden
-    };
+    let layout = hud
+        .as_ref()
+        .and_then(|h| h.0.menus.as_ref())
+        .and_then(|m| Some((m, m.layouts.get(m.scoreboard.as_ref()?)?)));
+    let game_look = layout.is_some();
+    for (mut vis, is_game) in &mut boards {
+        vis.set_if_neq(if show && is_game == game_look {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        });
+    }
     if !show {
         *last = None;
         return;
@@ -168,53 +264,198 @@ fn update(
     // Rows by team, most kills first, then fewest deaths.
     let mut rows: Vec<Row> = players
         .iter()
-        .map(|(e, name, team, score, dead, local, kit)| {
+        .map(|(e, name, team, score, dead, local, kit, bot)| {
             let s = score.copied().unwrap_or_default();
             let name = if local {
                 "Player".to_string()
             } else {
                 name.map_or_else(|| format!("{e}"), |n| n.to_string())
             };
-            // Team 1 terrorists; everyone else in the CT column.
-            let column = if team.is_some_and(|t| t.0 == 1) { 1 } else { 2 };
-            let mark = marker(dead, carriers.contains(&e), kit, team.is_some() && team.copied() == my_team);
-            (column, name, s.kills, s.deaths, dead, local, mark)
+            Row {
+                column: if team.is_some_and(|t| t.0 == 1) { 1 } else { 2 },
+                name,
+                kills: s.kills,
+                deaths: s.deaths,
+                dead,
+                local,
+                bot,
+                status: status(
+                    dead,
+                    carriers.contains(&e),
+                    kit,
+                    team.is_some() && team.copied() == my_team,
+                ),
+            }
         })
         .collect();
     rows.sort_by(|a, b| {
-        a.0.cmp(&b.0)
-            .then(b.2.cmp(&a.2))
-            .then(a.3.cmp(&b.3))
-            .then(a.1.cmp(&b.1))
+        a.column
+            .cmp(&b.column)
+            .then(b.kills.cmp(&a.kills))
+            .then(a.deaths.cmp(&b.deaths))
+            .then(a.name.cmp(&b.name))
     });
     // Rounds won, while rounds are played.
     let wins = rounds
         .filter(|r| r.phase != crate::rules::rounds::Phase::Off)
         .map(|r| r.wins);
-    let key = (rows, wins);
-    if last.as_ref() == Some(&key) {
+    let size = windows
+        .iter()
+        .next()
+        .map_or(Vec2::new(640.0, 480.0), |w| Vec2::new(w.width(), w.height()));
+    let map = map.map_or_else(String::new, |m| m.0.rsplit(':').next().unwrap_or(&m.0).to_string());
+    let shot = Shot {
+        rows,
+        wins,
+        map,
+        size,
+        game_look,
+    };
+    if last.as_ref() == Some(&shot) {
         return;
     }
-    let rows = &key.0;
+    if let (Some((menus, layout)), Some(hud), Ok(root)) = (layout, hud.as_deref(), roots.0.single()) {
+        commands.entity(root).despawn_related::<Children>();
+        let painter = Painter::new(hud, &fonts, size.y);
+        draw_game(&mut commands, root, &painter, menus, layout, &shot);
+    } else {
+        draw_plain(&mut commands, &roots.1, &fonts, &shot);
+    }
+    *last = Some(shot);
+}
+
+/// The game-look board: the layout's controls with its `%...%` labels
+/// filled in, then a row per player on the first-row cells.
+fn draw_game(
+    commands: &mut Commands,
+    root: Entity,
+    painter: &Painter,
+    menus: &GameMenus,
+    layout: &crate::map::hud::UiLayout,
+    shot: &Shot,
+) {
+    let alive = |team: u8| shot.rows.iter().filter(|r| r.column == team && !r.dead).count();
+    let wins = |team: u8| shot.wins.map_or(0, |w| w[if team == 1 { 0 } else { 1 }]);
+    let mut shown = |c: &UiControl| {
+        let mut s = Shown::of(c);
+        let name = c.name.to_lowercase();
+        let fill = match c.text.trim().to_lowercase().as_str() {
+            "%mapname%" => Some(shot.map.clone()),
+            "%ct_teamname%" => Some(menus.string("Cstrike_ScoreBoard_CT", "COUNTER-TERRORISTS").to_string()),
+            "%t_teamname%" => Some(menus.string("Cstrike_ScoreBoard_Ter", "TERRORISTS").to_string()),
+            "%ct_alivecount%" => Some(alive(2).to_string()),
+            "%t_alivecount%" => Some(alive(1).to_string()),
+            "%ct_totalteamscore%" => Some(wins(2).to_string()),
+            "%t_totalteamscore%" => Some(wins(1).to_string()),
+            "%spectators%" => Some(menus.string("Cstrike_Scoreboard_NoSpectators", "No Spectators").to_string()),
+            t if t.starts_with('%') => Some(String::new()),
+            _ => None,
+        };
+        s.text = fill;
+        // No time limit to show beside the clock (the map's time left).
+        if name == "icon_clock" || name == "winconditionlabel" {
+            s.visible = false;
+        }
+        s
+    };
+    painter.spawn(commands, root, shot.size, layout, VguiMenu::Scoreboard, &mut shown);
+
+    let rects = layout.rects(Rect::from_corners(Vec2::ZERO, shot.size), painter.scale);
+    let cell = |name: &str| {
+        layout
+            .controls
+            .iter()
+            .position(|c| c.name.eq_ignore_ascii_case(name))
+            .map(|i| (&layout.controls[i], rects[i]))
+    };
+    for (team, prefix) in [(2u8, "CT"), (1u8, "T")] {
+        let heading = |col: &str| cell(&format!("{prefix}Player{col}Label")).and_then(|(c, _)| c.fg);
+        let [r, g, b, a] = heading("").unwrap_or(if team == 1 { [240, 90, 90, 255] } else { [150, 200, 255, 255] });
+        let color = Color::srgba_u8(r, g, b, a);
+        let font = painter.font(Some("ScoreboardBody_1"));
+        let name_cell = cell(&format!("{prefix}PlayerName0"));
+        let latency_cell = cell(&format!("{prefix}PlayerLatency0"));
+        for (i, row) in shot.rows.iter().filter(|r| r.column == team).enumerate() {
+            let dy = i as f32 * ROW_PITCH * painter.scale;
+            let at = |r: Rect| Node {
+                position_type: PositionType::Absolute,
+                left: px(r.min.x),
+                top: px(r.min.y + dy),
+                width: px(r.width()),
+                height: px(r.height()),
+                display: Display::Flex,
+                align_items: AlignItems::Center,
+                ..default()
+            };
+            if row.local
+                && let (Some((_, from)), Some((_, to))) = (name_cell, latency_cell)
+                && let Some(image) = sprite(painter, "scoreboard_select")
+            {
+                let r = Rect::from_corners(from.min, Vec2::new(to.max.x, from.max.y));
+                commands.spawn((at(r), image, ZIndex(5), ChildOf(root)));
+            }
+            let text_cells = [
+                ("Name", row.name.clone(), JustifyContent::FlexStart),
+                ("Score", row.kills.to_string(), JustifyContent::Center),
+                ("Deaths", row.deaths.to_string(), JustifyContent::Center),
+                ("Latency", latency(row.bot), JustifyContent::Center),
+            ];
+            for (col, text, justify) in text_cells {
+                let Some((_, r)) = cell(&format!("{prefix}Player{col}0")) else {
+                    continue;
+                };
+                let node = Node {
+                    justify_content: justify,
+                    overflow: Overflow::clip(),
+                    ..at(r)
+                };
+                commands
+                    .spawn((node, ZIndex(10), ChildOf(root)))
+                    .with_child((Text::new(text), font.clone(), TextColor(color)));
+            }
+            if let Some(icon) = row.status.icon()
+                && let Some((_, r)) = cell(&format!("{prefix}PlayerStatus0"))
+                && let Some(mut image) = sprite(painter, icon)
+            {
+                image.color = color;
+                commands.spawn((at(r), image, ZIndex(10), ChildOf(root)));
+            }
+        }
+    }
+}
+
+/// A HUD sprite as an image node.
+fn sprite(painter: &Painter, name: &str) -> Option<ImageNode> {
+    let s = painter.hud.sprites.get(name)?;
+    let [x, y, w, h] = s.rect;
+    Some(ImageNode {
+        image: painter.images.get(&s.texture)?.clone(),
+        rect: Some(Rect::new(x, y, x + w, y + h)),
+        ..default()
+    })
+}
+
+/// The plain board: a column per team.
+fn draw_plain(commands: &mut Commands, columns: &Query<(Entity, &Column)>, fonts: &super::fonts::UiFonts, shot: &Shot) {
     // The client scheme's scoreboard fonts: team names, column titles,
     // player rows.
-    let h = windows.iter().next().map_or(480.0, |w| w.height());
+    let h = shot.size.y;
     let team_font = fonts.client("ScoreboardTeamName", h, 14.0);
     let column_font = fonts.client("ScoreboardColumns", h, 8.0);
     let body_font = fonts.client("ScoreboardBody_1", h, 10.0);
-    for (column, Column(team)) in &columns {
+    for (column, Column(team)) in columns {
         commands.entity(column).despawn_related::<Children>();
         let (title, color) = if *team == 1 {
             ("Terrorists", T_RED)
         } else {
             ("Counter-Terrorists", CT_BLUE)
         };
-        let members: Vec<_> = rows.iter().filter(|r| r.0 == *team).collect();
+        let members: Vec<_> = shot.rows.iter().filter(|r| r.column == *team).collect();
         row(
-            &mut commands,
+            commands,
             column,
             [
-                match wins {
+                match shot.wins {
                     Some(w) => format!("{title}  ({})   {}", members.len(), w[if *team == 1 { 0 } else { 1 }]),
                     None => format!("{title}  ({})", members.len()),
                 },
@@ -227,19 +468,23 @@ fn update(
             false,
             (&team_font, &column_font),
         );
-        for (_, name, kills, deaths, dead, local, status) in members {
+        for r in members {
             row(
-                &mut commands,
+                commands,
                 column,
-                // Latency: everyone is local until networking (0 ms).
-                [name.clone(), kills.to_string(), deaths.to_string(), "0".into(), (*status).into()],
-                if *dead { color.with_alpha(0.5) } else { color },
-                *local,
+                [
+                    r.name.clone(),
+                    r.kills.to_string(),
+                    r.deaths.to_string(),
+                    latency(r.bot),
+                    r.status.word().into(),
+                ],
+                if r.dead { color.with_alpha(0.5) } else { color },
+                r.local,
                 (&body_font, &body_font),
             );
         }
     }
-    *last = Some(key);
 }
 
 #[cfg(test)]
@@ -247,11 +492,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn markers_only_for_teammates() {
-        assert_eq!(marker(true, false, true, true), "DEAD");
-        assert_eq!(marker(false, true, false, true), "BOMB");
-        assert_eq!(marker(false, true, false, false), "");
-        assert_eq!(marker(false, false, true, true), "DEFUSER");
-        assert_eq!(marker(false, false, true, false), "");
+    fn status_icons_only_for_teammates() {
+        assert_eq!(status(true, false, true, true), Status::Dead);
+        assert_eq!(status(false, true, false, true), Status::Bomb);
+        assert_eq!(status(false, true, false, false), Status::None);
+        assert_eq!(status(false, false, true, true), Status::Defuser);
+        assert_eq!(status(false, false, true, false), Status::None);
+        assert_eq!(Status::Bomb.icon(), Some("scoreboard_bomb"));
+        assert_eq!(Status::Dead.icon(), Some("scoreboard_dead"));
+        assert_eq!(Status::Defuser.icon(), Some("scoreboard_defuser"));
+        assert_eq!(Status::None.icon(), None);
+    }
+
+    #[test]
+    fn bots_show_bot_for_latency() {
+        assert_eq!(latency(true), "BOT");
+        assert_eq!(latency(false), "0");
     }
 }

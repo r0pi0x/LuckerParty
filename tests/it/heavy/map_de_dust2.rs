@@ -10,6 +10,52 @@ use mashup::{
     movement::placeholder,
 };
 
+/// The scoreboard and spectator layouts, the scoreboard's and bomb's
+/// sprites, the C4 screen's look, and GameUI's loading dialog and sounds.
+#[test]
+fn the_scoreboard_spectator_bars_and_bomb_look_load() {
+    use mashup::map::hud::{UiKind, UiSound};
+    let Some(map) = dust2() else { return };
+    let hud = map.hud.as_ref().expect("CS:S has a HUD");
+    let menus = hud.menus.as_ref().expect("CS:S has its VGUI menus");
+    let board = &menus.layouts[menus.scoreboard.as_ref().expect("scoreboard.res")];
+    let background = board.get("ScoreboardBackground").unwrap();
+    assert_eq!(background.kind, UiKind::Image);
+    let picture = background.image.as_ref().expect("its picture (../vgui/ resolved)");
+    assert!(hud.sprites.contains_key(picture), "{picture}");
+    for cell in ["CTPlayerName0", "CTPlayerStatus0", "TPlayerLatency0"] {
+        assert!(board.get(cell).is_some(), "{cell}");
+    }
+    assert_eq!(menus.string("Cstrike_ScoreBoard_CT", ""), "COUNTER-TERRORISTS");
+    for sprite in ["scoreboard_bomb", "scoreboard_dead", "scoreboard_defuser", "c4", "ledglow"] {
+        assert!(hud.sprites.contains_key(sprite), "{sprite}");
+    }
+    let bars = &menus.layouts[menus.spectator.as_ref().expect("spectator.res")];
+    assert!(bars.get("topbar").is_some() && bars.get("playerlabel").is_some());
+    let spec_menu = &menus.layouts[menus.spectator_menu.as_ref().expect("bottomspectator.res")];
+    assert!(spec_menu.get("viewcombo").is_some());
+    // valve_english's strings under the game's.
+    assert_eq!(menus.string("Spec_Map", ""), "Map: %s1");
+    let screen = &hud.screens["c4_view_panel"];
+    assert_eq!(screen.pixels, Vec2::new(200.0, 100.0));
+    assert_eq!(screen.colors.get("C4Panel_Armed"), Some(&[255, 30, 13, 200]));
+    assert_eq!(screen.font.as_ref().map(|f| f.family.as_str()), Some("Courier New"));
+    let c4 = map.view_models.iter().find(|v| v.key == cs_source::objectives::C4).unwrap();
+    let (_, _, size) = mashup::map::view_model::screen_corners(c4).expect("the C4's screen attachments");
+    assert!((size.x - 2.7).abs() < 0.01 && (size.y - 1.25).abs() < 0.01, "{size}");
+    // GameUI: the loading dialog and the interface sounds.
+    let config = LocalConfig::load().unwrap();
+    let install = config.game_path("cs_source").unwrap();
+    let ui = cs_source::gameui::load(&cs_source::mount::open(&install).unwrap()).expect("GameUI");
+    let loading = ui.loading.as_ref().expect("the loading dialog");
+    assert_eq!(loading.get("LoadingDialog").map(|c| (c.wide, c.tall)), Some((380.0, 112.0)));
+    assert!(loading.get("Progress").is_some() && loading.get("InfoLabel").is_some());
+    for s in [UiSound::Rollover, UiSound::Click, UiSound::Release] {
+        assert!(ui.sounds.contains_key(&s), "{s:?}");
+    }
+    assert_eq!(ui.string("LoadingProgress_LoadMap"), Some("Loading world..."));
+}
+
 #[test]
 fn the_games_buy_and_team_menus_load() {
     use mashup::map::hud::{UiKind, layout_key};

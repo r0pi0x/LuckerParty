@@ -3,6 +3,7 @@
 //! Simulation code must never depend on this module.
 
 pub mod binds;
+pub mod bomb_fx;
 pub mod buy_menu;
 pub mod capture;
 pub mod chat;
@@ -248,6 +249,7 @@ impl Plugin for ClientPlugin {
                 chat::ChatPlugin,
                 radio::RadioPlugin,
                 objectives_hud::ObjectivesHudPlugin,
+                bomb_fx::BombFxPlugin,
                 game_menu::GameMenuPlugin,
                 senses::SensesPlugin,
                 spectate::SpectatePlugin,

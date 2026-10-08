@@ -69,6 +69,11 @@ pub struct BombRules {
     pub range_factor: f32,
     /// Seconds into arming of each key press (`sounds.click`).
     pub clicks: Vec<f32>,
+    /// What the key presses type on the bomb's little screen, a character
+    /// each (spec Constants, `plant_vm_code`), and when the screen masks
+    /// it with `*`s, seconds into arming.
+    pub code: String,
+    pub code_masked: f32,
     pub sounds: BombSounds,
     /// Held-model keys: the planted bomb, a dropped defusal kit.
     pub planted_model: Option<String>,
@@ -93,12 +98,27 @@ impl Default for BombRules {
             radius: 500.0,
             range_factor: 3.5,
             clicks: vec![0.9, 1.2333, 1.5, 1.7, 1.9, 2.1, 2.2333],
+            code: "7355608".into(),
+            code_masked: 2.6,
             sounds: BombSounds::default(),
             planted_model: None,
             kit_model: None,
             planted_turn: Quat::IDENTITY,
             use_box: (Vec3::new(-8.0, 0.0, -8.0) * UNIT, Vec3::new(8.0, 8.0, 8.0) * UNIT),
         }
+    }
+}
+
+impl BombRules {
+    /// The bomb's screen `elapsed` seconds into arming: the code typed so
+    /// far (a character per key press), then all `*`s (spec Constants:
+    /// "7", "73", ... "7355608", "*******" at 2.6 s).
+    pub fn screen_text(&self, elapsed: f32) -> String {
+        if elapsed >= self.code_masked {
+            return "*".repeat(self.code.chars().count());
+        }
+        let typed = self.clicks.iter().filter(|t| **t <= elapsed).count();
+        self.code.chars().take(typed).collect()
     }
 }
 
@@ -826,6 +846,18 @@ pub(super) fn round_start(world: &mut World) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_screen_types_the_code_then_masks_it() {
+        let r = BombRules::default();
+        assert_eq!(r.screen_text(0.0), "");
+        assert_eq!(r.screen_text(0.9), "7");
+        assert_eq!(r.screen_text(1.3), "73");
+        assert_eq!(r.screen_text(2.0), "73556");
+        assert_eq!(r.screen_text(2.3), "7355608");
+        assert_eq!(r.screen_text(2.6), "*******");
+        assert_eq!(r.screen_text(3.0), "*******");
+    }
 
     #[test]
     fn beeps_speed_up_from_one_second_to_a_tenth() {

@@ -34,6 +34,7 @@ pub mod interp;
 pub mod hearing;
 pub mod live_sound;
 pub mod loose;
+pub mod loading;
 pub mod merge;
 pub mod probe_lit;
 pub mod radio;
@@ -60,7 +61,8 @@ pub mod water;
 pub mod world_material;
 pub use view_model::{
     DynamicLight, EffectSettings, MapAttachment, MapViewModel, ViewAnimator, ViewModelAnchor, ViewModelCamera,
-    ViewModelEvent, ViewModelEventKind, ViewModelOffset, ViewModelSettings, ViewModelSource, ViewModels,
+    ViewModelEvent, ViewModelEventKind, ViewModelOffset, ViewModelScreen, ViewModelSettings, ViewModelSource,
+    ViewModels,
 };
 
 use prop_material::{PropMaterial, PropParams};
@@ -1716,7 +1718,8 @@ impl Plugin for MapPlugin {
                         loose::attach_shown,
                     )
                         .run_if(resource_exists::<CharacterBodies>),
-                    view_model::draw_view_models
+                    (view_model::draw_view_models, view_model::view_model_screens)
+                        .chain()
                         .after(DriveAnimation)
                         .run_if(resource_exists::<view_model::ViewModelAssets>),
                     (

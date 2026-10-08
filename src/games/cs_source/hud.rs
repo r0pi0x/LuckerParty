@@ -30,6 +30,13 @@ impl Kv {
             Kv::Block(_) => None,
         }
     }
+    /// This value's text (None for a block).
+    pub(crate) fn str_value(&self) -> Option<&str> {
+        match self {
+            Kv::Value(v) => Some(v),
+            Kv::Block(_) => None,
+        }
+    }
     pub(crate) fn items(&self) -> &[(String, Kv)] {
         match self {
             Kv::Block(items) => items,
@@ -205,11 +212,19 @@ pub fn load(materials: &mut MaterialLoader, map: &str) -> Option<GameHud> {
 
     // The sniper scope: a quarter of the ring (transparent inside, black
     // outside; the bottom-right quarter as stored) and the lens tint; the
-    // icon over a teammate's head while they speak on the radio.
+    // icon over a teammate's head while they speak on the radio; the
+    // scoreboard's status icons and its row highlight; the planted bomb's
+    // marker and its LED's glow.
     for (name, material) in [
         ("scope_arc", "sprites/scope_arc"),
         ("scope_lens", "overlays/scope_lens"),
         ("radio", "sprites/radio"),
+        ("scoreboard_bomb", "hud/scoreboard_bomb"),
+        ("scoreboard_dead", "hud/scoreboard_dead"),
+        ("scoreboard_defuser", "hud/scoreboard_defuser"),
+        ("scoreboard_select", "vgui/scoreboard/scoreboard-select"),
+        ("c4", "sprites/c4"),
+        ("ledglow", "sprites/ledglow"),
     ] {
         if materials.read(&format!("materials/{material}.vmt")).is_none() {
             continue;
@@ -253,8 +268,41 @@ pub fn load(materials: &mut MaterialLoader, map: &str) -> Option<GameHud> {
         );
     }
     hud.text_fonts = super::vgui::fonts(&scheme);
+    hud.screens = screens(materials);
     hud.menus = super::vgui::load(materials, &mut hud, map);
     (!hud.panels.is_empty()).then_some(hud)
+}
+
+/// The screens on models (`scripts/vgui_screens.txt`: each panel's size in
+/// pixels); the C4's (`c4_*`) take their font and colours from the C4
+/// panel's scheme, `resource/c4panel.res`.
+fn screens(materials: &MaterialLoader) -> HashMap<String, crate::map::hud::ModelScreen> {
+    let text = |p: &str| materials.read(p).map(|b| String::from_utf8_lossy(&b).into_owned());
+    let Some(list) = text("scripts/vgui_screens.txt") else {
+        return HashMap::new();
+    };
+    let list = parse(&list);
+    let list = list.items().first().map(|(_, v)| v.clone()).unwrap_or(list);
+    let c4 = text("resource/c4panel.res").map(|t| super::gameui::parse_pc(&t));
+    let c4 = c4.map(|s| s.items().first().map(|(_, v)| v.clone()).unwrap_or(s));
+    let num = |v: &Kv, k: &str| v.str(k).and_then(|x| x.trim().parse::<f32>().ok()).unwrap_or(0.0);
+    let mut out = HashMap::new();
+    for (name, v) in list.items() {
+        let mut screen = crate::map::hud::ModelScreen {
+            pixels: Vec2::new(num(v, "pixelswide"), num(v, "pixelshigh")),
+            ..Default::default()
+        };
+        if let Some(scheme) = c4.as_ref().filter(|_| name.to_lowercase().starts_with("c4")) {
+            screen.font = super::vgui::fonts(scheme).remove("Default").and_then(|s| s.into_iter().next());
+            for (k, c) in scheme.get("Colors").map(Kv::items).unwrap_or_default() {
+                if let Some(rgba) = c.str_value().and_then(color) {
+                    screen.colors.insert(k.clone(), rgba);
+                }
+            }
+        }
+        out.insert(name.to_lowercase(), screen);
+    }
+    out
 }
 
 /// The map's radar picture: `resource/overviews/<map>.txt` (upper-left

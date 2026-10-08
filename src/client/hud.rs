@@ -462,8 +462,10 @@ fn short(id: &str) -> &str {
 
 /// Crosshair gap from the held weapon's spread at the camera's field of
 /// view.
+#[allow(clippy::type_complexity)]
 fn draw_crosshair(
     player: Option<Single<(&Inventory, Option<&Dead>, Option<&Zoomed>), With<LocalPlayer>>>,
+    (spectating, watched): (Option<Res<super::spectate::SpecView>>, Query<(&Inventory, Option<&Zoomed>)>),
     scans: Query<&Hitscan>,
     camera: Query<(&Camera, &Projection), With<FirstPersonCamera>>,
     mut lines: Query<(&CrosshairLine, &mut Node, &mut Visibility, &mut BackgroundColor)>,
@@ -475,9 +477,13 @@ fn draw_crosshair(
     let Some(size) = cam.logical_viewport_size() else {
         return;
     };
-    let (inv, dead, zoomed) = match player.map(|p| *p) {
-        Some((i, d, z)) => (Some(i), d, z),
-        None => (None, None, None),
+    // Watching someone in first person: their weapon's crosshair (CS:S
+    // draws the watched player's, in your own crosshair settings).
+    let in_eye = spectating.and_then(|s| s.in_eye).and_then(|t| watched.get(t).ok());
+    let (inv, dead, zoomed) = match (in_eye, player.map(|p| *p)) {
+        (Some((i, z)), _) => (Some(i), None, z),
+        (None, Some((i, d, z))) => (Some(i), d, z),
+        (None, None) => (None, None, None),
     };
     // A scope draws its own cross hairs.
     let visible = inv.is_some() && dead.is_none() && !zoomed.is_some_and(|z| z.scope);
@@ -563,11 +569,17 @@ fn game_scope(
     });
 }
 
+/// Shown while the local player looks through a scope, or while watching
+/// in first person someone who does.
 fn draw_scope(
     player: Option<Single<Option<&Zoomed>, With<LocalPlayer>>>,
+    (spectating, watched): (Option<Res<super::spectate::SpecView>>, Query<&Zoomed>),
     mut overlay: Query<&mut Visibility, With<ScopeOverlay>>,
 ) {
-    let scoped = player.is_some_and(|z| z.is_some_and(|z| z.scope));
+    let scoped = match spectating.and_then(|s| s.in_eye) {
+        Some(t) => watched.get(t).is_ok_and(|z| z.scope),
+        None => player.is_some_and(|z| z.is_some_and(|z| z.scope)),
+    };
     let want = if scoped {
         Visibility::Inherited
     } else {

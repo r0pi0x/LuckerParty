@@ -199,6 +199,18 @@ Only `Reflect`-registered types are visible; register new core components in
   with `spec_mode 4|5|6` (first person, chase, free look), `spec_next`
   and `spec_prev`, `mp_forcecamera 0` to watch enemies too; the state is
   the `Spectator` resource (`tests/it/spectate.rs` drives it headless).
+  The spectator bars on a real map: `--map cs_source:de_dust2 --window
+  1280x720 --screenshot spec.png --frames 400 +mashup_rounds 1
+  +mp_freezetime 0 +bot_add 2 +bot_add 2 +wait 60 +mashup_hurtme chest
+  500` (the death cam ends 2 s after the death, then a teammate is
+  watched in first person, with their crosshair).
+- Scoreboard: `++showscores` holds it from the start (`--map
+  cs_source:de_dust2 --window 1280x720 --screenshot sb.png +bot_add 1
+  +bot_add 2 ++showscores`); a dead player shows the skull icon,
+  the bomb carrier the bomb to Ts, a kit owner the defuser to CTs.
+- Loading dialog: from the main menu, `+menu newgame` and Start Game, or
+  over the remote console while at the main menu, `map de_dust2` then
+  screenshots while it loads (the bar follows `map::loading`).
 - `mashup_objectives 1` prints the objectives' state on screen: who
   carries the bomb, a planted bomb's place, site and time left, a defuse's
   progress (who, kit, seconds), the outcome, and each hostage's health,

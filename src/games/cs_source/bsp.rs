@@ -54,6 +54,10 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
 /// 53, 51/55, 54) with auto exposure and bloom. Maps without HDR lighting
 /// load as LDR at any level, as in the game.
 pub fn load_level(mount: &Mount, name: &str, hdr_level: u8) -> Result<MapData, String> {
+    // Stages for a loading screen, worded as the game words them
+    // (`map::loading`; the fractions are rough shares of the time).
+    use crate::map::loading::report;
+    report(0.02, "LoadingProgress_LoadMap");
     let path = format!("maps/{name}.bsp");
     let bytes = mount.read(&path).map_err(|e| format!("{path}: {e}"))?;
     let bsp = Bsp::read(&bytes).map_err(|e| format!("{path}: {e}"))?;
@@ -61,6 +65,7 @@ pub fn load_level(mount: &Mount, name: &str, hdr_level: u8) -> Result<MapData, S
     let (mut data, layout) = convert_level(&bsp, &bytes, name, hdr_level >= 2);
     data.look = source_look_level(hdr_level, &data.entities);
 
+    report(0.15, "LoadingProgress_PrecacheWorld");
     let mut materials = MaterialLoader::new(&bsp, mount);
     for mesh in &mut data.meshes {
         let r = materials.resolve(&mesh.material);
@@ -132,6 +137,7 @@ pub fn load_level(mount: &Mount, name: &str, hdr_level: u8) -> Result<MapData, S
     super::sprites::add_sprites(&bsp, &mut materials, &mut data);
     super::dust::add_dust(&bsp, &mut materials, &mut data);
     let surfaces = super::surfaceprops::SurfaceProps::load(&mut materials);
+    report(0.55, "LoadingProgress_LoadResources");
     // Character bodies: a terrorist and a counter-terrorist model (CS:S
     // teams 2 and 3; ours are 1 and 2), the CT one for anyone else.
     for (path, team) in [
@@ -211,6 +217,7 @@ pub fn load_level(mount: &Mount, name: &str, hdr_level: u8) -> Result<MapData, S
         }
     }
     data.gib_physics = Some(super::breakables::gib_physics());
+    report(0.8, "LoadingProgress_SignonDataLocal");
     let mut sounds = super::sound::load(&mut materials, name, &surfaces, &data.entities);
     super::soundscape::load(&mut materials, &bsp, name, &mut sounds);
     data.sounds = std::sync::Arc::new(sounds);
@@ -248,6 +255,8 @@ pub fn load_level(mount: &Mount, name: &str, hdr_level: u8) -> Result<MapData, S
     data.warnings.extend(materials.missing);
     data.textures = materials.textures;
     data.cubemaps = materials.cubemaps;
+    // Left: putting it in the world (`map::change_map`).
+    report(0.95, "LoadingProgress_SignonLocal");
     Ok(data)
 }
 

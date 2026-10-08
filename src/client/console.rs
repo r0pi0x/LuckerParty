@@ -1744,6 +1744,12 @@ pub(super) fn map_loading(w: &World) -> bool {
     w.contains_resource::<MapLoad>()
 }
 
+/// The map a `map` command is loading (its name, without the game).
+pub(super) fn loading_map(w: &World) -> Option<String> {
+    let id = &w.get_resource::<MapLoad>()?.id;
+    Some(id.rsplit(':').next().unwrap_or(id).to_string())
+}
+
 /// A map loading in the background for the `map` command.
 #[derive(Resource)]
 struct MapLoad {
@@ -2062,6 +2068,7 @@ fn client_commands(app: &mut App) {
             w.insert_resource(crate::map::LoadedMapName(id.clone()));
             // At the HDR level set now (mat_hdr_level), as the game does.
             let hdr_level = w.get_resource::<super::hdr::HdrSettings>().map_or(0, |s| s.level);
+            crate::map::loading::reset();
             let task = bevy::tasks::AsyncComputeTaskPool::get().spawn({
                 let id = id.clone();
                 async move { crate::games::load_map_level(&id, hdr_level) }

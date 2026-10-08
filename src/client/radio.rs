@@ -4,7 +4,8 @@
 //! `core::Radio` calls sound like to the local player: the call's sound
 //! entry and a "Name (RADIO): text" chat line, for their own calls and
 //! living teammates', and the radio icon over a teammate's head while
-//! they speak (the game's `sprites/radio`, else a text marker).
+//! they speak (the game's `sprites/radio`, else a text marker), hidden
+//! behind walls as the game's depth-tested material is.
 
 use bevy::{prelude::*, window::CursorOptions};
 
@@ -283,8 +284,10 @@ impl RadioIcons {
 struct RadioIcon;
 
 /// The icons over speaking teammates' heads, placed on screen each frame
-/// (sized as a sprite 16 units across; seen through walls).
-#[allow(clippy::type_complexity)]
+/// (sized as a sprite 16 units across). Hidden behind walls and bodies:
+/// the game's `sprites/radio` material is drawn depth-tested
+/// (`$ignorez 0`), unlike the planted bomb's marker.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn draw_icons(
     time: Res<Time>,
     mut icons: ResMut<RadioIcons>,
@@ -292,9 +295,16 @@ fn draw_icons(
     camera: Query<(&Camera, &GlobalTransform), With<super::FirstPersonCamera>>,
     who: Query<(&GlobalTransform, Option<&crate::core::MovementState>, Option<&Health>)>,
     mut nodes: Query<(&mut Node, &mut Visibility), With<RadioIcon>>,
+    (spatial, local, spec): (
+        avian3d::prelude::SpatialQuery,
+        Query<Entity, With<crate::core::LocalPlayer>>,
+        Option<Res<super::spectate::SpecView>>,
+    ),
     mut commands: Commands,
 ) {
     let cam = camera.iter().next();
+    // Whose eyes the camera is in (not in the way of its own view).
+    let viewers: Vec<Entity> = local.iter().chain(spec.and_then(|s| s.in_eye)).collect();
     let dt = time.delta_secs();
     icons.0.retain_mut(|(e, left, node)| {
         *left -= dt;
@@ -346,7 +356,17 @@ fn draw_icons(
         let at = gt.translation() + Vec3::Y * top;
         if let (Some((c, ct)), Ok((mut node, mut vis))) = (cam, nodes.get_mut(n)) {
             let right = ct.right() * (8.0 * 0.0254);
+            let hidden = || {
+                let from = ct.translation();
+                let to = at - from;
+                let Ok(dir) = Dir3::new(to) else { return false };
+                let skip = viewers.iter().copied().chain([*e]);
+                let filter = avian3d::prelude::SpatialQueryFilter::from_excluded_entities(skip)
+                    .with_mask(crate::core::SOLID_LAYERS);
+                spatial.cast_ray(from, dir, to.length(), true, &filter).is_some()
+            };
             match (c.world_to_viewport(ct, at), c.world_to_viewport(ct, at + right)) {
+                (Ok(_), Ok(_)) if hidden() => *vis = Visibility::Hidden,
                 (Ok(p), Ok(q)) => {
                     let size = ((q - p).length() * 2.0).clamp(8.0, 64.0);
                     node.left = px(p.x - size / 2.0);

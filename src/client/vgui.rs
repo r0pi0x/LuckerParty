@@ -47,6 +47,10 @@ impl VguiOpen {
 pub(super) enum VguiMenu {
     Buy,
     Team,
+    /// Drawn only (no buttons that act): the scoreboard, the spectator
+    /// bars.
+    Scoreboard,
+    Spectator,
 }
 
 /// A drawn button: its control's name and command, and whether it works.
@@ -147,6 +151,14 @@ impl<'a> Painter<'a> {
     /// A client scheme font (`Default` when None or missing) at this
     /// window's size.
     pub fn font(&self, name: Option<&str>) -> TextFont {
+        // The game's own font file (`IconsSmall`: the clock glyph).
+        if let Some((handle, tall)) = name.and_then(|n| self.fonts.game(n)) {
+            return TextFont {
+                font: handle.into(),
+                font_size: FontSize::Px(tall * self.scale),
+                ..default()
+            };
+        }
         let name = name
             .filter(|n| self.fonts.sizes(Scheme::Client, n).is_some())
             .unwrap_or("Default");
@@ -192,12 +204,12 @@ impl<'a> Painter<'a> {
     ) -> HashMap<String, (Entity, Vec2)> {
         let mut out = HashMap::new();
         let bounds = Rect::from_corners(Vec2::ZERO, size);
-        for c in &layout.controls {
+        let rects = layout.rects(bounds, self.scale);
+        for (c, &r) in layout.controls.iter().zip(&rects) {
             let s = shown(c);
             if !s.visible || matches!(c.kind, UiKind::Frame | UiKind::Other(_)) {
                 continue;
             }
-            let r = c.rect(bounds, self.scale);
             let node = Node {
                 position_type: PositionType::Absolute,
                 left: px(r.min.x),
@@ -269,9 +281,17 @@ impl<'a> Painter<'a> {
                         && let Some(handle) = self.images.get(&sprite.texture)
                     {
                         let [x, y, w, h] = sprite.rect;
+                        // `scaleImage 1`: stretched over the box (else
+                        // fitted, keeping its shape).
+                        let stretch = c.keys.get("scaleimage").is_some_and(|v| v.trim() == "1");
                         e.insert(ImageNode {
                             image: handle.clone(),
                             rect: Some(Rect::new(x, y, x + w, y + h)),
+                            image_mode: if stretch {
+                                NodeImageMode::Stretch
+                            } else {
+                                NodeImageMode::Auto
+                            },
                             ..default()
                         });
                     }

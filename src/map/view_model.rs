@@ -674,6 +674,118 @@ fn spawn_body(commands: &mut Commands, camera: Entity, key: &str, asset: &ViewMo
     });
 }
 
+/// A picture on a view model's screen: Source's VGUI screens on view
+/// models (the C4's keypad display), drawn on a quad from the model's
+/// `controlpanel0_ll` attachment to its `controlpanel0_ur`, along the lower
+/// attachment's x and y axes. Put on the character whose view
+/// model `key` shows it; whoever draws the picture keeps `image` current.
+#[derive(Component, Clone, Debug)]
+pub struct ViewModelScreen {
+    pub key: String,
+    pub image: Handle<Image>,
+}
+
+/// The screen quad drawn on a view model body (on the body: the quad).
+#[derive(Component)]
+pub(super) struct ScreenQuad(Entity);
+
+/// The screen's corners on a view model: the bone they sit on, the lower
+/// corner's placement on it and the screen's size along its x and y axes
+/// (the skeleton's units).
+pub fn screen_corners(model: &MapViewModel) -> Option<(usize, Transform, Vec2)> {
+    let find = |name: &str| model.attachments.iter().find(|a| a.name.eq_ignore_ascii_case(name));
+    let (ll, ur) = (find("controlpanel0_ll")?, find("controlpanel0_ur")?);
+    if ll.bone != ur.bone {
+        return None;
+    }
+    let d = ur.local.translation - ll.local.translation;
+    let size = Vec2::new(d.dot(ll.local.rotation * Vec3::X), d.dot(ll.local.rotation * Vec3::Y));
+    (size.x.abs() > 1e-4 && size.y.abs() > 1e-4).then_some((ll.bone, ll.local, size))
+}
+
+/// Draw `ViewModelScreen`s on the view model bodies showing them.
+#[allow(clippy::type_complexity)]
+pub(super) fn view_model_screens(
+    bodies: Query<(Entity, &ViewModelBody, &ChildOf, Option<&ScreenQuad>)>,
+    cameras: Query<&ChildOf, With<ViewModelCamera>>,
+    anchors: Query<(&ChildOf, Option<&ViewModelSource>), With<ViewModelAnchor>>,
+    screens: Query<&ViewModelScreen>,
+    models: Option<Res<ViewModels>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut commands: Commands,
+) {
+    for (body, view, camera, quad) in &bodies {
+        let screen = cameras
+            .get(camera.parent())
+            .ok()
+            .and_then(|c| anchors.get(c.parent()).ok())
+            .and_then(|(parent, source)| screens.get(anchor_owner(parent, source)).ok())
+            .filter(|s| s.key == view.key);
+        match (screen, quad) {
+            (None, Some(q)) => {
+                commands.entity(q.0).try_despawn();
+                commands.entity(body).remove::<ScreenQuad>();
+            }
+            (Some(screen), None) => {
+                let Some((bone, at, size)) = models
+                    .as_ref()
+                    .and_then(|m| m.get(&view.key))
+                    .and_then(screen_corners)
+                else {
+                    continue;
+                };
+                let Some(&joint) = view.joints.get(bone) else { continue };
+                let mut mesh = Mesh::new(
+                    bevy::mesh::PrimitiveTopology::TriangleList,
+                    bevy::asset::RenderAssetUsages::default(),
+                );
+                // A hair off the model's surface (skeleton units), facing
+                // either way.
+                let z = 0.02;
+                mesh.insert_attribute(
+                    Mesh::ATTRIBUTE_POSITION,
+                    vec![[0.0, 0.0, z], [size.x, 0.0, z], [size.x, size.y, z], [0.0, size.y, z]],
+                );
+                mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0f32, 0.0, 1.0]; 4]);
+                // The picture's bottom-left at `_ll`, across along the
+                // attachment's x and up its y; on a mirrored model flipped
+                // across, so the text still reads.
+                let uvs = if view.mirrored {
+                    vec![[1.0f32, 1.0], [0.0, 1.0], [0.0, 0.0], [1.0, 0.0]]
+                } else {
+                    vec![[0.0f32, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]]
+                };
+                mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+                mesh.insert_indices(bevy::mesh::Indices::U32(vec![0, 1, 2, 0, 2, 3]));
+                let material = materials.add(StandardMaterial {
+                    base_color_texture: Some(screen.image.clone()),
+                    unlit: true,
+                    alpha_mode: AlphaMode::Blend,
+                    cull_mode: None,
+                    double_sided: true,
+                    ..default()
+                });
+                let q = commands
+                    .spawn((
+                        Name::new("View model screen"),
+                        Mesh3d(meshes.add(mesh)),
+                        MeshMaterial3d(material),
+                        at,
+                        RenderLayers::layer(VIEW_MODEL_LAYER),
+                        NotShadowCaster,
+                        NotShadowReceiver,
+                        bevy::camera::visibility::NoFrustumCulling,
+                        ChildOf(joint),
+                    ))
+                    .id();
+                commands.entity(body).insert(ScreenQuad(q));
+            }
+            _ => {}
+        }
+    }
+}
+
 /// A brief point light (muzzle flash) that lights the world, props and
 /// view models (see `dynamic_light` in world.wgsl and prop.wgsl): its
 /// radius shrinks to 0 over its life.

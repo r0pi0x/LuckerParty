@@ -56,7 +56,9 @@ impl Plugin for GameMenuPlugin {
                     sync,
                     cursor,
                     after_load,
+                    menu_sounds,
                     draw,
+                    loading_progress,
                 )
                     .chain(),
             );
@@ -384,6 +386,8 @@ pub enum Target {
     Tab(usize),
     /// A list's scroll bar (the click's step says how far).
     Scroll,
+    /// The loading dialog's Cancel button.
+    Cancel,
 }
 
 /// A key or pointer event for the menu.
@@ -878,6 +882,12 @@ impl GameMenu {
     /// Apply an input; the console lines it produces.
     pub fn handle(&mut self, input: Input) -> Outcome {
         let mut out = Outcome::default();
+        if self.open && self.loading.is_some() && matches!(input, Input::Click(Target::Cancel, _)) {
+            // Stop the load: back at the main menu (`disconnect` drops it).
+            self.loading = None;
+            out.lines.push("disconnect".into());
+            return out;
+        }
         if !self.open || self.loading.is_some() {
             return out;
         }
@@ -957,6 +967,8 @@ impl GameMenu {
                     self.set_tab(*tab);
                 }
             }
+            // Only while loading (above).
+            Input::Click(Target::Cancel, _) => {}
             Input::Click(Target::Scroll, step) | Input::Scroll(step) => {
                 let (len, shown) = self.list();
                 self.scroll = (self.scroll as i32 + step).clamp(0, len.saturating_sub(shown) as i32) as usize;
@@ -1698,6 +1710,14 @@ fn cursor(
 /// Run a new game's bot lines once its map is in (or if the load never
 /// started: the `map` line failed).
 fn after_load(w: &mut World) {
+    // A load started at the main menu (a menu, the console): its dialog.
+    if let Some(map) = super::console::loading_map(w)
+        && let Some(mut menu) = w.get_resource_mut::<GameMenu>()
+        && !menu.in_game
+        && menu.loading.is_none()
+    {
+        menu.loading = Some(map);
+    }
     let loading = super::console::map_loading(w);
     let mut after = w.resource_mut::<AfterLoad>();
     if after.lines.is_empty() {
@@ -2192,22 +2212,170 @@ fn main_list(
     }
 }
 
-/// A map the main menu started is loading: GameUI's loading dialog, the
-/// map's name in it, the menu's entries hidden.
+/// A map the main menu started is loading: GameUI's loading dialog (its
+/// layout from the install, `GameUi::loading`: the frame, the stage line,
+/// the progress bar, Cancel), the menu's entries hidden. The stage and
+/// the bar follow the load (`loading_progress`).
 fn loading_frame(commands: &mut Commands, root: Entity, menu: &GameMenu, look: &Look, size: Vec2, map: &str) {
-    let (w, h) = (300.0, 90.0);
+    let layout = look.ui.and_then(|u| u.loading.as_ref());
+    let at = |name: &str, fallback: (f32, f32, f32, f32)| {
+        layout
+            .and_then(|l| l.get(name))
+            .map_or(fallback, |c| (start(c.x), start(c.y), c.wide, c.tall))
+    };
+    fn start(c: crate::map::hud::HudCoord) -> f32 {
+        match c {
+            crate::map::hud::HudCoord::Start(v) | crate::map::hud::HudCoord::Centre(v) | crate::map::hud::HudCoord::End(v) => v,
+        }
+    }
+    let (_, _, w, h) = at("LoadingDialog", (0.0, 0.0, 380.0, 112.0));
     let title = menu.text("#GameUI_Loading", "Loading...");
     let f = frame(commands, root, look, size, (w, h), &title);
-    label(
+    let info = label(
         commands,
         f,
         look,
-        (16.0, 40.0, w - 32.0, 24.0),
-        map,
+        at("InfoLabel", (20.0, 34.0, 340.0, 24.0)),
+        &loading_text(menu, crate::map::loading::current(), map),
         look.font("Default", (16.0, false)),
         look.text(),
         -1,
     );
+    commands.entity(info).insert(LoadingInfo(map.to_string()));
+    // The bar: sunken, filled with the scheme's progress colour.
+    let (x, y, bw, bh) = at("Progress", (20.0, 64.0, 260.0, 24.0));
+    let bar = commands
+        .spawn((
+            Node {
+                border: UiRect::all(px(1.0)),
+                padding: UiRect::all(look.px(2.0)),
+                ..place(look, x, y, bw, bh)
+            },
+            bevel(look, false),
+            BackgroundColor(look.color("ProgressBar.BgColor", [0, 0, 0, 128])),
+            ChildOf(f),
+        ))
+        .id();
+    let fraction = crate::map::loading::current().map_or(0.0, |p| p.fraction);
+    commands.spawn((
+        LoadingBar,
+        Node {
+            width: percent(100.0 * fraction),
+            height: percent(100.0),
+            ..default()
+        },
+        BackgroundColor(look.color("ProgressBar.FgColor", [216, 222, 211, 255])),
+        ChildOf(bar),
+    ));
+    let cancel = layout.and_then(|l| l.get("CancelButton"));
+    let text = cancel.map_or_else(|| menu.text("#GameUI_Cancel", "Cancel"), |c| c.text.clone());
+    button(
+        commands,
+        f,
+        look,
+        at("CancelButton", (288.0, 64.0, 72.0, 24.0)),
+        &text,
+        Hit(Target::Cancel, 0),
+        false,
+        true,
+    );
+}
+
+/// The loading dialog's stage line: the stage the load reported, as the
+/// game words it (`LoadingProgress_LoadMap`: "Loading world..."), else
+/// "Loading <map> ...".
+fn loading_text(menu: &GameMenu, progress: Option<crate::map::loading::LoadProgress>, map: &str) -> String {
+    match progress {
+        Some(p) => menu.text(&format!("#{}", p.stage), p.stage),
+        None => menu.text("#GameUI_LoadingFilename", "Loading %s1 ...").replace("%s1", map),
+    }
+}
+
+/// The loading dialog's stage line (the map's name).
+#[derive(Component)]
+struct LoadingInfo(String);
+
+/// The loading dialog's bar fill.
+#[derive(Component)]
+struct LoadingBar;
+
+/// The loading dialog follows the load's progress.
+fn loading_progress(
+    menu: Res<GameMenu>,
+    infos: Query<(&LoadingInfo, &Children)>,
+    mut texts: Query<&mut Text>,
+    mut bars: Query<&mut Node, With<LoadingBar>>,
+) {
+    if menu.loading.is_none() {
+        return;
+    }
+    let progress = crate::map::loading::current();
+    for mut node in &mut bars {
+        let w = percent(100.0 * progress.map_or(0.0, |p| p.fraction));
+        if node.width != w {
+            node.width = w;
+        }
+    }
+    for (info, children) in &infos {
+        let line = loading_text(&menu, progress, &info.0);
+        for c in children.iter() {
+            if let Ok(mut t) = texts.get_mut(c)
+                && t.0 != line
+            {
+                t.0 = line.clone();
+            }
+        }
+    }
+}
+
+/// The interface's sounds (`GameUi::sounds`): the rollover as the
+/// pointer comes onto another entry, the click as one is pressed, the
+/// release as it is let go.
+fn menu_sounds(
+    menu: Res<GameMenu>,
+    menu_ui: Option<Res<MenuUi>>,
+    hits: Query<(&Interaction, &Hit), Changed<Interaction>>,
+    clips: Option<ResMut<Assets<crate::map::live_sound::LiveClip>>>,
+    mut last: Local<(Option<Target>, Option<Target>)>,
+    mut commands: Commands,
+) {
+    let (Some(ui), Some(mut clips)) = (menu_ui.and_then(|u| u.ui.clone()), clips) else {
+        return;
+    };
+    if !menu.open {
+        *last = (None, None);
+        return;
+    }
+    use crate::map::hud::UiSound;
+    let mut play = |sound: UiSound| {
+        if let Some(clip) = ui.sounds.get(&sound) {
+            let gains = std::sync::Arc::new(crate::map::live_sound::Gains::new(1.0, 1.0));
+            let handle = clips.add(crate::map::live_sound::LiveClip::new(clip.clone(), gains, default()));
+            commands.spawn((AudioPlayer(handle), PlaybackSettings::DESPAWN));
+        }
+    };
+    let (hovered, pressed) = &mut *last;
+    for (interaction, hit) in &hits {
+        match interaction {
+            Interaction::Hovered => {
+                if *pressed == Some(hit.0) {
+                    play(UiSound::Release);
+                } else if *hovered != Some(hit.0) {
+                    play(UiSound::Rollover);
+                }
+                *hovered = Some(hit.0);
+                *pressed = None;
+            }
+            Interaction::Pressed => {
+                play(UiSound::Click);
+                *pressed = Some(hit.0);
+            }
+            // Off it: coming back rolls over again (a redraw replaces the
+            // node without this, so the entry under the pointer is quiet).
+            Interaction::None if *hovered == Some(hit.0) => *hovered = None,
+            Interaction::None => {}
+        }
+    }
 }
 
 /// A GameUI frame centred on the screen: its background, raised borders,
@@ -2789,6 +2957,30 @@ mod tests {
         let mut m = GameMenu::default();
         m.open(Page::Main, vec!["cs_office".into(), "de_dust2".into(), "de_nuke".into()], None, |_| None);
         m
+    }
+
+    #[test]
+    fn cancel_stops_a_load_and_nothing_else_works_meanwhile() {
+        let mut m = main_menu();
+        m.loading = Some("de_dust2".into());
+        let before = m.clone();
+        assert!(m.handle(Input::Click(Target::Main(0), 0)).lines.is_empty());
+        assert_eq!(m, before, "the dialog takes no other input");
+        let out = m.handle(Input::Click(Target::Cancel, 0));
+        assert_eq!(out.lines, vec!["disconnect".to_string()]);
+        assert!(m.loading.is_none() && m.open && !m.in_game);
+    }
+
+    #[test]
+    fn the_loading_line_follows_the_load() {
+        let m = main_menu();
+        assert_eq!(loading_text(&m, None, "de_nuke"), "Loading de_nuke ...");
+        let p = crate::map::loading::LoadProgress {
+            fraction: 0.5,
+            stage: "LoadingProgress_LoadResources",
+        };
+        // Without the game's strings, the token itself.
+        assert_eq!(loading_text(&m, Some(p), "de_nuke"), "LoadingProgress_LoadResources");
     }
 
     /// A shown entry's index.

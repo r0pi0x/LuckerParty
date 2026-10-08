@@ -103,7 +103,7 @@ fn kind(control: &str) -> UiKind {
     match c.as_str() {
         "label" => UiKind::Label,
         "button" | "mouseoverpanelbutton" | "commandbutton" => UiKind::Button,
-        "imagepanel" => UiKind::Image,
+        "imagepanel" | "scalableimagepanel" => UiKind::Image,
         "richtext" => UiKind::RichText,
         "panel" | "editablepanel" => UiKind::Panel,
         "divider" => UiKind::Divider,
@@ -217,11 +217,29 @@ pub(crate) fn fonts(scheme: &Kv) -> HashMap<String, Vec<UiFontSize>> {
 const BUY_PAGES: [(u8, &str); 2] = [(1, "resource/ui/buymenu_ter.res"), (2, "resource/ui/buymenu_ct.res")];
 const BUY_FALLBACK: &str = "resource/ui/mainbuymenu.res";
 const TEAM_MENU: &str = "resource/ui/teammenu.res";
+const SCOREBOARD: &str = "resource/ui/scoreboard.res";
+const SPECTATOR: &str = "resource/ui/spectator.res";
+const SPECTATOR_MENU: &str = "resource/ui/bottomspectator.res";
+
+/// A path with its `..` segments resolved (`vgui/../vgui/x` -> `vgui/x`).
+fn resolve_dots(path: &str) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    for part in path.split('/') {
+        match part {
+            ".." => {
+                out.pop();
+            }
+            "." | "" => {}
+            p => out.push(p),
+        }
+    }
+    out.join("/")
+}
 
 /// An image panel's picture (`gfx/vgui/ak47`: under `materials/vgui/`) as
 /// a sprite key, its texture loaded once.
 fn image(materials: &mut MaterialLoader, sprites: &mut Vec<(String, HudSprite)>, path: &str) -> Option<String> {
-    let name = format!("vgui/{}", path.trim().replace('\\', "/").to_lowercase());
+    let name = resolve_dots(&format!("vgui/{}", path.trim().replace('\\', "/").to_lowercase()));
     if sprites.iter().any(|(k, _)| *k == name) {
         return Some(name);
     }
@@ -237,10 +255,14 @@ fn image(materials: &mut MaterialLoader, sprites: &mut Vec<(String, HudSprite)>,
 /// The menus from the install (None without its menu files). Pictures the
 /// layouts show become `hud.sprites` (keyed by material name).
 pub(crate) fn load(materials: &mut MaterialLoader, hud: &mut GameHud, map: &str) -> Option<GameMenus> {
-    let strings = materials
-        .read("resource/cstrike_english.txt")
-        .map(|b| super::radio::localization(&super::radio::decode(&b)))
-        .unwrap_or_default();
+    // The engine's strings (the spectator bars' `Spec_*`), then the game's
+    // over them.
+    let mut strings = HashMap::new();
+    for file in ["resource/valve_english.txt", "resource/cstrike_english.txt"] {
+        if let Some(b) = materials.read(file) {
+            strings.extend(super::radio::localization(&super::radio::decode(&b)));
+        }
+    }
     let colors = hud.colors.clone();
     let mut menus = GameMenus::default();
     let mut sprites: Vec<(String, HudSprite)> = Vec::new();
@@ -252,6 +274,7 @@ pub(crate) fn load(materials: &mut MaterialLoader, hud: &mut GameHud, map: &str)
     let mut queue: Vec<String> = BUY_PAGES.iter().map(|(_, p)| p.to_string()).collect();
     queue.push(BUY_FALLBACK.into());
     queue.push(TEAM_MENU.into());
+    queue.extend([SCOREBOARD, SPECTATOR, SPECTATOR_MENU].map(String::from));
     let mut seen = std::collections::HashSet::new();
     while let Some(path) = queue.pop() {
         let key = layout_key(&path);
@@ -301,10 +324,13 @@ pub(crate) fn load(materials: &mut MaterialLoader, hud: &mut GameHud, map: &str)
         }
     }
     menus.team = menus.layouts.contains_key(TEAM_MENU).then(|| TEAM_MENU.to_string());
+    let have = |path: &str| menus.layouts.contains_key(path).then(|| path.to_string());
+    (menus.scoreboard, menus.spectator, menus.spectator_menu) = (have(SCOREBOARD), have(SPECTATOR), have(SPECTATOR_MENU));
     menus.map_info = materials
         .read(&format!("maps/{}.txt", map.to_lowercase()))
         .map(|b| super::radio::decode(&b).replace('\r', "").trim().to_string())
         .filter(|t| !t.is_empty());
+    menus.strings = strings;
     (!menus.buy.is_empty() || menus.team.is_some()).then_some(menus)
 }
 

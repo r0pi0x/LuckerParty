@@ -76,12 +76,17 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   "Fire in the hole!" on throws, bots' enemy spotted/down and need
   backup, and bots' own commands and reports: go / stick together /
   follow me from the attackers' leader, cover me, sector clear, in
-  position, regroup), with a chat area and hint text (`client/chat.rs`) and a
-  scoreboard latency column (0 until networking) and its BOMB / DEFUSER
-  markers, the radio icon over a teammate's head (`sprites/radio`), and
+  position, regroup), with a chat area and hint text (`client/chat.rs`), the scoreboard
+  in the game's `scoreboard.res` look (its status icons, "BOT" latency),
+  the spectator bars (`spectator.res`), the radio icon over a teammate's
+  head (`sprites/radio`, hidden by walls), and
   text chat (Y / U, `say`, `say_team`). The buy and team menus draw in the game's VGUI look from its `.res` files
   (`client/vgui.rs`). Left: the class menu (`classmenu_*.res`, needs player
   models per class), spectating from the team menu (no spectator team),
+  the scoreboard's row spacing (16 units, a guess) and dead rows' look
+  checked against CS:S, its map time left beside the clock (no
+  `mp_timelimit`), the spectator menu (duck: `bottomspectator.res`'s
+  lists) and the freeze cam panel (`freezepanel_basic.res`),
   autobuy / rebuy / favourites, checking the widescreen placement against
   the game, other game messages in the chat (team joins, bomb pickups
   and drops are in), bots' answers checked against a bot behaviour spec
@@ -106,8 +111,11 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   the same menu over the game on Esc, `disconnect` back to it, and ours
   after CS:S's (quick start, greybox, bots, team, console). Left: the
   title's exact place and the entries' spacing checked against CS:S at a
-  few resolutions, menu music and sounds (`ui/buttonrollover`), a
-  loading bar with progress instead of the map name, the player list,
+  few resolutions (the loading dialog, `LoadingDialogNoBanner.res`,
+  and the interface sounds are in; CS:S has no menu music: its install
+  holds none), whether keyboard moves in the menu make the rollover
+  sound, a loading dialog for maps changed from inside a game (the old
+  map plays on until the new one is in), the player list,
   the server browser (needs networking), a mashup debug-options page
   (the overlay cvars as check boxes).
 - Debug overlays: `mashup_drawhitboxes`, `mashup_healthbars`,
@@ -142,12 +150,13 @@ a first bot are in.
 - Objectives, remaining (bomb and hostages are in: `src/objectives/`,
   specs/cs_source/objectives.md): measure the spec's open questions on the
   probe (Q1 movement while arming, Q3 blast shape/walls/armour, Q4 beep
-  schedule and loudness, Q5 money, Q6 carrier choice, Q7 the bomb's
-  solidity, Q9 hostage models, Q10 follow speeds, Q11 rescue rules, Q14
-  tick rounding); the C4's screen text (7355608) and LED glow sprite, the
-  `sprites/c4` marker through walls, screen shake, the explosion's own
-  effect (it uses the HE's); the scoreboard's own bomb/kit icons (ours
-  are words); hostage
+  schedule and loudness and where the LED sits, Q5 money, Q6 carrier
+  choice, Q7 the bomb's solidity, Q9 hostage models, Q10 follow speeds,
+  Q11 rescue rules, Q12 who sees the `sprites/c4` marker and how big,
+  Q14 tick rounding); the planted bomb's own screen (`c4_panel`: the
+  view model's is in, `client/bomb_fx.rs`), screen shake, the
+  explosion's scale (it uses the HE's base explosion effect: the install
+  names no C4 effect of its own, no explosion `.pcf` or sprite); hostage
   animation beyond idle/walk/run and a nod (`hostage_anim.rs`: compare
   with CS:S's hostages, which aren't measured; head/aim pose parameters
   toward the leader, flinch and cower), hostages avoiding

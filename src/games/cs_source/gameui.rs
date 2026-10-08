@@ -10,7 +10,12 @@
 //! background01.vtf` and `background01_widescreen.vtf`, stretched over the
 //! screen) and the game's title (`gameinfo.txt`'s `title` and `title2`) in
 //! the client scheme's `ClientTitleFont` (`resource/clientscheme.res`, its
-//! font file from `CustomFontFiles`).
+//! font file from `CustomFontFiles`); the loading dialog
+//! (`resource/LoadingDialogNoBanner.res`) and the interface sounds
+//! (`sound/ui/buttonrollover.wav`, `buttonclick.wav`,
+//! `buttonclickrelease.wav`). The install has no menu music: CS:S's
+//! folders hold no `sound/music/` or startup track of its own (only
+//! Half-Life 2's, under `hl2/`), so the menu is silent but for these.
 //!
 //! The scheme has platform conditionals (`[$WIN32]`, `[!$OSX]`,
 //! `[$X360]`): entries are kept as the Windows PC game reads them.
@@ -19,7 +24,7 @@ use std::collections::HashMap;
 
 use super::hud::Kv;
 use crate::{
-    map::hud::{GameUi, GameUiItem, KeyAction, UiImage},
+    map::hud::{GameUi, GameUiItem, KeyAction, UiImage, UiSound},
     mount::Mount,
 };
 
@@ -207,6 +212,18 @@ const OPTION_PAGES: [(&str, &str); 5] = [
 
 const THUMB_PREFIX: &str = "materials/vgui/maps/menu_thumb_";
 
+/// The loading dialog's layout files, preferred first.
+const LOADING_DIALOGS: [&str; 2] = ["resource/loadingdialognobanner.res", "resource/loadingdialog.res"];
+
+/// The interface sounds: the waves VGUI buttons name in the install's
+/// layouts (`sound_armed`, `sound_depressed`, `sound_released`; e.g.
+/// `resource/ui/econ/messageboxdialog.res`).
+const UI_SOUNDS: [(UiSound, &str); 3] = [
+    (UiSound::Rollover, "sound/ui/buttonrollover.wav"),
+    (UiSound::Click, "sound/ui/buttonclick.wav"),
+    (UiSound::Release, "sound/ui/buttonclickrelease.wav"),
+];
+
 /// The main menu's backgrounds: 4:3, widescreen.
 const BACKGROUNDS: [&str; 2] = [
     "materials/console/background01.vtf",
@@ -325,7 +342,17 @@ pub fn load(mount: &Mount) -> Option<GameUi> {
             ui.options.insert(page.to_string(), layout);
         }
     }
+    // The loading dialog: CS:S shows the one without the banner.
+    ui.loading = LOADING_DIALOGS.iter().find_map(|file| {
+        let root = read_res_pc(&mut read, file)?;
+        Some(super::vgui::layout(&root, &strings, &ui.colors, &mut |_| None))
+    });
     ui.strings = strings;
+    for (sound, file) in UI_SOUNDS {
+        if let Some(clip) = mount.read(file).ok().and_then(|b| super::wav::decode(&b).ok()) {
+            ui.sounds.insert(sound, clip);
+        }
+    }
     main_menu_look(mount, &mut ui);
     // Thumbnails: small pictures, decoded once.
     for (entry, _) in mount.entries() {

@@ -302,7 +302,7 @@ type LocalState<'a> = (
 );
 
 /// The round clock as the game shows it: minutes and seconds, rounded up.
-fn clock_text(seconds: f32) -> String {
+pub(super) fn clock_text(seconds: f32) -> String {
     let s = seconds.ceil() as u32;
     format!("{}:{:02}", s / 60, s % 60)
 }

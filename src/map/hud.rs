@@ -100,6 +100,18 @@ pub struct GameHud {
     pub sprites: HashMap<String, HudSprite>,
     /// The game's own menus, when it describes them (see `GameMenus`).
     pub menus: Option<GameMenus>,
+    /// Screens on models (Source's VGUI screens: the C4's keypad display),
+    /// by name (`c4_view_panel`).
+    pub screens: HashMap<String, ModelScreen>,
+}
+
+/// A screen on a model: its panel's size in pixels, its text font and
+/// named colours (`C4Panel_Armed`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ModelScreen {
+    pub pixels: Vec2,
+    pub font: Option<UiFontSize>,
+    pub colors: HashMap<String, [u8; 4]>,
 }
 
 impl GameHud {
@@ -261,6 +273,54 @@ impl UiLayout {
     pub fn get(&self, name: &str) -> Option<&UiControl> {
         self.controls.iter().find(|c| c.name.eq_ignore_ascii_case(name))
     }
+
+    /// Every control's box in pixels inside `parent` (as `UiControl::rect`),
+    /// in `controls` order; a control pinned to a sibling (VGUI's
+    /// `pin_to_sibling`) is placed with its corner `pin_corner_to_sibling`
+    /// on the sibling's corner `pin_to_sibling_corner`, moved by its
+    /// `xpos`/`ypos`.
+    pub fn rects(&self, parent: Rect, scale: f32) -> Vec<Rect> {
+        fn corner(r: Rect, n: u32) -> Vec2 {
+            let c = r.center();
+            match n {
+                1 => Vec2::new(r.max.x, r.min.y),
+                2 => Vec2::new(r.min.x, r.max.y),
+                3 => r.max,
+                4 => Vec2::new(c.x, r.min.y),
+                5 => Vec2::new(r.max.x, c.y),
+                6 => Vec2::new(c.x, r.max.y),
+                7 => Vec2::new(r.min.x, c.y),
+                _ => r.min,
+            }
+        }
+        fn place(layout: &UiLayout, i: usize, parent: Rect, scale: f32, depth: usize) -> Rect {
+            let c = &layout.controls[i];
+            let own = c.rect(parent, scale);
+            let sibling = c
+                .keys
+                .get("pin_to_sibling")
+                .and_then(|s| layout.controls.iter().position(|o| o.name.eq_ignore_ascii_case(s.trim())))
+                .filter(|&s| s != i && depth < 8);
+            let Some(s) = sibling else { return own };
+            let num = |k: &str| c.keys.get(k).and_then(|v| v.trim().parse::<u32>().ok()).unwrap_or(0);
+            let offset = |coord: HudCoord| match coord {
+                HudCoord::Start(v) | HudCoord::Centre(v) | HudCoord::End(v) => v * scale,
+            };
+            // The offset points inward from the pinned corner: away from
+            // the right or bottom edge when that is where it is pinned.
+            let pin = num("pin_corner_to_sibling");
+            let sign = Vec2::new(
+                if matches!(pin, 1 | 3 | 5) { -1.0 } else { 1.0 },
+                if matches!(pin, 2 | 3 | 6) { -1.0 } else { 1.0 },
+            );
+            let anchor = corner(place(layout, s, parent, scale, depth + 1), num("pin_to_sibling_corner"))
+                + Vec2::new(offset(c.x), offset(c.y)) * sign;
+            let size = own.size();
+            let mine = corner(Rect::from_corners(Vec2::ZERO, size), pin);
+            Rect::from_corners(anchor - mine, anchor - mine + size)
+        }
+        (0..self.controls.len()).map(|i| place(self, i, parent, scale, 0)).collect()
+    }
 }
 
 /// One size of a scheme font: its family, height (pixels at 480 lines,
@@ -323,11 +383,27 @@ pub struct GameMenus {
     pub buy: HashMap<u8, String>,
     /// The team menu's layout.
     pub team: Option<String>,
+    /// The scoreboard's layout: its background, headings and the first
+    /// row of each team's cells (`CTPlayerName0`, `TPlayerStatus0`, ...).
+    pub scoreboard: Option<String>,
+    /// The spectator bars' layout (top and bottom bar, target name, map,
+    /// clock, team scores) and the spectator menu's bottom bar (the mode).
+    pub spectator: Option<String>,
+    pub spectator_menu: Option<String>,
     /// The loaded map's description (the team menu's `MapInfo`).
     pub map_info: Option<String>,
+    /// The game's localised strings by lower-case token (no `#`), for
+    /// text the client fills in (`Cstrike_ScoreBoard_CT`).
+    pub strings: HashMap<String, String>,
 }
 
 impl GameMenus {
+    /// A `#token`'s text (any case; the `#` optional), else `fallback`.
+    pub fn string<'a>(&'a self, token: &str, fallback: &'a str) -> &'a str {
+        let t = token.trim().trim_start_matches('#').to_lowercase();
+        self.strings.get(&t).map_or(fallback, String::as_str)
+    }
+
     /// The buy menu's first page for `team` (any team's when it has none).
     pub fn buy_page(&self, team: Option<u8>) -> Option<&String> {
         team.and_then(|t| self.buy.get(&t))
@@ -401,6 +477,22 @@ pub struct GameUi {
     pub title: Vec<String>,
     /// The title's font: a TrueType file and its height in scheme pixels.
     pub title_font: Option<(Arc<Vec<u8>>, f32)>,
+    /// The loading dialog's layout (its frame `LoadingDialog`, `InfoLabel`,
+    /// `Progress`, `CancelButton`).
+    pub loading: Option<UiLayout>,
+    /// The interface's sounds by what they are for (`UiSound`).
+    pub sounds: HashMap<UiSound, super::sound::MapSoundClip>,
+}
+
+/// What an interface sound is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum UiSound {
+    /// The pointer comes onto a button (VGUI's `sound_armed`).
+    Rollover,
+    /// A button pressed (`sound_depressed`).
+    Click,
+    /// A button let go (`sound_released`).
+    Release,
 }
 
 impl GameUi {
@@ -487,6 +579,43 @@ mod tests {
         assert_eq!(r.min, Vec2::new(260.0, 90.0));
         let info = UiControl::new("price", UiKind::Label, 140.0, 134.0, 150.0, 24.0);
         assert_eq!(info.rect(r, 2.0).min, Vec2::new(260.0 + 280.0, 90.0 + 268.0));
+    }
+
+    #[test]
+    fn pinned_controls_sit_on_their_sibling() {
+        // scoreboard.res: "Players Alive" pinned with its bottom-left corner
+        // (2) to the count's bottom-right (3), 4 units to the right; and
+        // one pinned with its right-centre (5) to a box's left-centre (7).
+        let mut l = UiLayout::default();
+        l.controls.push(UiControl::new("count", UiKind::Label, 10.0, 20.0, 45.0, 12.0));
+        let mut suffix = UiControl::new("suffix", UiKind::Label, 4.0, 0.0, 80.0, 10.0);
+        suffix.keys = HashMap::from([
+            ("pin_to_sibling".to_string(), "COUNT".to_string()),
+            ("pin_corner_to_sibling".to_string(), "2".to_string()),
+            ("pin_to_sibling_corner".to_string(), "3".to_string()),
+        ]);
+        l.controls.push(suffix);
+        let mut left = UiControl::new("left", UiKind::Label, 0.0, 0.0, 30.0, 10.0);
+        left.keys = HashMap::from([
+            ("pin_to_sibling".to_string(), "count".to_string()),
+            ("pin_corner_to_sibling".to_string(), "5".to_string()),
+            ("pin_to_sibling_corner".to_string(), "7".to_string()),
+        ]);
+        l.controls.push(left);
+        // The terrorists' side: its bottom-right (3) on the count's
+        // bottom-left (2), the 4 units now to the left.
+        let mut t = UiControl::new("t_suffix", UiKind::Label, 4.0, 0.0, 80.0, 10.0);
+        t.keys = HashMap::from([
+            ("pin_to_sibling".to_string(), "count".to_string()),
+            ("pin_corner_to_sibling".to_string(), "3".to_string()),
+            ("pin_to_sibling_corner".to_string(), "2".to_string()),
+        ]);
+        l.controls.push(t);
+        let r = l.rects(Rect::new(0.0, 0.0, 640.0, 480.0), 2.0);
+        assert_eq!(r[0], Rect::new(20.0, 40.0, 110.0, 64.0));
+        assert_eq!(r[1], Rect::new(118.0, 44.0, 278.0, 64.0));
+        assert_eq!(r[2], Rect::new(-40.0, 42.0, 20.0, 62.0));
+        assert_eq!(r[3], Rect::new(-148.0, 44.0, 12.0, 64.0));
     }
 
     #[test]
