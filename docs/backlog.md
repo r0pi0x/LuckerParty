@@ -6,6 +6,35 @@ Things to build, **in priority order** (top first; reprioritized
 [plans/active/](plans/active/engine-split.md). Move items into a
 plan when work starts; delete them when done.
 
+## 0. Playtest feedback (2026-10-07), top priority
+
+CS:S feel:
+- Overlapping impact decals flicker when the camera turns (same depth:
+  draw them in creation order, each a hair above the last, as Source does).
+- Fall damage gives no feedback: CS:S's damage sound, view punch and HUD
+  damage indicator (measure on the probe server; the fall damage spec
+  lists the landing punch as unmeasured).
+- Buying ammo: the game-look buy menu has no ammo entries; CS:S buys ammo
+  with `,` (`buyammo1`) and `.` (`buyammo2`) binds, which we lack.
+- Scout/AWP scope overlay leaves a few pixels of the scene showing at its
+  top, left, right and bottom edges.
+- Weapon pickup: walking over a dropped gun should take it when that slot
+  is free (specs/cs_source/weapons.md 3.9: touch box, one weapon per slot,
+  line of sight, touchable 1 s after a drop); check ours. CS:S has no
+  +use pickup (CS:GO added it); if wanted, an option, off by default.
+- The window/taskbar icon: CS:S's, loaded at run time from the install
+  (never committed).
+
+Console:
+- Clicking inside the open console captures the mouse.
+- The visible line count doesn't follow a resolution change.
+- Completion list: Up/Down highlight an entry, Enter takes it and adds a
+  space for the arguments.
+- More convenience: help for each argument while typing, and similar.
+
+Debug UI: a rich, tabbed debug interface (sliders and proper inputs) for
+the things most useful in playtesting and development.
+
 ## 1. Playtest essentials
 
 A (settings, health bars, third person), B (penetration and collaterals,
