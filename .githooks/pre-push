@@ -33,8 +33,14 @@ if [ "$pushing" = 1 ] && [ "${MASHUP_PUSH_TESTS:-1}" != 0 ]; then
     mkdir -p target
     log=target/pre-push.log
     echo "pre-push: running the full test suite (log: $log)..." >&2
-    if ! cargo test --features dev --quiet --no-fail-fast >"$log" 2>&1; then
-        grep -E "panicked|FAILED|^error" "$log" | head -20
+    # nextest (a process per test) is twice as fast as one libtest process.
+    if cargo nextest --version >/dev/null 2>&1; then
+        run="cargo nextest run --features dev --no-fail-fast --color never"
+    else
+        run="cargo test --features dev --quiet --no-fail-fast"
+    fi
+    if ! $run >"$log" 2>&1; then
+        grep -E "panicked|FAILED|FAIL \[|^error" "$log" | head -20
         echo "pre-push: tests failed (full log: $log); not pushing." >&2
         exit 1
     fi

@@ -390,8 +390,8 @@ Where the time went:
   every `git add` (and so every commit's hook) relinked everything.
 - `cargo test` built a test harness for each binary target too (five
   without any tests).
-- Running: `cargo test` runs one test binary after another; de_dust2's 60
-  map tests alone took 224 s. The whole suite's tests add up to 2600 s of
+- Running: `cargo test` runs one test binary after another: 618 s of
+  running (load 13), de_dust2's 60 map tests alone 162-224 s. The whole suite's tests add up to 2600 s of
   test time (nextest, load 20); the slowest are real-map tests (de_nuke's
   ladders 123 s, dust2 props 102 s) and bot simulations (bot_radio's
   entity-id checks 80 s).
@@ -416,11 +416,13 @@ What changed:
 | after touching one test file | one binary, 15-60 s | 7 s (load 13) |
 | fast tier run (`-- --skip heavy::`, 692 tests) | - | 11 s (load 9), 31 s (load 34) |
 | full suite run, `cargo nextest run` | 234 s (load 23) | 200 s (load 33), 269 s (load 20) |
-| full suite run, `cargo test` | 224 s for de_dust2's binary alone | 445 s (load 12) |
+| full suite run, `cargo test` | 618 s (load 13) | 445 s (load 12) |
+| `cargo test --features dev` as the pre-commit hook ran it | 905 s (load 13): 267 s relinking, 618 s running | fast tier: 11-31 s plus a build |
 
-The full suite in one libtest process is twice as slow as nextest's
-process per test: the heavy tests share one process's task pools and
-allocator while they run. Hence nextest for the full suite.
+The full suite in one libtest process is about twice as slow as
+nextest's process per test, probably because the heavy tests then share
+one process's task pools and allocator. Hence nextest for the full suite
+(the pre-push hook uses it when installed).
 
 Linking the test binary (1.0 GB), replaying its link command: LLD (rustc's
 default here) 3.0 s, mold 3.0.0 1.6 s; without debug info 0.8 s and 0.4 s.
