@@ -25,6 +25,7 @@ mod mount_cs_source;
 mod movement;
 mod nav;
 mod net;
+mod net_prediction;
 mod objectives;
 mod phy_spec;
 mod prediction;

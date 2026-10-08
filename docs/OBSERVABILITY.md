@@ -349,6 +349,32 @@ let a = sim.character_of(0).unwrap();           // the server's copy
 `net::status(world)` is the `status` text; `net::LastDisconnect` says why
 a game ended. `netcode_over_loopback` covers the real UDP transport.
 
+Prediction (`tests/it/net_prediction.rs`): a client's `net::predict::NetGraph`
+counts the server states it compared (`checked`), the ones that differed
+from its prediction (`errors`, `last_error`/`worst_error` in m) and
+restarts (`resyncs`); `CommandClock` has the command tick and the lead
+the server reports; the server's `net::server::CommandBuffer` on a
+player's character has its queued commands, `missed`, `late` and `early`
+counts. `PredictionHistory` holds the client's predicted ticks not yet
+confirmed: compare them with the server's state at the same tick
+(`PredictedComponents::encode`), never the two worlds' present (the
+client runs ahead). `cargo test --features dev --test it net_prediction
+-- --nocapture` prints the numbers per latency, jitter and loss.
+
+In a game: the perf overlay (`mashup_perf 1`) and the F2 Perf tab show,
+while connected, `net:` (ping, loss, KB/s), `cmds:` (lead in ticks and
+its target, the clock's speed nudge and jumps, the server's buffer of
+our commands, missed and late) and `prediction:` (errors per second and
+their worst, totals, commands replayed, the view's correction still
+being eased out); `status` on a client prints the prediction line too,
+on a server each player's buffered and missed commands. `cl_showerror 1`
+logs every prediction error (tick, metres, which components differed)
+and clock jump. `cl_smoothtime` (0.1 s) eases corrections out of the
+view; 0 snaps. Fake network conditions on a client (Source's names; its
+UDP transport only): `net_fakelag <ms>` delays what it receives (ping
+grows by that), `net_fakejitter <ms>` adds up to that much at random,
+`net_fakeloss <percent>` drops packets both ways.
+
 Two real games on this box (`--features dev`; each needs its own remote
 port, `MASHUP_REMOTE_PORT`, so both answer `curl`):
 
@@ -360,7 +386,9 @@ MASHUP_REMOTE_PORT=15792 cargo run --features dev -- --window 1280x720 +name Cli
 Then drive each through its console (section 3b): `status` (players,
 ping), `getpos`, `+moveleft`/`-moveleft`, `setang`, `screenshot
 <file.png>`, `disconnect`. The host's `setpos` moves the host; a client's
-position is the server's (no prediction yet). The dedicated server:
+position is predicted and the server's state corrects it (a client's `setpos` snaps back). Add
+`+net_fakelag 100 +net_fakeloss 5 +cl_showerror 1` to the client's line to feel
+a bad link. The dedicated server:
 `cargo run --features dev --bin mashup_server -- -port 27032 +map greybox
 +bot_add` (console on stdin: `status`, `bot_add`, `quit`). Logs show
 `listening on UDP ...`, `<name> joined`, `<name> left`, `disconnected:

@@ -132,9 +132,11 @@ A module may use only the modules below it. Enforced by
 | `src/bin/testmap.rs` | Dev tool: writes the entity test map `tools/testmap/mashup_logic_test.vmf` (compiled on Windows by `scripts/compile_testmap.ps1`) |
 | `src/bin/dump.rs` | Dev tool: summarize, list and extract a game install's files; `--sequences` lists a model's bones and sequences |
 | `src/bin/mapsweep.rs` | Dev tool: load every map in the content cache headless (each under `catch_unwind`), run its logic a few seconds, and report load errors, warnings by kind, unhandled entity classes, logic complaints and counts (`target/mapsweep/report.md`, `.csv`); `--shots` adds a screenshot and frame time per map |
-| `src/net/mod.rs` | Network play (docs/plans/active/multiplayer.md, slice 1): `NetPlugin` (replicon + renet netcode over UDP, `AuthMethod::Custom`), the protocol in registration order (`Join`, `Refused`, `Welcome`, `NetIntent`; replicated `NetCharacter`, `NetBody`, `Team`, `Health`), `NetSettings` (cvars `hostport` 27015, `maxplayers`, `name`), `NET_VERSION` (also in replicon's protocol hash), `NetEvent` for the client layer, `disconnect`, `status`, the `connect`/`listen`/`status` commands, the map id and hash check (`map_matches`) |
-| `src/net/server.rs` | The server: `listen` (netcode, unsecure, `maxplayers` less the host), the join handshake (version, protocol, full; refused with `Refused` and dropped a second later), a character per client (team with fewer players, dead until the rules spawn it, `Seed` from its id), latest `NetIntent` per player made safe into its `Intent` before the rules, the host's and bots' characters marked for replication, `NetBody` written from the simulation each frame, leaving players' characters and weapons removed; `players` for `status` |
-| `src/net/client.rs` | The client: `connect` (netcode, random id; the process's own characters, bots and weapons go), `Join` on connecting, the welcome's map checked (`NetEvent::LoadMap`, then name and SHA-256 or leave), characters from the server given their local components (no movement slot) and ours `LocalPlayer`, `NetBody` into `Transform`/`Velocity`/`MovementState`/others' look and `Dead`, our `Intent` sent once a frame, dropped connections back to single player with the reason |
+| `src/net/mod.rs` | Network play (docs/plans/active/multiplayer.md, slices 1-2): `NetPlugin` (replicon + renet netcode over UDP, `AuthMethod::Custom`), the protocol in registration order (`Join`, `Refused`, `Welcome`, `UserCmds` of `NetCmd` (one per server tick, made safe by `NetCmd::apply`), `OwnState`; replicated `NetCharacter`, `NetBody`, `Team`, `Health`), `NetSettings` (cvars `hostport` 27015, `maxplayers`, `name`), `NET_VERSION` (also in replicon's protocol hash), `NetEvent` for the client layer, `disconnect`, `status`, the `connect`/`listen`/`status` commands, the map id and hash check (`map_matches`) |
+| `src/net/server.rs` | The server: `listen` (netcode, unsecure, `maxplayers` less the host), the join handshake (version, protocol, full; refused with `Refused` and dropped a second later), a character per client (team with fewer players, dead until the rules spawn it, `Seed` from its id), each player's commands queued by tick (`CommandBuffer`: late and too-early ones dropped) and one applied per tick before the rules (the last repeated when missing), after each tick `NetBody` and each player's `OwnState` (predicted components, lead, buffer) from the simulation's values, the host's and bots' characters marked for replication, leaving players' characters and weapons removed; `players` for `status` |
+| `src/net/client.rs` | The client: `connect` (`net::udp`, random id; the process's own characters, bots and weapons go), `Join` on connecting, the welcome's map checked (`NetEvent::LoadMap`, then name and SHA-256 or leave), the fixed tick set to the server's, characters from the server given their local components (no movement slot) and ours `LocalPlayer`, `NetBody` into `Transform`/`Velocity`/`MovementState`/others' look and `Dead` (our own only until it is predicted), dropped connections back to single player with the reason |
+| `src/net/predict.rs` | The client's commands, clock and prediction: each fixed tick is a server tick (`CommandClock`, ahead by the round trip and a buffer, kept there from the server's `OwnState::lead` by running ticks slightly faster or slower, or jumping), the intent normalized and sent as that tick's `NetCmd` (with `CMD_BACKUP` resends), the local player predicted by the normal tick and kept per tick (`PredictionHistory`), each `OwnState` compared byte for byte and, if different, put back and the later commands re-run (`core::predict`, not first time), the drawn eye easing the correction (`cl_smoothtime`), the rules' hold mirrored; `NetGraph` readout, `cl_showerror` |
+| `src/net/udp.rs` | The client's UDP transport (renetcode's netcode client over a socket) with Source's `net_fakelag`, `net_fakejitter`, `net_fakeloss` |
 | `src/net/memory.rs` | An in-memory renet transport for `NetSim`: a shared `Link` with seeded latency, jitter and loss |
 | `src/client/net.rs` | The game's side of the network: loads the server's map when asked, leaves the menu once joined, back to the main menu with a fresh local player when dropped; `listen_if_hosting` after a map loads with `maxplayers` > 1 |
 | `src/bin/mashup_server.rs` | The dedicated server: headless simulation + `net` (`-port`, `+map greybox` or a CS:S map, `+<command>`), console on stdin, output on stdout |
@@ -147,11 +149,13 @@ A module may use only the modules below it. Enforced by
 ## Data flow per tick
 
 ```
-PreUpdate:    (server) NetIntent from clients ──> RemoteIntent; (client) replication ──> NetBody,
-              NetBody ──> Transform, Velocity, MovementState, others' look, Dead
+PreUpdate:    (server) UserCmds from clients ──> CommandBuffer (by tick); (client) replication ──> NetBody,
+              NetBody ──> Transform, Velocity, MovementState, others' look, Dead; OwnState ──> pending
 Update:       keyboard/mouse ──> Intent (local player)
-FixedFirst:   (client) drawn transforms ──> the simulation's (map::interp::restore)
-FixedUpdate:  bot brains, (server) remote players' RemoteIntent ──> Intent (before the rules, which hold it)
+FixedFirst:   (client) drawn transforms ──> the simulation's (map::interp::restore); command tick + SimClock;
+              server state vs. predicted: on a mismatch restore it, re-run later commands (core::predict)
+FixedUpdate:  bot brains, (server) each player's command for this tick ──> Intent (before the rules, which
+              hold it); (client) local Intent normalized ──> this tick's NetCmd
               SimSet::Rules     rounds (new round ──> RoundRestarts, objectives::round_start;
                                 bomb/hostage state ──> round end; FreezeTime, RoundOpen),
                                 respawn; the dead's and (freeze time) everyone's Intent held
@@ -172,9 +176,10 @@ FixedUpdate:  bot brains, (server) remote players' RemoteIntent ──> Intent (
               then              Damage ──> Health, Died ──> Score, Dead
                                 WeaponEvent, Damage ──> impact sounds, decals, Particles (game effects)
 FixedPostUpdate: physics step; new contacts of props ──> impact Damage (crush, next tick)
-FixedLast:    (client) Transform, eye, look, punch ──> interpolation samples (last two ticks)
+FixedLast:    (client) Transform, eye, look, punch ──> interpolation samples (last two ticks); predicted
+              state ──> PredictionHistory; (server) characters ──> NetBody, OwnState
 after fixed loop: (client) samples + overstep fraction ──> drawn Transform, RenderedView
-PostUpdate:   (server) characters ──> NetBody, replicated; (client) local Intent ──> NetIntent
+PostUpdate:   (server) NetBody replicated, OwnState to each player; (client) new NetCmds + backups ──> UserCmds
               PlaySound ──> one-shots; SoundControl ──> LiveSounds (ambient loops) ──> audio
 Update:       camera <── Intent (local look) + drawn Transform + RenderedView (eye offset, roll, punch)
               Particles stepped (frame time, at most 0.1 s) and drawn

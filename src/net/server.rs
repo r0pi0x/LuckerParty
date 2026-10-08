@@ -14,15 +14,18 @@ use bevy_replicon_renet::{
 };
 
 use super::{
-    HOST_ID, Join, NET_VERSION, NetBody, NetCharacter, NetEvent, NetIntent, NetSettings, NetVersion, PROTOCOL_ID,
-    Refused, Welcome, body_flags, current_map,
+    HOST_ID, Join, NET_VERSION, NetBody, NetCharacter, NetCmd, NetEvent, NetSettings, NetVersion, OwnState,
+    PROTOCOL_ID, Refused, UserCmds, Welcome, body_flags, current_map,
 };
 use crate::{
     character::character_bundle,
-    core::{Health, Intent, LocalPlayer, MovementState, NetRole, Seed, SimSet, Team, Velocity},
+    core::{
+        FreezeTime, Health, Intent, LocalPlayer, MovementState, NetRole, PredictedComponents, Seed, SimClock, SimSet,
+        SimTick, Team, Velocity,
+    },
     objectives::hostages::Hostage,
     rules::Dead,
-    slots::{Loadout, set_movement},
+    slots::{Loadout, MovementSlot, set_movement},
     weapon::Inventory,
 };
 
@@ -32,7 +35,7 @@ pub(super) fn plugin(app: &mut App) {
         .add_systems(Update, drop_refused.run_if(in_state(ServerState::Running)))
         .add_systems(
             PreUpdate,
-            receive_intents
+            receive_commands
                 .after(ServerSystems::Receive)
                 .run_if(in_state(ServerState::Running)),
         )
@@ -40,14 +43,19 @@ pub(super) fn plugin(app: &mut App) {
         // time), as bots write theirs.
         .add_systems(
             FixedUpdate,
-            apply_intents
+            apply_commands
                 .before(SimSet::Rules)
                 .run_if(resource_equals(NetRole::Server)),
         )
+        // The tick's outcome, from the simulation's values (a listen
+        // server draws eased transforms after the fixed loop).
+        .add_systems(
+            FixedLast,
+            (write_bodies, capture_own_states).run_if(resource_equals(NetRole::Server)),
+        )
         .add_systems(
             PostUpdate,
-            (replicate_characters, write_bodies)
-                .chain()
+            (replicate_characters, send_own_states)
                 .before(ServerSystems::Send)
                 .run_if(resource_equals(NetRole::Server)),
         );
@@ -78,9 +86,38 @@ fn drop_refused(q: Query<(Entity, &RefusedAt)>, time: Res<Time<Real>>, mut out: 
     }
 }
 
-/// On a remote player's character: the latest intent its client sent.
+/// On a remote player's character: the commands its client sent for
+/// ticks to come (a jitter buffer, plan §1 "bind command number to server
+/// tick"), the last one applied, and how they arrive.
 #[derive(Component, Debug, Default)]
-pub struct RemoteIntent(pub Option<NetIntent>);
+pub struct CommandBuffer {
+    pub queued: std::collections::BTreeMap<u64, NetCmd>,
+    /// The command run last (repeated for a tick without one).
+    pub last: Option<NetCmd>,
+    /// The last tick a command was applied for.
+    pub applied: u64,
+    /// The smallest lead heard since the last `OwnState` (see
+    /// `OwnState::lead`), and the newest tick heard.
+    pub lead: Option<i32>,
+    pub newest: u64,
+    /// Ticks run on a repeated command; commands that came too late (after
+    /// their tick) or too early (beyond `MAX_AHEAD`).
+    pub missed: u32,
+    pub late: u32,
+    pub early: u32,
+}
+
+/// Commands further ahead of the server than this (ticks) are dropped: a
+/// client can't queue up more than this, whatever its clock says.
+pub const MAX_AHEAD: u64 = 64;
+
+/// On a remote player's character: its state after the latest tick, for
+/// its client (`send_own_states`).
+#[derive(Component, Debug, Default)]
+pub struct OwnStateOut {
+    state: Option<OwnState>,
+    sent: u64,
+}
 
 /// Start serving the loaded map on `hostport` (a listen server: this
 /// process's own player plays too). Fails if a network game is running
@@ -212,13 +249,13 @@ fn admit(world: &mut World, client: Entity, msg: Join) {
     } else {
         world.get_resource::<crate::map::MapFile>().and_then(|f| f.hash)
     };
-    let tick_interval = world.resource::<Time<Fixed>>().timestep().as_secs_f64();
+    let tick_nanos = world.resource::<Time<Fixed>>().timestep().as_nanos() as u64;
     world.commands().server_trigger(ToClients {
         targets: SendTargets::Single(ClientId::Client(client)),
         message: Welcome {
             map,
             map_hash,
-            tick_interval,
+            tick_nanos,
             you: id,
         },
     });
@@ -256,7 +293,8 @@ fn spawn_player(world: &mut World, id: u64, name: &str) -> Entity {
             // Command numbers and shared randoms differ per player.
             Seed(0x5EED_0000_0000_0000 ^ id),
             Dead { since: f64::MIN },
-            RemoteIntent::default(),
+            CommandBuffer::default(),
+            OwnStateOut::default(),
             Replicated,
             NetCharacter {
                 owner: Some(id),
@@ -300,32 +338,137 @@ fn despawn_character(world: &mut World, character: Entity) {
     }
 }
 
-/// Keep each remote player's latest intent.
-fn receive_intents(
-    mut intents: MessageReader<FromClient<NetIntent>>,
+/// Queue each remote player's commands by tick, and note how early they
+/// came (the clock sync's lead). Commands for ticks already run are late
+/// (counted, dropped); ones more than `MAX_AHEAD` ahead are dropped. A
+/// command already queued for a tick is replaced (the client moved its
+/// clock back and re-predicted that tick); repeats from `CMD_BACKUP` are
+/// the same command.
+fn receive_commands(
+    mut messages: MessageReader<FromClient<UserCmds>>,
     players: Query<&Player>,
-    mut remote: Query<&mut RemoteIntent>,
+    mut buffers: Query<&mut CommandBuffer>,
+    tick: Res<SimTick>,
 ) {
-    for msg in intents.read() {
+    let now = tick.0;
+    for msg in messages.read() {
         let Some(client) = msg.client_id.entity() else {
             continue;
         };
         let Ok(p) = players.get(client) else { continue };
-        if let Ok(mut r) = remote.get_mut(p.character) {
-            r.0 = Some(msg.message.clone());
+        let Ok(mut b) = buffers.get_mut(p.character) else {
+            continue;
+        };
+        let Some(newest) = msg.message.cmds.iter().map(|c| c.tick).max() else {
+            continue;
+        };
+        let lead = (newest as i64 - now as i64).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+        b.lead = Some(b.lead.map_or(lead, |l| l.min(lead)));
+        b.newest = b.newest.max(newest);
+        if newest <= b.applied {
+            // Even its newest command's tick has run.
+            b.late += 1;
+        }
+        for cmd in &msg.message.cmds {
+            if cmd.tick <= b.applied {
+                continue;
+            }
+            if cmd.tick > now + MAX_AHEAD {
+                b.early += 1;
+                continue;
+            }
+            b.queued.insert(cmd.tick, cmd.clone());
         }
     }
 }
 
-/// Remote players' intents for this tick (the latest each sent).
-fn apply_intents(mut q: Query<(&RemoteIntent, &mut Intent)>) {
-    for (remote, mut intent) in &mut q {
-        if let Some(r) = &remote.0 {
-            r.apply(&mut intent);
+/// Each remote player's command for this tick into its `Intent`, made
+/// safe (`NetCmd::apply`): exactly one command per tick whatever the
+/// client sends, so no client moves faster than the tick allows. Without
+/// one (lost, late) the last repeats, and the client gets corrected.
+fn apply_commands(mut q: Query<(&mut CommandBuffer, &mut Intent)>, clock: Res<SimClock>) {
+    let tick = clock.tick;
+    for (mut b, mut intent) in &mut q {
+        // Commands for ticks gone by never run.
+        let stale: Vec<u64> = b.queued.range(..tick).map(|(t, _)| *t).collect();
+        for t in stale {
+            b.queued.remove(&t);
+        }
+        let cmd = match b.queued.remove(&tick) {
+            Some(c) => Some(c),
+            None => {
+                if b.last.is_some() {
+                    b.missed += 1;
+                }
+                b.last.clone()
+            }
+        };
+        b.applied = tick;
+        if let Some(c) = cmd {
+            c.apply(&mut intent);
+            b.last = Some(c);
         }
     }
 }
 
+/// After each tick: every remote player's predicted state for its client.
+fn capture_own_states(world: &mut World) {
+    let clock = *world.resource::<SimClock>();
+    let tick_nanos = world.resource::<Time<Fixed>>().timestep().as_nanos() as u64;
+    let time_nanos = world.resource::<Time<Fixed>>().elapsed().as_nanos() as u64;
+    let frozen = world.get_resource::<FreezeTime>().is_some_and(|f| f.0);
+    let characters: Vec<Entity> = world
+        .query_filtered::<Entity, With<OwnStateOut>>()
+        .iter(world)
+        .collect();
+    world.resource_scope(|world, registry: Mut<PredictedComponents>| {
+        for e in characters {
+            let state = registry.encode(world, e);
+            let movement = world.get::<MovementSlot>(e).map_or("", |m| m.0).to_string();
+            let seed = world.get::<Seed>(e).map_or(0, |s| s.0);
+            let held = frozen || world.get::<Dead>(e).is_some();
+            let mut out = world.get_mut::<OwnStateOut>(e).expect("queried");
+            out.state = Some(OwnState {
+                tick: clock.tick,
+                time_nanos,
+                tick_nanos,
+                state,
+                movement,
+                seed,
+                held,
+                ..default()
+            });
+        }
+    });
+}
+
+/// The newest state of each remote player to its client, with how its
+/// commands are arriving.
+fn send_own_states(
+    players: Query<(Entity, &Player)>,
+    mut characters: Query<(&mut OwnStateOut, &mut CommandBuffer)>,
+    mut out: MessageWriter<ToClients<OwnState>>,
+) {
+    for (client, p) in &players {
+        let Ok((mut own, mut b)) = characters.get_mut(p.character) else {
+            continue;
+        };
+        let Some(mut state) = own.state.clone() else { continue };
+        if state.tick <= own.sent {
+            continue;
+        }
+        own.sent = state.tick;
+        state.lead = b.lead.take();
+        state.newest = b.newest;
+        state.buffered = b.queued.len().min(u16::MAX as usize) as u16;
+        state.missed = b.missed;
+        state.late = b.late;
+        out.write(ToClients {
+            targets: SendTargets::Single(ClientId::Client(client)),
+            message: state,
+        });
+    }
+}
 /// Characters this server didn't spawn for a client (the host's, bots)
 /// replicate too.
 #[allow(clippy::type_complexity)]
@@ -388,6 +531,10 @@ pub struct PlayerInfo {
     /// Round trip, ms (None for the host).
     pub ping_ms: Option<f64>,
     pub loss: f64,
+    /// Commands waiting for later ticks, and ticks run without one
+    /// (`CommandBuffer`); 0 for the host.
+    pub buffered: usize,
+    pub missed: u32,
 }
 
 /// The host (on a listen server) and every joined client.
@@ -405,18 +552,33 @@ pub fn players(world: &mut World) -> Vec<PlayerInfo> {
             name: host,
             ping_ms: None,
             loss: 0.0,
+            buffered: 0,
+            missed: 0,
         });
     }
+    let mut clients = Vec::new();
     for (p, id, stats) in world
         .query::<(&Player, &NetworkId, Option<&ConnectedClientStats>)>()
         .iter(world)
     {
-        out.push(PlayerInfo {
-            id: id.get(),
-            name: p.name.clone(),
-            ping_ms: stats.map(|s| s.rtt * 1000.0),
-            loss: stats.map_or(0.0, |s| s.packet_loss),
-        });
+        clients.push((
+            p.character,
+            PlayerInfo {
+                id: id.get(),
+                name: p.name.clone(),
+                ping_ms: stats.map(|s| s.rtt * 1000.0),
+                loss: stats.map_or(0.0, |s| s.packet_loss),
+                buffered: 0,
+                missed: 0,
+            },
+        ));
+    }
+    for (character, mut info) in clients {
+        if let Some(b) = world.get::<CommandBuffer>(character) {
+            info.buffered = b.queued.len();
+            info.missed = b.missed;
+        }
+        out.push(info);
     }
     out
 }

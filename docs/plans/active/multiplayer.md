@@ -3,7 +3,9 @@
 Status: slice 0 done but per-tick server hitbox poses (moved to slice 4;
 2026-10-08); slice 1 done (2026-10-08): a listen server and a dedicated
 server, direct-IP connect, characters replicated and drawn where the
-server puts them (no prediction yet). Recommendation:
+server puts them; slice 2 done (2026-10-08): usercmds bound to server
+ticks, clock sync, the client's own movement predicted and reconciled
+(weapons wait for slice 4). Recommendation:
 **bevy_replicon + renet (netcode over UDP)** for transport and
 replication; **our own Source-style prediction, interpolation and lag
 compensation** on top. Slices below; slice 0 is refactoring that pays off
@@ -476,11 +478,84 @@ with tests passing and something to see.
      chat, rounds or kill feed (slices 4-5); others are drawn at the
      latest snapshot, stepping at the packet rate (slice 3); the
      scoreboard's ping column isn't filled (slice 5).
-2. **[ ] Usercmds, server-authoritative movement, prediction and
+2. **[x] Usercmds, server-authoritative movement, prediction and
    reconciliation** (L, high risk: the core of the feel). Command
    buffering bound to ticks, clock sync, the prediction loop and replay,
    error smoothing, `net_graph` prediction errors. Tests: determinism
    suite above.
+   Progress (2026-10-08):
+   - [x] `UserCmds` (`net::NetCmd`: tick, move axis, exact `f32` angles,
+     buttons, slot), unreliable, every frame with ticks: the new commands
+     and the 3 before them (`CMD_BACKUP`). The client normalizes its own
+     intent the way the server makes commands safe (`NetCmd::normalize`)
+     before simulating, so both run the same values. Replaces slice 1's
+     `NetIntent`.
+   - [x] Server: commands queued by tick per player
+     (`server::CommandBuffer`), exactly one applied per tick before the
+     rules; a missing one repeats the last; late ones and ones more than
+     64 ticks ahead dropped and counted. No client moves faster than the
+     tick allows, whatever it sends (test).
+   - [x] Clock sync: the server reports each player's command lead (the
+     newest command's tick less its own tick on arrival) in `OwnState`;
+     the client keeps it at 2 ticks plus twice the jitter
+     (`predict::CommandClock`) by lengthening or shortening its fixed
+     timestep by up to 8 % (the simulated tick length stays the server's
+     via `SimClock`), or jumps when more than 6 ticks off. First guess:
+     the server's tick + RTT + the target.
+   - [x] Prediction: the local player gets the server's movement
+     implementation and `Seed` and runs its commands in the normal fixed
+     tick (the `Predict` schedules), each tick's command, clock and
+     outcome kept (`PredictionHistory`). `core::number_commands` numbers
+     from `SimClock::tick`, so a client's command numbers are the
+     server's. The rules' hold (dead, freeze time) is mirrored from
+     `OwnState::held`.
+   - [x] Reconciliation: **changed from §1/§3:** the server's state of a
+     client's own player isn't replicated components but an `OwnState`
+     message each tick, its predicted components as one blob
+     (`PredictedAppExt::predicted_net`, `PredictedComponents::encode`:
+     postcard per component, entity fields skipped). The client compares
+     it byte for byte with its prediction for that tick; on a mismatch it
+     decodes it and re-runs the later commands (`core::predict`,
+     `FirstTimePredicted` false). No tolerance: any bit differs, it
+     corrects (cheap: one entity, ~10-20 commands).
+   - [x] Error smoothing: the drawn eye keeps the correction and eases it
+     out over `cl_smoothtime` (0.1 s); a correction larger than a tick's
+     teleport distance (`map::interp::SNAP_SPEED`) snaps.
+   - [x] Readout: `NetGraph` in the perf overlay and the F2 Perf tab
+     (`net:` ping, loss, KB/s; `cmds:` lead, target, nudge, jumps, server
+     buffer, missed, late; `prediction:` errors/s, worst, totals,
+     replayed, easing), `status` (client: prediction; server: each
+     player's buffered and missed commands), `cl_showerror 1` (each error:
+     tick, metres, components; clock jumps).
+   - [x] `net_fakelag`, `net_fakejitter`, `net_fakeloss` (Source names) in
+     the client's own UDP transport (`net::udp`, renetcode's netcode
+     client; lag and jitter on what it receives, loss both ways).
+   - [x] Tests (`tests/it/net_prediction.rs`, `NetSim`): no loss at 50,
+     100 and 150 ms: 0 prediction errors in ~260 compared states each
+     (walking, strafing, turning, jumps, ducking, a duck jump, walk key),
+     and on the greybox ladder; with jitter and loss (50±20 ms 5 %,
+     100±40 10 %, 150±60 20 %, 100±120 35 %) errors are rare (0-1 per
+     run, worst 0.03 m), nothing is left to correct once idle and the
+     prediction is the server's bit for bit; the server's movement for a
+     command stream equals single player's for the same commands, bit for
+     bit; a flood of commands (80 a frame, far ahead, axis 40) moves no
+     faster than 6.35 m/s; a 0.3 m server-side shove is one error, eased
+     from the old position. `net::fake_lag_delays_what_the_client_receives`
+     covers the UDP transport's lag.
+   - [x] Two real games on the dev box (`-port 27031`, the client with
+     `+net_fakelag 100 +net_fakejitter 20 +net_fakeloss 5 +cl_showerror
+     1`): ping ~155 ms, walking, strafing, jumping and ducking with no
+     prediction errors; a client `setpos` was corrected back (5.2 m, one
+     error); at 150±60 ms and 20 % loss one 0.12 m error in a few seconds
+     of strafing (view moved 0.04 m, eased).
+   - Not yet: the weapon frame isn't predicted on a client because a
+     client has no inventory or weapon state until slice 4 (the
+     machinery is there: `Predict::Select`/`Weapons` run in the replay;
+     slice 4 registers the weapon components with `predicted_net` and
+     sends them); the server's movement cvars aren't sent (slice 5's
+     replicated cvars); movers don't move on a client (slice 3), so
+     riding one mispredicts; `OwnState` is the whole state each tick, no
+     delta.
 3. **[ ] Interpolation of others** (M, medium). Snapshot buffers keyed by
    server tick feeding `map::interp`'s `Interpolated`/`RenderedView`,
    `cl_interp`, brush entities, props and loose items replicated and

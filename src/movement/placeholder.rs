@@ -30,7 +30,7 @@ const MAX_GROUNDED_RISE: f32 = JUMP_SPEED * 0.5;
 const STAND_EYE: f32 = 1.62 - CAPSULE_HEIGHT / 2.0;
 const CROUCH_EYE: f32 = 1.0 - CAPSULE_HEIGHT / 2.0;
 
-#[derive(Component, Default, Clone)]
+#[derive(Component, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PlaceholderMovement {
     jump_held: bool,
     /// Normal of the ground we stood on last tick.
@@ -43,7 +43,7 @@ impl Plugin for PlaceholderMovementPlugin {
     fn build(&self, app: &mut App) {
         app.register_movement::<PlaceholderMovement>(ID)
             .add_systems(Predict::Movement, step)
-            .predicted::<PlaceholderMovement>();
+            .predicted_net::<PlaceholderMovement>();
     }
 }
 

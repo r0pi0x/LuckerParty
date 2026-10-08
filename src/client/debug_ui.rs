@@ -1020,6 +1020,15 @@ fn perf_tab(ui: &mut egui::Ui, world: &mut World, state: &mut DebugUi) {
     ) {
         ui.monospace(super::perf::interp_line(i, f));
     }
+    // Network play, live (client): ping, the command clock, prediction.
+    let client = world
+        .get_resource::<crate::core::NetRole>()
+        .is_some_and(|r| *r == crate::core::NetRole::Client);
+    if client && let Some(g) = world.get_resource::<crate::net::predict::NetGraph>() {
+        for l in g.lines() {
+            ui.monospace(l);
+        }
+    }
     if let Some(r) = world.get_resource::<super::perf::PerfReport>() {
         for l in &r.lines {
             ui.monospace(l);
@@ -1032,6 +1041,13 @@ fn perf_tab(ui: &mut egui::Ui, world: &mut World, state: &mut DebugUi) {
         state,
         "perf_cvars",
         &["mashup_perf", "mashup_perf_log", "host_timescale", "mat_vsync", "r_novis", "cl_interpolate"],
+    );
+    cvar_grid(
+        ui,
+        world,
+        state,
+        "net_cvars",
+        &["cl_showerror", "cl_smoothtime", "net_fakelag", "net_fakejitter", "net_fakeloss"],
     );
     ui.horizontal(|ui| {
         command_button(ui, world, "Log particles", "mashup_particles");
