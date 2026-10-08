@@ -1,17 +1,37 @@
-//! The in-game menu (Esc, or `menu [page]`), styled after CS:S's game
-//! menu: a list of entries at the left over the running game and a dark
-//! translucent dialog per page. The game keeps running while it is open;
-//! the mouse is free, so the local player's input is ignored
-//! (`input::write_local_intent`). Every choice is a console line (`map`,
-//! `bot_add`, `jointeam`, cvars ...), so the menu holds no game logic: the
-//! model (`GameMenu::handle`) turns keys and clicks into those lines, and
-//! is unit-tested without a window.
+//! The in-game menu (Esc, or `menu [page]`), drawn as CS:S's GameUI draws
+//! its game menu: the entries at the left over the darkened game, each
+//! dialog a frame in the middle of the screen (title bar, raised borders,
+//! the options' tabs), in the install's GameUI scheme (`map::hud::GameUi`:
+//! `SourceScheme.res` colours, numbers and fonts, `GameMenu.res` entries
+//! with ours added, the keyboard tab's `kb_act.lst` actions, localised
+//! words, map thumbnails); without the install, in built-in colours and
+//! words. The game keeps running while it is open; the mouse is free, so
+//! the local player's input is ignored (`input::write_local_intent`). Every
+//! choice is a console line (`map`, `bot_add`, `bind`, cvars ...), so the
+//! menu holds no game logic: the model (`GameMenu::handle`) turns keys
+//! and clicks into those lines, and is unit-tested without a window.
 
-use bevy::{prelude::*, window::CursorOptions};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap},
+    sync::{Arc, Mutex},
+};
 
+use bevy::{
+    input::mouse::{AccumulatedMouseScroll, MouseScrollUnit},
+    prelude::*,
+    text::LineBreak,
+    ui::RelativeCursorPosition,
+    window::CursorOptions,
+};
+
+use super::{
+    binds,
+    options::{SETTINGS, SettingKind, TABS, Tab},
+};
 use crate::{
     console::{Console, ConsoleAppExt},
     core::{Intent, Team},
+    map::hud::{GameUi, KeyAction},
 };
 
 pub struct GameMenuPlugin;
@@ -21,13 +41,15 @@ impl Plugin for GameMenuPlugin {
         app.init_resource::<GameMenu>()
             .init_resource::<AfterLoad>()
             .init_resource::<RegrabCursor>()
-            .add_systems(Startup, load_fonts)
+            .init_resource::<MenuUi>()
+            .add_systems(Startup, (load_fonts, start_loading_ui))
             .add_systems(
                 Update,
                 (
+                    ui_loaded,
                     keys.before(super::console::toggle),
                     pointer,
-                    counts,
+                    sync,
                     cursor,
                     after_load,
                     draw,
@@ -36,9 +58,12 @@ impl Plugin for GameMenuPlugin {
             );
         app.console_command(
             "menu",
-            "menu [main|newgame|maps|bots|team|options]: open the game menu (Esc) on a page.",
+            "menu [main|newgame|maps|bots|team|options|keyboard|mouse|audio|video|multiplayer]: open the game menu (Esc) on a page (options: on a tab).",
             |w, a| {
-                let page = match a.first().map(|s| s.to_lowercase()).as_deref() {
+                let arg = a.first().map(|s| s.to_lowercase());
+                let tab = TABS.iter().find(|(t, ..)| Some(t.page()) == arg.as_deref()).map(|(t, ..)| *t);
+                let page = match arg.as_deref() {
+                    _ if tab.is_some() => Page::Settings,
                     None | Some("main") => Page::Main,
                     Some("newgame") => Page::NewGame,
                     Some("maps") => Page::Maps,
@@ -48,6 +73,9 @@ impl Plugin for GameMenuPlugin {
                     Some(p) => return Err(format!("no menu page \"{p}\"")),
                 };
                 open_menu(w, page);
+                if let Some(tab) = tab {
+                    w.resource_mut::<GameMenu>().set_tab(tab);
+                }
                 Ok(None)
             },
         )
@@ -75,6 +103,7 @@ pub enum Page {
     Maps,
     Bots,
     Team,
+    /// The options dialog (its tab: `GameMenu::tab`).
     Settings,
 }
 
@@ -122,139 +151,7 @@ impl Default for NewGame {
     }
 }
 
-/// How a setting's value changes.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum SettingKind {
-    /// Steps of `step` between `min` and `max`, shown with `decimals`.
-    Range {
-        min: f32,
-        max: f32,
-        step: f32,
-        decimals: usize,
-    },
-    /// Fixed values (as the cvar takes them) with their labels.
-    Choice(&'static [(&'static str, &'static str)]),
-}
-
-/// A setting on the options page: one cvar (archived, so config.cfg keeps
-/// it).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Setting {
-    pub cvar: &'static str,
-    pub label: &'static str,
-    pub kind: SettingKind,
-}
-
-pub const SETTINGS: &[Setting] = &[
-    Setting {
-        cvar: "sensitivity",
-        label: "Mouse sensitivity",
-        kind: SettingKind::Range {
-            min: 0.1,
-            max: 20.0,
-            step: 0.1,
-            decimals: 1,
-        },
-    },
-    Setting {
-        cvar: "zoom_sensitivity_ratio",
-        label: "Zoom sensitivity ratio",
-        kind: SettingKind::Range {
-            min: 0.1,
-            max: 4.0,
-            step: 0.1,
-            decimals: 1,
-        },
-    },
-    Setting {
-        cvar: "volume",
-        label: "Master volume",
-        kind: SettingKind::Range {
-            min: 0.0,
-            max: 1.0,
-            step: 0.05,
-            decimals: 2,
-        },
-    },
-    Setting {
-        cvar: "viewmodel_fov",
-        label: "View model FOV",
-        kind: SettingKind::Range {
-            min: 40.0,
-            max: 90.0,
-            step: 1.0,
-            decimals: 0,
-        },
-    },
-    Setting {
-        cvar: "cl_righthand",
-        label: "Weapon hand",
-        kind: SettingKind::Choice(&[("0", "Left"), ("1", "Right")]),
-    },
-    Setting {
-        cvar: "cl_crosshaircolor",
-        label: "Crosshair colour",
-        kind: SettingKind::Choice(&[
-            ("0", "Green"),
-            ("1", "Red"),
-            ("2", "Blue"),
-            ("3", "Yellow"),
-            ("4", "Cyan"),
-        ]),
-    },
-    Setting {
-        cvar: "cl_showfps",
-        label: "Show FPS",
-        kind: SettingKind::Choice(&[("0", "Off"), ("1", "On"), ("2", "Detailed")]),
-    },
-    Setting {
-        cvar: "mat_hdr_level",
-        label: "High dynamic range (next map)",
-        kind: SettingKind::Choice(&[("0", "None"), ("1", "Bloom"), ("2", "Full")]),
-    },
-];
-
-impl Setting {
-    /// The value `dir` steps from `current` (wrapping through choices,
-    /// clamped in ranges).
-    pub fn step(&self, current: &str, dir: i32) -> String {
-        match self.kind {
-            SettingKind::Range {
-                min,
-                max,
-                step,
-                decimals,
-            } => {
-                let v = current.trim().parse::<f32>().unwrap_or(min);
-                // Onto the step grid, so 1.23 + 0.1 reads 1.3.
-                let n = ((v - min) / step).round() + dir as f32;
-                let v = (min + n * step).clamp(min, max);
-                format!("{v:.decimals$}")
-            }
-            SettingKind::Choice(choices) => {
-                let i = choices.iter().position(|(v, _)| *v == current.trim()).unwrap_or(0) as i32;
-                let n = choices.len() as i32;
-                choices[(i + dir).rem_euclid(n) as usize].0.to_string()
-            }
-        }
-    }
-
-    /// The value as shown.
-    pub fn show(&self, value: &str) -> String {
-        match self.kind {
-            SettingKind::Range { decimals, .. } => value
-                .trim()
-                .parse::<f32>()
-                .map_or(value.to_string(), |v| format!("{v:.decimals$}")),
-            SettingKind::Choice(choices) => choices
-                .iter()
-                .find(|(v, _)| *v == value.trim())
-                .map_or(value.to_string(), |(_, l)| l.to_string()),
-        }
-    }
-}
-
-/// The left-hand entries.
+/// What a left-hand entry does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MainItem {
     Resume,
@@ -266,6 +163,7 @@ pub enum MainItem {
     Quit,
 }
 
+/// The entries without the game's menu file: ours, in our order.
 pub const MAIN: [(MainItem, &str); 7] = [
     (MainItem::Resume, "Resume Game"),
     (MainItem::NewGame, "New Game"),
@@ -288,6 +186,77 @@ impl MainItem {
     }
 }
 
+/// A left-hand entry: what it does, its text, whether a gap comes before
+/// it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MainEntry {
+    pub item: MainItem,
+    pub label: String,
+    pub gap: bool,
+}
+
+/// The left-hand entries: the game's (`GameMenu.res`) that mashup can do,
+/// in its order and words, with ours (bots, team) after its new game;
+/// ours alone without the game's file. Entries mashup can't do (find
+/// servers, achievements ...) are left out.
+pub fn main_entries(ui: Option<&GameUi>) -> Vec<MainEntry> {
+    let ours = |item: MainItem, gap: bool| MainEntry {
+        item,
+        label: MAIN.iter().find(|(m, _)| *m == item).map_or("", |(_, l)| l).to_uppercase(),
+        gap,
+    };
+    let Some(ui) = ui.filter(|u| !u.menu.is_empty()) else {
+        return MAIN
+            .iter()
+            .map(|(item, _)| ours(*item, *item == MainItem::BugReport))
+            .collect();
+    };
+    let mut out: Vec<MainEntry> = Vec::new();
+    let mut gap = false;
+    for e in &ui.menu {
+        if e.label.trim().is_empty() && e.command.trim().is_empty() {
+            gap = !out.is_empty();
+            continue;
+        }
+        let command = e.command.trim().to_lowercase();
+        let item = match command.as_str() {
+            "resumegame" => MainItem::Resume,
+            "opennewgamedialog" | "opencreatemultiplayergamedialog" => MainItem::NewGame,
+            "openoptionsdialog" => MainItem::Options,
+            "quit" | "quitnoconfirm" => MainItem::Quit,
+            "engine bug" => MainItem::BugReport,
+            _ => continue,
+        };
+        if out.iter().any(|m| m.item == item) {
+            continue;
+        }
+        let label = match item {
+            // A new game is the game's "new game", not its server dialog.
+            MainItem::NewGame => ui.string("#GameUI_GameMenu_NewGame").unwrap_or("NEW GAME").to_string(),
+            _ => e.label.clone(),
+        };
+        out.push(MainEntry { item, label, gap });
+        gap = false;
+        if item == MainItem::NewGame {
+            out.push(ours(MainItem::Bots, false));
+            out.push(ours(MainItem::Team, false));
+        }
+    }
+    // Whatever the file lacks, where ours has it.
+    for (i, (item, _)) in MAIN.iter().enumerate() {
+        if out.iter().any(|m| m.item == *item) {
+            continue;
+        }
+        let at = if i == 0 {
+            0
+        } else {
+            out.iter().position(|m| m.item == MainItem::Quit).unwrap_or(out.len())
+        };
+        out.insert(at, ours(*item, false));
+    }
+    out
+}
+
 /// A value a row changes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Field {
@@ -296,7 +265,7 @@ pub enum Field {
     BotsT,
     BotsCt,
     Difficulty,
-    /// Index into `SETTINGS`.
+    /// Index into `options::SETTINGS`.
     Setting(usize),
 }
 
@@ -309,6 +278,12 @@ pub enum Action {
     PickMap(usize),
     /// Run a console line; close the menu too when set.
     Run(String, bool),
+    /// Wait for a key for the selected keyboard action.
+    EditKey,
+    /// Unbind the selected keyboard action's keys.
+    ClearKey,
+    /// Every bind back to the defaults.
+    DefaultBinds,
 }
 
 /// A row of a page.
@@ -316,6 +291,11 @@ pub enum Action {
 pub enum Row {
     Button { label: String, action: Action, enabled: bool },
     Value { label: String, value: String, field: Field },
+    /// A keyboard action: its description, console line and keys (as
+    /// shown); `known`: mashup has the command.
+    Bind { label: String, command: String, keys: String, known: bool },
+    /// A section heading in a list.
+    Heading(String),
     /// Text that can't be focused.
     Info(String),
 }
@@ -324,8 +304,8 @@ impl Row {
     fn focusable(&self) -> bool {
         match self {
             Row::Button { enabled, .. } => *enabled,
-            Row::Value { .. } => true,
-            Row::Info(_) => false,
+            Row::Value { .. } | Row::Bind { .. } => true,
+            Row::Info(_) | Row::Heading(_) => false,
         }
     }
 }
@@ -333,10 +313,14 @@ impl Row {
 /// What a click or hover is on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
-    /// A left-hand entry (index into `MAIN`).
+    /// A left-hand entry (index into `GameMenu::main`).
     Main(usize),
     /// A row of the open page.
     Row(usize),
+    /// An options tab (index into `options::TABS`).
+    Tab(usize),
+    /// A list's scroll bar (the click's step says how far).
+    Scroll,
 }
 
 /// A key or pointer event for the menu.
@@ -350,13 +334,23 @@ pub enum Input {
     Activate,
     /// Backspace: back to the main page.
     Back,
-    /// Esc: close.
+    /// Esc: close (or stop waiting for a key).
     Close,
     Hover(Target),
-    /// A click: on the row itself (0) or its `<` (-1) / `>` (+1) arrow.
+    /// A click: on the row itself (0) or its `<` (-1) / `>` (+1) arrow; on
+    /// the scroll bar, rows to scroll.
     Click(Target, i32),
     /// A typed letter or digit: jumps the map list.
     Char(char),
+    /// Tab (+1) / Shift+Tab (-1): the next options tab.
+    NextTab(i32),
+    /// The wheel over a list: rows to scroll.
+    Scroll(i32),
+    /// A slider row pressed or dragged at a position (0 to 1).
+    Slide(usize, f32),
+    /// The key, button or wheel notch pressed while waiting for one (a
+    /// Source key name).
+    BindKey(&'static str),
 }
 
 /// What an input asks for besides the menu's own state.
@@ -370,29 +364,107 @@ pub struct Outcome {
     pub close: bool,
 }
 
+/// The game's GameUI look and words, shared (compared by identity).
+#[derive(Clone, Default)]
+pub struct UiText(pub Option<Arc<GameUi>>);
+
+impl PartialEq for UiText {
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+}
+
+impl std::fmt::Debug for UiText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() { "GameUi" } else { "none" })
+    }
+}
+
 /// The menu's state.
 #[derive(Resource, Clone, Debug, Default, PartialEq)]
 pub struct GameMenu {
     pub open: bool,
     pub page: Page,
-    /// The focused row of the page (of `MAIN` on the main page).
+    /// The focused row of the page (of `main` on the main page).
     pub focus: usize,
     /// Loadable maps (`maps`).
     pub maps: Vec<String>,
     pub new_game: NewGame,
-    /// Each setting's current value (`SETTINGS` order), None if its cvar
-    /// isn't registered.
+    /// Each setting's current value (`options::SETTINGS` order), None if
+    /// its cvar isn't registered.
     pub values: Vec<Option<String>>,
     /// Bots in the game now: terrorists, counter-terrorists.
     pub bots: [usize; 2],
     /// Everyone in the game now, by team (auto-assign).
     pub players: [usize; 2],
+    /// The options dialog's tab.
+    pub tab: Tab,
+    /// The left-hand entries.
+    pub main: Vec<MainEntry>,
+    /// The game's look and words, when the install has them.
+    pub ui: UiText,
+    /// The binds now (key -> line).
+    pub binds: BTreeMap<String, String>,
+    /// Console commands and cvars that exist (lower case), to tell the
+    /// keyboard actions mashup has from those it lacks.
+    pub known: BTreeSet<String>,
+    /// The keyboard action waiting for a key.
+    pub capture: Option<String>,
+    /// The keyboard list's selected row (Edit key / Clear key act on it).
+    pub key_row: Option<usize>,
+    /// The first row of the open list shown (keyboard actions, maps).
+    pub scroll: usize,
+    /// Window sizes the video tab offers.
+    pub resolutions: Vec<String>,
 }
 
-/// Map list rows per column.
-pub const MAP_ROWS: usize = 14;
-/// Map list columns.
-pub const MAP_COLUMNS: usize = 3;
+/// Map list rows shown at once.
+pub const MAP_ROWS: usize = 16;
+/// Keyboard list rows shown at once.
+pub const KEY_ROWS: usize = 14;
+/// Buttons under the keyboard list (Use defaults, Edit key, Clear key).
+const KEY_BUTTONS: usize = 3;
+
+/// The keyboard list without the game's `kb_act.lst`: what mashup does.
+const OUR_ACTIONS: &[(&str, &str)] = &[
+    ("", "Movement"),
+    ("+forward", "Move forward"),
+    ("+back", "Move back"),
+    ("+moveleft", "Move left (strafe)"),
+    ("+moveright", "Move right (strafe)"),
+    ("+speed", "Walk"),
+    ("+jump", "Jump"),
+    ("+duck", "Duck"),
+    ("", "Combat"),
+    ("+attack", "Fire"),
+    ("+attack2", "Weapon special function"),
+    ("+reload", "Reload weapon"),
+    ("lastinv", "Last weapon used"),
+    ("drop", "Drop weapon"),
+    ("", "Communication"),
+    ("radio1", "Standard radio messages"),
+    ("radio2", "Group radio messages"),
+    ("radio3", "Report radio messages"),
+    ("messagemode", "Chat message"),
+    ("messagemode2", "Team message"),
+    ("", "Menus"),
+    ("buymenu", "Buy menu"),
+    ("chooseteam", "Select team"),
+    ("+showscores", "Display multiplayer scores"),
+    ("slot1", "Menu item 1"),
+    ("slot2", "Menu item 2"),
+    ("slot3", "Menu item 3"),
+    ("slot4", "Menu item 4"),
+    ("slot5", "Menu item 5"),
+    ("", "Miscellaneous"),
+    ("+use", "Use items"),
+    ("bug", "Report a bug"),
+    ("+freelook", "Free look"),
+];
 
 impl GameMenu {
     /// Open on a page with the current settings: `get` reads a cvar,
@@ -407,6 +479,11 @@ impl GameMenu {
         self.open = true;
         self.page = page;
         self.focus = 0;
+        self.capture = None;
+        self.scroll = 0;
+        if self.main.is_empty() {
+            self.main = main_entries(self.ui.0.as_deref());
+        }
         self.values = SETTINGS.iter().map(|s| get(s.cvar)).collect();
         let num = |name: &str| get(name).and_then(|v| v.trim().parse::<f32>().ok());
         self.new_game.map = current_map
@@ -435,6 +512,33 @@ impl GameMenu {
             self.focus = self.new_game.map;
         }
         self.focus = self.first_focusable_from(self.focus, 1);
+        self.key_row = None;
+        self.select_focused_key();
+        self.keep_visible();
+    }
+
+    /// The game's look and words (None: ours).
+    pub fn set_ui(&mut self, ui: Option<Arc<GameUi>>) {
+        self.ui = UiText(ui);
+        self.main = main_entries(self.ui.0.as_deref());
+        self.focus = self.focus.min(self.main.len().saturating_sub(1));
+    }
+
+    /// The binds now and the commands that exist.
+    pub fn set_binds(&mut self, binds: BTreeMap<String, String>, known: BTreeSet<String>) {
+        self.binds = binds;
+        self.known = known;
+    }
+
+    /// Show an options tab.
+    pub fn set_tab(&mut self, tab: Tab) {
+        self.tab = tab;
+        self.capture = None;
+        self.scroll = 0;
+        self.key_row = None;
+        self.focus = self.first_focusable_from(0, 1);
+        self.select_focused_key();
+        self.keep_visible();
     }
 
     /// The bots and players per team now (for the bots and team pages; a new
@@ -442,6 +546,69 @@ impl GameMenu {
     pub fn set_counts(&mut self, bots: [usize; 2], players: [usize; 2]) {
         self.bots = bots;
         self.players = players;
+    }
+
+    /// The game's text for a `#token`, else `ours`.
+    pub fn text(&self, token: &str, ours: &str) -> String {
+        self.ui
+            .0
+            .as_ref()
+            .and_then(|u| u.string(token))
+            .map_or_else(|| ours.to_string(), str::to_string)
+    }
+
+    fn game_text(&self, token: &str) -> Option<String> {
+        self.ui.0.as_ref().and_then(|u| u.string(token)).map(str::to_string)
+    }
+
+    /// The keyboard list: the game's actions, then ours it lacks.
+    pub fn key_actions(&self) -> Vec<KeyAction> {
+        let ours = |command: &str, label: &str| KeyAction::Action {
+            command: command.to_string(),
+            label: label.to_string(),
+        };
+        let Some(ui) = self.ui.0.as_ref().filter(|u| !u.actions.is_empty()) else {
+            return OUR_ACTIONS
+                .iter()
+                .map(|(c, l)| {
+                    if c.is_empty() {
+                        KeyAction::Section(l.to_string())
+                    } else {
+                        ours(c, l)
+                    }
+                })
+                .collect();
+        };
+        let mut list = ui.actions.clone();
+        let has = |c: &str| {
+            list.iter()
+                .any(|a| matches!(a, KeyAction::Action { command, .. } if command.eq_ignore_ascii_case(c)))
+        };
+        let missing: Vec<KeyAction> = OUR_ACTIONS
+            .iter()
+            .filter(|(c, _)| !c.is_empty() && !has(c))
+            .map(|(c, l)| ours(c, l))
+            .collect();
+        if !missing.is_empty() {
+            list.push(KeyAction::Section("mashup".into()));
+            list.extend(missing);
+        }
+        list
+    }
+
+    /// Whether mashup has a keyboard action's command.
+    fn known_command(&self, line: &str) -> bool {
+        let first = line.split_whitespace().next().unwrap_or_default().to_lowercase();
+        binds::is_polled(line) || self.known.contains(&first)
+    }
+
+    /// The left-hand entries.
+    pub fn entries(&self) -> Vec<MainEntry> {
+        if self.main.is_empty() {
+            main_entries(self.ui.0.as_deref())
+        } else {
+            self.main.clone()
+        }
     }
 
     /// The rows of the open page (the left-hand entries on the main page).
@@ -456,9 +623,14 @@ impl GameMenu {
             value,
             field,
         };
+        let ok = || button(&self.text("#GameUI_OK", "OK"), Action::Back);
         let ng = &self.new_game;
         match self.page {
-            Page::Main => MAIN.iter().map(|(item, label)| button(label, Action::Main(*item))).collect(),
+            Page::Main => self
+                .entries()
+                .iter()
+                .map(|e| button(&e.label, Action::Main(e.item)))
+                .collect(),
             Page::NewGame => vec![
                 value(
                     "Map",
@@ -482,7 +654,7 @@ impl GameMenu {
                     action: Action::Start,
                     enabled: !self.maps.is_empty(),
                 },
-                button("Back", Action::Back),
+                button(&self.text("#GameUI_Cancel", "Back"), Action::Back),
             ],
             Page::Maps => {
                 let mut rows: Vec<Row> = self
@@ -491,7 +663,7 @@ impl GameMenu {
                     .enumerate()
                     .map(|(i, m)| button(m, Action::PickMap(i)))
                     .collect();
-                rows.push(button("Back", Action::Back));
+                rows.push(button(&self.text("#GameUI_Cancel", "Back"), Action::Back));
                 rows
             }
             Page::Bots => vec![
@@ -502,7 +674,7 @@ impl GameMenu {
                 button("Add a terrorist bot", Action::Run("bot_add 1".into(), false)),
                 button("Add a counter-terrorist bot", Action::Run("bot_add 2".into(), false)),
                 button("Kick all bots", Action::Run("bot_kick".into(), false)),
-                button("Back", Action::Back),
+                ok(),
             ],
             Page::Team => vec![
                 button("Terrorists", Action::Run("jointeam 2".into(), true)),
@@ -517,19 +689,56 @@ impl GameMenu {
                         true,
                     ),
                 ),
-                button("Back", Action::Back),
+                button(&self.text("#GameUI_Cancel", "Back"), Action::Back),
             ],
+            Page::Settings if self.tab == Tab::Keyboard => {
+                let mut rows: Vec<Row> = self
+                    .key_actions()
+                    .into_iter()
+                    .map(|a| match a {
+                        KeyAction::Section(t) => Row::Heading(t),
+                        KeyAction::Action { command, label } => Row::Bind {
+                            keys: binds::keys_for(&self.binds, &command)
+                                .iter()
+                                .map(|k| binds::display(k))
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            known: self.known_command(&command),
+                            label,
+                            command,
+                        },
+                    })
+                    .collect();
+                let selected = self.key_row.is_some_and(|r| matches!(rows.get(r), Some(Row::Bind { .. })));
+                rows.push(button(&self.text("#GameUI_UseDefaults", "Use Defaults"), Action::DefaultBinds));
+                rows.push(Row::Button {
+                    label: self.text("#GameUI_SetNewKey", "Edit key"),
+                    action: Action::EditKey,
+                    enabled: selected,
+                });
+                rows.push(Row::Button {
+                    label: self.text("#GameUI_ClearKey", "Clear Key"),
+                    action: Action::ClearKey,
+                    enabled: selected,
+                });
+                rows.push(ok());
+                rows
+            }
             Page::Settings => {
+                let text = |t: &str| self.game_text(t);
                 let mut rows: Vec<Row> = SETTINGS
                     .iter()
                     .enumerate()
-                    .map(|(i, s)| match self.values.get(i).cloned().flatten() {
-                        Some(v) => value(s.label, s.show(&v), Field::Setting(i)),
-                        None => Row::Info(format!("{}: not available", s.label)),
+                    .filter(|(_, s)| s.tab == self.tab)
+                    .map(|(i, s)| {
+                        let label = s.token.and_then(|t| self.game_text(t)).unwrap_or_else(|| s.label.to_string());
+                        match self.values.get(i).cloned().flatten() {
+                            Some(v) => value(&label, s.show(&v, &text), Field::Setting(i)),
+                            None => Row::Info(format!("{label}: not available")),
+                        }
                     })
                     .collect();
-                rows.push(Row::Info("Saved to config.cfg when you quit.".into()));
-                rows.push(button("Back", Action::Back));
+                rows.push(ok());
                 rows
             }
         }
@@ -541,6 +750,21 @@ impl GameMenu {
         if !self.open {
             return out;
         }
+        if let Some(command) = self.capture.clone() {
+            // Waiting for a key: it, or Esc to give up.
+            match input {
+                Input::BindKey(key) => {
+                    let line = binds::rebind_line(&self.binds, &command, key);
+                    self.binds.retain(|_, v| !v.trim().eq_ignore_ascii_case(command.trim()));
+                    self.binds.insert(key.to_string(), command);
+                    out.lines.push(line);
+                    self.capture = None;
+                }
+                Input::Close => self.capture = None,
+                _ => {}
+            }
+            return out;
+        }
         let rows = self.rows();
         match input {
             Input::Close => self.close(&mut out),
@@ -550,11 +774,10 @@ impl GameMenu {
             Input::Left | Input::Right => {
                 let dir = if input == Input::Left { -1 } else { 1 };
                 if self.page == Page::Maps {
-                    // Across the columns.
-                    let n = rows.len() as i32;
-                    let to = self.focus as i32 + dir * MAP_ROWS as i32;
-                    if (0..n).contains(&to) {
-                        self.focus = to as usize;
+                    // A screenful at a time.
+                    let n = self.maps.len() as i32;
+                    if self.focus < self.maps.len() && n > 0 {
+                        self.focus = (self.focus as i32 + dir * MAP_ROWS as i32).clamp(0, n - 1) as usize;
                     }
                 } else if let Some(Row::Value { field, .. }) = rows.get(self.focus) {
                     self.change(*field, dir, &mut out);
@@ -562,29 +785,67 @@ impl GameMenu {
             }
             Input::Activate => self.activate(self.focus, 0, &mut out),
             Input::Hover(Target::Main(i)) => {
-                if self.page == Page::Main && i < MAIN.len() {
+                if self.page == Page::Main && i < rows.len() {
                     self.focus = i;
                 }
             }
             Input::Hover(Target::Row(i)) => {
-                if self.page != Page::Main && rows.get(i).is_some_and(Row::focusable) {
+                // Lists select by click, not by hover.
+                let list = matches!(rows.get(i), Some(Row::Bind { .. }));
+                if self.page != Page::Main && !list && rows.get(i).is_some_and(Row::focusable) {
                     self.focus = i;
                 }
             }
+            Input::Hover(_) => {}
             Input::Click(Target::Main(i), _) => {
-                if let Some((item, _)) = MAIN.get(i) {
+                if let Some(e) = self.entries().get(i) {
                     if self.page == Page::Main {
                         self.focus = i;
                     }
-                    self.main(*item, &mut out);
+                    self.main(e.item, &mut out);
                 }
             }
             Input::Click(Target::Row(i), step) => {
                 if self.page != Page::Main && rows.get(i).is_some_and(Row::focusable) {
-                    self.focus = i;
-                    self.activate(i, step, &mut out);
+                    // A list row: the first click selects, the next edits.
+                    if matches!(rows[i], Row::Bind { .. }) && self.key_row != Some(i) {
+                        self.focus = i;
+                        self.key_row = Some(i);
+                    } else {
+                        self.focus = i;
+                        self.activate(i, step, &mut out);
+                    }
                 }
             }
+            Input::Click(Target::Tab(i), _) => {
+                if self.page == Page::Settings
+                    && let Some((tab, ..)) = TABS.get(i)
+                {
+                    self.set_tab(*tab);
+                }
+            }
+            Input::Click(Target::Scroll, step) | Input::Scroll(step) => {
+                let (len, shown) = self.list();
+                self.scroll = (self.scroll as i32 + step).clamp(0, len.saturating_sub(shown) as i32) as usize;
+                return out;
+            }
+            Input::NextTab(dir) => {
+                if self.page == Page::Settings {
+                    self.set_tab(self.tab.step(dir));
+                }
+            }
+            Input::Slide(i, f) => {
+                if let Some(Row::Value {
+                    field: Field::Setting(s),
+                    ..
+                }) = rows.get(i)
+                    && let Some(v) = SETTINGS[*s].at_fraction(f)
+                {
+                    self.focus = i;
+                    self.set_value(*s, v, &mut out);
+                }
+            }
+            Input::BindKey(_) => {}
             Input::Char(c) => {
                 // Jump to the next map starting with it.
                 let on_map = self.page == Page::Maps
@@ -610,17 +871,58 @@ impl GameMenu {
                 }
             }
         }
+        self.select_focused_key();
+        self.keep_visible();
         out
+    }
+
+    /// The focused keyboard action is the selected one.
+    fn select_focused_key(&mut self) {
+        if self.page == Page::Settings
+            && self.tab == Tab::Keyboard
+            && matches!(self.rows().get(self.focus), Some(Row::Bind { .. }))
+        {
+            self.key_row = Some(self.focus);
+        }
+    }
+
+    /// The open list's length and rows shown (0, 0 without one).
+    pub fn list(&self) -> (usize, usize) {
+        match self.page {
+            Page::Maps => (self.maps.len(), MAP_ROWS),
+            Page::Settings if self.tab == Tab::Keyboard => (self.rows().len() - KEY_BUTTONS - 1, KEY_ROWS),
+            _ => (0, 0),
+        }
+    }
+
+    /// Scroll the open list so the focused row shows.
+    fn keep_visible(&mut self) {
+        let (len, shown) = self.list();
+        if shown == 0 {
+            self.scroll = 0;
+            return;
+        }
+        if self.focus < len {
+            if self.focus < self.scroll {
+                self.scroll = self.focus;
+            } else if self.focus >= self.scroll + shown {
+                self.scroll = self.focus + 1 - shown;
+            }
+        }
+        self.scroll = self.scroll.min(len.saturating_sub(shown));
     }
 
     fn close(&mut self, out: &mut Outcome) {
         self.open = false;
+        self.capture = None;
         out.close = true;
     }
 
     /// Back to the main page, its entry focused (to the new game page from
     /// the map list).
     fn back(&mut self) {
+        self.capture = None;
+        self.scroll = 0;
         match self.page {
             Page::Main => {}
             Page::Maps => {
@@ -628,7 +930,7 @@ impl GameMenu {
                 self.focus = 0;
             }
             page => {
-                self.focus = MAIN.iter().position(|(m, _)| m.page() == Some(page)).unwrap_or(0);
+                self.focus = self.entries().iter().position(|e| e.item.page() == Some(page)).unwrap_or(0);
                 self.page = Page::Main;
             }
         }
@@ -637,7 +939,10 @@ impl GameMenu {
     fn main(&mut self, item: MainItem, out: &mut Outcome) {
         if let Some(page) = item.page() {
             self.page = page;
+            self.scroll = 0;
+            self.key_row = None;
             self.focus = self.first_focusable_from(0, 1);
+            self.select_focused_key();
             return;
         }
         match item {
@@ -658,7 +963,11 @@ impl GameMenu {
             return;
         };
         match row {
-            Row::Button { enabled: false, .. } | Row::Info(_) => {}
+            Row::Button { enabled: false, .. } | Row::Info(_) | Row::Heading(_) => {}
+            Row::Bind { command, .. } => {
+                self.key_row = Some(i);
+                self.capture = Some(command);
+            }
             Row::Value { field, .. } => {
                 if step == 0 && field == Field::Map && !self.maps.is_empty() {
                     self.page = Page::Maps;
@@ -687,6 +996,23 @@ impl GameMenu {
                         out.after_load = after;
                         self.close(out);
                     }
+                }
+                Action::EditKey => {
+                    if let Some(Row::Bind { command, .. }) = self.key_row.and_then(|r| self.rows().into_iter().nth(r)) {
+                        self.capture = Some(command);
+                    }
+                }
+                Action::ClearKey => {
+                    if let Some(Row::Bind { command, .. }) = self.key_row.and_then(|r| self.rows().into_iter().nth(r))
+                        && let Some(line) = binds::clear_line(&self.binds, &command)
+                    {
+                        self.binds.retain(|_, v| !v.trim().eq_ignore_ascii_case(command.trim()));
+                        out.lines.push(line);
+                    }
+                }
+                Action::DefaultBinds => {
+                    binds::bind_defaults(&mut self.binds, true);
+                    out.lines.push("binddefaults".into());
                 }
             },
         }
@@ -717,12 +1043,25 @@ impl GameMenu {
                 let (Some(setting), Some(Some(current))) = (SETTINGS.get(i), self.values.get(i)) else {
                     return;
                 };
-                let next = setting.step(current, dir);
-                if setting.show(&next) != setting.show(current) {
-                    out.lines.push(format!("{} {next}", setting.cvar));
-                    self.values[i] = Some(next);
-                }
+                let next = setting.step(current, dir, &self.resolutions);
+                self.set_value(i, next, out);
             }
+        }
+    }
+
+    /// Set setting `i` to `next` (a line when that changes what it shows).
+    fn set_value(&mut self, i: usize, next: String, out: &mut Outcome) {
+        let (Some(setting), Some(Some(current))) = (SETTINGS.get(i), self.values.get(i)) else {
+            return;
+        };
+        let none = |_: &str| None;
+        let changed = match setting.kind {
+            SettingKind::Negate => next.trim() != current.trim(),
+            _ => setting.show(&next, &none) != setting.show(current, &none),
+        };
+        if changed {
+            out.lines.push(format!("{} {}", setting.cvar, crate::console::quote(&next)));
+            self.values[i] = Some(next);
         }
     }
 
@@ -778,9 +1117,77 @@ struct AfterLoad {
 #[derive(Resource, Default)]
 struct RegrabCursor(bool);
 
+/// The install's GameUI look, read in the background at startup, and its
+/// map thumbnails as images.
+#[derive(Resource, Default)]
+struct MenuUi {
+    loading: Option<Arc<Mutex<Option<Option<GameUi>>>>>,
+    ui: Option<Arc<GameUi>>,
+    /// By map: the picture and its height over its width.
+    thumbs: HashMap<String, (Handle<Image>, f32)>,
+}
+
+/// Read the GameUI files on a thread (the install's archives).
+fn start_loading_ui(mut ui: ResMut<MenuUi>) {
+    let slot = Arc::new(Mutex::new(None));
+    ui.loading = Some(slot.clone());
+    std::thread::spawn(move || {
+        let loaded = crate::mount::config::LocalConfig::load()
+            .ok()
+            .and_then(|c| c.game_path(crate::games::cs_source::GAME))
+            .and_then(|p| crate::games::cs_source::mount::open(&p).ok())
+            .and_then(|m| crate::games::cs_source::gameui::load(&m));
+        if let Ok(mut s) = slot.lock() {
+            *s = Some(loaded);
+        }
+    });
+}
+
+/// Take the GameUI look once read.
+fn ui_loaded(mut ui: ResMut<MenuUi>, mut menu: ResMut<GameMenu>, mut images: ResMut<Assets<Image>>) {
+    let Some(slot) = ui.loading.clone() else { return };
+    let Some(loaded) = slot.lock().ok().and_then(|mut s| s.take()) else {
+        return;
+    };
+    ui.loading = None;
+    let Some(game_ui) = loaded else {
+        info!("game menu: no GameUI files in the install, built-in look");
+        return;
+    };
+    for (map, pic) in &game_ui.thumbnails {
+        use bevy::{
+            asset::RenderAssetUsages,
+            render::render_resource::{Extent3d, TextureDimension, TextureFormat},
+        };
+        let image = Image::new(
+            Extent3d {
+                width: pic.width,
+                height: pic.height,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            pic.rgba8.clone(),
+            TextureFormat::Rgba8UnormSrgb,
+            RenderAssetUsages::RENDER_WORLD,
+        );
+        ui.thumbs
+            .insert(map.clone(), (images.add(image), pic.height as f32 / pic.width.max(1) as f32));
+    }
+    info!(
+        "game menu: GameUI look ({} entries, {} keyboard actions, {} option pages, {} map thumbnails)",
+        game_ui.menu.len(),
+        game_ui.actions.len(),
+        game_ui.options.len(),
+        game_ui.thumbnails.len()
+    );
+    let game_ui = Arc::new(game_ui);
+    ui.ui = Some(game_ui.clone());
+    menu.set_ui(Some(game_ui));
+}
+
 /// Open the menu on a page, reading the settings from the console.
 fn open_menu(w: &mut World, page: Page) {
-    let get = {
+    let (get, binds, known) = {
         let cvars: Vec<_> = {
             let console = w.resource::<Console>();
             SETTINGS
@@ -790,10 +1197,14 @@ fn open_menu(w: &mut World, page: Page) {
                 .filter_map(|n| console.cvar(n).cloned())
                 .collect()
         };
-        cvars
+        let console = w.resource::<Console>();
+        let binds = console.binds.clone();
+        let known: BTreeSet<String> = console.names().into_iter().map(|n| n.to_lowercase()).collect();
+        let values = cvars
             .into_iter()
             .filter_map(|c| (c.get)(w).map(|v| (c.name.clone(), v)))
-            .collect::<std::collections::HashMap<_, _>>()
+            .collect::<HashMap<_, _>>();
+        (values, binds, known)
     };
     let current = w
         .get_resource::<crate::map::LoadedMapName>()
@@ -807,8 +1218,20 @@ fn open_menu(w: &mut World, page: Page) {
             bots[i] += bot as usize;
         }
     }
+    let mut monitors = w.query_filtered::<&bevy::window::Monitor, With<bevy::window::PrimaryMonitor>>();
+    let modes: Vec<(UVec2, Vec<UVec2>)> = monitors
+        .iter(w)
+        .map(|m| {
+            (
+                UVec2::new(m.physical_width, m.physical_height),
+                m.video_modes.iter().map(|v| v.physical_size).collect(),
+            )
+        })
+        .collect();
     let mut menu = w.resource_mut::<GameMenu>();
     menu.set_counts(bots, players);
+    menu.set_binds(binds, known);
+    menu.resolutions = super::options::resolutions(&modes);
     menu.open(page, maps, current.as_deref(), |n| get.get(n).cloned());
     // Menus close each other.
     if let Some(mut b) = w.get_resource_mut::<super::buy_menu::BuyMenu>() {
@@ -883,11 +1306,14 @@ const LETTERS: [(KeyCode, char); 36] = [
     (KeyCode::Digit9, '9'),
 ];
 
-/// Esc opens and closes the menu; arrows, Enter, Space, Backspace and
-/// letters drive it. Runs before the console's toggle, so the Esc that
-/// closes the console doesn't open the menu.
+/// Esc opens and closes the menu; arrows, Enter, Space, Backspace, Tab and
+/// letters drive it; while a keyboard action waits for a key, the next
+/// key, button or wheel notch is its new key. Runs before the console's
+/// toggle, so the Esc that closes the console doesn't open the menu.
+#[allow(clippy::too_many_arguments)]
 fn keys(
     keys: Res<ButtonInput<KeyCode>>,
+    (mouse, scroll): (Option<Res<ButtonInput<MouseButton>>>, Option<Res<AccumulatedMouseScroll>>),
     ui: Res<super::console::ConsoleUi>,
     mut menu: ResMut<GameMenu>,
     mut console: ResMut<Console>,
@@ -904,6 +1330,19 @@ fn keys(
         }
         return;
     }
+    if menu.capture.is_some() {
+        let input = if keys.just_pressed(KeyCode::Escape) {
+            Some(Input::Close)
+        } else {
+            let none = ButtonInput::<MouseButton>::default();
+            binds::first_pressed(&keys, mouse.as_deref().unwrap_or(&none), scroll.as_deref()).map(Input::BindKey)
+        };
+        if let Some(input) = input {
+            apply(input, &mut menu, &mut console, &mut after, &mut regrab);
+        }
+        return;
+    }
+    let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
     let mut inputs = Vec::new();
     for (key, input) in [
         (KeyCode::Escape, Input::Close),
@@ -915,6 +1354,9 @@ fn keys(
         (KeyCode::NumpadEnter, Input::Activate),
         (KeyCode::Space, Input::Activate),
         (KeyCode::Backspace, Input::Back),
+        (KeyCode::Tab, Input::NextTab(if shift { -1 } else { 1 })),
+        (KeyCode::PageUp, Input::Scroll(-(KEY_ROWS as i32))),
+        (KeyCode::PageDown, Input::Scroll(KEY_ROWS as i32)),
     ] {
         if keys.just_pressed(key) {
             inputs.push(input);
@@ -930,18 +1372,31 @@ fn keys(
 #[derive(Component, Clone, Copy)]
 struct Hit(Target, i32);
 
-/// Hovering focuses, clicking presses.
+/// A slider's track: pressing or dragging along it sets its row's value.
+#[derive(Component, Clone, Copy)]
+struct SliderTrack(usize);
+
+/// A list the wheel scrolls.
+#[derive(Component)]
+struct WheelList;
+
+/// Hovering focuses, clicking presses, the wheel scrolls a list under the
+/// mouse, a pressed slider follows the mouse.
+#[allow(clippy::too_many_arguments)]
 fn pointer(
     hits: Query<(&Interaction, &Hit), Changed<Interaction>>,
+    sliders: Query<(&Interaction, &SliderTrack, &RelativeCursorPosition)>,
+    lists: Query<&RelativeCursorPosition, With<WheelList>>,
+    scroll: Option<Res<AccumulatedMouseScroll>>,
     mut menu: ResMut<GameMenu>,
     mut console: ResMut<Console>,
     mut after: ResMut<AfterLoad>,
     mut regrab: ResMut<RegrabCursor>,
 ) {
-    if !menu.open {
+    if !menu.open || menu.capture.is_some() {
         return;
     }
-    let inputs: Vec<Input> = hits
+    let mut inputs: Vec<Input> = hits
         .iter()
         .filter_map(|(i, h)| match i {
             Interaction::Hovered => Some(Input::Hover(h.0)),
@@ -949,14 +1404,33 @@ fn pointer(
             Interaction::None => None,
         })
         .collect();
+    for (i, track, at) in &sliders {
+        if *i == Interaction::Pressed
+            && let Some(p) = at.normalized
+        {
+            inputs.push(Input::Slide(track.0, p.x + 0.5));
+        }
+    }
+    if let Some(scroll) = scroll
+        && scroll.delta.y != 0.0
+        && lists.iter().any(|l| l.cursor_over())
+    {
+        let notches = match scroll.unit {
+            MouseScrollUnit::Line => scroll.delta.y.round(),
+            MouseScrollUnit::Pixel => (scroll.delta.y / 40.0).round(),
+        } as i32;
+        inputs.push(Input::Scroll(-notches * 3));
+    }
     for input in inputs {
         apply(input, &mut menu, &mut console, &mut after, &mut regrab);
     }
 }
 
-/// Bots and players per team, for the bots and team pages.
-fn counts(
+/// Bots and players per team (bots and team pages), and the binds (the
+/// keyboard tab), while open.
+fn sync(
     mut menu: ResMut<GameMenu>,
+    console: Res<Console>,
     characters: Query<(&Team, Has<crate::bot::Bot>), With<Intent>>,
 ) {
     if !menu.open {
@@ -974,6 +1448,9 @@ fn counts(
     }
     if menu.bots != bots || menu.players != players {
         menu.set_counts(bots, players);
+    }
+    if menu.binds != console.binds {
+        menu.binds = console.binds.clone();
     }
 }
 
@@ -1026,101 +1503,303 @@ fn after_load(w: &mut World) {
 // ---------------------------------------------------------------------------
 // Drawing.
 
-/// The menu's text faces: the system's UI font (Tahoma, as CS:S's menus
-/// use, on Windows), regular and bold; Bevy's own when none is found.
+/// The menu's text faces: Tahoma (the GameUI scheme's face) and Verdana
+/// (its menu face) where installed, regular and bold, with the vgui
+/// module's fallbacks (DejaVu, Liberation, Noto) on Linux; Bevy's own
+/// when none is found.
 #[derive(Resource, Default)]
 struct MenuFonts {
-    text: Option<Handle<Font>>,
-    bold: Option<Handle<Font>>,
+    tahoma: Option<Handle<Font>>,
+    tahoma_bold: Option<Handle<Font>>,
+    verdana: Option<Handle<Font>>,
+    verdana_bold: Option<Handle<Font>>,
 }
 
 fn load_fonts(mut fonts: ResMut<Assets<Font>>, mut commands: Commands) {
-    let mut find = |names: &[&str]| super::vgui::system_font(&mut fonts, names);
-    let text = find(&[
-        "tahoma.ttf",
-        "DejaVuSans.ttf",
-        "LiberationSans-Regular.ttf",
-        "NotoSans-Regular.ttf",
-    ]);
-    let bold = find(&[
-        "tahomabd.ttf",
-        "DejaVuSans-Bold.ttf",
-        "LiberationSans-Bold.ttf",
-        "NotoSans-Bold.ttf",
-    ])
-    .or_else(|| text.clone());
-    commands.insert_resource(MenuFonts { text, bold });
+    let mut find = |first: &str, rest: &[&str]| {
+        let names: Vec<&str> = std::iter::once(first).chain(rest.iter().copied()).collect();
+        super::vgui::system_font(&mut fonts, &names)
+    };
+    const REGULAR: [&str; 3] = ["DejaVuSans.ttf", "LiberationSans-Regular.ttf", "NotoSans-Regular.ttf"];
+    const BOLD: [&str; 3] = ["DejaVuSans-Bold.ttf", "LiberationSans-Bold.ttf", "NotoSans-Bold.ttf"];
+    let tahoma = find("tahoma.ttf", &REGULAR);
+    let tahoma_bold = find("tahomabd.ttf", &BOLD).or_else(|| tahoma.clone());
+    let verdana = find("verdana.ttf", &REGULAR).or_else(|| tahoma.clone());
+    let verdana_bold = find("verdanab.ttf", &BOLD).or_else(|| verdana.clone());
+    commands.insert_resource(MenuFonts {
+        tahoma,
+        tahoma_bold,
+        verdana,
+        verdana_bold,
+    });
 }
 
 #[derive(Component)]
 struct MenuRoot;
 
-/// Colours: the game's scheme where it has them.
-struct Look {
+/// Colours, sizes and fonts: the GameUI scheme's, else built in.
+struct Look<'a> {
+    ui: Option<&'a GameUi>,
+    fonts: Option<&'a MenuFonts>,
+    /// Pixels per scheme pixel (GameUI is drawn in screen pixels; larger
+    /// windows scale it up).
+    s: f32,
+    height: f32,
     accent: Color,
-    text: Color,
-    /// Focused text, on the accent's tint.
-    bright: Color,
-    dim: Color,
-    panel: Color,
-    border: Color,
-    focus: Color,
 }
 
-fn look(hud: Option<&crate::map::hud::ActiveHud>) -> Look {
-    let scheme = |name: &str| hud.and_then(|h| h.0.color(name));
-    let accent = scheme("FgColor")
-        .map(|c| c.with_alpha(1.0))
-        .unwrap_or(Color::srgb_u8(255, 176, 0));
-    Look {
-        accent,
-        text: Color::srgb_u8(225, 225, 225),
-        bright: Color::WHITE,
-        dim: Color::srgb_u8(130, 130, 130),
-        panel: Color::srgba_u8(28, 28, 28, 225),
-        border: Color::srgba_u8(255, 255, 255, 40),
-        focus: accent.with_alpha(0.12),
+/// Source font heights are a line's (ascent plus descent); Bevy sizes the
+/// em square.
+const EM_PER_LINE: f32 = 0.82;
+
+impl<'a> Look<'a> {
+    fn color(&self, name: &str, fallback: [u8; 4]) -> Color {
+        let [r, g, b, a] = self.ui.and_then(|u| u.color(name)).unwrap_or(fallback);
+        Color::srgba_u8(r, g, b, a)
     }
+
+    fn number(&self, name: &str, fallback: f32) -> f32 {
+        self.ui.and_then(|u| u.numbers.get(name).copied()).unwrap_or(fallback)
+    }
+
+    /// Built in colours stand in for the scheme's: a darker panel, our
+    /// accent for selections.
+    fn has_scheme(&self) -> bool {
+        self.ui.is_some_and(|u| !u.colors.is_empty())
+    }
+
+    /// A scheme font (`Default`, `UiBold`, `MenuLarge`) at this window's
+    /// size: `fallback` scheme pixels tall and bold when the scheme lacks
+    /// it.
+    fn font(&self, name: &str, fallback: (f32, bool)) -> TextFont {
+        let size = self.ui.and_then(|u| u.fonts.get(name)).and_then(|sizes| {
+            let h = self.height.round() as u32;
+            sizes
+                .iter()
+                .find(|s| s.yres.is_some_and(|(lo, hi)| (lo..=hi).contains(&h)))
+                .or(sizes.first())
+        });
+        let (tall, bold, verdana) = match size {
+            Some(f) => (f.tall, f.weight >= 600, f.family.to_lowercase().contains("verdana")),
+            None => (fallback.0, fallback.1, name == "MenuLarge"),
+        };
+        let handle = self.fonts.and_then(|f| match (verdana, bold) {
+            (true, true) => f.verdana_bold.clone(),
+            (true, false) => f.verdana.clone(),
+            (false, true) => f.tahoma_bold.clone(),
+            (false, false) => f.tahoma.clone(),
+        });
+        TextFont {
+            font: handle.unwrap_or_default().into(),
+            font_size: FontSize::Px((tall * self.s * EM_PER_LINE).max(1.0)),
+            ..default()
+        }
+    }
+
+    fn frame_bg(&self) -> Color {
+        if self.has_scheme() {
+            self.color("Frame.BgColor", [160, 160, 160, 128])
+        } else {
+            Color::srgba_u8(28, 28, 28, 230)
+        }
+    }
+
+    fn bright(&self) -> Color {
+        self.color("Border.Bright", [200, 200, 200, 196])
+    }
+
+    fn dark(&self) -> Color {
+        self.color("Border.Dark", [40, 40, 40, 196])
+    }
+
+    fn text(&self) -> Color {
+        self.color("Label.TextColor", [221, 221, 221, 255])
+    }
+
+    fn dull(&self) -> Color {
+        self.color("Label.TextDullColor", [190, 190, 190, 255])
+    }
+
+    fn disabled(&self) -> Color {
+        self.color("Label.DisabledFgColor1", [117, 117, 117, 255])
+    }
+
+    fn white(&self) -> Color {
+        self.color("Label.TextBrightColor", [255, 255, 255, 255])
+    }
+
+    fn selected_bg(&self) -> Color {
+        if self.has_scheme() {
+            self.color("SectionedListPanel.SelectedBgColor", [255, 155, 0, 255])
+        } else {
+            self.accent
+        }
+    }
+
+    fn selected_text(&self) -> Color {
+        self.color("SectionedListPanel.SelectedTextColor", [0, 0, 0, 255])
+    }
+
+    fn sunken_bg(&self) -> Color {
+        self.color("TextEntry.BgColor", [0, 0, 0, 128])
+    }
+
+    fn px(&self, v: f32) -> Val {
+        px((v * self.s).round())
+    }
+}
+
+/// An absolutely placed box, in scheme pixels, inside `parent`.
+fn place(look: &Look, x: f32, y: f32, w: f32, h: f32) -> Node {
+    Node {
+        position_type: PositionType::Absolute,
+        left: look.px(x),
+        top: look.px(y),
+        width: look.px(w),
+        height: look.px(h),
+        ..default()
+    }
+}
+
+/// Raised (lit top-left) or sunken (lit bottom-right) VGUI borders.
+fn bevel(look: &Look, raised: bool) -> BorderColor {
+    let (a, b) = if raised {
+        (look.bright(), look.dark())
+    } else {
+        (look.dark(), look.bright())
+    };
+    BorderColor {
+        top: a,
+        left: a,
+        bottom: b,
+        right: b,
+    }
+}
+
+/// Text in a box: one line, vertically centred, `align` -1 left, 0
+/// centre, 1 right.
+#[allow(clippy::too_many_arguments)]
+fn label(
+    commands: &mut Commands,
+    parent: Entity,
+    look: &Look,
+    (x, y, w, h): (f32, f32, f32, f32),
+    text: &str,
+    font: TextFont,
+    color: Color,
+    align: i32,
+) -> Entity {
+    let node = Node {
+        display: Display::Flex,
+        align_items: AlignItems::Center,
+        justify_content: match align {
+            -1 => JustifyContent::FlexStart,
+            0 => JustifyContent::Center,
+            _ => JustifyContent::FlexEnd,
+        },
+        overflow: Overflow::clip(),
+        ..place(look, x, y, w, h)
+    };
+    let e = commands.spawn((node, ChildOf(parent))).id();
+    commands.spawn((
+        Text::new(text),
+        font,
+        TextColor(color),
+        TextLayout::new(Justify::Left, LineBreak::NoWrap),
+        ChildOf(e),
+    ));
+    e
+}
+
+/// A VGUI button: raised borders, its text, lit when focused.
+#[allow(clippy::too_many_arguments)]
+fn button(
+    commands: &mut Commands,
+    parent: Entity,
+    look: &Look,
+    rect: (f32, f32, f32, f32),
+    text: &str,
+    hit: Hit,
+    focused: bool,
+    enabled: bool,
+) -> Entity {
+    let (x, y, w, h) = rect;
+    let bg = look.color("Button.BgColor", [0, 0, 0, 0]);
+    let focus_bg = if look.has_scheme() {
+        Color::srgba(1.0, 1.0, 1.0, 0.12)
+    } else {
+        look.accent.with_alpha(0.15)
+    };
+    let e = commands
+        .spawn((
+            Node {
+                border: UiRect::all(px(1.0)),
+                ..place(look, x, y, w, h)
+            },
+            bevel(look, true),
+            BackgroundColor(if focused { focus_bg } else { bg }),
+            hit,
+            Button,
+            Interaction::default(),
+            ChildOf(parent),
+        ))
+        .id();
+    let color = if !enabled {
+        look.disabled()
+    } else if focused {
+        look.white()
+    } else {
+        look.color("Button.TextColor", [255, 255, 255, 255])
+    };
+    label(commands, e, look, (6.0, 0.0, w - 12.0, h - 2.0), text, look.font("Default", (16.0, false)), color, -1);
+    e
 }
 
 #[allow(clippy::too_many_arguments)]
 fn draw(
     menu: Res<GameMenu>,
     fonts: Option<Res<MenuFonts>>,
+    menu_ui: Option<Res<MenuUi>>,
     hud: Option<Res<crate::map::hud::ActiveHud>>,
     shown: Query<Entity, With<MenuRoot>>,
     windows: Query<&Window>,
-    mut last_height: Local<f32>,
+    mut last_size: Local<Vec2>,
     mut commands: Commands,
 ) {
-    let height = windows.iter().next().map_or(480.0, |w| w.height());
-    let resized = (height - *last_height).abs() > 0.5;
+    let size = windows
+        .iter()
+        .next()
+        .map_or(Vec2::new(640.0, 480.0), |w| Vec2::new(w.width(), w.height()));
+    let resized = (size - *last_size).abs().max_element() > 0.5;
     if !menu.is_changed() && !resized && !hud.as_ref().is_some_and(|h| h.is_changed()) {
         return;
     }
-    *last_height = height;
+    *last_size = size;
     for e in &shown {
         commands.entity(e).despawn();
     }
     if !menu.open {
         return;
     }
-    let s = height / 480.0;
-    let look = look(hud.as_deref());
-    let fonts = fonts.as_deref();
-    let font = |bold: bool, size: f32| TextFont {
-        font: fonts
-            .and_then(|f| if bold { f.bold.clone() } else { f.text.clone() })
-            .unwrap_or_default()
-            .into(),
-        font_size: FontSize::Px(size * s),
-        ..default()
+    let accent = hud
+        .as_ref()
+        .and_then(|h| h.0.color("FgColor"))
+        .map(|c| c.with_alpha(1.0))
+        .unwrap_or(Color::srgb_u8(255, 176, 0));
+    let look = Look {
+        ui: menu.ui.0.as_deref(),
+        fonts: fonts.as_deref(),
+        s: (size.y / 720.0).clamp(0.6, 3.0),
+        height: size.y,
+        accent,
     };
-    let title_font = font(true, 24.0);
-
-    let rows = menu.rows();
-    let main_page = menu.page == Page::Main;
-    commands
+    let thumbs = menu_ui.as_ref().map(|u| &u.thumbs);
+    let backdrop = if look.has_scheme() {
+        look.color("MainMenu.Backdrop", [0, 0, 0, 156])
+    } else {
+        Color::srgba(0.0, 0.0, 0.0, 0.35)
+    };
+    let root = commands
         .spawn((
             MenuRoot,
             Node {
@@ -1129,271 +1808,723 @@ fn draw(
                 height: percent(100.0),
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.35)),
+            BackgroundColor(backdrop),
             GlobalZIndex(45),
         ))
-        .with_children(|root| {
-            // The left-hand entries.
-            root.spawn(Node {
-                position_type: PositionType::Absolute,
-                left: px(40.0 * s),
-                bottom: px(70.0 * s),
-                flex_direction: FlexDirection::Column,
-                row_gap: px(3.0 * s),
-                ..default()
-            })
-            .with_children(|col| {
-                col.spawn((
-                    Text::new("MASHUP"),
-                    title_font,
-                    TextColor(look.text),
-                    Node {
-                        margin: UiRect::bottom(px(14.0 * s)),
-                        ..default()
-                    },
-                ));
-                for (i, (item, label)) in MAIN.iter().enumerate() {
-                    let current = !main_page && item.page() == Some(menu.page);
-                    let focused = main_page && menu.focus == i;
-                    let color = if focused {
-                        look.bright
-                    } else if current {
-                        look.accent
-                    } else {
-                        look.text
-                    };
-                    col.spawn((
-                        Hit(Target::Main(i), 0),
-                        Button,
-                        Interaction::default(),
-                        Node {
-                            padding: UiRect::axes(px(6.0 * s), px(2.0 * s)),
-                            // Set apart from the game's entries.
-                            margin: if *item == MainItem::BugReport {
-                                UiRect::top(px(10.0 * s))
-                            } else {
-                                UiRect::ZERO
-                            },
-                            ..default()
-                        },
-                        BackgroundColor(if focused { look.focus } else { Color::NONE }),
-                    ))
-                    .with_child((Text::new(label.to_uppercase()), font(true, 12.0), TextColor(color)));
-                }
-            });
-            if main_page {
-                return;
-            }
-            // The page's dialog.
-            let maps = menu.page == Page::Maps;
-            let width = if maps { 470.0 } else { 300.0 };
-            root.spawn((
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: px(190.0 * s),
-                    top: px(70.0 * s),
-                    width: px(width * s),
-                    flex_direction: FlexDirection::Column,
-                    padding: UiRect::all(px(10.0 * s)),
-                    row_gap: px(2.0 * s),
-                    border: UiRect::all(px(1.0)),
-                    border_radius: BorderRadius::all(px(4.0 * s)),
-                    ..default()
-                },
-                BackgroundColor(look.panel),
-                BorderColor::all(look.border),
-            ))
-            .with_children(|dialog| {
-                let title = match menu.page {
-                    Page::Main => "",
-                    Page::NewGame => "New Game",
-                    Page::Maps => "Choose a Map",
-                    Page::Bots => "Bots",
-                    Page::Team => "Choose a Team",
-                    Page::Settings => "Options",
-                };
-                dialog.spawn((
-                    Text::new(title),
-                    font(true, 11.0),
-                    TextColor(look.accent),
-                    Node {
-                        margin: UiRect::bottom(px(8.0 * s)),
-                        ..default()
-                    },
-                ));
-                if maps {
-                    map_grid(dialog, &menu, &rows, &look, &font, s);
-                } else {
-                    for (i, row) in rows.iter().enumerate() {
-                        spawn_row(dialog, i, row, menu.focus == i, &look, &font, s);
-                    }
-                }
-                let hint = if maps {
-                    "Arrows select   Enter picks   a letter jumps   Backspace back   Esc closes"
-                } else {
-                    "Up/Down select   Left/Right change   Enter picks   Backspace back   Esc closes"
-                };
-                dialog.spawn((
-                    Text::new(hint),
-                    font(false, 7.0),
-                    TextColor(look.dim),
-                    Node {
-                        margin: UiRect::top(px(8.0 * s)),
-                        ..default()
-                    },
-                ));
-            });
-        });
-}
-
-/// One row of a dialog.
-fn spawn_row(
-    parent: &mut ChildSpawnerCommands,
-    i: usize,
-    row: &Row,
-    focused: bool,
-    look: &Look,
-    font: &impl Fn(bool, f32) -> TextFont,
-    s: f32,
-) {
-    let size = 9.5;
-    let line = Node {
-        width: percent(100.0),
-        padding: UiRect::axes(px(6.0 * s), px(3.0 * s)),
-        align_items: AlignItems::Center,
-        border_radius: BorderRadius::all(px(2.0 * s)),
-        ..default()
+        .id();
+    main_list(&mut commands, root, &menu, &look, size);
+    if menu.page == Page::Main {
+        return;
+    }
+    let (w, h) = match menu.page {
+        Page::Settings | Page::Maps => (532.0, 410.0),
+        Page::NewGame => (560.0, 280.0),
+        _ => (360.0, 230.0),
     };
-    let bg = BackgroundColor(if focused { look.focus } else { Color::NONE });
-    match row {
-        Row::Info(text) => {
-            parent.spawn((line, children![(Text::new(text.clone()), font(false, 8.5), TextColor(look.dim))]));
-        }
-        Row::Button { label, enabled, .. } => {
-            let color = if !enabled {
-                look.dim
-            } else if focused {
-                look.bright
+    let title = match menu.page {
+        Page::Main => String::new(),
+        Page::NewGame => menu.text("#GameUI_GameMenu_NewGame", "New Game"),
+        Page::Maps => "Choose a Map".into(),
+        Page::Bots => "Bots".into(),
+        Page::Team => "Choose a Team".into(),
+        Page::Settings => menu.text("#GameUI_Options", "Options"),
+    };
+    let frame = frame(&mut commands, root, &look, size, (w, h), &title);
+    let rows = menu.rows();
+    match menu.page {
+        Page::Settings => {
+            tabs(&mut commands, frame, &look, &menu, w);
+            let content = commands
+                .spawn((
+                    Node {
+                        border: UiRect::all(px(1.0)),
+                        ..place(&look, 8.0, 56.0, w - 16.0, h - 56.0 - 40.0)
+                    },
+                    bevel(&look, true),
+                    ChildOf(frame),
+                ))
+                .id();
+            if menu.tab == Tab::Keyboard {
+                keyboard_tab(&mut commands, content, &look, &menu, &rows);
             } else {
-                look.text
-            };
-            parent
-                .spawn((Hit(Target::Row(i), 0), Button, Interaction::default(), line, bg))
-                .with_child((Text::new(label.clone()), font(false, size), TextColor(color)));
+                if menu.tab == Tab::Multiplayer {
+                    setting_rows(&mut commands, content, &look, &menu, &rows, (20.0, 14.0, w - 56.0 - 104.0));
+                    crosshair_preview(&mut commands, content, &look, &menu, (w - 16.0 - 104.0, 14.0));
+                } else {
+                    setting_rows(&mut commands, content, &look, &menu, &rows, (20.0, 14.0, w - 56.0));
+                }
+            }
+            let ok = rows.len() - 1;
+            button(
+                &mut commands,
+                frame,
+                &look,
+                (w - 8.0 - 80.0, h - 8.0 - 24.0, 80.0, 24.0),
+                &label_of(&rows[ok]),
+                Hit(Target::Row(ok), 0),
+                menu.focus == ok,
+                true,
+            );
+            if menu.tab != Tab::Keyboard {
+                label(
+                    &mut commands,
+                    frame,
+                    &look,
+                    (12.0, h - 8.0 - 24.0, w - 120.0, 24.0),
+                    "Changes apply at once; config.cfg keeps them.",
+                    look.font("DefaultSmall", (13.0, false)),
+                    look.dull(),
+                    -1,
+                );
+            }
         }
-        Row::Value { label, value, .. } => {
-            let color = if focused { look.bright } else { look.text };
-            parent
-                .spawn((Hit(Target::Row(i), 0), Button, Interaction::default(), line, bg))
-                .with_children(|r| {
-                    r.spawn((
-                        Text::new(label.clone()),
-                        font(false, size),
-                        TextColor(look.text),
-                        Node {
-                            flex_grow: 1.0,
-                            ..default()
-                        },
-                    ));
-                    let arrow = |r: &mut ChildSpawnerCommands, text: &str, step: i32| {
-                        r.spawn((
-                            Hit(Target::Row(i), step),
-                            Button,
-                            Interaction::default(),
-                            Node {
-                                padding: UiRect::axes(px(5.0 * s), px(0.0)),
-                                ..default()
-                            },
-                        ))
-                        .with_child((Text::new(text), font(true, size), TextColor(look.accent)));
-                    };
-                    arrow(r, "<", -1);
-                    r.spawn((
-                        Text::new(value.clone()),
-                        font(true, size),
-                        TextColor(color),
-                        TextLayout::justify(Justify::Center),
-                        Node {
-                            min_width: px(95.0 * s),
-                            justify_content: JustifyContent::Center,
-                            ..default()
-                        },
-                    ));
-                    arrow(r, ">", 1);
-                });
+        Page::Maps => map_list(&mut commands, frame, &look, &menu, &rows, thumbs, (w, h)),
+        _ => {
+            if menu.page == Page::NewGame {
+                setting_rows(&mut commands, frame, &look, &menu, &rows, (16.0, 36.0, w - 32.0 - 152.0));
+                if let Some(map) = menu.maps.get(menu.new_game.map) {
+                    thumbnail(&mut commands, frame, &look, thumbs, map, (w - 16.0 - 136.0, 36.0, 136.0));
+                }
+            } else {
+                setting_rows(&mut commands, frame, &look, &menu, &rows, (16.0, 36.0, w - 32.0));
+            }
         }
     }
 }
 
-/// The map list: columns of `MAP_ROWS`, a page of them around the focus.
-fn map_grid(
-    parent: &mut ChildSpawnerCommands,
-    menu: &GameMenu,
-    rows: &[Row],
-    look: &Look,
-    font: &impl Fn(bool, f32) -> TextFont,
-    s: f32,
-) {
-    let per_page = MAP_ROWS * MAP_COLUMNS;
-    let maps = rows.len() - 1;
-    let page = menu.focus.min(maps.saturating_sub(1)) / per_page;
-    let start = page * per_page;
-    if maps == 0 {
-        parent.spawn((Text::new("No maps found in the install."), font(false, 9.0), TextColor(look.dim)));
+fn label_of(row: &Row) -> String {
+    match row {
+        Row::Button { label, .. } | Row::Value { label, .. } | Row::Bind { label, .. } => label.clone(),
+        Row::Heading(t) | Row::Info(t) => t.clone(),
     }
-    parent
-        .spawn(Node {
-            flex_direction: FlexDirection::Row,
-            column_gap: px(4.0 * s),
-            ..default()
-        })
-        .with_children(|grid| {
-            for c in 0..MAP_COLUMNS {
-                let from = start + c * MAP_ROWS;
-                if from >= maps {
-                    break;
-                }
-                grid.spawn(Node {
-                    flex_direction: FlexDirection::Column,
-                    width: px(148.0 * s),
-                    ..default()
-                })
-                .with_children(|col| {
-                    for i in from..(from + MAP_ROWS).min(maps) {
-                        spawn_row(col, i, &rows[i], menu.focus == i, look, font, s);
-                    }
-                });
-            }
-        });
-    if maps > per_page {
-        parent.spawn((
-            Text::new(format!(
-                "Page {} of {} ({} maps)",
-                page + 1,
-                maps.div_ceil(per_page),
-                maps
-            )),
-            font(false, 8.0),
-            TextColor(look.dim),
+}
+
+/// The left-hand entries, as GameUI's game menu: at the left inset, one
+/// entry per `MainMenu.MenuItemHeight`, the bottom one a fixed distance up
+/// from the screen's foot.
+fn main_list(commands: &mut Commands, root: Entity, menu: &GameMenu, look: &Look, size: Vec2) {
+    let entries = menu.entries();
+    let item_h = look.number("MainMenu.MenuItemHeight", 22.0);
+    let inset = look.number("MainMenu.Inset", 32.0);
+    let gaps = entries.iter().filter(|e| e.gap).count() as f32;
+    let total = item_h * (entries.len() as f32 + gaps * 0.5);
+    let bottom = size.y / look.s - 72.0;
+    let top = bottom - total;
+    let font = look.font("MenuLarge", (12.0, true));
+    let normal = look.color("MainMenu.TextColor", [255, 255, 255, 255]);
+    let armed = if look.has_scheme() {
+        look.color("MainMenu.ArmedTextColor", [200, 200, 200, 255])
+    } else {
+        look.accent
+    };
+    let current_color = look.color("MainMenu.DepressedTextColor", [192, 186, 80, 255]);
+    // The title over the entries.
+    label(
+        commands,
+        root,
+        look,
+        (inset, top - 64.0, 400.0, 48.0),
+        "MASHUP",
+        TextFont {
+            font_size: FontSize::Px(34.0 * look.s),
+            ..look.font("MenuLarge", (12.0, true))
+        },
+        normal,
+        -1,
+    );
+    let mut y = top;
+    for (i, e) in entries.iter().enumerate() {
+        if e.gap {
+            y += item_h * 0.5;
+        }
+        let main_page = menu.page == Page::Main;
+        let current = !main_page && e.item.page() == Some(menu.page);
+        let focused = main_page && menu.focus == i;
+        // GameUI lights the entry under the mouse in its armed colour.
+        let color = if current {
+            current_color
+        } else if focused {
+            armed
+        } else {
+            normal
+        };
+        let e_node = commands
+            .spawn((
+                place(look, inset - 4.0, y, 260.0, item_h),
+                Hit(Target::Main(i), 0),
+                Button,
+                Interaction::default(),
+                BackgroundColor(if focused && !look.has_scheme() {
+                    look.accent.with_alpha(0.12)
+                } else {
+                    Color::NONE
+                }),
+                ChildOf(root),
+            ))
+            .id();
+        label(commands, e_node, look, (4.0, 0.0, 256.0, item_h), &e.label.to_uppercase(), font.clone(), color, -1);
+        y += item_h;
+    }
+}
+
+/// A GameUI frame centred on the screen: its background, raised borders,
+/// title. Returns the frame (children placed in scheme pixels from its
+/// corner).
+fn frame(commands: &mut Commands, root: Entity, look: &Look, size: Vec2, (w, h): (f32, f32), title: &str) -> Entity {
+    let x = ((size.x / look.s - w) / 2.0).max(0.0);
+    let y = ((size.y / look.s - h) / 2.0).max(0.0);
+    let e = commands
+        .spawn((
+            Node {
+                border: UiRect::all(px(1.0)),
+                ..place(look, x, y, w, h)
+            },
+            bevel(look, true),
+            BackgroundColor(look.frame_bg()),
+            ChildOf(root),
+        ))
+        .id();
+    let inset = look.number("Frame.TitleTextInsetX", 16.0);
+    label(
+        commands,
+        e,
+        look,
+        (inset, 4.0, w - inset - 32.0, 22.0),
+        title,
+        look.font("UiBold", (12.0, true)),
+        look.color("FrameTitleBar.TextColor", [255, 255, 255, 255]),
+        -1,
+    );
+    e
+}
+
+/// The options' tabs over the page (PropertySheet): raised, the open one
+/// joined to the page below.
+fn tabs(commands: &mut Commands, frame: Entity, look: &Look, menu: &GameMenu, w: f32) {
+    let mut x = 8.0;
+    let font = look.font("Default", (16.0, false));
+    let tab_w = ((w - 16.0) / TABS.len() as f32).min(96.0);
+    for (i, (tab, token, ours)) in TABS.iter().enumerate() {
+        let open = *tab == menu.tab;
+        let (y, h) = if open { (30.0, 27.0) } else { (33.0, 23.0) };
+        let e = commands
+            .spawn((
+                Node {
+                    border: UiRect {
+                        left: px(1.0),
+                        right: px(1.0),
+                        top: px(1.0),
+                        bottom: px(0.0),
+                    },
+                    ..place(look, x, y, tab_w - 2.0, h)
+                },
+                bevel(look, true),
+                BackgroundColor(if open { look.frame_bg() } else { Color::NONE }),
+                Hit(Target::Tab(i), 0),
+                Button,
+                Interaction::default(),
+                ZIndex(if open { 2 } else { 0 }),
+                ChildOf(frame),
+            ))
+            .id();
+        let color = if open {
+            look.color("PropertySheet.SelectedTextColor", [255, 255, 255, 255])
+        } else {
+            look.color("PropertySheet.TextColor", [221, 221, 221, 255])
+        };
+        label(commands, e, look, (0.0, 0.0, tab_w - 4.0, h - 1.0), &menu.text(token, ours), font.clone(), color, 0);
+        x += tab_w;
+    }
+}
+
+/// A scroll bar `h` tall at (x, y): arrows at the ends, a thumb for the
+/// shown part; clicks scroll a row (arrows) or a page (the track).
+fn scroll_bar(commands: &mut Commands, parent: Entity, look: &Look, (x, y, h): (f32, f32, f32), (len, shown, first): (usize, usize, usize)) {
+    let w = look.number("ScrollBar.Wide", 17.0);
+    let fg = look.color("ScrollBarButton.FgColor", [255, 255, 255, 255]);
+    let track = commands
+        .spawn((place(look, x, y, w, h), BackgroundColor(look.sunken_bg()), ChildOf(parent)))
+        .id();
+    let font = look.font("Marlett", (12.0, false));
+    for (ty, text, step) in [(0.0, "\u{25B2}", -1), (h - w, "\u{25BC}", 1)] {
+        let b = commands
+            .spawn((
+                Node {
+                    border: UiRect::all(px(1.0)),
+                    ..place(look, 0.0, ty, w, w)
+                },
+                bevel(look, true),
+                Hit(Target::Scroll, step),
+                Button,
+                Interaction::default(),
+                ChildOf(track),
+            ))
+            .id();
+        label(commands, b, look, (0.0, 0.0, w - 2.0, w - 2.0), text, font.clone(), fg, 0);
+    }
+    let room = h - 2.0 * w;
+    if len > shown && room > 8.0 {
+        let thumb_h = (room * shown as f32 / len as f32).max(10.0);
+        let at = w + (room - thumb_h) * first as f32 / (len - shown) as f32;
+        let page = shown as i32;
+        commands.spawn((
+            place(look, 0.0, w, w, at - w),
+            Hit(Target::Scroll, -page),
+            Button,
+            Interaction::default(),
+            ChildOf(track),
+        ));
+        commands.spawn((
+            place(look, 0.0, at + thumb_h, w, h - w - at - thumb_h),
+            Hit(Target::Scroll, page),
+            Button,
+            Interaction::default(),
+            ChildOf(track),
+        ));
+        commands.spawn((
+            Node {
+                border: UiRect::all(px(1.0)),
+                ..place(look, 1.0, at, w - 2.0, thumb_h)
+            },
+            bevel(look, true),
+            BackgroundColor(look.color("ScrollBarSlider.BgColor", [255, 255, 255, 64])),
+            ChildOf(track),
         ));
     }
+}
+
+/// The keyboard tab: the action list (sections, action and key columns,
+/// a scroll bar) where the game's layout puts it, and its buttons.
+fn keyboard_tab(commands: &mut Commands, content: Entity, look: &Look, menu: &GameMenu, rows: &[Row]) {
+    let layout = menu.ui.0.as_ref().and_then(|u| u.options.get("keyboard"));
+    let rect = |name: &str, fallback: (f32, f32, f32, f32)| {
+        layout
+            .and_then(|l| l.get(name))
+            .map_or(fallback, |c| {
+                let num = |h: crate::map::hud::HudCoord| match h {
+                    crate::map::hud::HudCoord::Start(v) => v,
+                    _ => 0.0,
+                };
+                (num(c.x), num(c.y), c.wide, c.tall)
+            })
+    };
+    let (lx, ly, lw, lh) = rect("listpanel_keybindlist", (8.0, 10.0, 480.0, 258.0));
+    let (len, shown) = menu.list();
+    let list = commands
+        .spawn((
+            Node {
+                border: UiRect::all(px(1.0)),
+                ..place(look, lx, ly, lw, lh)
+            },
+            bevel(look, false),
+            BackgroundColor(look.color("SectionedListPanel.BgColor", [0, 0, 0, 128])),
+            RelativeCursorPosition::default(),
+            WheelList,
+            ChildOf(content),
+        ))
+        .id();
+    let bar_w = look.number("ScrollBar.Wide", 17.0);
+    let row_h = ((lh - 22.0) / KEY_ROWS as f32).floor();
+    let key_x = (lw - bar_w) * 0.62;
+    let header = look.font("DefaultBold", (16.0, true));
+    let text_font = look.font("Default", (16.0, false));
+    let header_color = look.color("SectionedListPanel.HeaderTextColor", [255, 255, 255, 255]);
+    label(commands, list, look, (6.0, 1.0, key_x, 20.0), &menu.text("#GameUI_Action", "Action"), header.clone(), header_color, -1);
+    label(
+        commands,
+        list,
+        look,
+        (key_x, 1.0, lw - bar_w - key_x, 20.0),
+        &menu.text("#GameUI_KeyButton", "Key/Button"),
+        header.clone(),
+        header_color,
+        -1,
+    );
+    commands.spawn((
+        place(look, 2.0, 21.0, lw - bar_w - 6.0, 1.0),
+        BackgroundColor(look.color("SectionedListPanel.DividerColor", [0, 0, 0, 255])),
+        ChildOf(list),
+    ));
+    let text = look.color("SectionedListPanel.TextColor", [190, 190, 190, 255]);
+    for (k, i) in (menu.scroll..(menu.scroll + shown).min(len)).enumerate() {
+        let y = 22.0 + k as f32 * row_h;
+        let width = lw - bar_w - 4.0;
+        match &rows[i] {
+            Row::Heading(t) => {
+                label(commands, list, look, (6.0, y, width, row_h), t, header.clone(), header_color, -1);
+            }
+            Row::Bind { label: name, keys, known, .. } => {
+                let selected = menu.key_row == Some(i);
+                let waiting = selected && menu.capture.is_some();
+                let bg = if selected { look.selected_bg() } else { Color::NONE };
+                let fg = if selected {
+                    look.selected_text()
+                } else if *known {
+                    text
+                } else {
+                    look.disabled()
+                };
+                let e = commands
+                    .spawn((
+                        place(look, 1.0, y, width, row_h),
+                        BackgroundColor(bg),
+                        Hit(Target::Row(i), 0),
+                        Button,
+                        Interaction::default(),
+                        ChildOf(list),
+                    ))
+                    .id();
+                label(commands, e, look, (16.0, 0.0, key_x - 20.0, row_h), name, text_font.clone(), fg, -1);
+                let keys = if waiting { "Press a key (Esc: cancel)".to_string() } else { keys.clone() };
+                label(commands, e, look, (key_x - 1.0, 0.0, width - key_x, row_h), &keys, text_font.clone(), fg, -1);
+            }
+            _ => {}
+        }
+    }
+    scroll_bar(commands, list, look, (lw - bar_w - 2.0, 0.0, lh - 2.0), (len, shown, menu.scroll));
+    // The buttons, where the game's layout has them.
+    let names = ["Defaults", "ChangeKeyButton", "ClearKeyButton"];
+    let fallback = [(8.0, 276.0, 134.0, 24.0), (272.0, 276.0, 106.0, 24.0), (384.0, 276.0, 105.0, 24.0)];
+    for (k, name) in names.iter().enumerate() {
+        let i = len + k;
+        let Row::Button { label: text, enabled, .. } = &rows[i] else { continue };
+        button(commands, content, look, rect(name, fallback[k]), text, Hit(Target::Row(i), 0), menu.focus == i, *enabled);
+    }
+}
+
+/// Rows of labelled controls (sliders, check boxes, choices, buttons) in a
+/// column at (x, y), `w` wide; the last row (OK / Back) on the options
+/// page is the dialog's own button, drawn by the caller.
+fn setting_rows(commands: &mut Commands, parent: Entity, look: &Look, menu: &GameMenu, rows: &[Row], (x, y, w): (f32, f32, f32)) {
+    let row_h = 28.0;
+    let font = look.font("Default", (16.0, false));
+    let controls = if menu.page == Page::Settings { rows.len() - 1 } else { rows.len() };
+    let label_w = (w * 0.45).round();
+    let control_w = (w - label_w).min(220.0);
+    for (i, row) in rows.iter().enumerate().take(controls) {
+        let ry = y + i as f32 * row_h;
+        let focused = menu.focus == i;
+        match row {
+            Row::Info(t) | Row::Heading(t) => {
+                label(commands, parent, look, (x, ry, w, row_h - 4.0), t, font.clone(), look.dull(), -1);
+            }
+            Row::Button { label: text, enabled, .. } => {
+                button(commands, parent, look, (x, ry, w.min(260.0), 24.0), text, Hit(Target::Row(i), 0), focused, *enabled);
+            }
+            Row::Bind { .. } => {}
+            Row::Value { label: text, value, field } => {
+                let color = if focused { look.white() } else { look.text() };
+                label(commands, parent, look, (x, ry, label_w, 24.0), text, font.clone(), color, -1);
+                let cx = x + label_w;
+                let kind = match field {
+                    Field::Setting(s) => Some(SETTINGS[*s].kind),
+                    _ => None,
+                };
+                match kind {
+                    Some(SettingKind::Range { .. }) => {
+                        let Field::Setting(s) = field else { unreachable!() };
+                        let f = menu.values[*s].as_deref().and_then(|v| SETTINGS[*s].fraction(v)).unwrap_or(0.0);
+                        slider(commands, parent, look, (cx, ry, control_w - 48.0), i, f, focused);
+                        label(commands, parent, look, (cx + control_w - 44.0, ry, 44.0, 24.0), value, font.clone(), color, 1);
+                    }
+                    Some(SettingKind::Toggle | SettingKind::Negate) => {
+                        let Field::Setting(s) = field else { unreachable!() };
+                        let on = menu.values[*s].as_deref().is_some_and(|v| SETTINGS[*s].checked(v));
+                        check_box(commands, parent, look, (cx, ry), i, on, focused);
+                    }
+                    _ => combo(commands, parent, look, (cx, ry, control_w), i, value, focused),
+                }
+            }
+        }
+    }
+}
+
+/// A slider: its track and nob; pressing or dragging sets the value.
+fn slider(commands: &mut Commands, parent: Entity, look: &Look, (x, y, w): (f32, f32, f32), row: usize, f: f32, focused: bool) {
+    let e = commands
+        .spawn((
+            place(look, x, y, w, 24.0),
+            SliderTrack(row),
+            RelativeCursorPosition::default(),
+            Button,
+            Interaction::default(),
+            BackgroundColor(if focused { Color::srgba(1.0, 1.0, 1.0, 0.06) } else { Color::NONE }),
+            ChildOf(parent),
+        ))
+        .id();
+    commands.spawn((
+        Node {
+            border: UiRect::all(px(1.0)),
+            ..place(look, 4.0, 10.0, w - 8.0, 4.0)
+        },
+        bevel(look, false),
+        BackgroundColor(look.color("Slider.TrackColor", [31, 31, 31, 255])),
+        ChildOf(e),
+    ));
+    let nob_x = 4.0 + (w - 8.0 - 8.0) * f;
+    commands.spawn((
+        Node {
+            border: UiRect::all(px(1.0)),
+            ..place(look, nob_x, 3.0, 8.0, 18.0)
+        },
+        bevel(look, true),
+        BackgroundColor(look.color("Slider.NobColor", [108, 108, 108, 255])),
+        ChildOf(e),
+    ));
+}
+
+/// A check box: a sunken square, ticked when on.
+fn check_box(commands: &mut Commands, parent: Entity, look: &Look, (x, y): (f32, f32), row: usize, on: bool, focused: bool) {
+    let e = commands
+        .spawn((
+            Node {
+                border: UiRect::all(px(1.0)),
+                ..place(look, x, y + 4.0, 16.0, 16.0)
+            },
+            BorderColor {
+                top: look.color("CheckButton.Border1", [40, 40, 40, 196]),
+                left: look.color("CheckButton.Border1", [40, 40, 40, 196]),
+                bottom: look.color("CheckButton.Border2", [200, 200, 200, 196]),
+                right: look.color("CheckButton.Border2", [200, 200, 200, 196]),
+            },
+            BackgroundColor(if focused {
+                Color::srgba(1.0, 1.0, 1.0, 0.15)
+            } else {
+                look.color("CheckButton.BgColor", [0, 0, 0, 128])
+            }),
+            Hit(Target::Row(row), 0),
+            Button,
+            Interaction::default(),
+            ChildOf(parent),
+        ))
+        .id();
+    if on {
+        commands.spawn((
+            place(look, 3.0, 3.0, 8.0, 8.0),
+            BackgroundColor(look.color("CheckButton.Check", [255, 255, 255, 255])),
+            ChildOf(e),
+        ));
+    }
+}
+
+/// A choice, as a combo box: a sunken box with the value, arrows either
+/// side stepping it.
+fn combo(commands: &mut Commands, parent: Entity, look: &Look, (x, y, w): (f32, f32, f32), row: usize, value: &str, focused: bool) {
+    let e = commands
+        .spawn((
+            Node {
+                border: UiRect::all(px(1.0)),
+                ..place(look, x, y, w, 24.0)
+            },
+            bevel(look, false),
+            BackgroundColor(if focused {
+                Color::srgba(1.0, 1.0, 1.0, 0.12)
+            } else {
+                look.sunken_bg()
+            }),
+            Hit(Target::Row(row), 0),
+            Button,
+            Interaction::default(),
+            ChildOf(parent),
+        ))
+        .id();
+    let font = look.font("Default", (16.0, false));
+    let color = look.color("TextEntry.TextColor", [221, 221, 221, 255]);
+    label(commands, e, look, (20.0, 0.0, w - 42.0, 22.0), value, font.clone(), color, 0);
+    let arrow = look.color("ComboBoxButton.ArrowColor", [190, 190, 190, 255]);
+    for (ax, text, step) in [(0.0, "\u{25C4}", -1), (w - 20.0, "\u{25BA}", 1)] {
+        let a = commands
+            .spawn((
+                place(look, ax, 0.0, 18.0, 22.0),
+                Hit(Target::Row(row), step),
+                Button,
+                Interaction::default(),
+                ChildOf(e),
+            ))
+            .id();
+        label(commands, a, look, (0.0, 0.0, 18.0, 22.0), text, font.clone(), arrow, 0);
+    }
+}
+
+/// The crosshair as the multiplayer tab's settings draw it, on a dark
+/// square.
+fn crosshair_preview(commands: &mut Commands, parent: Entity, look: &Look, menu: &GameMenu, (x, y): (f32, f32)) {
+    let get = |cvar: &str| {
+        SETTINGS
+            .iter()
+            .position(|s| s.cvar == cvar)
+            .and_then(|i| menu.values.get(i).cloned().flatten())
+            .and_then(|v| v.trim().parse::<f32>().ok())
+    };
+    let defaults = super::hud::CrosshairColor::default();
+    let c = super::hud::CrosshairColor {
+        color: get("cl_crosshaircolor").map_or(defaults.color, |v| v as u8),
+        scale: get("cl_crosshairscale").unwrap_or(defaults.scale),
+        alpha: get("cl_crosshairalpha").map_or(defaults.alpha, |v| v as u8),
+        use_alpha: get("cl_crosshairusealpha").map_or(defaults.use_alpha, |v| v as u8),
+        dynamic: get("cl_dynamiccrosshair").map_or(defaults.dynamic, |v| v as u8),
+    };
+    let side = 88.0;
+    let e = commands
+        .spawn((
+            Node {
+                border: UiRect::all(px(1.0)),
+                ..place(look, x, y, side, side)
+            },
+            bevel(look, false),
+            BackgroundColor(Color::srgb(0.25, 0.27, 0.3)),
+            ChildOf(parent),
+        ))
+        .id();
+    // As at this window's height, in screen pixels.
+    let centre = Vec2::splat(side * look.s / 2.0);
+    for (offset, size) in c.lines(4.0, look.height) {
+        let at = centre + offset - size / 2.0;
+        commands.spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(at.x.round()),
+                top: px(at.y.round()),
+                width: px(size.x),
+                height: px(size.y),
+                ..default()
+            },
+            BackgroundColor(c.color()),
+            ChildOf(e),
+        ));
+    }
+}
+
+/// A map's thumbnail (`menu_thumb_<map>`, else the game's default one),
+/// `side` scheme pixels wide at (x, y), as tall as its picture.
+fn thumbnail(
+    commands: &mut Commands,
+    parent: Entity,
+    look: &Look,
+    thumbs: Option<&HashMap<String, (Handle<Image>, f32)>>,
+    map: &str,
+    (x, y, side): (f32, f32, f32),
+) {
+    let Some((image, aspect)) = thumbs.and_then(|t| t.get(&map.to_lowercase()).or_else(|| t.get("default"))) else {
+        return;
+    };
+    commands.spawn((
+        Node {
+            border: UiRect::all(px(1.0)),
+            ..place(look, x, y, side, (side * aspect).round())
+        },
+        bevel(look, false),
+        ImageNode::new(image.clone()),
+        ChildOf(parent),
+    ));
+}
+
+/// The map list: a scrolled list with a scroll bar, the focused map's
+/// thumbnail beside it, Back under it.
+#[allow(clippy::too_many_arguments)]
+fn map_list(
+    commands: &mut Commands,
+    frame: Entity,
+    look: &Look,
+    menu: &GameMenu,
+    rows: &[Row],
+    thumbs: Option<&HashMap<String, (Handle<Image>, f32)>>,
+    (w, h): (f32, f32),
+) {
+    let (len, shown) = menu.list();
+    let font = look.font("Default", (16.0, false));
+    let (lx, ly, lw) = (12.0, 36.0, 300.0);
+    let row_h = 20.0;
+    let lh = shown as f32 * row_h + 4.0;
+    let list = commands
+        .spawn((
+            Node {
+                border: UiRect::all(px(1.0)),
+                ..place(look, lx, ly, lw, lh)
+            },
+            bevel(look, false),
+            BackgroundColor(look.color("ListPanel.BgColor", [0, 0, 0, 128])),
+            RelativeCursorPosition::default(),
+            WheelList,
+            ChildOf(frame),
+        ))
+        .id();
+    let bar_w = look.number("ScrollBar.Wide", 17.0);
+    if len == 0 {
+        label(commands, list, look, (8.0, 4.0, lw - 16.0, row_h), "No maps found in the install.", font.clone(), look.dull(), -1);
+    }
+    for (k, i) in (menu.scroll..(menu.scroll + shown).min(len)).enumerate() {
+        let focused = menu.focus == i;
+        let chosen = menu.new_game.map == i;
+        let e = commands
+            .spawn((
+                place(look, 1.0, 1.0 + k as f32 * row_h, lw - bar_w - 4.0, row_h),
+                BackgroundColor(if focused { look.selected_bg() } else { Color::NONE }),
+                Hit(Target::Row(i), 0),
+                Button,
+                Interaction::default(),
+                ChildOf(list),
+            ))
+            .id();
+        let color = if focused {
+            look.selected_text()
+        } else if chosen {
+            look.white()
+        } else {
+            look.color("ListPanel.TextColor", [221, 221, 221, 255])
+        };
+        label(commands, e, look, (6.0, 0.0, lw - bar_w - 12.0, row_h), &label_of(&rows[i]), font.clone(), color, -1);
+    }
+    scroll_bar(commands, list, look, (lw - bar_w - 2.0, 0.0, lh - 2.0), (len, shown, menu.scroll));
+    if let Some(map) = menu.maps.get(menu.focus.min(len.saturating_sub(1))) {
+        thumbnail(commands, frame, look, thumbs, map, (lx + lw + 16.0, ly, (w - lx - lw - 32.0).min(192.0)));
+        label(
+            commands,
+            frame,
+            look,
+            (lx + lw + 16.0, ly + 160.0, w - lx - lw - 32.0, 24.0),
+            map,
+            look.font("DefaultBold", (16.0, true)),
+            look.white(),
+            -1,
+        );
+    }
+    let hint = if len > shown {
+        format!("{len} maps; wheel or the bar scrolls, a letter jumps")
+    } else {
+        format!("{len} maps; a letter jumps")
+    };
+    label(commands, frame, look, (lx, ly + lh + 6.0, lw, 20.0), &hint, look.font("DefaultSmall", (13.0, false)), look.dull(), -1);
     // Back.
-    spawn_row(parent, maps, &rows[maps], menu.focus == maps, look, font, s);
+    let back = rows.len() - 1;
+    button(
+        commands,
+        frame,
+        look,
+        (w - 8.0 - 80.0, h - 8.0 - 24.0, 80.0, 24.0),
+        &label_of(&rows[back]),
+        Hit(Target::Row(back), 0),
+        menu.focus == back,
+        true,
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::hud::GameUiItem;
 
     fn menu() -> GameMenu {
         let mut m = GameMenu::default();
         let cvars = [
             ("sensitivity", "3"),
+            ("m_pitch", "0.022"),
             ("zoom_sensitivity_ratio", "1.2"),
             ("volume", "1"),
             ("viewmodel_fov", "54"),
             ("cl_righthand", "1"),
             ("cl_showfps", "0"),
+            ("mat_vsync", "1"),
             ("mashup_rounds", "1"),
             ("bot_reaction", "0.35"),
         ];
@@ -1417,6 +2548,19 @@ mod tests {
         all
     }
 
+    fn setting(cvar: &str) -> usize {
+        SETTINGS.iter().position(|s| s.cvar == cvar).unwrap()
+    }
+
+    /// The row of the open page with this setting.
+    fn row_of(m: &GameMenu, cvar: &str) -> usize {
+        let i = setting(cvar);
+        m.rows()
+            .iter()
+            .position(|r| matches!(r, Row::Value { field: Field::Setting(s), .. } if *s == i))
+            .unwrap()
+    }
+
     #[test]
     fn opens_with_the_game_as_it_is() {
         let m = menu();
@@ -1426,7 +2570,8 @@ mod tests {
         assert_eq!(m.new_game.mode, Mode::Rounds);
         assert_eq!(m.new_game.difficulty, NORMAL);
         // No crosshair colour cvar given: shown as not available.
-        assert_eq!(m.values[5], None);
+        assert_eq!(m.values[setting("cl_crosshaircolor")], None);
+        assert_eq!(m.entries().len(), MAIN.len());
     }
 
     #[test]
@@ -1456,12 +2601,12 @@ mod tests {
         // The info line can't be focused.
         assert_eq!(m.focus, 1);
         press(&mut m, &[Input::Up]);
-        assert_eq!(m.focus, 4, "wraps past the info line to Back");
+        assert_eq!(m.focus, 4, "wraps past the info line to OK");
         press(&mut m, &[Input::Back]);
         assert_eq!((m.page, m.focus), (Page::Main, 2), "back on its entry");
         // Up from the top wraps to Quit.
         press(&mut m, &[Input::Up, Input::Up, Input::Up]);
-        assert_eq!(MAIN[m.focus].0, MainItem::Quit);
+        assert_eq!(m.entries()[m.focus].item, MainItem::Quit);
         assert_eq!(press(&mut m, &[Input::Activate]).lines, ["quit"]);
     }
 
@@ -1576,6 +2721,29 @@ mod tests {
     }
 
     #[test]
+    fn long_map_lists_scroll_with_the_focus_wheel_and_bar() {
+        let mut m = GameMenu::default();
+        let maps: Vec<String> = (0..50).map(|i| format!("map{i:02}")).collect();
+        m.open(Page::Maps, maps, Some("map45"), |_| None);
+        assert_eq!(m.focus, 45);
+        assert_eq!(m.scroll, 45 + 1 - MAP_ROWS, "the chosen map shows");
+        press(&mut m, &[Input::Scroll(-100)]);
+        assert_eq!((m.scroll, m.focus), (0, 45), "the wheel scrolls without moving the focus");
+        press(&mut m, &[Input::Click(Target::Scroll, MAP_ROWS as i32)]);
+        assert_eq!(m.scroll, MAP_ROWS);
+        press(&mut m, &[Input::Scroll(1000)]);
+        assert_eq!(m.scroll, 50 - MAP_ROWS, "not past the end");
+        // Left and right go a screenful at a time.
+        press(&mut m, &[Input::Left]);
+        assert_eq!(m.focus, 45 - MAP_ROWS);
+        press(&mut m, &[Input::Left, Input::Left, Input::Left]);
+        assert_eq!((m.focus, m.scroll), (0, 0));
+        // A click picks.
+        press(&mut m, &[Input::Click(Target::Row(3), 0)]);
+        assert_eq!((m.page, m.new_game.map), (Page::NewGame, 3));
+    }
+
+    #[test]
     fn no_maps_no_start() {
         let mut m = GameMenu::default();
         m.open(Page::NewGame, Vec::new(), None, |_| None);
@@ -1591,31 +2759,164 @@ mod tests {
     fn settings_set_their_cvars_at_once() {
         let mut m = menu();
         press(&mut m, &[Input::Click(Target::Main(4), 0)]);
-        assert_eq!((m.page, m.focus), (Page::Settings, 0));
-        let o = press(&mut m, &[Input::Right, Input::Right, Input::Down, Input::Left]);
-        assert_eq!(o.lines, ["sensitivity 3.1", "sensitivity 3.2", "zoom_sensitivity_ratio 1.1"]);
-        // Volume stops at 1.
-        let o = press(&mut m, &[Input::Down, Input::Right]);
+        assert_eq!((m.page, m.tab), (Page::Settings, Tab::Keyboard));
+        press(&mut m, &[Input::NextTab(1)]);
+        assert_eq!((m.tab, m.focus), (Tab::Mouse, 0));
+        let o = press(&mut m, &[Input::Right, Input::Right, Input::Down, Input::Activate, Input::Down, Input::Left]);
+        assert_eq!(
+            o.lines,
+            ["sensitivity 3.1", "sensitivity 3.2", "m_pitch -0.022", "zoom_sensitivity_ratio 1.1"]
+        );
+        // A slider pressed halfway.
+        let o = press(&mut m, &[Input::Slide(0, 1.0), Input::Slide(0, 1.0)]);
+        assert_eq!(o.lines, ["sensitivity 20.0"], "once: dragging to the same place sets nothing");
+        // Audio: volume stops at 1.
+        press(&mut m, &[Input::Click(Target::Tab(2), 0)]);
+        assert_eq!(m.tab, Tab::Audio);
+        let o = press(&mut m, &[Input::Right]);
         assert!(o.lines.is_empty(), "{:?}", o.lines);
-        // Hand: a choice, wrapping; shown by name.
-        let o = press(&mut m, &[Input::Click(Target::Row(4), 1)]);
+        // Multiplayer: hand, a choice, wrapping; shown by name.
+        press(&mut m, &[Input::NextTab(1), Input::NextTab(1)]);
+        assert_eq!(m.tab, Tab::Multiplayer);
+        let hand = row_of(&m, "cl_righthand");
+        let o = press(&mut m, &[Input::Click(Target::Row(hand), 1)]);
         assert_eq!(o.lines, ["cl_righthand 0"]);
-        assert!(matches!(&m.rows()[4], Row::Value { value, .. } if value == "Left"));
+        assert!(matches!(&m.rows()[hand], Row::Value { value, .. } if value == "Left"));
         // Crosshair colour isn't registered here: not focusable, skipped.
-        press(&mut m, &[Input::Down]);
-        assert_eq!(m.focus, 6);
-        let o = press(&mut m, &[Input::Activate, Input::Activate]);
-        assert_eq!(o.lines, ["cl_showfps 1", "cl_showfps 2"]);
+        assert!(matches!(m.rows()[0], Row::Info(_)));
+        assert_eq!(m.focus, hand);
+        // Video: a check box flips.
+        press(&mut m, &[Input::NextTab(-1)]);
+        let vsync = row_of(&m, "mat_vsync");
+        let o = press(&mut m, &[Input::Click(Target::Row(vsync), 0), Input::Click(Target::Row(vsync), 0)]);
+        assert_eq!(o.lines, ["mat_vsync 0", "mat_vsync 1"]);
+        // OK goes back.
+        let ok = m.rows().len() - 1;
+        press(&mut m, &[Input::Click(Target::Row(ok), 0)]);
+        assert_eq!(m.page, Page::Main);
+    }
+
+    fn keyboard() -> GameMenu {
+        let mut m = menu();
+        let mut b = BTreeMap::new();
+        binds::bind_defaults(&mut b, true);
+        m.set_binds(b, BTreeSet::from(["bugreport".to_string()]));
+        press(&mut m, &[Input::Click(Target::Main(4), 0)]);
+        m
+    }
+
+    fn bind_row(m: &GameMenu, command: &str) -> usize {
+        m.rows()
+            .iter()
+            .position(|r| matches!(r, Row::Bind { command: c, .. } if c == command))
+            .unwrap()
     }
 
     #[test]
-    fn steps_snap_to_the_grid() {
-        let s = SETTINGS[0];
-        assert_eq!(s.step("1.23", 1), "1.3");
-        assert_eq!(s.step("0.1", -1), "0.1");
-        assert_eq!(s.step("bad", 1), "0.2");
-        assert_eq!(SETTINGS[2].step("0.5", 1), "0.55");
-        assert_eq!(SETTINGS[2].show("0.5"), "0.50");
+    fn the_keyboard_tab_lists_actions_with_their_keys() {
+        let m = keyboard();
+        let rows = m.rows();
+        assert!(matches!(&rows[0], Row::Heading(t) if t == "Movement"));
+        assert!(matches!(&rows[bind_row(&m, "+jump")], Row::Bind { keys, known: true, .. } if keys == "MWHEELDOWN, MWHEELUP, SPACE"));
+        assert_eq!(m.focus, 1, "the first action, past the heading");
+        assert_eq!(m.list(), (rows.len() - 4, KEY_ROWS));
+    }
+
+    #[test]
+    fn rebinding_through_the_keyboard_tab() {
+        let mut m = keyboard();
+        let jump = bind_row(&m, "+jump");
+        // One click selects, the next waits for a key.
+        press(&mut m, &[Input::Click(Target::Row(jump), 0)]);
+        assert_eq!((m.key_row, m.capture.as_deref()), (Some(jump), None));
+        press(&mut m, &[Input::Click(Target::Row(jump), 0)]);
+        assert_eq!(m.capture.as_deref(), Some("+jump"));
+        // Keys while waiting go to the bind, not the menu.
+        let o = press(&mut m, &[Input::Down, Input::BindKey("f")]);
+        assert_eq!(o.lines, ["unbind mwheeldown; unbind mwheelup; unbind space; bind f +jump"]);
+        assert_eq!(m.capture, None);
+        assert!(matches!(&m.rows()[jump], Row::Bind { keys, .. } if keys == "F"));
+        // Esc while waiting gives up, leaving the menu open.
+        press(&mut m, &[Input::Activate]);
+        assert!(m.capture.is_some());
+        let o = press(&mut m, &[Input::Close]);
+        assert!(o.lines.is_empty() && m.open && m.capture.is_none());
+        // Edit key and Clear key act on the selected action.
+        let duck = bind_row(&m, "+duck");
+        press(&mut m, &[Input::Click(Target::Row(duck), 0)]);
+        let rows = m.rows();
+        let edit = rows.iter().position(|r| matches!(r, Row::Button { action: Action::EditKey, .. })).unwrap();
+        let clear = edit + 1;
+        let o = press(&mut m, &[Input::Click(Target::Row(clear), 0)]);
+        assert_eq!(o.lines, ["unbind ctrl"]);
+        press(&mut m, &[Input::Click(Target::Row(edit), 0)]);
+        assert_eq!(m.capture.as_deref(), Some("+duck"));
+        let o = press(&mut m, &[Input::BindKey("mouse4")]);
+        assert_eq!(o.lines, ["bind mouse4 +duck"]);
+        // Use Defaults puts every bind back.
+        let o = press(&mut m, &[Input::Click(Target::Row(edit - 1), 0)]);
+        assert_eq!(o.lines, ["binddefaults"]);
+        assert_eq!(m.binds.get("space").map(String::as_str), Some("+jump"));
+        assert_eq!(m.binds.get("mouse4"), None);
+    }
+
+    #[test]
+    fn the_keyboard_list_scrolls_to_the_focus() {
+        let mut m = keyboard();
+        for _ in 0..20 {
+            press(&mut m, &[Input::Down]);
+        }
+        let (len, shown) = m.list();
+        assert!(m.focus < len);
+        assert!(m.scroll <= m.focus && m.focus < m.scroll + shown, "{} in {}+{shown}", m.focus, m.scroll);
+    }
+
+    #[test]
+    fn the_games_menu_entries_with_ours_added() {
+        let item = |label: &str, command: &str| GameUiItem {
+            label: label.into(),
+            command: command.into(),
+            in_game_only: false,
+        };
+        let ui = GameUi {
+            menu: vec![
+                item("RESUME GAME", "ResumeGame"),
+                item("DISCONNECT", "Disconnect"),
+                item("", ""),
+                item("FIND SERVERS", "OpenServerBrowser"),
+                item("CREATE SERVER", "OpenCreateMultiplayerGameDialog"),
+                item("REPORT BUG", "engine bug"),
+                item("OPTIONS", "OpenOptionsDialog"),
+                item("QUIT", "Quit"),
+            ],
+            strings: HashMap::from([("gameui_gamemenu_newgame".to_string(), "NEW GAME".to_string())]),
+            ..default()
+        };
+        let e = main_entries(Some(&ui));
+        let items: Vec<MainItem> = e.iter().map(|e| e.item).collect();
+        assert_eq!(
+            items,
+            [
+                MainItem::Resume,
+                MainItem::NewGame,
+                MainItem::Bots,
+                MainItem::Team,
+                MainItem::BugReport,
+                MainItem::Options,
+                MainItem::Quit
+            ]
+        );
+        assert_eq!(e[1].label, "NEW GAME");
+        assert!(e[1].gap, "the file's blank entry");
+        assert_eq!(e[4].label, "REPORT BUG");
+        // Without the file: ours.
+        assert_eq!(main_entries(None).len(), MAIN.len());
+        let mut m = menu();
+        m.set_ui(Some(Arc::new(ui)));
+        press(&mut m, &[Input::Click(Target::Main(5), 0)]);
+        assert_eq!(m.page, Page::Settings);
+        press(&mut m, &[Input::Back]);
+        assert_eq!(m.focus, 5, "back on its entry");
     }
 
     #[test]
@@ -1623,11 +2924,11 @@ mod tests {
         let mut m = menu();
         press(&mut m, &[Input::Hover(Target::Main(4))]);
         assert_eq!(m.focus, 4);
-        press(&mut m, &[Input::Activate]);
+        press(&mut m, &[Input::Activate, Input::NextTab(1)]);
         assert_eq!(m.page, Page::Settings);
         // The left-hand list doesn't take the focus from the dialog.
-        press(&mut m, &[Input::Hover(Target::Main(1)), Input::Hover(Target::Row(3))]);
-        assert_eq!(m.focus, 3);
+        press(&mut m, &[Input::Hover(Target::Main(1)), Input::Hover(Target::Row(2))]);
+        assert_eq!(m.focus, 2);
     }
 
     #[test]
@@ -1693,6 +2994,60 @@ mod tests {
             .release(MouseButton::Left);
         app.update();
         assert!(grabbed(&app));
+    }
+
+    /// Rebinding in the open menu with real keys: the console's binds
+    /// change, and the new key then drives the action (headless).
+    #[test]
+    fn a_key_rebound_in_the_options_drives_the_action() {
+        let mut app = App::new();
+        app.add_plugins(crate::console::ConsolePlugin)
+            .init_resource::<super::super::console::ConsoleUi>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<GameMenu>()
+            .init_resource::<AfterLoad>()
+            .init_resource::<RegrabCursor>()
+            .add_systems(Update, keys.before(super::super::console::toggle))
+            .add_systems(Update, super::super::console::toggle);
+        super::super::binds::test_binds(&mut app);
+        binds::commands(&mut app);
+        app.world_mut()
+            .spawn((super::super::console::ConsoleRoot, Visibility::Hidden));
+        let tap = |app: &mut App, key: KeyCode| {
+            app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(key);
+            app.update();
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.release(key);
+            keys.clear();
+            app.update();
+        };
+        // Open on the options (the keyboard tab), as `menu keyboard` does.
+        app.world_mut().commands().queue(|w: &mut World| {
+            open_menu(w, Page::Settings);
+        });
+        app.update();
+        assert!(app.world().resource::<GameMenu>().open);
+        // To "Jump", Enter to wait for a key, then K.
+        let jump = bind_row(app.world().resource::<GameMenu>(), "+jump");
+        for _ in 1..jump {
+            tap(&mut app, KeyCode::ArrowDown);
+        }
+        assert_eq!(app.world().resource::<GameMenu>().focus, jump);
+        tap(&mut app, KeyCode::Enter);
+        assert_eq!(app.world().resource::<GameMenu>().capture.as_deref(), Some("+jump"));
+        tap(&mut app, KeyCode::KeyK);
+        let console = app.world().resource::<Console>();
+        assert_eq!(console.binds.get("k").map(String::as_str), Some("+jump"));
+        assert_eq!(console.binds.get("space"), None);
+        assert!(console.dirty, "saved to config.cfg on quit");
+        // K now holds jump; Space doesn't.
+        let mut keys = ButtonInput::<KeyCode>::default();
+        let mouse = ButtonInput::<MouseButton>::default();
+        keys.press(KeyCode::KeyK);
+        assert!(binds::pressed(&console.binds, &keys, &mouse, "+jump"));
+        keys.release(KeyCode::KeyK);
+        keys.press(KeyCode::Space);
+        assert!(!binds::pressed(&console.binds, &keys, &mouse, "+jump"));
     }
 
     #[test]

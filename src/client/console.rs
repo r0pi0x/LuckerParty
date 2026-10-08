@@ -280,7 +280,7 @@ fn candidates(world: &mut World, input: &str) -> (String, Vec<(String, String)>)
                 }
             }
             "bind" | "unbind" if words.len() <= 2 && !(words.len() == 2 && ends_space) => {
-                out.extend(KEY_NAMES.iter().map(|(_, n)| (n.to_string(), String::new())));
+                out.extend(super::binds::KEY_NAMES.iter().map(|(_, n)| (n.to_string(), String::new())));
                 out.extend(
                     [
                         "mouse1",
@@ -578,7 +578,15 @@ fn autoexec(
     args: Res<super::ClientArgs>,
     mut root: Query<&mut Visibility, With<ConsoleRoot>>,
 ) {
-    console.submit("execifexists config.cfg; execifexists autoexec.cfg");
+    // Every key is a bind: the defaults first, then the player's config.
+    // A config written before that has only the player's own binds after
+    // its `unbindall`: the defaults go back on the keys it left free.
+    let marked = crate::console::read_cfg("config.cfg").is_none_or(|t| t.contains(super::binds::CONFIG_MARK));
+    console.submit("binddefaults; execifexists config.cfg");
+    if !marked {
+        console.submit("binddefaults missing");
+    }
+    console.submit("execifexists autoexec.cfg");
     for line in &args.0.console {
         console.submit(line.clone());
     }
@@ -1167,78 +1175,6 @@ const ACTIONS: &[&str] = &[
     "freelook",
 ];
 
-/// Source key names.
-const KEY_NAMES: &[(KeyCode, &str)] = &[
-    (KeyCode::KeyA, "a"),
-    (KeyCode::KeyB, "b"),
-    (KeyCode::KeyC, "c"),
-    (KeyCode::KeyD, "d"),
-    (KeyCode::KeyE, "e"),
-    (KeyCode::KeyF, "f"),
-    (KeyCode::KeyG, "g"),
-    (KeyCode::KeyH, "h"),
-    (KeyCode::KeyI, "i"),
-    (KeyCode::KeyJ, "j"),
-    (KeyCode::KeyK, "k"),
-    (KeyCode::KeyL, "l"),
-    (KeyCode::KeyM, "m"),
-    (KeyCode::KeyN, "n"),
-    (KeyCode::KeyO, "o"),
-    (KeyCode::KeyP, "p"),
-    (KeyCode::KeyQ, "q"),
-    (KeyCode::KeyR, "r"),
-    (KeyCode::KeyS, "s"),
-    (KeyCode::KeyT, "t"),
-    (KeyCode::KeyU, "u"),
-    (KeyCode::KeyV, "v"),
-    (KeyCode::KeyW, "w"),
-    (KeyCode::KeyX, "x"),
-    (KeyCode::KeyY, "y"),
-    (KeyCode::KeyZ, "z"),
-    (KeyCode::Digit0, "0"),
-    (KeyCode::Digit1, "1"),
-    (KeyCode::Digit2, "2"),
-    (KeyCode::Digit3, "3"),
-    (KeyCode::Digit4, "4"),
-    (KeyCode::Digit5, "5"),
-    (KeyCode::Digit6, "6"),
-    (KeyCode::Digit7, "7"),
-    (KeyCode::Digit8, "8"),
-    (KeyCode::Digit9, "9"),
-    (KeyCode::Space, "space"),
-    (KeyCode::Enter, "enter"),
-    (KeyCode::Tab, "tab"),
-    (KeyCode::ShiftLeft, "shift"),
-    (KeyCode::ControlLeft, "ctrl"),
-    (KeyCode::AltLeft, "alt"),
-    (KeyCode::ArrowUp, "uparrow"),
-    (KeyCode::ArrowDown, "downarrow"),
-    (KeyCode::ArrowLeft, "leftarrow"),
-    (KeyCode::ArrowRight, "rightarrow"),
-    (KeyCode::F1, "f1"),
-    (KeyCode::F2, "f2"),
-    (KeyCode::F3, "f3"),
-    (KeyCode::F4, "f4"),
-    (KeyCode::F5, "f5"),
-    (KeyCode::F6, "f6"),
-    (KeyCode::F7, "f7"),
-    (KeyCode::F8, "f8"),
-    (KeyCode::F9, "f9"),
-    (KeyCode::F10, "f10"),
-    (KeyCode::F11, "f11"),
-    (KeyCode::F12, "f12"),
-    (KeyCode::Minus, "-"),
-    (KeyCode::Equal, "="),
-    (KeyCode::BracketLeft, "["),
-    (KeyCode::BracketRight, "]"),
-    (KeyCode::Backslash, "\\"),
-    (KeyCode::Semicolon, "semicolon"),
-    (KeyCode::Quote, "'"),
-    (KeyCode::Comma, ","),
-    (KeyCode::Period, "."),
-    (KeyCode::Slash, "/"),
-];
-
 /// Run bound commands: on press, and the `-` half of `+` actions on
 /// release; wheel notches run once.
 fn run_binds(
@@ -1252,7 +1188,7 @@ fn run_binds(
         return;
     }
     let mut events: Vec<(String, bool)> = Vec::new();
-    for (code, name) in KEY_NAMES {
+    for (code, name) in super::binds::KEY_NAMES {
         if keys.just_pressed(*code) {
             events.push((name.to_string(), true));
         }
@@ -1260,22 +1196,20 @@ fn run_binds(
             events.push((name.to_string(), false));
         }
     }
-    for (b, name) in [
-        (MouseButton::Left, "mouse1"),
-        (MouseButton::Right, "mouse2"),
-        (MouseButton::Middle, "mouse3"),
-        (MouseButton::Back, "mouse4"),
-        (MouseButton::Forward, "mouse5"),
-    ] {
-        if mouse.just_pressed(b) {
-            events.push((name.into(), true));
+    for (b, name) in super::binds::MOUSE_NAMES {
+        if mouse.just_pressed(*b) {
+            events.push((name.to_string(), true));
         }
-        if mouse.just_released(b) {
-            events.push((name.into(), false));
+        if mouse.just_released(*b) {
+            events.push((name.to_string(), false));
         }
     }
     for w in wheel.read() {
-        let name = if w.y > 0.0 { "mwheelup" } else { "mwheeldown" };
+        let name = if w.y > 0.0 {
+            super::binds::WHEEL_UP
+        } else {
+            super::binds::WHEEL_DOWN
+        };
         events.push((name.into(), true));
         events.push((name.into(), false));
     }
@@ -1283,6 +1217,10 @@ fn run_binds(
         let Some(cmd) = console.binds.get(&key).cloned() else {
             continue;
         };
+        // Read from the held keys by the systems that own them.
+        if super::binds::is_polled(&cmd) {
+            continue;
+        }
         if pressed {
             console.submit(cmd);
         } else {
@@ -1417,6 +1355,7 @@ fn local_player(w: &mut World) -> Result<Entity, String> {
 }
 
 fn client_commands(app: &mut App) {
+    super::binds::commands(app);
     for a in ACTIONS {
         let a = *a;
         for (sign, on) in [("+", true), ("-", false)] {

@@ -351,6 +351,71 @@ pub struct ActiveOverview(pub MapOverview, pub Handle<Image>);
 #[derive(Resource, Clone, Debug)]
 pub struct ActiveHud(pub Arc<GameHud>, pub HashMap<usize, Handle<Image>>);
 
+/// A game's own game menu and options dialog look (Source's GameUI), read
+/// from the install once, independent of the map: the scheme's colours,
+/// numbers and fonts, the menu's entries, the options pages' layouts and
+/// the keyboard page's action list, localised strings and map thumbnails.
+#[derive(Clone, Debug, Default)]
+pub struct GameUi {
+    /// Named colours and the base settings that name them (`Frame.BgColor`).
+    pub colors: HashMap<String, [u8; 4]>,
+    /// Base settings that are numbers (`Frame.ClientInsetX`).
+    pub numbers: HashMap<String, f32>,
+    /// The scheme's fonts by name, sizes in order of preference.
+    pub fonts: HashMap<String, Vec<UiFontSize>>,
+    /// The game menu's entries, in the game's order.
+    pub menu: Vec<GameUiItem>,
+    /// Localised strings by lower-case token (no `#`).
+    pub strings: HashMap<String, String>,
+    /// Options pages by name (`keyboard`, `mouse`, `audio`, `video`,
+    /// `multiplayer`).
+    pub options: HashMap<String, UiLayout>,
+    /// The keyboard page's list: sections and actions, labels localised.
+    pub actions: Vec<KeyAction>,
+    /// Map thumbnails by lower-case map name.
+    pub thumbnails: HashMap<String, UiImage>,
+}
+
+impl GameUi {
+    /// A `#token`'s text (any case; the `#` optional), else None.
+    pub fn string(&self, token: &str) -> Option<&str> {
+        let t = token.trim().trim_start_matches('#').to_lowercase();
+        self.strings.get(&t).map(String::as_str)
+    }
+
+    /// A scheme colour by name.
+    pub fn color(&self, name: &str) -> Option<[u8; 4]> {
+        self.colors.get(name).copied()
+    }
+}
+
+/// A game menu entry: its text and the GameUI command it runs
+/// (`ResumeGame`, `OpenOptionsDialog`, `Quit`, `engine <line>` ...).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GameUiItem {
+    pub label: String,
+    pub command: String,
+    /// Shown only while a game runs (`OnlyInGame`).
+    pub in_game_only: bool,
+}
+
+/// A row of the keyboard page's list.
+#[derive(Clone, Debug, PartialEq)]
+pub enum KeyAction {
+    /// A section heading.
+    Section(String),
+    /// A bindable console line and its description.
+    Action { command: String, label: String },
+}
+
+/// An RGBA8 picture (sRGB).
+#[derive(Clone, Debug, PartialEq)]
+pub struct UiImage {
+    pub width: u32,
+    pub height: u32,
+    pub rgba8: Vec<u8>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

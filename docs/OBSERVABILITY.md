@@ -78,9 +78,16 @@ Only `Reflect`-registered types are visible; register new core components in
   console actions work without mouse capture. Automated runs never write
   config.cfg, and only archived cvars are saved there.
 - `menu [main|newgame|maps|bots|team|options]` opens the game menu (Esc)
-  on a page, for screenshots of it: `--screenshot menu.png +menu options`.
-  Its logic is unit-tested in `client::game_menu` (keys and clicks in,
-  console lines out).
+  on a page, for screenshots of it: `--window 1280x720 --screenshot
+  menu.png +menu options`; `menu keyboard` (or `mouse`, `audio`, `video`,
+  `multiplayer`) opens the options on that tab. Cvars it shows are read
+  when it opens: put `+cl_crosshaircolor 3` before `+menu`. The log
+  line `game menu: GameUI look (...)` says the install's look loaded
+  (else the built-in one is drawn). Its logic is unit-tested in
+  `client::game_menu` (keys and clicks in, console lines out; rebinding
+  with real key presses headless).
+- Binds: `bindlist` lists them; every game key is one (`client::binds`),
+  `binddefaults` puts the defaults back.
 - `buymenu [n]` and `chooseteam` open the buy menu (on category n) and
   the team menu, e.g. `--map cs_source:de_dust2 --screenshot buy.png
   +wait 30 +buymenu 4` (the `wait` lets the map's HUD and menu layouts
@@ -244,7 +251,8 @@ Only `Reflect`-registered types are visible; register new core components in
   "method":"mashup/console","params":{"line":"getpos; cvarlist sv_"}}'`
   runs a line now and returns the lines it printed.
 - Configs live in `~/.local/share/mashup/cfg` (Windows `%APPDATA%\mashup\cfg`):
-  config.cfg (written on quit when binds/cvars changed), autoexec.cfg,
+  config.cfg (written on quit when binds/cvars changed; every bind, as
+  `bind` lines after `unbindall`), autoexec.cfg,
   history.txt; `exec name` runs name.cfg from there.
 
 ## 3c. Performance

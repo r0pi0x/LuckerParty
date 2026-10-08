@@ -119,6 +119,7 @@ fn marker(dead: bool, carrier: bool, kit: bool, teammate: bool) -> &'static str 
 #[allow(clippy::type_complexity)]
 fn update(
     keys: Res<ButtonInput<KeyCode>>,
+    (binds, mouse): (Option<Res<crate::console::Console>>, Option<Res<ButtonInput<MouseButton>>>),
     held: Res<super::console::HeldActions>,
     console: Option<Res<super::console::ConsoleUi>>,
     mut board: Single<&mut Visibility, With<Board>>,
@@ -142,7 +143,11 @@ fn update(
     mut commands: Commands,
 ) {
     let typing = console.is_some_and(|c| c.open);
-    let show = (keys.pressed(KeyCode::Tab) && !typing) || held.showscores;
+    let tab = match (&binds, &mouse) {
+        (Some(b), Some(m)) => super::binds::pressed(&b.binds, &keys, m, "+showscores"),
+        _ => false,
+    };
+    let show = (tab && !typing) || held.showscores;
     **board = if show {
         Visibility::Inherited
     } else {

@@ -2,6 +2,7 @@
 //! debug tools and agent-facing tools (screenshots, remote inspection).
 //! Simulation code must never depend on this module.
 
+pub mod binds;
 pub mod buy_menu;
 pub mod capture;
 pub mod chat;
@@ -16,6 +17,7 @@ pub mod hud_sprites;
 pub mod hud;
 pub mod input;
 pub mod objectives_hud;
+pub mod options;
 pub mod perf;
 pub mod radar;
 pub mod radio;
@@ -227,6 +229,7 @@ impl Plugin for ClientPlugin {
                 senses::SensesPlugin,
                 spectate::SpectatePlugin,
                 hdr::HdrPlugin,
+                options::VideoPlugin,
             ))
             .add_systems(PostStartup, spawn_local_player)
             .add_systems(Update, (follow_eye, zoom_camera).after(spectate::SpectateSet));

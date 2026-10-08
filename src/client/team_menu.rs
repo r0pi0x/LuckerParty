@@ -77,7 +77,7 @@ fn line(command: &str, count: impl Fn(u8) -> usize) -> Option<String> {
 
 #[allow(clippy::too_many_arguments)]
 fn keys(
-    keys: Res<ButtonInput<KeyCode>>,
+    (keys, mouse): (Res<ButtonInput<KeyCode>>, Res<ButtonInput<MouseButton>>),
     cursor: Single<&CursorOptions>,
     (open, ui, chat, game_menu): (
         Res<VguiOpen>,
@@ -94,7 +94,7 @@ fn keys(
     if !super::vgui::keys_live(&cursor, &open, ui.as_deref(), chat.as_deref(), game_menu.as_deref()) {
         return;
     }
-    if keys.just_pressed(KeyCode::KeyM) {
+    if super::binds::just_pressed(&console.binds, &keys, &mouse, "chooseteam") {
         menu.0 = !menu.0;
         if menu.0 {
             // Menus close each other.
@@ -303,6 +303,7 @@ mod tests {
                 w.resource_mut::<Joined>().0.push(a.join(" "));
                 Ok(None)
             });
+        super::super::binds::test_binds(&mut app);
         if game_look {
             let button = |name: &str, key: char, command: &str| {
                 let mut c = UiControl::new(name, UiKind::Button, 76.0, 116.0, 148.0, 20.0);

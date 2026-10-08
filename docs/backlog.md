@@ -68,10 +68,16 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   with you, team dots, your place name); its range (2200 units) is a guess.
 - The game menu (Esc; `client/game_menu.rs`: new game with map, mode,
   bots per team and difficulty; bots; team; options; bug report; quit)
-  is in, in its own look. Left: the game's own GameUI look
-  (`SourceScheme.res` frames, its fonts on Linux, where Tahoma is
-  missing), more options (binds, crosshair size, video), a scrollbar for
-  long map lists (pages of 42 now), map thumbnails.
+  is in, in the game's GameUI look (`SourceScheme.res` frames and
+  colours, `GameMenu.res` entries, tabbed options: keyboard binds from
+  `kb_act.lst`, mouse, audio, video, crosshair; a scrolled map list with
+  thumbnails). Left: placing the mouse, audio, video and multiplayer
+  tabs' controls where their `OptionsSub*.res` put them (ours are a
+  column), OK / Cancel / Apply (changes apply at once now), dragging
+  frames, the keyboard tab's "Advanced" dialog, binds for the actions
+  greyed in it (`invprev`, `+voicerecord`, `autobuy`, ...), the game's
+  logo over the entries, comparing the look with CS:S's (refcmp has no
+  menu views).
 - Debug overlays: `mashup_drawhitboxes`, `mashup_healthbars`,
   `mashup_drawnav`, `mashup_drawbots` exist; add more as features need
   them (sound radii, triggers).
