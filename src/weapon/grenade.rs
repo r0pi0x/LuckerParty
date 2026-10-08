@@ -212,6 +212,8 @@ pub struct Blast {
     pub force_jitter: (f32, f32),
     /// A pushed body gets at most this speed from it, m/s.
     pub max_push_speed: f32,
+    /// The push on ragdolls (the client's explosion effect), if any.
+    pub ragdolls: Option<RagdollBlast>,
     /// Decal group placed on the probed ground.
     pub scorch: Option<String>,
     pub sound: Option<String>,
@@ -219,6 +221,27 @@ pub struct Blast {
     pub hearing: Option<BlastHearing>,
     /// How it shakes the view of those near it (clients draw it).
     pub shake: Option<Shake>,
+}
+
+/// A blast's push on ragdolls (specs/cs_source/grenades.md 5.3, the
+/// explosion effect's rule): each ragdoll within the radius gets a blast
+/// line (`map::RagdollShot`, pushed by 4000 × its length, ragdolls.md 6.2)
+/// from `drop` below the blast towards its root body, of length
+/// `length · (1 − d/radius)` for its distance `d` from the blast; none
+/// when that is `min` or less. Meters.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RagdollBlast {
+    pub length: f32,
+    pub min: f32,
+    pub drop: f32,
+}
+
+impl RagdollBlast {
+    /// The blast line's length at `distance` from a blast of `radius`.
+    pub fn length_at(&self, radius: f32, distance: f32) -> Option<f32> {
+        let l = self.length - self.length / radius * distance;
+        (l > self.min).then_some(l)
+    }
 }
 
 /// What a blast does to the hearing of a character it hurts (Source's
@@ -732,9 +755,16 @@ struct GrenadeWorld<'w, 's> {
             Option<&'static ComputedMass>,
             Forces,
         ),
-        // Players' physics shadows follow their players, not blasts.
-        Without<crate::map::prop_physics::PhysicsShadow>,
+        // Players' physics shadows follow their players, not blasts;
+        // ragdolls get their own push (`RagdollBlast`).
+        (
+            Without<crate::map::prop_physics::PhysicsShadow>,
+            Without<crate::map::RagdollBody>,
+        ),
     >,
+    ragdolls: Query<'w, 's, (Entity, &'static crate::map::Ragdoll)>,
+    ragdoll_bodies: Query<'w, 's, &'static Position, With<crate::map::RagdollBody>>,
+    ragdoll_shots: MessageWriter<'w, crate::map::RagdollShot>,
     armor: Query<'w, 's, &'static mut Armor>,
     blinded: Query<'w, 's, &'static Blinded>,
     water: Option<Res<'w, MapWater>>,
@@ -1058,6 +1088,9 @@ fn explosions(
         let mut b = rule.0.clone();
         let scale = if b.damage > 0.0 { e.damage / b.damage } else { 1.0 };
         b.force *= scale;
+        if let Some(r) = &mut b.ragdolls {
+            r.length *= scale;
+        }
         b.damage = e.damage;
         b.radius = e.radius;
         let (origin, probe) = explode_at(
@@ -1203,6 +1236,28 @@ fn blast(
         let dir = (centre - src).normalize_or(Vec3::Y);
         if let Ok((.., mut forces)) = world.dynamic.get_mut(e) {
             forces.apply_linear_impulse(dir * j);
+        }
+    }
+    // Ragdolls in the radius: a blast line each, walls or not (the
+    // client effect's rule has no trace).
+    if let Some(r) = b.ragdolls {
+        let from = origin - Vec3::Y * r.drop;
+        let lines: Vec<(Entity, Vec3)> = world
+            .ragdolls
+            .iter()
+            .filter_map(|(e, rd)| Some((e, world.ragdoll_bodies.get(*rd.bodies.first()?).ok()?.0)))
+            .collect();
+        for (ragdoll, root) in lines {
+            let Some(length) = r.length_at(b.radius, root.distance(origin)) else {
+                continue;
+            };
+            let dir = (root - from).normalize_or(Vec3::Y);
+            world.ragdoll_shots.write(crate::map::RagdollShot {
+                from,
+                to: from + dir * length,
+                blast: true,
+                ragdoll: Some(ragdoll),
+            });
         }
     }
 }

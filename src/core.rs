@@ -498,6 +498,17 @@ impl SightBlocker {
 #[derive(Resource, Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FriendlyFire(pub u8);
 
+/// Whether team rules refuse this damage: teammates don't hurt each other
+/// unless friendly fire is on (your own damage, e.g. falling, always
+/// counts).
+pub fn refused_by_team(d: &Damage, teams: &Query<&Team>, friendly_fire: Option<&FriendlyFire>) -> bool {
+    let teammate = d
+        .attacker
+        .filter(|a| *a != d.target)
+        .is_some_and(|a| matches!((teams.get(a), teams.get(d.target)), (Ok(x), Ok(y)) if x == y && x.0 != 0));
+    teammate && !friendly_fire.is_some_and(|f| f.0 != 0)
+}
+
 /// Subtract damage from health; announce deaths once (public so other
 /// systems can order themselves after it).
 pub fn apply_damage(
@@ -507,15 +518,8 @@ pub fn apply_damage(
     friendly_fire: Option<Res<FriendlyFire>>,
     mut died: MessageWriter<Died>,
 ) {
-    let friendly_fire = friendly_fire.is_some_and(|f| f.0 != 0);
     for d in damage.read() {
-        // Teammates don't hurt each other unless friendly fire is on (your
-        // own damage, e.g. falling, always counts).
-        let teammate = d
-            .attacker
-            .filter(|a| *a != d.target)
-            .is_some_and(|a| matches!((teams.get(a), teams.get(d.target)), (Ok(x), Ok(y)) if x == y && x.0 != 0));
-        if teammate && !friendly_fire {
+        if refused_by_team(d, &teams, friendly_fire.as_deref()) {
             continue;
         }
         let Ok(mut h) = health.get_mut(d.target) else { continue };

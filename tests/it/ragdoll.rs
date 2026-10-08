@@ -1,7 +1,8 @@
 //! Ragdolls in the running simulation (specs/cs_source/ragdolls.md): a
 //! character with a small made-up skeleton and ragdoll is killed on a
 //! floor; its body falls, settles without exploding, and goes away when
-//! the character lives again.
+//! the character lives again. With CS:S's weapons: blasts push ragdolls
+//! and loose weapons, and bullets push loose weapons.
 
 use std::sync::Arc;
 
@@ -145,16 +146,19 @@ fn sim() -> (Sim, Entity) {
     sim_with(model())
 }
 
-fn sim_with(model: MapCharacterModel) -> (Sim, Entity) {
+fn floor_map(model: MapCharacterModel) -> MapData {
     let (lo, hi) = (Vec3::new(-20.0, -1.0, -20.0), Vec3::new(20.0, 0.0, 20.0));
-    let data = MapData {
+    MapData {
         name: "test:ragdoll".into(),
         collision_brushes: vec![MapBrush::from_box(lo, hi)],
         collision_hulls: vec![cube(lo, hi).iter().map(|v| v.to_array()).collect()],
         characters: vec![model],
         ..default()
-    };
-    let mut sim = Sim::new(MapPlugin::new(data));
+    }
+}
+
+fn sim_with(model: MapCharacterModel) -> (Sim, Entity) {
+    let mut sim = Sim::new(MapPlugin::new(floor_map(model)));
     // The dead stay dead for the test.
     sim.app.world_mut().resource_mut::<Deathmatch>().respawn_delay = 1000.0;
     let p = sim.spawn_character(Vec3::new(0.0, 0.9, 0.0), noclip::ID);
@@ -351,6 +355,7 @@ fn bullets_push_a_dead_body() {
         from: at - Vec3::X,
         to: at + Vec3::X,
         blast: false,
+        ragdoll: None,
     });
     sim.ticks(1);
     assert!(sim.app.world().get::<avian3d::prelude::Sleeping>(root).is_none(), "woken");
@@ -372,6 +377,7 @@ fn bullets_push_a_dead_body() {
         from: Vec3::new(-1.0, 1.5, 0.0),
         to: Vec3::new(1.0, 1.5, 0.0),
         blast: false,
+        ragdoll: None,
     });
     sim.ticks(8);
     assert!(bodies(&mut sim)[0].1.translation.distance(still.translation) < 1e-3);
@@ -505,4 +511,103 @@ fn bodies_take_their_surface_friction() {
     let pelvis = ragdoll(&mut sim).unwrap().bodies[0];
     let f = sim.app.world().get::<avian3d::prelude::Friction>(pelvis).unwrap();
     assert_eq!(f.dynamic_coefficient, 0.35);
+}
+
+/// The floor map with CS:S's weapons (guns, HE blasts) and one character
+/// standing still (noclip) at the centre.
+fn armed_sim() -> (Sim, Entity) {
+    let mut sim = Sim::new((
+        MapPlugin::new(floor_map(model())),
+        mashup::games::cs_source::weapons::CsWeaponsPlugin,
+    ));
+    sim.set_tick_interval(mashup::games::cs_source::TICK_INTERVAL);
+    sim.app.world_mut().resource_mut::<Deathmatch>().respawn_delay = 1000.0;
+    let p = sim.spawn_character(Vec3::new(0.0, 0.9, 0.0), noclip::ID);
+    sim.ticks(10);
+    (sim, p)
+}
+
+/// An HE-sized blast (100 damage, 350 units) at `at`.
+fn blast(sim: &mut Sim, at: Vec3) {
+    sim.app.world_mut().write_message(mashup::core::Explosion {
+        origin: at,
+        damage: 1.0,
+        radius: 350.0 * SCALE,
+        attacker: None,
+        inflictor: None,
+        sound: None,
+        weapon: None,
+    });
+}
+
+/// specs/cs_source/grenades.md 5.3 and ragdolls.md 6.2: a blast pushes
+/// every ragdoll within its radius away from it (from 32 units below the
+/// blast, 4000 × a line of up to 100 units), walls or not; one beyond
+/// the radius stays still.
+#[test]
+fn blasts_push_ragdolls_in_their_radius() {
+    for (away, pushed) in [(1.0, true), (360.0 * SCALE, false)] {
+        let (mut sim, p) = armed_sim();
+        kill(&mut sim, p, Hitgroup::Chest, Vec3::new(0.0, 1.2, 0.0), Vec3::NEG_Z);
+        sim.seconds(8.0);
+        let (_, at, v) = bodies(&mut sim)[0];
+        assert!(v.length() < 0.05, "settled before: {v}");
+        let before = at.translation;
+        // On the floor beside the body, toward +X.
+        blast(&mut sim, before.with_y(0.05) + Vec3::X * away);
+        sim.ticks(2);
+        let v = bodies(&mut sim)[0].2;
+        if pushed {
+            assert!(v.x < -1.0, "pelvis pushed away from the blast: {v}");
+            assert!(v.y > 0.0, "and up (from below the blast): {v}");
+        } else {
+            assert!(v.length() < 0.01, "out of reach, untouched: {v}");
+        }
+    }
+}
+
+/// Loose weapons are physics objects: a blast throws them away from it
+/// (physics_props.md 5.3).
+#[test]
+fn blasts_push_loose_weapons() {
+    use mashup::{map::loose::LooseItem, weapon::drop::drop_weapon};
+    let (mut sim, p) = armed_sim();
+    let item = drop_weapon(sim.app.world_mut(), p, false).expect("dropped");
+    sim.app.world_mut().despawn(p);
+    sim.app.world_mut().get_mut::<Transform>(item).unwrap().translation = Vec3::new(3.0, 0.2, 3.0);
+    sim.seconds(2.0);
+    assert!(sim.app.world().get::<LooseItem>(item).is_some());
+    let start = sim.position(item);
+    blast(&mut sim, start.with_y(0.05) - Vec3::X);
+    sim.seconds(0.5);
+    let went = sim.position(item) - start;
+    assert!(went.x > 0.5, "thrown away from the blast: {went}");
+}
+
+/// Bullets hit loose weapons and push them (the gun's impulse at the hit;
+/// dropped weapons are physics objects).
+#[test]
+fn bullets_push_loose_weapons() {
+    use mashup::weapon::{Inventory, drop::drop_weapon, give};
+    let (mut sim, p) = armed_sim();
+    let item = drop_weapon(sim.app.world_mut(), p, false).expect("dropped");
+    sim.app.world_mut().get_mut::<Transform>(item).unwrap().translation = Vec3::new(0.0, 0.1, -2.0);
+    // Shoot it with a rifle, standing still.
+    let rifle = give(sim.app.world_mut(), p, mashup::games::cs_source::weapons::M4A1).unwrap();
+    sim.seconds(2.0);
+    assert_eq!(sim.app.world().get::<Inventory>(p).unwrap().active, Some(rifle));
+    let start = sim.position(item);
+    let eye = sim.position(p) + sim.state(p).eye_offset;
+    let d = start - eye;
+    {
+        let mut i = sim.intent(p);
+        i.yaw = (-d.x).atan2(-d.z);
+        i.pitch = d.y.atan2(d.xz().length());
+        i.fire = true;
+    }
+    sim.ticks(1);
+    sim.intent(p).fire = false;
+    sim.seconds(1.0);
+    let went = sim.position(item) - start;
+    assert!(went.z < -0.2, "pushed along the shot: {went}");
 }

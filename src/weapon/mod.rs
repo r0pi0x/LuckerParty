@@ -48,6 +48,8 @@ impl Plugin for WeaponPlugin {
             .init_resource::<economy::Prices>()
             .init_resource::<economy::BuyWindow>()
             .init_resource::<drop::DeathDrops>()
+            .init_resource::<drop::UsePickup>()
+            .add_message::<drop::UsedPickup>()
             .register_type::<economy::Money>()
             .register_type::<economy::DefuseKit>()
             .init_resource::<PassMaterials>()
@@ -61,6 +63,7 @@ impl Plugin for WeaponPlugin {
                     (
                         give_starting_weapons,
                         drop::pick_up,
+                        drop::use_pick_up,
                         select_weapons.in_set(SelectWeapons),
                     )
                         .chain()
@@ -119,6 +122,12 @@ impl Plugin for WeaponPlugin {
                 },
             );
         }
+        crate::console::resource_cvar::<drop::UsePickup, u8>(
+            app,
+            "mashup_usepickup",
+            "1: +use on a dropped weapon you look at takes it, dropping the one in its slot (CS:GO's; CS:S has none).",
+            |u| &mut u.0,
+        );
         app.console_command("drop", "Drop the weapon you hold (G); walk over one to pick it up.", |w, _| {
             let player = local_player(w)?;
             drop::drop_weapon(w, player, true).ok_or("nothing to drop")?;
@@ -350,6 +359,8 @@ pub struct Inventory {
     prev_secondary: bool,
     prev_select: Option<u8>,
     prev_last: bool,
+    /// Last tick's use key (`drop::use_pick_up`).
+    prev_use: bool,
     /// Counts ticks with an attack; seeds the shot spread.
     command: u32,
 }
@@ -807,6 +818,9 @@ pub enum WeaponEventKind {
         secondary: bool,
         /// Where it hit: point, surface normal and what was hit.
         at: Option<(Vec3, Vec3, Entity)>,
+        /// The swing's line trace: from the eye to where it stopped (the
+        /// range's end when it hit nothing).
+        line: (Vec3, Vec3),
     },
     DryFire,
     /// The weapon stepped to this `AltModes` mode (attack2, or a sniper
@@ -1423,7 +1437,7 @@ fn apply_zoom(
 fn ragdoll_shots(mut events: MessageReader<WeaponEvent>, mut shots: MessageWriter<crate::map::RagdollShot>) {
     for e in events.read() {
         if let WeaponEventKind::Shot { from, to, .. } | WeaponEventKind::ShotContinued { from, to, .. } = e.kind {
-            shots.write(crate::map::RagdollShot { from, to, blast: false });
+            shots.write(crate::map::RagdollShot::bullet(from, to));
         }
     }
 }
