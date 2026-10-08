@@ -239,7 +239,6 @@ impl Plugin for ClientPlugin {
                 radar::RadarPlugin,
                 effects::ShotEffectsPlugin,
                 view::ViewPlugin,
-                interp::ClientInterpPlugin,
             ))
             .add_plugins((
                 buy_menu::BuyMenuPlugin,
@@ -256,6 +255,7 @@ impl Plugin for ClientPlugin {
                 options::VideoPlugin,
                 window_icon::WindowIconPlugin,
             ))
+            .add_plugins(interp::ClientInterpPlugin)
             .add_systems(PostStartup, spawn_local_player)
             .add_systems(Update, (follow_eye, zoom_camera).after(spectate::SpectateSet));
 
