@@ -21,6 +21,10 @@ const MASS: f32 = 3.0;
 /// Friction (averaged with the world's 0.5): a guess that lets a shot
 /// weapon slide over the ground as CS:S's do (unmeasured).
 const FRICTION: f32 = 0.5;
+/// Swept collision only above these speeds (m/s, rad/s): slower, an item
+/// moves under a centimetre a tick, which the contact margin catches.
+const CCD_SPEED: f32 = 0.5;
+const CCD_SPIN: f32 = 6.0;
 
 #[derive(Resource, Default)]
 pub(super) struct LooseAssets(pub(super) HashMap<String, LooseAsset>);
@@ -84,8 +88,11 @@ pub(super) fn attach_loose(
             LinearDamping(0.1),
             AngularDamping(0.5),
             // Small and fast when shot: swept so it can't pass through
-            // thin surfaces.
-            SweptCcd::default(),
+            // thin surfaces. Only while it moves: unthresholded, every
+            // resting item swept itself against everything its box touches
+            // each tick (the world's colliders included; 250 placed
+            // weapons on mg_swag_multigames_v1: 19 ms a tick).
+            SweptCcd::default().with_velocity_threshold(CCD_SPEED, CCD_SPIN),
             MaxLinearSpeed(2000.0 * 0.0254),
             MaxAngularSpeed(3600f32.to_radians()),
             PhysicsProp {

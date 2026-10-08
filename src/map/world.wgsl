@@ -186,6 +186,13 @@ const BASIS_2 = vec3<f32>(-0.40824829, -0.70710678, 0.57735027);
 
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
+    // WindowImposter: the cubemap seen through the surface in the view
+    // direction (as if infinitely far), unlit and without fog.
+    if params.envmap > 1.5 {
+        let d = in.world_position.xyz - view.world_position;
+        let c = textureSample(envmap_texture, envmap_sampler, vec3<f32>(d.x, -d.z, d.y)).rgb;
+        return vec4<f32>(c * params.envmap_tint.rgb, out_alpha(1.0));
+    }
     var albedo = textureSample(base_texture, base_sampler, in.uv) * params.base_color;
     // WorldVertexTransition: blend toward the second texture by the vertex
     // alpha, optionally shaped by the mask (green: transition point, red:
