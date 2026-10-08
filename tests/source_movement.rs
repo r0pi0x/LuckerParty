@@ -595,3 +595,39 @@ fn no_fall_damage_into_water() {
         "hurt landing in water"
     );
 }
+
+/// Landing feedback (movement spec "Falling and landing", sound spec
+/// "Landing"): the view rolls by fall speed × 0.013° and springs back; a
+/// landing that takes health plays `Player.FallDamage`, one that doesn't
+/// is silent about it.
+#[test]
+fn hard_landings_roll_the_view_and_play_the_damage_sound() {
+    use mashup::map::PlaySound;
+    #[derive(Resource, Default)]
+    struct Heard(Vec<String>);
+    fn hear(mut sounds: MessageReader<PlaySound>, mut heard: ResMut<Heard>) {
+        heard.0.extend(sounds.read().map(|s| s.entry.clone()));
+    }
+    // (start speed, measured fall speed, takes damage)
+    for (start, fall, hurt) in [(400.0f32, 460.0f32, false), (800.0, 836.0, true)] {
+        let mut sim = Sim::new((TestMap, SourceMovementPlugin));
+        sim.set_tick_interval(mashup::games::cs_source::TICK_INTERVAL);
+        sim.app.init_resource::<Heard>().add_systems(Last, hear);
+        let p = sim.spawn_character(to_engine(Vec3::new(0.0, -3000.0, 40.0 + 36.0)), movement::ID);
+        sim.app.world_mut().get_mut::<Velocity>(p).unwrap().0 = to_engine(Vec3::Z * -start);
+        let mut most = 0.0f32;
+        for _ in 0..20 {
+            sim.ticks(1);
+            most = most.max(sim.state(p).view_roll);
+        }
+        close(most.to_degrees(), fall * 0.013, 0.05, &format!("start {start}: landing roll"));
+        sim.seconds(2.0);
+        assert!(sim.state(p).view_roll.abs() < 1e-3, "the roll springs back");
+        let heard = &sim.app.world().resource::<Heard>().0;
+        assert_eq!(
+            heard.iter().any(|s| s == "Player.FallDamage"),
+            hurt,
+            "start {start}: {heard:?}"
+        );
+    }
+}

@@ -19,7 +19,7 @@ use crate::{
     map::hud::{ActiveHud, GameMenus, UiControl, UiKind, UiLayout, layout_key},
     weapon::{
         Armor, Inventory, Weapon, WeaponRegistry,
-        economy::{BuyWindow, Money, Prices},
+        economy::{AMMO_BUYS, BuyWindow, Money, Prices},
     },
 };
 
@@ -118,12 +118,23 @@ struct BuyState<'a> {
     console: &'a Console,
     money: Option<u32>,
     team: Option<u8>,
+    /// The weapons carried: (slot, ID).
+    held: Vec<(u8, &'static str)>,
 }
 
 impl BuyState<'_> {
     /// Price of what a `buy X` command gets, if it is for sale to us.
+    /// Ammo (`primammo`, `secammo`) costs a box for the weapon carried in
+    /// its slot.
     fn price(&self, command: &str) -> Option<u32> {
         let what = command.strip_prefix("buy ")?.trim();
+        if let Some((_, slot, _)) = AMMO_BUYS.iter().find(|(n, ..)| n.eq_ignore_ascii_case(what)) {
+            return self
+                .held
+                .iter()
+                .find_map(|(s, id)| (*s == *slot).then(|| self.prices.ammo.get(id))?)
+                .map(|b| b.price);
+        }
         let id = priced(what, self.registry)?;
         if self
             .prices
@@ -156,6 +167,12 @@ impl BuyState<'_> {
         };
         s
     }
+}
+
+/// The weapons in an inventory: (slot, ID).
+fn held_slots(inv: Option<&Inventory>, weapons: &Query<&Weapon>) -> Vec<(u8, &'static str)> {
+    inv.map(|i| i.weapons.iter().filter_map(|w| weapons.get(*w).ok()).map(|w| (w.slot, w.id)).collect())
+        .unwrap_or_default()
 }
 
 /// What pressing one of the game's buttons does.
@@ -348,7 +365,10 @@ fn keys(
     (open, typing): (Res<VguiOpen>, Typing),
     mut menu: ResMut<BuyMenu>,
     (prices, registry, hud, mut console): (Res<Prices>, Res<WeaponRegistry>, Option<Res<ActiveHud>>, ResMut<Console>),
-    player: Option<Single<(Option<&Team>, Option<&Money>), With<LocalPlayer>>>,
+    (player, weapons): (
+        Option<Single<(Option<&Team>, Option<&Money>, Option<&Inventory>), With<LocalPlayer>>>,
+        Query<&Weapon>,
+    ),
     mut slots: Local<Option<Vec<(&'static str, u8)>>>,
     mut commands: Commands,
 ) {
@@ -391,6 +411,7 @@ fn keys(
             console: &console,
             money: player.as_ref().and_then(|p| p.1).map(|m| m.0),
             team,
+            held: held_slots(player.as_ref().and_then(|p| p.2), &weapons),
         };
         let pressed = super::vgui::hotkey_button(page, key, &mut |c| state.shown(c)).and_then(|c| c.command.clone());
         if let Some(command) = pressed {
@@ -640,6 +661,7 @@ fn draw_vgui(
         console: &console,
         money,
         team,
+        held: held_slots(inv, &weapons),
     };
     let painter = Painter::new(hud, menus, fonts.as_deref(), h);
     if drawn.page != key || roots.is_empty() {
@@ -897,6 +919,7 @@ mod tests {
             console: &console,
             money: Some(800),
             team: Some(2),
+            held: Vec::new(),
         };
         let enabled = |c: &str| state.shown(&button("b", '1', c)).enabled;
         assert!(enabled("buy vest"));
@@ -908,6 +931,21 @@ mod tests {
         assert!(!enabled("autobuy"), "no such command");
         assert_eq!(action("Resource\\UI/X.res"), Action::Page("resource/ui/x.res".into()));
         assert_eq!(action("buy ak47"), Action::Buy("ak47".into()));
+        // Ammo: a box for the gun in that slot, when one is carried.
+        assert!(!enabled("buy primammo"), "no primary weapon");
+        let mut prices = prices.clone();
+        prices.ammo.insert(
+            "cs_source:weapon_ak47",
+            crate::weapon::economy::AmmoBox { price: 80, rounds: 30 },
+        );
+        let armed = BuyState {
+            prices: &prices,
+            held: vec![(0, "cs_source:weapon_ak47")],
+            ..state
+        };
+        assert_eq!(armed.price("buy primammo"), Some(80));
+        assert!(armed.shown(&button("b", '6', "buy primammo")).enabled);
+        assert!(!armed.shown(&button("b", '7', "buy secammo")).enabled, "no pistol");
     }
 
     #[test]

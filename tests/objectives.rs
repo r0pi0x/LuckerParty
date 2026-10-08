@@ -451,9 +451,10 @@ fn the_carrier_drops_the_bomb_and_only_terrorists_take_it() {
     assert_eq!(loose.len(), 1, "the bomb on the ground");
     assert!(first(&sim, |e| *e == ObjectiveEvent::DroppedBomb { who: t }).is_some());
     let (bomb, at) = loose[0];
-    // O11: a CT walks over it: nothing.
+    // O11: a CT walks over it: nothing (also once it is touchable, 1 s
+    // after the drop: specs/cs_source/weapons.md 3.9).
     let ct = character(&mut sim, at + Vec3::Y * 0.5, 2);
-    sim.ticks(20);
+    sim.ticks(80);
     assert!(sim.app.world().get::<Weapon>(bomb).unwrap().owner.is_none());
     teleport(&mut sim, ct, Vec3::new(-20.0, 1.0, 0.0));
     // O12: a terrorist takes it, into its slot, his hand unchanged.

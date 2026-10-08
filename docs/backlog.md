@@ -9,21 +9,9 @@ plan when work starts; delete them when done.
 ## 0. Playtest feedback (2026-10-07), top priority
 
 CS:S feel:
-- Overlapping impact decals flicker when the camera turns (same depth:
-  draw them in creation order, each a hair above the last, as Source does).
-- Fall damage gives no feedback: CS:S's damage sound, view punch and HUD
-  damage indicator (measure on the probe server; the fall damage spec
-  lists the landing punch as unmeasured).
-- Buying ammo: the game-look buy menu has no ammo entries; CS:S buys ammo
-  with `,` (`buyammo1`) and `.` (`buyammo2`) binds, which we lack.
-- Scout/AWP scope overlay leaves a few pixels of the scene showing at its
-  top, left, right and bottom edges.
-- Weapon pickup: walking over a dropped gun should take it when that slot
-  is free (specs/cs_source/weapons.md 3.9: touch box, one weapon per slot,
-  line of sight, touchable 1 s after a drop); check ours. CS:S has no
-  +use pickup (CS:GO added it); if wanted, an option, off by default.
-- The window/taskbar icon: CS:S's, loaded at run time from the install
-  (never committed).
+- Optional `+use` pickup of dropped weapons (CS:GO's; CS:S has none): a
+  cvar such as `mashup_usepickup`, off by default, reaching farther than
+  the touch box.
 
 ## 1. Playtest essentials
 

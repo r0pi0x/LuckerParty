@@ -1,5 +1,13 @@
 # Lucker Party
 
+> [!WARNING]
+> ## 🤖⚠️ This entire repository is AI-generated ⚠️🤖
+>
+> **Every file here (code, shaders, tests, specs and docs) was written by AI
+> coding agents (Claude). No code has been reviewed by a human.** Expect the
+> mistakes and quirks that come with that, and review anything before
+> relying on it.
+
 Exploratory design for building minigames out of other games' assets, behavior
 and UI, and mixing those parts across games; "mashup" is the engine and dev
 sandbox it runs on. Everything here is a prototype: allowed to be messy, and

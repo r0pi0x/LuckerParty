@@ -30,6 +30,7 @@ pub mod team_menu;
 pub mod vgui;
 pub mod view;
 pub mod weapon_select;
+pub mod window_icon;
 
 use std::path::PathBuf;
 
@@ -231,6 +232,7 @@ impl Plugin for ClientPlugin {
                 spectate::SpectatePlugin,
                 hdr::HdrPlugin,
                 options::VideoPlugin,
+                window_icon::WindowIconPlugin,
             ))
             .add_systems(PostStartup, spawn_local_player)
             .add_systems(Update, (follow_eye, zoom_camera).after(spectate::SpectateSet));
@@ -406,11 +408,12 @@ fn follow_eye(
     for (at, intent, state, children, punch) in &players {
         // Recoil kicks the view (pitch up, yaw left).
         let p = punch.map_or(Vec2::ZERO, |p| p.0);
+        // A hard landing rolls it (Source's roll turns it clockwise).
         let look = Quat::from_euler(
             EulerRot::YXZ,
             intent.yaw + p.y + free.yaw,
             intent.pitch + p.x + free.pitch,
-            0.0,
+            -state.view_roll,
         );
         let look = view::camera_look(&mode, look);
         let offset = view::camera_offset(&mode, at.translation, state.eye_offset, look, &spatial, &characters);

@@ -101,3 +101,11 @@ players (spawnflags without bit 1, when not 0).
 2. Whether armour reduces trigger_hurt damage (drown type), and whether
    other damage types differ.
 3. Whether the half-second timer is per trigger (shared) or per toucher.
+4. Feedback on a damaging landing (implementation guesses, for the
+   coordinator to measure on the probe server or a client demo): does
+   `Player.FallDamage` play on every landing that takes health (and not on
+   one that takes none, e.g. god mode)? Is the landing view roll
+   fall speed × 0.013° (the shared code's), with which sign, and does it
+   decay by the shared punch spring (damping 9, spring 65)? Which HUD
+   damage indicators light for a fall (ours: all four), and does the
+   health panel run `HealthTookDamage` (scripts/HudAnimations.txt) for it?
