@@ -129,10 +129,12 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
 
 Plan: [plans/active/multiplayer.md](plans/active/multiplayer.md)
 (bevy_replicon + renet; Source-style prediction, interpolation and lag
-compensation of our own; slices 0-9). Not started; its open questions
-wait on the user. Slice 0 (command-time weapon timers, spread seeds from
-command numbers, a replayable movement/weapon schedule) helps without
-networking too.
+compensation of our own; slices 0-9). Slices 0 and 1 done: a listen
+server (maxplayers 4; map <name>) and the dedicated mashup_server,
+connect <ip[:port]>, characters replicated and drawn where the server
+puts them (docs/OBSERVABILITY.md, Network play). Next: slice 2 (usercmds
+bound to ticks, prediction and reconciliation). Open questions 1, 3 and 4
+still wait on the user; 2 was taken as both (listen first, dedicated too).
 
 ## 3. Weapons, remaining
 

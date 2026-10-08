@@ -123,7 +123,8 @@ pub struct MovingSolid {
     pub solid: bool,
 }
 
-#[derive(Component, Reflect, Clone, Copy, Debug)]
+// Serde: replicated to clients (`net`).
+#[derive(Component, Reflect, Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[reflect(Component)]
 pub struct Health {
     /// 1.0 is a standard player's full health (README normalization rules).
@@ -137,7 +138,7 @@ impl Default for Health {
     }
 }
 
-#[derive(Component, Reflect, Default, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Component, Reflect, Default, Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[reflect(Component)]
 pub struct Team(pub u8);
 

@@ -1,0 +1,422 @@
+//! The server side: listening, the join handshake, a character per
+//! client, intents from clients, and what characters replicate.
+
+use std::{
+    net::{Ipv4Addr, SocketAddr, UdpSocket},
+    time::SystemTime,
+};
+
+use bevy::prelude::*;
+use bevy_replicon::{prelude::*, shared::backend::connected_client::NetworkId};
+use bevy_replicon_renet::{
+    RenetServer,
+    netcode::{NetcodeServerTransport, ServerAuthentication, ServerConfig},
+};
+
+use super::{
+    HOST_ID, Join, NET_VERSION, NetBody, NetCharacter, NetEvent, NetIntent, NetSettings, NetVersion, PROTOCOL_ID,
+    Refused, Welcome, body_flags, current_map,
+};
+use crate::{
+    character::character_bundle,
+    core::{Health, Intent, LocalPlayer, MovementState, NetRole, Seed, SimSet, Team, Velocity},
+    objectives::hostages::Hostage,
+    rules::Dead,
+    slots::{Loadout, set_movement},
+    weapon::Inventory,
+};
+
+pub(super) fn plugin(app: &mut App) {
+    app.add_observer(join)
+        .add_observer(left)
+        .add_systems(Update, drop_refused.run_if(in_state(ServerState::Running)))
+        .add_systems(
+            PreUpdate,
+            receive_intents
+                .after(ServerSystems::Receive)
+                .run_if(in_state(ServerState::Running)),
+        )
+        // Before the rules, which may hold the intent (the dead, freeze
+        // time), as bots write theirs.
+        .add_systems(
+            FixedUpdate,
+            apply_intents
+                .before(SimSet::Rules)
+                .run_if(resource_equals(NetRole::Server)),
+        )
+        .add_systems(
+            PostUpdate,
+            (replicate_characters, write_bodies)
+                .chain()
+                .before(ServerSystems::Send)
+                .run_if(resource_equals(NetRole::Server)),
+        );
+}
+
+/// On a client's server-side entity (replicon's `ConnectedClient`): its
+/// player's name and character.
+#[derive(Component, Debug)]
+pub struct Player {
+    pub name: String,
+    pub character: Entity,
+}
+
+/// On a refused client's entity: when it was told (`drop_refused`).
+#[derive(Component, Debug)]
+struct RefusedAt(f64);
+
+/// How long a refused client has to hear why before it is dropped, s.
+const REFUSED_GRACE: f64 = 1.0;
+
+/// Drop refused clients that didn't hang up.
+fn drop_refused(q: Query<(Entity, &RefusedAt)>, time: Res<Time<Real>>, mut out: MessageWriter<DisconnectRequest>) {
+    let now = time.elapsed_secs_f64();
+    for (client, at) in &q {
+        if now - at.0 >= REFUSED_GRACE {
+            out.write(DisconnectRequest { client });
+        }
+    }
+}
+
+/// On a remote player's character: the latest intent its client sent.
+#[derive(Component, Debug, Default)]
+pub struct RemoteIntent(pub Option<NetIntent>);
+
+/// Start serving the loaded map on `hostport` (a listen server: this
+/// process's own player plays too). Fails if a network game is running
+/// or the port is taken.
+pub fn listen(world: &mut World) -> Result<SocketAddr, String> {
+    let port = world.resource::<NetSettings>().hostport;
+    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, port)).map_err(|e| format!("UDP port {port}: {e}"))?;
+    let addr = socket.local_addr().map_err(|e| e.to_string())?;
+    let max_clients = remote_slots(world);
+    let config = ServerConfig {
+        current_time: SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default(),
+        max_clients,
+        protocol_id: PROTOCOL_ID,
+        // Direct IP and LAN, as Source's game traffic: no encryption.
+        // Secure connect tokens come with a matchmaker (plan slice 9).
+        public_addresses: vec![addr],
+        authentication: ServerAuthentication::Unsecure,
+    };
+    let transport = NetcodeServerTransport::new(config, socket).map_err(|e| e.to_string())?;
+    start(world)?;
+    world.insert_resource(transport);
+    world.write_message(NetEvent::Listening(addr));
+    Ok(addr)
+}
+
+/// Become the server with renet's `RenetServer` (a transport is added by
+/// the caller: netcode in `listen`, memory in tests).
+pub fn start(world: &mut World) -> Result<(), String> {
+    if super::active(world) {
+        return Err("already in a network game (disconnect first)".into());
+    }
+    let config = super::connection_config(world);
+    world.insert_resource(RenetServer::new(config));
+    world.insert_resource(NetRole::Server);
+    Ok(())
+}
+
+/// Remote players the server takes: `maxplayers`, less the host's own
+/// slot on a listen server (one with a local player).
+fn remote_slots(world: &mut World) -> usize {
+    let max = world.resource::<NetSettings>().maxplayers.max(1) as usize;
+    let host = world.query_filtered::<(), With<LocalPlayer>>().iter(world).count();
+    max.saturating_sub(host).max(1)
+}
+
+/// Stop serving: clients are told and dropped, their characters go.
+pub(super) fn stop(world: &mut World) {
+    if let Some(mut transport) = world.remove_resource::<NetcodeServerTransport>() {
+        if let Some(mut server) = world.get_resource_mut::<RenetServer>() {
+            transport.disconnect_all(&mut server);
+        }
+    }
+    if let Some(memory) = world.remove_resource::<super::memory::MemoryServer>()
+        && let Some(server) = world.get_resource::<RenetServer>()
+    {
+        memory.hang_up(server);
+    }
+    world.remove_resource::<RenetServer>();
+    let clients: Vec<Entity> = world
+        .query_filtered::<Entity, With<ConnectedClient>>()
+        .iter(world)
+        .collect();
+    for c in clients {
+        despawn_player(world, c);
+        world.despawn(c);
+    }
+    // What stays (the host, bots) stops replicating.
+    let replicated: Vec<Entity> = world.query_filtered::<Entity, With<Replicated>>().iter(world).collect();
+    for e in replicated {
+        world.entity_mut(e).remove::<(Replicated, NetCharacter, NetBody)>();
+    }
+}
+
+/// A connected client says who it is: refused (another version or
+/// protocol, the server full) or let in with a character.
+fn join(join: On<FromClient<Join>>, mut commands: Commands) {
+    let Some(client) = join.client_id.entity() else {
+        return;
+    };
+    let msg = join.message.clone();
+    commands.queue(move |world: &mut World| admit(world, client, msg));
+}
+
+fn admit(world: &mut World, client: Entity, msg: Join) {
+    let ours = world.resource::<NetVersion>().0.clone();
+    let protocol = *world.resource::<ProtocolHash>();
+    let refuse = if msg.version != ours {
+        Some(format!(
+            "Your game is version {} but the server's is {ours}: update the one that's older.",
+            msg.version
+        ))
+    } else if msg.protocol != protocol {
+        Some(format!(
+            "Your game's network protocol differs from the server's ({NET_VERSION})."
+        ))
+    } else if world.get::<Player>(client).is_some() {
+        return;
+    } else {
+        let taken = world.query_filtered::<(), With<Player>>().iter(world).count();
+        (taken >= remote_slots(world)).then(|| "Server is full.".to_string())
+    };
+    let id = world.get::<NetworkId>(client).map_or(0, |n| n.get());
+    if let Some(reason) = refuse {
+        info!("refused client {id} ({}): {reason}", msg.name);
+        world.commands().server_trigger(ToClients {
+            targets: SendTargets::Single(ClientId::Client(client)),
+            message: Refused { reason },
+        });
+        // Dropped a moment later: the client hangs up when it hears why,
+        // and a disconnect sent now could overtake the reason.
+        let at = world.resource::<Time<Real>>().elapsed_secs_f64();
+        world.entity_mut(client).insert(RefusedAt(at));
+        return;
+    }
+    let name = clean_name(&msg.name, id);
+    let character = spawn_player(world, id, &name);
+    world.entity_mut(client).insert((
+        AuthorizedClient,
+        Player {
+            name: name.clone(),
+            character,
+        },
+    ));
+    let map = current_map(world);
+    let map_hash = if map == super::GREYBOX {
+        None
+    } else {
+        world.get_resource::<crate::map::MapFile>().and_then(|f| f.hash)
+    };
+    let tick_interval = world.resource::<Time<Fixed>>().timestep().as_secs_f64();
+    world.commands().server_trigger(ToClients {
+        targets: SendTargets::Single(ClientId::Client(client)),
+        message: Welcome {
+            map,
+            map_hash,
+            tick_interval,
+            you: id,
+        },
+    });
+    info!("{name} joined (client {id})");
+}
+
+/// A printable name of at most 32 characters, or "Player <id>".
+fn clean_name(name: &str, id: u64) -> String {
+    let n: String = name.chars().filter(|c| !c.is_control()).take(32).collect();
+    let n = n.trim();
+    if n.is_empty() {
+        format!("Player {id}")
+    } else {
+        n.to_string()
+    }
+}
+
+/// A remote player's character: on the team with fewer players, dead
+/// until the rules put it at a spawn point (next tick, with its weapons).
+fn spawn_player(world: &mut World, id: u64, name: &str) -> Entity {
+    let mut counts = [0usize; 2];
+    for (team, hostage) in world.query::<(&Team, Has<Hostage>)>().iter(world) {
+        if !hostage && (1..=2).contains(&team.0) {
+            counts[team.0 as usize - 1] += 1;
+        }
+    }
+    // Counter-terrorists (2) on a tie, as the local player starts.
+    let team = if counts[0] < counts[1] { Team(1) } else { Team(2) };
+    let movement = world
+        .get_resource::<Loadout>()
+        .map_or(crate::movement::placeholder::ID, |l| l.movement);
+    let e = world
+        .spawn((
+            character_bundle(Transform::default(), team),
+            // Command numbers and shared randoms differ per player.
+            Seed(0x5EED_0000_0000_0000 ^ id),
+            Dead { since: f64::MIN },
+            RemoteIntent::default(),
+            Replicated,
+            NetCharacter {
+                owner: Some(id),
+                name: name.to_string(),
+            },
+            NetBody::default(),
+        ))
+        .id();
+    world.entity_mut(e).insert(Name::new(name.to_string()));
+    set_movement(e, movement).apply(world);
+    e
+}
+
+/// A client left (or was dropped): its character and weapons go.
+fn left(remove: On<Remove, ConnectedClient>, players: Query<&Player>, mut commands: Commands) {
+    let Ok(p) = players.get(remove.entity) else { return };
+    info!("{} left", p.name);
+    let character = p.character;
+    commands.queue(move |world: &mut World| despawn_character(world, character));
+}
+
+fn despawn_player(world: &mut World, client: Entity) {
+    if let Some(character) = world.get::<Player>(client).map(|p| p.character) {
+        despawn_character(world, character);
+    }
+}
+
+/// A character and the weapons it carries.
+fn despawn_character(world: &mut World, character: Entity) {
+    let weapons = world
+        .get::<Inventory>(character)
+        .map(|i| i.weapons.clone())
+        .unwrap_or_default();
+    for w in weapons {
+        if let Ok(e) = world.get_entity_mut(w) {
+            e.despawn();
+        }
+    }
+    if let Ok(e) = world.get_entity_mut(character) {
+        e.despawn();
+    }
+}
+
+/// Keep each remote player's latest intent.
+fn receive_intents(
+    mut intents: MessageReader<FromClient<NetIntent>>,
+    players: Query<&Player>,
+    mut remote: Query<&mut RemoteIntent>,
+) {
+    for msg in intents.read() {
+        let Some(client) = msg.client_id.entity() else {
+            continue;
+        };
+        let Ok(p) = players.get(client) else { continue };
+        if let Ok(mut r) = remote.get_mut(p.character) {
+            r.0 = Some(msg.message.clone());
+        }
+    }
+}
+
+/// Remote players' intents for this tick (the latest each sent).
+fn apply_intents(mut q: Query<(&RemoteIntent, &mut Intent)>) {
+    for (remote, mut intent) in &mut q {
+        if let Some(r) = &remote.0 {
+            r.apply(&mut intent);
+        }
+    }
+}
+
+/// Characters this server didn't spawn for a client (the host's, bots)
+/// replicate too.
+#[allow(clippy::type_complexity)]
+fn replicate_characters(
+    q: Query<
+        (Entity, Option<&Name>, Has<LocalPlayer>),
+        (With<Intent>, With<Health>, Without<Replicated>, Without<Hostage>),
+    >,
+    settings: Res<NetSettings>,
+    mut commands: Commands,
+) {
+    for (e, name, local) in &q {
+        let name = if local {
+            settings.name.clone()
+        } else {
+            name.map_or_else(|| "Character".into(), |n| n.as_str().to_string())
+        };
+        commands.entity(e).insert((
+            Replicated,
+            NetCharacter {
+                owner: local.then_some(HOST_ID),
+                name,
+            },
+            NetBody::default(),
+        ));
+    }
+}
+
+/// The simulation's state of each character into what replicates.
+fn write_bodies(mut q: Query<(&Transform, &Velocity, &MovementState, &Intent, Has<Dead>, &mut NetBody)>) {
+    for (t, v, s, i, dead, mut body) in &mut q {
+        let mut flags = 0;
+        for (on, bit) in [
+            (s.on_ground, body_flags::ON_GROUND),
+            (s.crouching, body_flags::CROUCHING),
+            (s.on_ladder, body_flags::ON_LADDER),
+            (dead, body_flags::DEAD),
+        ] {
+            if on {
+                flags |= bit;
+            }
+        }
+        let now = NetBody {
+            origin: t.translation.to_array(),
+            velocity: v.0.to_array(),
+            yaw: i.yaw,
+            pitch: i.pitch,
+            eye: s.eye_offset.to_array(),
+            flags,
+        };
+        body.set_if_neq(now);
+    }
+}
+
+/// A connected player, for `status` and the scoreboard.
+#[derive(Clone, Debug)]
+pub struct PlayerInfo {
+    pub id: u64,
+    pub name: String,
+    /// Round trip, ms (None for the host).
+    pub ping_ms: Option<f64>,
+    pub loss: f64,
+}
+
+/// The host (on a listen server) and every joined client.
+pub fn players(world: &mut World) -> Vec<PlayerInfo> {
+    let mut out = Vec::new();
+    let host = world.resource::<NetSettings>().name.clone();
+    if world
+        .query_filtered::<(), With<LocalPlayer>>()
+        .iter(world)
+        .next()
+        .is_some()
+    {
+        out.push(PlayerInfo {
+            id: HOST_ID,
+            name: host,
+            ping_ms: None,
+            loss: 0.0,
+        });
+    }
+    for (p, id, stats) in world
+        .query::<(&Player, &NetworkId, Option<&ConnectedClientStats>)>()
+        .iter(world)
+    {
+        out.push(PlayerInfo {
+            id: id.get(),
+            name: p.name.clone(),
+            ping_ms: stats.map(|s| s.rtt * 1000.0),
+            loss: stats.map_or(0.0, |s| s.packet_loss),
+        });
+    }
+    out
+}

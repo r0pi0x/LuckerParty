@@ -10,6 +10,8 @@ file says where things are and which way dependencies may point.
               |
    harness    |    games/<name>   (one module per game)
       \       |       /    \
+       net ---'      /      \       (net: transport, replication, join handshake)
+        |           /        \
        bot   rules   logic  movement   greybox   mount   (mount: VFS, local config)
         |      |       |      |          |
         |  objectives  |      |          |      (objectives: bomb, hostages, zones)
@@ -27,7 +29,11 @@ file says where things are and which way dependencies may point.
              core                (shared vocabulary)
 ```
 
-Exact edges: bot uses core, console, slots, character, map, weapon (grenades
+Exact edges: net uses everything the simulation has (core, console,
+slots, character, movement, map, weapon, objectives, rules, bot, logic),
+and harness and client use net (games/<name> will, to register what they
+replicate: add it to their `ALLOWED` entry then); bot uses core, console,
+slots, character, map, weapon (grenades
 it carries and throws), objectives (planting, defusing); rules uses core,
 console, weapon, objectives; objectives uses core, console, slots,
 character, map, weapon (games use it too, to fill in their bomb and
@@ -98,7 +104,7 @@ A module may use only the modules below it. Enforced by
 | `src/map/water.rs`, `water.wgsl` | Water surfaces for any game (Source's Water shader): `MapWaterMaterial` from the game; refraction from the main view's opaque colour and depth prepass (height fog rebuilt per pixel), planar reflection by a mirrored camera (`WaterReflectionCamera`, oblique clip at the surface, world brushes on `REFLECT_LAYER`), the cheap cubemap pass by distance, Fresnel and shore fade; 3D skybox water samples the main view's planar reflection over the fog colour; under water (`WaterView`) the view clears to the water's fog colour, what lies below the surface takes its fog, and the material's `$underwateroverlay` (`MapScreenWarp`, `ScreenWarpMaterial`, screen_warp.wgsl) warps the finished frame from the view-model camera's transmissive phase; when the near plane crosses a surface from above (`WaterView::intersect`) what lies below takes the water's height fog and that surface reads it already fogged; `WaterSettings` (the water cvars, registered by the client: `r_waterforceexpensive`, `r_waterforcereflectentities`, `r_WaterDrawReflection`, `r_WaterDrawRefraction`, `mat_drawwater`); surfaces drawn only by main views (`WATER_LAYER`) |
 | `src/map/fire.rs` | `MapFires`: the fires (floor point, size) and burning entities (their box) the logic says burn now, for a game to draw; `map::MapTraceSkip` (in `mod.rs`) lists the collision brushes line traces pass (player clips, grates), for the logic's static world |
 | `src/map/fog.rs`, `fog.wgsl` | Source's fog shared by map shaders (`mashup::fog::source_fog`): world range fog, the water's range fog under water and height fog at the surface; `SceneFog` (set by the map and `water::underwater_fog`) pushed to rope, decal and particle materials |
-| `src/map/mod.rs` | `MapData` (meters, Y up, meshes per material (spawned in chunks, see `vis`; one material asset per distinct material, brush entities' meshes included, so they draw in batches), visibility, textures, lightmap atlas (with each switchable light style's share, `MapLightStyle`; `relight` rebuilds the lightmap images when `LightStyles` change), collision, prop models (skin families' looks, body parts, a `MapRig` skeleton for animated props) and placements, spawns, ropes, the `MapLightField` light-at-a-point query, muzzle flash and shell data) and `MapPlugin` that spawns it (re-exports the `core` collision types); what the logic switches: sprites and dust (`EntityPart`, `switch_parts`), prop skins and body groups (`PropLook`, `apply_prop_looks`), animated props' sequences (`PropSequence`, `animate_props`: joints posed from a `map::anim::Animator`, back to the default sequence when one ends); prop entities keep their exact movement brushes on their node (`core::MovingSolid`, still) so a removed one stops blocking; character bodies (the local player's hidden unless `ShowLocalBody`, which also removes the view model in third person; by team, or by `BodyName` for models only named characters use: hostages) |
+| `src/map/mod.rs` | `MapData` (the file's SHA-256 for the network handshake, kept as `MapFile` while loaded; meters, Y up, meshes per material (spawned in chunks, see `vis`; one material asset per distinct material, brush entities' meshes included, so they draw in batches), visibility, textures, lightmap atlas (with each switchable light style's share, `MapLightStyle`; `relight` rebuilds the lightmap images when `LightStyles` change), collision, prop models (skin families' looks, body parts, a `MapRig` skeleton for animated props) and placements, spawns, ropes, the `MapLightField` light-at-a-point query, muzzle flash and shell data) and `MapPlugin` that spawns it (re-exports the `core` collision types); what the logic switches: sprites and dust (`EntityPart`, `switch_parts`), prop skins and body groups (`PropLook`, `apply_prop_looks`), animated props' sequences (`PropSequence`, `animate_props`: joints posed from a `map::anim::Animator`, back to the default sequence when one ends); prop entities keep their exact movement brushes on their node (`core::MovingSolid`, still) so a removed one stops blocking; character bodies (the local player's hidden unless `ShowLocalBody`, which also removes the view model in third person; by team, or by `BodyName` for models only named characters use: hostages) |
 | `src/map/anim.rs` | Skeletal animation for any game: `AnimSet` (sampled animations, sequences on pose-parameter grids, autolayers), the blend/layer math, and the `Animator` component that `pose_bodies` turns into body joint transforms; games drive it in `DriveAnimation` |
 | `src/map/view_model.rs` | First-person view models for any game: `MapViewModel` (skinned meshes in eye space, own skeleton, `AnimSet`, handedness, attachments, lighting origin), `ViewModels`, the `ViewAnimator` and `ViewModelOffset` (bob/sway) games drive on each character, `ViewModelSettings` (FOV, hand, draw), and the drawing at a `ViewModelAnchor` camera (another character's with `ViewModelSource` on it: a spectator in first person; a child camera on `VIEW_MODEL_LAYER` with its own depth and FOV, so the model never clips into walls; mirrored when its hand differs from the player's; lit per pixel by the `LightField` at its lighting origin); muzzle flashes from `ViewModelEvent`s (sprites re-projected into the world view, or at a held weapon's muzzle, and a pooled `DynamicLight`); `ViewModelScreen`: a picture on the model's screen between its `controlpanel0_ll`/`_ur` attachments (Source's VGUI screens; the C4's keypad) |
 | `src/map/loading.rs` | How far a map load has come (`report` from the loader's thread at its stages, `current` for a loading screen) |
@@ -126,18 +132,26 @@ A module may use only the modules below it. Enforced by
 | `src/bin/testmap.rs` | Dev tool: writes the entity test map `tools/testmap/mashup_logic_test.vmf` (compiled on Windows by `scripts/compile_testmap.ps1`) |
 | `src/bin/dump.rs` | Dev tool: summarize, list and extract a game install's files; `--sequences` lists a model's bones and sequences |
 | `src/bin/mapsweep.rs` | Dev tool: load every map in the content cache headless (each under `catch_unwind`), run its logic a few seconds, and report load errors, warnings by kind, unhandled entity classes, logic complaints and counts (`target/mapsweep/report.md`, `.csv`); `--shots` adds a screenshot and frame time per map |
-| `src/harness.rs` | `Sim`: headless app stepped by exact fixed ticks, for tests; `Sim::pad` (and `MASHUP_TEST_PAD=<n>` for every `Sim`) spawns entities and a resource first, so a test can check its result doesn't depend on entity ids |
+| `src/net/mod.rs` | Network play (docs/plans/active/multiplayer.md, slice 1): `NetPlugin` (replicon + renet netcode over UDP, `AuthMethod::Custom`), the protocol in registration order (`Join`, `Refused`, `Welcome`, `NetIntent`; replicated `NetCharacter`, `NetBody`, `Team`, `Health`), `NetSettings` (cvars `hostport` 27015, `maxplayers`, `name`), `NET_VERSION` (also in replicon's protocol hash), `NetEvent` for the client layer, `disconnect`, `status`, the `connect`/`listen`/`status` commands, the map id and hash check (`map_matches`) |
+| `src/net/server.rs` | The server: `listen` (netcode, unsecure, `maxplayers` less the host), the join handshake (version, protocol, full; refused with `Refused` and dropped a second later), a character per client (team with fewer players, dead until the rules spawn it, `Seed` from its id), latest `NetIntent` per player made safe into its `Intent` before the rules, the host's and bots' characters marked for replication, `NetBody` written from the simulation each frame, leaving players' characters and weapons removed; `players` for `status` |
+| `src/net/client.rs` | The client: `connect` (netcode, random id; the process's own characters, bots and weapons go), `Join` on connecting, the welcome's map checked (`NetEvent::LoadMap`, then name and SHA-256 or leave), characters from the server given their local components (no movement slot) and ours `LocalPlayer`, `NetBody` into `Transform`/`Velocity`/`MovementState`/others' look and `Dead`, our `Intent` sent once a frame, dropped connections back to single player with the reason |
+| `src/net/memory.rs` | An in-memory renet transport for `NetSim`: a shared `Link` with seeded latency, jitter and loss |
+| `src/client/net.rs` | The game's side of the network: loads the server's map when asked, leaves the menu once joined, back to the main menu with a fresh local player when dropped; `listen_if_hosting` after a map loads with `maxplayers` > 1 |
+| `src/bin/mashup_server.rs` | The dedicated server: headless simulation + `net` (`-port`, `+map greybox` or a CS:S map, `+<command>`), console on stdin, output on stdout |
+| `src/harness.rs` | `NetSim`: a server and N clients (each a `Sim`) over `net::memory`, stepped together; `Sim`: headless app stepped by exact fixed ticks, for tests; `Sim::pad` (and `MASHUP_TEST_PAD=<n>` for every `Sim`) spawns entities and a resource first, so a test can check its result doesn't depend on entity ids |
 | `src/client/view.rs` | Third-person camera (`thirdperson`/`firstperson`, `cam_idealdist`, `cam_idealyaw` orbit, `mashup_freecam` detached camera, `mashup_watch` chase camera on a bot, swept back from the eye against the world; spectating while dead (`spectate`) comes before these), master `volume` (Bevy `GlobalVolume`), `mashup_healthbars` |
 | `src/client/` | Local input (mouse look as CS:S: `sensitivity` x `m_yaw`/`m_pitch` degrees per count; Left Alt / `+freelook` turns only the camera; E or `+use` sets `Intent::use_key`; a click grabs the mouse (not while the console, a menu or the debug UI is open, nor on an egui window), Esc opens the game menu, which frees it), first-person camera (FOV from `Zoomed`), debug UI, `--screenshot` and the `screenshot <file>` console command (`capture.rs`), remote protocol; `hud.rs`: crosshair (gap from spread, CS:S's `cl_crosshaircolor` presets, `cl_crosshairscale`, `cl_crosshairalpha` with `cl_crosshairusealpha`, `cl_dynamiccrosshair`), sniper scope overlay, smoke grey and flash white screen tints, health, ammo, hit marker, killfeed, capsule bodies for other characters |
 | `src/lib.rs` | `SimPlugins` (everything the simulation needs) |
-| `src/main.rs` | The game binary: `SimPlugins` + map + `ClientPlugin` |
+| `src/main.rs` | The game binary: `SimPlugins` + map + `NetPlugin` + `ClientPlugin` |
 
 ## Data flow per tick
 
 ```
+PreUpdate:    (server) NetIntent from clients ──> RemoteIntent; (client) replication ──> NetBody,
+              NetBody ──> Transform, Velocity, MovementState, others' look, Dead
 Update:       keyboard/mouse ──> Intent (local player)
 FixedFirst:   (client) drawn transforms ──> the simulation's (map::interp::restore)
-FixedUpdate:  bot brains ──> Intent (before the rules, which hold it)
+FixedUpdate:  bot brains, (server) remote players' RemoteIntent ──> Intent (before the rules, which hold it)
               SimSet::Rules     rounds (new round ──> RoundRestarts, objectives::round_start;
                                 bomb/hostage state ──> round end; FreezeTime, RoundOpen),
                                 respawn; the dead's and (freeze time) everyone's Intent held
@@ -160,7 +174,8 @@ FixedUpdate:  bot brains ──> Intent (before the rules, which hold it)
 FixedPostUpdate: physics step; new contacts of props ──> impact Damage (crush, next tick)
 FixedLast:    (client) Transform, eye, look, punch ──> interpolation samples (last two ticks)
 after fixed loop: (client) samples + overstep fraction ──> drawn Transform, RenderedView
-PostUpdate:   PlaySound ──> one-shots; SoundControl ──> LiveSounds (ambient loops) ──> audio
+PostUpdate:   (server) characters ──> NetBody, replicated; (client) local Intent ──> NetIntent
+              PlaySound ──> one-shots; SoundControl ──> LiveSounds (ambient loops) ──> audio
 Update:       camera <── Intent (local look) + drawn Transform + RenderedView (eye offset, roll, punch)
               Particles stepped (frame time, at most 0.1 s) and drawn
               DriveAnimation  WeaponEvent ──> Animator (bodies), ViewAnimator (view models) ──> joints
