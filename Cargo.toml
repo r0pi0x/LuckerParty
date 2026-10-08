@@ -30,6 +30,30 @@ vmdl = "0.2"
 vmt-parser = "0.2"
 vtf = "0.4"
 
+# Binaries without unit tests: `cargo test` skips building a test harness
+# of each (one more link of the game apiece). A binary that gets tests
+# loses its `test = false`; tests/it/architecture.rs checks this.
+[[bin]]
+name = "mashup"
+path = "src/main.rs"
+test = false
+
+[[bin]]
+name = "dump"
+test = false
+
+[[bin]]
+name = "movecmp"
+test = false
+
+[[bin]]
+name = "refcmp"
+test = false
+
+[[bin]]
+name = "tracesum"
+test = false
+
 [features]
 # Combat Arms loader: developed locally, git-ignored (src/games/combat_arms/).
 # Enable with --features combat_arms where that folder exists.

@@ -65,7 +65,7 @@ fn dust2_a_bomb_lights_the_a_fires_and_they_burn() {
     let mut sim = Sim::new((MapPlugin::new(map), SourceMovementPlugin, CsWeaponsPlugin));
     sim.set_tick_interval(TICK_INTERVAL);
     sim.ticks(2);
-    // Plant at A (as tests/map_objectives.rs) with a 10 s timer.
+    // Plant at A (as tests/it/heavy/map_objectives.rs) with a 10 s timer.
     let t = character(&mut sim, Vec3::new(1160.0, 2480.0, 100.0), 1);
     sim.seconds(0.5);
     give(sim.app.world_mut(), t, C4).unwrap();

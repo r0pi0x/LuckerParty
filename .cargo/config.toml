@@ -1,7 +1,11 @@
 # Fast-build settings, adapted from Bevy 0.19.1's .cargo/config_fast_builds.toml.
 
-# Linux: rustc already uses LLD by default on x86_64-unknown-linux-gnu.
-# To try mold instead (`pacman -S mold`), uncomment:
+# Linux: rustc already links with LLD on x86_64-unknown-linux-gnu. mold
+# links the test binary in 1.6 s instead of 3.0 s (docs/performance.md,
+# "Test cycle"): worth it only where it is installed, so it stays opt-in.
+# Put this in ~/.cargo/config.toml (or here, uncommitted) once mold is on
+# the PATH (`pacman -S mold`, or its release tarball); changing rustflags
+# rebuilds everything once:
 # [target.x86_64-unknown-linux-gnu]
 # rustflags = ["-Clink-arg=-fuse-ld=mold"]
 

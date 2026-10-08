@@ -1,7 +1,7 @@
 //! What first-person view models play, driven by weapon events
 //! (specs/cs_source/weapons.md 3.3–3.8), on the greybox map with stand-in
 //! view models (one bone, sequences named and timed like CS:S's). The real
-//! models are checked in tests/map_de_dust2.rs.
+//! models are checked in tests/it/heavy/map_de_dust2.rs.
 
 use std::sync::Arc;
 

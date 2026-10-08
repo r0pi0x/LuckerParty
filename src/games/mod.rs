@@ -1,5 +1,5 @@
 //! One module per game. A game module never uses another game's module
-//! (enforced by tests/architecture.rs).
+//! (enforced by tests/it/architecture.rs).
 
 #[cfg(feature = "combat_arms")]
 pub mod combat_arms;

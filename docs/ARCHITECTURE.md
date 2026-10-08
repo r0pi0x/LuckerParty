@@ -36,7 +36,7 @@ map (games feed it through `MapData::entities`; harness and client may use
 it); map uses only core.
 
 A module may use only the modules below it. Enforced by
-`tests/architecture.rs` (`ALLOWED`); update both together.
+`tests/it/architecture.rs` (`ALLOWED`); update both together.
 
 - `core` never depends on anything in this crate.
 - Simulation code (everything except `client`) never depends on `client`, so

@@ -4,9 +4,9 @@
 //! `dust2_bot_round_stats` (ignored) plays whole rounds bot against bot
 //! and prints winners, kills, time to first contact and where bots got
 //! stuck (no progress for 4 s while walking a route, summed up by spot;
-//! `tests/bot_nav.rs` has the tools to look at one):
+//! `tests/it/heavy/bot_nav.rs` has the tools to look at one):
 //! `MASHUP_BOT_MAP=de_nuke MASHUP_BOT_ROUNDS=8 cargo test --features dev
-//! --test bot_rounds -- --ignored --nocapture`.
+//! --test it bot_rounds:: -- --ignored --nocapture`.
 
 use bevy::prelude::*;
 use mashup::{

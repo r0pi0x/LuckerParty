@@ -20,6 +20,9 @@
 # Combat Arms: developed locally, not in the repository for now.
 /src/games/combat_arms/
 /specs/combat_arms/
+/tests/it/rez_format.rs
+/tests/it/mount_combat_arms.rs
+# Their old places (before the one test crate), so copies there stay out too.
 /tests/rez_format.rs
 /tests/mount_combat_arms.rs
 /docs/plans/active/mvp-combat-arms-slice.md

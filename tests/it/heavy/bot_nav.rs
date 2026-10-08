@@ -7,7 +7,7 @@
 //! `nav_near` (ignored) prints the nav areas, links and ladders around a
 //! point, for working out why a bot stops somewhere:
 //! `MASHUP_NAV_MAP=de_nuke MASHUP_NAV_AT=11.4,-15.2,34.4 cargo test
-//! --features dev --test bot_nav -- --ignored --nocapture nav_near`
+//! --features dev --test it bot_nav::nav_near -- --ignored --nocapture`
 //! (engine meters, as `bot_rounds`' stuck report prints them).
 
 use bevy::prelude::*;

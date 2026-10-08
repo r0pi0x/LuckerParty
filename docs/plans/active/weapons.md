@@ -24,7 +24,7 @@ Started 2026-10-05, from specs/cs_source/weapons.md. MVP plan items 4–5.
 
 1. [x] Framework, knife, AK-47, HUD (crosshair, health, ammo, hit marker,
    killfeed), deathmatch respawns, a first bot brain (no navigation),
-   `tests/weapons.rs` (spec T5, T6, T8, T10, T11).
+   `tests/it/weapons.rs` (spec T5, T6, T8, T10, T11).
 2. [x] Merge the probe measurements: carry-over refire (7,7,7,6 ticks),
    dry fire on a held empty clip, whole-point damage with the measured
    hitgroups and falloff, the knife (follow-up slash, bearing-based
@@ -68,7 +68,7 @@ Started 2026-10-05, from specs/cs_source/weapons.md. MVP plan items 4–5.
    - [x] M4A1, AWP, USP, Glock, Deagle (2026-10-06). Guns are `Gun`
      rows of script values in `games/cs_source/weapons.rs` (the spec's
      tables; sound entries and model paths checked against the install
-     by `tests/map_de_dust2.rs::gun_models_icons_and_handedness`; reload,
+     by `tests/it/heavy/map_de_dust2.rs::gun_models_icons_and_handedness`; reload,
      draw and silencer sounds at the view models' event times from
      `dump --sequences`), built by `gun`. New weapon parts: `AltModes`
      (attack2 steps modes; `toggle_time`, silencers block both attacks),
@@ -80,10 +80,10 @@ Started 2026-10-05, from specs/cs_source/weapons.md. MVP plan items 4–5.
      uses the `*Alt` keys in a non-zero mode. Starting weapons are per
      team (`StartingWeapons::team`): Terrorists knife + Glock, everyone
      else knife + USP, plus the AK-47 for all (deathmatch rifle, drawn).
-     Tests: `tests/cs_guns.rs` (damage with falloff, armour and
+     Tests: `tests/it/cs_guns.rs` (damage with falloff, armour and
      headshots; deploy, refire, reload ticks; first kicks; zoom levels,
      speed, unzoom/re-zoom; silencer and burst timing), view-model cases
-     in `tests/view_models.rs`.
+     in `tests/it/view_models.rs`.
    - [ ] Real-game checks (probe): silenced damage/range (M16), scoped
      and silenced/burst recoil, the Glock's burst refire, the M4A1's
      moving/airborne kicks, pistol punch caps, whether reloading
@@ -101,7 +101,7 @@ Started 2026-10-05, from specs/cs_source/weapons.md. MVP plan items 4–5.
      (64 churning sprites, grey tint, `core::SightBlocker` for bots);
      view-model pin/throw/draw with the pin sound, the third-person
      grenade layer, a primed grenade dropped live on death, all cleared
-     at a new round. Tests: `tests/cs_grenades.rs`, unit tests for the
+     at a new round. Tests: `tests/it/cs_grenades.rs`, unit tests for the
      spec's G cases, `map_de_dust2::grenade_models_and_sequences`.
    - [x] The other 18 guns (2026-10-06): FAMAS (burst, M16's 0.08 s
      rounds and 0.55 s refire), Galil, AUG and SG552 (55 zoom, no
@@ -121,11 +121,11 @@ Started 2026-10-05, from specs/cs_source/weapons.md. MVP plan items 4–5.
      5 machine guns, 8 equipment; each team sees its own items); bots pick
      a primary at random by `Prices::bot_weights` among the dearer half
      they can afford and let go of the trigger between semi-automatic
-     shots. Tests: `tests/cs_guns.rs` (buy by name, slot, clip/reserve,
+     shots. Tests: `tests/it/cs_guns.rs` (buy by name, slot, clip/reserve,
      price, fire cycle, draw/reload ticks for all; pellets and cone, shell
      reload T25 timing and interruption, scope FOVs, FAMAS burst, Elite
-     hands, shotgun kick), `tests/view_models.rs` (Elite sequences, shell
-     reload sequences, AUG keeps its view model), `tests/map_de_dust2.rs`
+     hands, shotgun kick), `tests/it/view_models.rs` (Elite sequences, shell
+     reload sequences, AUG keeps its view model), `tests/it/heavy/map_de_dust2.rs`
      (every gun's models, icons, sounds, durations, handedness and body
      animations).
    - [ ] Real-game checks for the new guns (probe): recoil of every

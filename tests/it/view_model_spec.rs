@@ -1,7 +1,7 @@
 //! The test cases of specs/cs_source/view_models.md that are pure maths:
 //! bob (B), sway (S), field of view (F) and handedness (H). The scenario
-//! cases (E1, events) are in tests/view_models.rs, the model data (L1,
-//! attachments, events) in tests/map_de_dust2.rs.
+//! cases (E1, events) are in tests/it/view_models.rs, the model data (L1,
+//! attachments, events) in tests/it/heavy/map_de_dust2.rs.
 
 use bevy::prelude::*;
 use mashup::{

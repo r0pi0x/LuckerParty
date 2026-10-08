@@ -210,7 +210,7 @@ a first bot are in.
 
 ## 4. Bots
 
-- Ladders on other maps (`tests/bot_nav.rs::ladders_climb_both_ways`,
+- Ladders on other maps (`tests/it/heavy/bot_nav.rs::ladders_climb_both_ways`,
   ignored; de_nuke's all pass): 118 of 128 climbs on cs_office,
   de_train, de_port, de_cbble, cs_militia, cs_assault, de_piranesi and
   de_prodigy (2026-10-07, up from 81; per map before/after: cs_office
@@ -278,7 +278,7 @@ docs/plans/active/sound.md.
 
 ## 7. Physics props, remaining
 
-- Player physics shadow (src/games/cs_source/shadow.rs, tests/map_physics_shadow.rs)
+- Player physics shadow (src/games/cs_source/shadow.rs, tests/it/heavy/map_physics_shadow.rs)
   follow-ups (docs/tech-debt.md "Physics shadow"): the push speed limit
   (spec Q7), the shadow's weight on a prop stood on, the controller's
   velocity target when not touching (spec 4.1 step 5), measuring the push
@@ -295,7 +295,7 @@ docs/plans/active/sound.md.
   model's `door_options` move/open/close), swing-side checks against the
   world (only players are checked), forceclosed pushing physics props.
 - Breakables, remaining (vents and windows break: src/logic/breakables.rs,
-  tests/map_breakables.rs): the cracked look of a broken window's panes
+  tests/it/heavy/map_breakables.rs): the cracked look of a broken window's panes
   (`$crackmaterial`, jagged edge pieces; spec open question 8), the
   falling pane pieces (`models/brokenglass_piece.mdl`; collapsing panes
   just shatter now), the GlassBreak/BulletProof decals, break-on-pressure

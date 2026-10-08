@@ -1,5 +1,5 @@
 //! Scenario tests for CS:S's guns (every one but the AK-47's basics, which
-//! tests/weapons.rs covers) on the greybox map at CS:S's tick (0.015 s): script values
+//! tests/it/weapons.rs covers) on the greybox map at CS:S's tick (0.015 s): script values
 //! (specs/cs_source/weapons.md, "Weapon data") and the measured rules
 //! ("CS:S values (measured)": M3 recoil, M4/M8 timing, M5-M7 damage, M15
 //! zoom, M16 fire modes).

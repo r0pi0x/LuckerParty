@@ -3,12 +3,16 @@
 # isn't the repo's identity: commit metadata stays anonymous (CLAUDE.md,
 # "Commit identity"). Fix with TZ=UTC and the repo-local user.name/email,
 # then amend or rebase the listed commits.
+# Then run the full test suite (pre-commit runs only the fast tier);
+# MASHUP_PUSH_TESTS=0 skips it, keeping the identity check.
 want_name=r0pi0x
 want_email=339403489+r0pi0x@users.noreply.github.com
 zero=0000000000000000000000000000000000000000
 bad=0
+pushing=0
 while read -r _local_ref local_sha _remote_ref remote_sha; do
     [ "$local_sha" = "$zero" ] && continue
+    pushing=1
     if [ "$remote_sha" = "$zero" ]; then range="$local_sha"; else range="$remote_sha..$local_sha"; fi
     out=$(git log --format='%h %an|%ae|%ad|%cn|%ce|%cd' --date=format:%z "$range" |
         awk -F'|' -v n="$want_name" -v e="$want_email" '{
@@ -24,4 +28,14 @@ done
 if [ "$bad" = 1 ]; then
     echo "pre-push: set TZ=UTC and the repo-local identity, then amend/rebase them; not pushing." >&2
     exit 1
+fi
+if [ "$pushing" = 1 ] && [ "${MASHUP_PUSH_TESTS:-1}" != 0 ]; then
+    mkdir -p target
+    log=target/pre-push.log
+    echo "pre-push: running the full test suite (log: $log)..." >&2
+    if ! cargo test --features dev --quiet --no-fail-fast >"$log" 2>&1; then
+        grep -E "panicked|FAILED|^error" "$log" | head -20
+        echo "pre-push: tests failed (full log: $log); not pushing." >&2
+        exit 1
+    fi
 fi

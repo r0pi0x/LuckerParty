@@ -1,7 +1,7 @@
 # Performance
 
 How to measure, what the numbers were, and what the map visibility culling
-does. Tools are listed in [OBSERVABILITY.md](OBSERVABILITY.md) ("3c.
+does; at the end, how long the tests take to build and run ("Test cycle"). Tools are listed in [OBSERVABILITY.md](OBSERVABILITY.md) ("3c.
 Performance").
 
 ## Measuring
@@ -115,7 +115,7 @@ Fades apply with `r_novis 1` too.
 
 ### Checks
 
-- `cargo test --test map_vis`: from every spawn and ~250 nav area centres
+- `cargo test --features dev --test it map_vis::`: from every spawn and ~250 nav area centres
   per map (de_dust2, de_nuke, cs_office), 400 rays from eye height; every
   world surface a ray reaches (translucent ones on the way, then the
   first opaque one) must be in a potentially visible chunk, unless the ray
@@ -184,7 +184,7 @@ view, the PVS already culls most of what lies beyond, and what remains
 beyond an opening but outside its screen rectangle is mostly outside the
 frustum anyway (meshes drawn don't change). The win is behind shut doors
 (cs_militia: 54 map parts behind its front door, cs_assault: 15; see
-`tests/map_areaportals.rs`). `refcmp vischeck` on de_nuke lists the same
+`tests/it/heavy/map_areaportals.rs`). `refcmp vischeck` on de_nuke lists the same
 15 views, pixel for pixel, with and without `+r_portalsopenall 1`, so none
 come from areaportals; one of them, nav1627_90 (16k pixels inside the
 glass of the door beside the A site door), is over vischeck's 0.5% limit.
@@ -367,3 +367,66 @@ walks every tree holding a collider each tick in
 `propagate_collider_transforms`, about 0.3 ms per tick on dust2 under
 load): a dust2 physics prop then settled differently
 (`physics_props_settle_and_get_pushed`), so it is left for later.
+
+## Test cycle
+
+How long `cargo test` takes to build and run, and why the tests are laid
+out as they are (docs/OBSERVABILITY.md section 1 has the commands).
+Measured 2026-10-08 on the dev box (12 cores, 31 GB) while other agents
+built and tested: load averages from 9 to 60, given with each number, so
+compare ratios. `CARGO_BUILD_JOBS=6`, `--features dev`, a worktree's own
+`target/`.
+
+Where the time went:
+
+- Every integration test file was its own test binary: 61 of them, each
+  a link of the whole game (about 1 GB with debug info). Rebuilding the
+  tests after a change in `src/` relinked all 61: 213 s (load 52), the
+  test binaries' units summing to 835 s on 6 jobs.
+- `build.rs` watched `.git/HEAD`, which doesn't exist in a worktree (`.git`
+  is a file there): cargo reran it on every build and relinked every
+  target, even with nothing changed. A no-op `cargo test --no-run` took
+  410 s (load 55); it now takes 1 s. It also watched `.git/index`, so
+  every `git add` (and so every commit's hook) relinked everything.
+- `cargo test` built a test harness for each binary target too (five
+  without any tests).
+- Running: `cargo test` runs one test binary after another; de_dust2's 60
+  map tests alone took 224 s. The whole suite's tests add up to 2600 s of
+  test time (nextest, load 20); the slowest are real-map tests (de_nuke's
+  ladders 123 s, dust2 props 102 s) and bot simulations (bot_radio's
+  entity-id checks 80 s).
+
+What changed:
+
+- One test binary, `tests/it/` (`main.rs` declares each file as a
+  module); the real-map and long bot tests under `heavy`.
+- `build.rs` watches this checkout's HEAD and branch ref through
+  `git rev-parse --git-path`.
+- `test = false` for the binaries without unit tests (`mashup`, `dump`,
+  `movecmp`, `refcmp`, `tracesum`; tests/it/architecture.rs checks they
+  stay without).
+- Two tiers: the fast tier before each commit, the full suite before a
+  push.
+
+| | before | after |
+|---|---|---|
+| cold `cargo test --no-run` (all dependencies) | 41 min (load ~25) | the same; dependencies dominate |
+| no-op `cargo test --no-run` in a worktree | 410 s (load 55) | 1 s |
+| after touching `src/lib.rs` | 213 s (load 52), 61 test links | 26 s (load 14), 1 test link |
+| after touching one test file | one binary, 15-60 s | 7 s (load 13) |
+| fast tier run (`-- --skip heavy::`, 692 tests) | - | 11 s (load 9), 31 s (load 34) |
+| full suite run, `cargo nextest run` | 234 s (load 23) | 200 s (load 33), 269 s (load 20) |
+| full suite run, `cargo test` | 224 s for de_dust2's binary alone | 445 s (load 12) |
+
+The full suite in one libtest process is twice as slow as nextest's
+process per test: the heavy tests share one process's task pools and
+allocator while they run. Hence nextest for the full suite.
+
+Linking the test binary (1.0 GB), replaying its link command: LLD (rustc's
+default here) 3.0 s, mold 3.0.0 1.6 s; without debug info 0.8 s and 0.4 s.
+With one test binary that is a second per change, so mold stays an
+opt-in line in `.cargo/config.toml`. Dropping dependencies' debug info
+(`split-debuginfo` or `debug = "line-tables-only"`) would save about as
+much but costs a full rebuild and backtraces into Bevy; not done.
+sccache (a compile cache shared by worktrees) could make a new worktree's
+first build cheaper; not tried.

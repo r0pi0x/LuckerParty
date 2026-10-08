@@ -178,7 +178,7 @@ fn module_layering() {
         }
         let Some((_, allowed)) = ALLOWED.iter().find(|(m, _)| *m == module) else {
             errors.push(format!(
-                "{}: module `{module}` has no layering rule. Add it to ALLOWED in tests/architecture.rs \
+                "{}: module `{module}` has no layering rule. Add it to ALLOWED in tests/it/architecture.rs \
                  and to the layer diagram in docs/ARCHITECTURE.md.",
                 file.display()
             ));
@@ -304,6 +304,82 @@ fn docs_map_links_resolve() {
             errors.push(format!(
                 "CLAUDE.md links to {target}, which does not exist. Fix the link or restore the file."
             ));
+        }
+    }
+    assert!(errors.is_empty(), "\n{}\n", errors.join("\n"));
+}
+
+/// Binaries built without a test harness (`test = false` in Cargo.toml)
+/// must have no unit tests, or those would never run.
+#[test]
+fn untested_binaries_have_no_tests() {
+    let manifest: toml::Table = fs::read_to_string(root().join("Cargo.toml")).unwrap().parse().unwrap();
+    let mut errors = Vec::new();
+    for bin in manifest.get("bin").and_then(|b| b.as_array()).into_iter().flatten() {
+        if bin.get("test").and_then(|t| t.as_bool()) != Some(false) {
+            continue;
+        }
+        let name = bin["name"].as_str().unwrap();
+        let path = bin
+            .get("path")
+            .and_then(|p| p.as_str())
+            .map(String::from)
+            .unwrap_or_else(|| format!("src/bin/{name}.rs"));
+        let text = fs::read_to_string(root().join(&path)).unwrap();
+        if text.contains("#[test]") || text.contains("#[cfg(test)]") {
+            errors.push(format!(
+                "{path} has tests, but its [[bin]] `{name}` in Cargo.toml says `test = false`, so they never \
+                 run. Remove that `test = false`."
+            ));
+        }
+    }
+    assert!(errors.is_empty(), "\n{}\n", errors.join("\n"));
+}
+
+/// Integration tests are one test binary (tests/it/main.rs): any other
+/// file in `tests/` would be its own binary, linking the whole game again
+/// (docs/performance.md, "Test cycle"). And a file in tests/it/ without
+/// its `mod` line is never compiled.
+#[test]
+fn tests_are_one_crate() {
+    let tests = root().join("tests");
+    let it = tests.join("it");
+    let main = fs::read_to_string(it.join("main.rs")).unwrap();
+    let (light, heavy) = main
+        .split_once("mod heavy {")
+        .expect("tests/it/main.rs has a `mod heavy { ... }` block");
+    let declared = |text: &str, stem: &str| text.lines().any(|l| l.trim() == format!("mod {stem};"));
+    let mut errors = Vec::new();
+    for entry in fs::read_dir(&tests).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        let own_binary = if path.is_dir() {
+            name != "it" && path.join("main.rs").exists()
+        } else {
+            name.ends_with(".rs")
+        };
+        if own_binary {
+            let stem = name.trim_end_matches(".rs");
+            errors.push(format!(
+                "tests/{name} is a test binary of its own, which links the whole game again. Move it into \
+                 the one test crate: `git mv tests/{name} tests/it/` (or tests/it/heavy/ if it loads real \
+                 maps or simulates for long: the fast tier skips those) and add `mod {stem};` to \
+                 tests/it/main.rs (inside `mod heavy {{ }}` for heavy/). Run its tests with \
+                 `cargo test --features dev --test it {stem}::`."
+            ));
+        }
+    }
+    for (dir, text, place) in [(it.clone(), light, "outside"), (it.join("heavy"), heavy, "inside")] {
+        for entry in fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            let Some(stem) = name.strip_suffix(".rs") else { continue };
+            if stem != "main" && !declared(text, stem) {
+                errors.push(format!(
+                    "{}: never compiled: add `mod {stem};` to tests/it/main.rs ({place} `mod heavy {{ }}`).",
+                    path.strip_prefix(root()).unwrap().display()
+                ));
+            }
         }
     }
     assert!(errors.is_empty(), "\n{}\n", errors.join("\n"));

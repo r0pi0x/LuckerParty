@@ -34,24 +34,31 @@ This file is a map. Follow the links for detail; keep it short.
 - Scope: first-person games only; CS:S and Combat Arms first.
 
 `cargo test` enforces layering, the asset rule, the spec rule and this file's
-links (`tests/architecture.rs`). Its failure messages say how to fix things.
+links (`tests/it/architecture.rs`). Its failure messages say how to fix things.
 
 ## Commands
 
 ```
 cargo run --features dev       # day-to-day (dynamic linking + remote protocol)
-cargo test --features dev      # all tests; run before every commit
+cargo test --features dev -- --skip heavy::   # fast tier; before every commit
+cargo nextest run --features dev   # full suite (or `cargo test --features dev`,
+                                   # 2x slower); before pushing or merging
+cargo test --features dev --test it weapons::   # one test file (tests/it/)
 cargo run --features dev -- --help    # screenshot, spawn, look, movement options
 cargo run --profile playtest   # optimized, quick to rebuild; for playtesting
 ```
+
+Integration tests are one crate, `tests/it/` (slow ones in `tests/it/heavy/`);
+docs/OBSERVABILITY.md section 1 says where new ones go.
 
 ## Working conventions
 
 - Verify your own work with tests, screenshots or remote queries
   (docs/OBSERVABILITY.md) before calling it done. New behavior gets a
   scenario test.
-- Commit at working milestones; `cargo test` must pass. `.githooks/pre-commit`
-  enforces it (enable per clone: `git config core.hooksPath .githooks`).
+- Commit at working milestones; the fast tier must pass, the full suite
+  before a push or merge to main. `.githooks/pre-commit` and `pre-push`
+  enforce it (enable per clone: `git config core.hooksPath .githooks`).
 - Propose a plan before writing a new mount adapter or loader. Multi-session
   work gets a plan in `docs/plans/active/`, kept updated.
 - When something was hard because a tool, doc or check was missing, add it.
