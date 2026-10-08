@@ -91,12 +91,19 @@ fn spawn_ui_camera(mut commands: Commands) {
         },
         IsDefaultUiCamera,
         PrimaryEguiContext,
+        // Not the world's layer: a 2D camera would otherwise draw the 3D
+        // gizmos (F3's collision lines) flattened into a small copy at
+        // the middle of the screen.
+        bevy::camera::visibility::RenderLayers::layer(UI_CAMERA_LAYER),
     ));
 }
 
 /// The camera that draws the UI and egui over everything (`spawn_ui_camera`).
 #[derive(Component)]
 pub struct UiCamera;
+
+/// A render layer nothing in the world uses, for the UI camera.
+const UI_CAMERA_LAYER: usize = 30;
 
 /// Above every 3D camera (the view model's is the first person's + 1).
 const UI_CAMERA_ORDER: isize = 100;

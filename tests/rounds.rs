@@ -208,3 +208,18 @@ fn rounds_ammo_is_bought_by_the_box() {
     buy(sim.app.world_mut(), ct, "secammo").unwrap();
     assert_eq!((gun(&sim, ct, USP).1, money(&sim, ct)), (100, 12545));
 }
+
+#[test]
+fn a_map_change_starts_a_fresh_game_and_brings_the_dead_back() {
+    let (mut sim, t, ct, ct2) = setup();
+    sim.ticks(80);
+    kill(&mut sim, t, ct);
+    assert!(sim.app.world().get::<mashup::rules::Dead>(ct).is_some());
+    // What loading a map does: a new game, not the old round's clock.
+    mashup::rules::new_game(sim.app.world_mut());
+    sim.ticks(3);
+    assert!(sim.app.world().get::<mashup::rules::Dead>(ct).is_none(), "the dead respawn on the new map");
+    assert!(matches!(phase(&sim), Phase::Freeze { .. }), "{:?}", phase(&sim));
+    assert_eq!(sim.app.world().resource::<RoundState>().number, 1);
+    assert_eq!(money(&sim, ct2), 800);
+}

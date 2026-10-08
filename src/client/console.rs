@@ -1794,7 +1794,7 @@ fn finish_map_load(w: &mut World) {
         };
         w.entity_mut(c).insert(t);
     }
-    crate::rules::respawn_everyone(w);
+    crate::rules::new_game(w);
     w.resource_mut::<Console>().info(summary);
     super::game_menu::entered_game(w);
 }
@@ -1826,7 +1826,7 @@ pub(super) fn load_greybox(w: &mut World) {
     for mut camera in skies.iter_mut(w) {
         camera.is_active = false;
     }
-    crate::rules::respawn_everyone(w);
+    crate::rules::new_game(w);
 }
 
 /// The greybox map's name for `map` and `--map`.

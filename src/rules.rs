@@ -100,6 +100,17 @@ pub struct Dead {
 
 /// Respawn every character on the next tick (after a map change), with
 /// fresh weapons, at the spawn points.
+/// A fresh game on a newly loaded map, as a map change is in CS:S: with
+/// rounds, the next step starts a new game (everyone at a spawn, start
+/// money); without, everyone respawns now. Without this the dead stayed
+/// dead (spectating) until the old round's clock ran out on the new map.
+pub fn new_game(world: &mut World) {
+    if let Some(mut state) = world.get_resource_mut::<rounds::RoundState>() {
+        *state = rounds::RoundState::default();
+    }
+    respawn_everyone(world);
+}
+
 pub fn respawn_everyone(world: &mut World) {
     let all: Vec<Entity> = world
         .query_filtered::<Entity, (With<Intent>, With<Health>, Without<crate::objectives::hostages::Hostage>)>()
