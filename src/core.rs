@@ -361,6 +361,13 @@ pub struct SimTick(pub u64);
 #[derive(Resource, Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RoundRestarts(pub u32);
 
+/// The rules hold every character still (a round's freeze time): they
+/// may turn, look and buy, not move or shoot. The rules clear the
+/// intents (`SimSet::Rules`); bots read it so standing still doesn't
+/// count as being stuck.
+#[derive(Resource, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FreezeTime(pub bool);
+
 /// What a blast or a flash does to a character's hearing for a while
 /// (Source: a player DSP preset): what they hear is mixed `mix` toward a
 /// muffled copy (low-passed at `cutoff` Hz, times `wet_gain`), and a
@@ -566,6 +573,7 @@ impl Plugin for CorePlugin {
             .init_resource::<SimTick>()
             .add_systems(FixedFirst, |mut tick: ResMut<SimTick>| tick.0 += 1)
             .init_resource::<RoundRestarts>()
+            .init_resource::<FreezeTime>()
             .configure_sets(FixedUpdate, (SimSet::Rules, SimSet::Movement, SimSet::Weapons).chain());
     }
 }

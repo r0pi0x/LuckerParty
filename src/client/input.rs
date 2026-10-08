@@ -184,7 +184,7 @@ fn drop_key(
 /// (Source) sees every notch, and spinning the wheel near a landing lands
 /// a press on the right tick.
 #[derive(Resource, Default)]
-struct WheelJump {
+pub(super) struct WheelJump {
     pending: u32,
     /// Jump held on the keyboard.
     key_held: bool,
@@ -223,7 +223,7 @@ impl FreeLook {
 const PITCH_LIMIT: f32 = 89f32.to_radians();
 
 #[allow(clippy::too_many_arguments)]
-fn write_local_intent(
+pub(super) fn write_local_intent(
     mut intent: Single<&mut Intent, With<LocalPlayer>>,
     cursor: Single<&CursorOptions>,
     (keys, mouse, motion, scroll): (

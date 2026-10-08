@@ -153,6 +153,7 @@ pub const CVAR_RANGES: &[(&str, f32, f32)] = &[
     ("mp_forcecamera", 0.0, 2.0),
     ("bot_reaction", 0.0, 2.0),
     ("bot_aim_error", 0.0, 20.0),
+    ("bot_recoil_control", 0.0, 1.0),
     ("bot_turn_rate", 30.0, 1500.0),
     ("bot_grenades", 0.0, 2.0),
     ("mashup_drawnav", 0.0, 2.0),
@@ -892,6 +893,7 @@ fn bots_tab(ui: &mut egui::Ui, world: &mut World, state: &mut DebugUi) {
             "bot_radio",
             "bot_reaction",
             "bot_aim_error",
+            "bot_recoil_control",
             "bot_turn_rate",
             "bot_debug",
             "mashup_drawbots",
@@ -1011,6 +1013,13 @@ fn perf_tab(ui: &mut egui::Ui, world: &mut World, state: &mut DebugUi) {
         frames.len()
     ));
     frame_graph(ui, &frames);
+    // Live, every frame (the readout below is once a second).
+    if let (Some(i), Some(f)) = (
+        world.get_resource::<crate::map::interp::Interpolation>(),
+        world.get_resource::<Time<Fixed>>(),
+    ) {
+        ui.monospace(super::perf::interp_line(i, f));
+    }
     if let Some(r) = world.get_resource::<super::perf::PerfReport>() {
         for l in &r.lines {
             ui.monospace(l);
@@ -1022,7 +1031,7 @@ fn perf_tab(ui: &mut egui::Ui, world: &mut World, state: &mut DebugUi) {
         world,
         state,
         "perf_cvars",
-        &["mashup_perf", "mashup_perf_log", "host_timescale", "mat_vsync", "r_novis"],
+        &["mashup_perf", "mashup_perf_log", "host_timescale", "mat_vsync", "r_novis", "cl_interpolate"],
     );
     ui.horizontal(|ui| {
         command_button(ui, world, "Log particles", "mashup_particles");

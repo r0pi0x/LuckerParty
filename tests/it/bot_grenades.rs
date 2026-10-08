@@ -15,6 +15,7 @@ use mashup::{
     greybox::GreyboxMapPlugin,
     harness::Sim,
     movement::placeholder,
+    objectives::RoundOpen,
     weapon::{
         Armor, Inventory, Weapon,
         economy::{Money, autobuy_rolling},
@@ -158,6 +159,68 @@ fn a_bot_turns_away_from_its_own_flash() {
         }
     }
     assert!(averted, "looked away from the flash");
+}
+
+/// Whether `bot` starts a throw (plans one, or a grenade flies) in
+/// `secs`.
+fn throws_within(sim: &mut Sim, bot: Entity, secs: f64) -> bool {
+    for _ in 0..(secs / TICK_INTERVAL) as usize {
+        sim.ticks(1);
+        let w = sim.app.world_mut();
+        if w.get::<Bot>(bot).unwrap().throwing() || w.query::<&Projectile>().iter(w).next().is_some() {
+            return true;
+        }
+    }
+    false
+}
+
+/// Playtest: bots threw at where the last enemy died, at the round's end.
+/// A dead enemy is forgotten, an old sighting isn't thrown at, and no
+/// throw starts while the round is closed (frozen, or won).
+#[test]
+fn bots_throw_nothing_at_dead_or_old_sightings_nor_after_the_round() {
+    let (at, enemy_at) = (Vec3::new(1.0, 0.9, 1.0), Vec3::new(0.0, 0.9, -24.0));
+    let now = |sim: &Sim| sim.app.world().resource::<Time>().elapsed_secs_f64();
+
+    // Seen, shot dead: forgotten, nothing thrown where it fell.
+    let mut sim = sim();
+    sim.app
+        .world_mut()
+        .resource_mut::<mashup::console::Console>()
+        .submit("mp_respawn_delay 100");
+    let (bot, enemy) = setup(&mut sim, at, enemy_at, HEGRENADE);
+    sim.app.world_mut().get_mut::<Bot>(bot).unwrap().lead = None;
+    // In the open, 12 m off.
+    sim.app.world_mut().get_mut::<Transform>(enemy).unwrap().translation = Vec3::new(1.0, 0.9, -11.0);
+    let mut died = None;
+    for _ in 0..(4.0 / TICK_INTERVAL) as usize {
+        assert!(!throws_within(&mut sim, bot, TICK_INTERVAL), "threw while fighting");
+        if sim.app.world().get::<Health>(enemy).unwrap().current <= 0.0 {
+            died = Some(now(&sim));
+            break;
+        }
+    }
+    assert!(died.is_some(), "the bot shot the enemy");
+    sim.ticks(1);
+    assert_eq!(sim.app.world().get::<Bot>(bot).unwrap().lead, None, "forgot the dead");
+    assert!(!throws_within(&mut sim, bot, 3.0), "threw at a dead enemy");
+
+    // Seen 6 s ago: too old to throw at.
+    let mut sim = self::sim();
+    let (bot, _) = setup(&mut sim, at, enemy_at, HEGRENADE);
+    let t = now(&sim);
+    sim.app.world_mut().get_mut::<Bot>(bot).unwrap().lead = Some((enemy_at - Vec3::Y * 0.9, t - 6.0));
+    assert!(!throws_within(&mut sim, bot, 3.0), "threw at an old sighting");
+
+    // The round closed (frozen or over): no throw; open again: a throw.
+    let mut sim = self::sim();
+    let (bot, _) = setup(&mut sim, at, enemy_at, HEGRENADE);
+    sim.app.insert_resource(RoundOpen(false));
+    assert!(!throws_within(&mut sim, bot, 3.0), "threw with the round closed");
+    sim.app.insert_resource(RoundOpen(true));
+    let t = now(&sim);
+    sim.app.world_mut().get_mut::<Bot>(bot).unwrap().lead = Some((enemy_at - Vec3::Y * 0.9, t));
+    assert!(throws_within(&mut sim, bot, 3.0), "throws once the round is open");
 }
 
 #[test]

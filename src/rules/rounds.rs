@@ -20,7 +20,7 @@ use bevy::prelude::*;
 use super::{Dead, put_at_spawn};
 use crate::{
     console::{ConsoleAppExt, resource_cvar},
-    core::{Died, Health, Intent, Team},
+    core::{Died, FreezeTime, Health, Intent, Team},
     objectives::{
         MapKind, MapObjectives, ObjectiveEvent, RoundOpen,
         bomb::{BombOutcome, BombState},
@@ -278,6 +278,8 @@ pub(super) fn run_rounds(world: &mut World) {
         if phase != Phase::Off {
             *world.resource_mut::<RoundState>() = RoundState::default();
             world.insert_resource(BuyWindow::default());
+            world.insert_resource(FreezeTime(false));
+            world.insert_resource(RoundOpen(true));
         }
         return;
     }
@@ -329,6 +331,10 @@ pub(super) fn run_rounds(world: &mut World) {
     };
     if world.resource::<BuyWindow>().0 != window {
         world.insert_resource(BuyWindow(window));
+    }
+    let frozen = matches!(world.resource::<RoundState>().phase, Phase::Freeze { .. });
+    if world.get_resource::<FreezeTime>().is_none_or(|f| f.0 != frozen) {
+        world.insert_resource(FreezeTime(frozen));
     }
     // Objectives (planting) only while the round is live.
     let open = matches!(world.resource::<RoundState>().phase, Phase::Live { .. });
@@ -511,8 +517,9 @@ pub(super) fn kill_rewards(
 }
 
 /// While frozen, nobody moves or shoots (they can still look around).
-pub(super) fn hold_frozen(state: Res<RoundState>, mut intents: Query<&mut Intent>) {
-    if !matches!(state.phase, Phase::Freeze { .. }) {
+/// Bots think before the rules (`bot::BotPlugin`), so this holds them too.
+pub(super) fn hold_frozen(frozen: Res<FreezeTime>, mut intents: Query<&mut Intent>) {
+    if !frozen.0 {
         return;
     }
     for mut intent in &mut intents {

@@ -94,7 +94,7 @@ pub struct ViewModelSettings {
 impl Default for ViewModelSettings {
     fn default() -> Self {
         Self {
-            fov: 54.0,
+            fov: 80.0,
             default_fov: 90.0,
             right_hand: 1,
             draw: 1,

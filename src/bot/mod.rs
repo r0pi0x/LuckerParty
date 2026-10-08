@@ -50,7 +50,9 @@ impl Plugin for BotPlugin {
             FixedUpdate,
             (hear, tactics::update, radio::obey, objectives::goals, think, objectives::act)
                 .chain()
-                .before(SimSet::Movement)
+                // Before the rules: they hold everyone's intents in the
+                // freeze time and the dead's (`rules::rounds::hold_frozen`).
+                .before(SimSet::Rules)
                 .before(crate::weapon::SelectWeapons),
         );
         resource_cvar::<BotConfig, u8>(app, "bot_stop", "1: bots stand still.", |c| &mut c.stop);
@@ -74,6 +76,12 @@ impl Plugin for BotPlugin {
             |c| &mut c.radio,
         );
         resource_cvar::<BotConfig, f32>(app, "bot_aim_error", "Bot aim wobble, degrees.", |c| &mut c.aim_error);
+        resource_cvar::<BotConfig, f32>(
+            app,
+            "bot_recoil_control",
+            "Share of the recoil bots pull down against while firing (1: bullets kept on the target, 0: none).",
+            |c| &mut c.recoil_control,
+        );
         resource_cvar::<BotConfig, f32>(app, "bot_turn_rate", "Bot turn speed, degrees per second.", |c| {
             &mut c.turn_rate
         });
@@ -168,6 +176,11 @@ pub struct BotConfig {
     pub grenades: u8,
     /// 1: bots use the team radio (`radio`).
     pub radio: u8,
+    /// How much of the recoil a bot's aim takes back while firing: 1
+    /// aims so the bullets (view + the weapon's `punch_scale` x punch)
+    /// stay on the target, as CS:S bots' sprays do; 0 not at all.
+    /// UNMEASURED: how far CS:S bots pull down (docs/tech-debt.md).
+    pub recoil_control: f32,
 }
 
 impl Default for BotConfig {
@@ -180,6 +193,7 @@ impl Default for BotConfig {
             aim_error: 2.5,
             grenades: 1,
             radio: 1,
+            recoil_control: 1.0,
         }
     }
 }
@@ -231,6 +245,8 @@ pub struct Bot {
     wobble: (Vec2, f32),
     /// Where an enemy was last seen or heard (feet), and when.
     pub lead: Option<(Vec3, f64)>,
+    /// Who that was (forgotten once they're dead).
+    lead_who: Option<Entity>,
     /// Where the bot is roaming to (feet), with nothing better to do.
     roam: Option<Vec3>,
     /// The roaming goal is one of the map's objectives.
@@ -388,6 +404,7 @@ impl Bot {
         self.route_areas.clear();
         self.next = 0;
         self.lead = None;
+        self.lead_who = None;
         self.assist = None;
         self.order = None;
         self.urgent_until = 0.0;
@@ -493,7 +510,7 @@ fn hear(
     mut sounds: MessageReader<crate::map::PlaySound>,
     bank: Option<Res<crate::map::sound::SoundBank>>,
     mut bots: Query<(&mut Bot, &Transform, &Team, &Health)>,
-    teams: Query<(&Team, &Transform)>,
+    teams: Query<(&Team, &Transform, Option<&Health>)>,
     time: Res<Time>,
 ) {
     let now = time.elapsed_secs_f64();
@@ -501,9 +518,13 @@ fn hear(
         let (Some(source), Some(at)) = (s.source, s.at) else {
             continue;
         };
-        let Ok((source_team, source_at)) = teams.get(source) else {
+        let Ok((source_team, source_at, source_health)) = teams.get(source) else {
             continue;
         };
+        // Not a dead one's (its last cry, its gun hitting the floor).
+        if source_health.is_some_and(|h| h.current <= 0.0) {
+            continue;
+        }
         let level = bank
             .as_ref()
             .and_then(|b| b.0.entry(&s.entry).map(|e| e.level))
@@ -516,6 +537,7 @@ fn hear(
             let units = t.translation.distance(at) / 0.0254;
             if crate::map::sound::distance_gain(level, units) >= HEARING_GAIN {
                 bot.lead = Some((feet, now));
+                bot.lead_who = Some(source);
             }
         }
     }
@@ -621,6 +643,7 @@ fn think(
         Option<&crate::core::Blinded>,
         Option<&mut Inventory>,
         &crate::core::Velocity,
+        Option<&crate::weapon::ViewPunch>,
     )>,
     others: Query<(Entity, &Transform, &Team, &Health), With<Intent>>,
     teamless: Query<(&Transform, &Health), (With<Intent>, Without<Team>)>,
@@ -635,8 +658,18 @@ fn think(
     cfg: Res<BotConfig>,
     time: Res<Time>,
     tactics: Res<Tactics>,
+    round: (
+        Option<Res<crate::core::FreezeTime>>,
+        Option<Res<crate::objectives::RoundOpen>>,
+        Query<&crate::weapon::Hitscan>,
+    ),
 ) {
     let brushes = brushes.as_deref().map_or(&[][..], |b| &b.0[..]);
+    // Freeze time: it may look around, not walk (the rules hold its
+    // intent), so standing still isn't being stuck. Grenades only while
+    // the round is open (not frozen, not over).
+    let frozen = round.0.is_some_and(|f| f.0);
+    let open = round.1.is_none_or(|o| o.0) && !frozen;
     let dt = time.delta_secs();
     let now = time.elapsed_secs_f64();
     // World traces for flash sight (a line) and grenade arcs (the
@@ -664,7 +697,7 @@ fn think(
             .cast_shape_predicate(&shape, a, Quat::IDENTITY, dir, &config, &filter, &not_character)
             .map(|h| (a + *dir * h.distance, h.normal1.normalize_or_zero()))
     };
-    for (me, mut bot, mut intent, t, state, team, health, blinded, mut inv, velocity) in &mut bots {
+    for (me, mut bot, mut intent, t, state, team, health, blinded, mut inv, velocity, punch) in &mut bots {
         if health.current <= 0.0 {
             bot.target = None;
             bot.toss = None;
@@ -677,6 +710,14 @@ fn think(
             // Respawned.
             bot.dead = false;
             bot.new_life();
+        }
+        // The enemy it remembers is dead (or gone): nothing left there.
+        if bot
+            .lead_who
+            .is_some_and(|who| !others.get(who).is_ok_and(|(_, _, _, h)| h.current > 0.0))
+        {
+            bot.lead = None;
+            bot.lead_who = None;
         }
         let eye = t.translation + state.eye_offset;
         // A flashed bot sees nothing until the white is mostly gone, and
@@ -767,6 +808,12 @@ fn think(
             .and_then(|i| i.active)
             .and_then(|w| triggers.get(w).ok())
             .is_some_and(|t| !t.automatic);
+        // How much of the punch its bullets take.
+        let punch_scale = inv
+            .as_deref()
+            .and_then(|i| i.active)
+            .and_then(|w| round.2.get(w).ok())
+            .map_or(0.0, |h| h.punch_scale);
         intent.fire = false;
         match best {
             Some((e, aim, _)) => {
@@ -776,6 +823,7 @@ fn think(
                     aim - Vec3::Y * (AIM_HEIGHT + CAPSULE_HEIGHT / 2.0),
                     time.elapsed_secs_f64(),
                 ));
+                bot.lead_who = Some(e);
                 if bot.target == Some(e) {
                     bot.seen += dt;
                 } else {
@@ -789,8 +837,12 @@ fn think(
                     bot.wobble = (Vec2::from_angle(a) * r * error.to_radians(), AIM_REROLL);
                 }
                 let to = aim - eye;
-                let want_yaw = (-to.x).atan2(-to.z) + bot.wobble.0.x;
-                let want_pitch = to.y.atan2(to.xz().length()) + bot.wobble.0.y;
+                // Recoil control: aimed so the bullets (eye angles plus
+                // the weapon's share of the punch) stay on the target,
+                // pulling down against the kick.
+                let kick = punch.map_or(Vec2::ZERO, |p| p.0) * punch_scale * cfg.recoil_control;
+                let want_yaw = (-to.x).atan2(-to.z) + bot.wobble.0.x - kick.y;
+                let want_pitch = to.y.atan2(to.xz().length()) + bot.wobble.0.y - kick.x;
                 let step = cfg.turn_rate.to_radians() * dt;
                 let dyaw = wrap(want_yaw - intent.yaw);
                 intent.yaw = wrap(intent.yaw + dyaw.clamp(-step, step));
@@ -807,6 +859,16 @@ fn think(
             }
         }
 
+        // The round closed (won, or frozen) before the pin came out: no
+        // throw.
+        if !open && bot.toss.as_ref().is_some_and(|t| t.pulled.is_none()) {
+            let previous = bot.toss.take().and_then(|t| t.previous);
+            if let Some(inv) = inv.as_deref_mut() {
+                inv.wanted = previous
+                    .filter(|p| inv.weapons.contains(p))
+                    .or_else(|| grenades::best_weapon(inv, &arms));
+            }
+        }
         // A throw in progress takes over.
         if bot.toss.is_some() {
             bot.activity = Activity::Throwing;
@@ -914,6 +976,7 @@ fn think(
         // Now and then a grenade at the remembered enemy or the site.
         if let Some(inv) = inv.as_deref()
             && cfg.grenades > 0
+            && open
             && now >= bot.next_toss_check
         {
             bot.next_toss_check = now + grenades::TOSS_CHECK;
@@ -953,6 +1016,12 @@ fn think(
         // Never left hanging on a ladder: with nowhere to go, it finishes
         // the climb (its route's end).
         let goal = goal.or_else(|| state.on_ladder.then(|| bot.route.last().copied()).flatten());
+        if frozen {
+            // Held still: no progress expected, nothing in the way.
+            bot.progress = (feet, 0.0);
+            bot.toward.1 = now;
+            bot.blocked = 0.0;
+        }
         let step = match goal {
             Some(goal) => walk_route(&mut bot, nav, feet, goal, &params, dt, now, state.on_ladder, state.on_ground, brushes),
             // Waiting keeps its route (for comparing with the leader's).
@@ -1079,7 +1148,7 @@ fn think(
             };
             // Walking into something: press use now and then (doors),
             // jump it every so often (ledges).
-            if velocity.0.xz().length() < BLOCKED_SPEED {
+            if velocity.0.xz().length() < BLOCKED_SPEED && !frozen {
                 bot.blocked += dt;
             } else {
                 bot.blocked = 0.0;
@@ -1546,7 +1615,9 @@ fn consider_throw(
         let d = (at - feet).xz().length();
         d >= grenades::TOSS_RANGE.0 && d <= grenades::TOSS_RANGE.1
     };
-    let (target, kinds) = match (bot.lead, objective) {
+    // Only where an enemy was lately (it moves on, or died).
+    let lead = bot.lead.filter(|(_, when)| now - when <= grenades::TOSS_LEAD_MEMORY);
+    let (target, kinds) = match (lead, objective) {
         (Some((at, _)), _) if in_range(at) => {
             if !(always || bot.rand() < grenades::TOSS_CHANCE_LEAD) {
                 return;
