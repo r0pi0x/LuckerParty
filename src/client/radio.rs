@@ -138,7 +138,7 @@ const DIGITS: [KeyCode; 10] = [
 ];
 
 fn keys(
-    keys: Res<ButtonInput<KeyCode>>,
+    (keys, mouse): (Res<ButtonInput<KeyCode>>, Res<ButtonInput<MouseButton>>),
     cursor: Single<&CursorOptions>,
     menu: Res<RadioMenu>,
     radio: Option<Res<RadioCommands>>,
@@ -148,8 +148,9 @@ fn keys(
     if !super::input::cursor_grabbed(&cursor) {
         return;
     }
-    for (i, k) in [KeyCode::KeyZ, KeyCode::KeyX, KeyCode::KeyC].into_iter().enumerate() {
-        if keys.just_pressed(k) {
+    // The radio keys (`radio1` to `radio3`: Z, X, C).
+    for i in 0..3 {
+        if super::binds::just_pressed(&console.binds, &keys, &mouse, &format!("radio{}", i + 1)) {
             commands.queue(move |w: &mut World| open(w, Some(i)));
             return;
         }

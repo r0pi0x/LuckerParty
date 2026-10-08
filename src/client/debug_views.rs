@@ -5,7 +5,8 @@
 //! hold spot and the approaches it watches, what it looks at and the
 //! corner it checks, the teammate it answers, the map's sites, its
 //! planned grenade arc, target and burst point, a flash it looks away
-//! from; `bot_debug 1`: a list of the bots' states) and
+//! from, its radio order and what it said on the radio lately;
+//! `bot_debug 1`: a list of the bots' states and last radio calls) and
 //! ragdolls (`mashup_ragdoll_debug 1`: each body's bounds and axes, each
 //! joint from its parent body's anchor to the child body).
 
@@ -17,6 +18,7 @@ use crate::{
     core::{Health, Intent, LocalPlayer, Team},
     map::{
         nav::NavMesh,
+        radio::RadioCommands,
         ragdoll::{RagdollBody, RagdollJoint, RagdollSettings},
     },
     weapon::grenade::GrenadeKind,
@@ -119,6 +121,23 @@ fn draw_nav(
             // Half the way: two-way links meet in the middle.
             gizmos.line(from, from.lerp(end, 0.5), color.with_alpha(0.5));
         }
+    }
+    // Ladders: the climbable line (yellow), the point in front of the foot
+    // bots get on from (green) and the one behind the top they go down
+    // from (orange), 32 units out (nav spec, path building).
+    let out = 32.0 * 0.0254;
+    for l in &nav.ladders {
+        if views.nav == 1 && here.is_some_and(|h| h.distance(l.bottom) > NAV_RADIUS) {
+            continue;
+        }
+        gizmos.line(l.bottom, l.top, Color::srgb(1.0, 0.9, 0.2));
+        let cross = |gizmos: &mut Gizmos, p: Vec3, c: Color| {
+            gizmos.line(p - Vec3::X * 0.15, p + Vec3::X * 0.15, c);
+            gizmos.line(p - Vec3::Z * 0.15, p + Vec3::Z * 0.15, c);
+            gizmos.line(p, p + Vec3::Y * 0.3, c);
+        };
+        cross(&mut gizmos, l.bottom + l.normal * out, Color::srgb(0.3, 1.0, 0.3));
+        cross(&mut gizmos, l.top - l.normal * out, Color::srgb(1.0, 0.5, 0.1));
     }
 }
 
@@ -272,10 +291,23 @@ fn order_text(bot: &Bot, now: f64, name_of: impl Fn(Entity) -> String) -> Option
     }
 }
 
-/// `mashup_drawbots`: each bot's radio-driven order as text over its head.
-#[allow(clippy::type_complexity)]
+/// Seconds a bot's radio call stays over its head (`mashup_drawbots`).
+const SAID_SHOWN: f64 = 4.0;
+
+/// A radio command's text ("Go go go!"), else its name.
+fn call_text(radio: Option<&RadioCommands>, call: &str) -> String {
+    radio
+        .and_then(|r| r.get(call))
+        .and_then(|c| c.variants.first())
+        .map_or_else(|| call.to_string(), |v| v.1.clone())
+}
+
+/// `mashup_drawbots`: each bot's radio-driven order and its latest radio
+/// call as text over its head.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn order_labels(
     views: Res<DebugViews>,
+    radio: Option<Res<RadioCommands>>,
     time: Res<Time<Fixed>>,
     bots: Query<(Entity, &Bot, &GlobalTransform, &Health)>,
     names: Query<(Option<&Name>, Has<LocalPlayer>)>,
@@ -293,9 +325,15 @@ fn order_labels(
     let mut shown: Vec<Entity> = Vec::new();
     if views.bots > 0 {
         for (e, bot, at, health) in &bots {
-            let Some(text) = order_text(bot, now, name_of).filter(|_| health.current > 0.0) else {
+            let said = bot
+                .last_call()
+                .filter(|(_, at)| now - at < SAID_SHOWN)
+                .map(|(call, _)| format!("\"{}\"", call_text(radio.as_deref(), call)));
+            let lines: Vec<String> = order_text(bot, now, name_of).into_iter().chain(said).collect();
+            if lines.is_empty() || health.current <= 0.0 {
                 continue;
-            };
+            }
+            let text = lines.join("\n");
             let Some(p) = cam.and_then(|(c, ct)| c.world_to_viewport(ct, at.translation() + Vec3::Y * 1.2).ok()) else {
                 continue;
             };
@@ -361,10 +399,11 @@ fn spawn_bot_list(mut commands: Commands) {
 
 /// `bot_debug 1`: each team's plan, then one line per bot (name, team,
 /// role, site, activity, `*` for the group leader, health, a teammate's
-/// radio command it carries out).
+/// radio command it carries out, its last radio call and how long ago).
 #[allow(clippy::too_many_arguments)]
 fn bot_list(
     views: Res<DebugViews>,
+    radio: Option<Res<RadioCommands>>,
     bots: Query<(Entity, &Bot, &Team, &Health, Option<&Name>)>,
     names: Query<(Option<&Name>, Has<LocalPlayer>)>,
     time: Res<Time<Fixed>>,
@@ -408,8 +447,12 @@ fn bot_list(
             Ok((Some(n), _)) => n.to_string(),
             _ => e.to_string(),
         });
+        let now = time.elapsed_secs_f64();
+        let said = bot.last_call().map_or_else(String::new, |(call, at)| {
+            format!("  said \"{}\" {:.0} s ago", call_text(radio.as_deref(), call), now - at)
+        });
         out += &format!(
-            "{name:<8} t{} {:<7} {site:<10} {:<10}{} hp {:.0}{}\n",
+            "{name:<8} t{} {:<7} {site:<10} {:<10}{} hp {:.0}{}{said}\n",
             team.0,
             format!("{:?}", bot.role()),
             format!("{:?}", bot.activity()),

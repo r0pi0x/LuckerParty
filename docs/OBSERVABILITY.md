@@ -78,9 +78,16 @@ Only `Reflect`-registered types are visible; register new core components in
   console actions work without mouse capture. Automated runs never write
   config.cfg, and only archived cvars are saved there.
 - `menu [main|newgame|maps|bots|team|options]` opens the game menu (Esc)
-  on a page, for screenshots of it: `--screenshot menu.png +menu options`.
-  Its logic is unit-tested in `client::game_menu` (keys and clicks in,
-  console lines out).
+  on a page, for screenshots of it: `--window 1280x720 --screenshot
+  menu.png +menu options`; `menu keyboard` (or `mouse`, `audio`, `video`,
+  `multiplayer`) opens the options on that tab. Cvars it shows are read
+  when it opens: put `+cl_crosshaircolor 3` before `+menu`. The log
+  line `game menu: GameUI look (...)` says the install's look loaded
+  (else the built-in one is drawn). Its logic is unit-tested in
+  `client::game_menu` (keys and clicks in, console lines out; rebinding
+  with real key presses headless).
+- Binds: `bindlist` lists them; every game key is one (`client::binds`),
+  `binddefaults` puts the defaults back.
 - `buymenu [n]` and `chooseteam` open the buy menu (on category n) and
   the team menu, e.g. `--map cs_source:de_dust2 --screenshot buy.png
   +wait 30 +buymenu 4` (the `wait` lets the map's HUD and menu layouts
@@ -93,7 +100,9 @@ Only `Reflect`-registered types are visible; register new core components in
   computer0* Skin 2` in a `--screenshot` run on de_nuke (the `wait` lets
   the map's logic load first). Logged at info level.
 - `mashup_drawnav 1` outlines the nav areas near you (2: all), coloured by
-  place, with half-links toward their neighbours; `mashup_drawbots 1`
+  place, with half-links toward their neighbours, and the mesh's ladders
+  (yellow line, green cross where bots get on at the foot, orange where
+  they start down from behind the top); `mashup_drawbots 1`
   shows the map's sites (yellow rings) with where routes from the
   attackers' (orange balls) and defenders' (blue balls) spawns come onto
   them, and per bot: its role (ring at its feet: orange attacker, blue
@@ -122,7 +131,8 @@ Only `Reflect`-registered types are visible; register new core components in
   --features dev --test bot_nav -- --ignored --nocapture nav_near` prints
   the nav areas, links, ladders, ladder brushes and entities (breakables
   with their keyvalues) around it (engine meters, as the report prints
-  them); add a case to `tests/bot_nav.rs` (a lone bot sent from a start
+  them; `MASHUP_NAV_BRUSHES=1` also lists every collision brush within
+  1 m, e.g. player clip flush with a ladder's face); add a case to `tests/bot_nav.rs` (a lone bot sent from a start
   to a goal, `MASHUP_BOT_CASE=<name>` to run one, `MASHUP_BOT_TRACE=0`
   for every tick of its intent, ladder and ground state), and try raw
   inputs with `probe_walk` (`P_AT=x,y,z P_OPT=yaw,crouch,jump,seconds,
@@ -131,7 +141,9 @@ Only `Reflect`-registered types are visible; register new core components in
   bot up and down every ladder on de_nuke's mesh; the ignored
   `ladders_climb_both_ways` does it on `MASHUP_NAV_MAP` (comma-separated
   maps) and lists the ladders bots fail, one `MASHUP_BOT_CASE="ladder 3
-  up"` at a time. Bot dice come from bot numbers, never entity ids:
+  up"` at a time (`MASHUP_BOT_TRACE_CASE="ladder 3 up"` with
+  `MASHUP_BOT_TRACE` traces just that one while running the whole map:
+  earlier cases leave stuck reports and broken grilles behind). Bot dice come from bot numbers, never entity ids:
   `MASHUP_TEST_PAD=<n>` spawns n entities and a resource in every `Sim`
   first, and a test's outcome must not change with it (run the bot tests
   with a few values after touching bot randomness). In game, `bot_goto <x> <y> <z>` (CS:S units) sends
@@ -157,6 +169,11 @@ Only `Reflect`-registered types are visible; register new core components in
   by hitgroup, where shots test them (e.g. `+bot_stop 1 +bot_add 2
   +mashup_drawhitboxes 1` with `--screenshot` to check they follow the
   animated body).
+- `mashup_drawphys 1` outlines physics props by state (green moving,
+  blue asleep, grey still or frozen; multiplayer props darker) and
+  players' physics shadows (white, a yellow line to each prop the shadow
+  touches), and lists the props nearest the local player (distance, mass,
+  push mode, state) on the debug HUD.
 - `mashup_ragdoll_debug 1` draws ragdoll bodies (bounds, axes) and
   joints (yellow to the anchor on the parent; a red dot when the child
   drifted from it). `cl_ragdoll_physics_enable 0` turns ragdolls off,
@@ -234,7 +251,8 @@ Only `Reflect`-registered types are visible; register new core components in
   "method":"mashup/console","params":{"line":"getpos; cvarlist sv_"}}'`
   runs a line now and returns the lines it printed.
 - Configs live in `~/.local/share/mashup/cfg` (Windows `%APPDATA%\mashup\cfg`):
-  config.cfg (written on quit when binds/cvars changed), autoexec.cfg,
+  config.cfg (written on quit when binds/cvars changed; every bind, as
+  `bind` lines after `unbindall`), autoexec.cfg,
   history.txt; `exec name` runs name.cfg from there.
 
 ## 3c. Performance

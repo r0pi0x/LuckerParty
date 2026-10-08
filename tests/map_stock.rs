@@ -494,3 +494,20 @@ fn all_stock_maps_warnings() {
         }
     }
 }
+
+/// A community map in the user's content cache (never in the repo), when
+/// present: its packed materials resolve whatever case the pack stores
+/// their names in (`legomg/Shotgun.vmt` for `legomg/shotgun`).
+#[test]
+fn packed_materials_resolve_case_insensitively() {
+    let name = "mg_lego_multigames_v2";
+    let present = mashup::mount::config::content_dir(cs_source::GAME)
+        .is_some_and(|d| d.join("maps").join(format!("{name}.bsp")).is_file());
+    if !installed() || !present {
+        eprintln!("skipping: {name} not in the content cache");
+        return;
+    }
+    let map = load(name).unwrap();
+    let missing: Vec<_> = map.warnings.iter().filter(|w| w.contains("not found")).collect();
+    assert!(missing.is_empty(), "{missing:#?}");
+}

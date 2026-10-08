@@ -436,17 +436,19 @@ fn keys(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     cursor: Single<&CursorOptions>,
+    console: Res<crate::console::Console>,
     mut spec: ResMut<Spectator>,
 ) {
     if spec.phase != SpecPhase::Watching || !super::input::cursor_grabbed(&cursor) {
         return;
     }
-    if keys.just_pressed(KeyCode::Space) {
+    let pressed = |c: &str| super::binds::just_pressed(&console.binds, &keys, &mouse, c);
+    if pressed("+jump") {
         spec.pending.next_mode = true;
     }
-    if mouse.just_pressed(MouseButton::Left) {
+    if pressed("+attack") {
         spec.pending.target_step = 1;
-    } else if mouse.just_pressed(MouseButton::Right) {
+    } else if pressed("+attack2") {
         spec.pending.target_step = -1;
     }
 }
@@ -485,6 +487,8 @@ fn place_camera(
         Option<Res<AccumulatedMouseMotion>>,
         Option<Res<super::input::MouseSettings>>,
         Option<Single<&CursorOptions>>,
+        Option<Res<ButtonInput<MouseButton>>>,
+        Option<Res<crate::console::Console>>,
     ),
 ) {
     let (Some(local), true) = (local, spec.active()) else {
@@ -494,7 +498,7 @@ fn place_camera(
         return;
     };
     let (me, at, intent, state) = *local;
-    let (keys, motion, settings, cursor) = controls;
+    let (keys, motion, settings, cursor, mouse, console) = controls;
     let grabbed = cursor.is_some_and(|c| super::input::cursor_grabbed(&c));
     let turn = match (grabbed, motion, settings) {
         (true, Some(m), Some(s)) => s.look_delta(m.delta),
@@ -574,10 +578,17 @@ fn place_camera(
                         let (yaw, pitch, _) = q.to_euler(EulerRot::YXZ);
                         chase.roam.at = Some((p, yaw, pitch));
                     }
-                    let held = |k: KeyCode| grabbed && keys.as_ref().is_some_and(|keys| keys.pressed(k));
-                    let axis = |a: KeyCode, b: KeyCode| held(a) as i8 as f32 - held(b) as i8 as f32;
-                    let input = Vec3::new(axis(KeyCode::KeyD, KeyCode::KeyA), axis(KeyCode::KeyW, KeyCode::KeyS), 0.0);
-                    let speed = if held(KeyCode::ShiftLeft) { 12.0 } else { 4.0 };
+                    // The movement keys (binds) fly it.
+                    let held = |c: &str| {
+                        grabbed
+                            && match (&keys, &mouse, &console) {
+                                (Some(k), Some(m), Some(con)) => super::binds::pressed(&con.binds, k, m, c),
+                                _ => false,
+                            }
+                    };
+                    let axis = |a: &str, b: &str| held(a) as i8 as f32 - held(b) as i8 as f32;
+                    let input = Vec3::new(axis("+moveright", "+moveleft"), axis("+forward", "+back"), 0.0);
+                    let speed = if held("+speed") { 12.0 } else { 4.0 };
                     chase.roam.fly(input, turn, speed, time.delta_secs());
                     chase.roam.rotation()
                 }

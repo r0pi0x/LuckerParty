@@ -59,6 +59,15 @@ pub struct Resolved {
     pub tint: Option<[f32; 3]>,
 }
 
+/// A packfile's entries by lower-case name (with `/` separators).
+fn pack_names(pack: &vbsp::Packfile) -> HashMap<String, String> {
+    let zip = pack.clone().into_zip();
+    let zip = zip.lock().unwrap_or_else(|e| e.into_inner());
+    zip.file_names()
+        .map(|n| (n.replace('\\', "/").to_lowercase(), n.to_string()))
+        .collect()
+}
+
 pub struct MaterialLoader<'a> {
     bsp: &'a Bsp,
     mount: &'a Mount,
@@ -66,6 +75,10 @@ pub struct MaterialLoader<'a> {
     pub cubemaps: Vec<crate::map::MapCubemap>,
     by_path: HashMap<String, Option<usize>>,
     cube_by_path: HashMap<String, Option<usize>>,
+    /// The map's packed files by lower-case path: maps pack names in any
+    /// case (`legomg/Shotgun.vmt`) and the game finds them whatever case
+    /// the map's own references use.
+    pack_names: HashMap<String, String>,
     /// Materials or textures that couldn't be loaded, with the reason.
     pub missing: Vec<String>,
 }
@@ -79,6 +92,7 @@ impl<'a> MaterialLoader<'a> {
             cubemaps: Vec::new(),
             by_path: HashMap::new(),
             cube_by_path: HashMap::new(),
+            pack_names: pack_names(&bsp.pack),
             missing: Vec::new(),
         }
     }
@@ -86,6 +100,9 @@ impl<'a> MaterialLoader<'a> {
     pub fn read(&self, path: &str) -> Option<Vec<u8>> {
         let path = normalize(path);
         if let Ok(Some(data)) = self.bsp.pack.get(&path) {
+            return Some(data);
+        }
+        if let Some(Ok(Some(data))) = self.pack_names.get(&path.to_lowercase()).map(|n| self.bsp.pack.get(n)) {
             return Some(data);
         }
         self.mount.read(&path).ok()

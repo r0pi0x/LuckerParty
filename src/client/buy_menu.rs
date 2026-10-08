@@ -343,7 +343,7 @@ type Typing<'a> = (
 
 #[allow(clippy::too_many_arguments)]
 fn keys(
-    keys: Res<ButtonInput<KeyCode>>,
+    (keys, mouse): (Res<ButtonInput<KeyCode>>, Res<ButtonInput<MouseButton>>),
     cursor: Single<&CursorOptions>,
     (open, typing): (Res<VguiOpen>, Typing),
     mut menu: ResMut<BuyMenu>,
@@ -356,7 +356,7 @@ fn keys(
     if !super::vgui::keys_live(&cursor, &open, ui.as_deref(), chat.as_deref(), game_menu.as_deref()) {
         return;
     }
-    if keys.just_pressed(KeyCode::KeyB) {
+    if super::binds::just_pressed(&console.binds, &keys, &mouse, "buymenu") {
         if menu.open {
             *menu = BuyMenu::default();
         } else {
@@ -805,6 +805,7 @@ mod tests {
                 ..default()
             })
             .add_systems(Update, keys);
+        super::super::binds::test_binds(&mut app);
         if game_look {
             let hud = GameHud {
                 menus: Some(game_menus()),

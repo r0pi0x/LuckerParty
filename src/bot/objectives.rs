@@ -135,7 +135,7 @@ pub(super) fn goals(
 #[allow(clippy::type_complexity)]
 pub(super) fn act(
     mut bots: Query<(
-        &Bot,
+        &mut Bot,
         &mut Intent,
         &Transform,
         Option<&MovementState>,
@@ -150,7 +150,8 @@ pub(super) fn act(
     open: Res<RoundOpen>,
 ) {
     let bomb = planted.iter().find(|(b, _)| !b.defused).map(|(_, t)| t.translation);
-    for (bot, mut intent, t, state, team, health, inv) in &mut bots {
+    for (mut bot, mut intent, t, state, team, health, inv) in &mut bots {
+        bot.radio.at_objective = false;
         if health.current <= 0.0 || bot.target.is_some() || !open.0 {
             continue;
         }
@@ -168,6 +169,7 @@ pub(super) fn act(
             intent.move_axis = Vec2::ZERO;
             intent.jump = false;
             intent.fire = inv.active == Some(c4);
+            bot.radio.at_objective = true;
             continue;
         }
         // Defuse: beside the planted bomb, looking at it.
@@ -185,6 +187,7 @@ pub(super) fn act(
                 intent.fire = false;
                 // Another defender at it already: told so, no harm.
                 intent.use_key = true;
+                bot.radio.at_objective = true;
                 continue;
             }
         }

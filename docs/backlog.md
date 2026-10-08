@@ -44,6 +44,13 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   facing/banking and player train control. (Round restarts re-create
   entities: rounds plan.) Target: two
   real minigame maps from the user's downloads.
+- First minigame map: `mg_lego_multigames_v2` (in the user's content
+  cache). Fixed: impacts showing the sky on maps with water (decals were
+  in the depth prepass), packed materials whose names differ in case.
+  Open: about 11 fps at the breakable-block room (a perf pass is under
+  way), impacts don't land on brush entities (its walls are
+  func_breakable blocks; `decal::place_decals` projects only onto the
+  world and props).
 
 ## 2b. HUD and debug views
 
@@ -54,7 +61,9 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   selection icons). The team menu is in (M; you start as CT). The radio
   is in (`client/radio.rs`: Z/X/C menus, the calls as console commands,
   "Fire in the hole!" on throws, bots' enemy spotted/down and need
-  backup), with a chat area and hint text (`client/chat.rs`) and a
+  backup, and bots' own commands and reports: go / stick together /
+  follow me from the attackers' leader, cover me, sector clear, in
+  position, regroup), with a chat area and hint text (`client/chat.rs`) and a
   scoreboard latency column (0 until networking) and its BOMB / DEFUSER
   markers, the radio icon over a teammate's head (`sprites/radio`), and
   text chat (Y / U, `say`, `say_team`). The buy and team menus draw in the game's VGUI look from its `.res` files
@@ -63,15 +72,22 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   autobuy / rebuy / favourites, checking the widescreen placement against
   the game, other game messages in the chat (team joins, bomb pickups
   and drops are in), bots' answers checked against a bot behaviour spec
-  (`ignorerad` and bots answering and carrying out radio commands are
-  in: `bot::radio::obey`). The radar is in (`client/radar.rs`: the map overview turning
+  (`ignorerad`, bots answering and carrying out radio commands and
+  issuing their own are in: `bot::radio::obey`, `speak`; checking
+  when CS:S bots talk needs that spec). The radar is in (`client/radar.rs`: the map overview turning
   with you, team dots, your place name); its range (2200 units) is a guess.
 - The game menu (Esc; `client/game_menu.rs`: new game with map, mode,
   bots per team and difficulty; bots; team; options; bug report; quit)
-  is in, in its own look. Left: the game's own GameUI look
-  (`SourceScheme.res` frames, its fonts on Linux, where Tahoma is
-  missing), more options (binds, crosshair size, video), a scrollbar for
-  long map lists (pages of 42 now), map thumbnails.
+  is in, in the game's GameUI look (`SourceScheme.res` frames and
+  colours, `GameMenu.res` entries, tabbed options: keyboard binds from
+  `kb_act.lst`, mouse, audio, video, crosshair; a scrolled map list with
+  thumbnails). Left: placing the mouse, audio, video and multiplayer
+  tabs' controls where their `OptionsSub*.res` put them (ours are a
+  column), OK / Cancel / Apply (changes apply at once now), dragging
+  frames, the keyboard tab's "Advanced" dialog, binds for the actions
+  greyed in it (`invprev`, `+voicerecord`, `autobuy`, ...), the game's
+  logo over the entries, comparing the look with CS:S's (refcmp has no
+  menu views).
 - Debug overlays: `mashup_drawhitboxes`, `mashup_healthbars`,
   `mashup_drawnav`, `mashup_drawbots` exist; add more as features need
   them (sound radii, triggers).
@@ -159,16 +175,20 @@ a first bot are in.
 ## 4. Bots
 
 - Ladders on other maps (`tests/bot_nav.rs::ladders_climb_both_ways`,
-  ignored; de_nuke's all pass, and 81 of 128 climbs on cs_office,
+  ignored; de_nuke's all pass): 118 of 128 climbs on cs_office,
   de_train, de_port, de_cbble, cs_militia, cs_assault, de_piranesi and
-  de_prodigy, up from 62): de_train's ladders on the train cars start
-  about 1.5 m above the floor and bots circle or pace under them without
-  getting on (33 of 70 climbs fail there); the rest (cs_militia 0 down,
-  2-3 up; de_cbble 0/4/5 down; cs_assault 0/5 down; de_prodigy 0/5 down;
-  de_port 0 down; cs_office 1 up; de_piranesi 0) mostly get stuck on
-  boxes or ledges beside the ladder's top, or the test's start spot is
-  awkward. Look at each with `MASHUP_BOT_CASE="ladder 3 up"` and the
-  trace.
+  de_prodigy (2026-10-07, up from 81; per map before/after: cs_office
+  3/4 to 4/4, de_train 37/70 to 63/70, de_port 1/2 to 2/2, de_cbble
+  11/14 to 14/14, cs_militia 7/10 to 9/10, cs_assault 14/16 to 15/16,
+  de_piranesi 0/2 to 2/2, de_prodigy 8/10 to 9/10). Left: de_train 6,
+  18, 23 up and 24 down (the foot on a ledge 0.7 m above the pit floor
+  by the tracks: bots drop into the pit beside it and jump about under
+  the ledge), 11 and 34 up (wander off on another route after a stuck
+  report from an earlier case), 37 up (flung onto a roof beside the top
+  when an approach from the side catches the ladder early);
+  cs_militia 2 up, cs_assault 5 down, de_prodigy 1 up (not looked at).
+  Look at each with `MASHUP_BOT_CASE="ladder 3 up"` and the trace, or
+  `MASHUP_BOT_TRACE_CASE` to trace one inside the whole map's run.
 - A CS:S bot behaviour spec (nav spec open questions 2-4) to check our
   team play against: path costs, how bots pick sites, hold and rotate,
   what they say. Ours (`bot::tactics`) plants and defuses only through
@@ -222,10 +242,16 @@ docs/plans/active/sound.md.
 
 ## 7. Physics props, remaining
 
-- The player physics shadow for `prop_physics` (dust2 has none).
+- Player physics shadow (src/games/cs_source/shadow.rs, tests/map_physics_shadow.rs)
+  follow-ups (docs/tech-debt.md "Physics shadow"): the push speed limit
+  (spec Q7), the shadow's weight on a prop stood on, the controller's
+  velocity target when not touching (spec 4.1 step 5), measuring the push
+  feel against CS:S on cs_militia/de_inferno crates. CS:S has no +use
+  pickup of props (no physgun; +use pushes only under `sv_turbophysics 1`,
+  spec 4.2.4, not done).
 - Prop damage follow-ups (docs/tech-debt.md "Prop damage"): stress crush, the
-  velocity restore after an impact breaks a prop, pieces as real avian
-  bodies with their skin, the spec's open questions on the probe server
+  velocity restore after an impact breaks a prop, the chunks' 90°
+  realignment, the spec's open questions on the probe server
   (Q1-Q14: damage types, gas-can ignition, player impact rules, client
   break sounds, round restarts of client props).
 - Model doors: the hardware's latch/lock sounds and the spec's open

@@ -1,7 +1,7 @@
 //! Local intent source: keyboard and mouse write the local player's `Intent`.
 
 use bevy::{
-    input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit},
+    input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll},
     prelude::*,
     window::{CursorGrabMode, CursorOptions},
 };
@@ -141,19 +141,29 @@ pub(super) fn grab_cursor(
     }
 }
 
-/// G drops the held weapon (CS:S's default `bind g drop`); F9 saves a
-/// bug report.
+/// The drop key (`drop`, G) drops the held weapon while playing; the bug
+/// report key (`bugreport`, F9) saves a bug report any time.
 fn drop_key(
     keys: Res<ButtonInput<KeyCode>>,
+    mouse: Res<ButtonInput<MouseButton>>,
     cursor: Single<&CursorOptions>,
     console: Option<ResMut<crate::console::Console>>,
+    ui: Option<Res<super::console::ConsoleUi>>,
+    chat: Option<Res<super::chat::ChatInput>>,
+    menu: Option<Res<super::game_menu::GameMenu>>,
 ) {
     let Some(mut console) = console else { return };
-    if keys.just_pressed(KeyCode::KeyG) && cursor_grabbed(&cursor) {
+    // Typing, or the game menu reading keys (rebinding them).
+    if ui.is_some_and(|u| u.open) || chat.is_some_and(|c| c.open.is_some()) || menu.is_some_and(|m| m.open) {
+        return;
+    }
+    let pressed = |c: &str| super::binds::just_pressed(&console.binds, &keys, &mouse, c);
+    let (drop, report) = (pressed("drop"), pressed("bug") || pressed("bugreport"));
+    if drop && cursor_grabbed(&cursor) {
         console.submit("drop");
     }
-    // F9: a bug report (screenshot, position, build, console) to send.
-    if keys.just_pressed(KeyCode::F9) {
+    // A bug report (screenshot, position, build, console) to send.
+    if report {
         console.submit("bugreport");
     }
 }
@@ -173,8 +183,6 @@ struct WheelJump {
 
 /// Notches queued at most, so a long spin doesn't keep jumping after it.
 const MAX_WHEEL_JUMPS: u32 = 4;
-/// Pixel-unit scrolling (touchpads, smooth wheels): pixels per notch.
-const PIXELS_PER_NOTCH: f32 = 40.0;
 
 fn apply_wheel_jump(mut wheel: ResMut<WheelJump>, mut intent: Single<&mut Intent, With<LocalPlayer>>) {
     let pulse = wheel.pending > 0 && !wheel.pressed_last_tick;
@@ -208,10 +216,13 @@ const PITCH_LIMIT: f32 = 89f32.to_radians();
 fn write_local_intent(
     mut intent: Single<&mut Intent, With<LocalPlayer>>,
     cursor: Single<&CursorOptions>,
-    keys: Res<ButtonInput<KeyCode>>,
-    mouse: Res<ButtonInput<MouseButton>>,
-    motion: Res<AccumulatedMouseMotion>,
-    scroll: Res<AccumulatedMouseScroll>,
+    (keys, mouse, motion, scroll): (
+        Res<ButtonInput<KeyCode>>,
+        Res<ButtonInput<MouseButton>>,
+        Res<AccumulatedMouseMotion>,
+        Res<AccumulatedMouseScroll>,
+    ),
+    console: Option<Res<crate::console::Console>>,
     mut wheel: ResMut<WheelJump>,
     mouse_settings: Res<MouseSettings>,
     held: Option<Res<super::console::HeldActions>>,
@@ -226,7 +237,12 @@ fn write_local_intent(
     zoomed: Query<&crate::weapon::Zoomed, With<LocalPlayer>>,
     spectator: Option<Res<super::spectate::Spectator>>,
 ) {
-    let freelook = keys.pressed(KeyCode::AltLeft) || held.as_ref().is_some_and(|h| h.freelook);
+    // Every game key is a bind (`binds`): what the keys bound to an action
+    // hold.
+    let empty = std::collections::BTreeMap::new();
+    let binds = console.as_ref().map_or(&empty, |c| &c.binds);
+    let bound = |command: &str| super::binds::pressed(binds, &keys, &mouse, command);
+    let freelook = bound("+freelook") || held.as_ref().is_some_and(|h| h.freelook);
     if !freelook {
         free.set_if_neq(FreeLook::default());
     }
@@ -258,15 +274,15 @@ fn write_local_intent(
         };
         return;
     }
-    let axis = |pos: KeyCode, neg: KeyCode| keys.pressed(pos) as i8 as f32 - keys.pressed(neg) as i8 as f32;
+    let axis = |pos: &str, neg: &str| bound(pos) as i8 as f32 - bound(neg) as i8 as f32;
     // Flying the detached camera: the player stands still.
     if freecam.mode == 1 {
         let input = Vec3::new(
-            axis(KeyCode::KeyD, KeyCode::KeyA),
-            axis(KeyCode::KeyW, KeyCode::KeyS),
-            axis(KeyCode::Space, KeyCode::ControlLeft),
+            axis("+moveright", "+moveleft"),
+            axis("+forward", "+back"),
+            axis("+jump", "+duck"),
         );
-        let speed = if keys.pressed(KeyCode::ShiftLeft) { 12.0 } else { 4.0 };
+        let speed = if bound("+speed") { 12.0 } else { 4.0 };
         freecam.fly(input, mouse_settings.look_delta(motion.delta), speed, time.delta_secs());
         let (yaw, pitch) = (intent.yaw, intent.pitch);
         **intent = Intent {
@@ -276,7 +292,7 @@ fn write_local_intent(
         };
         return;
     }
-    intent.move_axis = Vec2::new(axis(KeyCode::KeyD, KeyCode::KeyA), axis(KeyCode::KeyW, KeyCode::KeyS));
+    intent.move_axis = Vec2::new(axis("+moveright", "+moveleft"), axis("+forward", "+back"));
 
     let zoom = mouse_settings.zoom_scale(zoomed.iter().next().map(|z| z.fov));
     let turn = mouse_settings.look_delta(motion.delta) * zoom;
@@ -287,30 +303,18 @@ fn write_local_intent(
         intent.pitch = (intent.pitch + turn.y).clamp(-PITCH_LIMIT, PITCH_LIMIT);
     }
 
-    intent.jump = keys.pressed(KeyCode::Space);
+    intent.jump = bound("+jump");
     wheel.key_held = intent.jump;
-    let notches = match scroll.unit {
-        MouseScrollUnit::Line => scroll.delta.y.abs().round(),
-        MouseScrollUnit::Pixel => (scroll.delta.y.abs() / PIXELS_PER_NOTCH).ceil(),
-    } as u32;
+    let notches = super::binds::wheel_notches(binds, &scroll, "+jump");
     wheel.pending = (wheel.pending + notches).min(MAX_WHEEL_JUMPS);
-    // C is the radio responses menu, as in CS:S.
-    intent.crouch = keys.pressed(KeyCode::ControlLeft);
-    intent.sprint = keys.pressed(KeyCode::ShiftLeft);
-    intent.walk = keys.pressed(KeyCode::ShiftLeft);
-    intent.fire = mouse.pressed(MouseButton::Left);
-    intent.secondary = mouse.pressed(MouseButton::Right);
-    intent.reload = keys.pressed(KeyCode::KeyR);
-    intent.last_weapon = keys.pressed(KeyCode::KeyQ);
-    // CS:S binds E to +use.
-    intent.use_key = keys.pressed(KeyCode::KeyE);
-    const SLOTS: [KeyCode; 5] = [
-        KeyCode::Digit1,
-        KeyCode::Digit2,
-        KeyCode::Digit3,
-        KeyCode::Digit4,
-        KeyCode::Digit5,
-    ];
+    intent.crouch = bound("+duck");
+    intent.sprint = bound("+speed");
+    intent.walk = bound("+speed");
+    intent.fire = bound("+attack");
+    intent.secondary = bound("+attack2");
+    intent.reload = bound("+reload");
+    intent.last_weapon = bound("lastinv");
+    intent.use_key = bound("+use");
     // Number keys pick from the buy, team or radio menu while one is open.
     intent.select = if menu.is_some_and(|m| m.open)
         || team_menu.is_some_and(|m| m.0)
@@ -318,9 +322,10 @@ fn write_local_intent(
     {
         None
     } else {
-        SLOTS.iter().position(|k| keys.pressed(*k)).map(|i| i as u8)
+        (0..5u8).find(|i| bound(&format!("slot{}", i + 1)))
     };
-    // Bound actions (`bind f +duck`) add to the keys.
+    // Actions held from the console (`+duck` typed, `++attack`) add to the
+    // keys.
     if let Some(h) = held {
         apply_held(&mut intent, &mut wheel, &h);
     }

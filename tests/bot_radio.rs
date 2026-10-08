@@ -2,17 +2,22 @@
 //! person's "Follow me" makes the nearest bot answer and follow them,
 //! "Hold this position" keeps bots near the caller's spot, all the same
 //! whatever the entity ids (`MASHUP_TEST_PAD`); on de_dust2, skipped
-//! without a CS:S install. And what the player hears: `ignorerad` hides
-//! teammates' calls, and players joining a team get the game's chat line.
+//! without a CS:S install. Bots' own calls (`bot::radio::speak`): one
+//! leader call as a round opens, "Cover me" from a planting bot, the same
+//! calls whatever the entity ids, and no more than one call per team per
+//! `TEAM_GAP` over a whole round. And what the player hears: `ignorerad`
+//! hides teammates' calls, and players joining a team get the game's chat
+//! line.
 
+use avian3d::prelude::Position;
 use bevy::{
     ecs::message::{MessageCursor, Messages},
     prelude::*,
 };
 use mashup::{
     bot::{
-        Activity, Bot, BotConfig,
-        radio::{HOLD_NEAR, Order},
+        Activity, Bot, BotConfig, Tactics,
+        radio::{CALLS, HOLD_NEAR, Order, TEAM_GAP},
     },
     client::{
         chat::{ChatLine, GameMessagesPlugin},
@@ -24,7 +29,8 @@ use mashup::{
         self,
         cs_source::{
             self, TICK_INTERVAL,
-            movement::{self, SourceMovementPlugin},
+            movement::{self, SourceMovementPlugin, to_engine},
+            objectives::C4,
             weapons::CsWeaponsPlugin,
         },
     },
@@ -36,6 +42,8 @@ use mashup::{
     },
     mount::config::LocalConfig,
     movement::placeholder,
+    rules::rounds::{Phase, RoundState},
+    weapon::give,
 };
 
 fn installed() -> bool {
@@ -322,4 +330,172 @@ fn the_installs_join_lines() {
         .collect();
     assert_eq!(line, "Bot 2 is joining the Counter-Terrorist force");
     assert!(say.join("Bot 3", 1).is_some());
+}
+
+/// de_dust2 with `t` terrorist and `ct` counter-terrorist bots, padded
+/// by `pad` more entities; rounds on (`rounds`) with a 1 s freeze.
+fn bot_game(t: usize, ct: usize, pad: usize, rounds: bool) -> (Sim, Vec<Entity>) {
+    let map = games::load_map("cs_source:de_dust2").expect("load de_dust2");
+    let mut sim = Sim::new((MapPlugin::new(map), SourceMovementPlugin, CsWeaponsPlugin));
+    sim.pad(pad);
+    sim.set_tick_interval(TICK_INTERVAL);
+    sim.app
+        .insert_resource(mashup::slots::Loadout { movement: movement::ID });
+    sim.app.world_mut().resource_mut::<BotConfig>().grenades = 0;
+    let mut bots = Vec::new();
+    for _ in 0..t {
+        bots.push(mashup::bot::add_bot(sim.app.world_mut(), Team(1)).expect("bot"));
+    }
+    for _ in 0..ct {
+        bots.push(mashup::bot::add_bot(sim.app.world_mut(), Team(2)).expect("bot"));
+    }
+    if rounds {
+        sim.app
+            .world_mut()
+            .resource_mut::<Console>()
+            .submit("mp_freezetime 1; mp_roundtime 1.5; mashup_rounds 1");
+    }
+    sim.ticks(2);
+    (sim, bots)
+}
+
+/// A call bots start on their own (not an answer, nor a grenade's "Fire
+/// in the hole", which the weapon says).
+fn own(call: &str) -> bool {
+    CALLS.contains(&call)
+}
+
+fn live(sim: &Sim) -> bool {
+    matches!(sim.app.world().resource::<RoundState>().phase, Phase::Live { .. })
+}
+
+#[test]
+fn a_round_opens_with_one_leader_call() {
+    if !installed() {
+        return;
+    }
+    let (mut sim, bots) = bot_game(4, 1, 0, true);
+    let mut cursor = sim.app.world().resource::<Messages<Radio>>().get_cursor_current();
+    // The freeze: nobody says anything of their own.
+    let mut frozen = Vec::new();
+    while !live(&sim) {
+        frozen.extend(run(&mut sim, TICK_INTERVAL, &mut cursor));
+    }
+    assert!(frozen.iter().all(|h| !own(&h.2)), "said in the freeze: {frozen:?}");
+    let heard = run(&mut sim, 9.0, &mut cursor);
+    let leader = {
+        let t = sim.app.world().resource::<Tactics>();
+        t.team(Team(1)).and_then(|p| p.leader).expect("a leader")
+    };
+    let starts: Vec<&(u64, Entity, String)> = heard
+        .iter()
+        .filter(|h| bots[..4].contains(&h.1) && matches!(h.2.as_str(), "go" | "sticktog" | "followme"))
+        .collect();
+    assert_eq!(starts.len(), 1, "one call to start the round: {heard:?}");
+    assert_eq!(starts[0].1, leader, "the leader makes it");
+    // Teammates near answer it.
+    assert!(
+        heard.iter().any(|h| h.2 == "roger" && bots[..4].contains(&h.1)),
+        "answered: {heard:?}"
+    );
+}
+
+#[test]
+fn a_planting_bot_calls_cover_me() {
+    if !installed() {
+        return;
+    }
+    let (mut sim, bots) = bot_game(2, 0, 0, false);
+    let (planter, mate) = (bots[0], bots[1]);
+    // Both in the A target (O4/O5's box), the planter with the bomb.
+    let teleport = |sim: &mut Sim, e: Entity, x: f32, y: f32| {
+        let at = to_engine(Vec3::new(x, y, 100.0)) + Vec3::Y * (36.0 * mashup::objectives::UNIT + 0.05);
+        let w = sim.app.world_mut();
+        w.get_mut::<Transform>(e).unwrap().translation = at;
+        if let Some(mut p) = w.get_mut::<Position>(e) {
+            p.0 = at;
+        }
+    };
+    teleport(&mut sim, planter, 1160.0, 2480.0);
+    teleport(&mut sim, mate, 1120.0, 2400.0);
+    give(sim.app.world_mut(), planter, C4).expect("the bomb");
+    let mut cursor = sim.app.world().resource::<Messages<Radio>>().get_cursor_current();
+    let heard = run(&mut sim, 4.0, &mut cursor);
+    assert!(
+        heard.iter().any(|h| h.1 == planter && h.2 == "coverme"),
+        "the planter asks for cover: {heard:?}"
+    );
+    assert!(
+        heard.iter().any(|h| h.1 == mate && h.2 == "roger"),
+        "the mate answers: {heard:?}"
+    );
+    let bot = sim.app.world().get::<Bot>(planter).unwrap();
+    assert!(bot.last_call().is_some(), "remembered for the debug views");
+}
+
+/// A terrorists-only round's own calls: (tick from the round's start,
+/// bot number, call).
+fn attackers_calls(pad: usize) -> Vec<(u64, u32, String)> {
+    let (mut sim, _) = bot_game(4, 0, pad, false);
+    let mut cursor = sim.app.world().resource::<Messages<Radio>>().get_cursor_current();
+    let start = sim.tick();
+    let heard = run(&mut sim, 30.0, &mut cursor);
+    heard
+        .into_iter()
+        .map(|h| (h.0 - start, number(&sim, h.1), h.2))
+        .collect()
+}
+
+#[test]
+fn bots_calls_dont_depend_on_entity_ids() {
+    if !installed() {
+        return;
+    }
+    let base = attackers_calls(0);
+    assert!(base.iter().any(|c| own(&c.2)), "something said: {base:?}");
+    for pad in [7, 40] {
+        assert_eq!(attackers_calls(pad), base, "padded by {pad}");
+    }
+}
+
+#[test]
+fn a_teams_bots_start_a_call_per_gap_at_most_over_a_round() {
+    if !installed() {
+        return;
+    }
+    let (mut sim, bots) = bot_game(4, 4, 0, true);
+    let mut cursor = sim.app.world().resource::<Messages<Radio>>().get_cursor_current();
+    let mut heard = Vec::new();
+    let mut was_live = false;
+    // Until the first round is over (at most its 90 s and the freeze).
+    for _ in 0..(100.0 / 0.5) as usize {
+        heard.extend(run(&mut sim, 0.5, &mut cursor));
+        let now_live = live(&sim);
+        if was_live && !now_live {
+            break;
+        }
+        was_live |= now_live;
+    }
+    assert!(was_live, "the round went live");
+    let tick_gap = (TEAM_GAP / TICK_INTERVAL).round() as u64 - 1;
+    for team in [1u8, 2] {
+        let calls: Vec<&(u64, Entity, String)> = heard
+            .iter()
+            .filter(|h| bots.contains(&h.1) && own(&h.2))
+            .filter(|h| sim.app.world().get::<Team>(h.1) == Some(&Team(team)))
+            .collect();
+        eprintln!(
+            "team {team}: {:?}",
+            calls.iter().map(|c| (c.0, &c.2)).collect::<Vec<_>>()
+        );
+        for w in calls.windows(2) {
+            assert!(
+                w[1].0 - w[0].0 >= tick_gap,
+                "team {team}: {:?} then {:?} too soon",
+                w[0],
+                w[1]
+            );
+        }
+    }
+    assert!(heard.iter().any(|h| own(&h.2)), "bots said something");
 }

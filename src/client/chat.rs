@@ -158,13 +158,20 @@ fn typing(
     cursor: Query<&CursorOptions>,
     console: Option<Res<super::console::ConsoleUi>>,
     menu: Option<Res<super::game_menu::GameMenu>>,
+    (binds, mouse): (Option<Res<crate::console::Console>>, Option<Res<ButtonInput<MouseButton>>>),
     mut commands: Commands,
 ) {
     let busy = console.is_some_and(|c| c.open) || menu.is_some_and(|m| m.open);
     if input.open.is_none() {
         let playing = cursor.iter().next().is_some_and(super::input::cursor_grabbed);
-        if !busy && playing && (keys.just_pressed(KeyCode::KeyY) || keys.just_pressed(KeyCode::KeyU)) {
-            input.open = Some(keys.just_pressed(KeyCode::KeyU));
+        // The chat keys (`messagemode`, Y; `messagemode2`, U).
+        let pressed = |c: &str| match (&binds, &mouse) {
+            (Some(b), Some(m)) => super::binds::just_pressed(&b.binds, &keys, m, c),
+            _ => false,
+        };
+        let (all, team) = (pressed("messagemode"), pressed("messagemode2"));
+        if !busy && playing && (all || team) {
+            input.open = Some(team);
             input.text.clear();
             keys.reset_all();
         }

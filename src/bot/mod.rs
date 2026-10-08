@@ -28,8 +28,8 @@ use crate::{
     character::CAPSULE_HEIGHT,
     character::spawn_character,
     console::{Command, Console, resource_cvar},
-    core::{Health, Intent, LocalPlayer, MovementState, SimSet, SpawnPoint, Team},
-    map::nav::{NavMesh, STEP_HEIGHT, flags},
+    core::{Health, Intent, LocalPlayer, MapBrush, MapBrushes, MovementState, SimSet, SpawnPoint, Team},
+    map::nav::{NavLadder, NavMesh, STEP_HEIGHT, flags},
     slots::{Loadout, MovementSlot},
     weapon::{Inventory, grenade::Projectile},
 };
@@ -70,7 +70,7 @@ impl Plugin for BotPlugin {
         resource_cvar::<BotConfig, u8>(
             app,
             "bot_radio",
-            "1: bots use the team radio (enemy spotted, enemy down, need backup).",
+            "1: bots use the team radio (enemy spotted and down, need backup, commands such as follow me and cover me, sector clear, in position).",
             |c| &mut c.radio,
         );
         resource_cvar::<BotConfig, f32>(app, "bot_aim_error", "Bot aim wobble, degrees.", |c| &mut c.aim_error);
@@ -219,8 +219,12 @@ pub struct Bot {
     /// and seconds since (a ceiling over a ladder's top stops it short).
     climbed: Option<(f32, f32)>,
     /// On a ladder: how far off its middle line it climbs (along the
-    /// rungs, m), after getting stuck under something on the middle.
+    /// rungs, m): to the side it got on from on a ladder boxed in by
+    /// flush faces (`LadderFit`), or after getting stuck under something
+    /// on the middle.
     ladder_shift: f32,
+    /// The last mesh ladder looked at closely (index), and how it fits.
+    ladder_fit: Option<(usize, Option<LadderFit>)>,
     /// When it last jumped.
     jumped: f64,
     /// Current aim offset (yaw, pitch radians) and seconds until re-rolled.
@@ -478,6 +482,9 @@ pub fn objectives_of(map: &crate::map::MapEntities, classes: &[&str]) -> Vec<Vec
 const MEMORY: f64 = 15.0;
 /// A remembered or roaming goal counts as reached within this, m.
 const ARRIVED: f32 = 2.0;
+/// A goal it was sent to counts as reached within half `ARRIVED` and this
+/// much above or below, m.
+const SENT_RISE: f32 = 0.5;
 /// A sound is heard when its distance gain at the bot is above this.
 const HEARING_GAIN: f32 = 0.05;
 
@@ -624,10 +631,12 @@ fn think(
     breakable: Query<(), With<crate::core::Damageable>>,
     spatial: SpatialQuery,
     nav: Option<Res<NavMesh>>,
+    brushes: Option<Res<MapBrushes>>,
     cfg: Res<BotConfig>,
     time: Res<Time>,
     tactics: Res<Tactics>,
 ) {
+    let brushes = brushes.as_deref().map_or(&[][..], |b| &b.0[..]);
     let dt = time.delta_secs();
     let now = time.elapsed_secs_f64();
     // World traces for flash sight (a line) and grenade arcs (the
@@ -945,7 +954,7 @@ fn think(
         // the climb (its route's end).
         let goal = goal.or_else(|| state.on_ladder.then(|| bot.route.last().copied()).flatten());
         let step = match goal {
-            Some(goal) => walk_route(&mut bot, nav, feet, goal, &params, dt, now, state.on_ladder, state.on_ground),
+            Some(goal) => walk_route(&mut bot, nav, feet, goal, &params, dt, now, state.on_ladder, state.on_ground, brushes),
             // Waiting keeps its route (for comparing with the leader's).
             None if bot.activity == Activity::Waiting => None,
             None => {
@@ -978,7 +987,8 @@ fn think(
                 look = rung + Vec3::Y * (rung.y - feet.y).signum() * 2.0;
                 pitch_limit = LADDER_PITCH;
             } else if step.dismount {
-                // Off a ladder's top: level, the way out.
+                // Off a ladder's top: level, the way out (on the ladder:
+                // square to it, `rungs`, above).
                 look = eye + step.dir * 2.0;
             } else if bot.blocked > USE_AFTER {
                 // Stuck: face the way (a door to open, a ledge to jump).
@@ -1017,18 +1027,45 @@ fn think(
             // Full speed whichever way (the larger key fully pressed); on
             // a ladder, straight at it.
             intent.move_axis = match step.rungs {
+                // Stepping off its top sideways: climbing on, and the
+                // sideways key toward the way out.
+                Some(r) if state.on_ladder && step.dismount => {
+                    let perp = Vec3::Y.cross(r.normal);
+                    let across = step.target.map_or(0.0, |t| (t - feet).dot(perp));
+                    let side = if across.abs() > LADDER_CENTRE {
+                        (perp * across.signum()).dot(right).signum()
+                    } else {
+                        0.0
+                    };
+                    if fwd.with_y(0.0).normalize_or_zero().dot(r.face) < LADDER_FACING {
+                        Vec2::ZERO
+                    } else {
+                        Vec2::new(side, 1.0)
+                    }
+                }
                 // On the ladder: straight on, stepping sideways back to
                 // its middle line.
                 Some(r) if state.on_ladder => {
                     let perp = Vec3::Y.cross(r.normal);
                     let off = (feet - r.foot).dot(perp) - r.shift;
-                    let side = if off.abs() > LADDER_CENTRE {
+                    // (Exactly on a line off the middle: `Bot::ladder_shift`.)
+                    let centre = if r.shift == 0.0 { LADDER_CENTRE } else { LADDER_ON_SHIFT };
+                    // (Not near the top going up: the ladder lets go with
+                    // the sideways speed still on, flinging it off the top.)
+                    let near_top = step.climb.is_some_and(|c| c.y > feet.y && c.y - feet.y < LADDER_TOP_STEADY);
+                    let side = if off.abs() > centre && !near_top {
                         -(perp * off.signum()).dot(right).signum()
                     } else {
                         0.0
                     };
                     let up = step.climb.is_some_and(|c| c.y > feet.y);
-                    Vec2::new(side, if up { 1.0 } else { -1.0 })
+                    if fwd.with_y(0.0).normalize_or_zero().dot(r.face) < LADDER_FACING {
+                        // Turned away (aiming at something): hang there
+                        // until square again (keys move it along the view).
+                        Vec2::ZERO
+                    } else {
+                        Vec2::new(side, if up { 1.0 } else { -1.0 })
+                    }
                 }
                 // A drop with no mesh ladder: straight on, over the edge.
                 // A climb: straight on once facing it (still turning,
@@ -1038,7 +1075,7 @@ fn think(
                 {
                     Vec2::Y
                 }
-                _ => axis / axis.abs().max_element().max(1e-3),
+                _ => axis / axis.abs().max_element().max(1e-3) * step.pace,
             };
             // Walking into something: press use now and then (doors),
             // jump it every so often (ledges).
@@ -1051,8 +1088,10 @@ fn think(
             intent.use_key = b > USE_AFTER && (b / USE_PERIOD) as u32 % 2 == 0;
             let blocked = b > BLOCKED_JUMP && (b - BLOCKED_JUMP) % JUMP_PERIOD < dt * 1.5;
             // Jump is a fresh press each time (held, it jumps once), and
-            // never on a ladder (that lets go of it).
-            let want_jump = ((step.jump && step.climb.is_none()) || blocked) && !state.on_ladder;
+            // never on a ladder (that lets go of it); blocked at one (slow,
+            // pressing in or sidestepping at its foot) it doesn't jump
+            // either (the jump and the duck after it keep it off).
+            let want_jump = ((step.jump && step.climb.is_none()) || (blocked && step.rungs.is_none())) && !state.on_ladder;
             intent.jump = want_jump && !bot.jump_held;
             bot.jump_held = intent.jump;
             if intent.jump && state.on_ground {
@@ -1076,7 +1115,11 @@ fn think(
                     )
                     .is_some_and(|h| h.distance > 0.02)
             };
-            let low_ceiling = !state.on_ladder && (low(feet) || low(ahead));
+            // (Not for what's ahead when getting on a ladder starting above
+            // the floor: that is the underside of what it climbs, a train
+            // car, and a ducked box doesn't reach the ladder.)
+            let high_ladder = step.rungs.is_some_and(|r| r.foot.y - feet.y > STEP_HEIGHT);
+            let low_ceiling = !state.on_ladder && (low(feet) || (low(ahead) && !high_ladder));
             intent.crouch = step.crouch || airborne || low_ceiling;
             // Something breakable in the way (a vent grille, a window):
             // shoot it.
@@ -1101,10 +1144,12 @@ fn think(
                     target + Vec3::Y * 0.3,
                 ];
                 let filter = SpatialQueryFilter::from_excluded_entities([me]).with_mask(crate::core::SOLID_LAYERS);
+                // (No further than the route point: not a window past it.)
+                let reach = BREAK_REACH.min(target.distance(eye) + BREAK_PAST);
                 let hit = aims.into_iter().find_map(|aim| {
                     let dir = Dir3::new(aim - eye).ok()?;
                     spatial
-                        .cast_ray(eye, dir, BREAK_REACH, true, &filter)
+                        .cast_ray(eye, dir, reach, true, &filter)
                         .filter(|h| breakable.contains(h.entity))
                         .map(|h| eye + *dir * h.distance)
                 });
@@ -1114,7 +1159,7 @@ fn think(
                     intent.pitch = d.y.atan2(d.xz().length());
                     intent.fire = !(semi && pressed);
                     bot.look_at = Some(at);
-                    if step.dismount && state.on_ladder {
+                    if state.on_ladder {
                         // Hang on the ladder until it breaks.
                         intent.move_axis = Vec2::ZERO;
                     }
@@ -1147,6 +1192,8 @@ const BREAK_AFTER: f32 = 0.5;
 /// Walking to one route point this long also looks for one, s.
 const BREAK_SLOW: f64 = 2.0;
 const BREAK_REACH: f32 = 2.5;
+/// ... and no more than this past the route point it walks to, m.
+const BREAK_PAST: f32 = 0.5;
 /// Slower than this while walking for this long: jump, m/s and s.
 const BLOCKED_SPEED: f32 = 0.5;
 const BLOCKED_JUMP: f32 = 0.4;
@@ -1171,6 +1218,10 @@ const LADDER_SIDESTEP_NEAR: f32 = 0.6;
 const LADDER_SIDESTEP: f32 = 0.25;
 const LADDER_SIDESTEP_EACH: f32 = 1.2;
 const LADDER_MOUNT: f32 = 32.0 * 0.0254;
+/// A ladder's mount point (at its foot's height) counts as reached from
+/// the floor below it up to this far below, m (a standing box reaches a
+/// ladder starting up to 72 units up).
+const MOUNT_ABOVE: f32 = 72.0 * 0.0254;
 /// Going down, it backs out over the ladder's top until this far beyond
 /// it, then presses in (falling past it, it catches it), m.
 const LADDER_OVER: f32 = 0.45;
@@ -1181,10 +1232,30 @@ const LADDER_OVER: f32 = 0.45;
 const LADDER_TOP_NEAR: f32 = 0.3;
 const LADDER_RISING: f32 = 0.01;
 const LADDER_TOPPED: f32 = 0.25;
+/// Off a ladder's top toward a point within this (cosine) of straight
+/// over it, it turns and walks there; else it steps off sideways.
+const LADDER_OVER_TOP: f32 = 0.3;
+/// On a ladder, it climbs only while its view is within this (cosine) of
+/// square to it.
+const LADDER_FACING: f32 = 0.85;
+/// Climbing up within this of the top, it no longer steps sideways, m.
+const LADDER_TOP_STEADY: f32 = 0.6;
 /// Pitch limit looking up or down a ladder (radians).
 const LADDER_PITCH: f32 = 1.4;
-/// On a ladder further than this from its middle line: step sideways, m.
+/// On a ladder further than this from its middle line (or this from a
+/// line off it it keeps to): step sideways, m.
 const LADDER_CENTRE: f32 = 0.1;
+const LADDER_ON_SHIFT: f32 = 0.04;
+/// Sidestepping at a ladder's foot: this close to the line it gets on
+/// along, it presses in, m.
+const LADDER_ACROSS: f32 = 0.03;
+/// Within this of that line it slows, down to this share of full speed.
+const LADDER_SLOW: f32 = 0.2;
+const LADDER_PACE: f32 = 0.2;
+/// Half the box's width, and how far past a flank's face it keeps the box
+/// on a ladder boxed in by flush faces, m.
+const HALF_WIDTH: f32 = 16.0 * 0.0254;
+const LADDER_CLEAR: f32 = 2.0 * 0.0254;
 /// Seconds without contact a bot holds before moving on: attackers on a
 /// site they took go to the next one, defenders go hunting.
 const ATTACK_PATIENCE: (f64, f64) = (20.0, 35.0);
@@ -1236,7 +1307,8 @@ fn choose_goal(
 ) -> Option<Vec3> {
     if let Some(at) = bot.move_to {
         bot.activity = Activity::Sent;
-        return ((at - feet).xz().length() > ARRIVED * 0.5 || (at.y - feet.y).abs() > 1.0).then_some(at);
+        // (Not from on top of something beside it: a lip by a ladder's top.)
+        return ((at - feet).xz().length() > ARRIVED * 0.5 || (at.y - feet.y).abs() > SENT_RISE).then_some(at);
     }
     // The bomb to plant or defuse comes first (`objectives`).
     if let Some(at) = bot.objective {
@@ -1576,6 +1648,8 @@ struct Step {
     /// Stepping off a ladder's top toward `target`: still on the ladder
     /// it hangs there to shoot a breakable in the way (vent grilles).
     dismount: bool,
+    /// Share of full speed (lining up at a ladder's foot).
+    pace: f32,
 }
 
 /// A ladder being climbed: its foot (bottom going up, top going down),
@@ -1602,6 +1676,7 @@ fn walk_route(
     now: f64,
     on_ladder: bool,
     on_ground: bool,
+    brushes: &[MapBrush],
 ) -> Option<Step> {
     // Mid-ladder or in the air the route stays (a new one would start
     // from the area below or above, back at a ladder's foot or top),
@@ -1669,6 +1744,26 @@ fn walk_route(
             }
         }
     }
+    // Just got on a ladder boxed in by flush faces (`LadderFit`): climb
+    // it on the side it got on from, just clear of the far side's face
+    // (drifting back to its middle lets go of it).
+    if on_ladder && bot.climbed.is_none() {
+        bot.ladder_shift = 0.0;
+        let near = nav
+            .ladders
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| feet.y > l.bottom.y.min(l.top.y) - 2.0 && feet.y < l.bottom.y.max(l.top.y) + 1.0)
+            .min_by(|a, b| (a.1.bottom - feet).xz().length().total_cmp(&(b.1.bottom - feet).xz().length()))
+            .filter(|(_, l)| (l.bottom - feet).xz().length() < LADDER_REACH);
+        if let Some((k, l)) = near
+            && let Some(fit) = fit_of(bot, brushes, k, l)
+        {
+            let perp = Vec3::Y.cross(l.normal.with_y(0.0).normalize_or_zero());
+            let off = (feet - l.bottom).dot(perp) - fit.middle;
+            bot.ladder_shift = fit.middle + fit.clear.copysign(off);
+        }
+    }
     // On a ladder: how long since the feet last moved up or down.
     bot.climbed = match bot.climbed {
         _ if !on_ladder => None,
@@ -1690,13 +1785,38 @@ fn walk_route(
     let short = |p: Vec3| {
         on_ladder && (p.y - feet.y > LADDER_TOP_NEAR || feet.y - p.y > STEP_HEIGHT) && !topped_out
     };
+    let ladder_top = |p: Vec3| nav.ladders.iter().any(|l| l.top.distance(p) < 0.05);
+    // The point in front of a ladder's foot it gets on from (the mesh puts
+    // it at the foot's height, which can be well above the floor: ladders
+    // up the side of de_train's cars start 1.5 m up). Reached in 2D from
+    // the floor below it, as the spec's follower does.
+    let mount = |i: usize| {
+        let (Some(&p), Some(&top)) = (bot.route.get(i), bot.route.get(i + 1)) else {
+            return false;
+        };
+        ladder_top(top) && top.y - p.y > LADDER_RISE && (top - p).xz().length() < LADDER_REACH
+    };
+    // The point behind a ladder's top it gets on from going down (spec:
+    // the follower walks to the top's front instead, so boxes beside the
+    // top don't matter): reached within `LADDER_REACH`.
+    let entry = |i: usize| {
+        let (Some(&p), Some(&foot)) = (bot.route.get(i), bot.route.get(i + 1)) else {
+            return false;
+        };
+        nav.ladders.iter().any(|l| l.bottom.distance(foot) < 0.05)
+            && p.y - foot.y > LADDER_RISE
+            && (foot - p).xz().length() < LADDER_REACH
+    };
+    let near = |i: usize| if entry(i) && !on_ladder { LADDER_REACH } else { REACHED };
     while bot.next < bot.route.len()
-        && (bot.route[bot.next] - feet).xz().length() < REACHED
-        && (bot.route[bot.next].y - feet.y).abs() < LADDER_RISE
+        && (bot.route[bot.next] - feet).xz().length() < near(bot.next)
+        && ((bot.route[bot.next].y - feet.y).abs() < LADDER_RISE
+            || (mount(bot.next) && !on_ladder && bot.route[bot.next].y > feet.y && bot.route[bot.next].y - feet.y < MOUNT_ABOVE))
         && !short(bot.route[bot.next])
     {
         bot.next += 1;
     }
+    let to_mount = mount(bot.next) && !on_ladder;
     if let Some(&p) = bot.route.get(bot.next)
         && on_ladder
         && p.y - feet.y > LADDER_TOP_NEAR
@@ -1705,7 +1825,6 @@ fn walk_route(
         let turn = ((still - LADDER_TOPPED) / LADDER_SIDESTEP_EACH) as i32;
         bot.ladder_shift = if turn % 2 == 0 { LADDER_SIDESTEP } else { -LADDER_SIDESTEP };
     }
-    let ladder_top = |p: Vec3| nav.ladders.iter().any(|l| l.top.distance(p) < 0.05);
     let point = *bot.route.get(bot.next)?;
     // Past a ladder's top, still on it: step off toward the next point.
     let dismount = on_ladder
@@ -1722,7 +1841,11 @@ fn walk_route(
                 && p.y < l.bottom.y.max(l.top.y) + 1.0
         })
     };
-    let ladder = to.y.abs() > STEP_HEIGHT
+    // (On a ladder, short of the point: still climbing, the last step's
+    // height of it too; walking there presses sideways keys, which move it
+    // sideways at full climbing speed and fling it off the top.)
+    let ladder = !to_mount
+        && (to.y.abs() > STEP_HEIGHT || (short(point) && !dismount))
         && to.xz().length() < LADDER_REACH
         && (to.y.abs() > LADDER_RISE || (near_ladder(point) && near_ladder(feet)));
     let mut step = Step {
@@ -1730,10 +1853,11 @@ fn walk_route(
         climb: ladder.then_some(point),
         dir: to.with_y(0.0).normalize_or_zero(),
         // Jump up ledges higher than a step, and when stuck.
-        jump: stuck || (to.y > STEP_HEIGHT && to.xz().length() < 1.5),
+        jump: stuck || (to.y > STEP_HEIGHT && to.xz().length() < 1.5 && !to_mount),
         crouch: nav.area_at(feet).is_some_and(|a| nav.areas[a].has(flags::CROUCH)),
         rungs: None,
         dismount: false,
+        pace: 1.0,
     };
     // One of the mesh's ladders (the route goes to its top or foot): get
     // on it from the front, square to it (spec "Path following", ladder
@@ -1744,8 +1868,34 @@ fn walk_route(
         .iter()
         .find(|l| if up { l.top } else { l.bottom }.distance(point) < 0.05);
     if dismount && !ladder {
-        step.dismount = true;
         step.jump = false;
+        // Still rising below the top: climb on (spec "Path following":
+        // mid-ladder, locomotion finishes the climb; turning toward the
+        // next point first presses sideways or back keys, which slide it
+        // off the ladder's side or down it). Then toward a next point
+        // beside or behind it (or stopped under a lip): still facing it,
+        // climbing and stepping sideways toward it (de_nuke's vents: out
+        // through a grille in the shaft's side); else turning to walk.
+        let top = bot.route[bot.next - 1];
+        if let Some(l) = nav.ladders.iter().find(|l| l.top.distance(top) < 0.05) {
+            let n = l.normal.with_y(0.0).normalize_or_zero();
+            let rungs = Rungs {
+                foot: l.bottom,
+                normal: n,
+                face: -n,
+                shift: bot.ladder_shift,
+            };
+            if still <= LADDER_TOPPED && feet.y < top.y {
+                step.dir = -n;
+                step.climb = Some(top + Vec3::Y * LADDER_RISE);
+                step.rungs = Some(rungs);
+                return Some(step);
+            }
+            if step.dir.dot(-n) < LADDER_OVER_TOP {
+                step.rungs = Some(rungs);
+            }
+        }
+        step.dismount = true;
         return Some(step);
     }
     if ladder && let Some(l) = mesh_ladder {
@@ -1753,7 +1903,9 @@ fn walk_route(
         let foot = if up { l.bottom } else { l.top };
         let to_foot = (foot - feet).with_y(0.0);
         if up && !on_ladder {
-            let lined_up = to_foot.length() < 0.1 || to_foot.normalize().dot(n) < LADDER_LINED_UP;
+            // (Pressing at its foot, sidestepping, counts as lined up.)
+            let pressing = bot.ladder_pressing > 0.0 && to_foot.length() < LADDER_SIDESTEP_NEAR + LADDER_SIDESTEP;
+            let lined_up = pressing || to_foot.length() < 0.1 || to_foot.normalize().dot(n) < LADDER_LINED_UP;
             if !lined_up {
                 // Round to the front first.
                 let mount = l.bottom + n * LADDER_MOUNT;
@@ -1766,23 +1918,51 @@ fn walk_route(
         }
         // Pressing at its foot without getting on: try off its middle,
         // one side then the other (coincident clip faces beside a ladder
-        // win ties on one side; de_nuke's vent ladders).
+        // win ties on one side; de_nuke's vent ladders). A ladder boxed in
+        // by flush faces (`LadderFit`) only takes a box clear of one of
+        // them: at once, just that far off its middle.
         if up && !on_ladder && on_ground && to_foot.length() < LADDER_SIDESTEP_NEAR {
             bot.ladder_pressing += dt;
         } else if on_ladder || !up {
             bot.ladder_pressing = 0.0;
         }
-        let side = if bot.ladder_pressing > LADDER_SIDESTEP_AFTER {
-            let tangent = Vec3::Y.cross(n).normalize_or_zero();
-            let turn = ((bot.ladder_pressing - LADDER_SIDESTEP_AFTER) / LADDER_SIDESTEP_EACH) as i32;
-            tangent * if turn % 2 == 0 { LADDER_SIDESTEP } else { -LADDER_SIDESTEP }
+        let k = nav.ladders.iter().position(|m| std::ptr::eq(m, l)).unwrap_or(0);
+        let fit = if up && !on_ladder && bot.ladder_pressing > 0.0 {
+            fit_of(bot, brushes, k, l)
         } else {
-            Vec3::ZERO
+            None
         };
+        let (after, middle, off) = match fit {
+            Some(f) => (0.0, f.middle, f.clear),
+            None => (LADDER_SIDESTEP_AFTER, 0.0, LADDER_SIDESTEP),
+        };
+        let tangent = Vec3::Y.cross(n).normalize_or_zero();
+        // The line (off the mesh ladder's middle) to get on along.
+        let line = (bot.ladder_pressing > after).then(|| {
+            let turn = ((bot.ladder_pressing - after) / LADDER_SIDESTEP_EACH) as i32;
+            middle + if turn % 2 == 0 { off } else { -off }
+        });
         // Always facing it. Up: walk at its foot. Down: back out over
         // its top, and once past it (falling) press in to catch it.
-        step.dir = if up {
-            let to_foot = to_foot + side;
+        step.dir = if let Some(line) = line
+            && up
+            && !on_ladder
+        {
+            // Sidestepping at its foot: across to the line first, then
+            // straight in (pressing in while moving across carries the
+            // sideways speed onto the ladder and off its side).
+            let across = line - (feet - foot).dot(tangent);
+            if across.abs() > LADDER_ACROSS {
+                step.pace = (across.abs() / LADDER_SLOW).clamp(LADDER_PACE, 1.0);
+                tangent * across.signum()
+            } else {
+                -n
+            }
+        } else if up && !on_ladder && to_foot.length() < LADDER_SIDESTEP_NEAR {
+            // Close: straight in (any sideways key held as it gets on
+            // moves it sideways at full climbing speed).
+            -n
+        } else if up {
             if to_foot.length() > 0.1 { to_foot.normalize() } else { -n }
         } else {
             let beyond = (feet - foot).dot(n);
@@ -1802,6 +1982,74 @@ fn walk_route(
     Some(step)
 }
 
+/// A mesh ladder whose brush is narrower than the box and flush with
+/// other solid faces beside it (maps box ladders in with player clip):
+/// the probe from its middle can report a flank's face (spec: the first
+/// brush reached through the BSP tree wins a tie), so a box gets on, and
+/// stays on, only with one side clear of a flank.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct LadderFit {
+    /// The brush's middle line off the mesh ladder's (along `Y ×
+    /// normal`), m.
+    middle: f32,
+    /// How far off that middle the box clears a flank, m.
+    clear: f32,
+}
+
+/// `ladder_fit` of mesh ladder `k`, remembered for the last one asked.
+fn fit_of(bot: &mut Bot, brushes: &[MapBrush], k: usize, l: &NavLadder) -> Option<LadderFit> {
+    match bot.ladder_fit {
+        Some((j, fit)) if j == k => fit,
+        _ => {
+            let fit = ladder_fit(brushes, l);
+            bot.ladder_fit = Some((k, fit));
+            fit
+        }
+    }
+}
+
+fn ladder_fit(brushes: &[MapBrush], l: &NavLadder) -> Option<LadderFit> {
+    const FLUSH: f32 = 0.03;
+    let n = l.normal.with_y(0.0).normalize_or_zero();
+    let perp = Vec3::Y.cross(n);
+    let (lo, hi) = (l.bottom.y.min(l.top.y), l.bottom.y.max(l.top.y));
+    // A brush's extent along a (compass) direction.
+    let span = |b: &MapBrush, d: Vec3| {
+        let (a, c) = (b.min.dot(d), b.max.dot(d));
+        (a.min(c), a.max(c))
+    };
+    let at = |p: Vec3, d: Vec3| p.dot(d);
+    let rung = brushes.iter().find(|b| {
+        let (p0, p1) = span(b, perp);
+        let (n0, n1) = span(b, n);
+        let foot = at(l.bottom, perp);
+        b.ladder
+            && b.max.y > lo
+            && b.min.y < hi + 0.5
+            && foot > p0 - FLUSH
+            && foot < p1 + FLUSH
+            && at(l.bottom, n) > n0 - 0.3
+            && at(l.bottom, n) < n1 + 0.3
+    })?;
+    let (p0, p1) = span(rung, perp);
+    if p1 - p0 >= 2.0 * HALF_WIDTH {
+        return None;
+    }
+    let face = span(rung, n).1;
+    let flanked = brushes.iter().any(|b| {
+        let (q0, q1) = span(b, perp);
+        !b.ladder
+            && b.max.y > rung.min.y
+            && b.min.y < rung.max.y
+            && (span(b, n).1 - face).abs() < FLUSH
+            && ((q1 - p0).abs() < FLUSH || (q0 - p1).abs() < FLUSH)
+    });
+    flanked.then(|| LadderFit {
+        middle: (p0 + p1) / 2.0 - at(l.bottom, perp),
+        clear: HALF_WIDTH - (p1 - p0) / 2.0 + LADDER_CLEAR,
+    })
+}
+
 /// Away from the mesh's ladder the feet are at.
 fn off_ladder(nav: &NavMesh, feet: Vec3) -> Option<Step> {
     let l = nav
@@ -1818,6 +2066,7 @@ fn off_ladder(nav: &NavMesh, feet: Vec3) -> Option<Step> {
         climb: None,
         rungs: None,
         dismount: false,
+        pace: 1.0,
     })
 }
 
@@ -1842,7 +2091,7 @@ mod tests {
         let goal = nav.areas[3].center;
         let dt = 1.0 / 60.0;
         let mut now = 0.0;
-        walk_route(&mut bot, &nav, feet, goal, &params, dt, now, false, true);
+        walk_route(&mut bot, &nav, feet, goal, &params, dt, now, false, true, &[]);
         assert!(
             bot.route_areas.contains(&3) && !bot.route_areas.contains(&5),
             "{:?}",
@@ -1852,7 +2101,7 @@ mod tests {
         let mut jumped = false;
         while now < 3.0 * STUCK_SECONDS as f64 + 0.1 {
             now += dt as f64;
-            let step = walk_route(&mut bot, &nav, feet, goal, &params, dt, now, false, true).unwrap();
+            let step = walk_route(&mut bot, &nav, feet, goal, &params, dt, now, false, true, &[]).unwrap();
             jumped |= step.jump;
         }
         assert!(jumped, "a stuck bot jumps first");
@@ -1867,7 +2116,7 @@ mod tests {
         now += STUCK_MEMORY + 1.0;
         bot.repath = 0.0;
         bot.progress = (Vec3::splat(100.0), 0.0);
-        walk_route(&mut bot, &nav, feet, goal, &params, dt, now, false, true);
+        walk_route(&mut bot, &nav, feet, goal, &params, dt, now, false, true, &[]);
         assert!(bot.stuck_links.is_empty());
         assert!(!bot.route_areas.contains(&5), "{:?}", bot.route_areas);
     }

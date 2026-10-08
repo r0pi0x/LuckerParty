@@ -7,7 +7,8 @@ use crate::mount::{LooseDir, Mount};
 
 /// Mount a CS:S install (the folder containing `cstrike/` and `hl2/`).
 /// Order follows the game's search path: CS:S content first, then the shared
-/// HL2 content it depends on; loose files before archives at each level.
+/// HL2 content it depends on, then the engine's `platform/` folder; loose
+/// files before archives at each level.
 pub fn open(install: &Path) -> io::Result<Mount> {
     let cstrike = install.join("cstrike");
     let hl2 = install.join("hl2");
@@ -29,6 +30,15 @@ pub fn open(install: &Path) -> io::Result<Mount> {
         }
     }
     mount.push(LooseDir::new(&hl2).hiding(&["vpk"]));
+    // The engine's shared folder: the GameUI scheme's base, its fonts.
+    let platform = install.join("platform");
+    if platform.is_dir() {
+        mount.push(LooseDir::new(&platform).hiding(&["vpk"]));
+        let dir = platform.join("platform_misc_dir.vpk");
+        if dir.is_file() {
+            mount.push(Vpk::open(dir)?);
+        }
+    }
     // Maps and content fetched from servers (the game's own download
     // folder, read-only) and mashup's cache, last: they never replace the
     // game's own files.

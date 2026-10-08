@@ -8,7 +8,7 @@ use bevy::{
     prelude::*,
 };
 use mashup::{
-    bot::{Bot, BotConfig},
+    bot::{Bot, BotConfig, radio::TEAM_GAP},
     core::{Health, Radio, Team},
     games::{
         self, cs_source,
@@ -155,7 +155,9 @@ fn bots_call_enemy_spotted_once_and_enemy_down_after_a_kill() {
         kind: mashup::core::DamageKind::Bullet,
         weapon: None,
     });
-    let heard = run(&mut sim, 5, &mut cursor);
+    let mut heard = run(&mut sim, 5, &mut cursor);
     assert!(sim.app.world().get::<Health>(enemy).unwrap().current <= 0.0);
+    // (Within `TEAM_GAP` of "Enemy spotted" it waits its turn.)
+    heard.extend(run(&mut sim, (TEAM_GAP / TICK_INTERVAL) as u64, &mut cursor));
     assert_eq!(said(&heard, "enemydown"), 1, "{heard:?}");
 }

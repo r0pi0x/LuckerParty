@@ -1210,10 +1210,14 @@ fn prop_broke(world: &mut World, id: EntId, sound: Option<String>, explode: Opti
     }
     if let Some(index) = world.get::<PropIndex>(node).map(|p| p.0) {
         let velocity = world.get::<LinearVelocity>(node).map_or(Vec3::ZERO, |v| v.0);
+        let spin = world.get::<AngularVelocity>(node).map_or(Vec3::ZERO, |v| v.0);
+        let skin = world.get::<PropLook>(node).map(|l| l.skin);
         world.write_message(BreakProp {
             prop: index,
             transform: Transform::from_translation(pos).with_rotation(rot),
             velocity,
+            spin,
+            skin,
         });
     }
 }
@@ -1280,6 +1284,7 @@ fn impacts(
         Has<crate::map::PhysicsProp>,
     )>,
     characters: Query<&MovementState, With<Intent>>,
+    shadows: Query<&crate::map::prop_physics::PhysicsShadow>,
     positions: Query<&Position>,
     mut damage: MessageWriter<Damage>,
 ) {
@@ -1293,9 +1298,14 @@ fn impacts(
         Ok((rb, v, ..)) if rb.is_dynamic() => v.0,
         _ => Vec3::ZERO,
     };
+    // A player's physics shadow touches props for its player.
+    let player = |e: Entity| shadows.get(e).map_or(e, |s| s.owner);
     // New contacts start being measured.
     for s in started.read() {
-        let (b1, b2) = (s.body1.unwrap_or(s.collider1), s.body2.unwrap_or(s.collider2));
+        let (b1, b2) = (
+            player(s.body1.unwrap_or(s.collider1)),
+            player(s.body2.unwrap_or(s.collider2)),
+        );
         if b1 == b2 {
             continue;
         }

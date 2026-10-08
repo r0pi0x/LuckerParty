@@ -29,32 +29,121 @@ impl Plugin for HudPlugin {
                     screen_tints,
                 ),
             );
-        crate::console::resource_cvar::<CrosshairColor, u8>(
-            app,
-            "cl_crosshaircolor",
-            "Crosshair colour: 0 green, 1 red, 2 blue, 3 yellow, 4 cyan.",
-            |c| &mut c.0,
-        );
-        app.world_mut()
-            .resource_mut::<crate::console::Console>()
-            .archive("cl_crosshaircolor");
+        crosshair_cvars(app);
     }
 }
 
-/// `cl_crosshaircolor`: CS:S's crosshair colour presets.
-#[derive(Resource, Default, Clone, Copy, Debug, PartialEq)]
-pub struct CrosshairColor(pub u8);
+/// The crosshair's look, CS:S's cvars (all archived): `cl_crosshaircolor`
+/// (presets), `cl_crosshairscale` (0: our size; else the screen height
+/// it is drawn for, lower is bigger: 1200 small, 768 medium, 600 large),
+/// `cl_crosshairusealpha` with `cl_crosshairalpha` (0-255) for
+/// translucency, and `cl_dynamiccrosshair` (the gap follows the weapon's
+/// spread; 0: a fixed gap).
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct CrosshairColor {
+    pub color: u8,
+    pub scale: f32,
+    pub alpha: u8,
+    pub use_alpha: u8,
+    pub dynamic: u8,
+}
+
+impl Default for CrosshairColor {
+    fn default() -> Self {
+        Self {
+            color: 0,
+            scale: 0.0,
+            alpha: 200,
+            use_alpha: 0,
+            dynamic: 1,
+        }
+    }
+}
+
+fn crosshair_cvars(app: &mut App) {
+    use crate::console::resource_cvar;
+    resource_cvar::<CrosshairColor, u8>(
+        app,
+        "cl_crosshaircolor",
+        "Crosshair colour: 0 green, 1 red, 2 blue, 3 yellow, 4 cyan.",
+        |c| &mut c.color,
+    );
+    resource_cvar::<CrosshairColor, f32>(
+        app,
+        "cl_crosshairscale",
+        "Crosshair size: 0 ours; else the screen height it is drawn for (lower is bigger: 1200, 768, 600).",
+        |c| &mut c.scale,
+    );
+    resource_cvar::<CrosshairColor, u8>(
+        app,
+        "cl_crosshairalpha",
+        "Crosshair opacity (0-255) with cl_crosshairusealpha 1.",
+        |c| &mut c.alpha,
+    );
+    resource_cvar::<CrosshairColor, u8>(
+        app,
+        "cl_crosshairusealpha",
+        "1: draw the crosshair cl_crosshairalpha translucent.",
+        |c| &mut c.use_alpha,
+    );
+    resource_cvar::<CrosshairColor, u8>(
+        app,
+        "cl_dynamiccrosshair",
+        "1: the crosshair's gap follows the weapon's spread; 0: a fixed gap.",
+        |c| &mut c.dynamic,
+    );
+    let mut console = app.world_mut().resource_mut::<crate::console::Console>();
+    for name in [
+        "cl_crosshaircolor",
+        "cl_crosshairscale",
+        "cl_crosshairalpha",
+        "cl_crosshairusealpha",
+        "cl_dynamiccrosshair",
+    ] {
+        console.archive(name);
+    }
+}
 
 impl CrosshairColor {
     pub fn color(self) -> Color {
-        let a = CROSSHAIR_COLOR.alpha();
-        match self.0 {
+        let a = if self.use_alpha != 0 {
+            self.alpha as f32 / 255.0
+        } else {
+            CROSSHAIR_COLOR.alpha()
+        };
+        match self.color {
             1 => Color::srgba(1.0, 0.3, 0.3, a),
             2 => Color::srgba(0.3, 0.3, 1.0, a),
             3 => Color::srgba(1.0, 1.0, 0.3, a),
             4 => Color::srgba(0.3, 1.0, 1.0, a),
-            _ => CROSSHAIR_COLOR,
+            _ => CROSSHAIR_COLOR.with_alpha(a),
         }
+    }
+
+    /// How much bigger than ours the lines are drawn in a window `height`
+    /// pixels tall.
+    pub fn size(self, height: f32) -> f32 {
+        if self.scale > 0.0 {
+            (height / self.scale).clamp(0.25, 4.0)
+        } else {
+            1.0
+        }
+    }
+
+    /// The four lines (offset of each line's centre from the crosshair's
+    /// centre, x right and y down, and its size) for a spread gap in
+    /// pixels, in a window `height` pixels tall.
+    pub fn lines(self, spread_gap: f32, height: f32) -> [(Vec2, Vec2); 4] {
+        let k = self.size(height);
+        let gap = MIN_GAP * k + if self.dynamic != 0 { spread_gap } else { 0.0 };
+        let (length, width) = (LINE_LENGTH * k, (LINE_WIDTH * k).round().max(1.0));
+        let out = gap + length / 2.0;
+        [
+            (Vec2::new(out, 0.0), Vec2::new(length, width)),
+            (Vec2::new(-out, 0.0), Vec2::new(length, width)),
+            (Vec2::new(0.0, out), Vec2::new(width, length)),
+            (Vec2::new(0.0, -out), Vec2::new(width, length)),
+        ]
     }
 }
 
@@ -403,7 +492,8 @@ fn draw_crosshair(
         Projection::Perspective(p) => p.fov,
         _ => 1.0,
     };
-    let gap = MIN_GAP + spread / (fov / 2.0).tan() * size.y / 2.0;
+    let spread_gap = spread / (fov / 2.0).tan() * size.y / 2.0;
+    let shapes = color.lines(spread_gap, size.y);
     let centre = size / 2.0;
     for (line, mut node, mut vis, mut bg) in &mut lines {
         bg.set_if_neq(BackgroundColor(color.color()));
@@ -413,14 +503,12 @@ fn draw_crosshair(
             Visibility::Hidden
         };
         let d = line.0;
-        let (w, h) = if d.x != 0.0 {
-            (LINE_LENGTH, LINE_WIDTH)
-        } else {
-            (LINE_WIDTH, LINE_LENGTH)
+        // The line on that side (UI y grows downward).
+        let side = Vec2::new(d.x, -d.y);
+        let Some(&(offset, Vec2 { x: w, y: h })) = shapes.iter().find(|(o, _)| o.normalize_or_zero() == side) else {
+            continue;
         };
-        // Line centre: gap plus half its length out from the centre (UI y
-        // grows downward).
-        let c = centre + Vec2::new(d.x, -d.y) * (gap + LINE_LENGTH / 2.0);
+        let c = centre + offset;
         node.left = px(c.x - w / 2.0);
         node.top = px(c.y - h / 2.0);
         node.width = px(w);

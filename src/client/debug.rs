@@ -21,14 +21,86 @@ impl Plugin for DebugPlugin {
             PhysicsDebugPlugin,
         ))
         .init_resource::<DrawHitboxes>()
+        .init_resource::<DrawPhys>()
         .add_systems(Startup, (spawn_hud, hide_physics_gizmos))
-        .add_systems(Update, (keys, update_hud, draw_hitboxes));
+        .add_systems(Update, (keys, update_hud, draw_hitboxes, draw_phys));
         crate::console::resource_cvar::<DrawHitboxes, u8>(
             app,
             "mashup_drawhitboxes",
             "1: outline characters' hitboxes (head red, chest yellow, stomach green, arms blue, legs cyan).",
             |d| &mut d.0,
         );
+        crate::console::resource_cvar::<DrawPhys, u8>(
+            app,
+            "mashup_drawphys",
+            "1: outline physics props by state (green moving, blue asleep, grey still or frozen; \
+             multiplayer props darker), players' physics shadows (white, yellow lines to the props \
+             they touch) and list the props nearest you (mass, mode, state) on the debug HUD.",
+            |d| &mut d.0,
+        );
+    }
+}
+
+#[derive(Resource, Default)]
+struct DrawPhys(u8);
+
+/// A physics prop's state for `mashup_drawphys`.
+fn prop_state(rb: &RigidBody, sleeping: bool, asleep_since_spawn: bool) -> &'static str {
+    if asleep_since_spawn {
+        "asleep (since spawn)"
+    } else if !rb.is_dynamic() {
+        "still"
+    } else if sleeping {
+        "asleep"
+    } else {
+        "moving"
+    }
+}
+
+/// `mashup_drawphys 1`: props' boxes by state, shadows and what they
+/// touch.
+#[allow(clippy::type_complexity)]
+fn draw_phys(
+    on: Res<DrawPhys>,
+    props: Query<(
+        &crate::map::PhysicsProp,
+        &RigidBody,
+        &ColliderAabb,
+        Has<Sleeping>,
+        Has<crate::map::prop_physics::StartAsleep>,
+    )>,
+    shadows: Query<(Entity, &crate::map::prop_physics::PhysicsShadow, &ColliderAabb)>,
+    collisions: Collisions,
+    mut gizmos: Gizmos,
+) {
+    if on.0 == 0 {
+        return;
+    }
+    let cube = |aabb: &ColliderAabb| {
+        Transform::from_translation((aabb.min + aabb.max) / 2.0).with_scale((aabb.max - aabb.min).max(Vec3::splat(0.01)))
+    };
+    for (p, rb, aabb, sleeping, asleep) in &props {
+        let mut color = match prop_state(rb, sleeping, asleep) {
+            "moving" => Color::srgb(0.2, 1.0, 0.2),
+            "still" => Color::srgb(0.6, 0.6, 0.6),
+            _ => Color::srgb(0.3, 0.5, 1.0),
+        };
+        if p.push != crate::map::PushAway::Collide {
+            color = color.darker(0.3);
+        }
+        gizmos.cube(cube(aabb), color);
+    }
+    for (e, s, aabb) in &shadows {
+        if !s.active {
+            continue;
+        }
+        gizmos.cube(cube(aabb), Color::WHITE);
+        let from = (aabb.min + aabb.max) / 2.0;
+        for other in collisions.entities_colliding_with(e) {
+            if let Ok((_, _, o, ..)) = props.get(other) {
+                gizmos.line(from, (o.min + o.max) / 2.0, Color::srgb(1.0, 1.0, 0.2));
+            }
+        }
     }
 }
 
@@ -127,15 +199,41 @@ fn spawn_hud(mut commands: Commands) {
     ));
 }
 
+#[allow(clippy::type_complexity)]
 fn update_hud(
     mut hud: Single<&mut Text, With<DebugHud>>,
-    player: Single<(&MovementSlot, &Velocity, &MovementState), With<LocalPlayer>>,
+    player: Single<(&MovementSlot, &Velocity, &MovementState, &GlobalTransform), With<LocalPlayer>>,
+    phys: Res<DrawPhys>,
+    props: Query<(
+        &crate::map::PhysicsProp,
+        &RigidBody,
+        &ColliderAabb,
+        Has<Sleeping>,
+        Has<crate::map::prop_physics::StartAsleep>,
+    )>,
 ) {
-    let (slot, vel, state) = *player;
+    let (slot, vel, state, at) = *player;
     let speed = Vec2::new(vel.x, vel.z).length();
-    hud.0 = format!(
+    let mut text = format!(
         "movement: {}\nspeed: {speed:.2} m/s  vertical: {:.2}\nground: {}  crouch: {}  sprint: {}\n\n\
          click: capture mouse  esc: menu\nV: next movement  F1: inspector  F3: collision",
         slot.0, vel.y, state.on_ground, state.crouching, state.sprinting,
     );
+    if phys.0 != 0 {
+        // The physics props nearest the player.
+        let me = at.translation();
+        let mut near: Vec<_> = props
+            .iter()
+            .map(|(p, rb, aabb, sleeping, asleep)| {
+                let centre = (aabb.min + aabb.max) / 2.0;
+                (centre.distance(me), p, prop_state(rb, sleeping, asleep))
+            })
+            .collect();
+        near.sort_by(|a, b| a.0.total_cmp(&b.0));
+        text.push_str("\n\nnearest physics props:");
+        for (d, p, s) in near.iter().take(6) {
+            text.push_str(&format!("\n{d:5.1} m  {:7.1} kg  {:?}  {s}", p.mass, p.push));
+        }
+    }
+    hud.0 = text;
 }

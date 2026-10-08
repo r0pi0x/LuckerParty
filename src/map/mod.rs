@@ -3763,7 +3763,7 @@ fn glow_visibility(
     let (Some((eye, camera)), Some(mut materials)) = (cameras.iter().next(), materials) else {
         return;
     };
-    let filter = SpatialQueryFilter::from_excluded_entities(ignored.iter());
+    let filter = SpatialQueryFilter::from_excluded_entities(ignored.iter()).with_mask(crate::core::NOT_SHADOW);
     let from = eye.translation();
     let (right, up) = (eye.right().as_vec3(), eye.up().as_vec3());
     for (glow, sprite, material, mut visibility, clusters) in &mut glows {
