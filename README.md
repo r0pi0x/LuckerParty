@@ -1,11 +1,10 @@
 # Mashup prototype
 
 Exploratory design for building minigames out of other games' assets, behavior
-and UI, and mixing those parts across games, as a possible future for Lucker
-Party (https://github.com//LuckerParty). Everything here is a
-prototype: kept in its own private repository, separate from the shipping Godot
-build, allowed to be messy, and expected to change as each imported game
-teaches us something.
+and UI, and mixing those parts across games, as the engine of Lucker
+Party. Everything here is a prototype: a private repository, separate from the
+earlier Godot build, allowed to be messy, and expected to change as each
+imported game teaches us something.
 
 Status: Bevy project set up (see CLAUDE.md for build commands). Working on the
 foundation milestone below.

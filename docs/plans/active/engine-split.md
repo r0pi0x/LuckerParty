@@ -1,6 +1,9 @@
-# Plan: engine, Source and games as separate crates and repos
+# Plan: engine, Source and games as crates in one monorepo
 
-Status: proposed 2026-10-07. Nothing moved yet.
+Status: decided 2026-10-07: one private monorepo (`r0pi0x/LuckerParty`,
+history rewritten to the new identity), restructured into the crates
+below. Separate repos only if a good reason comes up later; crates keep
+that a folder move. Nothing moved yet.
 
 ## Why
 
@@ -64,23 +67,20 @@ Rules:
   without a rebuild later, scripted rule modules (WASM or Lua) behind the
   same interface.
 
-## Repos
+## Repo
 
-- Private (new account): the current repo, full history rewritten to the
-  new identity. Holds everything, including `games/combat_arms` and the
-  private workflow (spec sessions, probe server, refcmp references).
-- Public, each starting from one clean initial commit of a checked tree
-  (no old history): `engine`, then `cs_source` (which carries the
-  `source` crate for now). `source` gets a repo of its own only if
-  another Source game (the HL2 group) turns out to want ours; until then
-  it's a crate inside the CS:S repo, which is a folder move to split out
-  later. Other groups' games live in their repos, depending on these by
-  git.
-- The private repo depends on the public ones by git, with a local
-  `[patch]` to sibling checkouts, so one `cargo run` builds everything and
-  engine changes are visible immediately.
+- One private monorepo holding everything: engine, Source, all games,
+  minigames, both apps, specs and the private workflow docs.
+- Collaborators (friends on Lucker Party, other groups' games) get access
+  by invite. While the repo holds the Combat Arms specs and the private
+  workflow docs it stays private; keep those in clearly separate folders
+  (`games/combat_arms/`, `docs/private/` or similar) so publishing parts
+  later stays easy.
+- If a part ever goes public, it starts from one clean commit of a
+  checked tree (no old history: old commits carry content the current
+  files don't, and commit metadata).
 
-## Before anything goes public
+## If anything goes public later
 
 - No game assets, extracted files or keys (tests enforce this; check by
   hand too).
@@ -96,21 +96,18 @@ Rules:
 
 ## Order
 
-1. [ ] New account: log it into `gh`; pick the commit name and use its
-   noreply email.
-2. [ ] Back up, rewrite history to the new identity, create the private
-   repo under the new account, push, re-point `origin`; Windows
-   re-clones; owner deletes the old repo when satisfied.
-3. [ ] Cargo workspace in this repo, one crate at a time, tests passing
-   at each step: `engine` out of `src/` first, then `source` (pull the
-   Source formats and logic out of `games/cs_source`, `logic`, parts of
-   `map`), then `games/*` and `apps/*`. Sort every module first (table
-   below), then move.
-4. [ ] Minigame definitions and rule modules; the existing modes as the
+1. [x] New account and identity: history rewritten to `r0pi0x` (noreply
+   email, UTC timestamps), private `r0pi0x/LuckerParty` created,
+   `origin` re-pointed (2026-10-07). Left: Windows re-clones; the old
+   repo is deleted by the owner when satisfied.
+2. [ ] Cargo workspace, one crate at a time, tests passing at each step:
+   `engine` out of `src/` first, then `source` (the Source formats and
+   logic out of `games/cs_source`, `logic`, parts of `map`), then
+   `games/*` and `apps/*`. Sort every module first (table below), then
+   move.
+3. [ ] Minigame definitions and rule modules; the existing modes as the
    first definitions.
-5. [ ] Pre-publication check, then the public `engine` repo, then
-   `cs_source` (with the `source` crate).
-6. [ ] Networking; the Lucker Party app (lobby, party flow, rotation,
+4. [ ] Networking; the Lucker Party app (lobby, party flow, rotation,
    launcher), ported from the Godot prototype.
 
 ## Module sorting (to fill in at step 3)

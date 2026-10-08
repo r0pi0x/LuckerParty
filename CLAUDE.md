@@ -1,10 +1,11 @@
 # CLAUDE.md
 
-Private prototype for "mashup": minigames built from other games' assets and
-behavior, with parts mixed across games (e.g. a Combat Arms character on a
-Counter-Strike: Source map). It may later feed into Lucker Party
-(https://github.com//LuckerParty), a separate public repo. Never put
-prototype work there.
+Lucker Party (private monorepo; "mashup" is its engine and dev sandbox):
+minigames built from other games' assets and behavior, with parts mixed
+across games (e.g. a Combat Arms character on a Counter-Strike: Source map),
+and later original minigames. The earlier Godot prototype of Lucker Party is
+a separate, older repo: never push this work there. Planned layout:
+[docs/plans/active/engine-split.md](docs/plans/active/engine-split.md).
 
 This file is a map. Follow the links for detail; keep it short.
 
