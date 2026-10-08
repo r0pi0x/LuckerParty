@@ -82,7 +82,12 @@ fn main() {
                 custom_layer: client::console::log_layer,
                 ..default()
             }),
-        PhysicsPlugins::default().with_collision_hooks::<mashup::map::MapCollisionHooks>(),
+        // Rendering eases between ticks with `map::interp` (characters'
+        // eyes and looks too), not avian's transform interpolation.
+        PhysicsPlugins::default()
+            .with_collision_hooks::<mashup::map::MapCollisionHooks>()
+            .build()
+            .disable::<PhysicsInterpolationPlugin>(),
         SimPlugins,
         mashup::games::cs_source::movement::SourceMovementPlugin,
         mashup::games::cs_source::weapons::CsWeaponsPlugin,

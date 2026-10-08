@@ -230,6 +230,7 @@ pub fn update(
             &Intent,
             &Velocity,
             Option<&ViewPunch>,
+            Option<&crate::map::interp::RenderedView>,
             Option<&mut ViewMotionState>,
             Option<&mut ViewModelOffset>,
         ),
@@ -238,7 +239,7 @@ pub fn update(
     mut commands: Commands,
 ) {
     let now = time.elapsed_secs_f64();
-    for (e, intent, velocity, punch, state, offset) in &mut players {
+    for (e, intent, velocity, punch, view, state, offset) in &mut players {
         let (Some(mut state), Some(mut offset)) = (state, offset) else {
             commands.entity(e).insert((
                 ViewMotionState {
@@ -255,7 +256,8 @@ pub fn update(
         let speed = Vec2::new(velocity.0.x, velocity.0.z).length() / UNIT;
         let state = &mut *state;
         state.bob.update(now, time.delta_secs(), speed, &motion);
-        let p = punch.map_or(Vec2::ZERO, |p| p.0);
+        // The punch as the camera draws it (eased between ticks).
+        let p = view.map_or_else(|| punch.map_or(Vec2::ZERO, |p| p.0), |v| v.now.punch);
         let eye = Vec3::new(-(intent.pitch + p.x), intent.yaw + p.y, 0.0) * 180.0 / std::f32::consts::PI;
         let (o, q) = placement(eye, &state.bob, &mut state.history, now, &motion);
         let next = to_camera(o, q);

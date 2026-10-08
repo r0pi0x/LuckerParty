@@ -30,6 +30,7 @@ pub mod contact_filter;
 pub use breakables::{BreakProp, BrushPanes, GlassShatter, MapBreak, MapBreakPiece, SpawnGibs};
 mod dust;
 pub mod hud;
+pub mod interp;
 pub mod hearing;
 pub mod live_sound;
 pub mod loose;
@@ -710,13 +711,20 @@ fn show_local_body(
     }
 }
 
-/// Turn bodies with their character's yaw.
+/// Turn bodies with their character's yaw (as drawn: `interp`).
 fn turn_bodies(
-    characters: Query<(&crate::core::Intent, &Children, Option<&anim::Animator>)>,
+    characters: Query<(
+        &crate::core::Intent,
+        &Children,
+        Option<&anim::Animator>,
+        Option<&interp::RenderedView>,
+    )>,
     mut bodies: Query<&mut Transform, With<CharacterBody>>,
 ) {
-    for (intent, children, animator) in &characters {
-        let yaw = animator.and_then(|a| a.yaw).unwrap_or(intent.yaw);
+    for (intent, children, animator, view) in &characters {
+        let yaw = animator
+            .and_then(|a| a.yaw)
+            .unwrap_or(view.map_or(intent.yaw, |v| v.now.yaw));
         for c in children {
             if let Ok(mut t) = bodies.get_mut(*c) {
                 t.rotation = Quat::from_rotation_y(yaw);
@@ -1701,7 +1709,7 @@ impl Plugin for MapPlugin {
                     (
                         attach_bodies,
                         show_local_body,
-                        turn_bodies,
+                        turn_bodies.after(DriveAnimation),
                         pose_bodies.after(DriveAnimation),
                         attach_held,
                         probe_lit::relight,

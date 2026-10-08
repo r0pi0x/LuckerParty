@@ -35,9 +35,7 @@ pub fn character_bundle(transform: Transform, team: Team) -> impl Bundle {
         // The app's collision hooks drop its contacts with other bodies
         // that aren't dynamic (`map::contact_filter`): nothing uses them.
         ActiveCollisionHooks::FILTER_PAIRS,
-        // Movement runs at a fixed tick; smooth it for rendering. Rotation is
-        // not eased: cameras take look angles straight from `Intent`.
-        TranslationInterpolation,
+        // Drawn between ticks by the client (`map::interp`).
     )
 }
 
