@@ -59,6 +59,13 @@ cargo run --profile playtest   # optimized, quick to rebuild; for playtesting
 - Keep docs true: when code changes a fact in a doc, change the doc in the
   same commit.
 
+## Commit identity
+
+Commits are by `r0pi0x <339403489+r0pi0x@users.noreply.github.com>` with
+UTC dates: set that identity in the clone's local git config and commit
+with `TZ=UTC`. `.githooks/pre-push` refuses anything else. No real names,
+personal emails or machine paths in commits or files.
+
 ## Testing on Windows
 
 Remote: https://github.com/r0pi0x/LuckerParty (private). The games and the

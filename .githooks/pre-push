@@ -1,0 +1,27 @@
+#!/usr/bin/env sh
+# Refuse to push commits whose dates aren't UTC or whose author/committer
+# isn't the repo's identity: commit metadata stays anonymous (CLAUDE.md,
+# "Commit identity"). Fix with TZ=UTC and the repo-local user.name/email,
+# then amend or rebase the listed commits.
+want_name=r0pi0x
+want_email=339403489+r0pi0x@users.noreply.github.com
+zero=0000000000000000000000000000000000000000
+bad=0
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+    [ "$local_sha" = "$zero" ] && continue
+    if [ "$remote_sha" = "$zero" ]; then range="$local_sha"; else range="$remote_sha..$local_sha"; fi
+    out=$(git log --format='%h %an|%ae|%ad|%cn|%ce|%cd' --date=format:%z "$range" |
+        awk -F'|' -v n="$want_name" -v e="$want_email" '{
+            split($1, a, " "); an = substr($1, length(a[1]) + 2)
+            if (an != n || $2 != e || $3 != "+0000" || $4 != n || $5 != e || $6 != "+0000") print
+        }')
+    if [ -n "$out" ]; then
+        echo "pre-push: these commits aren't by $want_name <$want_email> in UTC:" >&2
+        echo "$out" >&2
+        bad=1
+    fi
+done
+if [ "$bad" = 1 ]; then
+    echo "pre-push: set TZ=UTC and the repo-local identity, then amend/rebase them; not pushing." >&2
+    exit 1
+fi
