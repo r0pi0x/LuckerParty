@@ -53,6 +53,7 @@ pub mod shadows;
 pub mod sound;
 pub mod room;
 pub mod soundscape;
+pub mod steam;
 pub use live_sound::{LiveSounds, SoundControl, SoundKey, StartSound};
 pub use sound::{MapSoundClip, MapSoundEntry, MapSounds, MapSurface, PlaySound, SoundLevel};
 pub mod shells;
@@ -1147,6 +1148,8 @@ pub struct MapData {
     pub fog: Option<MapFog>,
     pub sprites: Vec<MapSprite>,
     pub dust: Vec<MapDust>,
+    /// Steam jets (env_steam).
+    pub steam: Vec<steam::MapSteam>,
     pub ropes: Vec<MapRope>,
     /// Which sky each part of the map can see (Source: BSP leaf flags). When
     /// set, the camera draws the sky only from places that see it, and
@@ -1388,6 +1391,13 @@ pub struct LightStyles {
 /// map tests the zones' boxes itself.
 #[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
 pub struct SoundscapeTouches(pub Option<Vec<usize>>);
+
+/// Which env_soundscape entities (by entity index,
+/// `SoundscapeEmitter::entity`) are enabled, as the logic layer's
+/// Enable/Disable inputs left them; None: the map goes by their
+/// StartDisabled keys.
+#[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
+pub struct SoundscapeSwitches(pub Option<Vec<usize>>);
 
 /// A rope or cable: a line of points drawn as a strip that always faces the
 /// camera (the rope shader widens it per view). Source's Cable look:
@@ -1801,7 +1811,10 @@ impl Plugin for MapPlugin {
             .add_systems(
                 Update,
                 (
-                    switch_parts.before(glow_visibility).before(dust::update_dust),
+                    switch_parts
+                        .before(glow_visibility)
+                        .before(dust::update_dust)
+                        .before(steam::update_steam),
                     (light_styles::relight, light_styles::animate).chain(),
                     apply_prop_looks,
                     animate_props,
@@ -1829,6 +1842,7 @@ impl Plugin for MapPlugin {
                     attach_sky,
                     glow_visibility,
                     dust::update_dust,
+                    steam::update_steam,
                     (
                         tracer::draw_tracers,
                         particles::step_particles.in_set(particles::ParticleSet::Step),
@@ -2091,6 +2105,23 @@ fn spawn_map(
         && let Some(gibs) = breakables::build_assets(data, &[], view, None)
     {
         commands.insert_resource(gibs);
+    }
+    // Headless: steam jets still puff (undrawn), switched by the logic.
+    if meshes.is_none() || materials.is_none() || images.is_none() {
+        for (i, jet) in data.steam.iter().enumerate() {
+            let mut e = commands.spawn((
+                Name::new(format!("Steam {i}")),
+                MapPart,
+                steam::SteamEmitter::new(jet.clone(), Handle::default(), i as u64 + 1),
+            ));
+            if let Some(entity) = jet.entity {
+                e.insert(EntityPart {
+                    entity,
+                    on: jet.start_on,
+                    exists: true,
+                });
+            }
+        }
     }
     if let (Some(meshes), Some(materials), Some(images)) = (meshes.as_mut(), materials.as_mut(), images.as_mut()) {
         // HUD pictures are clamped at their edges: wrapped, the scope
@@ -2666,6 +2697,41 @@ fn spawn_map(
                     e.insert(EntityPart {
                         entity,
                         on: dust.start_on,
+                        exists: true,
+                    });
+                }
+            }
+            // Steam jets: a puff mesh each, rebuilt per frame.
+            for (i, jet) in data.steam.iter().enumerate() {
+                let mesh = meshes.add(dust::empty_mesh());
+                let end = jet.origin + jet.forward * jet.length;
+                let reach = Vec3::splat(jet.length * 0.5 + jet.end_size * 2.0);
+                let clusters = visibility
+                    .map(|v| vis::box_clusters(v, jet.origin.min(end) - reach, jet.origin.max(end) + reach))
+                    .unwrap_or_default();
+                let mut e = commands.spawn((
+                    Name::new(format!("Steam {i}")),
+                    MapPart,
+                    Mesh3d(mesh.clone()),
+                    MeshMaterial3d(materials.add(StandardMaterial {
+                        base_color_texture: jet.texture.map(|t| textures[t].clone()),
+                        unlit: true,
+                        alpha_mode: AlphaMode::Blend,
+                        double_sided: true,
+                        cull_mode: None,
+                        ..default()
+                    })),
+                    steam::SteamEmitter::new(jet.clone(), mesh, i as u64 + 1),
+                    bevy::camera::visibility::NoFrustumCulling,
+                    bevy::light::NotShadowCaster,
+                    Transform::default(),
+                    ChildOf(root),
+                ));
+                tag(&mut e, clusters);
+                if let Some(entity) = jet.entity {
+                    e.insert(EntityPart {
+                        entity,
+                        on: jet.start_on,
                         exists: true,
                     });
                 }
@@ -3997,12 +4063,15 @@ fn switch_parts(
             Option<&vis::VisClusters>,
             Has<vis::LogicHidden>,
             Has<dust::DustEmitter>,
+            Has<steam::SteamEmitter>,
         ),
         Changed<EntityPart>,
     >,
     mut commands: Commands,
 ) {
-    for (e, part, clusters, hidden, dust) in &parts {
+    for (e, part, clusters, hidden, dust, steam) in &parts {
+        // Dust and steam stay drawn while off: what they made lives on.
+        let dust = dust || steam;
         let shown = part.exists && (dust || part.on);
         if shown != hidden {
             continue;

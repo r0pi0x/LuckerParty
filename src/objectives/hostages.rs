@@ -235,6 +235,7 @@ pub(super) fn use_hostages(
         };
         if let Some(s) = sound {
             play.write(PlaySound {
+                pitch: None,
                 entry: s.clone(),
                 at: Some(ht.translation),
                 volume: None,
@@ -402,6 +403,7 @@ fn hurt(
         }
         if let Some(s) = &rules.sounds.pain {
             play.write(PlaySound {
+                pitch: None,
                 entry: s.clone(),
                 at: Some(t.translation),
                 volume: None,

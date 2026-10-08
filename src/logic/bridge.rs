@@ -23,7 +23,8 @@ use crate::map::entities::{engine_to_entity, entity_rotation, entity_to_engine, 
 use crate::map::vis::{LogicHidden, VisClusters};
 use crate::map::{
     BreakProp, BrushPanes, EntityPart, LightStyles, MapBrushEntity, MapEntities, PlaySound, PropEntity, PropHome,
-    PropIndex, PropLook, PropSequence, SoundControl, SoundKey, SoundLevel, SoundscapeTouches, StartSound,
+    PropIndex, PropLook, PropSequence, SoundControl, SoundKey, SoundLevel, SoundscapeSwitches, SoundscapeTouches,
+    StartSound,
 };
 
 /// The running logic world of the loaded map.
@@ -145,6 +146,7 @@ fn load(world: &mut World) {
             world.remove_resource::<crate::map::vis::AreaPortalStates>();
             world.remove_resource::<crate::map::vis::OccluderStates>();
             world.remove_resource::<SoundscapeTouches>();
+            world.remove_resource::<SoundscapeSwitches>();
             world.remove_resource::<crate::map::fire::MapFires>();
         }
         (Some(m), b) if b.as_ref().is_none_or(|b| !std::sync::Arc::ptr_eq(b, &m.entities)) => {
@@ -479,6 +481,18 @@ fn sync_soundscapes(world: &mut World, logic: &Logic) {
     let want = SoundscapeTouches(Some(touched));
     if world.get_resource::<SoundscapeTouches>() != Some(&want) {
         world.insert_resource(want);
+    }
+    // env_soundscapes the Enable/Disable inputs left on.
+    let enabled: Vec<usize> = logic
+        .world
+        .part_states()
+        .into_iter()
+        .filter(|(_, kind, on)| *kind == super::visuals::PartKind::Soundscape && *on)
+        .map(|(i, ..)| i)
+        .collect();
+    let switches = SoundscapeSwitches(Some(enabled));
+    if world.get_resource::<SoundscapeSwitches>() != Some(&switches) {
+        world.insert_resource(switches);
     }
 }
 
@@ -851,7 +865,12 @@ fn apply_effects(world: &mut World, effects: Vec<Effect>, scale: f32) {
                     ..Default::default()
                 }));
             }
-            Effect::Gibs { set, glass, pieces } => {
+            Effect::Gibs {
+                set,
+                glass,
+                pieces,
+                bounce,
+            } => {
                 let pieces = pieces
                     .into_iter()
                     .map(|g| {
@@ -869,6 +888,7 @@ fn apply_effects(world: &mut World, effects: Vec<Effect>, scale: f32) {
                     prop: false,
                     pieces,
                     shatters: None,
+                    bounce: bounce.map(str::to_string),
                 });
             }
             Effect::PropBreak { id, sound, explode } => prop_broke(world, id, sound, explode, scale),
@@ -957,8 +977,16 @@ fn apply_effects(world: &mut World, effects: Vec<Effect>, scale: f32) {
                     h.current = (health / 100.0).clamp(0.0, h.max.max(health / 100.0));
                 }
             }
-            Effect::Sound { entry, at } => {
-                world.write_message(PlaySound::at(entry, entity_to_engine(at, scale)));
+            Effect::Sound {
+                entry,
+                at,
+                volume,
+                pitch,
+            } => {
+                let mut sound = PlaySound::at(entry, entity_to_engine(at, scale));
+                sound.volume = volume;
+                sound.pitch = pitch;
+                world.write_message(sound);
             }
             Effect::AmbientStart {
                 id,

@@ -21,6 +21,7 @@ mod impact_effects;
 mod interpolation;
 mod logic_physics;
 mod map_logic;
+mod map_sound_fx;
 mod mount_cs_source;
 mod movement;
 mod nav;
@@ -78,6 +79,7 @@ mod heavy {
     mod map_physics_shadow;
     mod map_prop_damage;
     mod map_props;
+    mod map_sound_stock;
     mod map_stock;
     mod map_vis;
     mod map_visuals;

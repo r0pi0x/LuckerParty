@@ -146,6 +146,7 @@ pub fn load_level(mount: &Mount, name: &str, hdr_level: u8) -> Result<MapData, S
     }
     super::sprites::add_sprites(&bsp, &mut materials, &mut data);
     super::dust::add_dust(&bsp, &mut materials, &mut data);
+    super::steam::add_steam(&bsp, &mut materials, &mut data);
     let surfaces = super::surfaceprops::SurfaceProps::load(&mut materials);
     report(0.55, "LoadingProgress_LoadResources");
     // Character bodies: a terrorist and a counter-terrorist model (CS:S

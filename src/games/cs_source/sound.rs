@@ -184,6 +184,12 @@ const BREAKABLE_SOUNDS: &[&str] = &[
     "Breakable.MatMetal",
     "Breakable.MatConcrete",
     "Breakable.Computer",
+    // Their gibs' bounces (Material::bounce_sound).
+    "Bounce.Glass",
+    "Bounce.Wood",
+    "Bounce.Metal",
+    "Bounce.Flesh",
+    "Bounce.Concrete",
 ];
 
 const ALWAYS: &[&str] = &[
@@ -285,6 +291,10 @@ pub fn load(materials: &mut MaterialLoader, map: &str, surfaces: &SurfaceProps, 
             hardness: num("audiohardnessfactor", 1.0),
             hard_threshold: num("impacthardthreshold", 0.5),
             hard_min_velocity: num("audiohardminvelocity", 0.0),
+            scrape_rough: surfaces.text(name, "scraperough"),
+            scrape_smooth: surfaces.text(name, "scrapesmooth"),
+            roughness: num("audioroughnessfactor", 1.0),
+            rough_threshold: num("scraperoughthreshold", 0.5),
         };
         wanted.extend(
             [
@@ -293,6 +303,8 @@ pub fn load(materials: &mut MaterialLoader, map: &str, surfaces: &SurfaceProps, 
                 &surface.bullet_impact,
                 &surface.impact_soft,
                 &surface.impact_hard,
+                &surface.scrape_rough,
+                &surface.scrape_smooth,
             ]
             .into_iter()
             .flatten()

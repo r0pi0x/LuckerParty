@@ -84,6 +84,14 @@ pub struct MapSurface {
     pub hard_threshold: f32,
     /// Impacts slower than this play the soft sound (0: no rule), u/s.
     pub hard_min_velocity: f32,
+    /// Looping friction sounds while sliding (scraperough, scrapesmooth).
+    pub scrape_rough: Option<String>,
+    pub scrape_smooth: Option<String>,
+    /// How rough it sounds to what slides on it (audioroughnessfactor).
+    pub roughness: f32,
+    /// Sliding on something smoother than this plays the smooth scrape
+    /// (scrapeRoughThreshold).
+    pub rough_threshold: f32,
 }
 
 /// Sound data the map carries.
@@ -108,6 +116,15 @@ pub struct Soundscape {
     /// The room preset it sets (`room::PRESETS`, Source's "dsp"); None
     /// leaves the room as it was.
     pub dsp: Option<u16>,
+    /// The listener's own DSP preset it sets ("dsp_player"); kept and
+    /// shown, not played (`room::RoomDsp::player`).
+    pub dsp_player: Option<u16>,
+    /// The room's level it sets ("dsp_volume"); None puts the user's
+    /// back.
+    pub dsp_volume: Option<f32>,
+    /// The sound mixer it names ("soundmixer"); kept and shown, not
+    /// played (no mixers yet).
+    pub mixer: Option<String>,
     pub loops: Vec<ScapeLoop>,
     pub randoms: Vec<ScapeRandom>,
 }
@@ -171,6 +188,11 @@ pub struct SoundscapeEmitter {
     pub radius: Option<f32>,
     pub scape: usize,
     pub positions: Vec<Option<Vec3>>,
+    /// The entity (index into `MapData::entities`), which the logic
+    /// enables and disables (`SoundscapeSwitches`).
+    pub entity: Option<usize>,
+    /// Disabled at map start (StartDisabled).
+    pub start_disabled: bool,
 }
 
 impl MapSounds {
@@ -190,6 +212,8 @@ pub struct PlaySound {
     pub at: Option<Vec3>,
     /// Replaces the entry's volume (footsteps compute their own).
     pub volume: Option<f32>,
+    /// Replaces the entry's pitch (percent; rules that draw their own).
+    pub pitch: Option<f32>,
     /// Who makes it; with `channel`, a new sound replaces the old one.
     pub source: Option<Entity>,
     pub channel: Option<u8>,
@@ -201,6 +225,7 @@ impl PlaySound {
             entry: entry.into(),
             at: Some(at),
             volume: None,
+            pitch: None,
             source: None,
             channel: None,
         }
@@ -298,7 +323,8 @@ fn play_sounds(
         let wave = entry.waves[((unit() * entry.waves.len() as f32) as usize).min(entry.waves.len() - 1)];
         let clip = &bank.0.clips[wave];
         let volume = m.volume.unwrap_or_else(|| entry.volume.draw(unit())).clamp(0.0, 1.0);
-        let pitch = entry.pitch.draw(unit()).round().clamp(1.0, 255.0);
+        let drawn = entry.pitch.draw(unit());
+        let pitch = m.pitch.unwrap_or(drawn).round().clamp(1.0, 255.0);
         let level = match entry.level {
             SoundLevel::Db(l) => SoundLevel::Db(l.round()),
             a => a,

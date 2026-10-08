@@ -176,8 +176,14 @@ pub enum Effect {
     /// Heal up to max health.
     Heal { target: Entity, amount: f32 },
     SetHealth { target: Entity, health: f32 },
-    /// A sound entry (or file) at a point (entity space).
-    Sound { entry: String, at: Vec3 },
+    /// A sound entry (or file) at a point (entity space); volume (0..1)
+    /// and pitch (percent) override the entry's when given.
+    Sound {
+        entry: String,
+        at: Vec3,
+        volume: Option<f32>,
+        pitch: Option<f32>,
+    },
     /// Start an entity's long-lived sound (ambient_generic), replacing
     /// the one it plays: at `at` (entity space), or following `source`
     /// when it names one. Volume (0..1), pitch (percent) and level (dB)
@@ -222,6 +228,8 @@ pub enum Effect {
         set: String,
         glass: bool,
         pieces: Vec<super::breakables::Gib>,
+        /// The sound entry the gibs make when they bounce.
+        bounce: Option<&'static str>,
     },
     /// A prop broke (spec prop_damage.md 7): the host plays its break
     /// sound where it is, explodes it, throws its pieces.

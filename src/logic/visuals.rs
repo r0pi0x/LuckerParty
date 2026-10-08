@@ -1,6 +1,8 @@
-//! Entities that only change what is drawn: sprites (env_sprite,
+//! Entities that only change what is drawn or heard: sprites (env_sprite,
 //! specs/cs_source/sprites_dust.md 1), dust volumes (func_dustmotes,
-//! func_dustcloud, same spec 7) and switchable lights (`light`,
+//! func_dustcloud, same spec 7), steam jets (env_steam,
+//! specs/source/visual_entities.md 7), soundscape points (env_soundscape,
+//! specs/cs_source/sounds.md 6: Enable/Disable) and switchable lights (`light`,
 //! `light_spot`: a light style the lightmaps hold apart). The map draws
 //! them; the logic keeps whether each is on (`LogicWorld::part_states`,
 //! `LogicWorld::light_styles`).
@@ -23,6 +25,10 @@ pub const FIRST_SWITCHABLE_STYLE: i32 = 32;
 pub enum PartKind {
     Sprite,
     Dust,
+    /// env_steam, env_steamjet: emitting while on.
+    Steam,
+    /// env_soundscape(_proxy): picked by the listener while on (enabled).
+    Soundscape,
 }
 
 /// A sprite or dust volume: shown (sprites) or spawning (dust) while on.
@@ -45,7 +51,10 @@ pub(super) fn spawn_part(w: &LogicWorld, id: EntId, kind: PartKind) -> Part {
         // always shown.
         PartKind::Sprite => e.targetname.is_empty() || e.has_flag(SF_SPRITE_START_ON),
         // StartDisabled: its first character '1' starts it off.
-        PartKind::Dust => !e.kv("StartDisabled").is_some_and(|v| v.trim_start().starts_with('1')),
+        PartKind::Dust | PartKind::Soundscape => {
+            !e.kv("StartDisabled").is_some_and(|v| v.trim_start().starts_with('1'))
+        }
+        PartKind::Steam => e.kv_i("InitialState") == 1,
     };
     Part { kind, on }
 }
@@ -71,9 +80,15 @@ pub(super) fn input(w: &mut LogicWorld, id: EntId, input: &str, _value: &Value) 
     match w.get(id).map(|e| e.class.clone()) {
         Some(Class::Part(p)) => {
             let on = match (p.kind, input) {
-                (PartKind::Sprite, "showsprite") | (PartKind::Dust, "turnon") => true,
-                (PartKind::Sprite, "hidesprite") | (PartKind::Dust, "turnoff") => false,
-                (PartKind::Sprite, "togglesprite") => !p.on,
+                (PartKind::Sprite, "showsprite")
+                | (PartKind::Dust | PartKind::Steam, "turnon")
+                | (PartKind::Soundscape, "enable") => true,
+                (PartKind::Sprite, "hidesprite")
+                | (PartKind::Dust | PartKind::Steam, "turnoff")
+                | (PartKind::Soundscape, "disable") => false,
+                (PartKind::Sprite, "togglesprite")
+                | (PartKind::Steam, "toggle")
+                | (PartKind::Soundscape, "toggleenabled") => !p.on,
                 _ => return false,
             };
             if let Some(Class::Part(p)) = w.get_mut(id).map(|e| &mut e.class) {

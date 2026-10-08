@@ -140,6 +140,13 @@ pub struct RoomDsp {
     pub off: u8,
     /// `dsp_volume`: scales the room's level.
     pub volume: f32,
+    /// The current soundscape's "dsp_volume", which wins over `volume`
+    /// while it lasts (Source sets the cvar; a soundscape without one
+    /// reverts it).
+    pub scape_volume: Option<f32>,
+    /// The current soundscape's "dsp_player" preset: kept and shown, not
+    /// played (Source's player DSP is engine-side, docs/tech-debt.md).
+    pub player: Option<u16>,
     pub bus: Arc<RoomBus>,
     playing: Option<Entity>,
 }
@@ -150,6 +157,8 @@ impl Default for RoomDsp {
             preset: 0,
             off: 0,
             volume: 1.0,
+            scape_volume: None,
+            player: None,
             bus: Arc::default(),
             playing: None,
         }
@@ -160,6 +169,12 @@ impl RoomDsp {
     /// The preset that plays now (Normal while off).
     pub fn active(&self) -> &'static RoomPreset {
         if self.off != 0 { &PRESETS[0] } else { preset(self.preset) }
+    }
+
+    /// The room's level now: the soundscape's dsp_volume, else the
+    /// user's.
+    pub fn level(&self) -> f32 {
+        self.scape_volume.unwrap_or(self.volume).max(0.0)
     }
 }
 
@@ -574,7 +589,8 @@ fn drive_bus(
     mut commands: Commands,
 ) {
     let index = if room.off != 0 { 0 } else { room.preset };
-    room.bus.set(index, room.volume.max(0.0));
+    let level = room.level();
+    room.bus.set(index, level);
     let master = global.map_or(1.0, |g| g.volume.to_linear());
     match room.playing {
         Some(e) if commands.get_entity(e).is_ok() => {

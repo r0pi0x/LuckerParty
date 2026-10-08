@@ -46,7 +46,8 @@ pub enum Class {
     /// prop_dynamic, prop_physics*: damage, outputs, visibility, skin,
     /// body group, animation.
     Prop(Box<super::props::Prop>),
-    /// env_sprite, func_dustmotes, func_dustcloud: drawn while on.
+    /// env_sprite, func_dustmotes, func_dustcloud, env_steam: drawn while
+    /// on; env_soundscape: picked while on.
     Part(super::visuals::Part),
     /// light, light_spot: a switchable light style.
     Light(super::visuals::Light),
@@ -401,6 +402,12 @@ impl Class {
             }
             "func_dustmotes" | "func_dustcloud" => {
                 Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::Dust))
+            }
+            "env_steam" | "env_steamjet" => {
+                Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::Steam))
+            }
+            "env_soundscape" | "env_soundscape_proxy" => {
+                Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::Soundscape))
             }
             "func_areaportal" | "func_areaportalwindow" => {
                 super::visuals::spawn_area_portal(w, id).map_or(Class::None, Class::AreaPortal)
