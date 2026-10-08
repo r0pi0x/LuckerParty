@@ -117,7 +117,9 @@ pub(crate) fn family_name(ttf: &[u8]) -> Option<String> {
 /// the menus (`super::vgui`, `map`: the loaded map, for its description).
 pub fn load(materials: &mut MaterialLoader, map: &str) -> Option<GameHud> {
     let text = |m: &MaterialLoader, p: &str| m.read(p).map(|b| String::from_utf8_lossy(&b).into_owned());
-    let scheme = parse(&text(materials, "resource/clientscheme.res")?);
+    // As the Windows game reads it: its platform-conditional entries
+    // (font names and sizes) are the Windows ones.
+    let scheme = super::gameui::parse_pc(&text(materials, "resource/clientscheme.res")?);
     let scheme = scheme.items().first().map(|(_, v)| v.clone()).unwrap_or(scheme);
     let layout = parse(&text(materials, "scripts/hudlayout.res")?);
     let layout = layout.items().first().map(|(_, v)| v.clone()).unwrap_or(layout);
@@ -250,7 +252,8 @@ pub fn load(materials: &mut MaterialLoader, map: &str) -> Option<GameHud> {
             },
         );
     }
-    hud.menus = super::vgui::load(materials, &scheme, &mut hud, map);
+    hud.text_fonts = super::vgui::fonts(&scheme);
+    hud.menus = super::vgui::load(materials, &mut hud, map);
     (!hud.panels.is_empty()).then_some(hud)
 }
 

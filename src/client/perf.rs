@@ -208,14 +208,11 @@ fn end_frame(mut times: ResMut<FrameTimes>) {
 #[derive(Component)]
 struct PerfText;
 
-fn spawn_overlay(mut commands: Commands) {
+fn spawn_overlay(mut commands: Commands, fonts: Res<super::fonts::UiFonts>) {
     commands.spawn((
         PerfText,
         Text::default(),
-        TextFont {
-            font_size: FontSize::Px(13.0),
-            ..default()
-        },
+        fonts.debug(13.0),
         TextColor(Color::srgb(1.0, 1.0, 0.6)),
         Node {
             position_type: PositionType::Absolute,

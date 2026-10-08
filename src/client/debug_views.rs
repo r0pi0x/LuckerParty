@@ -313,6 +313,7 @@ fn order_labels(
     names: Query<(Option<&Name>, Has<LocalPlayer>)>,
     camera: Query<(&Camera, &GlobalTransform), With<super::FirstPersonCamera>>,
     mut labels: Query<(Entity, &OrderLabel, &mut Text, &mut Node, &mut Visibility)>,
+    fonts: Res<super::fonts::UiFonts>,
     mut commands: Commands,
 ) {
     let now = time.elapsed_secs_f64();
@@ -351,10 +352,7 @@ fn order_labels(
                     commands.spawn((
                         OrderLabel(e),
                         Text::new(text),
-                        TextFont {
-                            font_size: FontSize::Px(13.0),
-                            ..default()
-                        },
+                        fonts.debug(13.0),
                         TextColor(ORDER_COLOR),
                         Node {
                             position_type: PositionType::Absolute,
@@ -378,14 +376,11 @@ fn order_labels(
 #[derive(Component)]
 struct BotList;
 
-fn spawn_bot_list(mut commands: Commands) {
+fn spawn_bot_list(mut commands: Commands, fonts: Res<super::fonts::UiFonts>) {
     commands.spawn((
         BotList,
         Text::default(),
-        TextFont {
-            font_size: FontSize::Px(13.0),
-            ..default()
-        },
+        fonts.debug(13.0),
         TextColor(Color::srgb(0.85, 1.0, 0.85)),
         Node {
             position_type: PositionType::Absolute,

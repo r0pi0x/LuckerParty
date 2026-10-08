@@ -40,7 +40,12 @@ fn the_games_buy_and_team_menus_load() {
     let team = &menus.layouts[menus.team.as_ref().unwrap()];
     assert_eq!(team.get("terbutton").unwrap().command.as_deref(), Some("jointeam 2"));
     assert!(menus.map_info.as_ref().is_some_and(|t| !t.is_empty()));
-    assert!(menus.fonts.contains_key("Default") && menus.fonts.contains_key("MenuTitle"));
+    // The client scheme's text fonts, read as the Windows game reads them.
+    let chat = &hud.text_fonts["ChatFont"];
+    assert!(hud.text_fonts.contains_key("Default") && hud.text_fonts.contains_key("MenuTitle"));
+    assert_eq!(chat[0].family, "Verdana");
+    assert!(chat[0].bold() && chat.iter().all(|s| s.yres.is_some()));
+    assert_eq!(hud.text_fonts["CenterPrintText"][0].family, "Trebuchet MS");
 }
 
 fn dust2() -> Option<MapData> {

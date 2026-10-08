@@ -3,8 +3,8 @@
 //! `_ct`, the category pages its buttons open, each item's description
 //! panel `classes/<item>.res`), the team menu (`resource/ui/teammenu.res`)
 //! with the map's description (`maps/<map>.txt`), labels localised from
-//! `resource/cstrike_english.txt`, pictures from `materials/vgui/`, and the
-//! client scheme's text fonts.
+//! `resource/cstrike_english.txt`, pictures from `materials/vgui/`; and
+//! the client scheme's text fonts (`fonts`, onto `GameHud::text_fonts`).
 //!
 //! The `.res` reader is generic Source VGUI: KeyValues blocks per control
 //! (`ControlName`, `fieldName`, `xpos`/`ypos` with `r`/`c` anchors,
@@ -201,6 +201,7 @@ pub(crate) fn fonts(scheme: &Kv) -> HashMap<String, Vec<UiFontSize>> {
                     tall: e.str("tall")?.trim().parse().ok()?,
                     weight: e.str("weight").and_then(|w| w.trim().parse().ok()).unwrap_or(400),
                     yres,
+                    antialias: e.str("antialias").is_some_and(|a| a.trim() != "0"),
                 })
             })
             .collect();
@@ -235,16 +236,13 @@ fn image(materials: &mut MaterialLoader, sprites: &mut Vec<(String, HudSprite)>,
 
 /// The menus from the install (None without its menu files). Pictures the
 /// layouts show become `hud.sprites` (keyed by material name).
-pub(crate) fn load(materials: &mut MaterialLoader, scheme: &Kv, hud: &mut GameHud, map: &str) -> Option<GameMenus> {
+pub(crate) fn load(materials: &mut MaterialLoader, hud: &mut GameHud, map: &str) -> Option<GameMenus> {
     let strings = materials
         .read("resource/cstrike_english.txt")
         .map(|b| super::radio::localization(&super::radio::decode(&b)))
         .unwrap_or_default();
     let colors = hud.colors.clone();
-    let mut menus = GameMenus {
-        fonts: fonts(scheme),
-        ..Default::default()
-    };
+    let mut menus = GameMenus::default();
     let mut sprites: Vec<(String, HudSprite)> = Vec::new();
     let read_res_at = |materials: &MaterialLoader, path: &str| {
         let mut read = |p: &str| materials.read(p).map(|b| super::radio::decode(&b));
@@ -412,7 +410,7 @@ mod tests {
         let scheme = parse(
             r#"Scheme { Fonts {
                 "Default" { "1" { "name" "Verdana" "tall" "12" "weight" "900" "yres" "480 599" }
-                            "2" { "name" "Verdana" "tall" "9" } }
+                            "2" { "name" "Verdana" "tall" "9" "antialias" "1" } }
                 "MenuTitle" { "1" { "name" "Verdana Bold" "tall" "18" "weight" "500" } }
             } }"#,
         );
@@ -420,6 +418,7 @@ mod tests {
         assert_eq!(f["Default"].len(), 2);
         assert_eq!(f["Default"][0].yres, Some((480, 599)));
         assert_eq!((f["Default"][1].tall, f["Default"][1].weight), (9.0, 400));
+        assert!(f["Default"][1].antialias && !f["Default"][0].antialias);
         assert_eq!(f["MenuTitle"][0].family, "Verdana Bold");
     }
 }
