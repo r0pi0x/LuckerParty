@@ -61,6 +61,7 @@ mod heavy {
     mod map_breakables;
     mod map_brush_decals;
     mod map_brush_entities;
+    mod map_community;
     mod map_de_dust2;
     mod map_de_nuke;
     mod map_de_nuke_doors;
