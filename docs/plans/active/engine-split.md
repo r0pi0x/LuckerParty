@@ -70,9 +70,12 @@ Rules:
   new identity. Holds everything, including `games/combat_arms` and the
   private workflow (spec sessions, probe server, refcmp references).
 - Public, each starting from one clean initial commit of a checked tree
-  (no old history): `engine` and `source` (one repo with two crates at
-  first is simpler for contributors), then `cs_source`. Other groups'
-  games (HL2) live in their repos, depending on these by git.
+  (no old history): `engine`, then `cs_source` (which carries the
+  `source` crate for now). `source` gets a repo of its own only if
+  another Source game (the HL2 group) turns out to want ours; until then
+  it's a crate inside the CS:S repo, which is a folder move to split out
+  later. Other groups' games live in their repos, depending on these by
+  git.
 - The private repo depends on the public ones by git, with a local
   `[patch]` to sibling checkouts, so one `cargo run` builds everything and
   engine changes are visible immediately.
@@ -105,8 +108,8 @@ Rules:
    below), then move.
 4. [ ] Minigame definitions and rule modules; the existing modes as the
    first definitions.
-5. [ ] Pre-publication check, then the public `engine`/`source` repos;
-   later `cs_source`.
+5. [ ] Pre-publication check, then the public `engine` repo, then
+   `cs_source` (with the `source` crate).
 6. [ ] Networking; the Lucker Party app (lobby, party flow, rotation,
    launcher), ported from the Godot prototype.
 
