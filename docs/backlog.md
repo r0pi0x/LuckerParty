@@ -54,7 +54,9 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   selection icons). The team menu is in (M; you start as CT). The radio
   is in (`client/radio.rs`: Z/X/C menus, the calls as console commands,
   "Fire in the hole!" on throws, bots' enemy spotted/down and need
-  backup), with a chat area and hint text (`client/chat.rs`) and a
+  backup, and bots' own commands and reports: go / stick together /
+  follow me from the attackers' leader, cover me, sector clear, in
+  position, regroup), with a chat area and hint text (`client/chat.rs`) and a
   scoreboard latency column (0 until networking) and its BOMB / DEFUSER
   markers, the radio icon over a teammate's head (`sprites/radio`), and
   text chat (Y / U, `say`, `say_team`). The buy and team menus draw in the game's VGUI look from its `.res` files
@@ -63,8 +65,9 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   autobuy / rebuy / favourites, checking the widescreen placement against
   the game, other game messages in the chat (team joins, bomb pickups
   and drops are in), bots' answers checked against a bot behaviour spec
-  (`ignorerad` and bots answering and carrying out radio commands are
-  in: `bot::radio::obey`). The radar is in (`client/radar.rs`: the map overview turning
+  (`ignorerad`, bots answering and carrying out radio commands and
+  issuing their own are in: `bot::radio::obey`, `speak`; checking
+  when CS:S bots talk needs that spec). The radar is in (`client/radar.rs`: the map overview turning
   with you, team dots, your place name); its range (2200 units) is a guess.
 - The game menu (Esc; `client/game_menu.rs`: new game with map, mode,
   bots per team and difficulty; bots; team; options; bug report; quit)
