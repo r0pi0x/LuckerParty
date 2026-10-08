@@ -10,7 +10,7 @@
 //! names its script key) built by `gun`. The scripts are encrypted; the
 //! values are the spec's tables, which were read from the user's install.
 //! Sound entries and model paths are the install's own names (its sound
-//! scripts and model files), checked by `tests/map_de_dust2.rs`.
+//! scripts and model files), checked by `tests/it/heavy/map_de_dust2.rs`.
 
 use bevy::prelude::*;
 
@@ -99,7 +99,7 @@ pub fn silenced_key(id: &str) -> String {
 /// spec view_models.md 2). CS:S ships one knife view model for both teams.
 /// The scripts are encrypted, so handedness comes from the models: the AK
 /// is held left of the eye (left-handed), the knife right of it
-/// (`tests/map_de_dust2.rs::view_model_handedness_in_the_files`). With the
+/// (`tests/it/heavy/map_de_dust2.rs::view_model_handedness_in_the_files`). With the
 /// default `cl_righthand 1` the left-handed ones are mirrored, so all end
 /// up in the right hand, as CS:S shows them. Built right-handed (muzzle
 /// right of the eye): the knife, FAMAS, Galil, M249 and the Elites (whose
@@ -794,7 +794,9 @@ const M4A1_KICK: [Kick; 4] = [
 
 /// Shotguns: UNMEASURED; the SDK template's shotgun (spec weapons.md,
 /// constants): a whole 4-6 degrees up on the ground, 8-11 in the air, no
-/// sideways part.
+/// sideways part; once per shot, whatever its pellets (`after_shots`).
+/// The decay is the rifles' measured rule (M3), so 6 degrees settle in
+/// about 0.45 s.
 const SHOTGUN_KICK: [Kick; 4] = [
     Kick::random_up(4.0, 6.0),
     Kick::random_up(4.0, 6.0),
@@ -2170,22 +2172,44 @@ fn before_shots(
 }
 
 /// After the weapon frame: each shot adds to the penalty and kicks the
-/// view.
+/// view. A shotgun shot is one `Shot` event per pellet but kicks once.
 fn after_shots(
     mut events: MessageReader<WeaponEvent>,
-    mut weapons: Query<(Option<&mut Inaccuracy>, Option<&mut Recoil>, Option<&AltModes>)>,
+    mut weapons: Query<(
+        Option<&mut Inaccuracy>,
+        Option<&mut Recoil>,
+        Option<&AltModes>,
+        Option<&Hitscan>,
+    )>,
     mut owners: Query<(&MovementState, &Velocity, Option<&mut ViewPunch>, Option<&crate::core::Seed>)>,
     mut commands: Commands,
     time: Res<Time>,
+    mut traces: Local<Vec<(Entity, u32)>>,
 ) {
     let now = time.elapsed_secs_f64();
+    traces.clear();
     for e in events.read() {
         if !matches!(e.kind, WeaponEventKind::Shot { .. }) {
             continue;
         }
-        let Ok((acc, recoil, modes)) = weapons.get_mut(e.weapon) else {
+        let Ok((acc, recoil, modes, scan)) = weapons.get_mut(e.weapon) else {
             continue;
         };
+        // The n-th trace of this weapon this tick: a new shot every
+        // `pellets` traces.
+        let n = match traces.iter_mut().find(|(w, _)| *w == e.weapon) {
+            Some((_, n)) => {
+                *n += 1;
+                *n
+            }
+            None => {
+                traces.push((e.weapon, 0));
+                0
+            }
+        };
+        if !n.is_multiple_of(scan.map_or(1, |s| s.pellets.max(1))) {
+            continue;
+        }
         if let Some(mut acc) = acc {
             // (A sniper shot has already unzoomed: the AWP's fire key is
             // the same in both modes.)

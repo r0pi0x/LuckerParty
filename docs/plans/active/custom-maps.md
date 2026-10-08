@@ -135,7 +135,7 @@ ourselves, so each can be checked in mashup and measured in real CS:S.
    filters, game_text (client draws it), point_servercommand/
    point_clientcommand with allowlists, trigger_multiple/once/hurt (moved
    from map/hurt.rs)/push/teleport/gravity/remove. The specs' test cases
-   are unit tests (src/logic/tests.rs); tests/map_logic.rs runs teleport
+   are unit tests (src/logic/tests.rs); tests/it/map_logic.rs runs teleport
    and push with Source movement. Open: the target maps, the probe-server
    measurements in the specs' open questions.
 4. [x] Spec and build moving brush entities (doors, buttons, platforms,
@@ -152,19 +152,19 @@ ourselves, so each can be checked in mashup and measured in real CS:S.
    mover. Movers have their own node (`map::MapBrushEntity`) and a
    `core::MovingSolid` that Source movement sweeps and rides (base
    velocity on leaving). Tests: unit tests per spec case, a door on use
-   and a lift (tests/map_logic.rs), de_nuke's door pairs
-   (tests/map_de_nuke_doors.rs). Breakables built 2026-10-06
+   and a lift (tests/it/map_logic.rs), de_nuke's door pairs
+   (tests/it/heavy/map_de_nuke_doors.rs). Breakables built 2026-10-06
    (src/logic/breakables.rs; nodes like movers, `core::Damageable`,
    weapon damage routed through `LogicSet::Damage`; gibs and window panes
    in `map::breakables`; tests: spec cases as unit tests,
-   tests/map_breakables.rs shoots and knifes de_nuke's vents and shoots a
+   tests/it/heavy/map_breakables.rs shoots and knifes de_nuke's vents and shoots a
    cs_office window). Model doors and props as logic entities built
    2026-10-06 (src/logic/props.rs: prop_door_rotating as a pusher whose
    node carries the door model as a rider, volumes from its `.phy`;
    prop_dynamic/prop_physics take weapon damage and fire
    OnTakeDamage/OnHealthChanged/OnBreak, Break/health/visibility inputs;
    props put back at a round restart; tests: src/logic/prop_tests.rs,
-   tests/map_props.rs: cs_assault's doors, de_nuke's steam, cs_office's
+   tests/it/heavy/map_props.rs: cs_assault's doors, de_nuke's steam, cs_office's
    projector). Left: breakable follow-ups (backlog 7), prop gibs, Skin/
    SetAnimation/SetBodyGroup inputs, train orientation and control.
 5. [ ] Gameplay entities (`game_player_equip`, `game_text`, map weapons,

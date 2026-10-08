@@ -8,14 +8,14 @@ the rest.
 How to check:
 
 - Load warnings for every stock map: `cargo test --features dev --test
-  map_stock -- --ignored --nocapture all_stock_maps_warnings`.
+  it all_stock_maps_warnings -- --ignored --nocapture`.
 - Views: `tools/refcmp/{de_aztec,cs_office,de_nuke}.toml` (the maps'
   intermission cameras, first T/CT spawns, bomb/rescue zones four ways;
   cs_office adds hostage rooms and a window). Ours: `cargo run --features
   dev --bin refcmp -- capture-ours --views tools/refcmp/<map>.toml`. The
   reference game is shared: ask the coordinating session before capturing
   it (`capture-ref`).
-- `tests/map_stock.rs` holds a test per fix, and ignored debug aids:
+- `tests/it/heavy/map_stock.rs` holds a test per fix, and ignored debug aids:
   `props_near` (props and their light near a point), `dark_textures`
   (near-black textures, mips, mod2x details), `pick` (which surface a
   `--views` pixel shows).

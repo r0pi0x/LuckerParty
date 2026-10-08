@@ -325,7 +325,7 @@ fn set_prop_shown(world: &mut World, node: Entity, visible: bool, solid: bool, e
     // stale flag makes each new contact pair of that collider start out
     // generating no constraints and then switch on in the step it starts
     // touching, which links the contact into an island twice and trips
-    // avian's island assertion a few rounds later (tests/map_logic.rs
+    // avian's island assertion a few rounds later (tests/it/map_logic.rs
     // `restored_prop_contacts_join_islands_once`).
     let enable_body = {
         let mut e = world.entity_mut(node);

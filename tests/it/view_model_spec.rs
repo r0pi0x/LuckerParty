@@ -1,7 +1,7 @@
 //! The test cases of specs/cs_source/view_models.md that are pure maths:
 //! bob (B), sway (S), field of view (F) and handedness (H). The scenario
-//! cases (E1, events) are in tests/view_models.rs, the model data (L1,
-//! attachments, events) in tests/map_de_dust2.rs.
+//! cases (E1, events) are in tests/it/view_models.rs, the model data (L1,
+//! attachments, events) in tests/it/heavy/map_de_dust2.rs.
 
 use bevy::prelude::*;
 use mashup::{
@@ -211,7 +211,8 @@ fn offsets_reach_the_camera_in_its_axes() {
 #[test]
 fn f1_to_f4_fields_of_view() {
     use view_model::{aspect_fov, vertical_fov, view_model_fov};
-    let s = view_anim::settings();
+    // The spec's cases use CS:S's viewmodel_fov 54 (ours defaults to 80).
+    let s = view_model::ViewModelSettings { fov: 54.0, ..view_anim::settings() };
     let fov = view_model_fov(&s, 90.0);
     assert!(close(fov, 54.0) && close(aspect_fov(fov, 4.0 / 3.0), 54.0), "F1");
     assert!((vertical_fov(fov) - 41.828).abs() < 1e-3, "F1 {}", vertical_fov(fov));

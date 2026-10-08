@@ -10,7 +10,8 @@
 
 use bevy::{prelude::*, window::CursorOptions};
 
-use super::vgui::{Painter, Shown, VguiButton, VguiFonts, VguiMenu, VguiOpen};
+use super::fonts::UiFonts;
+use super::vgui::{Painter, Shown, VguiButton, VguiMenu, VguiOpen};
 use crate::{
     console::{Console, ConsoleAppExt},
     core::{Intent, Team},
@@ -170,6 +171,7 @@ fn draw(
     shown: Query<Entity, With<MenuText>>,
     windows: Query<&Window>,
     hud: Option<Res<ActiveHud>>,
+    fonts: Res<UiFonts>,
     mut commands: Commands,
 ) {
     if !menu.is_changed() {
@@ -183,14 +185,13 @@ fn draw(
     if !menu.0 || game_look {
         return;
     }
-    let scale = windows.iter().next().map_or(1.0, |w| w.height() / 480.0);
+    let h = windows.iter().next().map_or(480.0, |w| w.height());
+    let scale = h / 480.0;
     commands.spawn((
         MenuText,
         Text::new("SELECT A TEAM\n\n1  Terrorists\n2  Counter-Terrorists\n\n5  Auto-assign\n\n0  Close"),
-        TextFont {
-            font_size: FontSize::Px(11.0 * scale),
-            ..default()
-        },
+        // As a HudMenu: the client scheme's Default.
+        fonts.client("Default", h, 12.0),
         TextColor(Color::srgb_u8(255, 176, 0)),
         BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)),
         Node {
@@ -212,7 +213,7 @@ struct VguiRoot;
 fn draw_vgui(
     menu: Res<TeamMenu>,
     hud: Option<Res<ActiveHud>>,
-    fonts: Option<Res<VguiFonts>>,
+    fonts: Res<UiFonts>,
     windows: Query<&Window>,
     roots: Query<Entity, With<VguiRoot>>,
     mut open: ResMut<VguiOpen>,
@@ -240,7 +241,7 @@ fn draw_vgui(
     for e in &roots {
         commands.entity(e).despawn();
     }
-    let painter = Painter::new(hud, menus, fonts.as_deref(), size.y);
+    let painter = Painter::new(hud, &fonts, size.y);
     let root = commands
         .spawn((
             VguiRoot,

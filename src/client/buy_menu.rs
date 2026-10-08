@@ -12,7 +12,8 @@
 use bevy::prelude::*;
 use bevy::window::CursorOptions;
 
-use super::vgui::{Painter, Shown, VguiButton, VguiFonts, VguiMenu, VguiOpen};
+use super::fonts::UiFonts;
+use super::vgui::{Painter, Shown, VguiButton, VguiMenu, VguiOpen};
 use crate::{
     console::{Console, ConsoleAppExt},
     core::{LocalPlayer, Team},
@@ -471,7 +472,7 @@ fn draw(
     windows: Query<&Window>,
     mut text: Query<(Entity, &mut Text, &mut TextFont, &mut Node), With<MenuText>>,
     mut slots: Local<Option<Vec<(&'static str, u8)>>>,
-    hud: Option<Res<ActiveHud>>,
+    (hud, fonts): (Option<Res<ActiveHud>>, Res<UiFonts>),
     mut commands: Commands,
 ) {
     let (money, team, inv, armor) = player.map(|p| *p).unwrap_or((None, None, None, None));
@@ -528,22 +529,24 @@ fn draw(
     lines.push(String::new());
     lines.push("0  Close".into());
     let body = lines.join("\n");
-    let scale = windows.iter().next().map_or(1.0, |w| w.height() / 480.0);
+    let h = windows.iter().next().map_or(480.0, |w| w.height());
+    let scale = h / 480.0;
+    // As a HudMenu: the client scheme's Default.
+    let font = fonts.client("Default", h, 12.0);
     match text.single_mut() {
         Ok((_, mut t, mut f, _)) => {
             if t.0 != body {
                 t.0 = body;
             }
-            f.font_size = FontSize::Px(11.0 * scale);
+            if *f != font {
+                *f = font;
+            }
         }
         Err(_) => {
             commands.spawn((
                 MenuText,
                 Text::new(body),
-                TextFont {
-                    font_size: FontSize::Px(11.0 * scale),
-                    ..default()
-                },
+                font,
                 TextColor(Color::srgb_u8(255, 176, 0)),
                 BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)),
                 Node {
@@ -619,7 +622,7 @@ fn item_image<'a>(menus: &'a GameMenus, what: &str) -> Option<&'a String> {
 fn draw_vgui(
     menu: Res<BuyMenu>,
     hud: Option<Res<ActiveHud>>,
-    fonts: Option<Res<VguiFonts>>,
+    fonts: Res<UiFonts>,
     (prices, registry, console): (Res<Prices>, Res<WeaponRegistry>, Res<Console>),
     player: Option<Single<(Option<&Money>, Option<&Team>, Option<&Inventory>), With<LocalPlayer>>>,
     weapons: Query<&Weapon>,
@@ -663,7 +666,7 @@ fn draw_vgui(
         team,
         held: held_slots(inv, &weapons),
     };
-    let painter = Painter::new(hud, menus, fonts.as_deref(), h);
+    let painter = Painter::new(hud, &fonts, h);
     if drawn.page != key || roots.is_empty() {
         for e in &roots {
             commands.entity(e).despawn();

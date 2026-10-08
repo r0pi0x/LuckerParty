@@ -6,7 +6,7 @@
 
 use bevy::prelude::*;
 
-use super::game_hud::HudFonts;
+use super::fonts::UiFonts;
 use crate::{
     core::LocalPlayer,
     map::hud::ActiveHud,
@@ -57,7 +57,7 @@ fn boxes(slots: &[(u8, &'static str)], active: Option<&'static str>, max: u8) ->
 fn rebuild(
     mut events: MessageReader<WeaponEvent>,
     hud: Res<ActiveHud>,
-    fonts: Option<Res<HudFonts>>,
+    fonts: Res<UiFonts>,
     player: Option<Single<(Entity, &Inventory), With<LocalPlayer>>>,
     weapons: Query<&Weapon>,
     windows: Query<&Window>,
@@ -76,8 +76,7 @@ fn rebuild(
     if !deployed {
         return;
     }
-    let (Some(panel), Some(window), Some(fonts)) = (hud.0.panels.get("HudWeaponSelection"), windows.iter().next(), fonts)
-    else {
+    let (Some(panel), Some(window)) = (hud.0.panels.get("HudWeaponSelection"), windows.iter().next()) else {
         return;
     };
     for e in &old {
@@ -112,7 +111,15 @@ fn rebuild(
     let right = panel.x.resolve(w, scale) + panel.wide * scale;
     let top = panel.y.resolve(h, scale);
     let mut x = right - total * scale;
-    let font = |name: &str| fonts.0.get(name).cloned();
+    // A scheme font: the game's font file, else its system face.
+    let font = |name: &str, fallback: f32| match fonts.game(name) {
+        Some((handle, tall)) => TextFont {
+            font: handle.into(),
+            font_size: FontSize::Px(tall * scale),
+            ..default()
+        },
+        None => fonts.client(name, h, fallback),
+    };
     for (slot, big) in row {
         let (bw, bh) = if big.is_some() { (large_w, large_h) } else { (small, small) };
         let mut b = commands.spawn((
@@ -130,15 +137,11 @@ fn rebuild(
             GlobalZIndex(42),
         ));
         b.with_children(|c| {
-            let text = |s: String, at: Vec2, font: Option<(Handle<Font>, f32)>, size: f32| {
+            let text = |s: String, at: Vec2, font: TextFont| {
                 (
                     SelectPart,
                     Text::new(s),
-                    TextFont {
-                        font: font.as_ref().map(|f| f.0.clone().into()).unwrap_or_default(),
-                        font_size: FontSize::Px(font.map_or(size, |f| f.1) * scale),
-                        ..default()
-                    },
+                    font,
                     TextColor(fg),
                     Node {
                         position_type: PositionType::Absolute,
@@ -148,15 +151,18 @@ fn rebuild(
                     },
                 )
             };
-            c.spawn(text((slot + 1).to_string(), number_at, font("HudSelectionNumbers"), 11.0));
+            c.spawn(text((slot + 1).to_string(), number_at, font("HudSelectionNumbers", 11.0)));
             if let Some(id) = big {
                 if let Some((font_name, ch)) = glyph(&hud.0, id) {
                     // Sized to fill the box above the name.
-                    let f = font(&font_name).map(|(h, _)| (h, 40.0));
-                    c.spawn(text(ch.to_string(), icon_at + Vec2::new(10.0, 20.0), f, 40.0));
+                    let f = TextFont {
+                        font_size: FontSize::Px(40.0 * scale),
+                        ..font(&font_name, 40.0)
+                    };
+                    c.spawn(text(ch.to_string(), icon_at + Vec2::new(10.0, 20.0), f));
                 }
                 let name = id.rsplit(':').next().unwrap_or(id).trim_start_matches("weapon_").to_uppercase();
-                c.spawn(text(name, Vec2::new(icon_at.x, text_y), font("HudSelectionText"), 8.0));
+                c.spawn(text(name, Vec2::new(icon_at.x, text_y), font("HudSelectionText", 8.0)));
             }
         });
         x += (bw + gap) * scale;

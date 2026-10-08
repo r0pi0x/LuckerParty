@@ -1,11 +1,12 @@
 //! Scenario tests for CS:S's guns (every one but the AK-47's basics, which
-//! tests/weapons.rs covers) on the greybox map at CS:S's tick (0.015 s): script values
+//! tests/it/weapons.rs covers) on the greybox map at CS:S's tick (0.015 s): script values
 //! (specs/cs_source/weapons.md, "Weapon data") and the measured rules
 //! ("CS:S values (measured)": M3 recoil, M4/M8 timing, M5-M7 damage, M15
 //! zoom, M16 fire modes).
 
 use bevy::prelude::*;
 use mashup::{
+    bot::{BotConfig, add_bot},
     console::Console,
     core::{Health, LocalPlayer, MaxSpeed, Team},
     games::cs_source::{
@@ -918,4 +919,100 @@ fn shotgun_kicks_four_to_six_degrees_up() {
         let k = first_kick(id, false).unwrap();
         assert!([4.0, 5.0, 6.0].iter().any(|u| (k.x - u).abs() < 1e-3) && k.y.abs() < 1e-6, "{id} {k}");
     }
+}
+
+#[test]
+fn a_shotgun_shot_kicks_and_adds_inaccuracy_once_not_per_pellet() {
+    // Playtest: every pellet's trace kicked the view (9 x 4-6 degrees
+    // from the M3's second shot on) and added the fire inaccuracy.
+    for id in [M3, XM1014] {
+        let mut sim = sim();
+        let p = shooter_with(&mut sim, id);
+        let w = active(&sim, p);
+        for shot in 0..3 {
+            // Long enough for the punch to settle (about 0.45 s from 6
+            // degrees) and the penalty to recover.
+            sim.seconds(2.0);
+            let before = sim.app.world().get::<ViewPunch>(p).map_or(Vec2::ZERO, |v| v.0);
+            assert_eq!(before, Vec2::ZERO, "{id} shot {shot}: settled");
+            let acc = sim.app.world().get::<Inaccuracy>(w).unwrap().value;
+            tap(&mut sim, p);
+            // One tick of decay after the shot: at most 6 degrees.
+            let k = sim.app.world().get::<ViewPunch>(p).unwrap().0.x.to_degrees();
+            assert!((3.5..=6.0).contains(&k), "{id} shot {shot}: kick {k}");
+            let after = sim.app.world().get::<Inaccuracy>(w).unwrap().value;
+            let fire = gun(id).accuracy.fire;
+            assert!(after - acc < fire * 1.01, "{id} shot {shot}: {acc} -> {after} (fire {fire})");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bots and recoil
+
+/// Shots fired by and hits landed by `who` (`WeaponEventKind::Shot`/`Hit`).
+#[derive(Resource, Default)]
+struct Tally {
+    who: Option<Entity>,
+    shots: u32,
+    hits: u32,
+}
+
+fn tally(mut events: MessageReader<WeaponEvent>, mut out: ResMut<Tally>) {
+    for e in events.read() {
+        if Some(e.owner) != out.who {
+            continue;
+        }
+        match e.kind {
+            WeaponEventKind::Shot { .. } => out.shots += 1,
+            WeaponEventKind::Hit { .. } => out.hits += 1,
+            _ => {}
+        }
+    }
+}
+
+/// A bot (standing still, its number's seed) sprays a full AK-47 clip at
+/// an enemy 15 m away with `bot_recoil_control` at `control`: (shots,
+/// hits).
+fn bot_spray(control: f32) -> (u32, u32) {
+    let mut sim = sim();
+    sim.app.init_resource::<Tally>().add_systems(Update, tally);
+    sim.app.insert_resource(mashup::slots::Loadout { movement: placeholder::ID });
+    {
+        let mut cfg = sim.app.world_mut().resource_mut::<BotConfig>();
+        cfg.recoil_control = control;
+        cfg.grenades = 0;
+        cfg.radio = 0;
+        // Stands and fires (no strafing).
+        cfg.stop = 1;
+    }
+    let bot = add_bot(sim.app.world_mut(), Team(1)).unwrap();
+    sim.app.world_mut().get_mut::<Transform>(bot).unwrap().translation = Vec3::new(0.0, 1.0, 30.0);
+    let enemy = sim.spawn_character(Vec3::new(0.0, 1.0, 15.0), placeholder::ID);
+    sim.app.world_mut().entity_mut(enemy).insert((
+        Team(2),
+        Health {
+            current: 1000.0,
+            max: 1000.0,
+        },
+    ));
+    sim.ticks(1);
+    give(sim.app.world_mut(), bot, AK47).unwrap();
+    sim.app.world_mut().resource_mut::<Tally>().who = Some(bot);
+    // Draw (1 s), react, turn, and 30 rounds at 0.1 s.
+    sim.seconds(5.0);
+    let t = sim.app.world().resource::<Tally>();
+    (t.shots, t.hits)
+}
+
+#[test]
+fn bots_pull_down_against_recoil_and_keep_sprays_on_target() {
+    // CS:S bots keep their sprays on the target through the kick: they
+    // aim so that view + 2 x punch (M3) stays on it.
+    let (shots0, hits0) = bot_spray(0.0);
+    let (shots_half, hits_half) = bot_spray(0.5);
+    let (shots1, hits1) = bot_spray(1.0);
+    println!("recoil control 0: {hits0}/{shots0} hits; 0.5: {hits_half}/{shots_half}; 1: {hits1}/{shots1}");
+    assert!(shots0 >= 25 && shots1 >= 25, "a full clip each: {shots0}, {shots1}");
+    assert!(hits1 > hits0 + shots1 / 6, "control 0: {hits0}/{shots0}, 1: {hits1}/{shots1}");
 }

@@ -176,7 +176,7 @@ fn teardown(parts: Query<Entity, With<RadarPart>>, mut commands: Commands) {
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn update(
     overview: Res<ActiveOverview>,
-    hud: Option<Res<ActiveHud>>,
+    (hud, fonts): (Option<Res<ActiveHud>>, Res<super::fonts::UiFonts>),
     nav: Option<Res<NavMesh>>,
     windows: Query<&Window>,
     me: Option<Single<(Entity, &GlobalTransform, &Intent, Option<&Team>, Has<Dead>), With<LocalPlayer>>>,
@@ -351,6 +351,10 @@ fn update(
         }
         node.left = px(left);
         node.top = px(top + side + 2.0 * scale);
-        font.font_size = FontSize::Px(9.0 * scale);
+        // The place name in the client scheme's ChatFont.
+        let want = fonts.client("ChatFont", window.height(), 12.0);
+        if *font != want {
+            *font = want;
+        }
     }
 }

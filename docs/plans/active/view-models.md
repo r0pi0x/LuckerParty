@@ -77,11 +77,11 @@ A loader (new model kind), so the plan comes first (CLAUDE.md).
   `cl_bobup`, `cl_wpn_sway_interp`, `cl_wpn_sway_scale`, `cl_ejectbrass`.
 - **Tests**: the real AK view model loads with a mesh, a skeleton, the
   expected activities, attachments, events and lighting origin, and the
-  knife/AK handedness in the files (`tests/map_de_dust2.rs`; skipped
+  knife/AK handedness in the files (`tests/it/heavy/map_de_dust2.rs`; skipped
   without an install); scenario tests on the greybox with stand-in
-  `AnimSet`s (`tests/view_models.rs`: deploy/fire/reload/idle, spec E1);
+  `AnimSet`s (`tests/it/view_models.rs`: deploy/fire/reload/idle, spec E1);
   the spec's B, S, F, H and E cases as pure maths
-  (`tests/view_model_spec.rs`); cvars (`view_anim` unit test).
+  (`tests/it/view_model_spec.rs`); cvars (`view_anim` unit test).
 
 ## Findings
 
@@ -117,9 +117,9 @@ A loader (new model kind), so the plan comes first (CLAUDE.md).
 ## Slices
 
 1. [x] Load `v_rif_ak47` / `v_knife_t` (meshes, skeleton, sequences);
-   test (`tests/map_de_dust2.rs::view_models_load_with_their_sequences`).
+   test (`tests/it/heavy/map_de_dust2.rs::view_models_load_with_their_sequences`).
 2. [x] `ViewAnimator` and the CS:S driver from weapon events; scenario
-   tests (`tests/view_models.rs`).
+   tests (`tests/it/view_models.rs`).
 3. [x] Draw it over the world at the eye (separate camera and layer);
    screenshots idle, firing and the knife.
 4. [x] Spec view_models.md: `viewmodel_fov`/`cl_righthand` cvars,

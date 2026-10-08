@@ -12,15 +12,6 @@ plan when work starts; delete them when done.
   (CS:S keeps them until the map changes; players bound `r_cleardecals`):
   verify against the game, add `r_cleardecals` and an optional
   `mashup_round_cleardecals 1` (off by default).
-- Motion steps at the 66.7 Hz tick on high-refresh screens (own crouch,
-  spectated bots): interpolate rendering between ticks (agent working).
-- Bots move during freeze time while the player can't (round start).
-- Shotguns (M3, XM1014) kick the view far too high and take too long to
-  settle; check against specs/cs_source/weapons.md (shotgun recoil is
-  listed as unmeasured) and measure on the probe server.
-- Bots throw grenades at the spot of the last dead enemy at round end.
-- Bots don't control recoil (no pulling down while spraying); CS:S bots
-  keep their aim on the target through the view punch.
 
 CS:S feel:
 - Optional `+use` pickup of dropped weapons (CS:GO's; CS:S has none): a
@@ -70,9 +61,9 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   in the depth prepass), packed materials whose names differ in case.
   The breakable-block room went from 11-17 fps to the vsync cap (about
   240 fps at 720p uncapped; docs/performance.md, "Many brush entities").
-  Open: impacts don't land on brush entities (its walls are
-  func_breakable blocks; `decal::place_decals` projects only onto the
-  world and props).
+  Impacts land on brush entities (doors, breakables) and go with them;
+  unbroken brush entities draw merged (`map::merge`: 1768 -> 58 meshes
+  at the blocks room).
 
 ## 2b. HUD and debug views
 
@@ -210,7 +201,7 @@ a first bot are in.
 
 ## 4. Bots
 
-- Ladders on other maps (`tests/bot_nav.rs::ladders_climb_both_ways`,
+- Ladders on other maps (`tests/it/heavy/bot_nav.rs::ladders_climb_both_ways`,
   ignored; de_nuke's all pass): 118 of 128 climbs on cs_office,
   de_train, de_port, de_cbble, cs_militia, cs_assault, de_piranesi and
   de_prodigy (2026-10-07, up from 81; per map before/after: cs_office
@@ -278,7 +269,7 @@ docs/plans/active/sound.md.
 
 ## 7. Physics props, remaining
 
-- Player physics shadow (src/games/cs_source/shadow.rs, tests/map_physics_shadow.rs)
+- Player physics shadow (src/games/cs_source/shadow.rs, tests/it/heavy/map_physics_shadow.rs)
   follow-ups (docs/tech-debt.md "Physics shadow"): the push speed limit
   (spec Q7), the shadow's weight on a prop stood on, the controller's
   velocity target when not touching (spec 4.1 step 5), measuring the push
@@ -295,7 +286,7 @@ docs/plans/active/sound.md.
   model's `door_options` move/open/close), swing-side checks against the
   world (only players are checked), forceclosed pushing physics props.
 - Breakables, remaining (vents and windows break: src/logic/breakables.rs,
-  tests/map_breakables.rs): the cracked look of a broken window's panes
+  tests/it/heavy/map_breakables.rs): the cracked look of a broken window's panes
   (`$crackmaterial`, jagged edge pieces; spec open question 8), the
   falling pane pieces (`models/brokenglass_piece.mdl`; collapsing panes
   just shatter now), the GlassBreak/BulletProof decals, break-on-pressure
@@ -357,15 +348,6 @@ dithered fade bands. Left:
   (props touching clusters the roof can't see) before changing anything.
   cs_compound and de_port pass.
 - Measure on the Windows PC (`refcmp bench` there) and set a budget.
-- mg_lego_multigames_v2 `refcmp vischeck` views blocks_room and
-  blocks_room_right: a roof seen through a grate isn't in the PVS of the
-  camera's cluster (0.2% of the pixels). Same question as nuke's window:
-  do grates/translucent world brushes block the compiled PVS, and does
-  CS:S draw what's behind them?
-- Many brush entities: ~1770 meshes drawn at that view (a mesh per
-  material per breakable). Merge unbroken, unmoved brush entities that
-  share a material into combined meshes per chunk, split out when one
-  breaks or moves.
 - Frame-time follow-ups (performance.md, "Cheap wins found"): take
   before/after numbers on a quiet machine; props as hierarchies of their
   own (cheaper collider propagation) without changing how physics props

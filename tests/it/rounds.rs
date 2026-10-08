@@ -3,8 +3,9 @@
 
 use bevy::prelude::*;
 use mashup::{
+    bot::Bot,
     console::Console,
-    core::{Damage, Hitgroup, Intent, Team},
+    core::{Damage, FreezeTime, Hitgroup, Intent, Team},
     harness::Sim,
     movement::placeholder,
     rules::rounds::{Phase, RoundSettings, RoundState},
@@ -110,6 +111,52 @@ fn defenders_win_when_time_runs_out_and_buying_closes() {
     assert_eq!(money(&sim, ct), s.start_money + s.win_bonus);
     assert_eq!(money(&sim, t), s.start_money + s.loss_bonus);
     let _ = sim.app.world().get::<Intent>(t);
+}
+
+/// Freeze time holds bots as it holds the player (CS:S freezes
+/// everyone): a bot that sees an enemy, and would strafe, stays put
+/// until the freeze ends.
+#[test]
+fn bots_are_held_in_the_freeze_time_too() {
+    // On the greybox's floor, so walking moves.
+    let mut sim = Sim::new(mashup::greybox::GreyboxMapPlugin);
+    let places = [
+        Vec3::new(0.0, 1.0, 25.0),
+        Vec3::new(2.0, 1.0, 25.0),
+        Vec3::new(2.0, 1.0, 15.0),
+    ];
+    let [t, bot, ct] = places.map(|at| sim.spawn_character(at, placeholder::ID));
+    sim.app.world_mut().entity_mut(t).insert(Team(1));
+    sim.app.world_mut().entity_mut(bot).insert((Team(1), Bot::default()));
+    sim.app.world_mut().entity_mut(ct).insert(Team(2));
+    sim.app
+        .world_mut()
+        .resource_mut::<Console>()
+        .submit("mp_freezetime 2; mp_roundtime 0.5; mashup_rounds 1");
+    sim.ticks(3);
+    assert!(matches!(phase(&sim), Phase::Freeze { .. }), "{:?}", phase(&sim));
+    assert!(sim.app.world().resource::<FreezeTime>().0);
+    // The round put everyone at the spawns: back where the bot sees the
+    // enemy.
+    for (e, at) in [t, bot, ct].into_iter().zip(places) {
+        sim.app.world_mut().get_mut::<Transform>(e).unwrap().translation = at;
+    }
+    sim.ticks(10);
+    let flat = |sim: &Sim, e: Entity| sim.position(e).with_y(0.0);
+    let start = [t, bot, ct].map(|e| flat(&sim, e));
+    sim.intent(t).move_axis = Vec2::Y;
+    sim.seconds(1.5);
+    assert!(sim.app.world().get::<Bot>(bot).unwrap().target == Some(ct), "the bot sees the enemy");
+    for (e, at) in [t, bot, ct].into_iter().zip(start) {
+        let moved = flat(&sim, e).distance(at);
+        assert!(moved < 0.01, "{e} moved {moved} while frozen");
+    }
+    // Once the round is live the bot strafes (the test would see it move).
+    sim.seconds(1.0);
+    assert!(matches!(phase(&sim), Phase::Live { .. }), "{:?}", phase(&sim));
+    assert!(!sim.app.world().resource::<FreezeTime>().0);
+    let moved = flat(&sim, bot).distance(start[1]);
+    assert!(moved > 0.1, "the bot moved {moved} after the freeze");
 }
 
 /// The dead stop being solid (bots and players walk over the spot, a

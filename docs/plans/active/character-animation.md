@@ -25,7 +25,7 @@ pose; this makes them move.
    Done: our own `.mdl` animation decoder and include merge
    (`games/cs_source/anim.rs`), the blending and layering math
    (`map/anim.rs`), `Animator` on characters and `pose_bodies`; all spec
-   test values match (`tests/animation.rs`).
+   test values match (`tests/it/animation.rs`).
 3. [x] Pick by movement: `games/cs_source/player_anim.rs` follows spec §12
    (9-way move grid, idle/walk/run/crouch/jump, feet yaw lagging the eyes,
    upper-body weapon layers with aim, fire layer). Scenario test

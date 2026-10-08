@@ -5,7 +5,7 @@ Prefer them, in this order, over asking a human to look.
 
 ## 1. Headless scenario tests (fastest, most precise)
 
-`cargo test` runs `tests/movement.rs` and friends on `harness::Sim`: no
+`cargo test` runs `tests/it/movement.rs` and friends on `harness::Sim`: no
 window, time advanced by exact fixed ticks, `Intent` driven directly.
 
 ```rust
@@ -18,6 +18,30 @@ assert!(sim.velocity(p).xz().length() > 4.9);
 
 Every spec test case becomes one of these. New behavior gets a scenario test
 before it is called done.
+
+Integration tests are one test crate, so the game links once for all of
+them (docs/performance.md, "Test cycle"): `tests/it/main.rs` lists each
+file as a module. A new test file goes in `tests/it/` with a `mod name;`
+line there, or in `tests/it/heavy/` (inside `mod heavy { }`) when it loads
+real maps from the install or simulates long (bot rounds). A file directly
+in `tests/` would be another test binary: `architecture::tests_are_one_crate`
+fails and says how to move it. Test names read `weapons::name` and
+`heavy::map_de_dust2::name`.
+
+- Fast tier, before every commit (`.githooks/pre-commit`): `cargo test
+  --features dev -- --skip heavy::` (unit tests and everything outside
+  `heavy`; under a minute when warm).
+- Full suite, before a push or a merge to main (`.githooks/pre-push`, which
+  `MASHUP_PUSH_TESTS=0` skips): `cargo nextest run --features dev`, or
+  `cargo test --features dev` without nextest (twice as slow: in one
+  process the heavy tests contend). nextest runs each test in its own
+  process; install it once with `cargo install cargo-nextest --locked` (or
+  its prebuilt binary, https://nexte.st). It accepts the same `-- --skip
+  heavy::` filter. It doesn't run doctests (there are none);
+  `cargo test --doc` does.
+- One file: `cargo test --features dev --test it weapons::`; one test:
+  `cargo test --features dev --test it weapons::name`; `-- --ignored` runs
+  the ignored debug aids (filters work the same).
 
 ## 2. Screenshots
 
@@ -97,6 +121,12 @@ Only `Reflect`-registered types are visible; register new core components in
   back to the main menu: `+disconnect`; `map greybox` plays the greybox
   from anywhere; `toggleconsole` opens the console as the menu's
   Console entry does.
+- Fonts: the startup log line `fonts: tahoma -> tahoma.ttf, ...` says
+  which file each scheme family resolved to (`(stand-in)` when the
+  system lacks the real face, e.g. Liberation Sans for Tahoma on Linux;
+  `client::fonts`). Text sizes and faces per element are unit-tested
+  there; screenshots of the console, chat, scoreboard, buy menu, main
+  menu and `debugui` at 1280x720 show them.
 - Binds: `bindlist` lists them; every game key is one (`client::binds`),
   `binddefaults` puts the defaults back.
 - `buymenu [n]` and `chooseteam` open the buy menu (on category n) and
@@ -104,7 +134,7 @@ Only `Reflect`-registered types are visible; register new core components in
   +wait 30 +buymenu 4` (the `wait` lets the map's HUD and menu layouts
   load first, so the game-look pages are used). Their key and button
   logic is tested headless in `client::buy_menu` and `client::team_menu`;
-  `tests/map_de_dust2.rs` checks the install's layouts load.
+  `tests/it/heavy/map_de_dust2.rs` checks the install's layouts load.
 - `ent_fire <target> <input> [value]` sends a map entity an input through
   the logic layer (names, `*` wildcards, classnames; the local player is
   the activator), e.g. `+wait 30 +ent_fire logic_timer Disable +ent_fire
@@ -137,13 +167,13 @@ Only `Reflect`-registered types are visible; register new core components in
   statistics (winners, kills, time to first contact, and every spot where
   a bot walked a route without getting anywhere for 4 s, summed up):
   `MASHUP_BOT_MAP=de_dust2 MASHUP_BOT_ROUNDS=8 cargo test --features dev
-  --test bot_rounds -- --ignored --nocapture`. To look at such a spot:
+  --test it bot_rounds:: -- --ignored --nocapture`. To look at such a spot:
   `MASHUP_NAV_MAP=de_nuke MASHUP_NAV_AT=11.4,-15.2,34.4 cargo test
-  --features dev --test bot_nav -- --ignored --nocapture nav_near` prints
+  --features dev --test it bot_nav::nav_near -- --ignored --nocapture` prints
   the nav areas, links, ladders, ladder brushes and entities (breakables
   with their keyvalues) around it (engine meters, as the report prints
   them; `MASHUP_NAV_BRUSHES=1` also lists every collision brush within
-  1 m, e.g. player clip flush with a ladder's face); add a case to `tests/bot_nav.rs` (a lone bot sent from a start
+  1 m, e.g. player clip flush with a ladder's face); add a case to `tests/it/heavy/bot_nav.rs` (a lone bot sent from a start
   to a goal, `MASHUP_BOT_CASE=<name>` to run one, `MASHUP_BOT_TRACE=0`
   for every tick of its intent, ladder and ground state), and try raw
   inputs with `probe_walk` (`P_AT=x,y,z P_OPT=yaw,crouch,jump,seconds,
@@ -168,7 +198,7 @@ Only `Reflect`-registered types are visible; register new core components in
   death cam; 2 s later the camera watches a living teammate. Drive it
   with `spec_mode 4|5|6` (first person, chase, free look), `spec_next`
   and `spec_prev`, `mp_forcecamera 0` to watch enemies too; the state is
-  the `Spectator` resource (`tests/spectate.rs` drives it headless).
+  the `Spectator` resource (`tests/it/spectate.rs` drives it headless).
 - `mashup_objectives 1` prints the objectives' state on screen: who
   carries the bomb, a planted bomb's place, site and time left, a defuse's
   progress (who, kit, seconds), the outcome, and each hostage's health,
@@ -205,7 +235,7 @@ Only `Reflect`-registered types are visible; register new core components in
   release; a `setang` to another direction after the flash shows the
   frozen frame over the new view. Hearing (muffle, ringing) can't be
   photographed: `map::hearing::Hearing` and its tests
-  (`cargo test --lib hearing`) show the curves; `tests/cs_grenades.rs`
+  (`cargo test --lib hearing`) show the curves; `tests/it/cs_grenades.rs`
   checks which effect each blast or flash gives.
 - `mashup_healthbars 1` draws a health bar over every other living
   character (green full, red nearly dead), e.g. to watch damage land in a
@@ -240,7 +270,7 @@ Only `Reflect`-registered types are visible; register new core components in
 - `mashup_watch <n>` chases bot n from behind (`cam_idealdist`,
   `cam_idealyaw` apply; 0 returns): `+bot_add 2 +mashup_watch 1
   +cam_idealyaw 150` shows a bot running with its weapon.
-- View model (CS:S cvars): `viewmodel_fov` (54), `cl_righthand` (1;
+- View model (CS:S cvars): `viewmodel_fov` (80 here; CS:S 54), `cl_righthand` (1;
   0 puts weapons in the left hand), `r_drawviewmodel 0` hides it,
   `cl_bobcycle`/`cl_bobup` (bob), `cl_wpn_sway_interp`/`cl_wpn_sway_scale`
   (sway: e.g. 20 to exaggerate it), `muzzleflash_light 0` turns the
@@ -299,6 +329,14 @@ Details and baseline numbers: [performance.md](performance.md).
   can be compared without reading screenshots (`--frames N ... 2>&1 |
   grep mashup_perf:`); `bugreport` saves the latest readout in
   report.txt whether or not the overlay is on.
+- Drawing between ticks (`map::interp`): the readout's `interpolation:`
+  line gives the tick rate, the frame's blend between the last two ticks
+  (`Time<Fixed>` overstep fraction), ticks run that frame and teleport
+  snaps so far; the F2 Perf tab shows it live every frame.
+  `cl_interpolate 0` draws the latest tick instead (stepping at the tick
+  rate), for A/B. `cargo test --features dev --test it interpolation::
+  -- --nocapture` prints a walking, ducking camera eye per frame at 240 fps on the CS:S
+  tick with it on and off.
 - `refcmp bench --views tools/refcmp/<map>.toml` times 200 frames at each
   view (vsync off) and prints a table (frame, main-world CPU, process CPU
   and GPU ms; with pipelined rendering a frame takes the longer of the
@@ -314,14 +352,16 @@ Details and baseline numbers: [performance.md](performance.md).
   hide.
 - `r_novis 1` draws every map part (no visibility culling);
   `MASHUP_MERGED_WORLD=1` spawns the world as one mesh per material with no
-  culling, as before chunking (A/B comparisons).
+  culling, as before chunking (A/B comparisons); `MASHUP_MERGE_BRUSHES=0`
+  draws every brush entity from its own meshes (no merged combined
+  meshes, `map::merge`).
 - `refcmp vischeck --views tools/refcmp/<map>.toml` renders the views
   plus views from spawns and nav areas with culling off (`r_novis 1`,
   `r_occlusion 0`) and on (game time
   frozen with `host_timescale 0`), lists the views that differ and fails
   if any differs by more than 0.5% of its pixels (small differences:
   geometry seen through sky brushes, which culling hides as the game
-  does; see performance.md). `cargo test --test map_vis` checks the same with rays from
+  does; see performance.md). `cargo test --features dev --test it map_vis::` checks the same with rays from
   ~300 player positions per map (`MASHUP_VIS_FULL=1`: every nav area).
 - `REFCMP_OUT=<dir> refcmp ...` writes mashup's captures, reports, bench
   and vischeck output under `<dir>/<map>` (references are still read from
@@ -381,8 +421,9 @@ and keys typed into its fields don't reach binds.
   (`r_novis`, `r_portalsopenall`, `r_occlusion`, with the vis readout),
   HDR, water, view model and effect cvars, third person and free camera.
 - Perf: a frame-time graph of the last 300 frames (white frame, green
-  main-world CPU, 60 and 30 fps lines), the `mashup_perf` readout,
-  `mashup_perf`, `mashup_perf_log`, how to take a trace.
+  main-world CPU, 60 and 30 fps lines), the live interpolation line, the
+  `mashup_perf` readout, `mashup_perf`, `mashup_perf_log`,
+  `cl_interpolate`, how to take a trace.
 - Audio: volume, DSP, `snd_show`, the soundscape and room readout.
 - Logic: the map's entities (filter by name or class), an entity's
   keyvalues and output connections, fire an input at it (`ent_fire`);
@@ -393,7 +434,7 @@ and keys typed into its fields don't reach binds.
 - Cvars: every cvar, searchable, "changed only", edited in place (Enter
   sets it), reset to default; matching commands with their help.
 
-Headless: `tests/debug_ui.rs` opens it, walks the tabs and runs the
+Headless: `tests/it/debug_ui.rs` opens it, walks the tabs and runs the
 lines its tabs run in a `Sim` (`DebugUiStatePlugin`).
 
 ## 4. Logs
@@ -448,7 +489,7 @@ cargo run --features dev --bin refcmp -- capture-ours --only a_sign
   still read from the shared folder), so parallel worktrees don't
   overwrite each other's captures. Our captures currently show the view model.
 - Load warnings of every stock map: `cargo test --features dev --test
-  map_stock -- --ignored --nocapture all_stock_maps_warnings`.
+  it all_stock_maps_warnings -- --ignored --nocapture`.
 - CS:S runs through the Steam client (logged in once on this machine) and
   is driven over RCON on 127.0.0.1:27015, so it works with the desktop
   locked: the tool waits for the map to load, repositions the map's

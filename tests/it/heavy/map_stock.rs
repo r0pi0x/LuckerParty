@@ -2,8 +2,8 @@
 //! real install, headless: they load, and what they draw resolves.
 //! Skipped without an install.
 //!
-//! `cargo test --features dev --test map_stock -- --nocapture --ignored
-//! all_stock_maps_warnings` prints every map's load warnings (the catalog
+//! `cargo test --features dev --test it all_stock_maps_warnings -- --nocapture
+//! --ignored` prints every map's load warnings (the catalog
 //! in docs/plans/active/other-maps.md comes from it).
 
 use mashup::{

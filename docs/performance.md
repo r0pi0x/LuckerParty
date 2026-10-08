@@ -1,7 +1,7 @@
 # Performance
 
 How to measure, what the numbers were, and what the map visibility culling
-does. Tools are listed in [OBSERVABILITY.md](OBSERVABILITY.md) ("3c.
+does; at the end, how long the tests take to build and run ("Test cycle"). Tools are listed in [OBSERVABILITY.md](OBSERVABILITY.md) ("3c.
 Performance").
 
 ## Measuring
@@ -17,7 +17,7 @@ Performance").
   or `cargo build --profile playtest` and run `target/playtest/refcmp`).
 - A/B: `-- +r_novis 1` (no PVS culling) or `MASHUP_MERGED_WORLD=1` (the
   world as one mesh per material, nothing culled: the code before
-  chunking).
+  chunking); `MASHUP_MERGE_BRUSHES=0` (brush entities not merged).
 - Per-system CPU time: a `--features profile` build writes a Chrome
   trace (`TRACE_CHROME=<file>`, else `trace-*.json` in the working
   directory); `tracesum <file> --skip 200` prints the main and render
@@ -115,7 +115,7 @@ Fades apply with `r_novis 1` too.
 
 ### Checks
 
-- `cargo test --test map_vis`: from every spawn and ~250 nav area centres
+- `cargo test --features dev --test it map_vis::`: from every spawn and ~250 nav area centres
   per map (de_dust2, de_nuke, cs_office), 400 rays from eye height; every
   world surface a ray reaches (translucent ones on the way, then the
   first opaque one) must be in a potentially visible chunk, unless the ray
@@ -184,7 +184,7 @@ view, the PVS already culls most of what lies beyond, and what remains
 beyond an opening but outside its screen rectangle is mostly outside the
 frustum anyway (meshes drawn don't change). The win is behind shut doors
 (cs_militia: 54 map parts behind its front door, cs_assault: 15; see
-`tests/map_areaportals.rs`). `refcmp vischeck` on de_nuke lists the same
+`tests/it/heavy/map_areaportals.rs`). `refcmp vischeck` on de_nuke lists the same
 15 views, pixel for pixel, with and without `+r_portalsopenall 1`, so none
 come from areaportals; one of them, nav1627_90 (16k pixels inside the
 glass of the door beside the A site door), is over vischeck's 0.5% limit.
@@ -278,16 +278,59 @@ Pictures are unchanged: refcmp report mean abs diff de_dust2 0.0308
 (32 views), de_nuke 0.0250 (27), de_aztec 0.0409 (13), each view within
 0.0005 of the shared captures; de_port's 24 views (reflecting water)
 differ from the old build by at most 28 pixels. `refcmp vischeck` on the
-lego map: 48 views, two differ by 1732 and 1965 pixels (0.2%): a roof
-seen through a grate, which the map's PVS doesn't list from that
-cluster (with or without areaportals; backlog section 9, like de_nuke's
-nav1627_90).
+lego map: 48 views, two differ by 1732 and 1965 pixels (0.2%):
+blocks_room and blocks_room_right, a roof and walls seen through a
+ladder grate (`boharox/simpsons/{sewerladder`, alpha-tested) in a world
+brush. That brush was compiled as solid: rays from the eye through the
+grate cross a solid leaf (no cluster) and every cluster behind it is
+missing from the eye cluster's PVS (cluster 1088: 1299, 1300, 773 are
+listed, then solid, then 746, 749, 750, 752 are not; every culled hit
+lies behind solid). So the map's compiler let the grate block
+visibility, and CS:S, which draws only the leaves in the PVS, doesn't
+draw what lies behind it either. Our culling uses the map's PVS as it
+is and computes no visibility of its own, so there is nothing for
+see-through brushes to block or not; the difference stays (like sky
+brushes, see "Checks").
 
-What is left at that view: about 1770 meshes drawn (the wall of blocks is
-~580 breakables, a mesh per material each); main world ~2-5 ms of mostly
-Bevy's per-entity work (visibility checks, transform and collider
-propagation over the map's tree). Merging unbroken breakables into
-shared meshes would cut entities further.
+At that view about 1770 meshes were still drawn: the wall of blocks is
+~580 breakables, a mesh per material each.
+
+Brush entities drawn merged (`map::merge`): while a brush entity is
+where the map put it, whole and shown, its opaque and alpha-tested
+meshes are drawn through combined meshes per material and 512-unit
+chunk under the map's root, culled by the clusters their parts touch;
+its own meshes stay spawned but hidden. When it moves (doors, trains),
+breaks or is removed or turned off (`LogicHidden`: func_brush toggles),
+or shows broken panes, its triangles leave the combined meshes (their
+index buffers are rewritten without its ranges) and its own meshes are
+drawn; back home and shown (a shut door, a round restart) it rejoins.
+Blended meshes, the 3D skybox, water and areaportal window brushes
+(whose alpha changes per brush) stay on their own. The logic doesn't
+change brush entities' render mode or colour at run time; if it ever
+does, that must split the entity out too. On the lego map 767 brush
+entities go into 136 combined meshes; de_nuke 22 in 41; de_dust2 has
+none.
+
+`refcmp bench` (playtest build, 1280x720, vsync off, two interleaved
+runs, `MASHUP_MERGE_BRUSHES=0` for the unmerged runs, load 7-9 on 12
+cores):
+
+| map (views) | merged | blocks_room ms | mean frame ms | main ms | meshes drawn (blocks_room / mean) |
+|---|---|---|---|---|---|
+| lego (4) | no | 4.33 / 3.60 | 3.57 / 3.82 | 2.10 / 2.44 | 1768 / 512 |
+| lego (4) | yes | 4.46 / 3.69 | 3.61 / 3.42 | 2.11 / 1.96 | 58 / 28 |
+| de_nuke (27) | no | | 10.29 / 10.42 | 8.00 / 8.12 | 489 |
+| de_nuke (27) | yes | | 10.39 / 10.15 | 8.07 / 7.86 | 486 |
+| de_dust2 (32) | no | | 8.55 / 8.69 | 6.80 / 6.94 | 248 |
+| de_dust2 (32) | yes | | 8.81 / 8.67 | 7.08 / 6.93 | 248 |
+
+Draws at blocks_room fall 30-fold, frame times don't move: at 720p this
+view was no longer bound by draws (GPU 0.2-0.3 ms) but by the main
+world's per-entity work, which hidden meshes still cost a little
+(visibility checks skip them early). Pictures are unchanged: captures of
+the lego and de_nuke views with and without merging are identical
+except 11 pixels in one de_nuke view (smoke); `refcmp vischeck` on the
+lego map gives the same two views as before.
 
 ## Cheap wins found
 
@@ -324,3 +367,68 @@ walks every tree holding a collider each tick in
 `propagate_collider_transforms`, about 0.3 ms per tick on dust2 under
 load): a dust2 physics prop then settled differently
 (`physics_props_settle_and_get_pushed`), so it is left for later.
+
+## Test cycle
+
+How long `cargo test` takes to build and run, and why the tests are laid
+out as they are (docs/OBSERVABILITY.md section 1 has the commands).
+Measured 2026-10-08 on the dev box (12 cores, 31 GB) while other agents
+built and tested: load averages from 9 to 60, given with each number, so
+compare ratios. `CARGO_BUILD_JOBS=6`, `--features dev`, a worktree's own
+`target/`.
+
+Where the time went:
+
+- Every integration test file was its own test binary: 61 of them, each
+  a link of the whole game (about 1 GB with debug info). Rebuilding the
+  tests after a change in `src/` relinked all 61: 213 s (load 52), the
+  test binaries' units summing to 835 s on 6 jobs.
+- `build.rs` watched `.git/HEAD`, which doesn't exist in a worktree (`.git`
+  is a file there): cargo reran it on every build and relinked every
+  target, even with nothing changed. A no-op `cargo test --no-run` took
+  410 s (load 55); it now takes 1 s. It also watched `.git/index`, so
+  every `git add` (and so every commit's hook) relinked everything.
+- `cargo test` built a test harness for each binary target too (five
+  without any tests).
+- Running: `cargo test` runs one test binary after another: 618 s of
+  running (load 13), de_dust2's 60 map tests alone 162-224 s. The whole suite's tests add up to 2600 s of
+  test time (nextest, load 20); the slowest are real-map tests (de_nuke's
+  ladders 123 s, dust2 props 102 s) and bot simulations (bot_radio's
+  entity-id checks 80 s).
+
+What changed:
+
+- One test binary, `tests/it/` (`main.rs` declares each file as a
+  module); the real-map and long bot tests under `heavy`.
+- `build.rs` watches this checkout's HEAD and branch ref through
+  `git rev-parse --git-path`.
+- `test = false` for the binaries without unit tests (`mashup`, `dump`,
+  `movecmp`, `refcmp`, `tracesum`; tests/it/architecture.rs checks they
+  stay without).
+- Two tiers: the fast tier before each commit, the full suite before a
+  push.
+
+| | before | after |
+|---|---|---|
+| cold `cargo test --no-run` (all dependencies) | 41 min (load ~25) | the same; dependencies dominate |
+| no-op `cargo test --no-run` in a worktree | 410 s (load 55) | 1 s |
+| after touching `src/lib.rs` | 213 s (load 52), 61 test links | 26 s (load 14), 1 test link |
+| after touching one test file | one binary, 15-60 s | 7 s (load 13) |
+| fast tier run (`-- --skip heavy::`, 692 tests) | - | 11 s (load 9), 31 s (load 34) |
+| full suite run, `cargo nextest run` | 234 s (load 23) | 200 s (load 33), 269 s (load 20) |
+| full suite run, `cargo test` | 618 s (load 13) | 445 s (load 12) |
+| `cargo test --features dev` as the pre-commit hook ran it | 905 s (load 13): 267 s relinking, 618 s running | fast tier: 11-31 s plus a build |
+
+The full suite in one libtest process is about twice as slow as
+nextest's process per test, probably because the heavy tests then share
+one process's task pools and allocator. Hence nextest for the full suite
+(the pre-push hook uses it when installed).
+
+Linking the test binary (1.0 GB), replaying its link command: LLD (rustc's
+default here) 3.0 s, mold 3.0.0 1.6 s; without debug info 0.8 s and 0.4 s.
+With one test binary that is a second per change, so mold stays an
+opt-in line in `.cargo/config.toml`. Dropping dependencies' debug info
+(`split-debuginfo` or `debug = "line-tables-only"`) would save about as
+much but costs a full rebuild and backtraces into Bevy; not done.
+sccache (a compile cache shared by worktrees) could make a new worktree's
+first build cheaper; not tried.

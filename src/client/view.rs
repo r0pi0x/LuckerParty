@@ -24,6 +24,9 @@ const METERS_PER_UNIT: f32 = 0.0254;
 /// it stops short of walls (CS:S sweeps a 28-unit box).
 const CAMERA_RADIUS: f32 = 0.2;
 
+/// Sound volume a fresh config starts with (`volume`).
+pub const DEFAULT_VOLUME: f32 = 0.5;
+
 /// First or third person, and how far behind the eye the third-person
 /// camera sits.
 #[derive(Resource, Clone, Copy, Debug, PartialEq)]
@@ -89,6 +92,7 @@ pub struct ViewPlugin;
 impl Plugin for ViewPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CameraMode>()
+            .insert_resource(GlobalVolume::new(Volume::Linear(DEFAULT_VOLUME)))
             .init_resource::<FreeCam>()
             .init_resource::<Watch>()
             .init_resource::<HealthBars>()
@@ -114,7 +118,7 @@ fn view_console(app: &mut App) {
     .console_cvar(
         "volume",
         "Sound volume, 0 to 1.",
-        "1",
+        "0.5",
         |w| {
             Some(
                 w.get_resource::<GlobalVolume>()

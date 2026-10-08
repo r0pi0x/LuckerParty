@@ -208,14 +208,11 @@ fn end_frame(mut times: ResMut<FrameTimes>) {
 #[derive(Component)]
 struct PerfText;
 
-fn spawn_overlay(mut commands: Commands) {
+fn spawn_overlay(mut commands: Commands, fonts: Res<super::fonts::UiFonts>) {
     commands.spawn((
         PerfText,
         Text::default(),
-        TextFont {
-            font_size: FontSize::Px(13.0),
-            ..default()
-        },
+        fonts.debug(13.0),
         TextColor(Color::srgb(1.0, 1.0, 0.6)),
         Node {
             position_type: PositionType::Absolute,
@@ -429,6 +426,7 @@ fn perf_report(
     meshes: Query<(&Mesh3d, &ViewVisibility), With<Aabb>>,
     assets: Res<MeshTriangles>,
     mut report: ResMut<PerfReport>,
+    interp: (Option<Res<crate::map::interp::Interpolation>>, Res<Time<Fixed>>),
 ) {
     let now = Instant::now();
     let due = report.at.is_none_or(|t| (now - t).as_secs_f32() >= 1.0);
@@ -437,9 +435,26 @@ fn perf_report(
     }
     report.at = Some(now);
     report.lines = perf_lines(perf.show.max(log.0), &churn, &times, &diagnostics, &vis, parts.iter().count(), &meshes, &assets);
+    if let Some(i) = interp.0 {
+        report.lines.push(interp_line(&i, &interp.1));
+    }
     if log.0 != 0 && report.logged.is_none_or(|t| (now - t).as_secs_f32() >= 1.0) {
         report.logged = Some(now);
         info!("mashup_perf: {}", report.lines.join(" | "));
+    }
+}
+
+/// Drawing between ticks (`cl_interpolate`, `map::interp`): the tick
+/// rate, this frame's blend (overstep fraction) and ticks, snaps so far.
+pub fn interp_line(i: &crate::map::interp::Interpolation, fixed: &Time<Fixed>) -> String {
+    let hz = fixed.timestep().as_secs_f64().recip();
+    if i.enabled == 0 {
+        format!("interpolation off (cl_interpolate 0): latest of {hz:.1} Hz ticks drawn, {} this frame", i.ticks)
+    } else {
+        format!(
+            "interpolation: {hz:.1} Hz ticks, drawn at {:.2} between the last two, {} this frame, {} snaps",
+            i.fraction, i.ticks, i.snaps
+        )
     }
 }
 

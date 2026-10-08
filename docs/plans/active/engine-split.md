@@ -41,7 +41,7 @@ Rules:
   player's install); the same library supplies parts to minigames. A
   game's own modes are minigame definitions, so both uses run the same
   code.
-- `tests/architecture.rs` already enforces most of this as layers;
+- `tests/it/architecture.rs` already enforces most of this as layers;
   crates make the compiler enforce it.
 
 ## Minigames (the middle layer)

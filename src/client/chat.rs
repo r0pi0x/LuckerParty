@@ -21,6 +21,7 @@ use bevy::{
     window::CursorOptions,
 };
 
+use super::fonts::UiFonts;
 use crate::{
     console::{Console, ConsoleAppExt, Level},
     core::{Health, LocalPlayer, Team},
@@ -227,6 +228,7 @@ struct InputText;
 fn draw_input(
     input: Res<ChatInput>,
     hud: Option<Res<ActiveHud>>,
+    fonts: Res<UiFonts>,
     windows: Query<&Window>,
     shown: Query<Entity, With<InputText>>,
     mut built: Local<Option<(ChatInput, f32)>>,
@@ -249,15 +251,13 @@ fn draw_input(
         "HudChat",
         (HudCoord::Start(10.0), HudCoord::Start(275.0), 320.0, 120.0),
     );
-    let size = FontSize::Px(12.0 * scale * 0.85);
+    // The scheme's ChatFont (bold Verdana, drop shadow).
+    let font = fonts.client("ChatFont", h, 12.0);
     let root = commands
         .spawn((
             InputText,
             Text::default(),
-            TextFont {
-                font_size: size,
-                ..default()
-            },
+            font.clone(),
             TextShadow::default(),
             BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.5)),
             Node {
@@ -274,19 +274,13 @@ fn draw_input(
     let prompt = if team { "Say (TEAM) :" } else { "Say :" };
     commands.spawn((
         TextSpan::new(format!("{prompt} ")),
-        TextFont {
-            font_size: size,
-            ..default()
-        },
+        font.clone(),
         TextColor(Color::srgb_u8(255, 176, 0)),
         ChildOf(root),
     ));
     commands.spawn((
         TextSpan::new(format!("{}_", input.text)),
-        TextFont {
-            font_size: size,
-            ..default()
-        },
+        font,
         TextColor(Color::WHITE),
         ChildOf(root),
     ));
@@ -399,6 +393,7 @@ struct ChatRoot;
 fn draw_chat(
     log: Res<ChatLog>,
     hud: Option<Res<ActiveHud>>,
+    fonts: Res<UiFonts>,
     windows: Query<&Window>,
     root: Query<Entity, With<ChatRoot>>,
     mut built: Local<(u64, f32)>,
@@ -440,16 +435,12 @@ fn draw_chat(
             GlobalZIndex(41),
         ))
         .id();
-    // ChatFont: 12 at 480 lines.
-    let size = 12.0 * scale * 0.85;
+    let font = fonts.client("ChatFont", h, 12.0);
     for (line, _) in &log.lines {
         let text = commands
             .spawn((
                 Text::default(),
-                TextFont {
-                    font_size: FontSize::Px(size),
-                    ..default()
-                },
+                font.clone(),
                 TextShadow::default(),
                 ChildOf(root),
             ))
@@ -457,10 +448,7 @@ fn draw_chat(
         for (c, s) in &line.0 {
             commands.spawn((
                 TextSpan::new(s.clone()),
-                TextFont {
-                    font_size: FontSize::Px(size),
-                    ..default()
-                },
+                font.clone(),
                 TextColor(run_color(hud, *c, line.1)),
                 ChildOf(text),
             ));
@@ -475,6 +463,7 @@ fn draw_hint(
     mut hints: MessageReader<Hint>,
     mut state: ResMut<HintState>,
     hud: Option<Res<ActiveHud>>,
+    fonts: Res<UiFonts>,
     windows: Query<&Window>,
     shown: Query<Entity, With<HintText>>,
     time: Res<Time>,
@@ -532,11 +521,7 @@ fn draw_hint(
         .id();
     commands.spawn((
         Text::new(text.clone()),
-        // HudHintText: 12 at 480 lines.
-        TextFont {
-            font_size: FontSize::Px(12.0 * scale * 0.85),
-            ..default()
-        },
+        fonts.client("HudHintText", h, 12.0),
         TextColor(fg),
         TextLayout::justify(Justify::Center),
         BackgroundColor(bg),

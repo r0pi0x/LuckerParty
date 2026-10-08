@@ -4,9 +4,9 @@
 //! `dust2_bot_round_stats` (ignored) plays whole rounds bot against bot
 //! and prints winners, kills, time to first contact and where bots got
 //! stuck (no progress for 4 s while walking a route, summed up by spot;
-//! `tests/bot_nav.rs` has the tools to look at one):
+//! `tests/it/heavy/bot_nav.rs` has the tools to look at one):
 //! `MASHUP_BOT_MAP=de_nuke MASHUP_BOT_ROUNDS=8 cargo test --features dev
-//! --test bot_rounds -- --ignored --nocapture`.
+//! --test it bot_rounds:: -- --ignored --nocapture`.
 
 use bevy::prelude::*;
 use mashup::{
@@ -184,6 +184,42 @@ fn dust2_attackers_take_a_site_and_defenders_hold_both() {
     }
     assert!(per_site.iter().all(|n| *n >= 1), "sites held: {per_site:?}");
     assert!(holding >= 3, "{holding} of 4 defenders holding");
+}
+
+/// Playtest: bots walked off in the freeze time while the player was
+/// held. Nobody moves until it ends; then they set off.
+#[test]
+fn dust2_bots_hold_still_in_the_freeze_time() {
+    if !installed() {
+        return;
+    }
+    let (mut sim, bots) = sim("de_dust2", 2, 2);
+    sim.app.world_mut().resource_mut::<BotConfig>().grenades = 0;
+    sim.app
+        .world_mut()
+        .resource_mut::<Console>()
+        .submit("mp_freezetime 3; mp_roundtime 2; mashup_rounds 1");
+    sim.ticks(3);
+    assert!(matches!(
+        sim.app.world().resource::<RoundState>().phase,
+        Phase::Freeze { .. }
+    ));
+    // Settled onto the floor at the spawns.
+    sim.seconds(0.5);
+    let start: Vec<Vec3> = bots.iter().map(|&b| feet(&sim, b)).collect();
+    sim.seconds(2.0);
+    for (&b, at) in bots.iter().zip(&start) {
+        let moved = (feet(&sim, b) - *at).with_y(0.0).length();
+        assert!(moved < 0.01, "{b} moved {moved} m in the freeze time");
+    }
+    sim.seconds(3.0);
+    assert!(matches!(sim.app.world().resource::<RoundState>().phase, Phase::Live { .. }));
+    let walked = bots
+        .iter()
+        .zip(&start)
+        .filter(|(b, at)| (feet(&sim, **b) - **at).with_y(0.0).length() > 1.0)
+        .count();
+    assert!(walked >= 3, "{walked} of 4 bots set off after the freeze");
 }
 
 /// Whole rounds, bots against bots; prints what happened.

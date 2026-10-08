@@ -4,7 +4,10 @@
 //! clipped to the decal's rectangle, as the game projects decals onto the
 //! faces they touch (specs/cs_source/overlays_decals.md). Drawn with
 //! `DecalMaterial`: the surface is multiplied by the decal (modulate 2x).
-//! Props and characters take no decals yet.
+//! A hit prop or brush entity (door, breakable, func_brush) takes the decal
+//! on its own triangles, as its child: it moves with it, and goes when the
+//! entity is removed or broken (and at a round restart, which re-creates
+//! brush entities). Characters take no decals yet.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -103,15 +106,22 @@ pub(super) struct TriSet {
     cells: HashMap<IVec3, Vec<u32>>,
 }
 
-/// What decals can land on: the world's triangles, and each prop model's
-/// in its own space.
+/// What decals can land on: the world's triangles, each prop model's in
+/// its own space, and each brush entity's in its node's space.
 #[derive(Resource, Default)]
 pub(super) struct DecalSurfaces {
     world: TriSet,
     models: Vec<TriSet>,
     /// Prop index -> model index.
     props: Vec<usize>,
+    /// Map entity index -> its brush model's triangles.
+    entities: HashMap<usize, TriSet>,
 }
+
+/// A placed runtime decal (its colour part; the depth-only copy is its
+/// child).
+#[derive(Component)]
+pub struct RuntimeDecal;
 
 fn cell(p: Vec3) -> IVec3 {
     (p / CELL).floor().as_ivec3()
@@ -119,23 +129,39 @@ fn cell(p: Vec3) -> IVec3 {
 
 impl DecalSurfaces {
     pub(super) fn new(data: &super::MapData) -> Self {
+        let mut by_entity: HashMap<usize, Vec<&MapMesh>> = HashMap::new();
+        for m in &data.meshes {
+            if let Some(e) = m.entity {
+                by_entity.entry(e).or_default().push(m);
+            }
+        }
         Self {
             world: TriSet::new(&data.meshes),
             models: data.models.iter().map(|m| TriSet::new(&m.meshes)).collect(),
             props: data.props.iter().map(|p| p.model).collect(),
+            entities: by_entity
+                .into_iter()
+                .map(|(e, list)| (e, TriSet::from_meshes(list.into_iter(), true)))
+                .collect(),
         }
     }
 }
 
 impl TriSet {
     /// Opaque surfaces (not the 3D skybox, other decals or overlays,
-    /// unlit or blended surfaces).
+    /// unlit or blended surfaces), without brush entities' meshes (local to
+    /// their entity, not world space).
     pub(super) fn new(meshes: &[MapMesh]) -> Self {
+        Self::from_meshes(meshes.iter(), false)
+    }
+
+    /// The opaque surfaces of `meshes`, which are a brush entity's own
+    /// (node space) with `entity`, else world or model meshes.
+    fn from_meshes<'a>(meshes: impl Iterator<Item = &'a MapMesh>, entity: bool) -> Self {
         let mut out = Self::default();
         for m in meshes {
-            // Mover meshes are local to their entity (not world space).
             if m.skybox
-                || m.entity.is_some()
+                || m.entity.is_some() != entity
                 || m.unlit
                 || m.material.starts_with("decal:")
                 || matches!(m.alpha, super::MapAlpha::Blend | super::MapAlpha::Add)
@@ -327,6 +353,7 @@ pub(super) fn place_decals(
     mut asks: MessageReader<PlaceDecal>,
     surfaces: Option<Res<DecalSurfaces>>,
     props: Query<(&super::PropIndex, &GlobalTransform)>,
+    brushes: Query<(&super::MapBrushEntity, &GlobalTransform, Has<super::vis::LogicHidden>)>,
     parents: Query<&ChildOf>,
     assets: Option<ResMut<DecalAssets>>,
     meshes: Option<ResMut<Assets<Mesh>>>,
@@ -348,18 +375,34 @@ pub(super) fn place_decals(
             let turn = Quat::from_axis_angle(ask.normal.normalize_or_zero(), assets.random() * std::f32::consts::TAU);
             (right, down) = (turn * right, turn * down);
         }
-        // On a prop: its model, in its own space, as its child. A hit
-        // collider may be the prop or a child of it.
+        // On a prop: its model, in its own space, as its child; on a brush
+        // entity: its brushes, in its node's space, as the node's child. A
+        // hit collider may be the prop or a child of it.
+        let hit = |e: Entity| std::iter::once(e).chain(parents.get(e).ok().map(|c| c.parent()));
         let prop = ask.target.and_then(|t| {
-            std::iter::once(t)
-                .chain(parents.get(t).ok().map(|c| c.parent()))
-                .find_map(|e| props.get(e).ok().map(|(i, at)| (e, i.0, at.affine().inverse())))
+            hit(t).find_map(|e| props.get(e).ok().map(|(i, at)| (e, i.0, at.affine().inverse())))
         });
-        let projected = match prop {
-            Some((entity, index, to_local)) => {
-                let Some(set) = surfaces.props.get(index).and_then(|m| surfaces.models.get(*m)) else {
-                    continue;
-                };
+        let brush = ask
+            .target
+            .filter(|_| prop.is_none())
+            .and_then(|t| hit(t).find_map(|e| brushes.get(e).ok().map(|(b, at, gone)| (e, b.0, at, gone))));
+        // A removed or broken brush entity takes none (nor does the world
+        // behind where it was).
+        if brush.is_some_and(|b| b.3) {
+            continue;
+        }
+        let to_local = prop
+            .map(|p| p.2)
+            .or(brush.map(|b| b.2.affine().inverse()));
+        let set = match (prop, brush) {
+            (Some((_, index, _)), _) => surfaces.props.get(index).and_then(|m| surfaces.models.get(*m)),
+            (None, Some((_, index, _, _))) => surfaces.entities.get(&index),
+            (None, None) => Some(&surfaces.world),
+        };
+        let Some(set) = set else { continue };
+        let parent = prop.map(|p| p.0).or(brush.map(|b| b.0));
+        let projected = match to_local {
+            Some(to_local) => {
                 let local = |v: Vec3| to_local.transform_vector3(v).normalize_or_zero();
                 project(
                     set,
@@ -369,9 +412,9 @@ pub(super) fn place_decals(
                     local(right),
                     local(down),
                 )
-                .map(|m| (m, Some(entity)))
+                .map(|m| (m, parent))
             }
-            None => project(&surfaces.world, &decal, ask.point, ask.normal, right, down).map(|m| (m, None)),
+            None => project(set, &decal, ask.point, ask.normal, right, down).map(|m| (m, None)),
         };
         let Some((mesh, parent)) = projected else {
             continue;
@@ -405,12 +448,13 @@ pub(super) fn place_decals(
         let mesh = meshes.add(mesh);
         // The decal's surface normal where it lies (the prop's space for
         // decals on props).
-        let drop = match prop {
-            Some((_, _, to_local)) => to_local.transform_vector3(ask.normal).normalize_or_zero(),
+        let drop = match to_local {
+            Some(to_local) => to_local.transform_vector3(ask.normal).normalize_or_zero(),
             None => ask.normal.normalize_or_zero(),
         } * -DEPTH_DROP;
         let mut decal_entity = commands.spawn((
             Name::new("Decal"),
+            RuntimeDecal,
             Mesh3d(mesh.clone()),
             MeshMaterial3d(colour),
             Transform::default(),
@@ -435,6 +479,34 @@ pub(super) fn place_decals(
                 commands.entity(old).try_despawn();
             }
         }
+    }
+}
+
+/// Decals on brush entities go with them: when the logic removes one
+/// (killed, broken: `vis::LogicHidden` added to its node) and at a round
+/// restart, which re-creates them.
+#[allow(clippy::type_complexity)]
+pub(super) fn drop_brush_decals(
+    gone: Query<&Children, (With<super::MapBrushEntity>, Added<super::vis::LogicHidden>)>,
+    nodes: Query<&Children, With<super::MapBrushEntity>>,
+    decals: Query<(), With<RuntimeDecal>>,
+    restarts: Option<Res<crate::core::RoundRestarts>>,
+    mut seen: Local<Option<u32>>,
+    assets: Option<ResMut<DecalAssets>>,
+    mut commands: Commands,
+) {
+    let count = restarts.map_or(0, |r| r.0);
+    let restart = seen.replace(count).is_some_and(|s| s != count);
+    let mut removed = Vec::new();
+    let lists: Vec<&Children> = if restart { nodes.iter().collect() } else { gone.iter().collect() };
+    for children in lists {
+        for child in children.iter().filter(|c| decals.contains(*c)) {
+            commands.entity(child).try_despawn();
+            removed.push(child);
+        }
+    }
+    if let Some(mut assets) = assets.filter(|_| !removed.is_empty()) {
+        assets.placed.retain(|e| !removed.contains(e));
     }
 }
 

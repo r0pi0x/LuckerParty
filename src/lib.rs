@@ -1,5 +1,5 @@
 //! Mashup prototype. Module layering is documented in docs/ARCHITECTURE.md
-//! and enforced by tests/architecture.rs.
+//! and enforced by tests/it/architecture.rs.
 
 pub mod bot;
 pub mod character;
