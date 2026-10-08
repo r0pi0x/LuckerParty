@@ -169,7 +169,8 @@ ourselves, so each can be checked in mashup and measured in real CS:S.
    SetAnimation/SetBodyGroup inputs, train orientation and control.
 5. [ ] Gameplay entities (`game_player_equip`, `game_text`, map weapons,
    rounds) until the two target maps play through.
-6. [ ] Networking, then server-sent map download (hash check, bz2).
+6. [ ] Networking, then server-sent map download (hash check, bz2):
+   [multiplayer.md](multiplayer.md) slice 7.
 7. [ ] Per-map extra mounts; a mashup package format.
 
 ## Decision log

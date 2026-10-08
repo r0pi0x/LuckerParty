@@ -127,6 +127,15 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   the profile build), a fixed tick-rate control, a history graph per
   render pass.
 
+## 2c. Multiplayer
+
+Plan: [plans/active/multiplayer.md](plans/active/multiplayer.md)
+(bevy_replicon + renet; Source-style prediction, interpolation and lag
+compensation of our own; slices 0-9). Not started; its open questions
+wait on the user. Slice 0 (command-time weapon timers, spread seeds from
+command numbers, a replayable movement/weapon schedule) helps without
+networking too.
+
 ## 3. Weapons, remaining
 
 In progress: [plans/active/weapons.md](plans/active/weapons.md). The

@@ -96,7 +96,7 @@ Rules:
    move.
 3. [ ] Minigame definitions and rule modules; the existing modes as the
    first definitions.
-4. [ ] Networking; the Lucker Party app (lobby, party flow, rotation,
+4. [ ] Networking ([multiplayer.md](multiplayer.md)); the Lucker Party app (lobby, party flow, rotation,
    launcher).
 
 ## Module sorting (to fill in at step 3)

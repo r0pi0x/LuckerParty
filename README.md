@@ -224,7 +224,8 @@ Prior art: Minecraft's item data components; Unreal's Gameplay Ability System.
 
 Same principles as the main game: the server owns the loadout, rules and
 outcomes; clients submit intent. Every player must have each game the loadout
-uses mounted; the server checks this before a match.
+uses mounted; the server checks this before a match. Plan:
+[docs/plans/active/multiplayer.md](docs/plans/active/multiplayer.md).
 
 ## Assets, code and legal
 
