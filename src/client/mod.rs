@@ -81,6 +81,8 @@ pub struct Args {
     pub console_open: bool,
     /// Window size in physical pixels (screenshots at a known size).
     pub window: Option<UVec2>,
+    /// Size of `--views` captures and `--bench` frames (default 1280x720).
+    pub view_size: Option<UVec2>,
 }
 
 const USAGE: &str = "\
@@ -103,6 +105,8 @@ usage: mashup [options]
   --debug-view <kind>       lighting (x0.25) | albedo, untonemapped, magenta background
   --views <file.json>       capture each view (name, position, yaw, pitch; engine space)
                             off-screen at 1280x720, then exit (use with --movement mashup:noclip)
+  --view-size <WxH>         size of --views captures and --bench frames (default 1280x720),
+                            e.g. 3840x2160 to time 4K
   --capture-dir <dir>       where --views writes <name>.png (default: current directory)
   --bench                   with --views: time frames at each view (no vsync) and print
                             avg/p95/max frame ms and drawn meshes instead of capturing
@@ -197,12 +201,17 @@ impl Args {
                     out.cvars.push((name.to_string(), v.to_string()));
                 }
                 "--exec" => out.exec.push(value.into()),
-                "--window" => {
+                "--window" | "--view-size" => {
                     let size = value
                         .split_once(['x', 'X'])
                         .and_then(|(w, h)| Some(UVec2::new(w.trim().parse().ok()?, h.trim().parse().ok()?)))
-                        .ok_or_else(|| format!("--window: expected WxH, got {value}"))?;
-                    out.window = Some(size);
+                        .filter(|s| s.x > 0 && s.y > 0)
+                        .ok_or_else(|| format!("{flag}: expected WxH, got {value}"))?;
+                    if flag == "--window" {
+                        out.window = Some(size);
+                    } else {
+                        out.view_size = Some(size);
+                    }
                 }
                 _ => return Err(format!("unknown option {flag}")),
             }

@@ -360,11 +360,15 @@ dithered fade bands. Left:
   (props touching clusters the roof can't see) before changing anything.
   cs_compound and de_port pass.
 - Measure on the Windows PC (`refcmp bench` there) and set a budget.
-- Frame-time follow-ups (performance.md, "Cheap wins found"): take
-  before/after numbers on a quiet machine; props as hierarchies of their
-  own (cheaper collider propagation) without changing how physics props
-  settle; skip posing bodies nobody sees (hidden local body, culled bots)
-  if hitboxes and muzzles don't read the joints.
+- Frame-time follow-ups (performance.md, "Frame time pass"): before/after
+  numbers on a quiet machine and on the Windows PC (`refcmp bench`, also
+  `MASHUP_EXECUTOR=multi`, `-- --view-size 3840x2160`); props as
+  hierarchies of their own (cheaper collider propagation) without
+  changing how physics props settle; fewer cameras per frame (the view
+  model camera runs its passes and an MSAA copy even with nothing on its
+  layer; shells and the under-water overlay draw there too); a render
+  scale (`mat_render_scale`) only if a GPU turns out to be the limit (the
+  dev box's RTX 3080 draws dust2 at 4K in about 1.5 ms).
 
 ## 10. Long tail
 

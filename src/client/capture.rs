@@ -56,6 +56,8 @@ struct ViewRun {
     times: Vec<f32>,
     /// Main-world CPU time of each timed frame (seconds).
     main_times: Vec<f32>,
+    /// Render-world time of each timed frame (ms).
+    render_times: Vec<f32>,
     /// Process CPU time when this view's timing started.
     cpu_start: Option<f64>,
     results: Vec<BenchRow>,
@@ -70,6 +72,8 @@ struct BenchRow {
     /// with pipelined rendering, a frame takes the longer of this and the
     /// render world's time.
     main: f32,
+    /// Render-world ms per frame (its `Render` schedule, `perf::RenderTime`).
+    render: f32,
     meshes: (usize, usize, usize),
     parts: (usize, usize),
     /// Process CPU (all threads) and GPU ms per frame, when known.
@@ -168,9 +172,10 @@ fn start_views(
         exit.write(AppExit::error());
         return;
     }
+    let size = args.0.view_size.unwrap_or(VIEW_SIZE);
     let target = images.add(Image::new_target_texture(
-        VIEW_SIZE.x,
-        VIEW_SIZE.y,
+        size.x,
+        size.y,
         TextureFormat::Rgba8Unorm,
         Some(TextureFormat::Rgba8UnormSrgb),
     ));
@@ -182,7 +187,7 @@ fn start_views(
         for mut w in &mut windows {
             w.present_mode = bevy::window::PresentMode::AutoNoVsync;
         }
-        info!("timing {} views", views.len());
+        info!("timing {} views at {}x{}", views.len(), size.x, size.y);
     } else {
         info!("capturing {} views into {}", views.len(), dir.display());
     }
@@ -195,6 +200,7 @@ fn start_views(
         waiting: false,
         times: Vec::new(),
         main_times: Vec::new(),
+        render_times: Vec::new(),
         cpu_start: None,
         results: Vec::new(),
     });
@@ -213,6 +219,7 @@ fn run_views(
     vis: Res<crate::map::vis::VisStats>,
     diagnostics: Res<bevy::diagnostic::DiagnosticsStore>,
     frame_times: Res<super::perf::FrameTimes>,
+    render_time: Res<super::perf::RenderTime>,
 ) {
     let Some(mut run) = run else { return };
     if run.waiting {
@@ -251,6 +258,7 @@ fn run_views(
         if let Some((_, main)) = frame_times.frames.back() {
             run.main_times.push(*main);
         }
+        run.render_times.push(render_time.ms());
         if run.frame < settle + BENCH_FRAMES {
             return;
         }
@@ -258,8 +266,10 @@ fn run_views(
         t.sort_by(f32::total_cmp);
         let avg = t.iter().sum::<f32>() / t.len() as f32;
         let main = std::mem::take(&mut run.main_times);
+        let render = std::mem::take(&mut run.render_times);
         let row = BenchRow {
             main: main.iter().sum::<f32>() / main.len().max(1) as f32 * 1e3,
+            render: render.iter().sum::<f32>() / render.len().max(1) as f32,
             name: view.name.clone(),
             avg: avg * 1e3,
             p95: t[(t.len() * 95 / 100).min(t.len() - 1)] * 1e3,
@@ -295,17 +305,18 @@ fn run_views(
 fn print_bench(rows: &[BenchRow]) {
     let opt = |v: Option<f32>| v.map_or("n/a".to_string(), |v| format!("{v:.2}"));
     println!(
-        "{:<24} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>10} {:>9} {:>11}",
-        "view", "avg ms", "p95 ms", "max ms", "main ms", "cpu ms", "gpu ms", "meshes", "tris (k)", "vis parts"
+        "{:<24} {:>8} {:>8} {:>8} {:>8} {:>9} {:>8} {:>8} {:>10} {:>9} {:>11}",
+        "view", "avg ms", "p95 ms", "max ms", "main ms", "render ms", "cpu ms", "gpu ms", "meshes", "tris (k)", "vis parts"
     );
     for r in rows {
         println!(
-            "{:<24} {:>8.2} {:>8.2} {:>8.2} {:>8.2} {:>8} {:>8} {:>10} {:>9} {:>11}",
+            "{:<24} {:>8.2} {:>8.2} {:>8.2} {:>8.2} {:>9.2} {:>8} {:>8} {:>10} {:>9} {:>11}",
             r.name,
             r.avg,
             r.p95,
             r.max,
             r.main,
+            r.render,
             opt(r.cpu),
             opt(r.gpu),
             format!("{}/{}", r.meshes.1, r.meshes.0),
@@ -319,12 +330,13 @@ fn print_bench(rows: &[BenchRow]) {
         rows.iter().map(f).collect::<Option<Vec<f32>>>().map(|v| v.iter().sum::<f32>() / n)
     };
     println!(
-        "{:<24} {:>8.2} {:>8.2} {:>8} {:>8.2} {:>8} {:>8} {:>10.0} {:>9.0}",
+        "{:<24} {:>8.2} {:>8.2} {:>8} {:>8.2} {:>9.2} {:>8} {:>8} {:>10.0} {:>9.0}",
         "MEAN",
         mean(&|r| r.avg),
         mean(&|r| r.p95),
         "",
         mean(&|r| r.main),
+        mean(&|r| r.render),
         opt(mean_opt(&|r| r.cpu)),
         opt(mean_opt(&|r| r.gpu)),
         mean(&|r| r.meshes.1 as f32),

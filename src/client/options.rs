@@ -1,7 +1,7 @@
 //! The options dialog's settings (`game_menu`'s Options page): which
 //! cvar each control sets, on which tab, how its value steps and shows,
 //! and the video cvars (`mat_vsync`, `mashup_fullscreen`,
-//! `mashup_resolution`) that set the window.
+//! `mashup_resolution`) that set the window, and `mat_antialias` (MSAA).
 
 use bevy::{
     prelude::*,
@@ -169,6 +169,13 @@ pub const SETTINGS: &[Setting] = &[
         token: Some("#GameUI_Wait_For_VSync"),
         label: "Wait for vertical sync",
         kind: SettingKind::Toggle,
+    },
+    Setting {
+        tab: Tab::Video,
+        cvar: "mat_antialias",
+        token: None,
+        label: "Antialiasing (MSAA)",
+        kind: SettingKind::Choice(&[("0", "None"), ("2", "2x"), ("4", "4x")]),
     },
     Setting {
         tab: Tab::Video,
@@ -376,7 +383,8 @@ pub struct VideoPlugin;
 impl Plugin for VideoPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<VideoSettings>()
-            .add_systems(Update, apply_video);
+            .add_systems(Update, apply_video)
+            .add_systems(PostUpdate, apply_msaa);
         resource_cvar::<VideoSettings, u8>(
             app,
             "mat_vsync",
@@ -395,8 +403,15 @@ impl Plugin for VideoPlugin {
             "Window size in pixels, e.g. 1920x1080 (empty: as started).",
             |v| &mut v.resolution,
         );
+        resource_cvar::<VideoSettings, u8>(
+            app,
+            "mat_antialias",
+            "Multisample antialiasing: 0 off, 2 or 4 samples per pixel (4 by default). Off saves GPU time \
+             at high resolutions (each sample is drawn and resolved for every camera).",
+            |v| &mut v.antialias,
+        );
         let mut console = app.world_mut().resource_mut::<Console>();
-        for name in ["mat_vsync", "mashup_fullscreen", "mashup_resolution"] {
+        for name in ["mat_vsync", "mashup_fullscreen", "mashup_resolution", "mat_antialias"] {
             console.archive(name);
         }
     }
@@ -408,6 +423,8 @@ pub struct VideoSettings {
     pub vsync: u8,
     pub fullscreen: u8,
     pub resolution: String,
+    /// MSAA samples (`mat_antialias`).
+    pub antialias: u8,
 }
 
 impl Default for VideoSettings {
@@ -416,6 +433,31 @@ impl Default for VideoSettings {
             vsync: 1,
             fullscreen: 0,
             resolution: String::new(),
+            antialias: 4,
+        }
+    }
+}
+
+impl VideoSettings {
+    /// `mat_antialias` as Bevy's MSAA setting: 0 or 1 off, 2, anything
+    /// higher 4 (8 isn't supported everywhere).
+    pub fn msaa(&self) -> Msaa {
+        match self.antialias {
+            0 | 1 => Msaa::Off,
+            2 | 3 => Msaa::Sample2,
+            _ => Msaa::Sample4,
+        }
+    }
+}
+
+/// Every camera (the main view, sky, view model, water reflection and the
+/// HUD's: the ones drawing into one target should agree, or each switch
+/// costs a full-screen copy) takes `mat_antialias`.
+fn apply_msaa(settings: Res<VideoSettings>, cameras: Query<(Entity, Option<&Msaa>), With<Camera>>, mut commands: Commands) {
+    let want = settings.msaa();
+    for (e, msaa) in &cameras {
+        if msaa != Some(&want) {
+            commands.entity(e).insert(want);
         }
     }
 }
@@ -527,6 +569,15 @@ mod tests {
 
     fn setting(cvar: &str) -> Setting {
         *SETTINGS.iter().find(|s| s.cvar == cvar).unwrap()
+    }
+
+    #[test]
+    fn antialias_levels() {
+        let msaa = |antialias| VideoSettings { antialias, ..default() }.msaa();
+        assert_eq!(VideoSettings::default().msaa(), Msaa::Sample4, "4x by default");
+        assert_eq!([msaa(0), msaa(1), msaa(2), msaa(4), msaa(8)], [Msaa::Off, Msaa::Off, Msaa::Sample2, Msaa::Sample4, Msaa::Sample4]);
+        let s = setting("mat_antialias");
+        assert_eq!(s.step("4", 1, &[]), "0", "wraps like the other choices");
     }
 
     #[test]

@@ -11,10 +11,12 @@ Performance").
   triangles drawn, the camera's visibility cluster. `mashup_perf_log 1`
   logs it as text once a second; `bugreport` saves it in report.txt.
 - `refcmp bench --views tools/refcmp/<map>.toml`: 200 frames per view
-  after settling, vsync off, offscreen at 1280x720; prints avg/p95/max
-  frame ms, drawn meshes/total, triangles drawn, map parts potentially
-  visible. Build the profile you want first (`cargo build --features dev`,
-  or `cargo build --profile playtest` and run `target/playtest/refcmp`).
+  after settling, vsync off, offscreen at 1280x720 (`-- --view-size
+  3840x2160` for another size); prints avg/p95/max frame ms, main-world
+  and render-world ms, process CPU and GPU ms, drawn meshes/total,
+  triangles drawn, map parts potentially visible. Build the profile you
+  want first (`cargo build --features dev`, or `cargo build --profile
+  playtest` and run `target/playtest/refcmp`).
 - A/B: `-- +r_novis 1` (no PVS culling) or `MASHUP_MERGED_WORLD=1` (the
   world as one mesh per material, nothing culled: the code before
   chunking); `MASHUP_MERGE_BRUSHES=0` (brush entities not merged).
@@ -28,6 +30,8 @@ Performance").
 
 Frame times move with machine load (other builds on the dev box): compare
 runs taken back to back, and trust ratios more than absolute numbers.
+On a busy box, interleave the builds over several rounds and compare
+medians and minimums ("Frame time pass" below).
 
 ## Visibility culling (`map::vis`)
 
@@ -367,6 +371,116 @@ walks every tree holding a collider each tick in
 `propagate_collider_transforms`, about 0.3 ms per tick on dust2 under
 load): a dust2 physics prop then settled differently
 (`physics_props_settle_and_get_pushed`), so it is left for later.
+
+## Frame time pass (executors, dynamic meshes, posing, resolution)
+
+Goal: frame rates near a 240 Hz monitor's at 4K. Measured with
+`refcmp bench` (playtest build, vsync off) on de_dust2 (six `survey_*`
+views, static and with rounds and 10 bots), de_nuke (27 views),
+cs_office (23), mg_lego_multigames_v2 (4) and mg_kommando (8 views at
+two spawns), plus traces of a `--features profile` build.
+
+### What cost the most
+
+- **A dust volume's mesh**, rewritten every frame with its visible
+  motes (one per map on dust2): Bevy's mesh allocator frees and
+  re-allocates a modified mesh in a buffer shared with other meshes,
+  and with a size that changed every frame that cost 3.5-4.5 ms of the
+  render world per frame (`allocate_and_free_meshes`, every frame of a
+  trace at `floor_mid`), plus knock-on costs in
+  `prepare_clusters_for_gpu_clustering` (2.2 ms) and
+  `prepare_assets<GpuImage>` (0.8 ms). It came and went between runs
+  (one dust2 run of the old build: 14.7 ms frames at 5.1 ms main
+  world; the next 4.9 ms), presumably depending on whether the new size
+  fit the hole the old one left. Dust and particle meshes are now padded
+  to power-of-two sizes with degenerate triangles
+  (`dust::write_dynamic_mesh`): in the same trace 0.33 ms, 0.53 ms and
+  0.17 ms.
+- **The executor.** A frame runs about 1500 systems (main and render
+  world: ~200 of ours, ~180 avian per tick, ~60 render-graph systems
+  for each of four cameras, ~100 asset systems), nearly
+  all tiny (ours: 0.01-0.04 ms each). Bevy's multi-threaded executor
+  hands each to a worker and wakes the next; that cost more than the
+  systems, and much more when the machine is busy (main world 4.3 ms at
+  load 3, 10-30 ms at load 10-20 for the same views). Every per-frame
+  schedule (First..Last, the fixed ones, `Render`, `RenderGraph`,
+  `Core3d`, `Core2d`) now runs on Bevy's single-threaded executor
+  (`main.rs`); systems that iterate many entities still spread over the
+  task pool themselves (transform propagation, visibility), and the main
+  and render worlds still run side by side. `MASHUP_EXECUTOR=multi`
+  brings back Bevy's default.
+- **Bodies nobody sees** were posed every frame: the local player's
+  hidden body (51 joints written per frame on dust2) and bots out of
+  view. `map::pose_bodies` now poses a body every frame only while some
+  camera drew one of its meshes the frame before, else every 4th frame
+  (`UNSEEN_POSE_INTERVAL`); hitboxes don't read the joints (they pose
+  from `SkeletonPose` every tick), and body culling uses the mesh's own
+  bounds, not the joints. Ragdolls and body turns write only real
+  changes (a ragdoll at rest no longer dirties ~50 joints a frame).
+  `map::pose_tests` checks it.
+- **Resolution** barely matters on the dev box's RTX 3080: GPU time for
+  the survey views 0.37 ms at 1280x720, 0.40 at 1920x1080, 0.49 at
+  2560x1440, 0.53 at 3840x2160 (`--view-size`), frame times unchanged
+  (CPU bound). At 4K the largest pass is `msaa_writeback` (0.27 ms of
+  1.0 at `survey_b_site`: the sky and view-model cameras draw over the
+  main one, each copying the resolved image back into the multisampled
+  one), then the opaque pass (0.19). `mat_antialias` (Options > Video,
+  0/2/4, default 4) sets every camera's MSAA; 4K with it off: 0.45 ms
+  GPU instead of 0.52. A render scale wasn't worth adding until a GPU is
+  the limit (backlog).
+
+Tried and dropped: disabling unused Bevy plugins (animation, scenes, UI
+widgets): no measurable change; glTF and picking can't go (the PBR and
+UI plugins need them). A mesh kept alive to stop the dust's buffer
+emptying (the first guess at the allocator cost) changed nothing.
+
+### Before and after
+
+`refcmp bench`, playtest build, 1280x720, vsync off; old = the build
+before this pass, multi = this pass with `MASHUP_EXECUTOR=multi`, new =
+this pass. The builds ran interleaved, several rounds each, at load 6-25
+on 12 cores (other agents building), so single runs swing 2-3x: medians
+and (in brackets) minimums over the rounds. Frame = wall time per frame,
+main / render = each world's time, CPU = process CPU over all threads.
+
+| map (views, rounds) | build | frame ms | main ms | render ms | CPU ms |
+|---|---|---|---|---|---|
+| de_dust2 (6, 6) | old | 28.7 (9.5) | 26.6 (8.2) | | 28.5 (18.3) |
+| | multi | 22.4 (9.1) | 20.6 (8.0) | 18.0 (7.0) | 28.1 (17.0) |
+| | new | 14.6 (5.4) | 12.3 (4.5) | 11.7 (4.8) | 17.8 (11.2) |
+| de_dust2 bots (6, 4) | old | 34.2 (18.3) | 32.6 (17.2) | | 38.3 (27.6) |
+| | multi | 38.4 (12.4) | 36.1 (11.3) | 20.6 (9.8) | 38.5 (24.1) |
+| | new | 25.7 (9.3) | 23.5 (7.9) | 17.7 (7.9) | 26.9 (19.1) |
+| de_nuke (27, 3) | old | 11.8 (11.3) | 9.3 (8.7) | | 22.1 (21.7) |
+| | multi | 13.2 (11.2) | 10.3 (8.6) | 11.8 (9.3) | 26.3 (22.1) |
+| | new | 10.0 (8.0) | 6.6 (5.6) | 8.5 (6.5) | 18.2 (14.7) |
+| cs_office (23, 3) | old | 30.2 (29.5) | 29.2 (28.4) | | 38.4 (37.9) |
+| | multi | 24.0 (13.0) | 23.2 (12.5) | 12.0 (6.8) | 36.0 (25.7) |
+| | new | 35.6 (12.7) | 33.7 (12.2) | 21.2 (6.8) | 36.8 (22.3) |
+| mg_lego_multigames_v2 (4, 4) | old | 7.6 (5.7) | 5.5 (3.6) | | 15.2 (13.5) |
+| | multi | 7.3 (5.8) | 5.3 (3.8) | 6.5 (5.2) | 15.3 (13.6) |
+| | new | 5.7 (4.7) | 3.4 (2.7) | 5.0 (4.0) | 11.0 (8.5) |
+| mg_kommando (8, 3) | old | 13.5 (11.6) | 13.0 (11.2) | | 26.5 (22.2) |
+| | multi | 19.5 (11.3) | 18.9 (10.9) | 9.6 (5.4) | 34.1 (21.8) |
+| | new | 19.9 (10.4) | 18.7 (10.0) | 11.2 (4.7) | 27.7 (17.0) |
+
+The bot rounds differ run to run (who is alive, where), so read that row
+loosely. Pictures are unchanged: refcmp mean abs diff de_dust2 0.0308
+(32 views), de_nuke 0.0248 (27); dust2 captures of the old and new
+builds differ by at most 662 pixels a view, less than two runs of the
+old build differ from each other (dust motes, glows: up to 845).
+
+Left: cs_office and mg_kommando stay main-world bound (10-12 ms at
+best) by per-tick work: at 2-3 ticks a frame the logic bridge's sync
+(`logic: sync to the ECS`, ~0.27 ms a call, twice a tick) and transform
+propagation twice a tick (avian's and Bevy's, each walking the map
+root's thousands of children whenever a prop under it moved: 7 props a
+frame on cs_office). Props as hierarchies of their own is the backlog
+item; it changed how a dust2 prop settled last time. On a quiet machine
+(load 3) the old build drew dust2's 32 views at 4.9 ms a frame (main
+world 4.3): the per-frame cost a 240 Hz monitor (4.2 ms) has to beat;
+new numbers on a quiet machine and on the Windows PC are still to be
+taken.
 
 ## Test cycle
 

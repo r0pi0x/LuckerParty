@@ -113,8 +113,60 @@ fn main() {
     .insert_resource(Loadout {
         movement: mashup::games::cs_source::movement::ID,
     })
-    .add_plugins(client::ClientPlugin { args })
-    .run();
+    .add_plugins(client::ClientPlugin { args });
+    if std::env::var("MASHUP_EXECUTOR").as_deref() != Ok("multi") {
+        single_threaded_schedules(&mut app);
+    }
+    app.run();
+}
+
+/// Run the per-frame schedules on one thread each instead of Bevy's
+/// multi-threaded executor.
+///
+/// A frame runs about 1500 systems (main and render world), nearly all of
+/// them tiny: handing each to a worker thread and waking the next cost more
+/// than the systems did, and much more on a busy machine. With one thread
+/// per schedule the main and render worlds took a quarter and a sixth less
+/// time on de_dust2 (and bot matches) here; systems that iterate many
+/// entities still spread over the task pool themselves (transform
+/// propagation, visibility), and the main and render worlds still run side
+/// by side (pipelined rendering). docs/performance.md, "Executors".
+/// `MASHUP_EXECUTOR=multi` keeps Bevy's default for comparisons.
+fn single_threaded_schedules(app: &mut App) {
+    use bevy::ecs::{
+        intern::Interned,
+        schedule::{ScheduleLabel, SingleThreadedExecutor},
+    };
+    let main: [Interned<dyn ScheduleLabel>; 10] = [
+        First.intern(),
+        PreUpdate.intern(),
+        Update.intern(),
+        PostUpdate.intern(),
+        Last.intern(),
+        FixedFirst.intern(),
+        FixedPreUpdate.intern(),
+        FixedUpdate.intern(),
+        FixedPostUpdate.intern(),
+        FixedLast.intern(),
+    ];
+    for label in main {
+        app.edit_schedule(label, |s| {
+            s.set_executor(SingleThreadedExecutor::new());
+        });
+    }
+    let render: [Interned<dyn ScheduleLabel>; 4] = [
+        bevy::render::Render.intern(),
+        bevy::render::renderer::RenderGraph.intern(),
+        bevy::core_pipeline::Core3d.intern(),
+        bevy::core_pipeline::Core2d.intern(),
+    ];
+    if let Some(sub) = app.get_sub_app_mut(bevy::render::RenderApp) {
+        for label in render {
+            sub.edit_schedule(label, |s| {
+                s.set_executor(SingleThreadedExecutor::new());
+            });
+        }
+    }
 }
 
 /// Source movement settings: CS:S's, then `--exec` files, then `--cvar`s.

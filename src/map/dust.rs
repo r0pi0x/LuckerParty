@@ -73,6 +73,46 @@ pub(super) fn empty_mesh() -> Mesh {
     mesh
 }
 
+/// Write an emitter's quads into its mesh (dust motes, particles).
+///
+/// Bevy's mesh allocator frees a modified mesh and allocates it again in
+/// the GPU buffer (slab) it shares with other meshes of its layout; a mesh
+/// whose size changed every frame made that cost 3.5-4.5 ms of the render
+/// world per frame on de_dust2 for one dust volume
+/// (`allocate_and_free_meshes`; presumably the new size not fitting the
+/// hole the old one left, so the slab, which holds the whole map's
+/// indices, is reallocated and copied; docs/performance.md). So the
+/// buffers are padded to a power of two (at least 64 vertices) with
+/// degenerate triangles: the size changes rarely. An empty mesh gets the
+/// padding too (Bevy's allocator logs a use-after-free for meshes without
+/// vertices).
+pub(super) fn write_dynamic_mesh(
+    mesh: &mut Mesh,
+    normal: Vec3,
+    mut positions: Vec<[f32; 3]>,
+    mut uvs: Vec<[f32; 2]>,
+    mut colors: Vec<[f32; 4]>,
+    mut indices: Vec<u32>,
+) {
+    let vertices = positions.len().max(1).next_power_of_two().max(MIN_DYNAMIC_VERTICES);
+    // Six indices per quad of four vertices.
+    let index_count = (vertices / 2 * 3).max(indices.len().next_power_of_two());
+    // Padding sits on a real vertex (bounds stay put), fully transparent.
+    let at = positions.first().copied().unwrap_or([0.0; 3]);
+    positions.resize(vertices, at);
+    uvs.resize(vertices, [0.0; 2]);
+    colors.resize(vertices, [0.0; 4]);
+    indices.resize(index_count, 0);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![normal.to_array(); vertices]);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+    mesh.insert_indices(Indices::U32(indices));
+}
+
+/// Smallest vertex count `write_dynamic_mesh` writes.
+pub(super) const MIN_DYNAMIC_VERTICES: usize = 64;
+
 #[allow(clippy::type_complexity)]
 pub(super) fn update_dust(
     time: Res<Time>,
@@ -178,21 +218,8 @@ pub(super) fn update_dust(
             continue;
         }
         e.drawn_empty = positions.is_empty();
-        if positions.is_empty() {
-            // Bevy's mesh allocator rejects updates to an empty mesh (it logs
-            // a use-after-free every frame): keep one invisible triangle.
-            positions.extend([[0.0; 3]; 3]);
-            uvs.extend([[0.0; 2]; 3]);
-            colors.extend([[0.0; 4]; 3]);
-            indices.extend([0, 1, 2]);
-        }
         if let Some(mut mesh) = meshes.get_mut(&e.mesh) {
-            let n = positions.len();
-            mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![(-forward).to_array(); n]);
-            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
-            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
-            mesh.insert_indices(Indices::U32(indices));
+            write_dynamic_mesh(&mut mesh, -forward, positions, uvs, colors, indices);
         }
     }
 }

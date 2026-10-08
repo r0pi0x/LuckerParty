@@ -750,8 +750,11 @@ fn turn_bodies(
             .and_then(|a| a.yaw)
             .unwrap_or(view.map_or(intent.yaw, |v| v.now.yaw));
         for c in children {
-            if let Ok(mut t) = bodies.get_mut(*c) {
-                t.rotation = Quat::from_rotation_y(yaw);
+            let turned = Quat::from_rotation_y(yaw);
+            if let Ok(mut t) = bodies.get_mut(*c)
+                && t.rotation != turned
+            {
+                t.rotation = turned;
             }
         }
     }
@@ -825,29 +828,63 @@ fn attach_held(
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DriveAnimation;
 
+/// Bodies no camera saw last frame are posed every this many frames
+/// (staggered by entity), not every frame.
+pub const UNSEEN_POSE_INTERVAL: u32 = 4;
+
 /// Pose each animated body's joints from its character's `Animator`.
+///
+/// Only bodies some camera drew last frame (`ViewVisibility` of their
+/// meshes) are posed every frame; the rest (bots out of view, the hidden
+/// local body) every `UNSEEN_POSE_INTERVAL` frames, so their joints (and
+/// what hangs on them: the held weapon and its muzzle) are never far
+/// behind. Hitboxes don't read the joints (they pose from
+/// `ragdoll::SkeletonPose`, every tick). Bodies aren't culled by their
+/// joints (their bounds are the mesh's, at the body), so posing late
+/// doesn't hide one. Without a camera (headless) every body is posed.
 fn pose_bodies(
     time: Res<Time>,
     characters: Query<(&anim::Animator, &Children)>,
-    bodies: Query<&CharacterBody>,
+    bodies: Query<(Entity, &CharacterBody, Option<&Children>)>,
+    seen: Query<&ViewVisibility, With<Mesh3d>>,
+    cameras: Query<(), With<Camera>>,
+    mut frame: Local<u32>,
     mut joints: Query<&mut Transform, With<BodyJoint>>,
 ) {
     let now = time.elapsed_secs_f64();
+    *frame = frame.wrapping_add(1);
+    let culling = !cameras.is_empty();
     for (animator, children) in &characters {
-        let Some(body) = children.iter().find_map(|c| bodies.get(c).ok()) else {
+        let Some((body_entity, body, parts)) = children.iter().find_map(|c| bodies.get(c).ok()) else {
             continue;
         };
         if animator.main.is_none() {
             continue;
         }
+        if culling
+            && !body_seen(parts, &seen)
+            && !frame.wrapping_add(body_entity.index_u32()).is_multiple_of(UNSEEN_POSE_INTERVAL)
+        {
+            continue;
+        }
         let pose = animator.pose(now);
         for (joint, (q, p)) in body.joints.iter().zip(pose) {
-            if let Ok(mut t) = joints.get_mut(*joint) {
+            if let Ok(mut t) = joints.get_mut(*joint)
+                && (t.rotation != q || t.translation != p)
+            {
                 t.rotation = q;
                 t.translation = p;
             }
         }
     }
+}
+
+/// Whether any of a body's meshes was drawn by some camera last frame.
+fn body_seen(parts: Option<&Children>, seen: &Query<&ViewVisibility, With<Mesh3d>>) -> bool {
+    parts
+        .into_iter()
+        .flatten()
+        .any(|p| seen.get(*p).is_ok_and(|v| v.get()))
 }
 
 /// Characters get their team's hitboxes from the loaded character models.
@@ -4551,6 +4588,95 @@ fn follow_sky_camera(
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod pose_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// One bone whose pose is always (identity, (1, 2, 3)).
+    fn animator() -> anim::Animator {
+        let pose = (Quat::IDENTITY, Vec3::new(1.0, 2.0, 3.0));
+        let set = anim::AnimSet {
+            defaults: vec![pose],
+            bases: vec![vec![pose]],
+            animations: vec![anim::Animation {
+                frames: 1,
+                fps: 30.0,
+                ..default()
+            }],
+            sequences: vec![anim::Sequence {
+                grid: (1, 1),
+                anims: vec![0],
+                looping: true,
+                bone_weights: vec![1.0],
+                ..default()
+            }],
+            ..default()
+        };
+        let mut a = anim::Animator::new(Arc::new(set));
+        a.play(0, 0.0);
+        a
+    }
+
+    /// A character with a one-joint body and one mesh part drawn or not;
+    /// returns the joint.
+    fn spawn_character(app: &mut App, drawn: bool) -> Entity {
+        let world = app.world_mut();
+        let character = world.spawn(animator()).id();
+        let body = world.spawn(ChildOf(character)).id();
+        let joint = world.spawn((BodyJoint(0), Transform::default(), ChildOf(body))).id();
+        let seen = if drawn { ViewVisibility::VISIBLE } else { ViewVisibility::HIDDEN };
+        world.spawn((Mesh3d::default(), seen, ChildOf(body)));
+        world.entity_mut(body).insert(CharacterBody {
+            model: 0,
+            joints: vec![joint],
+            held: None,
+        });
+        joint
+    }
+
+    /// Frames out of `n` in which the joint was posed.
+    fn posed_frames(app: &mut App, joint: Entity, n: u32) -> u32 {
+        let mut posed = 0;
+        for _ in 0..n {
+            app.world_mut().get_mut::<Transform>(joint).unwrap().translation = Vec3::ZERO;
+            app.update();
+            posed += (app.world().get::<Transform>(joint).unwrap().translation == Vec3::new(1.0, 2.0, 3.0)) as u32;
+        }
+        posed
+    }
+
+    fn app(camera: bool) -> App {
+        let mut app = App::new();
+        app.init_resource::<Time>().add_systems(Update, pose_bodies);
+        if camera {
+            app.world_mut().spawn(Camera::default());
+        }
+        app
+    }
+
+    #[test]
+    fn unseen_bodies_are_not_posed_every_frame() {
+        let mut app = app(true);
+        let seen = spawn_character(&mut app, true);
+        let unseen = spawn_character(&mut app, false);
+        let n = 8 * UNSEEN_POSE_INTERVAL;
+        assert_eq!(posed_frames(&mut app, seen, n), n, "a drawn body is posed every frame");
+        assert_eq!(
+            posed_frames(&mut app, unseen, n),
+            n / UNSEEN_POSE_INTERVAL,
+            "a body no camera drew is posed every {UNSEEN_POSE_INTERVAL} frames"
+        );
+    }
+
+    #[test]
+    fn without_cameras_every_body_is_posed() {
+        let mut app = app(false);
+        let unseen = spawn_character(&mut app, false);
+        assert_eq!(posed_frames(&mut app, unseen, 8), 8);
     }
 }
 

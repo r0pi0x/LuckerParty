@@ -329,7 +329,8 @@ Only `Reflect`-registered types are visible; register new core components in
 Details and baseline numbers: [performance.md](performance.md).
 
 - `mashup_perf 1` (2: every render pass) shows frame times (avg, p95,
-  max), the main world's CPU time, GPU time per render pass, entity,
+  max), the main world's CPU time and the render world's time (its
+  `Render` schedule), GPU time per render pass, entity,
   mesh and triangle counts and visibility culling (camera cluster,
   clusters and map parts potentially visible), and what changes each
   frame (transforms written, under the map's root, mesh and material
@@ -350,11 +351,14 @@ Details and baseline numbers: [performance.md](performance.md).
   -- --nocapture` prints a walking, ducking camera eye per frame at 240 fps on the CS:S
   tick with it on and off.
 - `refcmp bench --views tools/refcmp/<map>.toml` times 200 frames at each
-  view (vsync off) and prints a table (frame, main-world CPU, process CPU
-  and GPU ms; with pipelined rendering a frame takes the longer of the
-  main world and the render world); `-- <args>` passes options to
-  mashup (e.g. `-- +r_novis 1`). Build first; it runs the mashup next to
-  it (`--profile playtest` for optimized numbers).
+  view (vsync off) and prints a table (frame, main-world CPU, render-world
+  (its `Render` schedule), process CPU and GPU ms; with pipelined
+  rendering a frame takes about the longer of the main world and the
+  render world); `-- <args>` passes options to mashup (e.g. `-- +r_novis
+  1`, `-- --view-size 3840x2160` to time 4K, `-- +mat_antialias 0`).
+  Build first; it runs the mashup next to it (`--profile playtest` for
+  optimized numbers). `MASHUP_EXECUTOR=multi` runs Bevy's multi-threaded
+  executor instead of ours (performance.md, "Frame time pass").
 - `r_portalsopenall 1` ignores areaportals (closed doors no longer hide
   what's behind them, no clipping through openings): PVS culling only.
   `mashup_perf 1` shows the camera's area, the areas it reaches and how
@@ -396,6 +400,12 @@ Details and baseline numbers: [performance.md](performance.md).
   `TRACE_CHROME=target/t.json target/playtest/mashup --map cs_source:de_dust2 --frames 400`,
   then `cargo build --profile playtest --bin tracesum` and
   `target/playtest/tracesum target/t.json --skip 200`.
+  Read systems' own spans, not schedules' self time: writing the trace
+  stalls every thread now and then (2-3 ms gaps without any span), which
+  lands in whichever schedule was running, and tracing makes a frame of
+  ~1500 small systems about twice as slow. For `--bench` runs, start
+  mashup itself (`--views <refcmp's views.json> --bench`); through
+  refcmp the trace came out empty.
   The profile build replaces `target/playtest/mashup`: copy it aside
   or rebuild without the feature before benchmarking. Tracy instead:
   `--features bevy/trace_tracy` and the Tracy profiler (not set up on the
