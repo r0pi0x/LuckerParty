@@ -8,6 +8,13 @@ plan when work starts; delete them when done.
 
 ## 0. Playtest feedback (2026-10-07), top priority
 
+- Decals persist across rounds (bullet holes, blood). Probably faithful
+  (CS:S keeps them until the map changes; players bound `r_cleardecals`):
+  verify against the game, add `r_cleardecals` and an optional
+  `mashup_round_cleardecals 1` (off by default).
+- Motion steps at the 66.7 Hz tick on high-refresh screens (own crouch,
+  spectated bots): interpolate rendering between ticks (agent working).
+
 CS:S feel:
 - Optional `+use` pickup of dropped weapons (CS:GO's; CS:S has none): a
   cvar such as `mashup_usepickup`, off by default, reaching farther than
