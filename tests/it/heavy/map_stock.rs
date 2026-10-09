@@ -138,7 +138,7 @@ fn aztec_walls_blend_two_textures() {
         .expect("an aztec stone wall");
     assert!(wall.texture.is_some());
     let detail = wall.detail.expect("the stonework as the detail layer");
-    assert_eq!(detail.mode, 4);
+    assert_eq!(detail.mode, mashup::map::DetailMode::TwoTextureMask);
     assert_eq!(detail.scale, [4.0, 4.0]);
     // The canals (Water, no base texture) draw their fog colour and
     // reflect the baked cubemap.
@@ -373,7 +373,7 @@ fn dark_textures() {
                 .map(|p| p[0] as f32 + p[1] as f32 + p[2] as f32)
                 .sum::<f32>()
                 / (3.0 * 255.0 * n);
-            if d.mode == 0 && dm < 0.3 {
+            if d.mode == mashup::map::DetailMode::Source(0) && dm < 0.3 {
                 println!("{} detail {} mod2x mean {dm:.3}", m.material, t.name);
             }
         }

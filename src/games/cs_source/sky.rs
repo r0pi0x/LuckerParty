@@ -41,6 +41,7 @@ pub fn add_sky(bsp: &Bsp, materials: &mut MaterialLoader, data: &mut MapData, hd
         return;
     };
     let mut faces = [(usize::MAX, 0u8); 6];
+    let mut transforms = [crate::map::MapUvTransform::IDENTITY; 6];
     for (suffix, face, turns) in FACES {
         let r = materials.resolve(&format!("skybox/{name}{suffix}"));
         let Some(tex) = r.texture else {
@@ -48,9 +49,14 @@ pub fn add_sky(bsp: &Bsp, materials: &mut MaterialLoader, data: &mut MapData, hd
             return;
         };
         faces[face] = (tex, turns);
+        transforms[face] = r.base_transform;
     }
     let hdr_faces = if hdr { hdr_faces(materials, name, data) } else { None };
-    data.sky = Some(MapSky { faces, hdr: hdr_faces });
+    data.sky = Some(MapSky {
+        faces,
+        transforms,
+        hdr: hdr_faces,
+    });
 }
 
 fn hdr_faces(materials: &mut MaterialLoader, name: &str, data: &mut MapData) -> Option<Arc<[MapHdrImage; 6]>> {

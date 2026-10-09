@@ -324,6 +324,91 @@ Only `Reflect`-registered types are visible; register new core components in
   opens the console with that input and suggestion n picked:
   `--window 1280x720 --screenshot con.png +con_input "sv_a" 2`.
 
+## 3b2. Network play
+
+Plan and progress: [plans/active/multiplayer.md](plans/active/multiplayer.md).
+The default port is UDP 27015 (Source's). **On the Linux dev box a CS:S
+server holds 27015: never bind it there.** Use another port for every run
+(`-port 27016`, `hostport 27016`); tests use ports the system picks.
+
+Headless first: `harness::NetSim` runs a server and N clients in one
+process over an in-memory link (`net::memory`) with seeded latency, jitter
+and loss, stepped tick by tick (`tests/it/net.rs`):
+
+```rust
+let mut sim = NetSim::new(LinkConditions { latency: Duration::from_millis(30), ..default() }, 1, 2, |app| {
+    app.add_plugins((GreyboxMapPlugin, SourceMovementPlugin)).insert_resource(Loadout { movement: source::ID });
+});
+sim.until_joined(200);
+let me = sim.local_player(0).unwrap();          // client 1's own character
+sim.clients[0].app.world_mut().get_mut::<Intent>(me).unwrap().move_axis = Vec2::Y;
+sim.ticks(64);
+let a = sim.character_of(0).unwrap();           // the server's copy
+```
+
+`net::status(world)` is the `status` text; `net::LastDisconnect` says why
+a game ended. `netcode_over_loopback` covers the real UDP transport.
+
+Prediction (`tests/it/net_prediction.rs`): a client's `net::predict::NetGraph`
+counts the server states it compared (`checked`), the ones that differed
+from its prediction (`errors`, `last_error`/`worst_error` in m) and
+restarts (`resyncs`); `CommandClock` has the command tick and the lead
+the server reports; the server's `net::server::CommandBuffer` on a
+player's character has its queued commands, `missed`, `late` and `early`
+counts. `PredictionHistory` holds the client's predicted ticks not yet
+confirmed: compare them with the server's state at the same tick
+(`PredictedComponents::encode`), never the two worlds' present (the
+client runs ahead). `cargo test --features dev --test it net_prediction
+-- --nocapture` prints the numbers per latency, jitter and loss.
+
+In a game: the perf overlay (`mashup_perf 1`) and the F2 Perf tab show,
+while connected, `net:` (ping, loss, KB/s), `cmds:` (lead in ticks and
+its target, the clock's speed nudge and jumps, the server's buffer of
+our commands, missed and late) and `prediction:` (errors per second and
+their worst, totals, commands replayed, the view's correction still
+being eased out); `status` on a client prints the prediction line too,
+on a server each player's buffered and missed commands. `cl_showerror 1`
+logs every prediction error (tick, metres, which components differed)
+and clock jump. `cl_smoothtime` (0.1 s) eases corrections out of the
+view; 0 snaps. Fake network conditions on a client (Source's names; its
+UDP transport only): `net_fakelag <ms>` delays what it receives (ping
+grows by that), `net_fakejitter <ms>` adds up to that much at random,
+`net_fakeloss <percent>` drops packets both ways.
+
+Two real games on this box (`--features dev`; each needs its own remote
+port, `MASHUP_REMOTE_PORT`, so both answer `curl`):
+
+```
+MASHUP_REMOTE_PORT=15791 cargo run --features dev -- --window 1280x720 -port 27031 +name Host +maxplayers 4 +map greybox
+MASHUP_REMOTE_PORT=15792 cargo run --features dev -- --window 1280x720 +name Client +connect 127.0.0.1:27031
+```
+
+Then drive each through its console (section 3b): `status` (players,
+ping), `getpos`, `+moveleft`/`-moveleft`, `setang`, `screenshot
+<file.png>`, `disconnect`. The host's `setpos` moves the host; a client's
+position is predicted and the server's state corrects it (a client's `setpos` snaps back). Add
+`+net_fakelag 100 +net_fakeloss 5 +cl_showerror 1` to the client's line to feel
+a bad link. The dedicated server:
+`cargo run --features dev --bin mashup_server -- -port 27032 +map greybox
++bot_add` (console on stdin: `status`, `bot_add`, `quit`). Logs show
+`listening on UDP ...`, `<name> joined`, `<name> left`, `disconnected:
+<reason>`.
+
+In game: `maxplayers 4; map <name>` hosts (Source's way), `listen` hosts
+the loaded map, `connect <ip[:port]>` joins, `disconnect` leaves (or stops
+hosting), `status`, `name <you>`.
+
+**LAN test with Windows.** The host's firewall must let the game take UDP
+on its port: the first time `mashup.exe` (or `mashup_server.exe`) listens,
+Windows asks; allow it on private networks. Without the prompt (or on a
+public network), add a rule in an administrator PowerShell:
+`New-NetFirewallRule -DisplayName "mashup" -Direction Inbound -Protocol UDP -LocalPort 27015 -Action Allow`
+(use the port you host on). Clients need no rule. Find the host's address
+with `ipconfig` (IPv4 Address) and join with `connect 192.168.x.y:27015`.
+Over the internet the host forwards that UDP port on its router. Both
+games must be the same build (`status` shows the version); another build
+is refused with a message.
+
 ## 3c. Performance
 
 Details and baseline numbers: [performance.md](performance.md).
@@ -410,7 +495,10 @@ Details and baseline numbers: [performance.md](performance.md).
   or rebuild without the feature before benchmarking. Tracy instead:
   `--features bevy/trace_tracy` and the Tracy profiler (not set up on the
   dev box). CPU sampling (`perf record -g`, `cargo flamegraph`) works on
-  any optimized build on Linux; `perf` isn't installed on the dev box.
+  any optimized build on Linux; `perf` isn't installed on the dev box:
+  sample the dev build under gdb instead (performance.md, "Community
+  maps' slow first views"). A main-thread schedule with much self time
+  in `tracesum` is waiting for workers (or descheduled under load).
 
 ## 3d. The debug UI
 

@@ -134,6 +134,11 @@ headless dev box (one view each, so only a hint).
 | `!activator` AddOutput gravity / basevelocity (boosters) / health / origin, SetDamageFilter (no-fall filters) | 24 / 13 / 11 / 5 / 3 maps use them | Player keyvalues in `LogicWorld::player_keyvalue`; `core::DamageFilter` |
 | Rendering crashed on 4 maps (mg_creative_multigames_v8_ns, mg_escape_prison_beta, mg_kommando, surf_happyhands): a prop triangle beyond its shadow cell indexed past it | 4 | `shadows::silhouette` skips triangles outside the cell |
 | Decals kept across rounds (backlog 0) | | `r_cleardecals`; `mashup_round_cleardecals 1` clears at each round start |
+| Materials the VMT parser refused: `$detailscale "[9 9 9]"`, WorldVertexTransition without `$basetexture2`, `$basetexturetransform "11"`, a missing `}`, `">=DX90"` blocks, a key twice, `{r g b a}` colours | 32 materials, 10 maps | Read again leniently, the game's way (`material::lenient_vmt`); 1 left (an empty file) |
+| Unknown shaders WindowImposter, ShatteredGlass, LightmappedReflective, `Refract_DX90` | 4 | Stand-ins (`material::StandIn`; WindowImposter: its cubemap in the view direction, unlit); specs/cs_source/shaders.md open question 15. Left, on purpose: Screenspace_General (1 map, mg_creative_multigames_v8_ns): a full-screen post-process/VGUI pass, not a surface shader, with no spec; its material stays unresolved |
+| surf_demise's "magenta floor": its ramps are translucent marble over an envmap-only material (no `$basetexture`) drawn grey instead of black (shaders.md 2), and its HDR sky cubemap failed twice (a pak entry the zip crate's LZMA decoder refuses; half-float texels) | 1 | Black albedo for envmap-only generic materials; such pak entries read through lzma-rs; RGBA16161616F decoded |
+| Material effects the shaders lacked: `$detail` on models (surf_surreal, kz_ancient_ruins, surf_boreas: 120+ materials) and blend modes past 0 and 1 (2, 5, 6, 8), `$selfillum` (27 maps; also de_nuke's windows), `$basetexturetransform` (22 maps) and TextureScroll on it (21), sky faces' half-height transform, UnlitGeneric brushes lit by the lightmap, `$selfillum` inside `">=DX90"` blocks ignored | 30+ | `map::material_fx`, world.wgsl and prop.wgsl (specs/cs_source/shaders.md; open questions 16-19 list what the spec leaves out); `$emissiveblend*` (surf_demise) still not drawn (question 17); de_nuke refcmp 0.0248 -> 0.0238 (its self-lit windows), de_dust2 unchanged (0.0308) |
+| Slow first views: mg_swag_multigames_v1 341 ms (every resting placed weapon ran swept CCD each tick, 19 ms a tick), surf_demise 98 ms (37k static parts revisited by transform propagation whenever anything under the map's root moved) | 2 | CCD only above 0.5 m/s; static parts under a root of their own. performance.md, "Community maps' slow first views", has the traces and before/after numbers |
 
 ## Left, ranked by maps affected
 
@@ -162,13 +167,12 @@ Generic, by maps affected (counts from the sweep after the fixes):
 7. **Triggers whose filtername names a missing filter** (5 maps, 341
    triggers: filter_blue/filter_red on surf_ maps): the game then lets
    every activator through, as we do; only the log line is noise.
-8. **Materials and textures**: 27 textures missing over 11 maps (mostly
-   `_rt_camera`, custom cubemaps, files the map's author didn't pack), 32
-   materials unreadable over 10 maps (VMT values the parser refuses:
-   `Vec2OrSingle`, missing `$basetexture2`), unknown shaders
-   WindowImposter, ShatteredGlass, LightmappedReflective (4 maps), 9
-   models unreadable (4 maps). Sounds: 14 missing (7 maps; mostly not
-   packed).
+8. **Materials and textures** (sweep of the evening of 2026-10-08): 19
+   textures missing over 10 maps (mostly `_rt_camera`, custom cubemaps,
+   files the map's author didn't pack), 11 materials missing over 8 maps,
+   1 unreadable (an empty file, mg_jacks_multigames_v1), 1 unknown shader
+   (Screenspace_General, mg_creative_multigames_v8_ns), 9 models
+   unreadable (4 maps). Sounds: 14 missing (7 maps; mostly not packed).
 9. **Decals/overlays without a surface** (11 / 5 maps, one each mostly),
    as on the stock maps (other-maps.md #11).
 10. **Server commands** maps send that we refuse: SourceMod/Mani admin
@@ -193,11 +197,17 @@ info_particle_system, env_smokestack, phys_constraint/ballsocket.
 Spawns: every map has spawn points; 14 have only one team's (bhop_, kz_,
 some mg_: the game puts everyone on the team that has spawns).
 
-Visual problems to look at (screenshots under the worktree's
-`target/mapsweep/after/shots/<map>.png`; another session is on surf_boreas'
-lighting): surf_demise shows a magenta (missing material) floor and runs at
-~98 ms a frame; mg_boatrace_scramble's first spawn is black (spawn in a
-dark box or a missing sky); slow first views: mg_swag_multigames_v1 (341
-ms), gg_simpsons_arabtoon (311 ms), surf_sacrifice (102 ms), mg_kommando
-(58 ms), mg_creative_multigames_v8_ns (45 ms), bhop_addict_v2_3xl (31 ms); the rest are at the 60 Hz cap or
-within 25 ms.
+Visual problems and slow views, second pass (2026-10-08 evening; another
+session is on surf_boreas): surf_demise's magenta floor and the two real
+slow-frame costs are fixed (table above). gg_simpsons_arabtoon (311 ms),
+surf_sacrifice (102 ms) and mg_creative_multigames_v8_ns (45 ms) run at
+the 60 Hz cap at a quiet moment with the old build too: those sweep
+numbers were the machine's load. mg_kommando runs at about 40 ms under
+load 12-15 with both builds while its threads are mostly idle (waiting on
+presentation or the GPU; not investigated further). mg_boatrace_scramble's
+first spawn isn't black here: three runs (dev and playtest builds, 60 and
+600 frames) show the lit shooting range. The black view didn't come back;
+the map's point_viewcontrol (`View-Startup`, unhandled) is the lead if it
+does. The new sweep's frame times (`target/mapsweep/after/report.md` in
+this session's worktree) were taken under load 8-15, so most maps sit
+between the 60 Hz cap and 30 ms.

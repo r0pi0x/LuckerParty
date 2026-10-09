@@ -13,6 +13,16 @@ bevy = { version = "0.19.1", features = ["wav"] }
 bevy-inspector-egui = "0.37"
 # The inspector's egui, with egui drawn over Bevy's UI (the debug UI over the HUD).
 bevy_egui = { version = "0.40", default-features = false, features = ["bevy_ui"] }
+# Networking (docs/plans/active/multiplayer.md): replication over renet's
+# netcode UDP transport.
+bevy_replicon = { version = "0.44.3", default-features = false, features = ["client", "server"] }
+bevy_replicon_renet = "0.20.0"
+# Netcode's client protocol, for our UDP client transport with
+# `net_fakelag`/`net_fakeloss` (net::udp); the one bevy_replicon_renet uses.
+renetcode = "2.0"
+# The server's state of a client's own player, compared with its prediction
+# byte for byte (core::PredictedComponents::encode); replicon's format.
+postcard = { version = "1.1", default-features = false, features = ["alloc"] }
 bzip2 = "0.6.1"
 arboard = "3.6"
 crc32fast = "1.5.2"
@@ -25,6 +35,8 @@ lzma-rs = "0.3"
 winit = { version = "0.30", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+# The map file's hash in the connect handshake.
+sha2 = "0.10"
 toml = "1.1.6"
 twofish = { version = "0.8", optional = true }
 vbsp = "0.9"
@@ -44,6 +56,11 @@ test = false
 
 [[bin]]
 name = "dump"
+test = false
+
+# The dedicated server: the simulation and `net`, no window.
+[[bin]]
+name = "mashup_server"
 test = false
 
 [[bin]]

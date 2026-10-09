@@ -629,6 +629,8 @@ fn sound(w: &mut LogicWorld, id: EntId, entry: &str) {
     w.effects.push(Effect::Sound {
         entry: entry.to_string(),
         at,
+        volume: None,
+        pitch: None,
     });
 }
 

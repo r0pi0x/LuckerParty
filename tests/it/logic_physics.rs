@@ -95,6 +95,7 @@ fn add_crate(data: &mut MapData, index: usize, at: Vec3) {
         solid: PropSolid::Mesh,
         skybox: false,
         lighting: None,
+        vertex_light: None,
         casts_shadow: false,
         physics: Some(MapPhysics {
             mass: 20.0,

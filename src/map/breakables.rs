@@ -39,6 +39,13 @@ pub struct MapGibPhysics {
     pub fade: f32,
     /// Downward acceleration of a broken prop's pieces (m/s²).
     pub prop_gravity: f32,
+    /// A flying gib's bounce makes its sound with this chance, at the
+    /// entry's volume × min(1, vertical speed / `sound_full_speed` (m/s)),
+    /// at a pitch drawn from the entry's range with chance
+    /// `sound_random_pitch`, else the range's start.
+    pub sound_chance: f32,
+    pub sound_full_speed: f32,
+    pub sound_random_pitch: f32,
 }
 
 impl Default for MapGibPhysics {
@@ -50,6 +57,9 @@ impl Default for MapGibPhysics {
             glass_alpha: 0.5,
             fade: 1.0,
             prop_gravity: 9.81,
+            sound_chance: 0.0,
+            sound_full_speed: 1.0,
+            sound_random_pitch: 0.0,
         }
     }
 }
@@ -106,6 +116,9 @@ pub struct SpawnGibs {
     /// panes, with `prop`): the pane's size and the shards' size
     /// (meters).
     pub shatters: Option<(Vec2, f32)>,
+    /// The sound entry a flying gib makes when it bounces (`GibSounds`
+    /// says how often and how loud).
+    pub bounce: Option<String>,
 }
 
 /// The most gibs alive at once (Source `cl_phys_props_max`); more are not
@@ -313,6 +326,7 @@ pub(super) fn break_props(
                 prop: true,
                 pieces,
                 shatters: None,
+                bounce: None,
             });
         }
     }
@@ -872,6 +886,8 @@ pub(super) struct FlyingGib {
     /// A physics body moves it (a prop's piece), not `state`.
     body: bool,
     materials: Vec<Handle<PropMaterial>>,
+    /// The sound entry it makes when it bounces.
+    bounce: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -886,19 +902,22 @@ pub struct GibState {
 
 /// One step of a gib: fall, spin and move, or bounce off `hit` (point and
 /// normal of the first surface on the way), keeping `bounce` of its
-/// velocity; it comes to rest on a floor once slow.
-pub fn gib_step(s: &mut GibState, dt: f32, hit: Option<(Vec3, Vec3)>, gravity: f32, bounce: f32) {
+/// velocity; it comes to rest on a floor once slow. On a hit, returns the
+/// vertical speed it hit with (m/s).
+pub fn gib_step(s: &mut GibState, dt: f32, hit: Option<(Vec3, Vec3)>, gravity: f32, bounce: f32) -> Option<f32> {
     s.age += dt;
     if s.resting {
-        return;
+        return None;
     }
     s.rotation = (Quat::from_scaled_axis(s.spin * dt) * s.rotation).normalize();
     match hit {
         None => {
             s.position += s.velocity * dt;
             s.velocity.y -= gravity * dt;
+            None
         }
         Some((point, normal)) => {
+            let vertical = s.velocity.y;
             s.position = point;
             s.velocity = (s.velocity - 2.0 * s.velocity.dot(normal) * normal) * bounce;
             s.spin *= bounce;
@@ -907,8 +926,34 @@ pub fn gib_step(s: &mut GibState, dt: f32, hit: Option<(Vec3, Vec3)>, gravity: f
                 s.spin = Vec3::ZERO;
                 s.resting = true;
             }
+            Some(vertical)
         }
     }
+}
+
+/// The sound of a gib's bounce at vertical speed `vz` (m/s): None when the
+/// chance draw `roll` misses, else its volume and pitch (the entry's
+/// range start, or `pitch_draw` from the range when `pitch_roll` says
+/// so). Specs: breakables.md "Breaking" 5 and view_models.md 8 (the
+/// shared temporary-entity bounce rule).
+pub fn gib_bounce_sound(
+    p: &MapGibPhysics,
+    entry: &super::sound::MapSoundEntry,
+    vz: f32,
+    roll: f32,
+    pitch_roll: f32,
+    pitch_draw: f32,
+) -> Option<(f32, f32)> {
+    if roll >= p.sound_chance {
+        return None;
+    }
+    let volume = entry.volume.draw(0.5) * (vz.abs() / p.sound_full_speed.max(1e-6)).min(1.0);
+    let pitch = if pitch_roll < p.sound_random_pitch {
+        entry.pitch.draw(pitch_draw)
+    } else {
+        entry.pitch.start
+    };
+    Some((volume, pitch))
 }
 
 /// A gib's opacity at `age` (fading out over `fade` after `life`); None
@@ -1018,6 +1063,7 @@ pub(super) fn spawn_gibs(
                     radius: if ev.prop { model.radius } else { 0.0 },
                     body,
                     materials: own.clone(),
+                    bounce: ev.bounce.clone(),
                 },
                 Transform::from_translation(centre).with_rotation(rotation),
                 Visibility::default(),
@@ -1106,6 +1152,7 @@ pub(super) fn fall_panes(mut events: MessageReader<FallingPane>, mut gibs: Messa
             prop: true,
             pieces: vec![piece],
             shatters: Some((ev.size, ev.shard)),
+            bounce: None,
         });
     }
 }
@@ -1139,16 +1186,25 @@ pub(super) fn shatter_pane_pieces(
     }
 }
 
-/// Move gibs, bounce them off the world (not characters), fade them out.
+/// Move gibs, bounce them off the world (not characters) with their
+/// bounce sound, fade them out.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn fly_gibs(
     time: Res<Time>,
     assets: Option<Res<GibAssets>>,
+    sounds: Option<Res<super::sound::SoundBank>>,
     spatial: SpatialQuery,
     characters: Query<Entity, With<crate::core::Intent>>,
     mut gibs: Query<(Entity, &mut FlyingGib, &mut Transform)>,
     mut materials: Option<ResMut<Assets<PropMaterial>>>,
+    mut play: MessageWriter<super::sound::PlaySound>,
+    mut dice: Local<u32>,
     mut commands: Commands,
 ) {
+    let mut unit = || {
+        *dice = dice.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (*dice >> 8) as f32 / (1u32 << 24) as f32
+    };
     let Some(assets) = assets else { return };
     let p = assets.physics;
     let dt = time.delta_secs().min(0.1);
@@ -1181,7 +1237,16 @@ pub(super) fn fly_gibs(
                     })
             })
         };
-        gib_step(&mut gib.state, dt, hit, gravity, bounce);
+        if let Some(vz) = gib_step(&mut gib.state, dt, hit, gravity, bounce)
+            && let (Some(name), Some(sounds)) = (gib.bounce.as_deref(), sounds.as_ref())
+            && let Some(entry) = sounds.0.entry(name)
+            && let Some((volume, pitch)) = gib_bounce_sound(&p, entry, vz, unit(), unit(), unit())
+        {
+            let mut sound = super::sound::PlaySound::at(name, gib.state.position);
+            sound.volume = Some(volume);
+            sound.pitch = Some(pitch);
+            play.write(sound);
+        }
         let Some(alpha) = gib_alpha(gib.state.age, gib.life, p.fade) else {
             commands.entity(e).try_despawn();
             continue;
@@ -1356,6 +1421,46 @@ mod tests {
         let (c, _, s) = boxes[0];
         assert!((c - Vec3::new(1.5, 0.5, -0.05)).length() < 1e-5, "{c}");
         assert!((s - Vec3::new(1.0, 1.0, 0.1)).length() < 1e-5);
+    }
+
+    #[test]
+    fn gib_bounce_sounds_follow_the_shared_rule() {
+        // One bounce in six, volume × min(1, |vz| / full), pitch from the
+        // range one time in four, else its start.
+        let p = MapGibPhysics {
+            sound_chance: 1.0 / 6.0,
+            sound_full_speed: 450.0 * 0.0254,
+            sound_random_pitch: 0.25,
+            ..default()
+        };
+        let entry = crate::map::MapSoundEntry {
+            waves: vec![0],
+            volume: crate::map::sound::Interval::fixed(0.8),
+            pitch: crate::map::sound::Interval {
+                start: 90.0,
+                range: 20.0,
+            },
+            level: crate::map::SoundLevel::Db(75.0),
+            channel: 0,
+            dry: false,
+        };
+        let full = 450.0 * 0.0254;
+        assert_eq!(gib_bounce_sound(&p, &entry, -full, 0.5, 0.0, 0.0), None, "missed the 1/6");
+        let (v, pitch) = gib_bounce_sound(&p, &entry, -full / 2.0, 0.1, 0.9, 0.5).unwrap();
+        assert!((v - 0.4).abs() < 1e-5 && pitch == 90.0, "{v} {pitch}");
+        let (v, pitch) = gib_bounce_sound(&p, &entry, -2.0 * full, 0.1, 0.1, 0.5).unwrap();
+        assert!((v - 0.8).abs() < 1e-5 && pitch == 100.0, "{v} {pitch}");
+        // A hit reports the vertical speed it came in with.
+        let mut s = GibState {
+            position: Vec3::ZERO,
+            velocity: Vec3::new(0.0, -3.0, 0.0),
+            rotation: Quat::IDENTITY,
+            spin: Vec3::ZERO,
+            age: 0.0,
+            resting: false,
+        };
+        assert_eq!(gib_step(&mut s, 0.1, Some((Vec3::ZERO, Vec3::Y)), 1.0, 0.3), Some(-3.0));
+        assert_eq!(gib_step(&mut s, 0.1, None, 1.0, 0.3), None);
     }
 
     #[test]

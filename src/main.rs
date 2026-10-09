@@ -113,6 +113,8 @@ fn main() {
     .insert_resource(Loadout {
         movement: mashup::games::cs_source::movement::ID,
     })
+    // Network play: a listen server, or a client (`connect`).
+    .add_plugins(mashup::net::NetPlugin)
     .add_plugins(client::ClientPlugin { args });
     if std::env::var("MASHUP_EXECUTOR").as_deref() != Ok("multi") {
         single_threaded_schedules(&mut app);
@@ -130,7 +132,7 @@ fn main() {
 /// time on de_dust2 (and bot matches) here; systems that iterate many
 /// entities still spread over the task pool themselves (transform
 /// propagation, visibility), and the main and render worlds still run side
-/// by side (pipelined rendering). docs/performance.md, "Executors".
+/// by side (pipelined rendering). docs/performance.md, "Frame time pass".
 /// `MASHUP_EXECUTOR=multi` keeps Bevy's default for comparisons.
 fn single_threaded_schedules(app: &mut App) {
     use bevy::ecs::{

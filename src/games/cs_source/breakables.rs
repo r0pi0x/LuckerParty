@@ -35,6 +35,13 @@ pub fn gib_physics() -> MapGibPhysics {
         fade: 1.0,
         // Broken props' pieces are client physics props: full gravity.
         prop_gravity: GRAVITY * UNIT,
+        // The shared temporary-entity bounce sound rule (view_models.md
+        // 8, which breakables.md "Breaking" 5 points to by its break
+        // flag): one bounce in six, full volume at 450 units/s down, the
+        // entry's pitch range one time in four.
+        sound_chance: 1.0 / 6.0,
+        sound_full_speed: 450.0 * UNIT,
+        sound_random_pitch: 0.25,
     }
 }
 
@@ -114,6 +121,8 @@ pub fn add_window_looks(materials: &mut MaterialLoader, entities: &[MapEntity], 
                     texture: r.texture,
                     normal_map: r.normal_map,
                     detail: r.detail,
+                    base_transform: r.base_transform,
+                    selfillum: r.selfillum,
                     alpha: r.alpha,
                     double_sided: true,
                     envmap: r.envmap,

@@ -1,6 +1,11 @@
 # Plan: multiplayer
 
-Status: research and design (2026-10-08). Nothing built. Recommendation:
+Status: slice 0 done but per-tick server hitbox poses (moved to slice 4;
+2026-10-08); slice 1 done (2026-10-08): a listen server and a dedicated
+server, direct-IP connect, characters replicated and drawn where the
+server puts them; slice 2 done (2026-10-08): usercmds bound to server
+ticks, clock sync, the client's own movement predicted and reconciled
+(weapons wait for slice 4). Recommendation:
 **bevy_replicon + renet (netcode over UDP)** for transport and
 replication; **our own Source-style prediction, interpolation and lag
 compensation** on top. Slices below; slice 0 is refactoring that pays off
@@ -374,24 +379,190 @@ with tests passing and something to see.
    per-tick hitbox poses from simulation values. Tests: existing ones
    unchanged; a replay test (save state, run 20 commands, restore, rerun:
    identical).
-1. **[ ] Transport, connect/disconnect, replicated characters on the
+   Progress (2026-10-08):
+   - [x] `core::NetRole { Standalone, Server, Client }` and the
+     `core::authoritative` run condition on bots, rules (rounds included),
+     `core::apply_damage`, the logic sets and objectives (bomb, hostages).
+   - [x] `Intent::command`, stamped in a new `SimSet::Commands` (after the
+     rules, before movement): the tick plus the character's `Seed`.
+     **Changed from §1:** Source numbers commands per client, and seeds
+     come from the command number while curtime comes from the tickbase;
+     with "command number == tick" for everyone, all players firing on the
+     same tick would share one spread pattern. So command numbers are
+     offset per character, and time stays the tick's (`core::SimClock`).
+     Slice 2 maps a client's command numbers to ticks with that offset.
+   - [x] Weapon timers on `core::SimClock` (set from `Time<Fixed>` at the
+     start of every tick, bit-identical to what `Time` gave; a replay sets
+     it per command), also movement's `dt`, punch decay, recoil reset.
+   - [x] Spread seed from the command number (spec 4.2: MD5, `& 255`,
+     pellets at `seed + 1 + i`; T1/T1b unit tests in
+     `weapon::random`); recoil rolls by the spec's CRC32 shared-random rule
+     (label and extra ours). The generator stays ours (Q1).
+   - [x] `core::Predict` schedules (`Select`, `Movement`, `Weapons`) run
+     from their places in `FixedUpdate`; `core::predict` runs a command
+     through all three. `core::FirstTimePredicted` gates sounds, damage,
+     armour and pushes. `core::PredictedComponents` saves and restores the
+     registered predicted components. Not yet: `WeaponEvent`s are still
+     written on a replay (recoil reads them); slice 4 marks or drops them
+     for the effects that read them. "One entity" holds because on a
+     client only the local player will carry movement/weapon components.
+   - [x] Cvar ownership: `console::CvarScope` (Local, Server, Replicated)
+     from the name (`SERVER_PREFIXES`); not acted on yet.
+   - [x] Pose history keyed by tick (`PoseFrame::tick`,
+     `SkeletonPose::at_tick`), kept 1 s (`sv_maxunlag`).
+   - [ ] Hitboxes posed per tick from simulation values (not the drawn,
+     client-rate animation): moved to slice 4 with lag compensation; it
+     means driving body animation in the fixed tick.
+   - [x] Tests: `tests/it/prediction.rs` (100 commands of walking,
+     jumping, ducking, an AK-47 spray and weapon switches replayed through
+     `core::predict` from saved state: bit-identical, no sounds or damage;
+     a client runs no damage or bots; pose history by tick).
+1. **[x] Transport, connect/disconnect, replicated characters on the
    greybox** (M, medium risk: the library choice is proven here). `net`
    module and layering rule, renet + replicon, `connect`/`disconnect`/
    `hostport`/`maxplayers`, listen server in the game binary, the
    dedicated binary, map handshake by name and hash (no download),
    characters spawned per client and their transforms replicated
    (drawn without prediction yet), `NetSim` with simulated latency.
-2. **[ ] Usercmds, server-authoritative movement, prediction and
+   Progress (2026-10-08):
+   - [x] bevy_replicon 0.44.3 + bevy_replicon_renet 0.20.0 (renet 2.0,
+     netcode UDP, unsecure) build on Bevy 0.19.1; `src/net/` with its
+     `ALLOWED` row (above the simulation, below client and harness).
+   - [x] Console: `connect <ip[:port]>` (27015 default), `disconnect`
+     (leaves, or stops hosting), `listen` (hosts the loaded map),
+     `status`, cvars `hostport`, `maxplayers`, `name`; `-port <n>` on
+     the command line. Source's way to host works: `maxplayers 4; map
+     <name>` (also `map greybox`) starts a listen server once the map has
+     loaded (`client::net::listen_if_hosting`).
+   - [x] Join handshake (replicon `AuthMethod::Custom`): the client sends
+     `Join { version, protocol hash, name }`; another `NET_VERSION` or
+     protocol hash, or a full server, gets `Refused { reason }` (the
+     client hangs up with it; the server drops it after 1 s). The
+     netcode protocol id is the same for every build so another build
+     hears why instead of timing out. Then `Welcome { map, SHA-256 of the
+     .bsp, tick interval, id }`: the client loads that map if it has
+     another one (`NetEvent::LoadMap` -> `map <name>`), compares the
+     hash (`MapData::file_hash`, kept as `map::MapFile`) and leaves on a
+     mismatch; it runs its fixed tick at the server's.
+   - [x] A character per client on the server (team with fewer players,
+     respawned by the rules at a spawn with the starting weapons). The
+     host's and bots' characters replicate too. Replicated:
+     `NetCharacter { owner, name }`, `NetBody` (origin, velocity, look,
+     eye offset, on ground/crouching/ladder/dead), `Team` (which picks
+     the body model) and `Health`. On a client they get the character
+     components without a movement slot; its own is `LocalPlayer` (camera
+     attached by the client). Leaving removes the character and weapons.
+   - [x] **Changed from the slice list:** so a client can move at all
+     before slice 2, it sends its latest `Intent` once a frame
+     (`NetIntent`, unreliable, made safe by the server: axis ≤ 1, finite
+     angles, pitch range, slot range) and the server applies the latest
+     one each tick. No command numbers, buffering or redundancy: slice 2
+     replaces it with usercmds bound to ticks.
+   - [x] Dedicated server `mashup_server` (`-port`, `+map greybox` or a
+     CS:S map, `+maxplayers`, `+bot_add`; console on stdin).
+   - [x] `harness::NetSim` (server + N clients in one process over
+     `net::memory`, seeded latency/jitter/loss) and `tests/it/net.rs`:
+     joining and seeing each other (and the host) move, looks and
+     crouch, disconnect cleanup both ways, version refused with its
+     reason, full server, map file mismatch, a lossy link converging,
+     and the real netcode over loopback on a system-picked port.
+   - [x] Two real games on the dev box (host `-port 27031`, client
+     `connect 127.0.0.1:27031`): each sees the other's capsule move
+     (screenshots), `status` shows the players and ping, `disconnect`
+     returns the client to the menu; a client on the dedicated server
+     sees its bot. How-to and Windows firewall notes:
+     docs/OBSERVABILITY.md, "Network play".
+   - Not yet (later slices): a `map` change while hosting doesn't take
+     clients along (slice 7: `changelevel`); `map` typed on a client
+     loads locally while still connected; clients see no weapons, shots,
+     chat, rounds or kill feed (slices 4-5); others are drawn at the
+     latest snapshot, stepping at the packet rate (slice 3); the
+     scoreboard's ping column isn't filled (slice 5).
+2. **[x] Usercmds, server-authoritative movement, prediction and
    reconciliation** (L, high risk: the core of the feel). Command
    buffering bound to ticks, clock sync, the prediction loop and replay,
    error smoothing, `net_graph` prediction errors. Tests: determinism
    suite above.
+   Progress (2026-10-08):
+   - [x] `UserCmds` (`net::NetCmd`: tick, move axis, exact `f32` angles,
+     buttons, slot), unreliable, every frame with ticks: the new commands
+     and the 3 before them (`CMD_BACKUP`). The client normalizes its own
+     intent the way the server makes commands safe (`NetCmd::normalize`)
+     before simulating, so both run the same values. Replaces slice 1's
+     `NetIntent`.
+   - [x] Server: commands queued by tick per player
+     (`server::CommandBuffer`), exactly one applied per tick before the
+     rules; a missing one repeats the last; late ones and ones more than
+     64 ticks ahead dropped and counted. No client moves faster than the
+     tick allows, whatever it sends (test).
+   - [x] Clock sync: the server reports each player's command lead (the
+     newest command's tick less its own tick on arrival) in `OwnState`;
+     the client keeps it at 2 ticks plus twice the jitter
+     (`predict::CommandClock`) by lengthening or shortening its fixed
+     timestep by up to 8 % (the simulated tick length stays the server's
+     via `SimClock`), or jumps when more than 6 ticks off. First guess:
+     the server's tick + RTT + the target.
+   - [x] Prediction: the local player gets the server's movement
+     implementation and `Seed` and runs its commands in the normal fixed
+     tick (the `Predict` schedules), each tick's command, clock and
+     outcome kept (`PredictionHistory`). `core::number_commands` numbers
+     from `SimClock::tick`, so a client's command numbers are the
+     server's. The rules' hold (dead, freeze time) is mirrored from
+     `OwnState::held`.
+   - [x] Reconciliation: **changed from §1/§3:** the server's state of a
+     client's own player isn't replicated components but an `OwnState`
+     message each tick, its predicted components as one blob
+     (`PredictedAppExt::predicted_net`, `PredictedComponents::encode`:
+     postcard per component, entity fields skipped). The client compares
+     it byte for byte with its prediction for that tick; on a mismatch it
+     decodes it and re-runs the later commands (`core::predict`,
+     `FirstTimePredicted` false). No tolerance: any bit differs, it
+     corrects (cheap: one entity, ~10-20 commands).
+   - [x] Error smoothing: the drawn eye keeps the correction and eases it
+     out over `cl_smoothtime` (0.1 s); a correction larger than a tick's
+     teleport distance (`map::interp::SNAP_SPEED`) snaps.
+   - [x] Readout: `NetGraph` in the perf overlay and the F2 Perf tab
+     (`net:` ping, loss, KB/s; `cmds:` lead, target, nudge, jumps, server
+     buffer, missed, late; `prediction:` errors/s, worst, totals,
+     replayed, easing), `status` (client: prediction; server: each
+     player's buffered and missed commands), `cl_showerror 1` (each error:
+     tick, metres, components; clock jumps).
+   - [x] `net_fakelag`, `net_fakejitter`, `net_fakeloss` (Source names) in
+     the client's own UDP transport (`net::udp`, renetcode's netcode
+     client; lag and jitter on what it receives, loss both ways).
+   - [x] Tests (`tests/it/net_prediction.rs`, `NetSim`): no loss at 50,
+     100 and 150 ms: 0 prediction errors in ~260 compared states each
+     (walking, strafing, turning, jumps, ducking, a duck jump, walk key),
+     and on the greybox ladder; with jitter and loss (50±20 ms 5 %,
+     100±40 10 %, 150±60 20 %, 100±120 35 %) errors are rare (0-1 per
+     run, worst 0.03 m), nothing is left to correct once idle and the
+     prediction is the server's bit for bit; the server's movement for a
+     command stream equals single player's for the same commands, bit for
+     bit; a flood of commands (80 a frame, far ahead, axis 40) moves no
+     faster than 6.35 m/s; a 0.3 m server-side shove is one error, eased
+     from the old position. `net::fake_lag_delays_what_the_client_receives`
+     covers the UDP transport's lag.
+   - [x] Two real games on the dev box (`-port 27031`, the client with
+     `+net_fakelag 100 +net_fakejitter 20 +net_fakeloss 5 +cl_showerror
+     1`): ping ~155 ms, walking, strafing, jumping and ducking with no
+     prediction errors; a client `setpos` was corrected back (5.2 m, one
+     error); at 150±60 ms and 20 % loss one 0.12 m error in a few seconds
+     of strafing (view moved 0.04 m, eased).
+   - Not yet: the weapon frame isn't predicted on a client because a
+     client has no inventory or weapon state until slice 4 (the
+     machinery is there: `Predict::Select`/`Weapons` run in the replay;
+     slice 4 registers the weapon components with `predicted_net` and
+     sends them); the server's movement cvars aren't sent (slice 5's
+     replicated cvars); movers don't move on a client (slice 3), so
+     riding one mispredicts; `OwnState` is the whole state each tick, no
+     delta.
 3. **[ ] Interpolation of others** (M, medium). Snapshot buffers keyed by
    server tick feeding `map::interp`'s `Interpolated`/`RenderedView`,
    `cl_interp`, brush entities, props and loose items replicated and
    eased, other players' bodies animating from replicated state.
 4. **[ ] Weapons** (L, high). Inventory and weapon state for the owner,
    predicted firing (timing, ammo, spread, punch, effects first time),
+   hitboxes posed per tick from simulation values (from slice 0),
    server hit detection with lag compensation, shot events to others with
    seeds, impacts and tracers for others' shots, damage/death/kill feed
    from the server, grenades thrown server-side and interpolated,

@@ -15,7 +15,7 @@
 use bevy::prelude::*;
 
 use crate::{
-    core::{Intent, MovementState, SimSet, Velocity},
+    core::{Intent, MovementState, PredictedAppExt, Velocity},
     weapon::{
         AltModes, Burst, CharacterPass, DamageEffect, FireTiming, HitgroupScale, Hitscan, Inventory, Magazine, Melee,
         PassMaterial, PassMaterials, Penetration, RegisterWeapons, ShellReload, SpreadShape, StartingWeapons, Swing,
@@ -260,10 +260,14 @@ impl Plugin for CsWeaponsPlugin {
             .register_weapon(XM1014, |e| gun(e, &XM1014_GUN))
             .insert_resource(prices())
             .add_message::<WeaponEvent>()
+            // Inaccuracy, punch and recoil are predicted with the weapon
+            // frame (`core::Predict`).
             .add_systems(
-                FixedUpdate,
-                (before_shots.before(WeaponFrame), after_shots.after(WeaponFrame)).in_set(SimSet::Weapons),
+                crate::core::Predict::Weapons,
+                (before_shots.before(WeaponFrame), after_shots.after(WeaponFrame)),
             )
+            .predicted::<Inaccuracy>()
+            .predicted::<Recoil>()
             .add_plugins((
                 super::impacts::ImpactSoundsPlugin,
                 super::impact_effects::ImpactEffectsPlugin,
@@ -2098,7 +2102,6 @@ pub struct Recoil {
     shots: u32,
     last_shot: f64,
     direction: f32,
-    rng: u64,
 }
 
 /// Faster than this (u/s) counts as moving for recoil (measured: 5 u/s
@@ -2124,9 +2127,9 @@ fn decay_punch(p: Vec2, dt: f32) -> Vec2 {
 fn before_shots(
     mut owners: Query<(&Inventory, &MovementState, &Velocity, &Intent, Option<&mut ViewPunch>)>,
     mut weapons: Query<(&Weapon, &mut Inaccuracy, &mut Hitscan, Option<&AltModes>)>,
-    time: Res<Time>,
+    clock: Res<crate::core::SimClock>,
 ) {
-    let dt = time.delta_secs();
+    let dt = clock.dt();
     for (inv, state, vel, _intent, punch) in &mut owners {
         if let Some(mut p) = punch {
             let next = decay_punch(p.0, dt);
@@ -2181,12 +2184,12 @@ fn after_shots(
         Option<&AltModes>,
         Option<&Hitscan>,
     )>,
-    mut owners: Query<(&MovementState, &Velocity, Option<&mut ViewPunch>, Option<&crate::core::Seed>)>,
+    mut owners: Query<(&MovementState, &Velocity, &Intent, Option<&mut ViewPunch>)>,
     mut commands: Commands,
-    time: Res<Time>,
+    clock: Res<crate::core::SimClock>,
     mut traces: Local<Vec<(Entity, u32)>>,
 ) {
-    let now = time.elapsed_secs_f64();
+    let now = clock.now;
     traces.clear();
     for e in events.read() {
         if !matches!(e.kind, WeaponEventKind::Shot { .. }) {
@@ -2216,7 +2219,7 @@ fn after_shots(
             acc.value += acc.keys(modes.map_or(0, |m| m.current)).fire;
         }
         let Some(mut r) = recoil else { continue };
-        let Ok((state, vel, punch, seed)) = owners.get_mut(e.owner) else {
+        let Ok((state, vel, intent, punch)) = owners.get_mut(e.owner) else {
             continue;
         };
         if now - r.last_shot > SHOTS_RESET {
@@ -2224,17 +2227,10 @@ fn after_shots(
         }
         r.last_shot = now;
         r.shots += 1;
-        // xorshift for the sideways direction.
-        // From the owner's `Seed`: entity ids shift with any spawn.
-        r.rng = if r.rng == 0 {
-            seed.map_or(e.weapon.to_bits(), |s| s.0.wrapping_mul(0x9E37_79B9_7F4A_7C15)) | 1
-        } else {
-            r.rng
-        };
-        r.rng ^= r.rng << 13;
-        r.rng ^= r.rng >> 7;
-        r.rng ^= r.rng << 17;
-        let roll = (r.rng >> 40) as f32 / (1u64 << 24) as f32;
+        // Shared randoms of the shot's command (spec 4.2): the same on a
+        // re-run; the shot count tells several shots of one tick apart.
+        let mut dice = crate::weapon::random::shared_random(intent.command, "recoil", r.shots as i32);
+        let roll = dice.next();
         if r.shots == 1 {
             r.direction = if roll < 0.5 { -1.0 } else { 1.0 };
         } else if roll < 0.125 {
@@ -2254,10 +2250,7 @@ fn after_shots(
         let (mut up, side) = (kick.up + kick.up_step * n, kick.side + kick.side_step * n);
         if kick.up_max > kick.up {
             // A second roll from the same dice.
-            r.rng ^= r.rng << 13;
-            r.rng ^= r.rng >> 7;
-            r.rng ^= r.rng << 17;
-            let u = (r.rng >> 40) as f32 / (1u64 << 24) as f32;
+            let u = dice.next();
             up = (kick.up + (u * (kick.up_max - kick.up + 1.0)).floor()).min(kick.up_max);
         }
         let old = punch.as_ref().map_or(Vec2::ZERO, |p| p.0);

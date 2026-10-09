@@ -34,8 +34,45 @@ pub struct Cvar {
     pub range: Option<(f32, f32)>,
     /// Takes whole numbers only (a field of an integer type).
     pub integer: bool,
+    /// Who owns it in a network game (from its name, `CvarScope::of`).
+    pub scope: CvarScope,
     pub get: GetFn,
     pub set: SetFn,
+}
+
+/// Who owns a cvar in a network game (docs/plans/active/multiplayer.md,
+/// "Console and cvars"). Nothing acts on it yet: until there is a
+/// network, every cvar is set locally.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CvarScope {
+    /// The player's own (`cl_*`, `m_*`, video, audio, `mashup_*` tools).
+    Local,
+    /// The server's, never sent to clients (bots, secrets).
+    Server,
+    /// The server's, sent to clients on connect and on change (Source's
+    /// FCVAR_REPLICATED): movement and game rules clients predict or show.
+    Replicated,
+}
+
+/// Name prefixes of server and game-rule settings: movement and physics
+/// `sv_*`, round rules `mp_*`, `phys_*`, `bot_*`, `ammo_*`. Maps may set
+/// these through point_servercommand (`logic::classes::SETTING_PREFIXES`).
+pub const SERVER_PREFIXES: &[&str] = &["sv_", "mp_", "phys_", "bot_", "ammo_"];
+
+impl CvarScope {
+    /// The scope of a cvar named `name`: the server's when it has a server
+    /// prefix; of those, bots' settings and secrets stay on the server and
+    /// the rest replicate.
+    pub fn of(name: &str) -> Self {
+        let name = name.to_lowercase();
+        if !SERVER_PREFIXES.iter().any(|p| name.starts_with(p)) {
+            CvarScope::Local
+        } else if name.starts_with("bot_") || name.contains("password") || name.contains("rcon") {
+            CvarScope::Server
+        } else {
+            CvarScope::Replicated
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -423,6 +460,7 @@ impl ConsoleAppExt for App {
             archive: false,
             range: None,
             integer: false,
+            scope: CvarScope::of(name),
             get: Arc::new(get),
             set: Arc::new(set),
         });
@@ -792,6 +830,16 @@ pub fn config_text(w: &mut World) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cvar_scopes_follow_the_server_prefixes() {
+        assert_eq!(CvarScope::of("sv_gravity"), CvarScope::Replicated);
+        assert_eq!(CvarScope::of("mp_friendlyfire"), CvarScope::Replicated);
+        assert_eq!(CvarScope::of("bot_stop"), CvarScope::Server);
+        assert_eq!(CvarScope::of("sv_password"), CvarScope::Server);
+        assert_eq!(CvarScope::of("cl_crosshairscale"), CvarScope::Local);
+        assert_eq!(CvarScope::of("sensitivity"), CvarScope::Local);
+    }
 
     #[test]
     fn usage_and_argument_positions() {

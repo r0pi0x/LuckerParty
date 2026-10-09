@@ -7,7 +7,7 @@
 
 #import bevy_pbr::{
     forward_io::VertexOutput,
-    mesh_view_bindings::view,
+    mesh_view_bindings::{view, globals},
     mesh_view_bindings as view_bindings,
     clustered_forward as clustering,
     view_transformations::position_world_to_view,
@@ -43,6 +43,9 @@ struct WorldParams {
     // Sign applied to the normal map's green channel.
     normal_g_sign: f32,
     alpha_cutoff: f32,
+    // $basetexturetransform rows: (m0, m1, m2, scroll per second).
+    base_uv_u: vec4<f32>,
+    base_uv_v: vec4<f32>,
     // 0 normal, 1 lighting only, 2 albedo only.
     debug_view: f32,
     // Sign applied to the normal map's red channel.
@@ -53,7 +56,8 @@ struct WorldParams {
     blend: f32,
     blend_masked: f32,
     blend_normal: f32,
-    // Detail texture: 0 none, 1 mod2x, 2 additive, 3 alpha blend.
+    // Detail texture: 0 none, 1 + Source's $detailblendmode, 20 and 21
+    // WorldTwoTextureBlend's detail over base and 2x grime mask.
     detail: f32,
     detail_factor: f32,
     detail_scale: vec2<f32>,
@@ -71,6 +75,20 @@ struct WorldParams {
     envmap_tint: vec4<f32>,
     water_fog_color: vec4<f32>,
     water_fog_range: vec4<f32>,
+    base2_uv_u: vec4<f32>,
+    base2_uv_v: vec4<f32>,
+    detail_tint: vec4<f32>,
+    selfillum: f32,
+    selfillum_tint: vec4<f32>,
+    unlit: f32,
+    unlit_tint: vec4<f32>,
+}
+
+// A texture transform (map::MapUvTransform): rows . (u, v, 1), plus the
+// TextureScroll translation, wrapped to [0, 1) as the proxy does.
+fn transform_uv(uv: vec2<f32>, ru: vec4<f32>, rv: vec4<f32>) -> vec2<f32> {
+    let scroll = fract(vec2<f32>(ru.w, rv.w) * globals.time);
+    return vec2<f32>(dot(ru.xyz, vec3<f32>(uv, 1.0)), dot(rv.xyz, vec3<f32>(uv, 1.0))) + scroll;
 }
 
 // A lightmap page, bilinear or bicubic B-spline (4 bilinear taps; the
@@ -186,7 +204,23 @@ const BASIS_2 = vec3<f32>(-0.40824829, -0.70710678, 0.57735027);
 
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
-    var albedo = textureSample(base_texture, base_sampler, in.uv) * params.base_color;
+    // WindowImposter: the cubemap seen through the surface in the view
+    // direction (as if infinitely far), unlit and without fog.
+    if params.envmap > 1.5 {
+        let d = in.world_position.xyz - view.world_position;
+        let c = textureSample(envmap_texture, envmap_sampler, vec3<f32>(d.x, -d.z, d.y)).rgb;
+        return vec4<f32>(c * params.envmap_tint.rgb, out_alpha(1.0));
+    }
+    // $basetexturetransform (shaders.md 2): the base texture's
+    // coordinates, and the detail's before $detailscale.
+    let uv = transform_uv(in.uv, params.base_uv_u, params.base_uv_v);
+    var albedo = textureSample(base_texture, base_sampler, uv) * params.base_color;
+    // Self-illumination masks by the base texture's own alpha (before the
+    // second layer); the surface is then opaque (alpha = $alpha only).
+    let base_alpha = albedo.a;
+    if params.selfillum > 0.5 {
+        albedo.a = params.base_color.a;
+    }
     // WorldVertexTransition: blend toward the second texture by the vertex
     // alpha, optionally shaped by the mask (green: transition point, red:
     // softness). Colors blend in linear space; alpha stays the first's.
@@ -202,37 +236,58 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
             let t = select(step(lo, b), saturate((b - lo) / (hi - lo)), hi > lo);
             b = t * t * (3.0 - 2.0 * t);
         }
-        let second = textureSample(base2_texture, base_sampler, in.uv) * params.base_color;
+        let uv2 = transform_uv(in.uv, params.base2_uv_u, params.base2_uv_v);
+        let second = textureSample(base2_texture, base_sampler, uv2) * params.base_color;
         albedo = vec4<f32>(mix(albedo.rgb, second.rgb, b), albedo.a);
     }
-    // $detail: mod2x multiplies by twice the raw texel (mid-grey = no
-    // change); additive adds the decoded texel; translucent blends over.
+    // $detail (shaders.md 2): sampled at $detailscale x the base
+    // coordinates, times $detailtint, combined by $detailblendmode
+    // (detail = 1 + mode; map::material_fx::detail_combine mirrors it).
+    // Modes 5 and 6 add after lighting, which this shader never does.
+    let two_texture = params.detail > 19.5;
     if params.detail > 0.5 {
-        let d = textureSample(detail_texture, base_sampler, in.uv * params.detail_scale);
-        if params.detail < 1.5 {
-            albedo = vec4<f32>(albedo.rgb * mix(vec3<f32>(1.0), 2.0 * d.rgb, params.detail_factor), albedo.a);
-        } else if params.detail < 2.5 {
-            albedo = vec4<f32>(albedo.rgb + params.detail_factor * d.rgb, albedo.a);
-        } else if params.detail < 3.5 {
-            // Translucent detail (mode 2): the decoded detail over the base
-            // by its own alpha.
-            albedo = vec4<f32>(mix(albedo.rgb, d.rgb, d.a * params.detail_factor), albedo.a);
-        } else if params.detail < 4.5 {
-            // WorldTwoTextureBlend, detail over base: the raw detail texel.
-            albedo = vec4<f32>(mix(albedo.rgb, d.rgb, d.a), albedo.a);
+        var d = textureSample(detail_texture, base_sampler, uv * params.detail_scale);
+        let f = params.detail_factor;
+        if two_texture {
+            if params.detail < 20.5 {
+                // WorldTwoTextureBlend, detail over base: the raw detail texel.
+                albedo = vec4<f32>(mix(albedo.rgb, d.rgb, d.a), albedo.a);
+            } else {
+                // WorldTwoTextureBlend's 2x grime mask: the detail is the
+                // surface, darkened by twice the decoded base where the
+                // detail's alpha says so. Alpha stays the base's.
+                let k = saturate(2.0 * albedo.rgb);
+                let m = saturate(k * d.a + (1.0 - d.a));
+                albedo = vec4<f32>(m * d.rgb, albedo.a);
+            }
         } else {
-            // WorldTwoTextureBlend's 2x grime mask: the detail is the
-            // surface, darkened by twice the decoded base where the
-            // detail's alpha says so. Alpha stays the base's.
-            let k = saturate(2.0 * albedo.rgb);
-            let m = saturate(k * d.a + (1.0 - d.a));
-            albedo = vec4<f32>(m * d.rgb, albedo.a);
+            d = vec4<f32>(d.rgb * params.detail_tint.rgb, d.a);
+            let mode = params.detail - 1.0;
+            if mode < 0.5 {
+                albedo = vec4<f32>(albedo.rgb * mix(vec3<f32>(1.0), 2.0 * d.rgb, f), albedo.a);
+            } else if mode < 1.5 {
+                albedo = vec4<f32>(albedo.rgb + f * d.rgb, albedo.a);
+            } else if mode < 2.5 {
+                albedo = vec4<f32>(mix(albedo.rgb, d.rgb, f * d.a), albedo.a);
+            } else if mode < 3.5 {
+                albedo = mix(albedo, d, f);
+            } else if mode < 4.5 {
+                albedo = vec4<f32>(mix(albedo.rgb, d.rgb, f * (1.0 - albedo.a)), d.a);
+            } else if mode < 6.5 {
+                // 5, 6: post-lighting, not in the world shader.
+            } else if mode < 7.5 {
+                let c = mix(d.r, d.a, albedo.a);
+                albedo = vec4<f32>(albedo.rgb * mix(1.0, 2.0 * c, f), albedo.a);
+            } else if mode < 8.5 {
+                albedo = mix(albedo, albedo * d, f);
+            } else {
+                albedo.a = mix(albedo.a, albedo.a * d.a, f);
+            }
         }
     }
     // WorldTwoTextureBlend lights with one bilinear lightmap tap times a
     // fixed 2.0, not 2^2.2; its bump uses the detail coordinates and
     // unsquared weights.
-    let two_texture = params.detail > 3.5;
     if params.alpha_cutoff > 0.0 && albedo.a < params.alpha_cutoff {
         discard;
     }
@@ -242,15 +297,21 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     }
     // The normal map (tangent space, signs fixed), for bump lighting and
     // reflections; its alpha can mask reflections.
-    let normal_texel = textureSample(normal_texture, normal_sampler, in.uv);
+    // The bump coordinates: the base's with a $detail (shaders.md 3),
+    // else the vertex's ($bumptransform isn't read); WorldTwoTextureBlend
+    // bumps at the detail's.
+    var bump_uv = select(in.uv, uv, params.detail > 0.5);
+    if two_texture {
+        bump_uv = uv * params.detail_scale;
+    }
+    let normal_texel = textureSample(normal_texture, normal_sampler, bump_uv);
     var n_ts = normal_texel.xyz * 2.0 - 1.0;
     n_ts.x = n_ts.x * params.normal_x_sign;
     n_ts.y = n_ts.y * params.normal_g_sign;
     if params.bumped > 0.5 {
-        let bump_uv = select(in.uv, in.uv * params.detail_scale, two_texture);
-        var n = textureSample(normal_texture, normal_sampler, bump_uv).xyz * 2.0 - 1.0;
+        var n = normal_texel.xyz * 2.0 - 1.0;
         if params.blend > 0.5 && params.blend_normal > 0.5 {
-            let n2 = textureSample(normal2_texture, normal_sampler, in.uv).xyz * 2.0 - 1.0;
+            let n2 = textureSample(normal2_texture, normal_sampler, bump_uv).xyz * 2.0 - 1.0;
             n = mix(n, n2, b);
         }
         n.x = n.x * params.normal_x_sign;
@@ -283,7 +344,16 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         return albedo;
     }
     light = light + dynamic_light(in.world_position.xyz, normalize(in.world_normal), in.position.xy);
-    var color = albedo.rgb * light * params.light_scale;
+    // UnlitGeneric on a brush: the texture's own brightness x $color.
+    if params.unlit > 0.5 {
+        light = params.unlit_tint.rgb;
+    }
+    var color = albedo.rgb * light;
+    // $selfillum: toward tint x albedo, unlit, by the base texture's alpha.
+    if params.selfillum > 0.5 {
+        color = mix(color, params.selfillum_tint.rgb * albedo.rgb, base_alpha);
+    }
+    color = color * params.light_scale;
     if params.envmap > 0.5 {
         color = color + envmap_term(in, n_ts, albedo.a, normal_texel.a);
     }

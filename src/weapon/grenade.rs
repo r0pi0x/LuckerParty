@@ -902,6 +902,7 @@ fn fly(
             let n = hit.normal1.normalize_or_zero();
             if let Some(s) = &p.bounce_sound {
                 world.play.write(PlaySound {
+                    pitch: None,
                     entry: s.clone(),
                     at: Some(transform.translation),
                     volume: None,
@@ -982,6 +983,7 @@ fn detonate(
             message.ground = probe;
             if let Some(s) = &b.sound {
                 world.play.write(PlaySound {
+                    pitch: None,
                     entry: s.clone(),
                     at: Some(origin),
                     volume: None,
@@ -995,6 +997,7 @@ fn detonate(
             flash(at, fl, world, commands, now);
             if let Some(s) = &fl.sound {
                 world.play.write(PlaySound {
+                    pitch: None,
                     entry: s.clone(),
                     at: Some(at),
                     volume: None,
@@ -1104,6 +1107,7 @@ fn explosions(
         );
         if let Some(s) = &e.sound {
             world.play.write(PlaySound {
+                pitch: None,
                 entry: s.clone(),
                 at: Some(origin),
                 volume: None,

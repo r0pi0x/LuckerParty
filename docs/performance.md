@@ -302,7 +302,7 @@ At that view about 1770 meshes were still drawn: the wall of blocks is
 Brush entities drawn merged (`map::merge`): while a brush entity is
 where the map put it, whole and shown, its opaque and alpha-tested
 meshes are drawn through combined meshes per material and 512-unit
-chunk under the map's root, culled by the clusters their parts touch;
+chunk under the map's root of static parts, culled by the clusters their parts touch;
 its own meshes stay spawned but hidden. When it moves (doors, trains),
 breaks or is removed or turned off (`LogicHidden`: func_brush toggles),
 or shows broken panes, its triangles leave the combined meshes (their
@@ -335,6 +335,74 @@ world's per-entity work, which hidden meshes still cost a little
 the lego and de_nuke views with and without merging are identical
 except 11 pixels in one de_nuke view (smoke); `refcmp vischeck` on the
 lego map gives the same two views as before.
+
+## Community maps' slow first views (mapsweep)
+
+The map sweep's screenshots (docs/plans/active/community-maps.md) timed
+six first views at 45-341 ms a frame. Traces (`--features profile`,
+`tracesum`, 150 frames after 200) found two real costs; the rest were
+the machine's load at the moment of the sweep.
+
+- **mg_swag_multigames_v1** (341 ms): `avian3d::...::solve_swept_ccd`
+  313 ms a frame. The map places about 300 weapons; each loose item had
+  swept CCD with no velocity threshold, so every resting one computed a
+  non-linear time of impact against everything its box touched (the
+  world's colliders included) every tick: 19 ms a tick, and the slow
+  frames ran up to 17 ticks each (Bevy's 250 ms catch-up), which made
+  them slower still. Loose items now sweep only above 0.5 m/s or 6 rad/s
+  (`map::loose`; slower, an item moves under a centimetre a tick, which
+  the contact margin catches). `heavy::map_community::
+  resting_placed_weapons_cost_no_sweeps`: 55 ms a tick before, 0.1-3.5
+  ms after (the bound depends on load).
+- **surf_demise** (98 ms): `propagate_parent_transforms` 9.6 ms a frame
+  plus avian's `propagate_collider_transforms` 3.5 ms. 37k map parts
+  (world chunks, 309k triangles, and static props) were children of the
+  map's root, and a func_rotating under the same root changed a transform
+  every frame: Bevy then rewrites the root's global transform and
+  recomputes every child of it, once per propagation (several a frame:
+  each fixed tick's physics propagates too). Parts that never move
+  (world chunks, static props, merged brush entities, ropes, prop
+  shadows) now sit under a root of their own beside the map's
+  (`spawn_map`, "Map static parts"), which Bevy skips whole while
+  nothing under it changes. After: both systems under 1 ms a frame.
+- **gg_simpsons_arabtoon** (311 ms; 1,700 faces, no props),
+  **surf_sacrifice** (102 ms), **mg_creative_multigames_v8_ns** (45 ms):
+  no system stands out in their traces; at a quiet moment they run at
+  the 60 Hz cap with both builds. Their sweep numbers were load spikes.
+- **mg_kommando** (58 ms): about 40 ms with both builds at load 12-15.
+  Sampling it (below) caught every thread waiting (worker threads
+  parked, the main thread waiting in the executor, the render thread
+  waiting): the frame waits on presentation or the GPU, not on CPU work.
+  Not investigated further.
+
+A main-thread schedule span with a lot of self time in `tracesum`
+(kommando's `PostUpdate`, 15 ms) is the main thread waiting for worker
+systems or being descheduled under load, not work of its own: check the
+workers' spans inside the same window first. CPU sampling without `perf`:
+`ptrace_scope` 1 lets a parent trace its child, so run the dev build
+(debug info) under `gdb -batch` with a command file of `thread apply all
+bt` / `continue` pairs and send the child SIGINT once a second.
+
+Old (before these fixes) and new playtest builds, interleaved, each
+map's first spawn, 600 frames at 1280x720, `mat_vsync 0` (60 Hz is the
+compositor's cap here), the last `mashup_perf_log` line; two rounds at
+different machine loads:
+
+| map | round 1 old | round 1 new | round 2 old | round 2 new |
+|---|---|---|---|---|
+| mg_swag_multigames_v1 | 75.1 (load 4) | 16.8 | 309.2 (load 14) | 52.3 |
+| gg_simpsons_arabtoon | 16.7 | 16.7 | 17.2 | 17.5 |
+| surf_sacrifice | 16.7 | 16.7 | 55.0 (load 15) | 50.0 |
+| surf_demise | 16.7 (load 2) | 20.8 (load 10) | 252.7 (load 14) | 27.5 |
+| mg_kommando | 42.6 (load 12) | 41.6 | 56.7 | 38.8 |
+| mg_creative_multigames_v8_ns | 19.5 (load 12) | 27.0 | 20.3 | 17.0 |
+
+Frame ms. Under load the old builds' extra per-tick cost multiplies
+(more ticks per frame); the new ones stay near the cap. Pictures:
+`refcmp` captures of de_dust2 (32 views) and de_nuke (27) with both
+builds report the same metrics (one view's sharpness ratio 0.652 vs
+0.653); 17 and 26 captures are identical, the others differ in at most 43
+pixels (particles, glows).
 
 ## Cheap wins found
 
@@ -370,7 +438,9 @@ as hierarchies of their own instead of children of the map's root (avian
 walks every tree holding a collider each tick in
 `propagate_collider_transforms`, about 0.3 ms per tick on dust2 under
 load): a dust2 physics prop then settled differently
-(`physics_props_settle_and_get_pushed`), so it is left for later.
+(`physics_props_settle_and_get_pushed`), so it is left for later. (Parts
+that never move, static props included, now have a root of their own:
+see "Community maps' slow first views".)
 
 ## Frame time pass (executors, dynamic meshes, posing, prop shadows, resolution)
 
@@ -497,10 +567,9 @@ old build differ from each other (dust motes, glows: up to 845).
 Left: per-tick work matters once frames are slow (2-3 ticks a frame):
 the logic bridge's sync (`logic: sync to the ECS`, ~0.27 ms a call on
 cs_office, twice a tick) and transform propagation twice a tick (ours
-after restoring eased transforms, and avian's), each walking the map
-root's thousands of children when a prop under it moved. Props as
-hierarchies of their own is the backlog item; it changed how a dust2
-prop settled last time. Physics props that never sleep (cs_office) are
+after restoring eased transforms, and avian's); these measurements
+predate the static parts' own root (above), which keeps the world out of
+that propagation. Physics props that never sleep (cs_office) are
 worth a look on the physics side. On a quiet machine (load 3) the old
 build drew dust2's 32 views at 4.9 ms a frame (main world 4.3): the
 per-frame cost a 240 Hz monitor (4.2 ms) has to beat; new numbers on a

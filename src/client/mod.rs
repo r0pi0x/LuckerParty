@@ -20,6 +20,7 @@ pub mod hud_sprites;
 pub mod hud;
 pub mod input;
 pub mod interp;
+pub mod net;
 pub mod objectives_hud;
 pub mod options;
 pub mod perf;
@@ -113,9 +114,15 @@ usage: mashup [options]
   --console                 start with the console open (~ toggles it)
   --window <WxH>            window size in pixels, e.g. 1920x1080 (screenshots at a known size;
                             a tiling window manager may still resize it)
+  -port <n>                 UDP port to host on (hostport; default 27015)
   +<command> [args...]      run a console command at startup, Source style
                             (e.g. +sv_airaccelerate 150 +cl_showpos 1 +bind f noclip;
-                            ++attack holds an action, e.g. to fire in a --screenshot run)";
+                            ++attack holds an action, e.g. to fire in a --screenshot run)
+
+network play (docs/OBSERVABILITY.md, \"Network play\"):
+  host:    mashup -port 27016 +maxplayers 4 +map greybox
+  join:    mashup +connect 127.0.0.1:27016
+  server:  cargo run --bin mashup_server -- -port 27016 +map greybox";
 
 impl Args {
     /// Whether the run starts playing (a map given, or the player placed
@@ -159,12 +166,20 @@ impl Args {
             if let Some(name) = flag.strip_prefix('+').filter(|n| !n.is_empty()) {
                 let mut line = vec![crate::console::quote(name)];
                 while let Some(next) = it.peek() {
-                    if next.starts_with('+') && next.len() > 1 || next.starts_with("--") {
+                    if next.starts_with('+') && next.len() > 1 || next.starts_with("--") || next == "-port" {
                         break;
                     }
                     line.push(crate::console::quote(&it.next().unwrap()));
                 }
                 out.console.push(line.join(" "));
+                continue;
+            }
+            // Source's `-port <n>`: the port a server listens on (before
+            // any +map that hosts).
+            if flag == "-port" {
+                let port = it.next().ok_or("-port: missing value")?;
+                port.parse::<u16>().map_err(|_| format!("-port: not a port: {port}"))?;
+                out.console.insert(0, format!("hostport {port}"));
                 continue;
             }
             if flag == "--console" {
@@ -266,17 +281,25 @@ impl Plugin for ClientPlugin {
                 options::VideoPlugin,
                 window_icon::WindowIconPlugin,
             ))
-            .add_plugins(interp::ClientInterpPlugin)
+            .add_plugins((interp::ClientInterpPlugin, net::ClientNetPlugin))
             .add_systems(PostStartup, spawn_local_player)
+            .add_systems(Update, camera_for_local_player)
             .add_systems(Update, (follow_eye, zoom_camera).after(spectate::SpectateSet));
 
         // Bevy Remote Protocol: query and edit the live ECS over HTTP
-        // (JSON-RPC on localhost:15702). See docs/OBSERVABILITY.md.
+        // (JSON-RPC on localhost:15702, or MASHUP_REMOTE_PORT: two games at
+        // once, e.g. a host and a client). See docs/OBSERVABILITY.md.
         #[cfg(feature = "dev")]
-        app.add_plugins((
-            bevy::remote::RemotePlugin::default().with_method_main("mashup/console", console::remote_exec),
-            bevy::remote::http::RemoteHttpPlugin::default(),
-        ));
+        {
+            let port = std::env::var("MASHUP_REMOTE_PORT")
+                .ok()
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(bevy::remote::http::DEFAULT_PORT);
+            app.add_plugins((
+                bevy::remote::RemotePlugin::default().with_method_main("mashup/console", console::remote_exec),
+                bevy::remote::http::RemoteHttpPlugin::default().with_port(port),
+            ));
+        }
     }
 }
 
@@ -315,29 +338,49 @@ fn spawn_local_player(
     // to the terrorists).
     let player = spawn_character(&mut commands, at, Team(2), movement);
     let look = args.look.unwrap_or(Vec2::new(spawn_yaw, 0.0));
-    commands
-        .entity(player)
-        .insert((
-            LocalPlayer,
-            Intent {
-                yaw: look.x.to_radians(),
-                pitch: look.y.to_radians(),
-                ..default()
-            },
-        ))
-        .with_child((
-            FirstPersonCamera,
-            // The local player's weapon is drawn here (map::view_model).
-            crate::map::ViewModelAnchor,
-            crate::map::sound::SoundListener,
-            Camera3d::default(),
-            Projection::Perspective(PerspectiveProjection {
-                // Source's fov 90 (horizontal at 4:3), kept vertically:
-                // 2 atan(3/4) = 73.74 degrees.
-                fov: 2.0 * 0.75f32.atan(),
-                ..default()
-            }),
-        ));
+    commands.entity(player).insert((
+        LocalPlayer,
+        Intent {
+            yaw: look.x.to_radians(),
+            pitch: look.y.to_radians(),
+            ..default()
+        },
+    ));
+    attach_camera(&mut commands, player, args.debug_view.is_some());
+}
+
+/// The first-person camera on a new local player (one the network sent:
+/// the client's own character, `net::client`).
+fn camera_for_local_player(
+    players: Query<(Entity, Option<&Children>), Added<LocalPlayer>>,
+    cameras: Query<(), With<FirstPersonCamera>>,
+    args: Res<ClientArgs>,
+    mut commands: Commands,
+) {
+    for (player, children) in &players {
+        if children.is_some_and(|c| c.iter().any(|c| cameras.contains(c))) {
+            continue;
+        }
+        attach_camera(&mut commands, player, args.0.debug_view.is_some());
+    }
+}
+
+/// The local player's first-person camera, its view model anchor and
+/// sound listener, following the map's presentation.
+fn attach_camera(commands: &mut Commands, player: Entity, debug_view: bool) {
+    commands.entity(player).with_child((
+        FirstPersonCamera,
+        // The local player's weapon is drawn here (map::view_model).
+        crate::map::ViewModelAnchor,
+        crate::map::sound::SoundListener,
+        Camera3d::default(),
+        Projection::Perspective(PerspectiveProjection {
+            // Source's fov 90 (horizontal at 4:3), kept vertically:
+            // 2 atan(3/4) = 73.74 degrees.
+            fov: 2.0 * 0.75f32.atan(),
+            ..default()
+        }),
+    ));
     // Follow the map's presentation (e.g. no tonemapping for Source LDR).
     commands.queue(|world: &mut World| {
         let Some(look) = world.get_resource::<crate::map::ActiveMapLook>().cloned() else {
@@ -354,7 +397,7 @@ fn spawn_local_player(
                 .insert(bevy::core_pipeline::tonemapping::Tonemapping::None);
         }
     });
-    if args.debug_view.is_some() {
+    if debug_view {
         // Raw values for analysis: no tonemapping, an unmistakable background.
         commands.queue(move |world: &mut World| {
             let mut q = world.query_filtered::<Entity, With<FirstPersonCamera>>();

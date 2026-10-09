@@ -487,6 +487,7 @@ fn perf_report(
     assets: Res<MeshTriangles>,
     mut report: ResMut<PerfReport>,
     interp: (Option<Res<crate::map::interp::Interpolation>>, Res<Time<Fixed>>),
+    net: (Option<Res<crate::net::predict::NetGraph>>, Option<Res<crate::core::NetRole>>),
     render_time: Option<Res<RenderTime>>,
 ) {
     let now = Instant::now();
@@ -503,6 +504,9 @@ fn perf_report(
     }
     if let Some(i) = interp.0 {
         report.lines.push(interp_line(&i, &interp.1));
+    }
+    if let Some(g) = net.0.filter(|_| net.1.is_some_and(|r| *r == crate::core::NetRole::Client)) {
+        report.lines.extend(g.lines());
     }
     if log.0 != 0 && report.logged.is_none_or(|t| (now - t).as_secs_f32() >= 1.0) {
         report.logged = Some(now);

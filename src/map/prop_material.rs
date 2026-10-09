@@ -13,6 +13,10 @@ pub struct PropParams {
     pub base_color: Vec4,
     /// Cut out below this alpha (0: off).
     pub alpha_cutoff: f32,
+    /// `$basetexturetransform` rows (m0, m1, m2, scroll), see
+    /// `MapUvTransform::shader_rows`; prop_prepass.wgsl reads them too.
+    pub base_uv_u: Vec4,
+    pub base_uv_v: Vec4,
     /// Linear fog color, w = 1 when fog is on.
     pub fog_color: Vec4,
     /// Fog start, end (meters), max density.
@@ -45,6 +49,15 @@ pub struct PropParams {
     /// the fudge); start, end (meters), max density in xyz.
     pub water_fog_color: Vec4,
     pub water_fog_range: Vec4,
+    /// `$detail`: 0 none, else 1 + `$detailblendmode` (0-9).
+    pub detail: f32,
+    pub detail_factor: f32,
+    pub detail_scale: Vec2,
+    /// `$detailtint`, linear.
+    pub detail_tint: Vec4,
+    /// 1 with `$selfillum` (mask: base alpha), 2 with a `$selfillummask`.
+    pub selfillum: f32,
+    pub selfillum_tint: Vec4,
 }
 
 impl PropParams {
@@ -78,6 +91,12 @@ pub struct PropMaterial {
     pub envmap: Option<Handle<Image>>,
     #[texture(5)]
     pub envmap_mask: Option<Handle<Image>>,
+    /// `$detail`, sampled like `base`.
+    #[texture(6)]
+    pub detail: Option<Handle<Image>>,
+    /// `$selfillummask`.
+    #[texture(7)]
+    pub selfillum_mask: Option<Handle<Image>>,
     pub alpha_mode: AlphaMode,
     pub double_sided: bool,
     /// Cull front faces instead of back ones (drawn mirrored).

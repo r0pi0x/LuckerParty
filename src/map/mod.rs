@@ -33,10 +33,13 @@ pub use breakables::{
 mod dust;
 pub mod hud;
 pub mod interp;
+mod light_styles;
 pub mod hearing;
 pub mod live_sound;
 pub mod loose;
 pub mod loading;
+pub mod material_fx;
+pub use material_fx::{DetailMode, MapSelfIllum, MapUvTransform};
 pub mod merge;
 pub mod probe_lit;
 pub mod radio;
@@ -52,6 +55,7 @@ pub mod shadows;
 pub mod sound;
 pub mod room;
 pub mod soundscape;
+pub mod steam;
 pub use live_sound::{LiveSounds, SoundControl, SoundKey, StartSound};
 pub use sound::{MapSoundClip, MapSoundEntry, MapSounds, MapSurface, PlaySound, SoundLevel};
 pub mod shells;
@@ -221,6 +225,11 @@ pub struct MapMesh {
     pub blend_weights: Vec<f32>,
     /// A detail texture tiled over the base texture.
     pub detail: Option<MapDetail>,
+    /// `$basetexturetransform` (or a TextureScroll proxy driving it): the
+    /// base texture's coordinates, and the detail's before `$detailscale`.
+    pub base_transform: MapUvTransform,
+    /// `$selfillum`: glows with its own colour where the mask says.
+    pub selfillum: Option<MapSelfIllum>,
     /// Drawn at the texture's own brightness, ignoring lighting (Source's
     /// UnlitGeneric).
     pub unlit: bool,
@@ -241,6 +250,10 @@ pub struct MapMesh {
     /// several (part, choice): drawn only while the prop's body picks it
     /// (`MapModel::body_parts`).
     pub body: Option<(u16, u16)>,
+    /// Model meshes: each vertex's index in the model's own vertex list
+    /// (Source `.vvd` order), for light baked per vertex of the model
+    /// (`MapProp::vertex_light`). Empty otherwise.
+    pub source_vertices: Vec<u32>,
     /// What part of a breakable window's look it is (`PaneLook`).
     pub pane_look: PaneLook,
 }
@@ -274,6 +287,9 @@ pub struct MapMeshLook {
     pub unlit: bool,
     pub envmap: Option<MapEnvmap>,
     pub tint: Option<[f32; 3]>,
+    pub detail: Option<MapDetail>,
+    pub base_transform: MapUvTransform,
+    pub selfillum: Option<MapSelfIllum>,
 }
 
 impl MapMeshLook {
@@ -287,6 +303,9 @@ impl MapMeshLook {
             unlit: self.unlit,
             envmap: self.envmap.clone(),
             tint: self.tint,
+            detail: self.detail,
+            base_transform: self.base_transform,
+            selfillum: self.selfillum,
             ..m.clone()
         }
     }
@@ -338,21 +357,28 @@ pub struct MapEnvmap {
     pub saturation: f32,
     /// Fresnel R0 (1: no fresnel).
     pub fresnel: f32,
+    /// WindowImposter (a "fake sky" window): the surface shows the
+    /// cubemap in the view direction, unlit and unfogged, instead of
+    /// reflecting it.
+    pub imposter: bool,
 }
 
 /// Source `$detail`: a texture tiled `scale` times per base texture repeat
 /// and combined with the base color (specs/cs_source/shaders.md).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MapDetail {
-    /// Index into `MapData::textures` (linear for mode 0, sRGB otherwise).
+    /// Index into `MapData::textures` (sRGB-decoded or raw as the mode and
+    /// shader want: shaders.md section 1).
     pub texture: usize,
     pub scale: [f32; 2],
     pub factor: f32,
-    /// 0: multiply by 2 x detail ("mod2x"); 1: add; 2: blend the detail
-    /// over the base by its alpha; 3 and 4: WorldTwoTextureBlend (detail
-    /// over base, and the 2x grime mask), which also light the surface
-    /// their own way (specs/cs_source/shaders_two_texture_blend.md).
-    pub mode: u8,
+    /// Source's `$detailblendmode`, or one of WorldTwoTextureBlend's own
+    /// modes, which also light the surface their own way
+    /// (specs/cs_source/shaders_two_texture_blend.md).
+    pub mode: DetailMode,
+    /// `$detailtint`, linear as the shader uses it (raw on world
+    /// surfaces, gamma-converted on models).
+    pub tint: [f32; 3],
 }
 
 /// The second layer of a two-texture surface. Indices into
@@ -364,6 +390,8 @@ pub struct MapBlend {
     /// Shapes the blend: green moves the transition point, red sets its
     /// softness (linear texture).
     pub mask: Option<usize>,
+    /// `$basetexturetransform2`: the second texture's coordinates.
+    pub transform: MapUvTransform,
 }
 
 /// Baked lighting atlas: linear RGB, where 1.0 shows a texture at its own
@@ -378,13 +406,14 @@ pub struct MapLightmap {
     /// per basis direction of radiosity normal mapping. Surfaces without
     /// them repeat `rgb`.
     pub bumped: Option<[Vec<[f32; 3]>; 3]>,
-    /// Switchable light styles: what each adds where it lights, so they
-    /// can be turned on and off (`LightStyles`). `rgb` and `bumped` hold
-    /// the lighting at map start (styles with `on` included).
+    /// Light styles that change: what each adds where it lights, so they
+    /// can be turned on and off (`LightStyles`) or animate (`pattern`).
+    /// `rgb` and `bumped` hold the lighting at map start (switchable
+    /// styles with `on` and animated ones at brightness 1 included).
     pub styles: Vec<MapLightStyle>,
 }
 
-/// One switchable light style's share of the lightmap atlas.
+/// One light style's share of the lightmap atlas.
 #[derive(Clone, Debug, Default)]
 pub struct MapLightStyle {
     pub style: u8,
@@ -396,21 +425,47 @@ pub struct MapLightStyle {
     pub rgb: Vec<[f32; 3]>,
     /// What it adds to each directional page, per texel.
     pub bumped: Option<[Vec<[f32; 3]>; 3]>,
+    /// An animated style's brightness per step (1 = as baked), at
+    /// `LIGHT_STYLE_STEPS` steps a second, looping; empty for a style that
+    /// only switches.
+    pub pattern: Vec<f32>,
+    /// The atlas rectangles it lights, one per face block (x, y, width,
+    /// height, padding included), in the order `texels` lists them.
+    pub rects: Vec<[u32; 4]>,
+}
+
+/// Steps a second of animated light styles' patterns (Quake's and
+/// Source's light style rate: ten characters a second).
+pub const LIGHT_STYLE_STEPS: f32 = 10.0;
+
+impl MapLightStyle {
+    /// Its brightness in `MapLightmap::rgb` (map start).
+    pub fn start(&self) -> f32 {
+        if !self.pattern.is_empty() || self.on { 1.0 } else { 0.0 }
+    }
+
+    /// An animated style's brightness `t` seconds in.
+    pub fn at(&self, t: f32) -> f32 {
+        if self.pattern.is_empty() {
+            return self.start();
+        }
+        let step = (t.max(0.0) * LIGHT_STYLE_STEPS) as usize;
+        self.pattern[step % self.pattern.len()]
+    }
 }
 
 impl MapLightmap {
-    /// The atlas (flat and directional pages) with each style lit as
-    /// `lit(style)` says.
+    /// The atlas (flat and directional pages) with each style at the
+    /// brightness `level(style)` gives (switchable: 0 or 1).
     #[allow(clippy::type_complexity)]
-    pub fn relit(&self, lit: &dyn Fn(u8) -> bool) -> (Vec<[f32; 3]>, Option<[Vec<[f32; 3]>; 3]>) {
+    pub fn relit(&self, level: &dyn Fn(&MapLightStyle) -> f32) -> (Vec<[f32; 3]>, Option<[Vec<[f32; 3]>; 3]>) {
         let mut rgb = self.rgb.clone();
         let mut bumped = self.bumped.clone();
         for s in &self.styles {
-            let sign = match (s.on, lit(s.style)) {
-                (false, true) => 1.0,
-                (true, false) => -1.0,
-                _ => continue,
-            };
+            let sign = level(s) - s.start();
+            if sign == 0.0 {
+                continue;
+            }
             let add = |dst: &mut [f32; 3], v: [f32; 3]| {
                 for k in 0..3 {
                     dst[k] = (dst[k] + sign * v[k]).max(0.0);
@@ -1012,6 +1067,11 @@ pub struct MapProp {
     pub skybox: bool,
     /// Baked lighting; lit by the scene's lights when absent.
     pub lighting: Option<LightProbe>,
+    /// Light baked per vertex for this placement (Source static props
+    /// compiled with per-vertex lighting), by the model's own vertex index
+    /// (`MapMesh::source_vertices`), linear lightmap units: replaces
+    /// `lighting` for the meshes' colours.
+    pub vertex_light: Option<Arc<Vec<[f32; 3]>>>,
     /// Casts a dynamic shadow onto the world (Source: entity props, not
     /// static props, whose shadows are baked into lightmaps).
     pub casts_shadow: bool,
@@ -1099,6 +1159,10 @@ pub struct MapTraceSkip(pub Vec<usize>);
 #[derive(Clone, Debug, Default)]
 pub struct MapData {
     pub name: String,
+    /// SHA-256 of the map's file as read from the install (before any
+    /// lump inflating), for the network handshake (`net`): every player
+    /// must load the same file. None for maps built in code.
+    pub file_hash: Option<[u8; 32]>,
     pub meshes: Vec<MapMesh>,
     pub textures: Vec<MapTexture>,
     /// Baked reflection cubemaps (`MapEnvmap::cubemap` indexes these).
@@ -1139,6 +1203,8 @@ pub struct MapData {
     pub fog: Option<MapFog>,
     pub sprites: Vec<MapSprite>,
     pub dust: Vec<MapDust>,
+    /// Steam jets (env_steam).
+    pub steam: Vec<steam::MapSteam>,
     pub ropes: Vec<MapRope>,
     /// Which sky each part of the map can see (Source: BSP leaf flags). When
     /// set, the camera draws the sky only from places that see it, and
@@ -1381,6 +1447,13 @@ pub struct LightStyles {
 #[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
 pub struct SoundscapeTouches(pub Option<Vec<usize>>);
 
+/// Which env_soundscape entities (by entity index,
+/// `SoundscapeEmitter::entity`) are enabled, as the logic layer's
+/// Enable/Disable inputs left them; None: the map goes by their
+/// StartDisabled keys.
+#[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
+pub struct SoundscapeSwitches(pub Option<Vec<usize>>);
+
 /// A rope or cable: a line of points drawn as a strip that always faces the
 /// camera (the rope shader widens it per view). Source's Cable look:
 /// texture x normal map's blue squared x per-point light.
@@ -1430,6 +1503,10 @@ pub struct MapFog {
 #[derive(Clone, Debug)]
 pub struct MapSky {
     pub faces: [(usize, u8); 6],
+    /// Each face material's `$basetexturetransform` (specs/cs_source/
+    /// shaders.md 6: the face coordinates go through it; community skies
+    /// use "scale 1 2" to show a half-height texture above the horizon).
+    pub transforms: [MapUvTransform; 6],
     /// HDR versions of the faces (same order and orientations), shown
     /// instead when the map loads in HDR.
     pub hdr: Option<Arc<[MapHdrImage; 6]>>,
@@ -1475,6 +1552,45 @@ pub struct MapHdr {
     pub exposure: Option<(f32, f32)>,
     /// Bloom strength, 1 = the game's default (Source's bloom scale).
     pub bloom_scale: f32,
+    /// How fast exposure adapts, 1 = the default (Source's tone-map rate).
+    pub rate: f32,
+}
+
+/// Auto exposure bounds without a controller: Source's
+/// mat_autoexposure_min and mat_autoexposure_max cvars at their public
+/// defaults.
+pub const DEFAULT_AUTO_EXPOSURE: (f32, f32) = (0.5, 2.0);
+
+/// What the map's env_tonemap_controller inputs set while it runs (the
+/// logic layer writes it): each set field replaces the map's look
+/// (`MapHdr`), which holds what the map sets at its start.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct TonemapInputs {
+    pub exposure_min: Option<f32>,
+    pub exposure_max: Option<f32>,
+    pub bloom_scale: Option<f32>,
+    pub rate: Option<f32>,
+    /// UseDefaultAutoExposure: bounds back at `DEFAULT_AUTO_EXPOSURE`
+    /// (until set again).
+    pub default_exposure: bool,
+}
+
+impl TonemapInputs {
+    /// `hdr` with these inputs applied.
+    pub fn apply(&self, hdr: &MapHdr) -> MapHdr {
+        let mut out = hdr.clone();
+        if let Some((lo, hi)) = out.exposure {
+            let (lo, hi) = if self.default_exposure { DEFAULT_AUTO_EXPOSURE } else { (lo, hi) };
+            out.exposure = Some((self.exposure_min.unwrap_or(lo), self.exposure_max.unwrap_or(hi)));
+        }
+        if let Some(b) = self.bloom_scale {
+            out.bloom_scale = b;
+        }
+        if let Some(r) = self.rate {
+            out.rate = r;
+        }
+        out
+    }
 }
 
 impl Default for MapLook {
@@ -1684,6 +1800,15 @@ pub struct ActiveMapLook(pub MapLook);
 #[derive(Resource, Clone, Debug, Default, PartialEq)]
 pub struct LoadedMapName(pub String);
 
+/// The loaded map's name (`MapData::name`) and file hash
+/// (`MapData::file_hash`), set when it spawns, removed when it unloads.
+/// The network handshake compares them with the server's.
+#[derive(Resource, Clone, Debug, PartialEq, Eq)]
+pub struct MapFile {
+    pub name: String,
+    pub hash: Option<[u8; 32]>,
+}
+
 /// Marks every entity belonging to the loaded map.
 #[derive(Component)]
 pub struct MapPart;
@@ -1695,6 +1820,7 @@ impl Plugin for MapPlugin {
                 .insert_resource(ActiveMapLook(data.look.clone()));
         }
         ragdoll::plugin(app);
+        app.add_plugins(light_styles::LightStylesPlugin);
         app.add_plugins(sound::SoundPlugin)
             .init_resource::<ShowLocalBody>()
             .init_resource::<vis::NoVis>()
@@ -1744,8 +1870,11 @@ impl Plugin for MapPlugin {
             .add_systems(
                 Update,
                 (
-                    switch_parts.before(glow_visibility).before(dust::update_dust),
-                    relight,
+                    switch_parts
+                        .before(glow_visibility)
+                        .before(dust::update_dust)
+                        .before(steam::update_steam),
+                    (light_styles::relight, light_styles::animate).chain(),
                     apply_prop_looks,
                     animate_props,
                 ),
@@ -1772,6 +1901,7 @@ impl Plugin for MapPlugin {
                     attach_sky,
                     glow_visibility,
                     dust::update_dust,
+                    steam::update_steam,
                     (
                         tracer::draw_tracers,
                         particles::step_particles.in_set(particles::ParticleSet::Step),
@@ -1865,6 +1995,10 @@ fn spawn_map(
 ) {
     let data = &pending.0;
     let view = pending.1;
+    commands.insert_resource(MapFile {
+        name: data.name.clone(),
+        hash: data.file_hash,
+    });
     info!(
         "spawning map: world material {}, lightmap {}",
         if world_materials.is_some() {
@@ -1877,6 +2011,21 @@ fn spawn_map(
     let root = commands
         .spawn((
             Name::new(format!("Map {}", data.name)),
+            MapPart,
+            Transform::default(),
+            Visibility::default(),
+        ))
+        .id();
+    // Drawn parts that never move (world chunks, static props, merged brush
+    // entities, ropes, prop shadows) under a root of their own, beside the
+    // map's (both at the origin): any transform written under a root (a
+    // rotating brush, a physics prop) makes Bevy's transform propagation
+    // recompute every child of that root, several times a frame
+    // (surf_demise: 37k map parts, 9.6 ms a frame); a root whose tree
+    // didn't change is skipped whole.
+    let statics = commands
+        .spawn((
+            Name::new("Map static parts"),
             MapPart,
             Transform::default(),
             Visibility::default(),
@@ -2016,6 +2165,23 @@ fn spawn_map(
     {
         commands.insert_resource(gibs);
     }
+    // Headless: steam jets still puff (undrawn), switched by the logic.
+    if meshes.is_none() || materials.is_none() || images.is_none() {
+        for (i, jet) in data.steam.iter().enumerate() {
+            let mut e = commands.spawn((
+                Name::new(format!("Steam {i}")),
+                MapPart,
+                steam::SteamEmitter::new(jet.clone(), Handle::default(), i as u64 + 1),
+            ));
+            if let Some(entity) = jet.entity {
+                e.insert(EntityPart {
+                    entity,
+                    on: jet.start_on,
+                    exists: true,
+                });
+            }
+        }
+    }
     if let (Some(meshes), Some(materials), Some(images)) = (meshes.as_mut(), materials.as_mut(), images.as_mut()) {
         // HUD pictures are clamped at their edges: wrapped, the scope
         // ring's outer edge blends with its clear centre and lets the
@@ -2125,16 +2291,16 @@ fn spawn_map(
         let world_lightmap = built.as_ref().map(|b| images.add(b.world.clone()));
         let bumped_lightmaps: Option<[Handle<Image>; 3]> =
             built.and_then(|b| b.bumped).map(|pages| pages.map(|p| images.add(p)));
-        // Switchable light styles relight these images (`relight`).
+        // Switchable and animated light styles relight these images
+        // (`light_styles`).
         if let Some(l) = data.lightmap.as_ref().filter(|l| !l.styles.is_empty()) {
-            commands.insert_resource(SwitchableLightmaps {
-                atlas: Arc::new(l.clone()),
+            commands.insert_resource(light_styles::StyledLightmaps::new(
+                Arc::new(l.clone()),
                 source_ldr,
-                plain: lightmap.clone(),
-                world: world_lightmap.clone(),
-                bumped: bumped_lightmaps.clone(),
-                applied: l.styles.iter().map(|s| s.on).collect(),
-            });
+                lightmap.clone(),
+                world_lightmap.clone(),
+                bumped_lightmaps.clone(),
+            ));
         }
         let mut sky_handle = None;
         if let Some(sky) = &data.sky
@@ -2294,9 +2460,20 @@ fn spawn_map(
                         blend: if blended { 1.0 } else { 0.0 },
                         blend_masked: if blend.mask.is_some() { 1.0 } else { 0.0 },
                         blend_normal: if bumped && blend.normal_map.is_some() { 1.0 } else { 0.0 },
-                        detail: m.detail.map_or(0.0, |d| d.mode as f32 + 1.0),
+                        detail: m.detail.map_or(0.0, |d| d.mode.shader_value()),
                         detail_factor: m.detail.map_or(0.0, |d| d.factor),
                         detail_scale: m.detail.map_or(Vec2::ONE, |d| Vec2::from_array(d.scale)),
+                        detail_tint: m.detail.map_or(Vec4::ONE, |d| Vec3::from_array(d.tint).extend(1.0)),
+                        base_uv_u: m.base_transform.shader_rows()[0],
+                        base_uv_v: m.base_transform.shader_rows()[1],
+                        base2_uv_u: blend.transform.shader_rows()[0],
+                        base2_uv_v: blend.transform.shader_rows()[1],
+                        selfillum: if m.selfillum.is_some() { 1.0 } else { 0.0 },
+                        unlit: if m.unlit { 1.0 } else { 0.0 },
+                        unlit_tint: m.tint.map_or(Vec4::ONE, |t| Vec3::from_array(t).extend(1.0)),
+                        selfillum_tint: m
+                            .selfillum
+                            .map_or(Vec4::ONE, |s| Vec3::from_array(s.tint).extend(1.0)),
                         fog_color: fog_color(data.fog.as_ref().filter(|_| view == MapDebugView::Normal && !m.skybox)),
                         fog_range: fog_range(data.fog.as_ref()),
                         bumped: if bumped { 1.0 } else { 0.0 },
@@ -2311,10 +2488,10 @@ fn spawn_map(
                             MapDebugView::Lighting { .. } => 1.0,
                             MapDebugView::Albedo => 2.0,
                         },
-                        envmap: if m.envmap.is_some_and(|e| e.cubemap.is_some()) {
-                            1.0
-                        } else {
-                            0.0
+                        envmap: match m.envmap {
+                            Some(e) if e.cubemap.is_some() && e.imposter => 2.0,
+                            Some(e) if e.cubemap.is_some() => 1.0,
+                            _ => 0.0,
                         },
                         envmap_mask: match m.envmap.map(|e| e.mask) {
                             Some(EnvmapMask::NormalAlpha) if m.normal_map.is_some() => 1.0,
@@ -2331,7 +2508,7 @@ fn spawn_map(
                         envmap_saturation: m.envmap.map_or(1.0, |e| e.saturation),
                         envmap_fresnel: m.envmap.map_or(1.0, |e| e.fresnel),
                         envmap_tint: m.envmap.map_or(Vec4::ONE, |e| Vec3::from_array(e.tint).extend(1.0)),
-                        ..default()
+                        ..WorldParams::identity_uv()
                     },
                     base: m.texture.map(|i| textures[i].clone()),
                     // Bound for radiosity bump lighting, and for reflections
@@ -2385,7 +2562,7 @@ fn spawn_map(
                         })),
                         MeshMaterial3d(material.clone()),
                         Transform::from_translation(centre),
-                        ChildOf(parent_of(m)),
+                        ChildOf(if own_node { parent_of(m) } else { statics }),
                     ));
                     if merged.is_some() {
                         e.insert((merge::MergedPiece, Visibility::Hidden));
@@ -2414,7 +2591,7 @@ fn spawn_map(
                     Mesh3d(meshes.add(build_mesh(&chunk, lit.is_some()))),
                     MeshMaterial3d(material.clone()),
                     Transform::from_translation(centre),
-                    ChildOf(parent_of(m)),
+                    ChildOf(if own_node { parent_of(m) } else { statics }),
                 ));
                 if let Some(image) = lit {
                     part.insert(bevy::pbr::Lightmap {
@@ -2450,7 +2627,7 @@ fn spawn_map(
                 Mesh3d(mesh),
                 Transform::from_translation(centre),
                 Visibility::default(),
-                ChildOf(root),
+                ChildOf(statics),
             ));
             if let Some(l) = lightmap {
                 e.insert(l);
@@ -2594,6 +2771,41 @@ fn spawn_map(
                     });
                 }
             }
+            // Steam jets: a puff mesh each, rebuilt per frame.
+            for (i, jet) in data.steam.iter().enumerate() {
+                let mesh = meshes.add(dust::empty_mesh());
+                let end = jet.origin + jet.forward * jet.length;
+                let reach = Vec3::splat(jet.length * 0.5 + jet.end_size * 2.0);
+                let clusters = visibility
+                    .map(|v| vis::box_clusters(v, jet.origin.min(end) - reach, jet.origin.max(end) + reach))
+                    .unwrap_or_default();
+                let mut e = commands.spawn((
+                    Name::new(format!("Steam {i}")),
+                    MapPart,
+                    Mesh3d(mesh.clone()),
+                    MeshMaterial3d(materials.add(StandardMaterial {
+                        base_color_texture: jet.texture.map(|t| textures[t].clone()),
+                        unlit: true,
+                        alpha_mode: AlphaMode::Blend,
+                        double_sided: true,
+                        cull_mode: None,
+                        ..default()
+                    })),
+                    steam::SteamEmitter::new(jet.clone(), mesh, i as u64 + 1),
+                    bevy::camera::visibility::NoFrustumCulling,
+                    bevy::light::NotShadowCaster,
+                    Transform::default(),
+                    ChildOf(root),
+                ));
+                tag(&mut e, clusters);
+                if let Some(entity) = jet.entity {
+                    e.insert(EntityPart {
+                        entity,
+                        on: jet.start_on,
+                        exists: true,
+                    });
+                }
+            }
         }
         if let Some(sprite_materials) = sprite_materials.as_mut()
             && view == MapDebugView::Normal
@@ -2680,7 +2892,7 @@ fn spawn_map(
                         })),
                         bevy::light::NotShadowCaster,
                         Transform::default(),
-                        ChildOf(root),
+                        ChildOf(statics),
                     ));
                     tag(&mut e, clusters.clone());
                 }
@@ -2720,7 +2932,7 @@ fn spawn_map(
                         MeshMaterial3d(material.clone()),
                         bevy::light::NotShadowCaster,
                         Transform::default(),
-                        ChildOf(root),
+                        ChildOf(statics),
                     ));
                 tag(&mut e, clusters);
                 entities.insert(prop, e.id());
@@ -2739,7 +2951,7 @@ fn spawn_map(
                     .collect(),
                 cells: built.cells.into_iter().map(|c| (c.prop, c)).collect(),
                 entities,
-                root,
+                root: statics,
             });
         }
     }
@@ -2822,7 +3034,15 @@ fn spawn_map(
             MapPart,
             rider.map_or(placed, |r| r.1),
             Visibility::default(),
-            ChildOf(rider.map_or(root, |r| r.0)),
+            // Static props (no entity, no physics) never move.
+            ChildOf(rider.map_or(
+                if prop.entity.is_none() && prop.physics.is_none() {
+                    statics
+                } else {
+                    root
+                },
+                |r| r.0,
+            )),
         ));
         if let Some(solid) = own_solid {
             e.insert(solid);
@@ -2981,14 +3201,24 @@ fn spawn_map(
                     }
                     spawned_materials.push(material.clone());
                     let layer = layer_of(prop.skybox);
+                    // Light baked per vertex when the prop has it (and it
+                    // covers the mesh), else the probe on each normal.
+                    let baked = prop
+                        .vertex_light
+                        .as_ref()
+                        .filter(|v| m.source_vertices.len() == m.normals.len() && m.source_vertices.iter().all(|&i| (i as usize) < v.len()));
                     let colors: Vec<[f32; 4]> = m
                         .normals
                         .iter()
-                        .map(|n| {
+                        .enumerate()
+                        .map(|(i, n)| {
                             if m.unlit {
                                 return [1.0, 1.0, 1.0, 1.0];
                             }
-                            let l = probe.eval(prop.rotation * Vec3::from(*n)) * probe_scale;
+                            let l = match baked {
+                                Some(v) => Vec3::from(v[m.source_vertices[i] as usize]),
+                                None => probe.eval(prop.rotation * Vec3::from(*n)),
+                            } * probe_scale;
                             [l.x, l.y, l.z, 1.0]
                         })
                         .collect();
@@ -3199,6 +3429,8 @@ pub fn unload_map(world: &mut World) {
         world.entity_mut(c).remove::<bevy::light::Skybox>();
     }
     world.remove_resource::<PendingMap>();
+    world.remove_resource::<MapFile>();
+    world.remove_resource::<light_styles::StyledLightmaps>();
     world.remove_resource::<MapSkybox>();
     world.remove_resource::<PlayableArea>();
     world.remove_resource::<SkyCameraInfo>();
@@ -3352,7 +3584,7 @@ fn clamp_edges(image: &mut Image) {
 
 /// Source's parameter gamma-to-linear table (specs/cs_source/shaders.md
 /// Quirks): rounded to 1/255; 0.95 and up become 1; above 1 unchanged.
-fn gamma_to_linear(v: f32) -> f32 {
+pub fn parameter_gamma_to_linear(v: f32) -> f32 {
     if v > 1.0 {
         return v;
     }
@@ -3393,11 +3625,7 @@ fn cube_image(c: &MapCubemap) -> Image {
 /// A lighting atlas layer in Source's LDR encoding (see
 /// `SOURCE_LIGHTMAP_SCALE`): 8-bit sRGB, decoded by the sampler.
 fn source_lightmap_image(rgb: &[[f32; 3]], width: u32, height: u32) -> Image {
-    let mut data = Vec::with_capacity(rgb.len() * 4);
-    for [r, g, b] in rgb {
-        data.extend([source_ldr_texel(*r), source_ldr_texel(*g), source_ldr_texel(*b), 255]);
-    }
-    srgb8_image(data, width, height)
+    srgb8_image(light_styles::source_ldr_texels(rgb), width, height)
 }
 
 /// RGBA8 sRGB texels as a linearly filtered lightmap layer.
@@ -3438,14 +3666,7 @@ impl LightmapLayers {
         let pages = bumped.map(|b| {
             if source_ldr {
                 // The game encodes the three pages together, against the flat one.
-                let mut texels: [Vec<u8>; 3] = std::array::from_fn(|_| Vec::with_capacity(rgb.len() * 4));
-                for (i, flat) in rgb.iter().enumerate() {
-                    let pages = source_ldr_bump_texels(*flat, [b[0][i], b[1][i], b[2][i]]);
-                    for (t, [r, g, b]) in texels.iter_mut().zip(pages) {
-                        t.extend([r, g, b, 255]);
-                    }
-                }
-                texels.map(|t| srgb8_image(t, width, height))
+                light_styles::source_ldr_page_texels(rgb, b).map(|t| srgb8_image(t, width, height))
             } else {
                 std::array::from_fn(|i| world_layer(&b[i]))
             }
@@ -3458,84 +3679,8 @@ impl LightmapLayers {
     }
 }
 
-/// The lightmap images of a map with switchable light styles, and the
-/// styles they show.
-#[derive(Resource)]
-struct SwitchableLightmaps {
-    atlas: Arc<MapLightmap>,
-    source_ldr: bool,
-    plain: Option<Handle<Image>>,
-    world: Option<Handle<Image>>,
-    bumped: Option<[Handle<Image>; 3]>,
-    /// Whether each of the atlas's styles is lit in the images now.
-    applied: Vec<bool>,
-}
-
-/// Rebuild the lightmap images when switchable light styles change
-/// (`LightStyles`): the atlas at map start, plus or minus each style
-/// switched since (Source lights' TurnOn/TurnOff).
-fn relight(
-    styles: Option<Res<LightStyles>>,
-    maps: Option<ResMut<SwitchableLightmaps>>,
-    images: Option<ResMut<Assets<Image>>>,
-    world_materials: Option<ResMut<Assets<world_material::WorldMaterial>>>,
-    standard: Option<ResMut<Assets<StandardMaterial>>>,
-) {
-    let (Some(styles), Some(mut maps), Some(mut images)) = (styles, maps, images) else {
-        return;
-    };
-    if !styles.is_changed() {
-        return;
-    }
-    let l = maps.atlas.clone();
-    let lit = |style: u8| {
-        styles.styles.iter().find(|(s, _)| *s == style).map_or_else(
-            || l.styles.iter().find(|s| s.style == style).is_some_and(|s| s.on),
-            |(_, on)| *on,
-        )
-    };
-    let want: Vec<bool> = l.styles.iter().map(|s| lit(s.style)).collect();
-    if maps.applied == want {
-        return;
-    }
-    maps.applied = want;
-    let (rgb, bumped) = l.relit(&lit);
-    let built = LightmapLayers::build(&rgb, bumped.as_ref(), l.width, l.height, maps.source_ldr);
-    let mut put = |handle: &Option<Handle<Image>>, image: Image| {
-        if let Some(h) = handle {
-            let _ = images.insert(h.id(), image);
-        }
-    };
-    put(&maps.plain, built.plain);
-    put(&maps.world, built.world);
-    if let (Some(handles), Some(pages)) = (&maps.bumped, built.bumped) {
-        for (h, p) in handles.iter().zip(pages) {
-            let _ = images.insert(h.id(), p);
-        }
-    }
-    // Materials bound to the old images are prepared again.
-    if let Some(mut m) = world_materials {
-        let ids: Vec<_> = m.ids().collect();
-        for id in ids {
-            let _ = m.get_mut(id);
-        }
-    }
-    if let Some(mut m) = standard {
-        let ids: Vec<_> = m.ids().collect();
-        for id in ids {
-            let _ = m.get_mut(id);
-        }
-    }
-    info!("lightmaps relit: {:?}", styles.styles);
-}
-
 fn lightmap_image(rgb: &[[f32; 3]], width: u32, height: u32) -> Image {
-    let mut data = Vec::with_capacity(rgb.len() * 8);
-    for [r, g, b] in rgb {
-        for c in [*r, *g, *b, 1.0] {
-            data.extend_from_slice(&half::f16::from_f32(c).to_le_bytes());
-        }
-    }
+    let data = light_styles::f16_texels(rgb);
     let mut image = Image::new(
         Extent3d {
             width,
@@ -3676,11 +3821,33 @@ fn lit_prop_material(
             } else {
                 1.0
             },
+            base_uv_u: m.base_transform.shader_rows()[0],
+            base_uv_v: m.base_transform.shader_rows()[1],
+            detail: m
+                .detail
+                .filter(|_| !lighting_only)
+                .map_or(0.0, |d| d.mode.shader_value()),
+            detail_factor: m.detail.map_or(0.0, |d| d.factor),
+            detail_scale: m.detail.map_or(Vec2::ONE, |d| Vec2::from_array(d.scale)),
+            detail_tint: m.detail.map_or(Vec4::ONE, |d| Vec3::from_array(d.tint).extend(1.0)),
+            selfillum: match m.selfillum {
+                Some(MapSelfIllum { mask: Some(_), .. }) => 2.0,
+                Some(_) => 1.0,
+                None => 0.0,
+            },
+            selfillum_tint: m
+                .selfillum
+                .map_or(Vec4::ONE, |s| Vec3::from_array(s.tint).extend(1.0)),
             ..default()
         },
         base: m.texture.filter(|_| !lighting_only).map(|i| textures[i].clone()),
         envmap: None,
         envmap_mask: None,
+        detail: m
+            .detail
+            .filter(|_| !lighting_only)
+            .map(|d| textures[d.texture].clone()),
+        selfillum_mask: m.selfillum.and_then(|s| s.mask).map(|i| textures[i].clone()),
         alpha_mode: m.alpha.shader_alpha_mode(),
         double_sided: m.double_sided,
         cull_front: false,
@@ -3701,7 +3868,7 @@ fn set_prop_envmap(material: &mut PropMaterial, env: &MapEnvmap, cube: Handle<Im
     }
     material.params.envmap_contrast = env.contrast;
     material.params.envmap_saturation = env.saturation;
-    material.params.envmap_tint = Vec3::from_array(env.tint.map(gamma_to_linear)).extend(1.0);
+    material.params.envmap_tint = Vec3::from_array(env.tint.map(parameter_gamma_to_linear)).extend(1.0);
 }
 
 /// A simulated physics prop: how players interact with it, its mass (kg)
@@ -4016,12 +4183,15 @@ fn switch_parts(
             Option<&vis::VisClusters>,
             Has<vis::LogicHidden>,
             Has<dust::DustEmitter>,
+            Has<steam::SteamEmitter>,
         ),
         Changed<EntityPart>,
     >,
     mut commands: Commands,
 ) {
-    for (e, part, clusters, hidden, dust) in &parts {
+    for (e, part, clusters, hidden, dust, steam) in &parts {
+        // Dust and steam stay drawn while off: what they made lives on.
+        let dust = dust || steam;
         let shown = part.exists && (dust || part.on);
         if shown != hidden {
             continue;
@@ -4400,7 +4570,7 @@ fn sky_image(sky: &MapSky, textures: &[MapTexture]) -> Image {
         let t = &textures[tex];
         for y in 0..size {
             for x in 0..size {
-                let (sx, sy) = sky_texel(x, y, size, turns, t.width, t.height);
+                let (sx, sy) = sky_texel(x, y, size, turns, &sky.transforms[face], t.width, t.height);
                 let i = ((sy * t.width + sx) * 4) as usize;
                 data.extend_from_slice(&t.rgba8[i..i + 4]);
             }
@@ -4410,8 +4580,9 @@ fn sky_image(sky: &MapSky, textures: &[MapTexture]) -> Image {
 }
 
 /// Which texel of a `w` x `h` sky face lands at (x, y) of a `size` cube
-/// face.
-fn sky_texel(x: u32, y: u32, size: u32, turns: u8, w: u32, h: u32) -> (u32, u32) {
+/// face, the face's coordinates through its material's `transform`
+/// (clamped to the texture, as the sky samples it).
+fn sky_texel(x: u32, y: u32, size: u32, turns: u8, transform: &MapUvTransform, w: u32, h: u32) -> (u32, u32) {
     // Rotate clockwise by `turns` quarter turns: sample the source
     // pixel that lands at (x, y).
     let (mut u, mut v) = (x, y);
@@ -4426,20 +4597,26 @@ fn sky_texel(x: u32, y: u32, size: u32, turns: u8, w: u32, h: u32) -> (u32, u32)
     // a black row) that the game never shows, while a cube map
     // blends them in at every seam.
     let inner = |p: u32, n: u32| 1 + (p as u64 * n.saturating_sub(2) as u64 / size as u64) as u32;
-    (inner(u, w).min(w - 1), inner(v, h).min(h - 1))
+    if transform.is_identity() {
+        return (inner(u, w).min(w - 1), inner(v, h).min(h - 1));
+    }
+    let face_uv = Vec2::new((u as f32 + 0.5) / size as f32, (v as f32 + 0.5) / size as f32);
+    let t = transform.apply(face_uv, 0.0).clamp(Vec2::ZERO, Vec2::ONE);
+    let texel = |c: f32, n: u32| ((c * n.saturating_sub(2) as f32) as u32 + 1).min(n.saturating_sub(2).max(1));
+    (texel(t.x, w).min(w - 1), texel(t.y, h).min(h - 1))
 }
 
 /// The HDR sky (`MapSky::hdr`) as a linear half-float cube map.
 fn hdr_sky_image(sky: &MapSky, faces: &[MapHdrImage; 6]) -> Image {
     let size = faces.iter().map(|f| f.width.max(f.height)).max().unwrap_or(1).max(1);
     let mut data = Vec::with_capacity((size * size * 8 * 6) as usize);
-    for (face, (_, turns)) in faces.iter().zip(sky.faces) {
+    for ((face, (_, turns)), transform) in faces.iter().zip(sky.faces).zip(&sky.transforms) {
         for y in 0..size {
             for x in 0..size {
                 let [r, g, b] = if face.width == 0 || face.height == 0 {
                     [0.0; 3]
                 } else {
-                    let (sx, sy) = sky_texel(x, y, size, turns, face.width, face.height);
+                    let (sx, sy) = sky_texel(x, y, size, turns, transform, face.width, face.height);
                     face.rgb[(sy * face.width + sx) as usize]
                 };
                 for c in [r, g, b, 1.0] {
@@ -4760,18 +4937,19 @@ mod switch_tests {
                     on: true,
                     texels: vec![0],
                     rgb: vec![[0.75; 3]],
-                    bumped: None,
+                    ..default()
                 },
                 MapLightStyle {
                     style: 33,
                     on: false,
                     texels: vec![1],
                     rgb: vec![[0.25; 3]],
-                    bumped: None,
+                    ..default()
                 },
             ],
         };
-        assert_eq!(l.relit(&|s| s == 32).0, l.rgb);
-        assert_eq!(l.relit(&|s| s == 33).0, vec![[0.25; 3], [0.75; 3]]);
+        let lit = |on: u8| move |s: &MapLightStyle| if s.style == on { 1.0 } else { 0.0 };
+        assert_eq!(l.relit(&lit(32)).0, l.rgb);
+        assert_eq!(l.relit(&lit(33)).0, vec![[0.25; 3], [0.75; 3]]);
     }
 }

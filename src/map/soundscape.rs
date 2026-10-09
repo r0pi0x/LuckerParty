@@ -1,7 +1,9 @@
 //! Soundscape playback (specs/cs_source/sounds.md 6, "Soundscapes"): pick
 //! the soundscape for the listener, fade its loops in over 3 s while the
 //! previous one's fade out, play its random one-shots and set the room
-//! DSP preset it names (`room::RoomDsp`).
+//! DSP preset, room level and player preset it names (`room::RoomDsp`).
+//! Emitters the logic disabled (`SoundscapeSwitches`) are not picked; one
+//! becoming current fires its OnPlay output.
 //!
 //! Selection and the loops run headless too: the loops are long-lived
 //! sounds (`live_sound`, keys under `live_sound::SOUNDSCAPE_KEYS`), which
@@ -34,7 +36,9 @@ pub struct SoundscapePlugin;
 
 impl Plugin for SoundscapePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<ScapeState>().add_systems(
+        app.init_resource::<ScapeState>()
+            .add_message::<super::entities::FireEntityOutput>()
+            .add_systems(
             PostUpdate,
             (
                 select,
@@ -53,6 +57,8 @@ pub struct ScapeState {
     pub current: Option<(usize, Source)>,
     /// The current soundscape's name (debug readouts).
     pub name: Option<String>,
+    /// The sound mixer it names (shown, not played).
+    pub mixer: Option<String>,
     /// Zones the listener is inside, most recently entered first.
     inside: Vec<usize>,
     generation: u32,
@@ -96,6 +102,8 @@ pub fn reset(world: &mut World) {
     world.insert_resource(ScapeState::default());
     if let Some(mut room) = world.get_resource_mut::<RoomDsp>() {
         room.preset = 0;
+        room.scape_volume = None;
+        room.player = None;
     }
 }
 
@@ -124,15 +132,27 @@ pub fn choose_emitter(
     chosen
 }
 
+/// Whether emitter `e` may be picked: the logic's switches, else its
+/// StartDisabled key.
+pub fn emitter_enabled(e: &super::sound::SoundscapeEmitter, switches: Option<&super::SoundscapeSwitches>) -> bool {
+    match (switches.and_then(|s| s.0.as_ref()), e.entity) {
+        (Some(on), Some(entity)) => on.contains(&entity),
+        _ => !e.start_disabled,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn select(
     bank: Option<Res<SoundBank>>,
     touches: Option<Res<super::SoundscapeTouches>>,
+    switches: Option<Res<super::SoundscapeSwitches>>,
     vis: Option<Res<ActiveVisibility>>,
     listener: Query<&GlobalTransform, With<SoundListener>>,
+    local: Query<Entity, With<crate::core::LocalPlayer>>,
     mut state: ResMut<ScapeState>,
     mut room: ResMut<RoomDsp>,
     mut control: MessageWriter<SoundControl>,
+    mut outputs: MessageWriter<super::entities::FireEntityOutput>,
     time: Res<Time>,
 ) {
     let (Some(bank), Some(ear)) = (bank, listener.iter().next()) else {
@@ -169,9 +189,10 @@ fn select(
         let vis = vis.as_ref().map(|v| &*v.0);
         let ear_cluster = vis.and_then(|v| v.cluster_at(ear));
         let emitters = &sounds.soundscape_emitters;
+        let enabled = |i: usize| emitter_enabled(&emitters[i], switches.as_deref());
         let qualifies = |i: usize| {
             let e = &emitters[i];
-            if !e.radius.is_none_or(|r| e.at.distance(ear) < r) {
+            if !enabled(i) || !e.radius.is_none_or(|r| e.at.distance(ear) < r) {
                 return false;
             }
             let Some(v) = vis else { return true };
@@ -181,8 +202,10 @@ fn select(
             };
             pvs && v.segment_clear(e.at, ear)
         };
+        // A disabled current one is dropped from the choice; it keeps
+        // playing until another qualifies.
         let current = match state.current {
-            Some((_, Source::Emitter(i))) => Some(i),
+            Some((_, Source::Emitter(i))) if enabled(i) => Some(i),
             _ => None,
         };
         match choose_emitter(current, emitters.len(), qualifies, |i| emitters[i].at.distance(ear)) {
@@ -193,6 +216,17 @@ fn select(
     let Some(source) = wanted else { return };
     if state.current.is_some_and(|c| c.1 == source) {
         return;
+    }
+    // An env_soundscape becoming current fires OnPlay (the local player
+    // as activator).
+    if let Source::Emitter(i) = source
+        && let Some(map_index) = sounds.soundscape_emitters[i].entity
+    {
+        outputs.write(super::entities::FireEntityOutput {
+            map_index,
+            output: "OnPlay".into(),
+            activator: local.iter().next(),
+        });
     }
     let (scape, positions) = match source {
         Source::Zone(i) => (
@@ -213,6 +247,11 @@ fn select(
     if let Some(dsp) = def.dsp {
         room.preset = dsp;
     }
+    // dsp_volume and the mixer revert when absent; dsp_player stays.
+    room.scape_volume = def.dsp_volume;
+    if def.dsp_player.is_some() {
+        room.player = def.dsp_player;
+    }
     info!(
         "soundscape: {} (dsp {})",
         def.name,
@@ -221,6 +260,7 @@ fn select(
     );
     state.current = Some((scape, source));
     state.name = Some(def.name.clone());
+    state.mixer = def.mixer.clone();
     state.generation += 1;
     state.positions = positions.clone();
     let now = time.elapsed_secs_f64();
@@ -374,16 +414,27 @@ fn play_randoms(
     }
 }
 
-/// The room readout: "<soundscape>  dsp <n> <preset>".
+/// The room readout: "<soundscape>  dsp <n> <preset>", then the room
+/// level, player preset and mixer a soundscape set.
 pub fn readout(state: &ScapeState, room: &RoomDsp) -> String {
     let p = room.active();
     let index = if room.off != 0 { 0 } else { room.preset };
-    format!(
+    let mut out = format!(
         "soundscape: {}  dsp {index} {}{}",
         state.name.as_deref().unwrap_or("none"),
         p.name,
         if (index as usize) >= PRESETS.len() { " (unknown index)" } else { "" }
-    )
+    );
+    if let Some(v) = room.scape_volume {
+        out += &format!("  dsp_volume {v}");
+    }
+    if let Some(n) = room.player {
+        out += &format!("  dsp_player {n} (not played)");
+    }
+    if let Some(m) = &state.mixer {
+        out += &format!("  mixer {m} (not played)");
+    }
+    out
 }
 
 #[cfg(test)]

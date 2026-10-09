@@ -176,8 +176,14 @@ pub enum Effect {
     /// Heal up to max health.
     Heal { target: Entity, amount: f32 },
     SetHealth { target: Entity, health: f32 },
-    /// A sound entry (or file) at a point (entity space).
-    Sound { entry: String, at: Vec3 },
+    /// A sound entry (or file) at a point (entity space); volume (0..1)
+    /// and pitch (percent) override the entry's when given.
+    Sound {
+        entry: String,
+        at: Vec3,
+        volume: Option<f32>,
+        pitch: Option<f32>,
+    },
     /// Start an entity's long-lived sound (ambient_generic), replacing
     /// the one it plays: at `at` (entity space), or following `source`
     /// when it names one. Volume (0..1), pitch (percent) and level (dB)
@@ -222,6 +228,8 @@ pub enum Effect {
         set: String,
         glass: bool,
         pieces: Vec<super::breakables::Gib>,
+        /// The sound entry the gibs make when they bounce.
+        bounce: Option<&'static str>,
     },
     /// A prop broke (spec prop_damage.md 7): the host plays its break
     /// sound where it is, explodes it, throws its pieces.
@@ -468,6 +476,8 @@ pub struct LogicWorld {
     pub round: u32,
     /// Switchable light styles and whether each is lit (`visuals`).
     pub(super) light_styles: Vec<(u8, bool)>,
+    /// What env_tonemap_controller inputs set (`visuals::tonemap_input`).
+    pub(super) tonemap: crate::map::TonemapInputs,
     /// Global states (env_global): name (lower case), state, counter.
     /// They outlive round restarts.
     pub globals: Vec<(String, GlobalState, i32)>,
@@ -534,6 +544,7 @@ impl LogicWorld {
             use_presses: Vec::new(),
             round: 0,
             light_styles: Vec::new(),
+            tonemap: Default::default(),
             globals: Vec::new(),
             collision: None,
             burning_players: Vec::new(),
@@ -576,6 +587,9 @@ impl LogicWorld {
         fresh.record = self.record;
         fresh.round = self.round + 1;
         fresh.globals = std::mem::take(&mut self.globals);
+        // The camera's tone-map settings stay (the map's own outputs set
+        // them again).
+        fresh.tonemap = self.tonemap.clone();
         fresh.collision = self.collision.clone();
         fresh.players = std::mem::take(&mut self.players);
         fresh.player_names = std::mem::take(&mut self.player_names);

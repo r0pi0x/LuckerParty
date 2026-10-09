@@ -132,15 +132,16 @@ pub fn face_samples_lit(
     (flat, pages)
 }
 
-/// A face's switchable light styles (32+) apart: each style's flat block
+/// A face's light styles other than the steady one (0) apart: animated
+/// presets (1-31) and switchable styles (32+), each style's flat block
 /// and, for bumped faces, its directional pages.
-pub fn face_switchable_styles(lump: &[u8], face: &vbsp::Face, bumped: bool) -> Vec<StyleSamples> {
+pub fn face_extra_styles(lump: &[u8], face: &vbsp::Face, bumped: bool) -> Vec<StyleSamples> {
     let per_style = if bumped { 4 } else { 1 };
     face.styles
         .iter()
         .enumerate()
         .take_while(|(_, s)| **s != 255)
-        .filter(|(_, s)| **s >= 32)
+        .filter(|(_, s)| **s != 0)
         .filter_map(|(k, &style)| {
             let k = k as u32 * per_style;
             let flat = block(lump, face, k)?;
@@ -158,7 +159,7 @@ pub fn face_switchable_styles(lump: &[u8], face: &vbsp::Face, bumped: bool) -> V
         .collect()
 }
 
-/// One switchable style's samples on one face.
+/// One light style's samples on one face.
 pub struct StyleSamples {
     pub style: u8,
     pub flat: FaceSamples,
@@ -185,6 +186,41 @@ fn block(lump: &[u8], face: &vbsp::Face, index: u32) -> Option<FaceSamples> {
     Some(FaceSamples { width, height, rgb })
 }
 
+/// The animated light style presets (`light` entities' "appearance"
+/// 1-12, as the Valve Developer Wiki's light entity page lists them):
+/// one letter a step, 'a' dark, 'm' as baked, 'z' about twice that.
+pub const STYLE_PRESETS: [&str; 13] = [
+    "m",
+    "mmnmmommommnonmmonqnmmo",
+    "abcdefghijklmnopqrstuvwxyzyxwvutsrqponmlkjihgfedcba",
+    "mmmmmaaaaammmmmaaaaaabcdefgabcdefg",
+    "mamamamamama",
+    "jklmnopqrstuvwxyzyxwvutsrqponmlkj",
+    "nmonqnmomnmomomno",
+    "mmmaaaabcdefgmmmmaaaammmaamm",
+    "mmmaaammmaaammmabcdefaaaammmmabcdefmmmaaaa",
+    "aaaaaaaazzzzzzzz",
+    "mmamammmmammamamaaamammma",
+    "abcdefghijklmnopqrrqponmlkjihgfedcba",
+    "mmnnmmnnnmmnn",
+];
+
+/// An animated style's brightness per step: the light's own `pattern`
+/// when it has one, else the style's preset; styles 13-31 without one
+/// stay as baked (no preset is documented for them).
+pub fn style_pattern(style: u8, custom: Option<&str>) -> Vec<f32> {
+    let letters = custom
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .or_else(|| STYLE_PRESETS.get(style as usize).copied())
+        .unwrap_or("m");
+    letters
+        .bytes()
+        .map(|c| c.to_ascii_lowercase().clamp(b'a', b'z'))
+        .map(|c| (c - b'a') as f32 / (b'm' - b'a') as f32)
+        .collect()
+}
+
 /// Lightmap sample coordinates (in luxels, sample centers at integers) of a
 /// point on the face's plane.
 pub fn luxel_coords(texinfo: &vbsp::TextureInfo, face: &vbsp::Face, p: vbsp::Vector) -> Vec2 {
@@ -202,7 +238,8 @@ pub struct AtlasBuilder {
     blocks: Vec<FaceSamples>,
     /// Directional lightmaps per block, when bump-mapped.
     bumped: Vec<Option<[FaceSamples; 3]>>,
-    /// Switchable styles per block, and whether each is lit at start.
+    /// Animated and switchable styles per block, and whether each is lit
+    /// at start.
     styles: Vec<Vec<(StyleSamples, bool)>>,
 }
 
@@ -226,8 +263,8 @@ impl AtlasBuilder {
         self.blocks.len() - 1
     }
 
-    /// A block's switchable styles (`face_switchable_styles`), lit at map
-    /// start or not.
+    /// A block's animated and switchable styles (`face_extra_styles`), lit
+    /// at map start or not.
     pub fn set_styles(&mut self, slot: usize, styles: Vec<(StyleSamples, bool)>) {
         self.styles[slot] = styles;
     }
@@ -294,7 +331,8 @@ impl AtlasBuilder {
                 }
             }
         }
-        // Each switchable style's share, texel by texel (padding included).
+        // Each style's share, texel by texel (padding included), block by
+        // block.
         let mut styles: Vec<MapLightStyle> = Vec::new();
         for (i, list) in self.styles.iter().enumerate() {
             let p = &placements[i];
@@ -313,6 +351,12 @@ impl AtlasBuilder {
                 };
                 let s = &mut styles[k];
                 let b = &st.flat;
+                s.rects.push([
+                    p.origin.x - PAD,
+                    p.origin.y - PAD,
+                    b.width + 2 * PAD,
+                    b.height + 2 * PAD,
+                ]);
                 for py in 0..b.height + 2 * PAD {
                     for px in 0..b.width + 2 * PAD {
                         let sx = (px as i32 - PAD as i32).clamp(0, b.width as i32 - 1) as u32;
@@ -401,6 +445,18 @@ mod tests {
             first_primitive_index: 0,
             smoothing_groups: 0,
         }
+    }
+
+    #[test]
+    fn style_patterns_follow_the_presets() {
+        // 'm' is as baked, 'a' dark, 'z' 25/12.
+        assert_eq!(style_pattern(0, None), vec![1.0]);
+        let strobe = style_pattern(4, None);
+        assert_eq!(&strobe[..2], &[1.0, 0.0]);
+        assert_eq!(style_pattern(9, None)[8], 25.0 / 12.0);
+        assert_eq!(style_pattern(20, None), vec![1.0], "no preset");
+        assert_eq!(style_pattern(1, Some("aZ")), vec![0.0, 25.0 / 12.0], "custom wins");
+        assert_eq!(style_pattern(1, None).len(), 23);
     }
 
     #[test]

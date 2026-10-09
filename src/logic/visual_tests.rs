@@ -50,6 +50,51 @@ fn sprites_show_hide_toggle_and_die() {
 }
 
 #[test]
+fn steam_turns_on_off_and_toggles() {
+    // env_steam: InitialState 1 starts it on; TurnOn, TurnOff, Toggle.
+    let entities = vec![
+        map_entity(&[("classname", "env_steam"), ("targetname", "steam"), ("InitialState", "0")]),
+        map_entity(&[("classname", "env_steamjet"), ("InitialState", "1")]),
+    ];
+    let mut w = world();
+    w.load_map(&entities);
+    assert_eq!(part(&w, 0), Some((PartKind::Steam, false)));
+    assert_eq!(part(&w, 1), Some((PartKind::Steam, true)));
+    w.queue_input("steam", "TurnOn", Value::Void, 0.0, None);
+    run_to(&mut w, 1);
+    assert_eq!(part(&w, 0), Some((PartKind::Steam, true)));
+    w.queue_input("steam", "Toggle", Value::Void, 0.0, None);
+    run_to(&mut w, 2);
+    assert_eq!(part(&w, 0), Some((PartKind::Steam, false)));
+    w.queue_input("steam", "Toggle", Value::Void, 0.0, None);
+    w.queue_input("steam", "TurnOff", Value::Void, 0.0, None);
+    run_to(&mut w, 3);
+    assert_eq!(part(&w, 0), Some((PartKind::Steam, false)));
+}
+
+#[test]
+fn soundscapes_enable_disable_and_toggle() {
+    // env_soundscape(_proxy): StartDisabled; Enable, Disable,
+    // ToggleEnabled (specs/cs_source/sounds.md 6).
+    let entities = vec![
+        map_entity(&[("classname", "env_soundscape"), ("targetname", "a"), ("StartDisabled", "1")]),
+        map_entity(&[("classname", "env_soundscape_proxy"), ("targetname", "b")]),
+    ];
+    let mut w = world();
+    w.load_map(&entities);
+    assert_eq!(part(&w, 0), Some((PartKind::Soundscape, false)));
+    assert_eq!(part(&w, 1), Some((PartKind::Soundscape, true)));
+    w.queue_input("a", "Enable", Value::Void, 0.0, None);
+    w.queue_input("b", "Disable", Value::Void, 0.0, None);
+    run_to(&mut w, 1);
+    assert_eq!(part(&w, 0), Some((PartKind::Soundscape, true)));
+    assert_eq!(part(&w, 1), Some((PartKind::Soundscape, false)));
+    w.queue_input("a", "ToggleEnabled", Value::Void, 0.0, None);
+    run_to(&mut w, 2);
+    assert_eq!(part(&w, 0), Some((PartKind::Soundscape, false)));
+}
+
+#[test]
 fn dust_turns_on_and_off() {
     // de_train's bomb-site dust clouds start disabled.
     let entities = vec![
@@ -70,6 +115,55 @@ fn dust_turns_on_and_off() {
     w.queue_input("dust", "TurnOff", Value::Void, 0.0, None);
     run_to(&mut w, 2);
     assert_eq!(part(&w, 0), Some((PartKind::Dust, false)));
+}
+
+#[test]
+fn tonemap_controller_inputs_fire_after_map_start() {
+    // surf_botanica's controller setup, then a trigger changing it later.
+    let entities = vec![
+        map_entity(&[("classname", "env_tonemap_controller"), ("targetname", "tonemap")]),
+        map_entity(&[
+            ("classname", "logic_auto"),
+            ("OnMapSpawn", "tonemap,SetAutoExposureMin,0.6,0,-1"),
+            ("OnMapSpawn", "tonemap,SetAutoExposureMax,2,0,-1"),
+            ("OnMapSpawn", "tonemap,SetBloomScale,0.15,0,-1"),
+            ("OnMapSpawn", "tonemap,SetTonemapRate,1,0,-1"),
+        ]),
+        map_entity(&[
+            ("classname", "logic_relay"),
+            ("targetname", "cave"),
+            ("OnTrigger", "tonemap,SetAutoExposureMax,4,0,-1"),
+            ("OnTrigger", "tonemap,SetTonemapRate,0.25,1,-1"),
+        ]),
+    ];
+    let mut w = world();
+    w.load_map(&entities);
+    run_to(&mut w, 30);
+    let t = w.tonemap().clone();
+    assert_eq!(
+        (t.exposure_min, t.exposure_max, t.bloom_scale, t.rate),
+        (Some(0.6), Some(2.0), Some(0.15), Some(1.0))
+    );
+    w.queue_input("cave", "Trigger", Value::Void, 0.0, None);
+    run_to(&mut w, 32);
+    assert_eq!(w.tonemap().exposure_max, Some(4.0));
+    assert_eq!(w.tonemap().rate, Some(1.0), "the rate comes a second later");
+    run_to(&mut w, 110);
+    assert_eq!(w.tonemap().rate, Some(0.25));
+    // Back to the cvars' bounds.
+    w.queue_input("tonemap", "UseDefaultAutoExposure", Value::Void, 0.0, None);
+    run_to(&mut w, 112);
+    let t = w.tonemap().clone();
+    assert!(t.default_exposure && t.exposure_min.is_none() && t.exposure_max.is_none());
+    let hdr = crate::map::MapHdr {
+        exposure: Some((0.6, 2.0)),
+        bloom_scale: 0.15,
+        rate: 1.0,
+    };
+    assert_eq!(t.apply(&hdr).exposure, Some(crate::map::DEFAULT_AUTO_EXPOSURE));
+    // Kept over a round restart.
+    w.round_restart(&entities);
+    assert!(w.tonemap().default_exposure);
 }
 
 #[test]

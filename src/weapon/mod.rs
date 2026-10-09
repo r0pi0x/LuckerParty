@@ -13,6 +13,7 @@ pub mod drop;
 pub mod economy;
 pub mod equip;
 pub mod grenade;
+pub mod random;
 
 use std::sync::Arc;
 
@@ -22,7 +23,10 @@ pub use deliver::{armor_split, falloff, hitgroup_at, quantize, spread_dir};
 
 use crate::{
     console::{Command, Console, ConsoleAppExt},
-    core::{Health, Hitgroup, Intent, LocalPlayer, MaxSpeed, MovementState, SimSet, Team},
+    core::{
+        FirstTimePredicted, Health, Hitgroup, Intent, LocalPlayer, MaxSpeed, MovementState, Predict, PredictedAppExt, SimClock,
+        SimSet, Team, run_predicted,
+    },
     map::PlaySound,
 };
 
@@ -69,16 +73,30 @@ impl Plugin for WeaponPlugin {
                         equip::apply_equips,
                         drop::pick_up,
                         drop::use_pick_up,
-                        select_weapons.in_set(SelectWeapons),
+                        run_predicted(Predict::Select).in_set(SelectWeapons),
                     )
                         .chain()
                         .before(SimSet::Movement),
                     drop::drop_on_death.after(SimSet::Weapons),
-                    (weapon_frame.in_set(WeaponFrame), timed_sounds, apply_zoom, ragdoll_shots)
+                    (run_predicted(Predict::Weapons).in_set(WeaponFrame), ragdoll_shots)
                         .chain()
                         .in_set(SimSet::Weapons),
                 ),
-            );
+            )
+            // What prediction re-runs (`core::Predict`): selection, and the
+            // weapon frame with its timed sounds and zoom.
+            .add_systems(Predict::Select, select_weapons.in_set(SelectWeapons))
+            .add_systems(
+                Predict::Weapons,
+                (weapon_frame.in_set(WeaponFrame), timed_sounds, apply_zoom).chain(),
+            )
+            .predicted::<Inventory>()
+            .predicted::<WeaponState>()
+            .predicted::<Magazine>()
+            .predicted::<AltModes>()
+            .predicted::<Hitscan>()
+            .predicted::<ViewPunch>()
+            .predicted::<Zoomed>();
         grenade::plugin(app);
         app.init_resource::<Console>();
         app.world_mut().resource_mut::<Console>().add_command(Command {
@@ -357,7 +375,7 @@ fn give_starting_weapons(world: &mut World) {
 // Components
 
 /// What a character carries, and the player-level weapon timers.
-#[derive(Component, Default, Debug)]
+#[derive(Component, Default, Clone, Debug)]
 pub struct Inventory {
     pub weapons: Vec<Entity>,
     pub active: Option<Entity>,
@@ -374,8 +392,6 @@ pub struct Inventory {
     prev_last: bool,
     /// Last tick's use key (`drop::use_pick_up`).
     prev_use: bool,
-    /// Counts ticks with an attack; seeds the shot spread.
-    command: u32,
 }
 
 /// A weapon's identity and handling.
@@ -872,9 +888,10 @@ fn select_weapons(
     mut commands: Commands,
     mut events: MessageWriter<WeaponEvent>,
     mut play: MessageWriter<PlaySound>,
-    time: Res<Time>,
+    clock: Res<SimClock>,
+    first: Res<FirstTimePredicted>,
 ) {
-    let now = time.elapsed_secs_f64();
+    let now = clock.now;
     for (owner, intent, mut inv, at) in &mut owners {
         inv.weapons.retain(|w| weapons.contains(*w));
         // Slot keys on press: the first weapon in that slot, or the next one
@@ -941,7 +958,9 @@ fn select_weapons(
             Some(s) => commands.entity(owner).insert(MaxSpeed(s)),
             None => commands.entity(owner).remove::<MaxSpeed>(),
         };
-        if let Some(s) = sounds.and_then(|s| s.deploy.clone()) {
+        if let Some(s) = sounds.and_then(|s| s.deploy.clone())
+            && first.0
+        {
             play.write(owner_sound(s, owner, at.translation, CHAN_ITEM));
         }
         if let Some(s) = sounds {
@@ -958,6 +977,7 @@ fn select_weapons(
 /// A sound from the weapon's owner at `at`.
 fn owner_sound(entry: String, owner: Entity, at: Vec3, channel: u8) -> PlaySound {
     PlaySound {
+        pitch: None,
         entry,
         at: Some(at),
         volume: None,
@@ -1028,7 +1048,7 @@ impl WeaponPartsItem<'_, '_> {
                 }
             });
             if let Some(s) = sound {
-                ctx.w.play.write(owner_sound(s, ctx.owner, ctx.eye, CHAN_WEAPON));
+                ctx.w.sound(owner_sound(s, ctx.owner, ctx.eye, CHAN_WEAPON));
             }
         }
         self.state.burst += shots;
@@ -1061,17 +1081,17 @@ fn weapon_frame(
         &MovementState,
         Option<&Health>,
         Option<&ViewPunch>,
-        Option<&crate::core::Seed>,
     )>,
     mut weapons: Query<WeaponParts>,
     mut world: deliver::World,
-    time: Res<Time>,
+    clock: Res<SimClock>,
 ) {
-    let now = time.elapsed_secs_f64();
+    // The command's time (Source's curtime).
+    let now = clock.now;
     // Compare timers against this; record new ones from `now`.
     let due = now + TIME_SLACK;
-    let dt = time.delta_secs();
-    for (owner, intent, mut inv, transform, state, health, punch, seed) in &mut owners {
+    let dt = clock.dt();
+    for (owner, intent, mut inv, transform, state, health, punch) in &mut owners {
         if health.is_some_and(|h| h.current <= 0.0) {
             continue;
         }
@@ -1079,7 +1099,6 @@ fn weapon_frame(
         let released2 = !intent.secondary && inv.prev_secondary;
         inv.prev_fire = intent.fire;
         inv.prev_secondary = intent.secondary;
-        inv.command = inv.command.wrapping_add(1);
         let Some(active) = inv.active else { continue };
         let Ok(mut w) = weapons.get_mut(active) else { continue };
         if !intent.fire {
@@ -1106,7 +1125,8 @@ fn weapon_frame(
             weapon: active,
             eye,
             aim,
-            seed: crate::core::Seed::of(seed, owner) as u32 ^ inv.command.wrapping_mul(0x9E37_79B9),
+            // Spec 4.2: from the command number.
+            seed: random::shot_seed(intent.command),
             now,
             w: &mut world,
         };
@@ -1217,7 +1237,7 @@ fn weapon_frame(
                 w.state.next_primary = w.state.next_secondary;
             }
             if let Some(s) = modes.sound {
-                ctx.w.play.write(owner_sound(s, owner, eye, CHAN_ITEM));
+                ctx.w.sound(owner_sound(s, owner, eye, CHAN_ITEM));
             }
             let next = (modes.current + 1) % modes.count.max(1);
             if let Some(s) = w.sounds {
@@ -1247,7 +1267,7 @@ fn weapon_frame(
                     if now >= w.state.next_empty_sound {
                         w.state.next_empty_sound = now + EMPTY_SOUND_INTERVAL;
                         if let Some(s) = w.sounds.and_then(|s| s.empty.clone()) {
-                            ctx.w.play.write(owner_sound(s, owner, eye, CHAN_ITEM));
+                            ctx.w.sound(owner_sound(s, owner, eye, CHAN_ITEM));
                         }
                     }
                     w.state.next_primary = now + 0.2;
@@ -1459,9 +1479,10 @@ fn timed_sounds(
     mut weapons: Query<(&Weapon, &mut WeaponState)>,
     owners: Query<&Transform>,
     mut play: MessageWriter<PlaySound>,
-    time: Res<Time>,
+    clock: Res<SimClock>,
+    first: Res<FirstTimePredicted>,
 ) {
-    let now = time.elapsed_secs_f64();
+    let now = clock.now;
     for (w, mut st) in &mut weapons {
         let Some(owner) = w.owner else { continue };
         if st.pending.is_empty() {
@@ -1470,7 +1491,9 @@ fn timed_sounds(
         let at = owners.get(owner).map_or(Vec3::ZERO, |t| t.translation);
         st.pending.retain(|(t, entry)| {
             if *t <= now {
-                play.write(owner_sound(entry.clone(), owner, at, CHAN_ITEM));
+                if first.0 {
+                    play.write(owner_sound(entry.clone(), owner, at, CHAN_ITEM));
+                }
                 false
             } else {
                 true

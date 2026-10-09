@@ -8,7 +8,7 @@ use bevy::prelude::*;
 use super::wish_dir;
 use crate::{
     character::CAPSULE_HEIGHT,
-    core::{Intent, MovementState, SimSet, Velocity},
+    core::{Intent, MovementState, Predict, PredictedAppExt, SimClock, Velocity},
     slots::RegisterSlots,
 };
 
@@ -30,7 +30,7 @@ const MAX_GROUNDED_RISE: f32 = JUMP_SPEED * 0.5;
 const STAND_EYE: f32 = 1.62 - CAPSULE_HEIGHT / 2.0;
 const CROUCH_EYE: f32 = 1.0 - CAPSULE_HEIGHT / 2.0;
 
-#[derive(Component, Default)]
+#[derive(Component, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PlaceholderMovement {
     jump_held: bool,
     /// Normal of the ground we stood on last tick.
@@ -42,7 +42,8 @@ pub struct PlaceholderMovementPlugin;
 impl Plugin for PlaceholderMovementPlugin {
     fn build(&self, app: &mut App) {
         app.register_movement::<PlaceholderMovement>(ID)
-            .add_systems(FixedUpdate, step.in_set(SimSet::Movement));
+            .add_systems(Predict::Movement, step)
+            .predicted_net::<PlaceholderMovement>();
     }
 }
 
@@ -57,9 +58,9 @@ fn step(
         &Collider,
     )>,
     move_and_slide: MoveAndSlide,
-    time: Res<Time>,
+    clock: Res<SimClock>,
 ) {
-    let dt = time.delta_secs();
+    let dt = clock.dt();
     for (entity, intent, mut me, mut transform, mut vel, mut state, collider) in &mut q {
         // Characters walk through ragdolls and loose items.
         let filter = SpatialQueryFilter::from_excluded_entities([entity]).with_mask(crate::core::CHARACTER_FILTER);
@@ -100,7 +101,7 @@ fn step(
             transform.translation,
             transform.rotation,
             desired,
-            time.delta(),
+            clock.delta,
             &config,
             &filter,
             |_| MoveAndSlideHitResponse::Accept,

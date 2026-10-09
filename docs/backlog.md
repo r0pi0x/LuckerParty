@@ -8,6 +8,15 @@ plan when work starts; delete them when done.
 
 ## 0. Playtest feedback (2026-10-07), top priority
 
+- HUD parity pass at pixel level: health, armour, ammo and money digits
+  and icons look slightly off-centre against CS:S; the weapon selection
+  (inventory) panel doesn't match CS:S's (layout, box sizes, which icons
+  and fonts, highlight, fade). Method: capture the real HUD with refcmp
+  (coordinator: reference client) at 1280x720, 1920x1080 and 4:3, overlay
+  and diff ours per panel (`HudLayout.res` positions, `xpos`/`ypos` with
+  `r`/`c` anchors, proportional scaling, digit and icon offsets), fix
+  until each panel lines up, and keep the captures' diff as a test.
+
 - Decals persist across rounds (bullet holes, blood), as we believe CS:S
   does (players bind `r_cleardecals`, now there; `mashup_round_cleardecals
   1` clears them each round). Left: confirm the game keeps them.
@@ -129,10 +138,14 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
 
 Plan: [plans/active/multiplayer.md](plans/active/multiplayer.md)
 (bevy_replicon + renet; Source-style prediction, interpolation and lag
-compensation of our own; slices 0-9). Not started; its open questions
-wait on the user. Slice 0 (command-time weapon timers, spread seeds from
-command numbers, a replayable movement/weapon schedule) helps without
-networking too.
+compensation of our own; slices 0-9). Slices 0-2 done: a listen
+server (maxplayers 4; map <name>) and the dedicated mashup_server,
+connect <ip[:port]>, characters replicated, usercmds bound to server
+ticks with clock sync, the client's own movement predicted and
+reconciled (net_graph-style readout, cl_showerror, net_fakelag;
+docs/OBSERVABILITY.md, Network play). Next: slice 3 (interpolation of
+others), then 4 (weapons, predicted). Open questions 1, 3 and 4
+still wait on the user; 2 was taken as both (listen first, dedicated too).
 
 ## 3. Weapons, remaining
 
@@ -268,15 +281,16 @@ The console and overlays are in (src/console.rs, src/client/console.rs).
 
 docs/plans/active/sound.md.
 
-- Scrapes (looping friction sounds): needs a stand-in for Source's
-  friction energy (spec open question 8); breakables' spec pitch/volume
-  rules (we play the entries as scripted) and gib bounce sounds.
+- Scrapes by ear: tune `games::cs_source::scrapes::friction_energy`
+  against CS:S (a crate shoved across concrete, a ragdoll sliding down a
+  ramp) once spec open question 8 is measured.
 - Room DSP by ear: tune `map::room::PRESETS` against CS:S (dust2's
-  tunnels, nuke's halls); soundscape `dsp_player`/`soundmixer`,
-  env_soundscape_proxy and env_soundscape Enable/Disable.
+  tunnels, nuke's halls); soundscape `dsp_player` and `soundmixer` are
+  read but not played (engine-side effects).
 - Stock ambient_generics the bomb starts (de_nuke's alarm, dust2's
   fires) now play when it explodes (`BombExplode`); check them by ear. (Prop outputs are in: de_nuke's steam, cs_office's
-  projector.) de_nuke's env_steam jets themselves aren't drawn.
+  projector.) env_steam's JetLength/SpreadSpeed/Speed inputs and heat-wave
+  jets (Type 1) are not done.
 - Measure ambient_generic's level for script entries vs raw waves (spec
   open question 11).
 - Measure on the probe server: the distance curves (replace the H1/H2
@@ -332,12 +346,32 @@ docs/plans/active/sound.md.
   (Bevy's histogram, 3/1 stops/s), the bloom filter and strength (Bevy's
   `OLD_SCHOOL` at 0.05 x bloom scale), whether bloom precedes exposure,
   HDR cubemaps/envmaps (still LDR), the `<sky>_hdr` material lookup rule,
-  controller inputs fired after map start (`SetTonemapRate`,
-  `UseDefaultAutoExposure`, triggers) and `mat_hdr_level` 1's exact look.
-  Then refcmp captures at mat_hdr_level 2.
+  `mat_hdr_level` 1's exact look, and the controller's inputs (followed
+  through the logic as they fire, `map::TonemapInputs`): what
+  `SetTonemapRate` scales (taken as a multiplier on the adaptation speed),
+  whether `UseDefaultAutoExposure` means the cvars' 0.5/2 bounds, and
+  `SetBloomScaleRange`, `SetTonemapScale`, `BlendTonemapScale` (accepted,
+  ignored; no cached map uses them). Then refcmp captures at
+  mat_hdr_level 2.
+- **Light styles and baked prop light, open questions** for a spec
+  session: animated styles step ten pattern letters a second, unblended,
+  'm' = as baked, scaling the style's lightmap share in linear light
+  (Quake's convention; the engine's rate, interpolation and scaling space
+  aren't specced), styles 13-31 without a light `pattern` stay steady,
+  and props' probes ignore them. Baked per-vertex prop light (`.vhv`,
+  `games/cs_source/vhv.rs`): its decode is taken as the spec's
+  (2v)^2.2 (shaders.md 4) for both `sp_` and `sp_hdr_` files (the HDR
+  files in the cached maps hold the same bytes as the LDR ones), each set
+  falls back to the other, and a file whose checksum or vertex count
+  doesn't fit the model is skipped; it comes out at about 0.45-0.75 of
+  our probe on average (self-shadowing, or a different scale?). Compare
+  a prop on kz_ancient_ruins or surf_demise with CS:S.
 - **More refcmp views** across dust2 (mid, long, B, spawns) and other maps.
-- Detail blend modes other than 0 and 1;
-  `$basetexturetransform` (unused on dust2).
+- **Material effects, open questions** for a spec session
+  (specs/cs_source/shaders.md 16-19): texture transform composition and
+  the TextureTransform proxy, `$emissiveblend*` (surf_demise's glowing
+  banners aren't drawn), `$selfillummask`'s channel and
+  `$selfillum_envmapmask_alpha`, detail modes 10/11.
 
 ## 9. Performance
 
@@ -387,7 +421,3 @@ Counts are from de_dust2's entity lump and static prop lump.
   func_brush) move through the logic layer, breakables break; render modes other than normal and 10 (translucent func_brush) aren't
   applied.
 - **Fire** (specs/source/fire.md) is in: env_fire (heat, growth, burn damage box with line of sight, fuel, Extinguish, outputs, re-created unlit each round, Q4), env_firesource/env_firesensor, entity flames (Ignite inputs, burning props, the gas can), the `env_fire_large_smoke` and `burning_character` looks (docs/tech-debt.md "Fire"). Next: compare a lit de_dust2 fire with CS:S's (Q1, Q10 operator meanings), and the probe-server questions: burn vs armour, the kill icon and score (Q2), player ignition (Q3), the radius damage of a burning can (Q6), burning-prop light (Q7), buried fires (Q9), floors on de_dust/de_train (Q5).
-- **Lightmap styles**: animated styles (1-31) at their pattern (they're
-  baked at normal brightness); switchable ones (32+) switch.
-- **Baked per-vertex prop lighting (`.vhv`)** for maps that ship it (dust2
-  doesn't; its props use the per-prop light probe, as in the game).

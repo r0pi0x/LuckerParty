@@ -19,7 +19,7 @@ use bevy::prelude::*;
 use crate::{
     core::{
         BaseVelocity, Damage, EntityGravity, Health, Hitgroup, Intent, MapBrush, MaxSpeed, MovementState, MovingSolid,
-        SimSet, Velocity,
+        PredictedAppExt, Velocity,
     },
     map::{
         MapBrushCollider, MapBrushTree, MapBrushes, MapTerrain, MapTerrainCollider, MapWater, PhysicsProp, PlaySound, PropSurface,
@@ -394,7 +394,7 @@ const PARALLEL_SLOP: f32 = 2.5e-5;
 const SOLID_SKIN: f32 = 0.01;
 
 /// Per-character movement state. Units and seconds as in the spec.
-#[derive(Component, Clone, Debug)]
+#[derive(Component, Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SourceMovement {
     pub on_ground: bool,
     pub ground_normal: Vec3,
@@ -419,7 +419,9 @@ pub struct SourceMovement {
     last_nudge: f32,
     /// Feet at the end of the last tick, to notice teleports.
     last_feet: Option<Vec3>,
-    /// The moving solid stood on (`MovingSolid`), if any.
+    /// The moving solid stood on (`MovingSolid`), if any. Not sent to a
+    /// predicting client (entity ids differ).
+    #[serde(skip)]
     pub ground_entity: Option<Entity>,
     /// Jump stamina left, ms (CS:S).
     pub stamina: f32,
@@ -503,7 +505,8 @@ impl Plugin for SourceMovementPlugin {
             );
         }
         app.register_movement::<SourceMovement>(ID)
-            .add_systems(FixedUpdate, step.in_set(SimSet::Movement))
+            .add_systems(crate::core::Predict::Movement, step)
+            .predicted_net::<SourceMovement>()
             .add_plugins((super::pushaway::PushAwayPlugin, super::shadow::ShadowPlugin));
     }
 }
@@ -1938,11 +1941,11 @@ fn step(
     mut play: MessageWriter<PlaySound>,
     mut damage: MessageWriter<Damage>,
     cfg: Res<SourceMovementConfig>,
-    time: Res<Time>,
+    (clock, first): (Res<crate::core::SimClock>, Res<crate::core::FirstTimePredicted>),
     other_characters: Query<(Entity, &ColliderAabb, Option<&Health>), (With<Intent>, Without<SourceMovement>)>,
     (health, god): (Query<&Health>, Query<(), With<crate::core::God>>),
 ) {
-    let dt = time.delta_secs();
+    let dt = clock.dt();
     // Every living character's box: Source hulls for Source movers, else
     // the collider's bounds.
     let alive = |e: Entity| health.get(e).is_ok_and(|h| h.current > 0.0) || health.get(e).is_err();
@@ -2068,7 +2071,11 @@ fn step(
                 **b = new;
             }
         }
-        if mover.fall_damage > 0.0 {
+        // Damage and sounds only the first time a command runs.
+        if !first.0 {
+            mover.sounds.clear();
+        }
+        if mover.fall_damage > 0.0 && first.0 {
             // Health is normalized: 1.0 = 100 points. No attacker, no
             // armour (measured: armour doesn't absorb it).
             damage.write(Damage {
@@ -2086,6 +2093,7 @@ fn step(
             // "Landing").
             if !god.contains(entity) && health.get(entity).is_ok_and(|h| h.current > 0.0) {
                 play.write(PlaySound {
+                    pitch: None,
                     entry: "Player.FallDamage".into(),
                     at: Some(to_engine(feet)),
                     volume: None,
@@ -2097,6 +2105,7 @@ fn step(
         }
         for (entry, at, volume) in mover.sounds.drain(..) {
             play.write(PlaySound {
+                pitch: None,
                 entry,
                 at: Some(to_engine(at)),
                 volume,

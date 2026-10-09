@@ -1,7 +1,9 @@
 //! CS:S soundscapes (specs/cs_source/sounds.md 6): the soundscape scripts,
 //! flattened (nested soundscapes, volumes and position overrides
 //! resolved), and the map entities that select them: trigger_soundscape
-//! boxes with their env_soundscape_triggerable, and env_soundscape points.
+//! boxes with their env_soundscape_triggerable, and env_soundscape points
+//! (with env_soundscape_proxy, which plays another env_soundscape's
+//! soundscape and positions from its own place).
 
 use std::collections::HashMap;
 
@@ -140,9 +142,15 @@ impl Builder<'_, '_> {
         };
         let block = block.clone();
         for (key, node) in &block {
-            // "dsp" sets the room preset, at the top level only.
-            if let (0, "dsp", Node::Value(v)) = (depth, key.as_str(), node) {
-                out.dsp = Some(interval(v).start.max(0.0) as u16);
+            // Room and mixer settings, at the top level only.
+            if let (0, Node::Value(v)) = (depth, node) {
+                match key.as_str() {
+                    "dsp" => out.dsp = Some(interval(v).start.max(0.0) as u16),
+                    "dsp_player" => out.dsp_player = Some(interval(v).start.max(0.0) as u16),
+                    "dsp_volume" => out.dsp_volume = Some(interval(v).start),
+                    "soundmixer" => out.mixer = Some(v.clone()),
+                    _ => {}
+                }
             }
             let Node::Block(b) = node else { continue };
             match key.as_str() {
@@ -334,10 +342,25 @@ pub fn load(materials: &mut MaterialLoader, bsp: &Bsp, map: &str, sounds: &mut M
                     entity: Some(index),
                 });
             }
-            Some("env_soundscape") if ent.prop("StartDisabled") != Some("1") => {
+            Some(class @ ("env_soundscape" | "env_soundscape_proxy")) => {
+                // A proxy plays the soundscape and positions of the
+                // env_soundscape it names ("MainSoundscapeName").
+                let main = if class == "env_soundscape_proxy" {
+                    let Some(m) = ent.prop("MainSoundscapeName").and_then(|n| {
+                        entities.iter().find(|e| {
+                            e.prop("classname") == Some("env_soundscape")
+                                && e.prop("targetname").is_some_and(|t| t.eq_ignore_ascii_case(n))
+                        })
+                    }) else {
+                        continue;
+                    };
+                    m
+                } else {
+                    ent
+                };
                 let (Some(at), Some(s)) = (
                     ent.prop("origin").and_then(vector),
-                    ent.prop("soundscape").and_then(|n| scape(&mut builder, n)),
+                    main.prop("soundscape").and_then(|n| scape(&mut builder, n)),
                 ) else {
                     continue;
                 };
@@ -349,7 +372,9 @@ pub fn load(materials: &mut MaterialLoader, bsp: &Bsp, map: &str, sounds: &mut M
                     at: to_engine(at),
                     radius: (radius >= 0.0).then_some(radius * METERS_PER_UNIT),
                     scape: s,
-                    positions: positions(ent),
+                    positions: positions(main),
+                    entity: Some(index),
+                    start_disabled: ent.prop("StartDisabled").is_some_and(|v| v.trim_start().starts_with('1')),
                 });
             }
             _ => {}

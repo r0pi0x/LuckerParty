@@ -60,6 +60,8 @@ pub fn load_level(mount: &Mount, name: &str, hdr_level: u8) -> Result<MapData, S
     report(0.02, "LoadingProgress_LoadMap");
     let path = format!("maps/{name}.bsp");
     let bytes = mount.read(&path).map_err(|e| format!("{path}: {e}"))?;
+    // What the network handshake compares (`MapData::file_hash`).
+    let file_hash: [u8; 32] = sha2::Digest::finalize(<sha2::Sha256 as sha2::Digest>::new_with_prefix(&bytes)).into();
     // Community maps often ship LZMA-compressed lumps; our own lump
     // readers want them plain.
     let bytes = super::lumps::inflate(bytes);
@@ -69,6 +71,7 @@ pub fn load_level(mount: &Mount, name: &str, hdr_level: u8) -> Result<MapData, S
     let hdr_level = if lightmap::hdr_lighting_lump(&bytes).is_some() { hdr_level.min(2) } else { 0 };
     let (mut data, layout) = convert_level(&bsp, &bytes, name, hdr_level >= 2);
     data.look = source_look_level(hdr_level, &data.entities);
+    data.file_hash = Some(file_hash);
 
     report(0.15, "LoadingProgress_PrecacheWorld");
     let mut materials = MaterialLoader::new(&bsp, mount);
@@ -78,6 +81,14 @@ pub fn load_level(mount: &Mount, name: &str, hdr_level: u8) -> Result<MapData, S
         mesh.normal_map = r.normal_map;
         mesh.blend = r.blend;
         mesh.detail = r.detail;
+        mesh.base_transform = r.base_transform;
+        mesh.selfillum = r.selfillum;
+        // UnlitGeneric brushes (neon signs) draw at their own brightness
+        // times $color; lightmapped ones ignore the tint for now.
+        mesh.unlit = r.unlit;
+        if r.unlit {
+            mesh.tint = r.tint;
+        }
         if mesh.blend.is_none() {
             mesh.blend_weights.clear();
         }
@@ -133,7 +144,7 @@ pub fn load_level(mount: &Mount, name: &str, hdr_level: u8) -> Result<MapData, S
         &shadow_hulls(&bsp, &super::ambient::raw_leaves(&bytes)),
         (&data.collision_positions, &data.collision_indices),
     );
-    super::props::add_static_props(&bsp, &mut materials, &lighting, &occluders, &mut data);
+    super::props::add_static_props(&bsp, &mut materials, &lighting, &occluders, &mut data, hdr_level >= 2);
     super::ropes::add_ropes(&bsp, &mut materials, &lighting, &occluders, &mut data);
     // The same query at run time, for view models (spec view_models.md 9).
     if let Some(tree) = data.sky_vis.clone() {
@@ -143,6 +154,7 @@ pub fn load_level(mount: &Mount, name: &str, hdr_level: u8) -> Result<MapData, S
     }
     super::sprites::add_sprites(&bsp, &mut materials, &mut data);
     super::dust::add_dust(&bsp, &mut materials, &mut data);
+    super::steam::add_steam(&bsp, &mut materials, &mut data);
     let surfaces = super::surfaceprops::SurfaceProps::load(&mut materials);
     report(0.55, "LoadingProgress_LoadResources");
     // Character bodies: a terrorist and a counter-terrorist model (CS:S
@@ -548,15 +560,15 @@ pub fn convert_level(bsp: &Bsp, bytes: &[u8], name: &str, hdr: bool) -> (MapData
                 dark_styles.contains(&style)
             });
         let slot = flat.map(|s| atlas.add_bumped(s, bumped));
-        // Switchable styles kept apart too, so lights can switch.
+        // Animated and switchable styles kept apart too, so lights can
+        // flicker and switch.
         if let Some(slot) = slot {
-            let styles: Vec<_> =
-                lightmap::face_switchable_styles(lighting, &face, flags.contains(TextureFlags::BUMPLIGHT))
-                    .into_iter()
-                    .map(|s| {
-                        let on = !dark_styles.contains(&s.style);
-                        (s, on)
-                    })
+            let styles: Vec<_> = lightmap::face_extra_styles(lighting, &face, flags.contains(TextureFlags::BUMPLIGHT))
+                .into_iter()
+                .map(|s| {
+                    let on = s.style < 32 || !dark_styles.contains(&s.style);
+                    (s, on)
+                })
                     .collect();
             if !styles.is_empty() {
                 atlas.set_styles(slot, styles);
@@ -610,7 +622,18 @@ pub fn convert_level(bsp: &Bsp, bytes: &[u8], name: &str, hdr: bool) -> (MapData
     data.entities = map_entities(bsp, &leaves);
     data.entity_scale = METERS_PER_UNIT;
 
-    let (lightmap, placements, white) = atlas.build();
+    let (mut lightmap, placements, white) = atlas.build();
+    // Animated styles' patterns: a light's custom `pattern` for its
+    // style, else the style's preset.
+    for s in lightmap.styles.iter_mut().filter(|s| s.style < 32) {
+        let custom = bsp
+            .entities
+            .iter()
+            .filter(|e| e.prop("classname").is_some_and(|c| c.starts_with("light")))
+            .filter(|e| e.prop("style").and_then(|v| v.trim().parse::<u8>().ok()) == Some(s.style))
+            .find_map(|e| e.prop("pattern").filter(|p| !p.trim().is_empty()));
+        s.pattern = lightmap::style_pattern(s.style, custom);
+    }
     for (material, mesh) in by_material.iter_mut() {
         mesh.lightmap_uvs = pending_lm[material]
             .iter()
@@ -1183,6 +1206,7 @@ pub fn source_look_level(hdr_level: u8, entities: &[crate::map::MapEntity]) -> c
     look.hdr = Some(crate::map::MapHdr {
         exposure: (hdr_level >= 2).then_some((t.exposure_min, t.exposure_max)),
         bloom_scale: t.bloom_scale,
+        rate: 1.0,
     });
     if hdr_level >= 2 {
         look.source_ldr_lightmaps = false;
@@ -1202,15 +1226,16 @@ pub struct TonemapController {
 /// mat_autoexposure_min 0.5, mat_autoexposure_max 2 and mat_bloomscale 1
 /// (their public defaults).
 pub const DEFAULT_TONEMAP: TonemapController = TonemapController {
-    exposure_min: 0.5,
-    exposure_max: 2.0,
+    exposure_min: crate::map::DEFAULT_AUTO_EXPOSURE.0,
+    exposure_max: crate::map::DEFAULT_AUTO_EXPOSURE.1,
     bloom_scale: 1.0,
 };
 
 /// The tone-map settings an `env_tonemap_controller` gets from map-start
 /// outputs (`OnMapSpawn` of `logic_auto`, how every stock map sets them):
-/// SetAutoExposureMin, SetAutoExposureMax and SetBloomScale. Other inputs
-/// and outputs fired later aren't followed.
+/// SetAutoExposureMin, SetAutoExposureMax and SetBloomScale: the look the
+/// map starts with. The logic layer then follows every controller input
+/// as it fires (`map::TonemapInputs`), these included.
 pub fn tonemap_controller(entities: &[crate::map::MapEntity]) -> TonemapController {
     let names: Vec<&str> = entities
         .iter()
@@ -1726,7 +1751,8 @@ mod tonemap_tests {
             hdr.hdr,
             Some(crate::map::MapHdr {
                 exposure: Some((0.5, 1.0)),
-                bloom_scale: 1.0
+                bloom_scale: 1.0,
+                rate: 1.0,
             })
         );
     }

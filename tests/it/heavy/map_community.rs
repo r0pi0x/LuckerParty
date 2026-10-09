@@ -203,3 +203,221 @@ fn first_hit(map: &MapData, o: Vec3, d: Vec3) -> Option<(f32, Vec3)> {
     }
     best
 }
+
+/// Static props compiled with per-vertex lighting (`sp_<n>.vhv` in the
+/// pakfile) take it instead of the light probe, and it agrees with the
+/// probe in colour (same lighting, same units, same channel order).
+#[test]
+fn baked_prop_vertex_light() {
+    for name in ["mg_lt_galaxy_v5", "surf_nebula", "kz_ancient_ruins", "surf_demise"] {
+        let Some(map) = load(name) else { continue };
+        let statics: Vec<_> = map.props.iter().filter(|p| p.entity.is_none()).collect();
+        let baked: Vec<_> = statics.iter().filter(|p| p.vertex_light.is_some()).collect();
+        // Per prop: the mean baked light over the mean probe light, per
+        // channel; the median of each.
+        let mut ratios: [Vec<f32>; 3] = Default::default();
+        for p in &baked {
+            let v = p.vertex_light.as_ref().unwrap();
+            let (mut sum_v, mut sum_p) = (Vec3::ZERO, Vec3::ZERO);
+            for m in &map.models[p.model].meshes {
+                for (i, n) in m.normals.iter().enumerate() {
+                    sum_v += Vec3::from(v[m.source_vertices[i] as usize]);
+                    sum_p += p.lighting.as_ref().unwrap().eval(p.rotation * Vec3::from(*n));
+                }
+            }
+            if sum_p.min_element() > 1e-3 {
+                for c in 0..3 {
+                    ratios[c].push(sum_v[c] / sum_p[c]);
+                }
+            }
+        }
+        let median = |v: &mut Vec<f32>| {
+            v.sort_by(f32::total_cmp);
+            v.get(v.len() / 2).copied().unwrap_or(0.0)
+        };
+        let m = ratios.each_mut().map(median);
+        let unfit: Vec<_> = map.warnings.iter().filter(|w| w.contains("per-vertex")).collect();
+        eprintln!(
+            "{name}: {} of {} static props baked; median baked/probe light per channel {m:?}; {unfit:?}",
+            baked.len(),
+            statics.len(),
+        );
+        assert!(baked.len() * 10 >= statics.len() * 9, "{name}: most static props baked");
+        assert!(unfit.is_empty(), "{name}: {unfit:?}");
+        // Same hue as the probe (the files' B, G, R order), somewhat
+        // darker (self-shadowing; docs/backlog.md's open question).
+        let (lo, hi) = (m.iter().copied().fold(f32::MAX, f32::min), m.iter().copied().fold(0.0, f32::max));
+        assert!(hi < 1.3 * lo, "{name}: channels {m:?}");
+        assert!((0.3..1.5).contains(&lo), "{name}: brightness {m:?}");
+    }
+}
+
+/// Animated light styles (1-31) keep their faces' share apart with their
+/// pattern: bhop_myztek's flickering (style 1) and second flicker (6)
+/// lights, mg_jacks_multigames_v1's candle (3) and fluorescent flicker
+/// (10) next to its switchable styles.
+#[test]
+fn animated_light_styles_keep_their_pattern() {
+    for (name, want) in [("bhop_myztek", vec![1u8, 6]), ("mg_jacks_multigames_v1", vec![1, 3, 6, 10])] {
+        let Some(map) = load(name) else { continue };
+        let l = map.lightmap.as_ref().expect("lightmap");
+        let animated: Vec<u8> = l.styles.iter().filter(|s| !s.pattern.is_empty()).map(|s| s.style).collect();
+        for style in &want {
+            let s = l.styles.iter().find(|s| s.style == *style).unwrap_or_else(|| panic!("{name}: style {style}"));
+            assert_eq!(s.pattern, cs_source::lightmap::style_pattern(*style, None), "{name}: style {style}");
+            assert!(!s.rects.is_empty() && s.rgb.iter().any(|c| c[0] > 0.01), "{name}: style {style} lights something");
+            let texels: u32 = s.rects.iter().map(|r| r[2] * r[3]).sum();
+            assert_eq!(texels as usize, s.texels.len());
+        }
+        assert!(animated.iter().all(|s| *s < 32), "{animated:?}");
+        if name == "mg_jacks_multigames_v1" {
+            assert!(l.styles.iter().any(|s| s.style >= 32 && s.pattern.is_empty()), "switchable styles too");
+        }
+    }
+}
+
+/// Materials the VMT parser refused (the map sweep: 32 over 10 maps) read
+/// the game's way: `$detailscale "[9 9 9]"`, WorldVertexTransition without
+/// `$basetexture2`, an unreadable `$basetexturetransform`, a missing
+/// closing brace; unknown shaders as their stand-ins (WindowImposter,
+/// ShatteredGlass, `Refract_DX90`).
+#[test]
+fn lenient_materials() {
+    let refused = [
+        "Vec2OrSingle",
+        "$basetexture2",
+        "$basetexturetransform",
+        "No valid token",
+        "\"windowimposter\"",
+        "\"shatteredglass\"",
+        "\"lightmappedreflective\"",
+        "\"refract_dx90\"",
+        "Vec3OrSingle",
+        "duplicate field",
+        "missing field `$basetexture`",
+    ];
+    for name in [
+        "kz_11342",
+        "kz_hikari_od_nh_v2",
+        "mg_kommando",
+        "mg_escape_prison_beta",
+        "surf_halloween_tf2",
+        "surf_jive",
+        "surf_threnody",
+    ] {
+        let Some(map) = load(name) else { continue };
+        let bad: Vec<_> = map
+            .warnings
+            .iter()
+            .filter(|w| refused.iter().any(|r| w.contains(r)))
+            .collect();
+        assert!(bad.is_empty(), "{name}: {bad:#?}");
+        if name == "surf_threnody" {
+            // Its fake skies show their cubemap.
+            assert!(
+                map.meshes
+                    .iter()
+                    .any(|m| m.material.contains("fakeskies") && m.envmap.is_some_and(|e| e.imposter)),
+                "a WindowImposter surface"
+            );
+        }
+    }
+}
+
+/// mg_swag_multigames_v1 places about 250 weapons. Every resting one swept
+/// itself (swept CCD) against all it touched each tick, the world's
+/// colliders included: 19 ms a tick, so frames took 340 ms (ticks piled
+/// up). Resting items sweep nothing now.
+#[test]
+fn resting_placed_weapons_cost_no_sweeps() {
+    let Some(map) = load("mg_swag_multigames_v1") else { return };
+    let mut sim = Sim::new((MapPlugin::new(map), SourceMovementPlugin, CsWeaponsPlugin));
+    sim.set_tick_interval(cs_source::TICK_INTERVAL);
+    // Let them land and settle.
+    sim.ticks(200);
+    let placed = {
+        let world = sim.app.world_mut();
+        world.query::<(&Loose, &MapWeapon)>().iter(world).count()
+    };
+    assert!(placed > 200, "{placed} placed weapons");
+    let mut worst = std::time::Duration::ZERO;
+    type Diagnostics = avian3d::dynamics::solver::SolverDiagnostics;
+    for _ in 0..20 {
+        *sim.app.world_mut().resource_mut::<Diagnostics>() = Diagnostics::default();
+        sim.ticks(1);
+        worst = worst.max(sim.app.world().resource::<Diagnostics>().swept_ccd);
+    }
+    let moving = {
+        let world = sim.app.world_mut();
+        world
+            .query_filtered::<&avian3d::prelude::LinearVelocity, With<MapWeapon>>()
+            .iter(world)
+            .filter(|v| v.length() > 0.5)
+            .count()
+    };
+    eprintln!("swept CCD at most {worst:?} a tick; {moving} of {placed} weapons moving");
+    // 55 ms before, 0.1-3.5 ms after (machine load).
+    assert!(worst.as_secs_f32() < 0.02, "swept CCD took {worst:?} in a tick");
+}
+
+/// surf_demise: its ramps are translucent marble over an envmap-only
+/// material (no `$basetexture`) reflecting a tinted HDR sky cubemap: black
+/// albedo (specs/cs_source/shaders.md 2), not the grey stand-in (which
+/// read as a magenta floor at the spawn). The cubemap is a half-float VTF
+/// in an LZMA-compressed pak entry the zip reader's decoder refused.
+#[test]
+fn envmap_only_ramps_reflect_their_sky() {
+    let Some(map) = load("surf_demise") else { return };
+    let bad: Vec<_> = map.warnings.iter().filter(|w| w.contains("sky_demise_05")).collect();
+    assert!(bad.is_empty(), "{bad:#?}");
+    let sky: Vec<_> = map
+        .models
+        .iter()
+        .flat_map(|m| &m.meshes)
+        .filter(|m| m.material.contains("sky_demise_05"))
+        .collect();
+    assert!(!sky.is_empty(), "the ramps' fake-sky meshes");
+    for m in sky {
+        let texture = &map.textures[m.texture.expect("a black base texture")];
+        assert_eq!(&texture.rgba8[..3], &[0, 0, 0], "{}: black albedo", m.material);
+        assert!(m.envmap.is_some_and(|e| e.cubemap.is_some()), "{}: its sky cubemap", m.material);
+    }
+}
+
+/// Material effects community maps use (specs/cs_source/shaders.md 2, 4,
+/// 6 and open questions 16 and 18): detail blend modes past 0 and 1,
+/// `$selfillum`, `$basetexturetransform` and its TextureScroll proxy, sky
+/// faces' half-height transform.
+#[test]
+fn material_effects() {
+    use mashup::map::{DetailMode, MapMesh};
+    fn meshes(map: &MapData) -> impl Iterator<Item = &MapMesh> {
+        map.meshes.iter().chain(map.models.iter().flat_map(|m| &m.meshes))
+    }
+    if let Some(map) = load("kz_ancient_ruins") {
+        // A temple prop's moss: detail mode 2 (model shader: decoded).
+        let moss = meshes(&map)
+            .find(|m| m.material.contains("doorways_moss"))
+            .expect("the doorway moss");
+        let d = moss.detail.expect("its detail");
+        assert_eq!(d.mode, DetailMode::Source(2));
+        assert!(map.textures[d.texture].srgb, "model detail other than mod2x is sRGB-decoded");
+        // Self-lit props (base alpha masks).
+        assert!(meshes(&map).any(|m| m.selfillum.is_some()), "a self-illuminated surface");
+        // A scrolling texture (TextureScroll on $basetexturetransform).
+        assert!(
+            meshes(&map).any(|m| m.base_transform.scroll != [0.0, 0.0]),
+            "a scrolling base texture"
+        );
+    }
+    if let Some(map) = load("surf_demise") {
+        if let Some(bone) = meshes(&map).find(|m| m.material.contains("bonecolor")) {
+            assert_eq!(bone.detail.map(|d| d.mode), Some(DetailMode::Source(8)));
+        }
+    }
+    if let Some(map) = load("bhop_flatzone") {
+        // Half-height sky faces: "center 0 0 scale 1 2" on the sides.
+        let sky = map.sky.as_ref().expect("a sky");
+        assert!(sky.transforms.iter().any(|t| !t.is_identity()), "sky face transforms");
+    }
+}

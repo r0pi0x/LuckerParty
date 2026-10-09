@@ -479,6 +479,9 @@ fn mesh_look(materials: &mut MaterialLoader, dirs: &[String], name: &str) -> Map
         unlit: r.unlit,
         envmap: r.envmap,
         tint: r.tint,
+        detail: r.detail,
+        base_transform: r.base_transform,
+        selfillum: r.selfillum,
     }
 }
 
@@ -538,6 +541,9 @@ fn convert_model_in(
             (look.apply(&m), slot)
         });
         let verts: Vec<&vmdl::vvd::Vertex> = mesh.vertices().collect();
+        // Each vertex's index in the model's vertex list (baked per-vertex
+        // light is stored in that order).
+        let ids: Vec<u32> = mesh.vertex_strip_indices().flatten().map(|i| i as u32).collect();
         let place = |t: &vmdl::vvd::Vertex| {
             to_engine(v(if root {
                 model.apply_root_transform(t.position)
@@ -546,6 +552,7 @@ fn convert_model_in(
             }))
         };
         let tris = verts.as_chunks::<3>().0;
+        let tri_ids = ids.as_chunks::<3>().0;
         // Wind counter-clockwise against the vertex normals: the model's
         // triangles share one winding, so take the majority over the mesh
         // and apply it to all. (Deciding per triangle flips good ones where
@@ -561,7 +568,7 @@ fn convert_model_in(
             })
             .sum::<i64>()
             > 0;
-        for tri in tris {
+        for (tri, tri_id) in tris.iter().zip(tri_ids) {
             let p: Vec<Vec3> = tri.iter().map(|t| place(t)).collect();
             let n: Vec<Vec3> = tri.iter().map(|t| to_engine(v(t.normal)).normalize_or_zero()).collect();
             let order = if reversed { [0, 2, 1] } else { [0, 1, 2] };
@@ -570,6 +577,7 @@ fn convert_model_in(
                 entry.positions.push(p[i].to_array());
                 entry.normals.push(n[i].to_array());
                 entry.uvs.push(tri[i].texture_coordinates);
+                entry.source_vertices.push(tri_id[i]);
                 if !root {
                     // Skinning weights, renormalized to sum to 1.
                     let (mut joints, mut weights) = ([0u16; 4], [0f32; 4]);
@@ -618,6 +626,9 @@ fn convert_model_in(
                             unlit: m.unlit,
                             envmap: m.envmap,
                             tint: m.tint,
+                            detail: m.detail,
+                            base_transform: m.base_transform,
+                            selfillum: m.selfillum,
                         },
                     })
                     .collect()
@@ -778,6 +789,9 @@ struct PropPlacement {
     /// Has `forcetoenablemotion` or `damagetoenablemotion`: pinned until
     /// they're reached.
     enable_threshold: bool,
+    /// Its index in the static prop lump (static props): names its baked
+    /// per-vertex light (`vhv::names`).
+    static_index: Option<usize>,
 }
 
 pub fn add_static_props(
@@ -786,9 +800,10 @@ pub fn add_static_props(
     lighting: &MapLighting,
     occluders: &Occluders,
     data: &mut MapData,
+    hdr: bool,
 ) {
     let mut placements = Vec::new();
-    for prop in bsp.static_props() {
+    for (static_index, prop) in bsp.static_props().enumerate() {
         // The stored NO_DRAW flag (0x4) is not read: the public BSP
         // description marks it "computed at run time based on dx level",
         // and community maps' version-10 prop lumps carry it on props the
@@ -822,10 +837,11 @@ pub fn add_static_props(
             body: 0,
             animated: false,
             enable_threshold: false,
+            static_index: Some(static_index),
         });
     }
     placements.extend(entity_props(bsp));
-    place_props(bsp, materials, lighting, occluders, data, placements);
+    place_props(bsp, materials, lighting, occluders, data, placements, hdr);
 }
 
 /// Props placed as entities: physics props (barrels, baskets; static here
@@ -897,6 +913,7 @@ fn entity_props(bsp: &Bsp) -> Vec<PropPlacement> {
                         .and_then(|v| v.trim().parse::<f32>().ok())
                         .is_some_and(|v| v > 0.0)
                 }),
+                static_index: None,
             })
         })
         .collect()
@@ -917,6 +934,7 @@ fn animation_targets(bsp: &Bsp) -> std::collections::HashSet<String> {
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn place_props(
     bsp: &Bsp,
     materials: &mut MaterialLoader,
@@ -924,7 +942,14 @@ fn place_props(
     occluders: &Occluders,
     data: &mut MapData,
     placements: Vec<PropPlacement>,
+    hdr: bool,
 ) {
+    // Each model's checksum and LOD 0 vertex order (`lod0_vertex_order`),
+    // read when a prop of it has baked per-vertex light.
+    let mut vertex_keys: HashMap<usize, Option<VertexKey>> = HashMap::new();
+    let mut baked = 0usize;
+    // Baked light files that didn't fit their prop's model.
+    let mut unfit: Vec<String> = Vec::new();
     let mut loaded: HashMap<(String, i32, bool), Option<usize>> = HashMap::new();
     let mut prop_datas: HashMap<usize, HashMap<String, String>> = HashMap::new();
     let mut key_values: HashMap<usize, String> = HashMap::new();
@@ -1046,6 +1071,16 @@ fn place_props(
             }
         };
         let lighting = probe(bsp, lighting, occluders, origin);
+        let vertex_light = prop
+            .static_index
+            .and_then(|n| match baked_vertex_light(materials, n, hdr, &prop.model, vertex_keys.entry(model)) {
+                Ok(v) => v,
+                Err(e) => {
+                    unfit.push(format!("{}: {e}", prop.model));
+                    None
+                }
+            });
+        baked += vertex_light.is_some() as usize;
         let skybox = bounds.as_ref().is_some_and(|b| !b.contains(prop.origin));
         let door = prop.class.as_deref() == Some(DOOR_CLASS);
         // What the logic needs to know about the entity from its model.
@@ -1097,6 +1132,7 @@ fn place_props(
             rotation,
             skybox,
             lighting: Some(lighting),
+            vertex_light,
             solid,
             // A model door's shadow would stay where it was baked, and an
             // animated prop's where it spawned.
@@ -1112,6 +1148,97 @@ fn place_props(
     failed.sort();
     failed.dedup();
     data.warnings.extend(failed);
+    if baked > 0 {
+        info!("{baked} static props lit by their baked per-vertex light");
+    }
+    if let Some(first) = unfit.first() {
+        data.warnings.push(format!(
+            "{} static props' baked per-vertex light doesn't fit their model (lit by the probe instead), e.g. {first}",
+            unfit.len()
+        ));
+    }
+}
+
+/// What a model's baked per-vertex light must match: its checksum and the
+/// model vertex (`.vvd` index) of each LOD 0 hardware vertex, in `.vtx`
+/// order (`lod0_vertex_order`).
+struct VertexKey {
+    checksum: u32,
+    order: Vec<u32>,
+}
+
+/// The `.vvd` index of each vertex the model's LOD 0 meshes draw, in the
+/// order the `.vtx` lists them (body part, model, mesh, strip group,
+/// vertex): the order baked per-vertex light is stored in. (Each LOD's
+/// colours count its `.vtx` vertices, not the `.vvd` table, which also
+/// holds vertices only lower LODs use: de_nuke's fuel cask draws 1179 of
+/// its 1955 at LOD 0, and its `.vhv` holds 1179.)
+fn lod0_vertex_order(mdl: &vmdl::mdl::Mdl, vtx: &vmdl::vtx::Vtx) -> Vec<u32> {
+    let mut order = Vec::new();
+    for (part, vpart) in mdl.body_parts.iter().zip(&vtx.body_parts) {
+        for (model, vmodel) in part.models.iter().zip(&vpart.models) {
+            let Some(lod) = vmodel.lods.first() else { continue };
+            for (mesh, vmesh) in model.meshes.iter().zip(&lod.meshes) {
+                let base = (model.vertex_offset + mesh.vertex_offset) as u32;
+                for group in &vmesh.strip_groups {
+                    order.extend(group.vertices.iter().map(|v| base + v.original_mesh_vertex_id as u32));
+                }
+            }
+        }
+    }
+    order
+}
+
+fn vertex_key(materials: &MaterialLoader, path: &str) -> Option<VertexKey> {
+    let mdl_bytes = materials.read(path)?;
+    let checksum = u32::from_le_bytes(mdl_bytes.get(8..12)?.try_into().ok()?);
+    let mdl = read_mdl(&mdl_bytes).ok()?;
+    let vtx = vmdl::vtx::Vtx::read(&materials.read(&format!("{}.dx90.vtx", path.trim_end_matches(".mdl")))?).ok()?;
+    Some(VertexKey {
+        checksum,
+        order: lod0_vertex_order(&mdl, &vtx),
+    })
+}
+
+/// Static prop `index`'s baked per-vertex light (`vhv`), decoded, by the
+/// model's own vertex index, when the map ships it for the prop's model as
+/// loaded (`key`: the model's `VertexKey`, read on first need). Ok(None):
+/// the map has none for it, and the prop keeps its light probe, as the
+/// game does for props compiled without it; Err: a file that doesn't fit
+/// the model.
+#[allow(clippy::type_complexity)]
+fn baked_vertex_light(
+    materials: &MaterialLoader,
+    index: usize,
+    hdr: bool,
+    path: &str,
+    key: std::collections::hash_map::Entry<usize, Option<VertexKey>>,
+) -> Result<Option<std::sync::Arc<Vec<[f32; 3]>>>, String> {
+    let Some((name, bytes)) = super::vhv::names(index, hdr)
+        .into_iter()
+        .find_map(|n| materials.read_packed(&n).map(|b| (n, b)))
+    else {
+        return Ok(None);
+    };
+    let Some(key) = key.or_insert_with(|| vertex_key(materials, path)).as_ref() else {
+        return Ok(None);
+    };
+    let v = super::vhv::parse(&bytes).map_err(|e| format!("{name}: {e}"))?;
+    if v.checksum != key.checksum || v.colors.len() != key.order.len() {
+        return Err(format!(
+            "{name} (checksum {:08x}, {} vertices; the model's {:08x}, {})",
+            v.checksum,
+            v.colors.len(),
+            key.checksum,
+            key.order.len()
+        ));
+    }
+    let size = key.order.iter().max().map_or(0, |m| *m as usize + 1);
+    let mut light = vec![[0.0f32; 3]; size];
+    for (&at, c) in key.order.iter().zip(v.colors) {
+        light[at as usize] = super::vhv::decode(c);
+    }
+    Ok(Some(std::sync::Arc::new(light)))
 }
 
 /// A model's skeleton and sequences (animated props), when it has any.

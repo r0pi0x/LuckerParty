@@ -46,7 +46,8 @@ pub enum Class {
     /// prop_dynamic, prop_physics*: damage, outputs, visibility, skin,
     /// body group, animation.
     Prop(Box<super::props::Prop>),
-    /// env_sprite, func_dustmotes, func_dustcloud: drawn while on.
+    /// env_sprite, func_dustmotes, func_dustcloud, env_steam: drawn while
+    /// on; env_soundscape: picked while on.
     Part(super::visuals::Part),
     /// light, light_spot: a switchable light style.
     Light(super::visuals::Light),
@@ -64,6 +65,8 @@ pub enum Class {
     AreaPortal(super::visuals::AreaPortal),
     /// func_occluder.
     Occluder(super::visuals::Occluder),
+    /// env_tonemap_controller: the HDR camera's exposure and bloom.
+    Tonemap,
     /// game_player_equip (what it gives, by Use) and player_weaponstrip
     /// (gives nothing, strips).
     Equip(Equip),
@@ -158,7 +161,7 @@ pub struct Filter {
 /// ignored. Everything else (other commands: quit, exec, bind, connect,
 /// rcon, changelevel, map, kick, writing configs, plugin commands such
 /// as `sm_say`; several commands on one line) is refused.
-pub const SETTING_PREFIXES: &[&str] = &["sv_", "mp_", "phys_", "bot_", "ammo_"];
+pub const SETTING_PREFIXES: &[&str] = crate::console::SERVER_PREFIXES;
 
 /// Parts of names a map may never set although their prefix fits:
 /// passwords, remote control, downloads and uploads, logging, bans,
@@ -400,11 +403,18 @@ impl Class {
             "func_dustmotes" | "func_dustcloud" => {
                 Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::Dust))
             }
+            "env_steam" | "env_steamjet" => {
+                Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::Steam))
+            }
+            "env_soundscape" | "env_soundscape_proxy" => {
+                Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::Soundscape))
+            }
             "func_areaportal" | "func_areaportalwindow" => {
                 super::visuals::spawn_area_portal(w, id).map_or(Class::None, Class::AreaPortal)
             }
             "func_occluder" => super::visuals::spawn_occluder(w, id).map_or(Class::None, Class::Occluder),
             "light" | "light_spot" => Class::Light(super::visuals::spawn_light(w, id)),
+            "env_tonemap_controller" => Class::Tonemap,
             "env_global" => Class::Global(global_spawn(w, id)),
             "env_fire" => Class::Fire(Box::new(super::fire::spawn_fire(w, id))),
             "env_firesource" => Class::FireSource(super::fire::spawn_source(w, id)),
@@ -970,6 +980,7 @@ pub(super) fn class_input(
         Class::Fire(_) | Class::FireSource(_) | Class::FireSensor(_) => return super::fire::input(w, id, input, value),
         Class::AreaPortal(_) => return super::visuals::area_portal_input(w, id, input),
         Class::Occluder(_) => return super::visuals::occluder_input(w, id, input),
+        Class::Tonemap => return super::visuals::tonemap_input(w, input, value),
         Class::Equip(equip) => match input {
             // player_weaponstrip: Strip (the activator), StripWeaponsAndSuit.
             "strip" | "stripweaponsandsuit" => equip_player(w, &equip, activator),

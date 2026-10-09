@@ -1,7 +1,10 @@
 //! Headless simulation for tests and tools: no window, no rendering, time
 //! advanced by exact fixed ticks. Scenario tests in `tests/` build on this.
 
-use std::time::Duration;
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use avian3d::prelude::*;
 use bevy::{prelude::*, time::TimeUpdateStrategy};
@@ -9,12 +12,38 @@ use bevy::{prelude::*, time::TimeUpdateStrategy};
 use crate::{
     DEFAULT_TICK_HZ, SimPlugins,
     character::character_bundle,
-    core::{Intent, MovementState, SimTick, Team, Velocity},
+    core::{Intent, LocalPlayer, MovementState, SimTick, Team, Velocity},
+    net::memory::{Link, LinkConditions},
     slots::set_movement,
 };
 
 pub struct Sim {
     pub app: App,
+}
+
+/// The simulation with no window or rendering: what `Sim` runs (stepped by
+/// hand).
+pub fn add_headless(app: &mut App) {
+    add_headless_with(app, MinimalPlugins.build());
+}
+
+/// The same with `minimal` (`MinimalPlugins`, e.g. with a run loop that
+/// waits between frames: the dedicated server).
+pub fn add_headless_with(app: &mut App, minimal: bevy::app::PluginGroupBuilder) {
+    app.add_plugins((
+        minimal,
+        TransformPlugin,
+        // avian watches mesh assets even when no collider uses them.
+        AssetPlugin::default(),
+        bevy::mesh::MeshPlugin,
+        // Interpolation eases rendering between ticks; headless, it
+        // would make `Transform` show the previous tick.
+        PhysicsPlugins::default()
+            .with_collision_hooks::<crate::map::MapCollisionHooks>()
+            .build()
+            .disable::<PhysicsInterpolationPlugin>(),
+        SimPlugins,
+    ));
 }
 
 /// `Sim::pad`'s resource.
@@ -31,22 +60,22 @@ impl Sim {
     /// and any game plugins whose implementations the test uses).
     pub fn new<M>(plugins: impl bevy::app::Plugins<M>) -> Self {
         let mut app = App::new();
-        app.add_plugins((
-            MinimalPlugins,
-            TransformPlugin,
-            // avian watches mesh assets even when no collider uses them.
-            AssetPlugin::default(),
-            bevy::mesh::MeshPlugin,
-            // Interpolation eases rendering between ticks; headless, it
-            // would make `Transform` show the previous tick.
-            PhysicsPlugins::default()
-                .with_collision_hooks::<crate::map::MapCollisionHooks>()
-                .build()
-                .disable::<PhysicsInterpolationPlugin>(),
-            SimPlugins,
-        ))
-        .add_plugins(plugins)
-        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
+        add_headless(&mut app);
+        app.add_plugins(plugins);
+        Self::start(app)
+    }
+
+    /// Like `new`, with the plugins added by `setup` (a `NetSim` builds
+    /// several apps from one setup).
+    pub fn with(setup: impl FnOnce(&mut App)) -> Self {
+        let mut app = App::new();
+        add_headless(&mut app);
+        setup(&mut app);
+        Self::start(app)
+    }
+
+    fn start(mut app: App) -> Self {
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
             1.0 / DEFAULT_TICK_HZ,
         )));
         app.finish();
@@ -145,5 +174,132 @@ impl Sim {
             .get::<MovementState>(entity)
             .expect("no MovementState")
             .clone()
+    }
+}
+
+type Setup = Arc<dyn Fn(&mut App) + Send + Sync>;
+
+/// A server and clients in one process, each a headless `Sim`, joined by
+/// an in-memory link (`net::memory`) with seeded latency, jitter and loss.
+/// Stepped together one tick at a time: the server, then each client.
+pub struct NetSim {
+    pub server: Sim,
+    pub clients: Vec<Sim>,
+    pub link: Arc<Mutex<Link>>,
+    setup: Setup,
+}
+
+impl NetSim {
+    /// A server running what `setup` adds (a map, game plugins) with
+    /// `clients` clients connected (not yet joined: step until they are,
+    /// e.g. `until_joined`). Client ids are 1, 2, ...
+    pub fn new(
+        conditions: LinkConditions,
+        seed: u64,
+        clients: usize,
+        setup: impl Fn(&mut App) + Send + Sync + 'static,
+    ) -> Self {
+        let setup: Setup = Arc::new(setup);
+        let link = Link::new(conditions, seed);
+        let mut server = Sim::with(|app| {
+            app.add_plugins(crate::net::NetPlugin);
+            setup(app);
+        });
+        // Room for any test's players (`a_full_server_refuses` sets fewer).
+        server.app.world_mut().resource_mut::<crate::net::NetSettings>().maxplayers = 32;
+        crate::net::memory::serve(server.app.world_mut(), link.clone()).expect("serve");
+        let mut sim = Self {
+            server,
+            clients: Vec::new(),
+            link,
+            setup,
+        };
+        for _ in 0..clients {
+            sim.add_client(|_| {});
+        }
+        sim
+    }
+
+    /// Connect another client, after `before` changes its world (e.g. its
+    /// `net::NetVersion`). Returns its index in `clients`.
+    pub fn add_client(&mut self, before: impl FnOnce(&mut World)) -> usize {
+        let setup = self.setup.clone();
+        let mut client = Sim::with(|app| {
+            app.add_plugins(crate::net::NetPlugin);
+            setup(app);
+        });
+        before(client.app.world_mut());
+        let id = self.clients.len() as u64 + 1;
+        crate::net::memory::join(client.app.world_mut(), self.link.clone(), id).expect("join");
+        self.clients.push(client);
+        self.clients.len() - 1
+    }
+
+    /// Client `i`'s id (`NetCharacter::owner` of its character).
+    pub fn client_id(&self, i: usize) -> u64 {
+        i as u64 + 1
+    }
+
+    /// One tick everywhere: the link's clock, the server, every client.
+    pub fn step(&mut self) {
+        let dt = Duration::from_secs_f64(1.0 / DEFAULT_TICK_HZ);
+        self.link.lock().unwrap().advance(dt);
+        self.server.app.update();
+        for c in &mut self.clients {
+            c.app.update();
+        }
+    }
+
+    pub fn ticks(&mut self, n: u64) {
+        for _ in 0..n {
+            self.step();
+        }
+    }
+
+    /// Step until `done` holds (true) or `max` ticks pass (false).
+    pub fn until(&mut self, max: u64, mut done: impl FnMut(&mut Self) -> bool) -> bool {
+        for _ in 0..max {
+            if done(self) {
+                return true;
+            }
+            self.step();
+        }
+        done(self)
+    }
+
+    /// Step until every client has joined (its map checked) and sees its
+    /// own character; panics after `max` ticks.
+    pub fn until_joined(&mut self, max: u64) {
+        let ok = self.until(max, |s| {
+            (0..s.clients.len()).all(|i| {
+                s.clients[i].app.world().contains_resource::<crate::net::client::Joined>() && s.local_player(i).is_some()
+            })
+        });
+        assert!(ok, "clients didn't join within {max} ticks");
+    }
+
+    /// Client `i`'s own character (its `LocalPlayer`), in its world.
+    pub fn local_player(&mut self, i: usize) -> Option<Entity> {
+        let world = self.clients[i].app.world_mut();
+        world
+            .query_filtered::<Entity, With<LocalPlayer>>()
+            .iter(world)
+            .next()
+    }
+
+    /// The server's character for client `i`.
+    pub fn character_of(&mut self, i: usize) -> Option<Entity> {
+        let id = self.client_id(i);
+        Self::owned_by(&mut self.server, Some(id))
+    }
+
+    /// The character owned by `owner` in a sim's world (`None`: a bot).
+    pub fn owned_by(sim: &mut Sim, owner: Option<u64>) -> Option<Entity> {
+        let world = sim.app.world_mut();
+        world
+            .query::<(Entity, &crate::net::NetCharacter)>()
+            .iter(world)
+            .find(|(_, c)| c.owner == owner)
+            .map(|(e, _)| e)
     }
 }

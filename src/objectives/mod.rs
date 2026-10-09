@@ -36,7 +36,10 @@ impl Plugin for ObjectivesPlugin {
             .init_resource::<RoundOpen>()
             .add_message::<ObjectiveEvent>()
             .add_message::<crate::map::entities::FireEntityOutput>()
-            .add_systems(FixedUpdate, load_objectives.before(SimSet::Rules));
+            .add_systems(
+                FixedUpdate,
+                load_objectives.before(SimSet::Rules).run_if(crate::core::authoritative),
+            );
         bomb::plugin(app);
         hostages::plugin(app);
     }
