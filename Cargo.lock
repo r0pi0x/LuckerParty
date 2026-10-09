@@ -4483,6 +4483,7 @@ dependencies = [
 name = "mashup"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
  "arboard",
  "avian3d",
  "bevy",

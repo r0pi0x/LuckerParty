@@ -8,15 +8,6 @@ plan when work starts; delete them when done.
 
 ## 0. Playtest feedback (2026-10-07), top priority
 
-- HUD parity pass at pixel level: health, armour, ammo and money digits
-  and icons look slightly off-centre against CS:S; the weapon selection
-  (inventory) panel doesn't match CS:S's (layout, box sizes, which icons
-  and fonts, highlight, fade). Method: capture the real HUD with refcmp
-  (coordinator: reference client) at 1280x720, 1920x1080 and 4:3, overlay
-  and diff ours per panel (`HudLayout.res` positions, `xpos`/`ypos` with
-  `r`/`c` anchors, proportional scaling, digit and icon offsets), fix
-  until each panel lines up, and keep the captures' diff as a test.
-
 - Decals persist across rounds (bullet holes, blood), as we believe CS:S
   does (players bind `r_cleardecals`, now there; `mashup_round_cleardecals
   1` clears them each round). Left: confirm the game keeps them.
@@ -76,9 +67,10 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
 
 - CS:S HUD: health/armour/ammo/money/round-timer panels, death notices
   and the Tab scoreboard are in (`client/game_hud.rs`,
-  `client/scoreboard.rs`), and the weapon selection
-  (`client/weapon_select.rs`, kill icons standing in for the scripts'
-  selection icons). The team menu is in (M; you start as CT). The radio
+  `client/scoreboard.rs`), and the weapon selection and pickup history
+  (`client/weapon_select.rs`; `hud_fastswitch`), matched to CS:S
+  captures panel by panel (`refcmp hudcmp`). Left of that pass: the
+  radar's look (zoom, translucency, markers) is ours. The team menu is in (M; you start as CT). The radio
   is in (`client/radio.rs`: Z/X/C menus, the calls as console commands,
   "Fire in the hole!" on throws, bots' enemy spotted/down and need
   backup, and bots' own commands and reports: go / stick together /

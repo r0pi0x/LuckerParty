@@ -71,6 +71,8 @@ impl HudPanel {
 pub struct HudFont {
     pub data: Arc<Vec<u8>>,
     pub tall: f32,
+    /// Added to the screen (`additive 1`), else blended.
+    pub additive: bool,
 }
 
 /// An icon cut from a texture.
@@ -335,6 +337,9 @@ pub struct UiFontSize {
     pub yres: Option<(u32, u32)>,
     /// Drawn smoothed (`antialias 1`); else hard-edged.
     pub antialias: bool,
+    /// Added to the screen (`additive 1`; HUD text drawn by
+    /// `client::hud_text`), else blended.
+    pub additive: bool,
 }
 
 impl UiFontSize {
@@ -648,6 +653,7 @@ mod tests {
             weight: 900,
             yres,
             antialias: false,
+            additive: false,
         };
         let sizes = [
             size(12.0, Some((480, 599))),

@@ -174,6 +174,7 @@ pub fn load(materials: &mut MaterialLoader, map: &str) -> Option<GameHud> {
                 HudFont {
                     data: data.clone(),
                     tall,
+                    additive: first.str("additive").is_some_and(|a| a.trim() != "0"),
                 },
             );
         }
@@ -239,12 +240,16 @@ pub fn load(materials: &mut MaterialLoader, map: &str) -> Option<GameHud> {
     // Panels.
     let num = |p: &Kv, k: &str| p.str(k).and_then(|v| v.trim().parse::<f32>().ok()).unwrap_or(0.0);
     for (name, p) in layout.items() {
-        let (Some(x), Some(y)) = (
+        // A panel needs a position; one it leaves out is 0 (VGUI's
+        // default: `HudHistoryResource` gives no `ypos`).
+        let (x, y) = (
             p.str("xpos").and_then(HudCoord::parse),
             p.str("ypos").and_then(HudCoord::parse),
-        ) else {
+        );
+        if x.is_none() && y.is_none() {
             continue;
-        };
+        }
+        let (x, y) = (x.unwrap_or(HudCoord::Start(0.0)), y.unwrap_or(HudCoord::Start(0.0)));
         hud.panels.insert(
             name.clone(),
             HudPanel {

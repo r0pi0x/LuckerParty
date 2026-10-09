@@ -644,6 +644,35 @@ cargo run --features dev --bin refcmp -- capture-ours --only a_sign
 - mashup renders views off-screen at 1280x720 (`--views`), matching CS:S's
   framing (90 degrees horizontal at 4:3 = 74 vertical).
 
+### Comparing the HUD (`refcmp hudcmp`)
+
+```
+cargo build --features dev
+cargo run --features dev --bin refcmp -- capture-hud --out <scratch>
+cargo run --features dev --bin refcmp -- hudcmp --out <scratch> --hud-ref <dir>
+```
+
+- `--hud-ref <dir>` holds CS:S captures named `hudref_<state>_<W>x<H>.jpg`
+  (default `<dump>/refcmp/hud/ref`; game imagery, never in the repo). The
+  coordinator takes them with the reference client: de_dust2, a CT with
+  100 health, no armour, $800, the USP drawn and an AK-47 in slot 1;
+  state `ak` with `hud_fastswitch 0` and the selection open on slot 1,
+  `select` open on slot 2; at 1280x720, 1920x1080 and 1024x768.
+- `capture-hud` runs mashup into the same states at the same sizes
+  (`ours_<state>_<W>x<H>.png`; console commands, then `screenshot`).
+- `hudcmp` crops each panel part (health, armour, clock, money and ammo
+  digits and icons, the panel boxes, the selection's numbers, icon, name
+  and box, the pickup history, the radar's box) from both and prints, per
+  part, the offset of ours (the shift that best correlates the two images'
+  HUD-coloured ink) and both ink (or box) rectangles; `hudcmp.txt`,
+  `hudcmp.json` and enlarged crops (reference | ours | overlay: reference
+  red, ours green) go to `<out>/hud/report/`. Different text (the clock,
+  ammo counts) still lines up by its left or right edge.
+- The measured reference rectangles are numbers in
+  `tests/it/heavy/hud_layout.rs`, checked against `game_hud::layout`,
+  `weapon_select::selection_layout` and `history_layout` through
+  `hud_text::ink_rect` (no images needed).
+
 ## Measuring CS:S behaviour live
 
 The reference CS:S (see refcmp) can also be measured directly over RCON:

@@ -60,6 +60,7 @@ mod heavy {
     mod bot_nav;
     mod bot_radio;
     mod bot_rounds;
+    mod hud_layout;
     mod lightmap_probe;
     mod map_ambient;
     mod map_areaportals;
