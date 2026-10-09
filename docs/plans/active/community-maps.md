@@ -140,46 +140,58 @@ headless dev box (one view each, so only a hint).
 | Material effects the shaders lacked: `$detail` on models (surf_surreal, kz_ancient_ruins, surf_boreas: 120+ materials) and blend modes past 0 and 1 (2, 5, 6, 8), `$selfillum` (27 maps; also de_nuke's windows), `$basetexturetransform` (22 maps) and TextureScroll on it (21), sky faces' half-height transform, UnlitGeneric brushes lit by the lightmap, `$selfillum` inside `">=DX90"` blocks ignored | 30+ | `map::material_fx`, world.wgsl and prop.wgsl (specs/cs_source/shaders.md; open questions 16-19 list what the spec leaves out); `$emissiveblend*` (surf_demise) still not drawn (question 17); de_nuke refcmp 0.0248 -> 0.0238 (its self-lit windows), de_dust2 unchanged (0.0308) |
 | Slow first views: mg_swag_multigames_v1 341 ms (every resting placed weapon ran swept CCD each tick, 19 ms a tick), surf_demise 98 ms (37k static parts revisited by transform propagation whenever anything under the map's root moved) | 2 | CCD only above 0.5 m/s; static parts under a root of their own. performance.md, "Community maps' slow first views", has the traces and before/after numbers |
 
+## Map entities (2026-10-09)
+
+From the four specs below (reviewed and approved): player_speedmod,
+game_ui, env_fade, game_score, env_hudhint, env_explosion,
+func_wall_toggle, func_conveyor (`logic::game`); point_viewcontrol
+(`logic::camera`, `core::MapView`); point_template and env_entity_maker
+(`logic::templates`, node copies in `map::copies`); func_physbox(_multiplayer)
+as physics bodies with the compiler's stored mass, phys_thruster and
+phys_keepupright (`logic::physics`, `map::controllers`); point_spotlight,
+env_laser, persistent env_beam and env_lightglow drawn (`map::beams`),
+env_spark's sparks; entities parented to a placed weapon follow it and
+its carrier, OnPlayerPickup (`map::entities` anchors). mg_item_battle_v4b:
+walking onto an item knife picks it up, its car rides along under the
+player and its speed change applies. Tests: `src/logic/game_tests.rs`,
+`template_tests.rs`, `tests/it/map_game_entities.rs`,
+`tests/it/heavy/map_community.rs` (`item_children_follow_the_player`).
+Shortcuts are in docs/tech-debt.md; the specs' open questions stand.
+
+Sweep (89 maps), entity classes nothing handles: 56 classes / 2945
+entities before, 36 / 684 after; no map lost its load. Left of the four
+specs: prop_ragdoll (6 maps), env_spritetrail (8), strike-generator
+env_beams, parented (dynamic) spotlights and their dynamic light.
+
 ## Left, ranked by maps affected
 
 Generic, by maps affected (counts from the sweep after the fixes):
 
-1. **Visual entities not drawn**: point_spotlight (22 maps, 344 entities),
-   env_laser (9), env_steam (8), env_spritetrail (8), info_particle_system
-   (7), env_lightglow (5), env_beam (4), env_spark (5), env_smokestack (3).
-   Spec first (sprites_dust.md covers env_sprite only).
-2. **point_viewcontrol** (23 maps): intro and spectator cameras; harmless
-   left out except where a map relies on it for a minigame.
-3. **point_template / env_entity_maker** (16 / 7 maps; `ForceSpawn` inputs
-   unhandled): spawning copies of template entities at run time. Needs a
-   spec (entity_io.md) and logic-world support for new entities from the
-   map's keyvalues.
-4. **Physics brushes**: func_physbox (14 maps, 252 entities),
-   func_physbox_multiplayer (6), phys_thruster (8), phys_keepupright (8),
-   prop_ragdoll (6), phys_constraint/ballsocket. func_physbox loads as a
-   static brush today (mg_ maps' boats and karts don't move).
-5. **Player/game entities in mg_ maps**: player_speedmod (8), game_ui (7:
-   vehicles and turrets driven by the player's keys), env_fade (7),
-   game_score (5), env_hudhint (4), env_explosion (5), func_wall_toggle
-   (6 maps, 172 entities; static now), func_conveyor (3, static).
-6. **env_tonemap_controller inputs** (15 maps: SetBloomScale,
+1. **Visual entities not drawn**: env_spritetrail (8 maps),
+   info_particle_system (7), env_smokestack (3), strike env_beams;
+   prop_ragdoll (6) isn't placed (physics_brushes.md 6).
+2. **Unspecced classes**: logic_measure_movement (3 maps, 39),
+   func_rot_button, momentary_rot_button, phys_motor, phys_constraint/
+   ballsocket, point_teleport, point_push, env_texturetoggle,
+   env_screenoverlay, func_water_analog.
+3. **env_tonemap_controller inputs** (15 maps: SetBloomScale,
    SetAutoExposureMin/Max): HDR look, logic logs them unhandled.
-7. **Triggers whose filtername names a missing filter** (5 maps, 341
+4. **Triggers whose filtername names a missing filter** (5 maps, 341
    triggers: filter_blue/filter_red on surf_ maps): the game then lets
    every activator through, as we do; only the log line is noise.
-8. **Materials and textures** (sweep of the evening of 2026-10-08): 19
+5. **Materials and textures** (sweep of the evening of 2026-10-08): 19
    textures missing over 10 maps (mostly `_rt_camera`, custom cubemaps,
    files the map's author didn't pack), 11 materials missing over 8 maps,
    1 unreadable (an empty file, mg_jacks_multigames_v1), 1 unknown shader
    (Screenspace_General, mg_creative_multigames_v8_ns), 9 models
    unreadable (4 maps). Sounds: 14 missing (7 maps; mostly not packed).
-9. **Decals/overlays without a surface** (11 / 5 maps, one each mostly),
+6. **Decals/overlays without a surface** (11 / 5 maps, one each mostly),
    as on the stock maps (other-maps.md #11).
-10. **Server commands** maps send that we refuse: SourceMod/Mani admin
-    commands (ma_say, sm_say: chat text) on 4 maps.
+7. **Server commands** maps send that we refuse: SourceMod/Mani admin
+   commands (ma_say, sm_say: chat text) on 4 maps.
 
-Specs for items 1–5 (written 2026-10-08 from the public Source SDK 2013,
-draft, to be reviewed before implementation):
+Specs for the map entities (written 2026-10-08 from the public Source SDK 2013,
+implemented 2026-10-09, above):
 [visual_entities.md](../../../specs/source/visual_entities.md)
 (point_spotlight, env_laser, env_beam, env_spritetrail, env_lightglow,
 env_steam, env_spark),
@@ -207,7 +219,7 @@ load 12-15 with both builds while its threads are mostly idle (waiting on
 presentation or the GPU; not investigated further). mg_boatrace_scramble's
 first spawn isn't black here: three runs (dev and playtest builds, 60 and
 600 frames) show the lit shooting range. The black view didn't come back;
-the map's point_viewcontrol (`View-Startup`, unhandled) is the lead if it
+the map's point_viewcontrol (`View-Startup`, handled since 2026-10-09) is the lead if it
 does. The new sweep's frame times (`target/mapsweep/after/report.md` in
 this session's worktree) were taken under load 8-15, so most maps sit
 between the 60 Hz cap and 30 ms.

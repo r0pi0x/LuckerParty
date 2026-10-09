@@ -248,6 +248,7 @@ pub(super) fn anchor_weapons(
     owners: Query<(&Transform, &crate::core::Intent, Option<&crate::core::MovementState>)>,
     mut nodes: Query<(&MapAnchor, &mut Transform), (Without<Loose>, Without<crate::core::Intent>)>,
     mut anchors: ResMut<EntityAnchors>,
+    map: Option<Res<MapEntities>>,
 ) {
     if nodes.is_empty() {
         if !anchors.0.is_empty() {
@@ -256,7 +257,7 @@ pub(super) fn anchor_weapons(
         return;
     }
     let mut poses: Vec<(usize, Transform)> = Vec::new();
-    for (weapon, w, map) in &weapons {
+    for (weapon, w, map_weapon) in &weapons {
         let pose = match w.owner {
             Some(o) => {
                 let Ok((t, intent, state)) = owners.get(o) else { continue };
@@ -267,11 +268,23 @@ pub(super) fn anchor_weapons(
                     .with_rotation(rotation_to_engine(entity_rotation(Vec3::new(0.0, yaw, 0.0))))
             }
             None => match loose.iter().find(|(l, _)| l.weapon == weapon) {
-                Some((_, t)) => *t,
+                // Where the map placed it, until someone takes it (its
+                // loose body settling or tumbling doesn't move what
+                // hangs on it).
+                Some((l, _)) if l.dropper.is_none() && map.as_ref().is_some_and(|m| m.entities.len() > map_weapon.0) => {
+                    let (m, e) = map.as_ref().map(|m| (m, &m.entities[map_weapon.0])).unwrap();
+                    Transform::from_translation(entity_to_engine(e.origin(), m.scale))
+                        .with_rotation(rotation_to_engine(entity_rotation(e.angles())))
+                }
+                // Dropped: where it lies, turned only about the vertical.
+                Some((_, t)) => {
+                    let (yaw, _, _) = t.rotation.to_euler(EulerRot::YXZ);
+                    Transform::from_translation(t.translation).with_rotation(Quat::from_rotation_y(yaw))
+                }
                 None => continue,
             },
         };
-        poses.push((map.0, pose));
+        poses.push((map_weapon.0, pose));
     }
     poses.sort_by_key(|(i, _)| *i);
     for (anchor, mut t) in &mut nodes {

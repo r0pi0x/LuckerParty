@@ -65,6 +65,7 @@ impl Plugin for LogicPlugin {
         app.init_resource::<HudMessages>()
             .init_resource::<ScreenFades>()
             .add_message::<HudEvent>()
+            .add_message::<crate::map::beams::SparkBurst>()
             .add_message::<crate::core::ScoreChange>()
             .add_message::<PlaySound>()
             .add_message::<SoundControl>()
@@ -868,7 +869,10 @@ fn sync_movers(world: &mut World, logic: &mut Logic) {
         let Some(node) = nodes.get(&id) else {
             continue;
         };
-        let shootable = logic.world.shootable(id);
+        // A brush riding a physics brush keeps its collider off (it would
+        // collide with the body carrying it); players still meet its
+        // brushes (`MovingSolid`).
+        let shootable = logic.world.shootable(id) && !logic.world.rides_body(id);
         let panes = logic.world.window(id).filter(|w| w.window_broken).map(|w| {
             let e = logic.world.get(id).unwrap();
             let s = logic.scale;
@@ -1238,6 +1242,13 @@ fn apply_effects(world: &mut World, effects: Vec<Effect>, scale: f32) {
                 origin,
                 angles,
             } => spawn_copy(world, id, source, origin, angles, scale),
+            Effect::Spark { at, dir, magnitude } => {
+                world.write_message(crate::map::beams::SparkBurst {
+                    at: entity_to_engine(at, scale),
+                    dir: entity_to_engine(dir, 1.0),
+                    magnitude,
+                });
+            }
             Effect::BodyVelocity { id, velocity } => {
                 if let Some(node) = entity_node(world, id)
                     && let Some(mut v) = world.get_mut::<LinearVelocity>(node)
@@ -1547,21 +1558,37 @@ fn run_phase(world: &mut World, phase: impl FnOnce(&mut LogicWorld, &dyn Collisi
 /// The anchor entities (placed weapons) where the ECS has them
 /// (`map::entities::EntityAnchors`), and their children with them.
 fn follow_anchors(world: &World, logic: &mut Logic) {
-    let Some(anchors) = world.get_resource::<crate::map::entities::EntityAnchors>() else {
-        return;
-    };
-    if anchors.0.is_empty() || logic.world.follows.is_empty() {
+    if logic.world.follows.is_empty() {
         return;
     }
     let scale = logic.scale;
-    for (index, t) in &anchors.0 {
-        let Some(id) = logic.world.by_map_index(*index) else { continue };
+    let entity_pose = |t: &Transform| {
         let rotation = Quat::from_xyzw(t.rotation.x, -t.rotation.z, t.rotation.y, t.rotation.w);
-        logic.world.set_anchor(
-            id,
-            engine_to_entity(t.translation, scale),
-            super::anchors::angles_of(rotation),
-        );
+        (engine_to_entity(t.translation, scale), super::anchors::angles_of(rotation))
+    };
+    let mut poses: Vec<(EntId, Vec3, Vec3)> = Vec::new();
+    if let Some(anchors) = world.get_resource::<crate::map::entities::EntityAnchors>() {
+        for (index, t) in &anchors.0 {
+            if let Some(id) = logic.world.by_map_index(*index) {
+                let (o, a) = entity_pose(t);
+                poses.push((id, o, a));
+            }
+        }
+    }
+    // Physics brushes: where their bodies are.
+    for (id, node) in &logic.props {
+        if logic
+            .world
+            .get(*id)
+            .is_some_and(|e| super::prop_damage::is_physbox(&e.classname))
+            && let Some(t) = world.get::<Transform>(*node)
+        {
+            let (o, a) = entity_pose(t);
+            poses.push((*id, o, a));
+        }
+    }
+    for (id, o, a) in poses {
+        logic.world.set_anchor(id, o, a);
     }
     logic.world.follow_anchors();
 }

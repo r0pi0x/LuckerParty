@@ -159,8 +159,30 @@ pub(super) fn activate(w: &mut LogicWorld, id: EntId) {
     }
 }
 
-/// One spark: OnSpark (the effect itself isn't drawn yet).
+/// env_spark "Silent" and "Directional".
+pub const SF_SPARK_SILENT: u32 = 256;
+pub const SF_SPARK_DIRECTIONAL: u32 = 512;
+
+/// One spark (8): the effect at the entity (along its forward with
+/// "Directional"), its sound unless silent, OnSpark.
 fn spark(w: &mut LogicWorld, id: EntId) {
+    if let Some(e) = w.get(id) {
+        let dir = if e.has_flag(SF_SPARK_DIRECTIONAL) {
+            super::triggers::forward(e.angles)
+        } else {
+            Vec3::ZERO
+        };
+        let (at, magnitude, silent) = (e.origin, e.kv_f("Magnitude").clamp(0.0, 15.0), e.has_flag(SF_SPARK_SILENT));
+        w.effects.push(Effect::Spark { at, dir, magnitude });
+        if !silent {
+            w.effects.push(Effect::Sound {
+                entry: "DoSpark".into(),
+                at,
+                volume: None,
+                pitch: None,
+            });
+        }
+    }
     w.fire_output(id, "OnSpark", Some(Who::Ent(id)), Value::Void);
 }
 

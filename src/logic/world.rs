@@ -357,6 +357,9 @@ pub enum Effect {
         origin: Vec3,
         angles: Vec3,
     },
+    /// env_spark's sparks: where (entity space), the direction (zero:
+    /// none) and the magnitude.
+    Spark { at: Vec3, dir: Vec3, magnitude: f32 },
     /// Push a physics body (env_entity_maker's PostSpawnSpeed): add
     /// `velocity` (entity space, units/s) to the entity's body.
     BodyVelocity { id: EntId, velocity: Vec3 },

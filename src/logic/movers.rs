@@ -535,7 +535,13 @@ pub(super) fn activate_attached(w: &mut LogicWorld, id: EntId) {
     let name = w.get(id).and_then(|e| e.kv("parentname")).unwrap_or("").to_string();
     let parent = w.find(&name).filter(|p| w.get(*p).and_then(|e| pusher(&e.class)).is_some());
     let Some(p) = parent else {
-        w.log.push(format!("parented brush: no moving parent '{name}'"));
+        // Placed weapons and physics brushes move it (`anchors`).
+        let anchored = w.find(&name).and_then(|p| w.get(p)).is_some_and(|p| {
+            crate::map::entities::anchor_class(&p.classname) || super::prop_damage::is_physbox(&p.classname)
+        });
+        if !anchored {
+            w.log.push(format!("parented brush: no moving parent '{name}'"));
+        }
         w.refresh_solid(id);
         return;
     };

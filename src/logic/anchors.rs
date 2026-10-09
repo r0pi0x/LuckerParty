@@ -34,10 +34,14 @@ impl LogicWorld {
     pub fn link_anchored(&mut self) {
         let ids = self.ids();
         // Anchored entities first, then their children's children.
+        // Placed weapons, and physics brushes (the physics moves them).
         let mut linked: Vec<EntId> = ids
             .iter()
             .copied()
-            .filter(|id| self.get(*id).is_some_and(|e| anchor_class(&e.classname)))
+            .filter(|id| {
+                self.get(*id)
+                    .is_some_and(|e| anchor_class(&e.classname) || super::prop_damage::is_physbox(&e.classname))
+            })
             .collect();
         let mut frontier = linked.clone();
         while !frontier.is_empty() {
@@ -123,5 +127,24 @@ impl LogicWorld {
     /// Whether `id` follows an anchored parent.
     pub fn follows_anchor(&self, id: EntId) -> bool {
         self.follows.iter().any(|(c, _)| *c == id)
+    }
+
+    /// Whether `id` is carried by a physics brush (through its parents):
+    /// its own collider must not collide with that body.
+    pub fn rides_body(&self, id: EntId) -> bool {
+        let mut at = id;
+        for _ in 0..16 {
+            let Some((_, f)) = self.follows.iter().find(|(c, _)| *c == at) else {
+                return false;
+            };
+            if self
+                .get(f.parent)
+                .is_some_and(|p| super::prop_damage::is_physbox(&p.classname))
+            {
+                return true;
+            }
+            at = f.parent;
+        }
+        false
     }
 }
