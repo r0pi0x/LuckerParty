@@ -30,7 +30,8 @@ fails and says how to move it. Test names read `weapons::name` and
 
 - Fast tier, before every commit (`.githooks/pre-commit`): `cargo test
   --features dev -- --skip heavy::` (unit tests and everything outside
-  `heavy`; under a minute when warm).
+  `heavy`; under a minute when warm). Commits that change only Markdown
+  skip it (their links are checked by the full suite before a push).
 - Before every push, `.githooks/pre-push` refuses personal traces in what's
   pushed (commit messages and added lines): machine paths (`/home/<name>/`,
   `/Users/<name>/`, `C:\\Users\\<name>`) always, plus the extended regexes in

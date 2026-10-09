@@ -5,6 +5,12 @@
 # Enable once per clone: git config core.hooksPath .githooks
 # Skip in an emergency with: git commit --no-verify
 set -e
+# Commits that change only Markdown (docs, specs, plans) don't build or
+# test here: in a fresh worktree that would be a cold build of everything.
+# Their links are still checked by the full suite before a push.
+if [ -z "$(git diff --cached --name-only --diff-filter=ACMRD | grep -v '\.md$')" ]; then
+    exit 0
+fi
 mkdir -p target
 log=target/pre-commit.log
 if ! cargo test --features dev --quiet --no-fail-fast -- --skip heavy:: >"$log" 2>&1; then
