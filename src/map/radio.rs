@@ -70,6 +70,8 @@ pub struct SayFormats {
     /// "%s1 is joining the Terrorist force" by team number (`%s1` the
     /// player).
     pub joins: Vec<(u8, String)>,
+    /// "* %s1 changed name to %s2".
+    pub name_change: String,
 }
 
 /// One team's chat formats: alive, alive at a known place, dead.
@@ -91,11 +93,17 @@ impl Default for SayFormats {
             team_spectator: "\u{1}(Spectator) \u{3}%s1\u{1} :  %s2".into(),
             sound: None,
             joins: Vec::new(),
+            name_change: "* %s1 changed name to %s2".into(),
         }
     }
 }
 
 impl SayFormats {
+    /// The chat line saying `old` is now called `new`.
+    pub fn renamed(&self, old: &str, new: &str) -> Vec<(ChatColor, String)> {
+        colour_runs(&fill(&self.name_change, &[old, new]), old)
+    }
+
     /// The chat line saying `player` joins `team`, when the game has one.
     pub fn join(&self, player: &str, team: u8) -> Option<Vec<(ChatColor, String)>> {
         let (_, f) = self.joins.iter().find(|(t, _)| *t == team)?;

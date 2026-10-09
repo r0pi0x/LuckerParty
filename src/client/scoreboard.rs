@@ -233,10 +233,11 @@ fn update(
     >,
     bombs: Query<&Weapon, With<C4>>,
     windows: Query<&Window>,
-    (fonts, hud, map): (
+    (fonts, hud, map, settings): (
         Res<super::fonts::UiFonts>,
         Option<Res<ActiveHud>>,
         Option<Res<crate::map::LoadedMapName>>,
+        Option<Res<crate::net::NetSettings>>,
     ),
     rounds: Option<Res<crate::rules::rounds::RoundState>>,
     mut last: Local<Option<Shot>>,
@@ -277,11 +278,7 @@ fn update(
             let bot = bot || flag(crate::net::score_flags::BOT);
             let carrier = carriers.contains(&e) || flag(crate::net::score_flags::BOMB);
             let kit = kit || flag(crate::net::score_flags::KIT);
-            let name = match (local, character) {
-                (_, Some(c)) => c.name.clone(),
-                (true, None) => "Player".to_string(),
-                (false, None) => name.map_or_else(|| format!("{e}"), |n| n.to_string()),
-            };
+            let name = super::shown_name(e, local, character, name, settings.as_deref());
             Row {
                 column: if team.is_some_and(|t| t.0 == 1) { 1 } else { 2 },
                 name,

@@ -61,8 +61,9 @@ fn clients_join_and_see_each_other_move() {
     let teams = |e| *sim.server.app.world().get::<Team>(e).unwrap();
     assert_eq!(teams(a), Team(1));
     assert_eq!(teams(b), Team(2));
-    // Respawned by the rules at a spawn point.
-    sim.ticks(10);
+    // Respawned by the rules at a spawn point once its client said it has
+    // the map (a round trip), and drawn there by the others (in the past).
+    sim.ticks(40);
     assert!(sim.server.app.world().get::<mashup::rules::Dead>(a).is_none());
 
     // Each client sees all three, its own as its local player.

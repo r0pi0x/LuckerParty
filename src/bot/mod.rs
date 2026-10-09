@@ -82,6 +82,24 @@ impl Plugin for BotPlugin {
              match: bot_quota bots per human.",
             |q| &mut q.mode,
         );
+        resource_cvar::<BotQuota, u8>(
+            app,
+            "bot_join_after_player",
+            "1: the bot quota adds no bots until a human player is in the game.",
+            |q| &mut q.join_after_player,
+        );
+        resource_cvar::<BotQuota, u8>(
+            app,
+            "bot_difficulty",
+            "Difficulty of bots added from now on: 0 easy, 1 normal, 2 hard, 3 expert (their names come with it).",
+            |q| &mut q.difficulty,
+        );
+        resource_cvar::<BotQuota, String>(
+            app,
+            "bot_prefix",
+            "Put before the names of bots added from now on.",
+            |q| &mut q.prefix,
+        );
         resource_cvar::<BotConfig, u8>(app, "bot_stop", "1: bots stand still.", |c| &mut c.stop);
         resource_cvar::<BotConfig, u8>(app, "bot_dont_shoot", "1: bots never fire.", |c| &mut c.dont_shoot);
         resource_cvar::<BotConfig, f32>(
@@ -154,24 +172,37 @@ impl Plugin for BotPlugin {
         });
         console.add_command(Command {
             name: "bot_kick".into(),
-            help: "bot_kick [name]: remove every bot (bot_quota 0), or the one by that name.".into(),
+            help: "bot_kick [all|t|ct|easy|normal|hard|expert|<name>]: remove every bot (bot_quota 0), those of a \
+                   team or difficulty, or the one by that name (the quota lowered by those kicked)."
+                .into(),
             run: Arc::new(|w, a| {
                 let wanted = a.join(" ");
+                let all = wanted.is_empty() || wanted.eq_ignore_ascii_case("all");
+                let team = match wanted.to_ascii_lowercase().as_str() {
+                    "t" => Some(Team(1)),
+                    "ct" => Some(Team(2)),
+                    _ => None,
+                };
+                let level = crate::map::bot_profiles::difficulty::of_name(&wanted);
                 let bots: Vec<(Entity, String)> = w
-                    .query_filtered::<(Entity, Option<&Name>), With<Bot>>()
+                    .query::<(Entity, &Bot, Option<&Name>, Option<&Team>)>()
                     .iter(w)
-                    .map(|(e, n)| (e, n.map_or_else(String::new, |n| n.as_str().to_string())))
-                    .filter(|(_, n)| wanted.is_empty() || n.eq_ignore_ascii_case(&wanted))
+                    .filter(|(_, b, n, t)| {
+                        all || team.is_some_and(|x| t.copied() == Some(x))
+                            || level.is_some_and(|l| b.difficulty & l != 0)
+                            || n.is_some_and(|n| n.as_str().eq_ignore_ascii_case(&wanted))
+                    })
+                    .map(|(e, _, n, _)| (e, n.map_or_else(String::new, |n| n.as_str().to_string())))
                     .collect();
-                if !wanted.is_empty() && bots.is_empty() {
-                    return Err(format!("no bot named \"{wanted}\""));
+                if !all && bots.is_empty() {
+                    return Err(format!("no bot \"{wanted}\""));
                 }
                 let n = bots.len();
                 for (b, _) in bots {
                     kick_bot(w, b);
                 }
                 let mut quota = w.resource_mut::<BotQuota>();
-                quota.quota = if wanted.is_empty() { 0 } else { quota.quota.saturating_sub(n as u32) };
+                quota.quota = if all { 0 } else { quota.quota.saturating_sub(n as u32) };
                 Ok(Some(format!("kicked {n} bots")))
             }),
             complete: None,
@@ -208,11 +239,21 @@ impl Plugin for BotPlugin {
 /// to 0 (or lowers it by the bots kicked by name), so they stay in step;
 /// setting `bot_quota` adds or kicks bots on a server (`keep_quota`).
 /// Single player keeps whatever bots it was given (never enforced there).
+/// With them, how bots join: `bot_join_after_player`, `bot_difficulty`,
+/// `bot_prefix` (CS:S's).
 #[derive(Resource, Clone, Debug)]
 pub struct BotQuota {
     pub quota: u32,
     /// "normal", "fill" or "match".
     pub mode: String,
+    /// 1: the quota adds no bots until a human is in the game (CS:S's
+    /// default); `bot_add` still adds one at once.
+    pub join_after_player: u8,
+    /// The difficulty new bots play at, 0 easy to 3 expert (their name
+    /// comes from a profile of that difficulty: `map::bot_profiles`).
+    pub difficulty: u8,
+    /// Put before every new bot's name ("<prefix> <name>"); empty: none.
+    pub prefix: String,
 }
 
 impl Default for BotQuota {
@@ -220,6 +261,9 @@ impl Default for BotQuota {
         Self {
             quota: 0,
             mode: "normal".into(),
+            join_after_player: 1,
+            difficulty: 1,
+            prefix: String::new(),
         }
     }
 }
@@ -275,8 +319,9 @@ fn keep_quota(world: &mut World) {
     let mut bots: Vec<(Entity, Team, u32)> = Vec::new();
     let mut counts = [0usize; 2];
     let mut humans = 0;
-    for (e, team, bot) in world
-        .query_filtered::<(Entity, &Team, Option<&Bot>), (With<Intent>, With<Health>, Without<crate::objectives::hostages::Hostage>)>()
+    let mut playing = 0;
+    for (e, team, bot, connecting) in world
+        .query_filtered::<(Entity, &Team, Option<&Bot>, Has<crate::core::Connecting>), (With<Intent>, With<Health>, Without<crate::objectives::hostages::Hostage>)>()
         .iter(world)
     {
         if (1..=2).contains(&team.0) {
@@ -284,11 +329,20 @@ fn keep_quota(world: &mut World) {
         }
         match bot {
             Some(b) => bots.push((e, *team, b.number)),
-            None => humans += 1,
+            None => {
+                humans += 1;
+                if !connecting {
+                    playing += 1;
+                }
+            }
         }
     }
-    let wanted = world.resource::<BotQuota>().wanted(humans);
-    if bots.len() < wanted {
+    let quota = world.resource::<BotQuota>().clone();
+    let wanted = quota.wanted(humans);
+    // `bot_join_after_player`: none join until someone plays (those there
+    // stay).
+    let waiting = quota.join_after_player != 0 && playing == 0;
+    if bots.len() < wanted && !waiting {
         // Counter-terrorists when even? CS:S picks at random; the
         // terrorists here, as `bot_add` does.
         let team = if counts[1] < counts[0] { Team(2) } else { Team(1) };
@@ -406,8 +460,13 @@ pub struct Bot {
     watched: Vec<Entity>,
     /// What it said on the radio lately.
     radio: radio::BotRadio,
-    /// Its number ("Bot 3"): the lowest free one when added.
+    /// Its number ("Bot 3" without a profile): the lowest free one when
+    /// added.
     number: u32,
+    /// The bot profile it took its name from (`map::bot_profiles`), and
+    /// the difficulty it plays at (`difficulty::*` bits; `bot_kick hard`).
+    pub profile: Option<String>,
+    pub difficulty: u8,
     /// Route noise seed, fixed per bot: from its number and team, never
     /// its entity id (`core::Seed`). The dice (`rng`) restart from it and
     /// the round number each round.
@@ -726,6 +785,25 @@ fn spawn_bot(world: &mut World, team: Team) -> Option<Entity> {
         .map(|m| m.0)
         .or_else(|| world.get_resource::<Loadout>().map(|l| l.movement))?;
     let yaw = at.rotation.to_euler(EulerRot::YXZ).0;
+    // A name from the game's bot profiles at `bot_difficulty` (one no bot
+    // here has), else "Bot <number>".
+    let quota = world.get_resource::<BotQuota>().cloned().unwrap_or_default();
+    let level = crate::map::bot_profiles::difficulty::of_level(quota.difficulty);
+    let taken: Vec<String> = world
+        .query::<&Bot>()
+        .iter(world)
+        .filter_map(|b| b.profile.clone())
+        .collect();
+    let profile = world
+        .get_resource::<crate::map::bot_profiles::BotProfiles>()
+        .and_then(|p| p.choose(level, team.0, &taken, seed >> 7))
+        .cloned();
+    let name = match &profile {
+        Some(p) if quota.prefix.trim().is_empty() => p.name.clone(),
+        Some(p) => format!("{} {}", quota.prefix.trim(), p.name),
+        None => format!("Bot {number}"),
+    };
+    let difficulty = profile.as_ref().map_or(level, |p| if p.difficulty & level != 0 { level } else { p.difficulty });
     let mut commands = world.commands();
     // Characters aren't rotated; the spawn's facing becomes the look yaw.
     let e = spawn_character(
@@ -735,12 +813,14 @@ fn spawn_bot(world: &mut World, team: Team) -> Option<Entity> {
         movement,
     );
     commands.entity(e).insert((
-        Name::new(format!("Bot {number}")),
+        Name::new(name),
         crate::core::Seed(seed),
         {
             let mut bot = Bot {
                 number,
                 seed,
+                profile: profile.map(|p| p.name),
+                difficulty,
                 ..default()
             };
             bot.reseed(round);

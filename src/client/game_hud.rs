@@ -219,18 +219,21 @@ fn death_notices(
     mut died: MessageReader<Died>,
     hud: Res<ActiveHud>,
     hits: Res<LastHits>,
-    who: Query<(Option<&Name>, Option<&Team>, Has<LocalPlayer>, Option<&Inventory>)>,
+    who: Query<(
+        Option<&Name>,
+        Option<&Team>,
+        Has<LocalPlayer>,
+        Option<&Inventory>,
+        Option<&crate::net::NetCharacter>,
+    )>,
     weapons: Query<&Weapon>,
     mut notices: ResMut<DeathNotices>,
+    settings: Option<Res<crate::net::NetSettings>>,
     time: Res<Time>,
 ) {
     let name = |e: Entity| match who.get(e) {
-        Ok((name, team, local, _)) => (
-            if local {
-                "Player".to_string()
-            } else {
-                name.map_or_else(|| format!("{e}"), |n| n.to_string())
-            },
+        Ok((name, team, local, _, net)) => (
+            super::shown_name(e, local, net, name, settings.as_deref()),
             team.copied(),
         ),
         Err(_) => (format!("{e}"), None),
@@ -245,7 +248,7 @@ fn death_notices(
             .or_else(|| {
                 attacker
                     .and_then(|a| who.get(a).ok())
-                    .and_then(|(.., inv)| inv?.active)
+                    .and_then(|(_, _, _, inv, _)| inv?.active)
                     .and_then(|w| weapons.get(w).ok())
                     .map(|w| w.id)
             })

@@ -200,7 +200,11 @@ buying, objectives, scoreboard, chat and radio; bots with `bot_quota`;
 `changelevel` taking clients along, late joiners' full state, map
 downloads (connection or `sv_downloadurl`, hash-checked, cached) and the
 GameUI loading dialog for joining and map changes (detailed view:
-`mashup_loading_details 1`). Next: slice 8 (Find Servers, LAN
+`mashup_loading_details 1`). Their leftovers too: loading players out
+of the game, predicted bomb arming and defusing, names (`name` over the
+network), chat and radio flood limits, spawns never inside another
+player, `changelevel` to the same map, bot profile names and `kick`,
+decals for late joiners. Next: slice 8 (Find Servers, LAN
 discovery, direct connect UI). Open questions 1, 3 and 4
 still wait on the user; 2 was taken as both (listen first, dedicated too).
 

@@ -246,8 +246,25 @@ impl PlaySound {
 #[derive(Message, Clone, Debug)]
 pub struct GameSound(pub PlaySound);
 
-/// Play the rules' sounds here.
-pub fn relay_game_sounds(mut sounds: MessageReader<GameSound>, mut play: MessageWriter<PlaySound>) {
+/// A sound of a character's own action that its network client predicts
+/// (the bomb's key presses while arming, a defuse starting): played here
+/// like a `GameSound`; a network server sends it to every client but
+/// `by`'s, which played it when it predicted the action (`net`).
+#[derive(Message, Clone, Debug)]
+pub struct PredictedSound {
+    pub by: Entity,
+    pub sound: PlaySound,
+}
+
+/// Play the rules' sounds here (and characters' predicted ones).
+pub fn relay_game_sounds(
+    mut sounds: MessageReader<GameSound>,
+    mut predicted: MessageReader<PredictedSound>,
+    mut play: MessageWriter<PlaySound>,
+) {
+    for s in predicted.read() {
+        play.write(s.sound.clone());
+    }
     for s in sounds.read() {
         play.write(s.0.clone());
     }

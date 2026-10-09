@@ -169,13 +169,12 @@ struct Pending {
 
 /// The rules hold our player as the server said: dead (only the look),
 /// frozen until a tick (the look and weapon picks: freeze time ends on
-/// the server's tick, known in advance), still (arming or defusing: no
-/// moving or jumping).
+/// the server's tick, known in advance). Arming or defusing the bomb
+/// holds it as predicted (`objectives::bomb::hold_still`).
 #[derive(Resource, Default)]
 struct Held {
     dead: bool,
     frozen_until: Option<u64>,
-    still: bool,
 }
 
 /// This tick's intent before the rules held it, put back after the tick
@@ -363,7 +362,10 @@ pub(super) fn plugin(app: &mut App) {
             (
                 capture_command.before(SimSet::Rules),
                 hold_local.in_set(SimSet::Rules),
-                record_command.after(SimSet::Commands).before(SimSet::Movement),
+                record_command
+                    .after(SimSet::Commands)
+                    .after(crate::objectives::bomb::BombHold)
+                    .before(SimSet::Movement),
             )
                 .run_if(client()),
         )
@@ -403,7 +405,13 @@ pub(super) fn reset(world: &mut World) {
     if let Some((_, _, step)) = world.resource::<CommandClock>().base {
         world.resource_mut::<Time<Fixed>>().set_timestep(step);
     }
-    world.insert_resource(CommandClock::default());
+    // A new epoch (`UserCmds::epoch`): the server never reads leads of
+    // commands from before as ours (it keeps the newest epoch it heard).
+    let jumps = world.resource::<CommandClock>().jumps + 1;
+    world.insert_resource(CommandClock {
+        jumps,
+        ..default()
+    });
     world.insert_resource(PredictionHistory::default());
     world.insert_resource(Outgoing::default());
     world.insert_resource(Pending::default());
@@ -438,6 +446,7 @@ fn receive_own_states(
     for s in states.read() {
         if let Some(lead) = s.lead
             && clock.tick.is_some()
+            && s.epoch == clock.jumps
             && s.newest >= clock.settle_from
         {
             clock.sample(lead as f64);
@@ -460,7 +469,6 @@ fn receive_own_states(
     *held = Held {
         dead: s.held,
         frozen_until: s.frozen_until,
-        still: s.still,
     };
     if let Some(p) = player {
         let (e, slot, seed) = *p;
@@ -765,8 +773,8 @@ fn capture_command(
 
 /// The rules hold our player as the server's do (`rules::hold_the_dead`:
 /// nothing but the look; `rules::rounds::hold_frozen`: the look and weapon
-/// picks; `objectives::bomb`'s hold while arming or defusing: no moving or
-/// jumping).
+/// picks). Arming and defusing hold it as predicted (`objectives::bomb`'s
+/// `BombHold`, before the command is recorded).
 fn hold_local(
     held: Res<Held>,
     clock: Res<CommandClock>,
@@ -785,10 +793,6 @@ fn hold_local(
             select: if held.dead { None } else { select },
             ..default()
         };
-    }
-    if held.still {
-        intent.move_axis = Vec2::ZERO;
-        intent.jump = false;
     }
 }
 
@@ -863,7 +867,7 @@ fn smooth_view(
 }
 
 /// New commands, with the last few again, to the server.
-fn send_commands(mut outgoing: ResMut<Outgoing>, mut out: MessageWriter<UserCmds>) {
+fn send_commands(mut outgoing: ResMut<Outgoing>, clock: Res<CommandClock>, mut out: MessageWriter<UserCmds>) {
     if outgoing.fresh == 0 {
         return;
     }
@@ -871,7 +875,7 @@ fn send_commands(mut outgoing: ResMut<Outgoing>, mut out: MessageWriter<UserCmds
     let start = outgoing.cmds.len() - n;
     let cmds: Vec<NetCmd> = outgoing.cmds.iter().skip(start).cloned().collect();
     outgoing.fresh = 0;
-    out.write(UserCmds { cmds });
+    out.write(UserCmds { cmds, epoch: clock.jumps });
 }
 
 /// The readout's transport numbers and error rate.
