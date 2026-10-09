@@ -467,12 +467,48 @@ from the command line), then `mp_restartgame 1` once the client is in;
 `mashup/console`. The client's `differences` shows the server's
 replicated values while connected; setting one says it can't. The dedicated server:
 `cargo run --features dev --bin mashup_server -- -port 27032 +map greybox
-+bot_add` (console on stdin: `status`, `bot_add`, `quit`). Logs show
++bot_add` (console on stdin: `status`, `bot_add`, `bot_quota 6`, `changelevel de_dust2`, `quit`). Logs show
 `listening on UDP ...`, `<name> joined`, `<name> left`, `disconnected:
 <reason>`.
 
+Bots (`tests/it/net_bots.rs`): `bot_add`, `bot_kick [name]`, `bot_quota
+<n>` and `bot_quota_mode normal|fill|match` on the server's console (a
+client is refused: `console::SERVER_COMMANDS`); `bot::BotQuota` has the
+quota, and a server keeps it (fill counts the host and remote players).
+A client sees bots as characters with `NetCharacter::owner` None and
+`score_flags::BOT` in their `NetScore`; their shots come as `FireBullets`
+(a client's `WeaponEvent`s owned by the bot's copy), kills as `Killed`,
+radio as `RadioCall`. `cargo test --features dev --test it net_bots --
+--nocapture` prints what each client saw and the server's frame time
+with ten bots and two clients.
+
+Maps (`tests/it/net_maps.rs`): tests build maps in code from a folder of
+files standing for an install (`harness::TestMaps`, `serve_maps`; a map
+id `test:<name>`, the file any bytes, hashed like a .bsp);
+`harness::begin_level_change` then `harness::load_level` on the server is
+`changelevel`. A client's `net::client::JoinProgress` has where joining
+is (`stage`, each stage's time in `log`, `download` bytes, the server's
+info) and why it ended (`failure`: a `JoinFailure` and the words); the
+server's `net::maps::ServedMap` what it offers (id, SHA-256, size) and a
+client entity's `net::maps::Upload` how far a download over the
+connection has come. Downloads land in the content cache
+(`<data>/mashup/content/cs_source/maps/<name>.bsp`, noted in its
+`index.toml`). On a server, `sv_allowdownload` (1), `sv_downloadurl` (an
+HTTP folder with `maps/<name>.bsp.bz2` or `.bsp`; quote it, `//` starts a
+comment) and `net_maxfilesize` (64 MB) say how clients get the map;
+`hostname` names the server. The log shows `changing level to ...`,
+`now serving <map> (<bytes>, sha256 ...)`, `sending maps/x.bsp`, and on a
+client `saved maps/x.bsp to ...`.
+
+The loading dialog: `connect`, a server's map change and a download show
+in it with the game's words; `mashup_loading_details 1` adds a panel
+with each stage's time, bytes and percentage and the server's name,
+map, players and ping (screenshot it while joining: `+mashup_loading_details
+1` on the client's command line).
+
 In game: `maxplayers 4; map <name>` hosts (Source's way), `listen` hosts
-the loaded map, `connect <ip[:port]>` joins, `disconnect` leaves (or stops
+the loaded map, `changelevel <name>` (or `map <name>`) while hosting
+takes the players along, `connect <ip[:port]>` joins, `disconnect` leaves (or stops
 hosting), `status`, `name <you>`.
 
 **LAN test with Windows.** The host's firewall must let the game take UDP

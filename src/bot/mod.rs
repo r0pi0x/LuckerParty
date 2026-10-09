@@ -42,6 +42,7 @@ pub struct BotPlugin;
 impl Plugin for BotPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<BotConfig>()
+            .init_resource::<BotQuota>()
             .init_resource::<radio::TeamCalls>()
             .init_resource::<Tactics>()
             .add_message::<crate::core::Radio>();
@@ -61,6 +62,25 @@ impl Plugin for BotPlugin {
                 .before(SimSet::Rules)
                 .before(crate::weapon::SelectWeapons)
                 .run_if(crate::core::authoritative),
+        );
+        // A network server keeps the bots at the quota (`keep_quota`).
+        app.add_systems(
+            Update,
+            keep_quota.run_if(resource_equals(crate::core::NetRole::Server)),
+        );
+        resource_cvar::<BotQuota, u32>(
+            app,
+            "bot_quota",
+            "Bots a server keeps in the game (bot_add raises it, bot_kick lowers it; see bot_quota_mode). \
+             Single player adds and kicks bots only when told.",
+            |q| &mut q.quota,
+        );
+        resource_cvar::<BotQuota, String>(
+            app,
+            "bot_quota_mode",
+            "normal: bot_quota bots; fill: bots fill the game up to bot_quota players (humans count); \
+             match: bot_quota bots per human.",
+            |q| &mut q.mode,
         );
         resource_cvar::<BotConfig, u8>(app, "bot_stop", "1: bots stand still.", |c| &mut c.stop);
         resource_cvar::<BotConfig, u8>(app, "bot_dont_shoot", "1: bots never fire.", |c| &mut c.dont_shoot);
@@ -103,7 +123,8 @@ impl Plugin for BotPlugin {
                     None => 1,
                 };
                 let e = add_bot(w, Team(team)).ok_or("no spawn point")?;
-                Ok(Some(format!("added bot {e}")))
+                let name = w.get::<Name>(e).map_or_else(|| e.to_string(), |n| n.as_str().to_string());
+                Ok(Some(format!("added {name}")))
             }),
             complete: None,
         });
@@ -133,13 +154,24 @@ impl Plugin for BotPlugin {
         });
         console.add_command(Command {
             name: "bot_kick".into(),
-            help: "Remove every bot.".into(),
-            run: Arc::new(|w, _| {
-                let bots: Vec<Entity> = w.query_filtered::<Entity, With<Bot>>().iter(w).collect();
-                let n = bots.len();
-                for b in bots {
-                    w.entity_mut(b).despawn();
+            help: "bot_kick [name]: remove every bot (bot_quota 0), or the one by that name.".into(),
+            run: Arc::new(|w, a| {
+                let wanted = a.join(" ");
+                let bots: Vec<(Entity, String)> = w
+                    .query_filtered::<(Entity, Option<&Name>), With<Bot>>()
+                    .iter(w)
+                    .map(|(e, n)| (e, n.map_or_else(String::new, |n| n.as_str().to_string())))
+                    .filter(|(_, n)| wanted.is_empty() || n.eq_ignore_ascii_case(&wanted))
+                    .collect();
+                if !wanted.is_empty() && bots.is_empty() {
+                    return Err(format!("no bot named \"{wanted}\""));
                 }
+                let n = bots.len();
+                for (b, _) in bots {
+                    kick_bot(w, b);
+                }
+                let mut quota = w.resource_mut::<BotQuota>();
+                quota.quota = if wanted.is_empty() { 0 } else { quota.quota.saturating_sub(n as u32) };
                 Ok(Some(format!("kicked {n} bots")))
             }),
             complete: None,
@@ -168,6 +200,111 @@ impl Plugin for BotPlugin {
             }),
             complete: None,
         });
+    }
+}
+
+/// `bot_quota` and `bot_quota_mode` (CS:S's): how many bots a network
+/// server keeps. `bot_add` (`add_bot`) raises the quota by one and `bot_kick` sets it
+/// to 0 (or lowers it by the bots kicked by name), so they stay in step;
+/// setting `bot_quota` adds or kicks bots on a server (`keep_quota`).
+/// Single player keeps whatever bots it was given (never enforced there).
+#[derive(Resource, Clone, Debug)]
+pub struct BotQuota {
+    pub quota: u32,
+    /// "normal", "fill" or "match".
+    pub mode: String,
+}
+
+impl Default for BotQuota {
+    fn default() -> Self {
+        Self {
+            quota: 0,
+            mode: "normal".into(),
+        }
+    }
+}
+
+impl BotQuota {
+    /// Bots wanted with `humans` players in the game.
+    pub fn wanted(&self, humans: usize) -> usize {
+        let q = self.quota as usize;
+        match self.mode.to_ascii_lowercase().as_str() {
+            "fill" => q.saturating_sub(humans),
+            "match" => q * humans,
+            _ => q,
+        }
+    }
+}
+
+/// Bring the quota in step with the bots there are (a server starting
+/// after bots were added in single player keeps them): normal mode only.
+pub fn sync_quota(world: &mut World) {
+    let bots = world.query_filtered::<(), With<Bot>>().iter(world).count() as u32;
+    let Some(mut q) = world.get_resource_mut::<BotQuota>() else {
+        return;
+    };
+    if q.mode.eq_ignore_ascii_case("normal") && q.quota != bots {
+        q.quota = bots;
+    }
+}
+
+/// Remove a bot as a player leaving would go: the bomb it carries dropped
+/// where it stands, its other weapons with it.
+pub fn kick_bot(world: &mut World, bot: Entity) {
+    let weapons = world
+        .get::<Inventory>(bot)
+        .map(|i| i.weapons.clone())
+        .unwrap_or_default();
+    for w in weapons {
+        if world.get::<crate::objectives::bomb::C4>(w).is_some() {
+            crate::weapon::drop::drop_this(world, bot, w, false);
+        } else if let Ok(e) = world.get_entity_mut(w) {
+            e.despawn();
+        }
+    }
+    if let Ok(e) = world.get_entity_mut(bot) {
+        e.despawn();
+    }
+}
+
+/// A server keeps `bot_quota` bots (one added or kicked per frame, as
+/// CS:S does): added to the team with fewer players, kicked from the one
+/// with more (the newest bot there). Humans are every other character
+/// but hostages (the host and remote players).
+fn keep_quota(world: &mut World) {
+    let mut bots: Vec<(Entity, Team, u32)> = Vec::new();
+    let mut counts = [0usize; 2];
+    let mut humans = 0;
+    for (e, team, bot) in world
+        .query_filtered::<(Entity, &Team, Option<&Bot>), (With<Intent>, With<Health>, Without<crate::objectives::hostages::Hostage>)>()
+        .iter(world)
+    {
+        if (1..=2).contains(&team.0) {
+            counts[team.0 as usize - 1] += 1;
+        }
+        match bot {
+            Some(b) => bots.push((e, *team, b.number)),
+            None => humans += 1,
+        }
+    }
+    let wanted = world.resource::<BotQuota>().wanted(humans);
+    if bots.len() < wanted {
+        // Counter-terrorists when even? CS:S picks at random; the
+        // terrorists here, as `bot_add` does.
+        let team = if counts[1] < counts[0] { Team(2) } else { Team(1) };
+        // None without spawn points (a map loading): again next frame.
+        let _ = spawn_bot(world, team);
+    } else if bots.len() > wanted {
+        let team = if counts[0] > counts[1] { Team(1) } else { Team(2) };
+        let pick = bots
+            .iter()
+            .filter(|b| b.1 == team)
+            .max_by_key(|b| b.2)
+            .or_else(|| bots.iter().max_by_key(|b| b.2))
+            .map(|b| b.0);
+        if let Some(b) = pick {
+            kick_bot(world, b);
+        }
     }
 }
 
@@ -553,6 +690,15 @@ fn hear(
 /// Spawn a bot on `team` at a spawn point (the team's, if the map has
 /// them), using the local player's movement or the loadout's.
 pub fn add_bot(world: &mut World, team: Team) -> Option<Entity> {
+    let e = spawn_bot(world, team)?;
+    if let Some(mut q) = world.get_resource_mut::<BotQuota>() {
+        q.quota += 1;
+    }
+    Some(e)
+}
+
+/// `add_bot` without raising `bot_quota` (the quota's own adds).
+fn spawn_bot(world: &mut World, team: Team) -> Option<Entity> {
     let spawns: Vec<(Transform, Option<Team>)> = world
         .query::<(&Transform, &SpawnPoint)>()
         .iter(world)

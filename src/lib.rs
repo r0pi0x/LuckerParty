@@ -42,3 +42,28 @@ impl Plugin for SimPlugins {
             .add_plugins((logic::LogicPlugin, metrics::TickMetricsPlugin));
     }
 }
+
+/// Put a map in place of the one playing, as the game's `map` does
+/// without the view (the dedicated server's `changelevel`, tests): `data`
+/// for map `id`, or the greybox (None); the tick its game runs at;
+/// everyone respawned in a new game there. A network server keeps its
+/// clock running (`core::set_tick_length`) and takes its clients along
+/// (`net::maps`).
+pub fn swap_map(world: &mut World, id: &str, data: Option<map::MapData>, tick: std::time::Duration) {
+    match data {
+        Some(data) => {
+            greybox::unload(world);
+            map::change_map(world, data, map::MapDebugView::Normal);
+            world.insert_resource(map::LoadedMapName(id.to_string()));
+        }
+        None => {
+            map::unload_map(world);
+            greybox::unload(world);
+            greybox::respawn(world);
+            world.remove_resource::<map::ActiveMapLook>();
+            world.insert_resource(map::LoadedMapName(net::GREYBOX.into()));
+        }
+    }
+    core::set_tick_length(world, tick);
+    rules::new_game(world);
+}

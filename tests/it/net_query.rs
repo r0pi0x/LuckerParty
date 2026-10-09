@@ -11,7 +11,7 @@ use std::{
 
 use bevy::prelude::*;
 use mashup::{
-    bot::Bot,
+    console::Console,
     client::server_browser::ServerBrowser,
     core::{LocalPlayer, Team},
     games::cs_source::movement::{self as source, SourceMovementPlugin},
@@ -66,8 +66,9 @@ fn run(
 fn a_server_answers_queries_with_its_info() {
     let (mut sv, addr) = server("Query test", 0, 6).expect("listen");
     // Two players: a bot and someone else's character.
-    let bot = sv.spawn_character(Vec3::new(4.0, 1.0, 0.0), source::ID);
-    sv.app.world_mut().entity_mut(bot).insert((Team(1), Bot::default()));
+    // `bot_add` (it raises `bot_quota`, which keeps the bots).
+    sv.app.world_mut().resource_mut::<Console>().submit("bot_add 1");
+    sv.ticks(4);
     let other = sv.spawn_character(Vec3::new(-4.0, 1.0, 0.0), source::ID);
     sv.app.world_mut().entity_mut(other).insert(Team(2));
     sv.app.world_mut().resource_mut::<Hosting>().password = "letmein".into();
