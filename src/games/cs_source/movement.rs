@@ -508,6 +508,9 @@ impl Plugin for SourceMovementPlugin {
             .add_systems(crate::core::Predict::Movement, step)
             .predicted_net::<SourceMovement>()
             .add_plugins((super::pushaway::PushAwayPlugin, super::shadow::ShadowPlugin));
+        if !app.is_plugin_added::<super::pain::PainSoundsPlugin>() {
+            app.add_plugins(super::pain::PainSoundsPlugin);
+        }
     }
 }
 
@@ -1979,11 +1982,7 @@ fn step(
     cfg: Res<SourceMovementConfig>,
     (clock, first): (Res<crate::core::SimClock>, Res<crate::core::FirstTimePredicted>),
     other_characters: Query<(Entity, &ColliderAabb, Option<&Health>), (With<Intent>, Without<SourceMovement>)>,
-    (health, god, dead): (
-        Query<&Health>,
-        Query<(), With<crate::core::God>>,
-        Query<(), With<ColliderDisabled>>,
-    ),
+    (health, dead): (Query<&Health>, Query<(), With<ColliderDisabled>>),
 ) {
     let dt = clock.dt();
     // Every living character's box: Source hulls for Source movers, else
@@ -2147,19 +2146,7 @@ fn step(
                 kind: crate::core::DamageKind::Fall,
                 weapon: None,
             });
-            // Taking it plays the damage sound at the player (sound spec,
-            // "Landing").
-            if !god.contains(entity) && health.get(entity).is_ok_and(|h| h.current > 0.0) {
-                play.write(PlaySound {
-                    pitch: None,
-                    entry: "Player.FallDamage".into(),
-                    at: Some(to_engine(feet)),
-                    volume: None,
-                    source: Some(entity),
-                    // The script's own (CHAN_BODY).
-                    channel: None,
-                });
-            }
+            // Taking it plays `Player.FallDamage` (`super::pain`).
         }
         for (entry, at, volume) in mover.sounds.drain(..) {
             play.write(PlaySound {

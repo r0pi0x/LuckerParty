@@ -681,6 +681,72 @@ fn bots_shoot_players_over_the_net() {
     assert!(shots > 0, "the client drew the bot's shots");
 }
 
+/// Hurt and death sounds over the network (`games::cs_source::pain`):
+/// client 0 shoots client 1, in kevlar, while client 2 watches. Every
+/// client hears the kevlar hit once, from the victim (the shooter and the
+/// victim included: no client predicts being hit), then the second shot's
+/// death cry once (from the kill the server sends, not again as a sound).
+#[test]
+fn everyone_hears_a_hit_and_a_death_once() {
+    use mashup::{core::FriendlyFire, map::PlaySound, weapon::Armor};
+    let mut sim = joined(link(60, 0, 0.0), 51, 3);
+    sim.server.app.insert_resource(FriendlyFire(1));
+    let target = sim.character_of(1).unwrap();
+    place(&mut sim, 0, Vec3::new(0.0, 1.0, 12.0), 0.0);
+    place(&mut sim, 1, Vec3::new(0.0, 1.0, 4.0), 0.0);
+    place(&mut sim, 2, Vec3::new(4.0, 1.0, 6.0), 0.0);
+    sim.server.app.world_mut().entity_mut(target).insert(Armor {
+        amount: 1.0,
+        helmet: false,
+    });
+    sim.ticks(80);
+    let id = sim.client_id(1);
+    // The victim as each client knows it.
+    let victims: Vec<Entity> = (0..3)
+        .map(|i| {
+            if i == 1 {
+                sim.local_player(1).unwrap()
+            } else {
+                NetSim::owned_by(&mut sim.clients[i], Some(id)).unwrap()
+            }
+        })
+        .collect();
+    let mut heard: Vec<Log<PlaySound>> = (1..=3).map(|app| Log::<PlaySound>::new(&sim, app)).collect();
+    let shoot = |sim: &mut NetSim, heard: &mut Vec<Log<PlaySound>>| {
+        let me = sim.local_player(0).unwrap();
+        let w = sim.clients[0].app.world();
+        let eye = w.get::<Transform>(me).unwrap().translation + w.get::<MovementState>(me).unwrap().eye_offset;
+        let body = w.get::<Transform>(victims[0]).unwrap().translation;
+        let (yaw, pitch) = look_at(eye, body + Vec3::Y * 0.2);
+        let mut i = client_intent(sim, 0);
+        i.yaw = yaw;
+        i.pitch = pitch;
+        i.fire = true;
+        let mut logs: Vec<&mut dyn Poll> = heard.iter_mut().map(|l| l as &mut dyn Poll).collect();
+        step(sim, &mut logs);
+        client_intent(sim, 0).fire = false;
+        steps(sim, 60, &mut logs);
+    };
+    let count = |heard: &[Log<PlaySound>], entry: &str| -> Vec<usize> {
+        heard
+            .iter()
+            .enumerate()
+            .map(|(i, l)| l.all.iter().filter(|s| s.entry == entry && s.source == Some(victims[i])).count())
+            .collect()
+    };
+    shoot(&mut sim, &mut heard);
+    let health = sim.server.app.world().get::<Health>(target).unwrap().current;
+    assert!(health < 1.0 && health > 0.0, "hit, alive: {health}");
+    assert_eq!(count(&heard, "Player.DamageKevlar"), [1, 1, 1], "the kevlar hit, once each");
+    assert_eq!(count(&heard, "Player.Death"), [0, 0, 0]);
+    // The next one kills.
+    sim.server.app.world_mut().get_mut::<Health>(target).unwrap().current = 0.01;
+    shoot(&mut sim, &mut heard);
+    assert_eq!(sim.server.app.world().get::<Health>(target).unwrap().current, 0.0, "killed");
+    assert_eq!(count(&heard, "Player.DamageKevlar"), [2, 2, 2]);
+    assert_eq!(count(&heard, "Player.Death"), [1, 1, 1], "the death cry, once each");
+}
+
 /// The weapon `id` in `e`'s inventory in `w`.
 fn carried(w: &World, e: Entity, id: &str) -> Option<Entity> {
     w.get::<Inventory>(e)?

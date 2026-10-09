@@ -194,7 +194,6 @@ const BREAKABLE_SOUNDS: &[&str] = &[
 
 const ALWAYS: &[&str] = &[
     "Player.Swim",
-    "Player.FallDamage",
     "Event.TERWin",
     "Event.CTWin",
     "Event.RoundDraw",
@@ -257,6 +256,7 @@ pub fn load(materials: &mut MaterialLoader, map: &str, surfaces: &SurfaceProps, 
         .copied()
         .chain(super::radio::sound_entries())
         .chain(super::fire::SOUNDS.iter().copied())
+        .chain(super::pain::SOUNDS.iter().copied())
         .map(|s| s.to_lowercase())
         .chain(ambient_entries)
         // Props' break and explosion sounds (props.rs), breakables' own.

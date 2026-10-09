@@ -602,11 +602,14 @@ fn no_fall_damage_into_water() {
 /// is silent about it.
 #[test]
 fn hard_landings_roll_the_view_and_play_the_damage_sound() {
-    use mashup::map::PlaySound;
+    use mashup::map::{GameSound, PlaySound};
     #[derive(Resource, Default)]
     struct Heard(Vec<String>);
-    fn hear(mut sounds: MessageReader<PlaySound>, mut heard: ResMut<Heard>) {
+    // The damage sound is the server's (`GameSound`; the weapons plugin,
+    // not loaded here, turns it into a `PlaySound`).
+    fn hear(mut sounds: MessageReader<PlaySound>, mut game: MessageReader<GameSound>, mut heard: ResMut<Heard>) {
         heard.0.extend(sounds.read().map(|s| s.entry.clone()));
+        heard.0.extend(game.read().map(|s| s.0.entry.clone()));
     }
     // (start speed, measured fall speed, takes damage)
     for (start, fall, hurt) in [(400.0f32, 460.0f32, false), (800.0, 836.0, true)] {

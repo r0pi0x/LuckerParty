@@ -34,6 +34,13 @@ plan when work starts; delete them when done.
   Keyboard > Advanced (fast weapon switch, developer console =
   `con_enable`, ours defaults to 1, CS:S 0): not captured.
 
+- Knife idle: CS:S's knife view model holds still while idle (captures 2,
+  6 and 10 s after drawing it at `setpos -295 1078 120; setang 0 0 0`, CT,
+  identical frames: blade upright, hands unmoved); ours plays a 12.5 s
+  idle that turns the blade sideways. Check which sequence we pick for
+  idle (activity weights, a "look at" sequence vs the plain idle) and
+  whether other view models idle when CS:S's don't.
+
 - mg_item_battle_v4b's items (done 2026-10-09, to playtest): a picked-up
   knife's parented entities follow its carrier (`map::entities` anchors),
   OnPlayerPickup fires, and the entities the items drive work (game_ui,
@@ -43,11 +50,7 @@ plan when work starts; delete them when done.
   (31 units above the feet standing) turned to its yaw: CS:S's captures
   of the car knife (first person at `setang 30 0 0`, third person) match
   it exactly (the car on the floor, roof at the shoulders); at the feet
-  the car sank to the knees. Left: playtest the cars and jetpack. Our
-  third-person camera sits about 26 units lower than CS:S's for the same
-  player and `cam_idealdist 150` (CS:S's `getpos` printed its camera at
-  z 192.55, 64.5 above the eye): check CS:S's third-person camera (its
-  pivot or offset).
+  the car sank to the knees. Left: playtest the cars and jetpack.
 - Inside geometry, checked against CS:S (2026-10-09, mg_item_battle_v4b,
   reference captures in the coordinator's target/inside/): inside the stone
   wall ours already matches (world drawn, sky black). Inside the car
@@ -61,22 +64,11 @@ plan when work starts; delete them when done.
   view's origin (the eye; in third person the camera: CS:S's third-person
   `getpos` was exactly its camera). So one `setpos` line gives the same
   view in both, and `setpos` with `getpos`'s numbers lands 64 higher, as
-  in CS:S. Ours used the body's centre (36 above the feet) for both. To
-  confirm: the coordinator noted CS:S's setpos-then-getpos returning the
-  same numbers, which contradicts the captures; capture the text of
-  `noclip; setpos -295 1078 500; getpos` and a `getpos` standing on a
-  known floor.
+  in CS:S. Ours used the body's centre (36 above the feet) for both.
+  Confirmed in CS:S's console: `noclip; setpos -295 1078 500; getpos`
+  prints z 564.
 - Options faithful to CS:S: any other option CS:S shows that we lack;
   defaults as CS:S's.
-
-- Pain sounds when losing health: play CS:S's damage sounds for the
-  local player and others (positional), whatever the install's sound
-  scripts give for each case: bullet hits on flesh, kevlar and helmet,
-  headshots, fall damage, burning/drowning if any, and the death sounds;
-  who hears what (the victim, the attacker, everyone nearby) and any
-  per-player cooldown as CS:S does (check against a capture or a spec;
-  CS:S has no voiced pain grunts for bullets, as we believe). Over the
-  network the server sends them like the other damage events.
 
 - Decals persist across rounds (bullet holes, blood), as we believe CS:S
   does (players bind `r_cleardecals`, now there; `mashup_round_cleardecals

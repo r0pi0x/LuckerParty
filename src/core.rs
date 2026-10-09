@@ -1088,25 +1088,35 @@ pub fn refused_by_team(d: &Damage, teams: &Query<&Team>, friendly_fire: Option<&
     teammate && !friendly_fire.is_some_and(|f| f.0 != 0)
 }
 
+/// What decides whether damage is refused before it reaches health:
+/// team rules, a map's invulnerability and damage filters (not `God`,
+/// which the health query leaves out).
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct DamageRules<'w, 's> {
+    teams: Query<'w, 's, &'static Team>,
+    filters: Query<'w, 's, &'static DamageFilter>,
+    controls: Query<'w, 's, &'static MapControls>,
+    friendly_fire: Option<Res<'w, FriendlyFire>>,
+}
+
+impl DamageRules<'_, '_> {
+    pub fn refuse(&self, d: &Damage) -> bool {
+        refused_by_team(d, &self.teams, self.friendly_fire.as_deref())
+            || self.controls.get(d.target).is_ok_and(|c| c.invulnerable)
+            || self.filters.get(d.target).is_ok_and(|f| f.blocked.contains(&d.kind))
+    }
+}
+
 /// Subtract damage from health; announce deaths once (public so other
 /// systems can order themselves after it).
 pub fn apply_damage(
     mut damage: MessageReader<Damage>,
     mut health: Query<&mut Health, Without<God>>,
-    teams: Query<&Team>,
-    filters: Query<&DamageFilter>,
-    controls: Query<&MapControls>,
-    friendly_fire: Option<Res<FriendlyFire>>,
+    rules: DamageRules,
     mut died: MessageWriter<Died>,
 ) {
     for d in damage.read() {
-        if refused_by_team(d, &teams, friendly_fire.as_deref()) {
-            continue;
-        }
-        if controls.get(d.target).is_ok_and(|c| c.invulnerable) {
-            continue;
-        }
-        if filters.get(d.target).is_ok_and(|f| f.blocked.contains(&d.kind)) {
+        if rules.refuse(d) {
             continue;
         }
         let Ok(mut h) = health.get_mut(d.target) else { continue };

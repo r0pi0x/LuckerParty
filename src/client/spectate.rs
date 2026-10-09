@@ -588,6 +588,7 @@ fn place_camera(
                         third_person: true,
                         ideal_dist: CHASE_DISTANCE,
                         ideal_yaw: 0.0,
+                        pivot_up: 0.0,
                     };
                     let offset = camera_offset(&third, t, e.eye_offset, look, &spatial, &characters);
                     Some((t + offset, look))

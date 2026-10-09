@@ -279,6 +279,9 @@ impl Plugin for CsWeaponsPlugin {
                 super::player_anim::SimAnimPlugin,
             ))
             .insert_resource(pass_materials());
+        if !app.is_plugin_added::<super::pain::PainSoundsPlugin>() {
+            app.add_plugins(super::pain::PainSoundsPlugin);
+        }
         let mut start = app.world_mut().get_resource_or_init::<StartingWeapons>();
         if start.is_empty() {
             // CS:S's spawn kit: the knife and the team's pistol (Terrorists,
