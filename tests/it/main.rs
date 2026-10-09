@@ -36,6 +36,7 @@ mod net_weapons;
 mod objectives;
 mod phy_spec;
 mod prediction;
+mod prop_shadows;
 mod radio;
 mod ragdoll;
 mod ragdoll_spec;

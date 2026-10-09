@@ -4003,6 +4003,7 @@ fn update_prop_shadows(
     mut shown: RemovedComponents<vis::LogicHidden>,
     props: Query<&PropIndex, Without<vis::LogicHidden>>,
     shadow_vis: Query<Option<&vis::VisClusters>, With<PropShadow>>,
+    shadow_meshes: Query<&Mesh3d, With<PropShadow>>,
     mut images: ResMut<Assets<Image>>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
@@ -4049,9 +4050,19 @@ fn update_prop_shadows(
         );
         redrawn.push(cell);
         match (mesh, state.entities.get(&index.0).copied()) {
-            (Some(mesh), Some(e)) => {
-                commands.entity(e).insert(Mesh3d(meshes.add(mesh)));
-            }
+            (Some(mesh), Some(e)) => match shadow_meshes.get(e) {
+                // The same mesh asset, rewritten: a new handle every
+                // frame left the shadow undrawn while its prop moved
+                // (Bevy re-specializes an entity whose `Mesh3d` changed
+                // and skipped it while the new mesh wasn't prepared yet).
+                // (The handle keeps the asset alive: the id stays valid.)
+                Ok(handle) => {
+                    let _ = meshes.insert(handle.id(), mesh);
+                }
+                Err(_) => {
+                    commands.entity(e).insert(Mesh3d(meshes.add(mesh)));
+                }
+            },
             (Some(mesh), None) => {
                 let e = commands
                     .spawn((

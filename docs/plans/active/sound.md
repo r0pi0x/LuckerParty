@@ -10,7 +10,9 @@ Started 2026-10-05, from specs/cs_source/sounds.md.
   volume override, source entity and channel). Playback resolves the
   entry (random wave, drawn pitch/volume/level), applies the distance
   model and left/right panning toward the listener (the active camera),
-  and plays through Bevy audio (pitch as playback speed). A new sound on
+  and plays (the listener's own sounds, made by the player the camera
+  belongs to, play centred as in Source; sounds within 16 units of the
+  ear pan less: `sound::Ear`) through Bevy audio (pitch as playback speed). A new sound on
   the same (entity, channel) replaces the old one.
 - **Distance model:** one function. Until measured (spec open question
   1): sound levels use H1 (inverse distance from a 36-unit reference),
