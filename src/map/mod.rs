@@ -89,9 +89,35 @@ const NORMAL_X_SIGN: f32 = 1.0;
 const SOURCE_LIGHTMAP_SCALE: f32 = 4.594_793;
 
 pub fn source_ldr_texel(l: f32) -> u8 {
-    let i = (l * 1024.0).round().clamp(0.0, 4095.0);
-    (255.0 * 0.5 * (i / 1024.0).powf(1.0 / 2.2)).round() as u8
+    SOURCE_LDR.texel[source_ldr_level(l)]
 }
+
+/// The 1/1024 step a linear lightmap value is stored at (0-4095).
+fn source_ldr_level(l: f32) -> usize {
+    (l * 1024.0).round().clamp(0.0, 4095.0) as usize
+}
+
+/// Every level's encoding, worked out once: a `powf` per channel was most
+/// of the cost of relighting blocks of animated light styles.
+struct SourceLdrTable {
+    /// The stored 8-bit value of each level.
+    texel: [u8; 4096],
+    /// Each level's 0.5 L^(1/2.2), before the 8-bit rounding.
+    gamma: [f32; 4096],
+}
+
+static SOURCE_LDR: std::sync::LazyLock<SourceLdrTable> = std::sync::LazyLock::new(|| {
+    let mut t = SourceLdrTable {
+        texel: [0; 4096],
+        gamma: [0.0; 4096],
+    };
+    for i in 0..4096 {
+        let l = i as f32 / 1024.0;
+        t.texel[i] = (255.0 * 0.5 * l.powf(1.0 / 2.2)).round() as u8;
+        t.gamma[i] = 0.5 * l.powf(1.0 / 2.2);
+    }
+    t
+});
 
 /// Source LDR bump pages (specs/cs_source/shaders.md, "Bump page encoding
 /// at upload"): the three directional values of a luxel (linear) are
@@ -101,8 +127,7 @@ pub fn source_ldr_texel(l: f32) -> u8 {
 pub fn source_ldr_bump_texels(flat: [f32; 3], pages: [[f32; 3]; 3]) -> [[u8; 3]; 3] {
     let mut q = [[0.0f32; 3]; 3];
     for c in 0..3 {
-        let i = (flat[c] * 1024.0).round().clamp(0.0, 4095.0);
-        let goal = 0.5 * (i / 1024.0).powf(1.0 / 2.2);
+        let goal = SOURCE_LDR.gamma[source_ldr_level(flat[c])];
         let mean = (pages[0][c] + pages[1][c] + pages[2][c]) / 3.0;
         let s = if mean > 0.0 { goal / mean } else { 0.0 };
         for k in 0..3 {
@@ -2340,12 +2365,13 @@ fn spawn_map(
         let bumped_lightmaps: Option<[Handle<Image>; 3]> =
             built.and_then(|b| b.bumped).map(|pages| pages.map(|p| images.add(p)));
         // Switchable and animated light styles relight these images
-        // (`light_styles`).
+        // (`light_styles`); the plain one only where surfaces sample it
+        // (standard materials, used when the world material is missing).
         if let Some(l) = data.lightmap.as_ref().filter(|l| !l.styles.is_empty()) {
             commands.insert_resource(light_styles::StyledLightmaps::new(
                 Arc::new(l.clone()),
                 source_ldr,
-                lightmap.clone(),
+                lightmap.clone().filter(|_| world_materials.is_none()),
                 world_lightmap.clone(),
                 bumped_lightmaps.clone(),
             ));
