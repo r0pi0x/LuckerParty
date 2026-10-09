@@ -4,12 +4,14 @@
 //! rewritten in place. A new mesh handle each frame left a moving prop's
 //! shadow undrawn until it came to rest (Bevy re-specializes an entity
 //! whose `Mesh3d` changed, and skipped it while the new mesh wasn't
-//! prepared on the GPU yet).
+//! prepared on the GPU yet). The render world's extraction is emulated
+//! (`harness::emulate_mesh_extraction`): every rewrite must reach it once,
+//! in the frame it was made.
 
 use avian3d::prelude::LinearVelocity;
 use bevy::{camera::primitives::MeshAabb, prelude::*};
 use mashup::{
-    harness::Sim,
+    harness::{MeshExtraction, Sim},
     map::{
         MapCollision, MapConvex, MapData, MapMesh, MapModel, MapPhysics, MapPlugin, MapProp, MapShadows, PropIndex,
         PropShadow, PropSolid, PushAway,
@@ -128,6 +130,7 @@ fn sim() -> Sim {
             .init_asset::<ShadowMaterial>()
             .init_asset::<bevy::mesh::skinning::SkinnedMeshInverseBindposes>()
             .add_plugins(MapPlugin::new(map()));
+        mashup::harness::emulate_mesh_extraction(app);
     })
 }
 
@@ -140,9 +143,11 @@ fn shadow(sim: &mut Sim) -> (Entity, AssetId<Mesh>, Vec3) {
         .find(|(_, s, _)| s.prop == 0)
         .map(|(e, _, m)| (e, m.id()))
         .expect("the crate casts a shadow");
+    // As the render world holds it (the shadow mesh lives there only).
     let aabb = world
-        .resource::<Assets<Mesh>>()
-        .get(mesh)
+        .resource::<MeshExtraction>()
+        .extracted
+        .get(&mesh)
         .and_then(|m| m.compute_aabb())
         .expect("a shadow mesh with positions");
     (e, mesh, Vec3::from(aabb.center))
@@ -179,4 +184,18 @@ fn a_moving_prop_keeps_its_shadow_mesh_and_moves_it() {
         last = centre;
     }
     assert!(last.x - start.x > 0.3, "the shadow moved with the crate: {start} -> {last}");
+    // Coming to rest: no shadow update is announced after the render
+    // world took its data (a rewrite announced a frame late, after
+    // `AssetEventSystems`, was extracted twice: Bevy logged "RenderMesh
+    // with RenderAssetUsages == RENDER_WORLD cannot be extracted" every
+    // time a moving prop stopped).
+    sim.app.world_mut().entity_mut(node).insert(LinearVelocity(Vec3::ZERO));
+    for _ in 0..30 {
+        sim.ticks(1);
+        // Stop and go: moves on alternate stretches of frames.
+        let v = if sim.tick() % 6 < 3 { Vec3::X } else { Vec3::ZERO };
+        sim.app.world_mut().entity_mut(node).insert(LinearVelocity(v));
+    }
+    let failures = &sim.app.world().resource::<MeshExtraction>().failures;
+    assert!(failures.is_empty(), "meshes announced changed after extraction: {failures:?}");
 }

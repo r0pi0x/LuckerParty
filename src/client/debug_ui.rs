@@ -529,7 +529,8 @@ fn player_tab(ui: &mut egui::Ui, world: &mut World, state: &mut DebugUi) {
     let movement = world.get::<crate::slots::MovementSlot>(p).map(|m| m.0).unwrap_or("?");
     let noclip = movement == crate::movement::noclip::ID;
     let dead = world.get::<crate::rules::Dead>(p).is_some();
-    let pos = units(t);
+    // The feet, as setpos takes them (bookmarks are setpos lines).
+    let pos = units(t + state_c.as_ref().map_or(Vec3::ZERO, |s| Vec3::Y * s.hull_min.y));
     let vel = units(v);
     ui.heading("State");
     egui::Grid::new("player_state").num_columns(2).show(ui, |ui| {
@@ -683,7 +684,8 @@ fn player_tab(ui: &mut egui::Ui, world: &mut World, state: &mut DebugUi) {
                 Some(2) => format!("CT {}", n[k]),
                 _ => format!("spawn {}", n[k]),
             };
-            let u = units(*at + Vec3::Y);
+            // setpos takes the feet: a unit above it.
+            let u = units(*at) + Vec3::Z;
             let line = format!(
                 "setpos {:.1} {:.1} {:.1}; setang 0 {:.1}",
                 u.x,
@@ -902,16 +904,16 @@ fn bots_tab(ui: &mut egui::Ui, world: &mut World, state: &mut DebugUi) {
     );
     ui.separator();
     let mut rows: Vec<_> = world
-        .query::<(&crate::bot::Bot, &Team, &Health, Option<&Name>, &Transform)>()
+        .query::<(&crate::bot::Bot, &Team, &Health, Option<&Name>, &Transform, Option<&MovementState>)>()
         .iter(world)
-        .map(|(b, t, h, n, at)| {
+        .map(|(b, t, h, n, at, m)| {
             (
                 n.map_or("?".to_string(), |n| n.to_string()),
                 t.0,
                 h.current * 100.0,
                 format!("{:?}", b.role()),
                 format!("{:?}", b.activity()),
-                at.translation,
+                at.translation + m.map_or(Vec3::ZERO, |m| Vec3::Y * m.hull_min.y),
             )
         })
         .collect();
@@ -932,7 +934,7 @@ fn bots_tab(ui: &mut egui::Ui, world: &mut World, state: &mut DebugUi) {
                 if let Some(n) = name.strip_prefix("Bot ") {
                     command_button(ui, world, "watch", &format!("mashup_watch {n}"));
                 }
-                let u = units(at + Vec3::Y);
+                let u = units(at);
                 command_button(ui, world, "go to", &format!("setpos {:.1} {:.1} {:.1}", u.x, u.y, u.z));
             });
             ui.end_row();

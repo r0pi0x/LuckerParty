@@ -32,8 +32,11 @@ fn step(mut q: Query<(&Intent, &mut Transform, &mut Velocity, &mut MovementState
         let speed = if intent.sprint { SPEED * FAST_MULTIPLIER } else { SPEED };
         vel.0 = (intent.look_rotation() * local + Vec3::Y * up) * speed;
         transform.translation += vel.0 * clock.dt();
+        // The box and the eye stay as they were (`setpos` places the feet).
         *state = MovementState {
             eye_offset: state.eye_offset,
+            hull_min: state.hull_min,
+            hull_max: state.hull_max,
             ..default()
         };
     }

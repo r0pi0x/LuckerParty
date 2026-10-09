@@ -237,8 +237,11 @@ pub(super) fn picked_up(world: &mut World, owner: Entity, weapon: Entity) {
 
 /// Where each placed weapon with entities parented to it is
 /// (`map::entities::EntityAnchors`, and its anchor node): lying loose, the
-/// loose item's pose; carried, its owner's origin (the feet, Source's
-/// origin) turned to the owner's yaw, as a held weapon follows its owner.
+/// loose item's pose; carried, the middle of its owner's box turned to the
+/// owner's yaw, as a held weapon follows its owner. The height is measured
+/// on CS:S (mg_item_battle_v4b's car knife: the car stays about where the
+/// map put it relative to the floor, roof at the carrier's shoulders, in
+/// first and third person); the feet put the car's roof at the knees.
 /// What is parented to it rides the anchor node; the logic moves its own
 /// children there.
 #[allow(clippy::type_complexity)]
@@ -261,10 +264,13 @@ pub(super) fn anchor_weapons(
         let pose = match w.owner {
             Some(o) => {
                 let Ok((t, intent, state)) = owners.get(o) else { continue };
-                let feet = t.translation + Vec3::Y * state.map_or(0.0, |s| s.hull_min.y);
+                // The middle of the carrier's box (Source's world-space
+                // centre: 31 units above the feet standing in CS:S's 62-unit
+                // hull).
+                let centre = t.translation + Vec3::Y * state.map_or(0.0, |s| (s.hull_min.y + s.hull_max.y) / 2.0);
                 // Entity yaw 0 is engine +X; the intent's yaw 0 looks down -Z.
                 let yaw = intent.yaw.to_degrees() + 90.0;
-                Transform::from_translation(feet)
+                Transform::from_translation(centre)
                     .with_rotation(rotation_to_engine(entity_rotation(Vec3::new(0.0, yaw, 0.0))))
             }
             None => match loose.iter().find(|(l, _)| l.weapon == weapon) {

@@ -431,3 +431,62 @@ fn load_requested_maps(world: &mut World, mut cursor: Local<bevy::ecs::message::
         }
     }
 }
+
+/// What `emulate_mesh_extraction` saw: each mesh as the render world
+/// would hold it, and the meshes it couldn't extract.
+#[derive(Resource, Default)]
+pub struct MeshExtraction {
+    /// The last data extracted per mesh (the render world's copy).
+    pub extracted: std::collections::HashMap<AssetId<Mesh>, Mesh>,
+    /// Meshes announced as added or modified whose data was already taken:
+    /// in a real run, Bevy's "RenderMesh with RenderAssetUsages ==
+    /// RENDER_WORLD cannot be extracted: The asset has already been
+    /// extracted" error.
+    pub failures: Vec<AssetId<Mesh>>,
+}
+
+/// Headless stand-in for the render world's mesh extraction, so a test can
+/// catch a mesh announced as changed after the render world took its
+/// data: each frame (in `Last`, after the asset events go out in
+/// `PostUpdate`) a mesh added or modified this frame is extracted as Bevy
+/// does: a `RENDER_WORLD`-only one has its data taken from the main world,
+/// others are copied. Readers of such meshes look in `MeshExtraction`.
+pub fn emulate_mesh_extraction(app: &mut App) {
+    app.init_resource::<MeshExtraction>().add_systems(Last, extract_meshes);
+}
+
+fn extract_meshes(
+    mut events: MessageReader<AssetEvent<Mesh>>,
+    meshes: Option<ResMut<Assets<Mesh>>>,
+    mut out: ResMut<MeshExtraction>,
+) {
+    let Some(mut meshes) = meshes else {
+        events.clear();
+        return;
+    };
+    let mut due: Vec<AssetId<Mesh>> = Vec::new();
+    for e in events.read() {
+        match e {
+            AssetEvent::Added { id } | AssetEvent::Modified { id } if !due.contains(id) => due.push(*id),
+            _ => {}
+        }
+    }
+    use bevy::asset::RenderAssetUsages;
+    for id in due {
+        let Some(mesh) = meshes.get_mut_untracked(id) else { continue };
+        if !mesh.asset_usage.contains(RenderAssetUsages::RENDER_WORLD) {
+            continue;
+        }
+        if mesh.asset_usage == RenderAssetUsages::RENDER_WORLD {
+            match mesh.take_gpu_data() {
+                Ok(data) => {
+                    out.extracted.insert(id, data);
+                }
+                Err(_) => out.failures.push(id),
+            }
+        } else {
+            let copy = mesh.clone();
+            out.extracted.insert(id, copy);
+        }
+    }
+}
