@@ -460,12 +460,16 @@ its `LocalPlayer`'s `Health`, `+sv_showlagcompensation 1` on the host to
 log each rewind. Cheat commands (`setpos`, `setang`, `noclip`, `god`,
 `give`, ...) need `+sv_cheats 1` on the host in a network game. A round
 on de_dust2: host `... -port 27031 +name Host +maxplayers 4 +sv_cheats 1
-+mashup_rounds 1 +map de_dust2` (`+map cs_source:de_dust2` doesn't load
-from the command line), then `mp_restartgame 1` once the client is in;
++mashup_rounds 1 +map de_dust2` (or `+map cs_source:de_dust2`), then `mp_restartgame 1` once the client is in;
 `buymenu`, `buy <weapon>`, `jointeam 2`, `say`/`say_team`,
 `+showscores`/`-showscores` and `screenshot` through each game's
 `mashup/console`. The client's `differences` shows the server's
-replicated values while connected; setting one says it can't. The dedicated server:
+replicated values while connected; setting one says it can't. On the server, `kick <name>` and `kickid <id> [message]` (ids from
+`status`) drop a player ("Kicked by Console"); `name <new>` on a client
+renames it for everyone ("* X changed name to Y"); bots take names from
+the install's botprofile.db at `bot_difficulty` (0-3; `bot_prefix`),
+`bot_kick t|ct|easy|...|expert|<name>`, and with `bot_join_after_player 1`
+(the default) the quota waits for a player. The dedicated server:
 `cargo run --features dev --bin mashup_server -- -port 27032 +map greybox
 +bot_add` (console on stdin: `status`, `bot_add`, `bot_quota 6`, `changelevel de_dust2`, `quit`). Logs show
 `listening on UDP ...`, `<name> joined`, `<name> left`, `disconnected:

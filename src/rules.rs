@@ -100,7 +100,7 @@ pub fn join_team(w: &mut World, player: Entity, team: Team) -> Result<String, St
     }
     // Switching teams: respawn at the new team's spawn now (no death
     // counted).
-    w.entity_mut(player).insert((team, Dead { since: f64::MIN }));
+    w.entity_mut(player).insert((team, Dead { since: f64::MIN }, ColliderDisabled));
     Ok(format!(
         "joined the {}",
         if team.0 == 1 {
@@ -151,11 +151,69 @@ pub struct Dead {
 /// rounds, the next step starts a new game (everyone at a spawn, start
 /// money); without, everyone respawns now. Without this the dead stayed
 /// dead (spectating) until the old round's clock ran out on the new map.
+///
+/// Remote players' clients load the new map too: they're out of the game
+/// (`core::Connecting`) until they have it (`enter_game`). The map loads
+/// counted (`MapLoads`) go up by one.
 pub fn new_game(world: &mut World) {
     if let Some(mut state) = world.get_resource_mut::<rounds::RoundState>() {
         *state = rounds::RoundState::default();
     }
     respawn_everyone(world);
+    let remote: Vec<Entity> = world
+        .query_filtered::<Entity, With<crate::core::RemotePlayer>>()
+        .iter(world)
+        .collect();
+    for e in remote {
+        hold_out(world, e);
+    }
+    world.get_resource_or_init::<MapLoads>().0 += 1;
+}
+
+/// Maps loaded so far (`new_game`): a map change, or the same map loaded
+/// again, counts one. A network server notices a reload of the same map
+/// by it (`net::maps`).
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MapLoads(pub u32);
+
+/// Keep a remote player out of the game while its client loads the map
+/// (`core::Connecting`): dead, not solid, no health, so nothing hits it
+/// and the rules neither spawn it nor count it on its team.
+pub fn hold_out(world: &mut World, e: Entity) {
+    let Ok(mut ent) = world.get_entity_mut(e) else { return };
+    ent.insert((crate::core::Connecting, Dead { since: f64::MIN }, ColliderDisabled));
+    if let Some(mut h) = ent.get_mut::<Health>() {
+        h.current = 0.0;
+    }
+    if let Some(mut v) = ent.get_mut::<Velocity>() {
+        v.0 = Vec3::ZERO;
+    }
+}
+
+/// A player's client has the map: it is in the game, and spawns as the
+/// rules allow. Deathmatch: at once. Rounds: at once during the freeze
+/// (or before the first round starts: with everyone), else at the next
+/// round (CS:S lets players who join in the freeze time play the round;
+/// the exact grace is unmeasured).
+pub fn enter_game(world: &mut World, e: Entity) {
+    if world.get::<crate::core::Connecting>(e).is_none() {
+        return;
+    }
+    world.entity_mut(e).remove::<crate::core::Connecting>();
+    let rounds = world
+        .get_resource::<rounds::RoundSettings>()
+        .is_some_and(|r| r.enabled != 0);
+    let freeze = world
+        .get_resource::<rounds::RoundState>()
+        .is_some_and(|r| matches!(r.phase, rounds::Phase::Freeze { .. }));
+    if rounds && freeze {
+        if let Some(start) = world.get_resource::<rounds::RoundSettings>().map(|s| s.start_money)
+            && world.get::<crate::weapon::economy::Money>(e).is_none()
+        {
+            world.entity_mut(e).insert(crate::weapon::economy::Money(start));
+        }
+        put_at_spawn(world, e, true);
+    }
 }
 
 pub fn respawn_everyone(world: &mut World) {
@@ -163,8 +221,14 @@ pub fn respawn_everyone(world: &mut World) {
         .query_filtered::<Entity, (With<Intent>, With<Health>, Without<crate::objectives::hostages::Hostage>)>()
         .iter(world)
         .collect();
+    // Unseen until they respawn: nobody bumps into them (the server's
+    // characters; a network client's are the server's to say).
+    let authority = world.get_resource::<crate::core::NetRole>() != Some(&crate::core::NetRole::Client);
     for e in all {
         world.entity_mut(e).insert(Dead { since: f64::MIN });
+        if authority {
+            world.entity_mut(e).insert(ColliderDisabled);
+        }
     }
 }
 
@@ -214,7 +278,10 @@ fn respawn(world: &mut World) {
     let now = world.resource::<Time>().elapsed_secs_f64();
     let delay = world.resource::<Deathmatch>().respawn_delay as f64;
     let ready: Vec<Entity> = world
-        .query_filtered::<(Entity, &Dead), Without<crate::objectives::hostages::Hostage>>()
+        .query_filtered::<(Entity, &Dead), (
+            Without<crate::objectives::hostages::Hostage>,
+            Without<crate::core::Connecting>,
+        )>()
         .iter(world)
         .filter(|(_, d)| now - d.since >= delay)
         .map(|(e, _)| e)
@@ -224,10 +291,15 @@ fn respawn(world: &mut World) {
     }
 }
 
-/// Bring a character back at one of its team's spawn points (round robin)
-/// with full health and no velocity; with `fresh` weapons its old ones go
-/// and it gets the starting weapons, otherwise it keeps what it carries.
-pub(crate) fn put_at_spawn(world: &mut World, e: Entity, fresh: bool) {
+/// How close (m, across) another living character may stand to a spawn
+/// point for it to be free: a player's box is 32 units wide.
+const SPAWN_CLEARANCE: f32 = 32.0 * 0.0254;
+
+/// Bring a character back at one of its team's spawn points (round robin,
+/// skipping those another living character stands on) with full health
+/// and no velocity; with `fresh` weapons its old ones go and it gets the
+/// starting weapons, otherwise it keeps what it carries.
+pub fn put_at_spawn(world: &mut World, e: Entity, fresh: bool) {
     let spawns: Vec<(Transform, Option<Team>)> = world
         .query::<(&Transform, &SpawnPoint)>()
         .iter(world)
@@ -247,12 +319,31 @@ pub(crate) fn put_at_spawn(world: &mut World, e: Entity, fresh: bool) {
         } else {
             own
         };
+        // The next spawn in turn that no living character stands on (two
+        // players put in one spot are stuck in each other for good), else
+        // the next in turn anyway.
+        let taken: Vec<Vec3> = world
+            .query_filtered::<(Entity, &Transform, &Health), (With<Intent>, Without<Dead>)>()
+            .iter(world)
+            .filter(|(o, _, h)| *o != e && h.current > 0.0)
+            .map(|(_, t, _)| t.translation)
+            .collect();
+        let free = |t: &Transform| {
+            !taken.iter().any(|p| {
+                let d = *p - t.translation;
+                d.x.abs() < SPAWN_CLEARANCE && d.z.abs() < SPAWN_CLEARANCE && d.y.abs() < 2.0
+            })
+        };
         let at = if pool.is_empty() {
             None
         } else {
             let mut dm = world.resource_mut::<Deathmatch>();
-            let i = dm.next_spawn % pool.len();
-            dm.next_spawn += 1;
+            let start = dm.next_spawn;
+            let i = (0..pool.len())
+                .map(|k| (start + k) % pool.len())
+                .find(|i| free(&pool[*i]))
+                .unwrap_or(start % pool.len());
+            dm.next_spawn = start + 1;
             Some(pool[i])
         };
         // Fresh weapons: drop the old ones.

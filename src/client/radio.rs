@@ -400,9 +400,11 @@ fn hear(
         Option<&Health>,
         Has<LocalPlayer>,
         Option<&GlobalTransform>,
+        Option<&crate::net::NetCharacter>,
     )>,
     nav: Option<Res<NavMesh>>,
     settings: Res<RadioSettings>,
+    net: Option<Res<crate::net::NetSettings>>,
     mut play: MessageWriter<PlaySound>,
     mut chat: MessageWriter<ChatLine>,
     mut icons: ResMut<RadioIcons>,
@@ -418,7 +420,7 @@ fn hear(
     };
     for call in calls.read() {
         let Some(c) = radio.get(&call.command) else { continue };
-        let Ok((name, team, health, is_local, at)) = who.get(call.sender) else {
+        let Ok((name, team, health, is_local, at, character)) = who.get(call.sender) else {
             continue;
         };
         let alive = health.is_none_or(|h| h.current > 0.0);
@@ -439,11 +441,7 @@ fn hear(
         if !is_local {
             icons.speak(call.sender);
         }
-        let sender = if is_local {
-            "Player".to_string()
-        } else {
-            name.map_or_else(|| format!("{}", call.sender), |n| n.to_string())
-        };
+        let sender = super::shown_name(call.sender, is_local, character, name, net.as_deref());
         let place = nav.as_ref().zip(at).and_then(|(nav, at)| {
             let area = nav.area_at(at.translation())?;
             nav.places.get(nav.areas[area].place?).cloned()

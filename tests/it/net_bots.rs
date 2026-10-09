@@ -18,6 +18,7 @@ use bevy::{
 };
 use mashup::{
     bot::{Bot, BotConfig, BotQuota},
+    map::bot_profiles::BotProfiles,
     console::{Console, execute, parse},
     core::{Seed, Team},
     games::cs_source::{
@@ -243,7 +244,9 @@ fn bots_fight_and_clients_see_their_shots_kills_and_radio() {
 #[test]
 fn bot_quota_fills_with_humans_counted() {
     let mut sim = NetSim::new(link(), 63, 0, setup);
-    run(sim.server.app.world_mut(), "bot_quota 3");
+    // Bots join an empty server here (CS:S's default waits for a player:
+    // `bots_wait_for_a_player`).
+    run(sim.server.app.world_mut(), "bot_join_after_player 0; bot_quota 3");
     sim.ticks(20);
     assert_eq!(bots(sim.server.app.world_mut()).len(), 3, "normal: 3 bots");
     let teams: Vec<Team> = bots(sim.server.app.world_mut()).iter().map(|b| b.2).collect();
@@ -377,4 +380,105 @@ fn server_frames(sim: &mut NetSim, n: usize) -> (f64, f64) {
     }
     ms.sort_by(f64::total_cmp);
     (ms.iter().sum::<f64>() / n as f64, ms[n * 95 / 100])
+}
+
+/// `bot_join_after_player` (CS:S's default 1): the quota adds no bots
+/// until a player is in the game.
+#[test]
+fn bots_wait_for_a_player() {
+    let mut sim = NetSim::new(link(), 67, 0, setup);
+    run(sim.server.app.world_mut(), "bot_quota 2");
+    sim.ticks(30);
+    assert_eq!(bots(sim.server.app.world_mut()).len(), 0, "nobody playing: no bots yet");
+    sim.add_client(|_| {});
+    sim.until_joined(400);
+    sim.ticks(10);
+    assert_eq!(bots(sim.server.app.world_mut()).len(), 2, "a player came: the bots join");
+}
+
+/// A file laid out as CS:S's botprofile.db (made up here).
+const PROFILES: &str = "
+Default
+    Difficulty = NORMAL
+End
+Template Top
+    Difficulty = EXPERT
+End
+Template Low
+    Difficulty = EASY
+End
+Top Ace
+End
+Low Newbie
+End
+Normal1 Norm
+End
+Normal2 Nina
+End
+Normal3 Nate
+End
+";
+
+/// Bots named from the game's bot profiles: at `bot_difficulty`, no name
+/// twice, `bot_prefix`; `bot_kick` by team and difficulty; `kick` and
+/// `kickid` for bots and players.
+#[test]
+fn bot_names_profiles_and_kicks() {
+    let mut sim = NetSim::new(link(), 68, 0, setup);
+    sim.server.app.insert_resource(BotProfiles::parse(PROFILES));
+    for i in 0..2 {
+        sim.add_client(move |w| w.resource_mut::<mashup::net::NetSettings>().name = format!("P{i}"));
+    }
+    sim.until_joined(400);
+    run(sim.server.app.world_mut(), "bot_add 1; bot_add 2; bot_add 1");
+    let names: Vec<String> = bots(sim.server.app.world_mut()).into_iter().map(|b| b.1).collect();
+    println!("normal bots: {names:?}");
+    let mut sorted = names.clone();
+    sorted.sort();
+    assert_eq!(sorted, ["Nate", "Nina", "Norm"], "the normal profiles, each once");
+    run(sim.server.app.world_mut(), "bot_difficulty 3; bot_prefix [BOT]; bot_add 2");
+    let names: Vec<String> = bots(sim.server.app.world_mut()).into_iter().map(|b| b.1).collect();
+    assert!(names.contains(&"[BOT] Ace".to_string()), "{names:?}");
+    sim.ticks(20);
+    // Every client sees the names.
+    let seen: Vec<String> = bots_seen(sim.clients[0].app.world_mut()).into_iter().map(|b| b.0).collect();
+    assert_eq!(seen.len(), 4, "{seen:?}");
+    assert!(seen.contains(&"[BOT] Ace".to_string()));
+    // bot_kick by difficulty, then by team.
+    let out = run(sim.server.app.world_mut(), "bot_kick expert");
+    assert!(out.iter().any(|l| l.contains("kicked 1 bots")), "{out:?}");
+    assert_eq!(sim.server.app.world().resource::<BotQuota>().quota, 3);
+    let t_bots = bots(sim.server.app.world_mut()).iter().filter(|b| b.2 == Team(1)).count();
+    let out = run(sim.server.app.world_mut(), "bot_kick t");
+    assert!(out.iter().any(|l| l.contains(&format!("kicked {t_bots} bots"))), "{out:?}");
+    assert!(bots(sim.server.app.world_mut()).iter().all(|b| b.2 == Team(2)));
+    // kick: a bot by name, then a player by name and one by id.
+    let left = bots(sim.server.app.world_mut())[0].1.clone();
+    let out = run(sim.server.app.world_mut(), &format!("kick {left}"));
+    assert!(out.iter().any(|l| l == &format!("kicked {left}")), "{out:?}");
+    assert!(bots(sim.server.app.world_mut()).is_empty());
+    let name0 = {
+        let c = sim.character_of(0).unwrap();
+        sim.server.app.world().get::<NetCharacter>(c).unwrap().name.clone()
+    };
+    let out = run(sim.server.app.world_mut(), &format!("kick {name0}"));
+    assert!(out.iter().any(|l| l.starts_with("kicked")), "{out:?}");
+    let id1 = sim.client_id(1);
+    let out = run(sim.server.app.world_mut(), &format!("kickid {id1} too loud"));
+    assert!(out.iter().any(|l| l.starts_with("kicked")), "{out:?}");
+    sim.ticks(60);
+    for i in 0..2 {
+        let w = sim.clients[i].app.world();
+        assert_eq!(*w.resource::<mashup::core::NetRole>(), mashup::core::NetRole::Standalone, "client {i} dropped");
+        let why = w.resource::<mashup::net::LastDisconnect>().0.clone();
+        println!("client {i}: {why}");
+        assert!(why.starts_with("Kicked by Console"), "{why}");
+    }
+    assert_eq!(
+        sim.clients[1].app.world().resource::<mashup::net::LastDisconnect>().0,
+        "Kicked by Console : too loud"
+    );
+    assert!(sim.character_of(0).is_none() && sim.character_of(1).is_none(), "their characters gone");
+    let out = run(sim.server.app.world_mut(), "kick nobody");
+    assert!(out.iter().any(|l| l.contains("No player named")), "{out:?}");
 }

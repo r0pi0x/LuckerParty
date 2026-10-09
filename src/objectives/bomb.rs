@@ -6,6 +6,7 @@
 
 use avian3d::prelude::*;
 use bevy::prelude::*;
+use serde::{Deserialize, Serialize};
 
 use super::{
     MapKind, MapObjectives, ObjectiveEvent, RoundOpen, UNIT,
@@ -13,9 +14,13 @@ use super::{
 };
 use crate::{
     console::resource_cvar,
-    core::{Died, Explosion, Health, Intent, MovementState, RoundRestarts, SimSet, Team},
+    core::{
+        Died, Explosion, FirstTimePredicted, Health, Intent, MovementState, NetRole, Predict, PredictedAppExt,
+        RoundRestarts, SimClock, SimSet, Team,
+    },
     map::{
-        GameSound, PlaySound,
+        GameSound, PlaySound, PredictedSound,
+        interp::NetDrawn,
         entities::FireEntityOutput,
         loose::{LooseItem, ShownItem, SitOnOrigin},
     },
@@ -122,29 +127,37 @@ impl BombRules {
     }
 }
 
-/// On a character arming the bomb: since when, and key presses heard.
-#[derive(Component, Clone, Copy, Debug)]
+/// On a character arming the bomb: since when (`SimClock` time), the
+/// bomb (this process's entity: not sent) and key presses heard.
+/// Predicted (`arm`): a network client runs it for its own player and the
+/// server's copy comes with that player's state.
+#[derive(Component, Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Arming {
     pub since: f64,
+    #[serde(skip, default = "no_entity")]
     pub weapon: Entity,
-    clicks: usize,
+    clicks: u32,
 }
 
-impl Arming {
-    /// Arming as a network client shows it (the server's, on its own
-    /// clock): since when, no weapon.
-    pub fn shown(since: f64) -> Self {
-        Self {
-            since,
-            weapon: Entity::PLACEHOLDER,
-            clicks: 0,
-        }
-    }
+fn no_entity() -> Entity {
+    Entity::PLACEHOLDER
 }
 
-/// On a character defusing the planted bomb (it holds still).
-#[derive(Component, Clone, Copy, Debug)]
-pub struct Defusing;
+/// On a character defusing the planted bomb (it holds still): when it
+/// started and ends (`SimClock` time), with a kit. The bomb's `Defuse` is
+/// the server's record; this is the defuser's, which its network client
+/// predicts (`predict_defuse`).
+#[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Defusing {
+    pub started: f64,
+    pub ends: f64,
+    pub kit: bool,
+}
+
+/// Arming and defusing holding a character still (`hold_still`): a
+/// network client's commands are recorded after it (they replay held).
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BombHold;
 
 /// A defuse in progress: who, when it started and ends, with a kit.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -218,15 +231,31 @@ pub(super) fn plugin(app: &mut App) {
     app.init_resource::<BombRules>()
         .init_resource::<BombState>()
         .init_resource::<LastButtons>()
+        .add_message::<PredictedSound>()
+        // Arming (and on a client its defusing) runs with the weapon frame,
+        // so a client predicts it like its shots (`core::Predict`).
+        .add_systems(
+            Predict::Weapons,
+            (arm, predict_defuse.run_if(resource_equals(NetRole::Client)))
+                .chain()
+                .after(crate::weapon::WeaponFrame),
+        )
+        .predicted_net::<Arming>()
+        .predicted_net::<Defusing>()
+        // Everywhere: a client holds its own player while it predicts it
+        // arming or defusing.
+        .add_systems(
+            FixedUpdate,
+            hold_still
+                .in_set(BombHold)
+                .after(SimSet::Rules)
+                .after(crate::weapon::SelectWeapons)
+                .before(SimSet::Movement),
+        )
         .add_systems(
             FixedUpdate,
             (
-                hold_still
-                    .after(SimSet::Rules)
-                    .after(crate::weapon::SelectWeapons)
-                    .before(SimSet::Movement),
                 (
-                    arm,
                     defuse,
                     tick_bomb,
                     kits,
@@ -287,14 +316,22 @@ enum ArmStep {
     Plant(Entity, Option<usize>),
 }
 
-/// Primary fire with the bomb in hand (spec 3).
-fn arm(world: &mut World) {
-    let now = world.resource::<Time>().elapsed_secs_f64();
+/// Primary fire with the bomb in hand (spec 3): arming, its key presses,
+/// stopping short, the plant. With the weapon frame (`core::Predict::
+/// Weapons`): a network client predicts it for its own player (the
+/// progress, the hold, the view model's key presses and their sounds, the
+/// bomb leaving its hands) live and in replays; the server's state of
+/// that player corrects it. What only the server does (the planted bomb,
+/// the HUD's words, the rules' sounds) happens where `authoritative`.
+pub fn arm(world: &mut World) {
+    let now = world.resource::<SimClock>().now;
+    let authority = world.get_resource::<NetRole>() != Some(&NetRole::Client);
+    let first = world.get_resource::<FirstTimePredicted>().is_none_or(|f| f.0);
     let rules = world.resource::<BombRules>().clone();
     let open = world.get_resource::<RoundOpen>().is_none_or(|o| o.0);
     let mut steps: Vec<(Entity, ArmStep)> = Vec::new();
     {
-        let mut q = world.query::<(
+        let mut q = world.query_filtered::<(
             Entity,
             &Intent,
             &Inventory,
@@ -302,7 +339,7 @@ fn arm(world: &mut World) {
             Option<&MovementState>,
             Option<&Health>,
             Option<&Arming>,
-        )>();
+        ), Without<NetDrawn>>();
         let objectives = world.resource::<MapObjectives>();
         let last = world.resource::<LastButtons>();
         for (e, intent, inv, t, state, health, arming) in q.iter(world) {
@@ -319,7 +356,6 @@ fn arm(world: &mut World) {
             let ground = state.is_none_or(|s| s.on_ground);
             let pressed = intent.fire && !last.get(e).fire;
             match arming {
-                Some(a) if a.weapon != bomb => steps.push((e, ArmStep::Abort { left_zone: false })),
                 Some(_) if !intent.fire || !open || !ground => steps.push((e, ArmStep::Abort { left_zone: false })),
                 Some(_) if site.is_none() => steps.push((e, ArmStep::Abort { left_zone: true })),
                 Some(a) if now - a.since + TIME_SLACK >= rules.plant_time as f64 => {
@@ -352,12 +388,14 @@ fn arm(world: &mut World) {
                     weapon,
                     clicks: 0,
                 });
-                world.write_message(ObjectiveEvent::BeginPlant { who: e });
+                if authority {
+                    world.write_message(ObjectiveEvent::BeginPlant { who: e });
+                }
                 world.write_message(WeaponEvent {
                     owner: e,
                     weapon,
                     kind: WeaponEventKind::ArmingStarted,
-                    replay: false,
+                    replay: !first,
                 });
             }
             ArmStep::Continue => {
@@ -369,51 +407,69 @@ fn arm(world: &mut World) {
                     .clicks
                     .iter()
                     .filter(|t| **t <= elapsed + TIME_SLACK as f32)
-                    .count();
+                    .count() as u32;
                 let new = due.saturating_sub(a.clicks);
                 a.clicks = due;
                 if new > 0
+                    && first
                     && let Some(s) = &rules.sounds.click
                 {
                     let at = world.get::<Transform>(e).map(|t| t.translation);
-                    world.write_message(GameSound(PlaySound {
+                    let sound = PlaySound {
                         pitch: None,
                         entry: s.clone(),
                         at,
                         volume: None,
                         source: Some(e),
                         channel: Some(crate::weapon::CHAN_WEAPON),
-                    }));
+                    };
+                    own_sound(world, authority, e, sound);
                 }
             }
             ArmStep::Abort { left_zone } => {
                 if let Some(a) = world.entity_mut(e).take::<Arming>() {
-                    world.write_message(ObjectiveEvent::AbortPlant { who: e, left_zone });
+                    if authority {
+                        world.write_message(ObjectiveEvent::AbortPlant { who: e, left_zone });
+                    }
+                    let weapon = carried_bomb(world, e).unwrap_or(a.weapon);
                     world.write_message(WeaponEvent {
                         owner: e,
-                        weapon: a.weapon,
+                        weapon,
                         kind: WeaponEventKind::ArmingStopped,
-                        replay: false,
+                        replay: !first,
                     });
                 }
             }
             ArmStep::Refuse(reason) => {
-                world.write_message(ObjectiveEvent::PlantRefused { who: e, reason });
+                if authority {
+                    world.write_message(ObjectiveEvent::PlantRefused { who: e, reason });
+                }
             }
-            ArmStep::Plant(weapon, site) => plant(world, e, weapon, site, now, &rules),
+            ArmStep::Plant(weapon, site) => {
+                take_bomb(world, e, weapon);
+                if authority {
+                    plant(world, e, site, now, &rules);
+                }
+            }
         }
     }
 }
 
-/// The bomb leaves `who`'s hands and sits at their feet, ticking.
-fn plant(world: &mut World, who: Entity, weapon: Entity, site: Option<usize>, now: f64, rules: &BombRules) {
+/// A sound of a character's own predicted action (a key press, starting
+/// a defuse): the authority plays it and sends it to every client but the
+/// actor's (`map::PredictedSound`); a client plays its own at once.
+fn own_sound(world: &mut World, authority: bool, by: Entity, sound: PlaySound) {
+    if authority {
+        world.write_message(PredictedSound { by, sound });
+    } else {
+        world.write_message(sound);
+    }
+}
+
+/// The bomb leaves `who`'s hands (planted): out of its inventory, the
+/// last weapon (else the best) wanted. Predicted with `arm`.
+fn take_bomb(world: &mut World, who: Entity, weapon: Entity) {
     world.entity_mut(who).remove::<Arming>();
-    let Some(t) = world.get::<Transform>(who).copied() else {
-        return;
-    };
-    let (lo, _) = hull(&t, world.get::<MovementState>(who));
-    let feet = t.translation.with_y(lo.y);
-    let yaw = world.get::<Intent>(who).map_or(0.0, |i| i.yaw);
     // The bomb goes; the last weapon (else the best) comes back up.
     if let Some(mut inv) = world.get_mut::<Inventory>(who) {
         inv.weapons.retain(|w| *w != weapon);
@@ -438,7 +494,20 @@ fn plant(world: &mut World, who: Entity, weapon: Entity, site: Option<usize>, no
     {
         inv.wanted = fallback;
     }
-    world.despawn(weapon);
+    if let Ok(w) = world.get_entity_mut(weapon) {
+        w.despawn();
+    }
+}
+
+/// The bomb sits at `who`'s feet, ticking (the server's; `take_bomb` took
+/// it out of its hands).
+fn plant(world: &mut World, who: Entity, site: Option<usize>, now: f64, rules: &BombRules) {
+    let Some(t) = world.get::<Transform>(who).copied() else {
+        return;
+    };
+    let (lo, _) = hull(&t, world.get::<MovementState>(who));
+    let feet = t.translation.with_y(lo.y);
+    let yaw = world.get::<Intent>(who).map_or(0.0, |i| i.yaw);
     let timer = rules.timer;
     let mut bomb = world.spawn((
         Name::new("Planted bomb"),
@@ -517,11 +586,11 @@ fn defuse(
     spatial: SpatialQuery,
     rules: Res<BombRules>,
     mut events: MessageWriter<ObjectiveEvent>,
-    mut play: MessageWriter<GameSound>,
+    mut play: MessageWriter<PredictedSound>,
     mut commands: Commands,
-    time: Res<Time>,
+    clock: Res<SimClock>,
 ) {
-    let now = time.elapsed_secs_f64();
+    let now = clock.now;
     let filter = SpatialQueryFilter::default().with_mask(crate::core::SOLID_LAYERS);
     let clear = |a: Vec3, b: Vec3| -> bool {
         let d = b - a;
@@ -583,24 +652,126 @@ fn defuse(
                 continue;
             }
             let length = if kit { rules.defuse_time_kit } else { rules.defuse_time };
-            bomb.defuse = Some(Defuse {
+            let d = Defuse {
                 who: e,
                 started: now,
                 ends: now + length as f64,
                 kit,
+            };
+            bomb.defuse = Some(d);
+            commands.entity(e).insert(Defusing {
+                started: d.started,
+                ends: d.ends,
+                kit,
             });
-            commands.entity(e).insert(Defusing);
+            // The defuser's client played it when it predicted the start.
             if let Some(s) = &rules.sounds.defuse_start {
-                play.write(GameSound(PlaySound {
-                    pitch: None,
-                    entry: s.clone(),
-                    at: Some(bt.translation),
-                    volume: None,
-                    source: Some(bomb_e),
-                    channel: None,
-                }));
+                play.write(PredictedSound {
+                    by: e,
+                    sound: defuse_sound(s, bt.translation, bomb_e),
+                });
             }
             events.write(ObjectiveEvent::BeginDefuse { who: e, kit });
+        }
+    }
+}
+
+/// On a network client's copy of the planted bomb: it predicted its own
+/// player finishing the defuse (until the server says so, no new one
+/// starts).
+#[derive(Component, Clone, Copy, Debug)]
+pub struct DefusedHere;
+
+/// The sound of a defuse starting, from the bomb.
+fn defuse_sound(entry: &str, at: Vec3, bomb: Entity) -> PlaySound {
+    PlaySound {
+        pitch: None,
+        entry: entry.to_string(),
+        at: Some(at),
+        volume: None,
+        source: Some(bomb),
+        channel: None,
+    }
+}
+
+/// A network client's own player defusing the planted bomb, predicted as
+/// the server's `defuse` and `tick_bomb` decide it for that player: it
+/// starts with +use on the bomb (alive, a defender, on the ground, nobody
+/// else at it), holds while it keeps at it, and stops when it lets go,
+/// leaves the bomb or the time is up (the defuse itself, the bomb's state
+/// and the HUD's words are the server's). In the weapon frame's place, so
+/// replays run it too.
+#[allow(clippy::type_complexity)]
+fn predict_defuse(
+    users: Query<
+        (
+            Entity,
+            &Intent,
+            &Transform,
+            Option<&MovementState>,
+            Option<&Health>,
+            Option<&Team>,
+            Has<DefuseKit>,
+            Option<&Defusing>,
+        ),
+        Without<NetDrawn>,
+    >,
+    characters: Query<(), With<Intent>>,
+    bombs: Query<(Entity, &PlantedBomb, &Transform, Has<DefusedHere>), Without<Intent>>,
+    spatial: SpatialQuery,
+    rules: Res<BombRules>,
+    clock: Res<SimClock>,
+    first: Res<FirstTimePredicted>,
+    mut play: MessageWriter<PlaySound>,
+    mut commands: Commands,
+) {
+    let now = clock.now;
+    let filter = SpatialQueryFilter::default().with_mask(crate::core::SOLID_LAYERS);
+    let clear = |a: Vec3, b: Vec3| -> bool {
+        let d = b - a;
+        let Ok(dir) = Dir3::new(d) else { return true };
+        spatial
+            .cast_ray_predicate(a, dir, d.length(), true, &filter, &|e| !characters.contains(e))
+            .is_none()
+    };
+    let bomb = bombs.iter().find(|(_, b, _, done)| !b.defused && !done).map(|(e, b, t, _)| (e, b, t));
+    for (e, intent, t, state, health, team, kit, defusing) in &users {
+        let alive = health.is_none_or(|h| h.current > 0.0);
+        let finds = bomb.is_some_and(|(bomb_e, _, bt)| {
+            let target = UseTarget {
+                entity: bomb_e,
+                lo: bt.translation + rules.use_box.0,
+                hi: bt.translation + rules.use_box.1,
+            };
+            find_use(&user_of(t, intent, state), &[target], &clear) == Some(bomb_e)
+        });
+        let ground = state.is_none_or(|s| s.on_ground);
+        if let Some(d) = defusing {
+            let going = alive && intent.use_key && ground && finds;
+            let done = now + TIME_SLACK >= d.ends;
+            if done && going && let Some((bomb_e, ..)) = bomb {
+                // Defused (the server's word comes later): not again.
+                commands.entity(bomb_e).insert(DefusedHere);
+            }
+            if !going || done {
+                commands.entity(e).remove::<Defusing>();
+            }
+            continue;
+        }
+        let Some((bomb_e, b, bt)) = bomb else { continue };
+        let free = b.defuse.is_none_or(|d| d.who == e);
+        if intent.use_key && alive && team == Some(&rules.defuser_team) && finds && ground && free {
+            let length = if kit { rules.defuse_time_kit } else { rules.defuse_time };
+            commands.entity(e).insert(Defusing {
+                started: now,
+                ends: now + length as f64,
+                kit,
+            });
+            if first.0
+                && let Some(s) = &rules.sounds.defuse_start
+            {
+                play.write(defuse_sound(s, bt.translation, bomb_e));
+            }
         }
     }
 }

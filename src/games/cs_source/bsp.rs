@@ -215,6 +215,11 @@ pub fn load_level_bytes(mount: &Mount, name: &str, bytes: Vec<u8>, hdr_level: u8
     data.hud = super::hud::load(&mut materials, name).map(std::sync::Arc::new);
     data.round_sounds = super::sound::round_sounds();
     data.radio = super::radio::load(&materials);
+    // Bots' names (the install's botprofile.db).
+    data.bot_profiles = materials
+        .read("botprofile.db")
+        .map(|b| crate::map::bot_profiles::BotProfiles::parse(&String::from_utf8_lossy(&b)))
+        .filter(|p| !p.0.is_empty());
     data.overview = super::hud::overview(&mut materials, name);
     data.particles = super::impact_effects::load_materials(&mut materials);
     timer.lap("characters, hud, particles");

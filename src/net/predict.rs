@@ -169,13 +169,12 @@ struct Pending {
 
 /// The rules hold our player as the server said: dead (only the look),
 /// frozen until a tick (the look and weapon picks: freeze time ends on
-/// the server's tick, known in advance), still (arming or defusing: no
-/// moving or jumping).
+/// the server's tick, known in advance). Arming or defusing the bomb
+/// holds it as predicted (`objectives::bomb::hold_still`).
 #[derive(Resource, Default)]
 struct Held {
     dead: bool,
     frozen_until: Option<u64>,
-    still: bool,
 }
 
 /// This tick's intent before the rules held it, put back after the tick
@@ -363,7 +362,10 @@ pub(super) fn plugin(app: &mut App) {
             (
                 capture_command.before(SimSet::Rules),
                 hold_local.in_set(SimSet::Rules),
-                record_command.after(SimSet::Commands).before(SimSet::Movement),
+                record_command
+                    .after(SimSet::Commands)
+                    .after(crate::objectives::bomb::BombHold)
+                    .before(SimSet::Movement),
             )
                 .run_if(client()),
         )
@@ -460,7 +462,6 @@ fn receive_own_states(
     *held = Held {
         dead: s.held,
         frozen_until: s.frozen_until,
-        still: s.still,
     };
     if let Some(p) = player {
         let (e, slot, seed) = *p;
@@ -753,8 +754,8 @@ fn capture_command(
 
 /// The rules hold our player as the server's do (`rules::hold_the_dead`:
 /// nothing but the look; `rules::rounds::hold_frozen`: the look and weapon
-/// picks; `objectives::bomb`'s hold while arming or defusing: no moving or
-/// jumping).
+/// picks). Arming and defusing hold it as predicted (`objectives::bomb`'s
+/// `BombHold`, before the command is recorded).
 fn hold_local(
     held: Res<Held>,
     clock: Res<CommandClock>,
@@ -773,10 +774,6 @@ fn hold_local(
             select: if held.dead { None } else { select },
             ..default()
         };
-    }
-    if held.still {
-        intent.move_axis = Vec2::ZERO;
-        intent.jump = false;
     }
 }
 

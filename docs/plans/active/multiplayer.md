@@ -874,17 +874,15 @@ with tests passing and something to see.
      clock while the rules compare it with the fixed clock, so a host
      whose ticks fell behind (a long map load) never restarted; it uses
      the fixed clock now. `+map cs_source:de_dust2` on the command line
-     doesn't load (`+map de_dust2` does; not looked into). Once, after a
+     didn't load (`+map de_dust2` did; fixed in "Leftovers"). Once, after a
      client was killed and reconnected and ~30 minutes of rounds, neither
      the host nor the client moved (cs_source movement only; noclip did);
-     not seen again after restarting both.
-   - Not yet: arming the bomb isn't predicted (a client's hold and the
-     bomb leaving its hands come a round trip late, corrected);
-     objective news and the rules' sounds go to every client (each shows
-     what concerns it); the kill feed still names the local player
-     "Player" (the HUD's, unchanged); radio requests
-     aren't rate-limited; a team change mid-round waits for the next
-     round.
+     not seen again after restarting both (most likely two players in one spot:
+     fixed in "Leftovers").
+   - Not yet: objective news and the rules' sounds go to every client
+     (each shows what concerns it); a team change mid-round waits for the
+     next round. (Arming the bomb, the kill feed's names and radio flood
+     limits: done in "Leftovers" below.)
 6. **[x] Bots on the server** (S, low). They already write `Intent` and
    use the same movement; make sure their perception never reads client
    state and a new `bot_quota` counts humans.
@@ -924,8 +922,8 @@ with tests passing and something to see.
      on the greybox, the server's frame 1.40 ms mean (1.63 p95) without
      bots, 1.66 ms (1.99 p95) with ten bots fighting; each client receives
      ~37 KB/s with ten bots (debug build).
-   - Not yet: bot names from CS:S's bot profiles; `bot_join_after_player`;
-     `kick` for players.
+   - Bot profile names, `bot_join_after_player` and `kick`: done in
+     "Leftovers" below.
 7. **[x] Maps: change, mid-game join, download** (M, medium).
    `changelevel` (new; `map` today) with everyone reloading, late join
    with full state (logic state as components), map download with hash check and bz2
@@ -1029,8 +1027,78 @@ with tests passing and something to see.
      new map in and a joining client couldn't match one: names are
      compared without the game now.
    - Not yet: the mount doctor check before joining; content besides the
-     map file (custom materials, models, sounds); a changelevel to the
-     same map file doesn't reload clients; decals for late joiners.
+     map file (custom materials, models, sounds). (Reloading the same map
+     and decals for late joiners: done in "Leftovers" below.)
+   - Leftovers of slices 5-7 (2026-10-09), each with a `NetSim` test:
+     - [x] A client loading the map (joining, or after any map change) is
+       out of the server's game (`core::Connecting`: dead, not solid, no
+       health; the rules neither spawn it nor count it on its team) until
+       it reports the map loaded (`Loaded`, which names the map: a report
+       from before a change counts for nothing); then `rules::enter_game`
+       spawns it at once in deathmatch and in the freeze time (with
+       everyone after a map change if its load was quick), else at the
+       next round. Test: `net_maps::a_client_loading_the_map_is_out_of_
+       the_game_until_it_has_it` (damage doesn't reach it while it
+       loads; a quick and a slow client after a change).
+     - [x] Arming and defusing the bomb predicted: `objectives::bomb::arm`
+       runs with the weapon frame (`core::Predict::Weapons`, live and in
+       replays, on `SimClock`), `Arming` and `Defusing` (now with its
+       start, end and kit) are in the predicted state, the hold is
+       predicted (`BombHold`, before the command is recorded), the bomb
+       leaves the hands on the predicted tick (`take_bomb`), a client
+       predicts its own defuse (`predict_defuse`: start, keep at it, stop,
+       finish) and the progress bar and the bomb's screen read
+       `SimClock`. The key presses' and the defuse start's sounds are
+       played by the predicting client the first time and sent by the
+       server to everyone else (`map::PredictedSound`). `OwnState` lost
+       `arming` and `still`. Test: `net_rules::arming_and_defusing_are_
+       predicted` (100 ms: arming and defusing shown on the frame the
+       button goes down, the bomb out of the hands before the server's
+       word, 0 prediction errors in 241 and 680 states, each key press and
+       the defuse start heard once).
+     - [x] Names: the kill feed, radio, objective messages, scoreboard and
+       join lines name the local player by its name
+       (`client::shown_name`: the server's `NetCharacter` in a network
+       game, the `name` cvar in single player); `name` while connected is
+       a `NameRequest` (Source's setinfo), the host's own change too; the
+       server renames the character and tells everyone (`NameChanged`,
+       "* X changed name to Y", the game's `Cstrike_Name_Change`). Test:
+       `net_rules::a_client_changes_its_name`.
+     - [x] Flood protection (`net::chat::Flood`, ours: CS:S drops spam,
+       its limits unmeasured): 4 chat lines in a burst then one a second,
+       3 radio calls then one every 1.5 s, more dropped and the sender
+       told. Test: `net_rules::chat_and_radio_floods_are_cut_short`
+       (normal talk all read; 12 lines at once: 4; 10 calls: 3).
+     - [x] The "nobody can move" freeze (slice 5's notes): reconnect and
+       map change cycles didn't bring it back; its symptoms (both stuck,
+       noclip moving) are reproduced exactly by two players put in one
+       spot (each inside the other's box, Source's
+       stuck test holds both; noclip ignores players). Spawning now skips
+       spawn points a living player stands on (`rules::put_at_spawn`), and
+       the dead (also those waiting to respawn with health left, unseen)
+       block no one's movement. Tests: `net_rules::players_never_spawn_
+       inside_each_other`, `net_rules::everyone_walks_after_deaths_
+       reconnects_and_map_changes` (four cycles of kill, disconnect,
+       reconnect on a new id and map reloads, host and client walk).
+     - [x] `+map cs_source:de_dust2` (and `changelevel` with the game's
+       name) works like `map de_dust2` (`client::console::map_target`);
+       the dedicated server took both already.
+     - [x] `changelevel` to the same map: the server counts map loads
+       (`rules::MapLoads`), so the same map loaded again is a new level;
+       its `ChangeLevel` makes clients load it again (`Handshake::reload`)
+       and wait for that load (`loads_before`). Test: `net_maps::
+       changelevel_to_the_same_map_makes_clients_reload_it`.
+     - [x] Bots: names from the install's botprofile.db (read at run time
+       with the map's data: `map::bot_profiles`) at `bot_difficulty`,
+       never twice, `bot_prefix`; `bot_join_after_player` (default 1);
+       `bot_kick all|t|ct|easy|normal|hard|expert|<name>`; `kick <name>`
+       and `kickid <id> [message]` for players and bots ("Kicked by
+       Console"). Tests: `net_bots::bot_names_profiles_and_kicks`,
+       `net_bots::bots_wait_for_a_player`.
+     - [x] Decals for late joiners (`net::decals`): the server keeps the
+       world's impact decals since the map loaded and sends them when a
+       client comes into the game. Test: `net_maps::a_late_joiner_gets_
+       the_decals`.
 8. **[ ] Find Servers, LAN discovery, direct connect UI** (M, low). LAN
    broadcast query (a small UDP info request on the server port, like
    Source's A2S_INFO in spirit), the Find Servers page in the GameUI

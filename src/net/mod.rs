@@ -33,6 +33,7 @@
 pub mod chat;
 pub mod client;
 pub mod cvars;
+pub mod decals;
 pub mod game;
 pub mod http;
 pub mod interp;
@@ -69,7 +70,7 @@ pub const PROTOCOL_ID: u64 = 0x4C55_434B_4552_5059;
 /// This build's network version. A server refuses clients of another
 /// version. Bump the suffix when the protocol changes in a way the
 /// replicon protocol hash can't see (a field added to a message).
-pub const NET_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/net7");
+pub const NET_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/net8");
 
 /// The owner id of the listen server's own player (`NetCharacter::owner`).
 /// Remote clients' ids are never 0.
@@ -219,6 +220,14 @@ pub struct ChangeLevel {
     pub download_url: String,
     pub allow_download: bool,
     pub tick_nanos: u64,
+}
+
+/// Client -> server: I have the map loaded (`map`, the id the server
+/// offered): put me in the game (`rules::enter_game`). Until then the
+/// server keeps the player out of it (`core::Connecting`).
+#[derive(Message, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct Loaded {
+    pub map: String,
 }
 
 /// Client -> server: send me your map's file (`sv_allowdownload`).
@@ -404,16 +413,13 @@ pub struct OwnState {
     /// Freeze time holds the player until this tick (it may look and pick
     /// a weapon); `held` is the dead's hold (only the look).
     pub frozen_until: Option<u64>,
-    /// Arming or defusing the bomb holds it in place (no moving or
-    /// jumping; `objectives::bomb`).
-    pub still: bool,
     /// What the HUD shows of the player that isn't predicted: its money
-    /// (`weapon::economy::Money`), armour (amount, helmet), whether it has
-    /// a defusal kit, and since when (server tick) it arms the bomb.
+    /// (`weapon::economy::Money`), armour (amount, helmet) and whether it
+    /// has a defusal kit. (Arming and defusing the bomb are predicted:
+    /// `objectives::bomb::Arming`, `Defusing` in `state`.)
     pub money: Option<u32>,
     pub armor: Option<(f32, bool)>,
     pub kit: bool,
-    pub arming: Option<f64>,
     /// Ticks run without this client's command (its last one repeated),
     /// and commands that came after their tick, since it joined.
     pub missed: u32,
@@ -846,6 +852,21 @@ pub struct CvarValues {
     pub values: Vec<(String, String)>,
 }
 
+/// Client -> server: my name is now this (the `name` cvar changed while
+/// connected; Source's setinfo).
+#[derive(Message, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct NameRequest {
+    pub name: String,
+}
+
+/// Server -> every player: someone changed their name (the game's
+/// "* %s1 changed name to %s2").
+#[derive(Message, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct NameChanged {
+    pub old: String,
+    pub new: String,
+}
+
 /// The network's systems, protocol and console commands. With
 /// `RepliconPlugins` and renet's; nothing runs until `listen` or
 /// `connect` (single player stays `NetRole::Standalone`).
@@ -884,6 +905,7 @@ impl Plugin for NetPlugin {
         .make_event_independent::<ChangingLevel>()
         .add_server_event::<ChangeLevel>(Channel::Ordered)
         .make_event_independent::<ChangeLevel>()
+        .add_client_message::<Loaded>(Channel::Ordered)
         .add_client_message::<MapRequest>(Channel::Ordered)
         .add_client_message::<MapAck>(Channel::Unreliable)
         .add_server_message::<MapChunk>(Channel::Ordered)
@@ -937,6 +959,9 @@ impl Plugin for NetPlugin {
         .add_mapped_server_message::<ServerSound>(Channel::Unreliable)
         .add_server_message::<CvarValues>(Channel::Ordered)
         .make_message_independent::<CvarValues>()
+        .add_client_message::<NameRequest>(Channel::Ordered)
+        .add_server_message::<NameChanged>(Channel::Ordered)
+        .make_message_independent::<NameChanged>()
         .init_resource::<NetSettings>()
         .init_resource::<NetVersion>()
         .add_message::<NetEvent>()
@@ -953,6 +978,7 @@ impl Plugin for NetPlugin {
         chat::plugin(app);
         cvars::plugin(app);
         maps::plugin(app);
+        decals::plugin(app);
         udp::plugin(app);
         memory::plugin(app);
         commands(app);

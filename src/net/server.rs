@@ -23,10 +23,7 @@ use crate::{
         FreezeTime, Health, Intent, LocalPlayer, MovementState, NetRole, PredictedComponents, Seed, SimClock, SimSet,
         SimTick, Team, Velocity,
     },
-    objectives::{
-        bomb::{Arming, Defusing},
-        hostages::Hostage,
-    },
+    objectives::hostages::Hostage,
     rules::{
         Dead,
         rounds::{Phase, RoundState},
@@ -39,12 +36,45 @@ use crate::{
 };
 
 pub(super) fn plugin(app: &mut App) {
+    use crate::console::ConsoleAppExt;
+    app.console_command(
+        "kick",
+        "kick <name>: drop a player (or a bot) from the server.",
+        |w, a| {
+            let name = a.join(" ");
+            if name.is_empty() {
+                return Err("kick <name>".into());
+            }
+            kick_by(w, |n, _| n.eq_ignore_ascii_case(&name), "Kicked by Console")
+                .ok_or_else(|| format!("No player named \"{name}\""))
+                .map(Some)
+        },
+    )
+    .console_command(
+        "kickid",
+        "kickid <userid> [message]: drop the player with that id (status lists them).",
+        |w, a| {
+            let id: u64 = a
+                .first()
+                .and_then(|i| i.parse().ok())
+                .ok_or("kickid <userid> [message]")?;
+            let message = a[1..].join(" ");
+            let reason = if message.is_empty() {
+                "Kicked by Console".to_string()
+            } else {
+                format!("Kicked by Console : {message}")
+            };
+            kick_by(w, |_, i| i == Some(id), &reason)
+                .ok_or_else(|| format!("No player with userid {id}"))
+                .map(Some)
+        },
+    );
     app.add_observer(join)
         .add_observer(left)
         .add_systems(Update, drop_refused.run_if(in_state(ServerState::Running)))
         .add_systems(
             PreUpdate,
-            receive_commands
+            (receive_commands, receive_loaded)
                 .after(ServerSystems::Receive)
                 .run_if(in_state(ServerState::Running)),
         )
@@ -94,6 +124,44 @@ struct RefusedAt(f64);
 
 /// How long a refused client has to hear why before it is dropped, s.
 const REFUSED_GRACE: f64 = 1.0;
+
+/// Kick the first player (or bot: no id) whose name and id `pick` takes:
+/// a client is told why and dropped a moment later (as a refusal); a bot
+/// leaves at once and the quota goes down by one. What happened, or None
+/// when nobody matched (or no game is served).
+fn kick_by(world: &mut World, pick: impl Fn(&str, Option<u64>) -> bool, reason: &str) -> Option<String> {
+    if world.get_resource::<NetRole>() != Some(&NetRole::Server) {
+        return None;
+    }
+    let client = world
+        .query::<(Entity, &Player, &NetworkId)>()
+        .iter(world)
+        .find(|(_, p, id)| pick(&p.name, Some(id.get())))
+        .map(|(c, p, _)| (c, p.name.clone()));
+    if let Some((client, name)) = client {
+        info!("kicked {name}: {reason}");
+        world.commands().server_trigger(ToClients {
+            targets: SendTargets::Single(ClientId::Client(client)),
+            message: Refused {
+                reason: reason.to_string(),
+            },
+        });
+        let at = world.resource::<Time<Real>>().elapsed_secs_f64();
+        world.entity_mut(client).insert(RefusedAt(at));
+        return Some(format!("kicked {name}"));
+    }
+    let bot = world
+        .query_filtered::<(Entity, &Name), With<crate::bot::Bot>>()
+        .iter(world)
+        .find(|(_, n)| pick(n.as_str(), None))
+        .map(|(e, n)| (e, n.as_str().to_string()));
+    let (bot, name) = bot?;
+    crate::bot::kick_bot(world, bot);
+    if let Some(mut q) = world.get_resource_mut::<crate::bot::BotQuota>() {
+        q.quota = q.quota.saturating_sub(1);
+    }
+    Some(format!("kicked {name}"))
+}
 
 /// Drop refused clients that didn't hang up.
 fn drop_refused(q: Query<(Entity, &RefusedAt)>, time: Res<Time<Real>>, mut out: MessageWriter<DisconnectRequest>) {
@@ -298,7 +366,7 @@ fn admit(world: &mut World, client: Entity, msg: Join) {
 }
 
 /// A printable name of at most 32 characters, or "Player <id>".
-fn clean_name(name: &str, id: u64) -> String {
+pub(super) fn clean_name(name: &str, id: u64) -> String {
     let n: String = name.chars().filter(|c| !c.is_control()).take(32).collect();
     let n = n.trim();
     if n.is_empty() {
@@ -308,8 +376,9 @@ fn clean_name(name: &str, id: u64) -> String {
     }
 }
 
-/// A remote player's character: on the team with fewer players, dead
-/// until the rules put it at a spawn point (next tick, with its weapons).
+/// A remote player's character: on the team with fewer players, out of
+/// the game (`core::Connecting`) until its client has loaded the map,
+/// then spawned as the rules allow (`rules::enter_game`).
 fn spawn_player(world: &mut World, id: u64, name: &str) -> Entity {
     let mut counts = [0usize; 2];
     for (team, hostage) in world.query::<(&Team, Has<Hostage>)>().iter(world) {
@@ -342,7 +411,32 @@ fn spawn_player(world: &mut World, id: u64, name: &str) -> Entity {
         .id();
     world.entity_mut(e).insert(Name::new(name.to_string()));
     set_movement(e, movement).apply(world);
+    // Out of the game until its client has the map (`receive_loaded`).
+    crate::rules::hold_out(world, e);
     e
+}
+
+/// A client has the map loaded: its player comes into the game, if it's
+/// the map the server is on (a report from before a map change counts
+/// for nothing).
+fn receive_loaded(mut loaded: MessageReader<FromClient<super::Loaded>>, players: Query<&Player>, mut commands: Commands) {
+    for l in loaded.read() {
+        let Some(client) = l.client_id.entity() else { continue };
+        let Ok(p) = players.get(client) else { continue };
+        let (character, map) = (p.character, l.message.map.clone());
+        commands.queue(move |world: &mut World| {
+            let serving = world
+                .get_resource::<super::maps::ServedMap>()
+                .map_or_else(|| super::current_map(world), |s| s.map.clone());
+            if !map.eq_ignore_ascii_case(&serving) || world.get_entity(character).is_err() {
+                info!("a client reported {map} loaded; the server is on {serving}");
+                return;
+            }
+            crate::rules::enter_game(world, character);
+            // What was shot up before it came.
+            super::decals::send(world, client);
+        });
+    }
 }
 
 /// A client left (or was dropped): its character and weapons go.
@@ -495,11 +589,9 @@ fn capture_own_states(world: &mut World) {
             let movement = world.get::<MovementSlot>(e).map_or("", |m| m.0).to_string();
             let seed = world.get::<Seed>(e).map_or(0, |s| s.0);
             let held = world.get::<Dead>(e).is_some();
-            let still = world.get::<Arming>(e).is_some() || world.get::<Defusing>(e).is_some();
             let money = world.get::<Money>(e).map(|m| m.0);
             let armor = world.get::<Armor>(e).map(|a| (a.amount, a.helmet));
             let kit = world.get::<DefuseKit>(e).is_some();
-            let arming = world.get::<Arming>(e).map(|a| super::game::tick_of(&clock, a.since));
             let ground = world
                 .get::<MovementState>(e)
                 .and_then(|s| s.ground)
@@ -516,11 +608,9 @@ fn capture_own_states(world: &mut World) {
                 held,
                 ground,
                 frozen_until,
-                still,
                 money,
                 armor,
                 kit,
-                arming,
                 ..default()
             });
         }

@@ -380,6 +380,15 @@ pub struct LocalPlayer;
 #[reflect(Component)]
 pub struct RemotePlayer;
 
+/// A remote player whose client is still loading the map (joining, or
+/// after a map change): not in the game yet. It is dead, not solid and
+/// at no health, so nothing hits it; the rules don't spawn it or count it
+/// on its team until its client has the map (`rules::enter_game`), as
+/// CS:S keeps connecting players out of the game.
+#[derive(Component, Reflect, Default, Clone, Copy, Debug)]
+#[reflect(Component)]
+pub struct Connecting;
+
 /// Number of fixed ticks simulated so far. Tests and tools use it to step
 /// the simulation by exact ticks.
 #[derive(Resource, Reflect, Default, Clone, Copy, Debug)]
@@ -985,6 +994,7 @@ impl Plugin for CorePlugin {
             .add_systems(FixedUpdate, apply_damage.after(SimSet::Weapons).run_if(authoritative))
             .register_type::<SpawnPoint>()
             .register_type::<LocalPlayer>()
+            .register_type::<Connecting>()
             .register_type::<SimTick>()
             .init_resource::<SimTick>()
             .init_resource::<SimClock>()

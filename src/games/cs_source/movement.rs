@@ -1978,12 +1978,17 @@ fn step(
     cfg: Res<SourceMovementConfig>,
     (clock, first): (Res<crate::core::SimClock>, Res<crate::core::FirstTimePredicted>),
     other_characters: Query<(Entity, &ColliderAabb, Option<&Health>), (With<Intent>, Without<SourceMovement>)>,
-    (health, god): (Query<&Health>, Query<(), With<crate::core::God>>),
+    (health, god, dead): (
+        Query<&Health>,
+        Query<(), With<crate::core::God>>,
+        Query<(), With<ColliderDisabled>>,
+    ),
 ) {
     let dt = clock.dt();
     // Every living character's box: Source hulls for Source movers, else
-    // the collider's bounds.
-    let alive = |e: Entity| health.get(e).is_ok_and(|h| h.current > 0.0) || health.get(e).is_err();
+    // the collider's bounds. Those whose collider is off (the dead, also
+    // those waiting to respawn with their health, unseen) block nobody.
+    let alive = |e: Entity| (health.get(e).is_ok_and(|h| h.current > 0.0) || health.get(e).is_err()) && !dead.contains(e);
     let hull_box = |feet: Vec3, ducked: bool| {
         let height = if ducked { cfg.duck_height } else { cfg.stand_height };
         let (a, b) = (
@@ -2005,7 +2010,7 @@ fn step(
     boxes.extend(
         other_characters
             .iter()
-            .filter(|(_, _, h)| h.is_none_or(|h| h.current > 0.0))
+            .filter(|(e, _, h)| h.is_none_or(|h| h.current > 0.0) && !dead.contains(*e))
             .map(|(e, aabb, _)| (e, MapBrush::from_box(aabb.min, aabb.max))),
     );
     // Characters (dead ones too) never block through physics casts.

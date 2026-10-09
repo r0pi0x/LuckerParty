@@ -58,6 +58,13 @@ pub struct ServerAddress(pub SocketAddr);
 pub struct Handshake {
     pub welcome: Welcome,
     pub fetch: super::maps::Fetch,
+    /// A map change: load the map even if it's the one here (the server
+    /// loaded it again: a fresh game, CS:S's `changelevel` to the same
+    /// map).
+    pub reload: bool,
+    /// The map loads counted (`rules::MapLoads`) when we asked the game
+    /// to load it: in once there has been one more.
+    pub loads_before: Option<u32>,
 }
 
 /// In the game: the map matches the server's.
@@ -363,6 +370,8 @@ fn welcome(w: On<Welcome>, mut commands: Commands) {
         world.insert_resource(Handshake {
             welcome,
             fetch: default(),
+            reload: false,
+            loads_before: None,
         });
     });
 }
@@ -420,6 +429,8 @@ fn change_level(c: On<ChangeLevel>, mut commands: Commands) {
         world.insert_resource(Handshake {
             welcome,
             fetch: default(),
+            reload: true,
+            loads_before: None,
         });
     });
 }
@@ -582,11 +593,19 @@ fn check_map(world: &mut World) {
         return;
     }
     let (map, hash, tick_nanos) = (h.welcome.map.clone(), h.welcome.map_hash, h.welcome.tick_nanos);
+    // Asked for a load: wait for it (the map here may be the one asked
+    // for, loaded before).
+    let loads = world.get_resource::<crate::rules::MapLoads>().map_or(0, |l| l.0);
+    if h.loads_before.is_some_and(|before| loads <= before) {
+        return;
+    }
     match super::map_matches(world, &map, hash) {
         Some(true) => {
             world.insert_resource(Time::<Fixed>::from_duration(std::time::Duration::from_nanos(tick_nanos)));
             world.remove_resource::<Handshake>();
             world.insert_resource(Joined { map: map.clone() });
+            // The server puts us in the game now.
+            world.write_message(super::Loaded { map: map.clone() });
             set_stage(world, JoinStage::Joined);
             world.write_message(NetEvent::Joined { map });
         }

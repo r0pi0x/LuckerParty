@@ -67,8 +67,9 @@ impl Plugin for GameMessagesPlugin {
             .add_message::<Hint>()
             .add_message::<crate::net::ChatMessage>()
             .add_message::<crate::net::Notice>()
+            .add_message::<crate::net::NameChanged>()
             .add_message::<crate::map::PlaySound>()
-            .add_systems(Update, (team_joins, heard_says, notices));
+            .add_systems(Update, (team_joins, heard_says, notices, name_changes));
         for (name, team, help) in [
             ("say", false, "Say something to everyone."),
             ("say_team", true, "Say something to your team."),
@@ -99,6 +100,18 @@ fn heard_says(
     }
 }
 
+/// Players renamed in a network game ("* X changed name to Y").
+fn name_changes(
+    mut renamed: MessageReader<crate::net::NameChanged>,
+    radio: Option<Res<crate::map::radio::RadioCommands>>,
+    mut chat: MessageWriter<ChatLine>,
+) {
+    let formats = radio.map(|r| r.say.clone()).unwrap_or_default();
+    for n in renamed.read() {
+        chat.write(ChatLine(formats.renamed(&n.old, &n.new), None));
+    }
+}
+
 /// Why the server refused a request (a buy, a team), as a hint.
 fn notices(mut notices: MessageReader<crate::net::Notice>, mut hints: MessageWriter<Hint>) {
     for n in notices.read() {
@@ -115,6 +128,7 @@ fn team_joins(
         With<crate::core::Intent>,
     >,
     mut known: Local<std::collections::HashMap<Entity, u8>>,
+    settings: Option<Res<crate::net::NetSettings>>,
     mut chat: MessageWriter<ChatLine>,
 ) {
     let Some(radio) = radio else { return };
@@ -125,12 +139,7 @@ fn team_joins(
             continue;
         }
         // A network game names everyone (us too) as the server does.
-        let name = match (local, net, name) {
-            (_, Some(c), _) => c.name.clone(),
-            (true, None, _) => "Player".to_string(),
-            (false, None, Some(n)) => n.to_string(),
-            (false, None, None) => e.to_string(),
-        };
+        let name = super::shown_name(e, local, net, name, settings.as_deref());
         if let Some(runs) = radio.say.join(&name, team.0) {
             chat.write(ChatLine(runs, Some(*team)));
         }
@@ -189,7 +198,10 @@ pub fn say(w: &mut World, text: &str, team_only: bool) {
         let area = nav.area_at(at)?;
         nav.places.get(nav.areas[area].place?).cloned()
     });
-    let runs = formats.line("Player", text, team.map(|t| t.0), alive, team_only, place.as_deref());
+    let me = w
+        .get_resource::<crate::net::NetSettings>()
+        .map_or_else(|| "Player".to_string(), |s| s.name.clone());
+    let runs = formats.line(&me, text, team.map(|t| t.0), alive, team_only, place.as_deref());
     w.write_message(ChatLine(runs, team));
     if let Some(s) = formats.sound {
         w.write_message(crate::map::PlaySound::ui(s));

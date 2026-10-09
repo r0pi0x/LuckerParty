@@ -34,12 +34,12 @@ use super::{
 use crate::{
     core::{LocalPlayer, NetRole, SimClock, Team},
     map::{
-        BodyName, GameSound, PlaySound,
+        BodyName, GameSound, PlaySound, PredictedSound,
         loose::{ShownItem, SitOnOrigin},
     },
     objectives::{
         ObjectiveEvent, RoundOpen,
-        bomb::{Arming, BombOutcome, BombRules, BombState, C4, Defuse, PlantedBomb},
+        bomb::{BombOutcome, BombRules, BombState, C4, Defuse, PlantedBomb},
         hostages::{Hostage, HostagePenalty, HostageTally},
     },
     rules::{
@@ -399,16 +399,22 @@ fn send_objectives(
     }
 }
 
-/// The rules' sounds, to every client.
+/// The rules' sounds, to every client; a sound of a player's predicted
+/// action (`PredictedSound`) to every client but that player's, which
+/// played it already.
 fn send_sounds(
     mut sounds: MessageReader<GameSound>,
+    mut predicted: MessageReader<PredictedSound>,
     replicated: Query<(), With<Replicated>>,
+    players: Query<(Entity, &Player)>,
     mut out: MessageWriter<ToClients<ServerSound>>,
 ) {
-    for s in sounds.read() {
-        let s = &s.0;
+    let all = sounds.read().map(|s| (&s.0, None));
+    let own = predicted.read().map(|s| (&s.sound, Some(s.by)));
+    for (s, by) in all.chain(own) {
+        let client = by.and_then(|by| players.iter().find(|(_, p)| p.character == by).map(|(c, _)| c));
         out.write(ToClients {
-            targets: SendTargets::CLIENTS_ONLY,
+            targets: client.map_or(SendTargets::CLIENTS_ONLY, |c| SendTargets::AllExcept(ClientId::Client(c))),
             message: ServerSound {
                 entry: s.entry.clone(),
                 at: s.at.map(|a| a.to_array()),
@@ -758,19 +764,17 @@ fn apply_hostages(
     }
 }
 
-/// Our money, armour, kit and arming from the server's newest state.
+/// Our money and armour from the server's newest state (arming and
+/// defusing are predicted: `objectives::bomb::arm`).
 fn apply_own(
     mut states: MessageReader<OwnState>,
-    player: Option<Single<(Entity, Option<&Money>, Option<&Armor>, Option<&Arming>), With<LocalPlayer>>>,
-    interp: Res<InterpClock>,
-    command_clock: Res<CommandClock>,
-    fixed: Res<Time<Fixed>>,
+    player: Option<Single<(Entity, Option<&Money>, Option<&Armor>), With<LocalPlayer>>>,
     mut commands: Commands,
 ) {
     let Some(s) = states.read().max_by_key(|s| s.tick).cloned() else {
         return;
     };
-    let Some((e, money, armor, arming)) = player.map(|p| *p) else {
+    let Some((e, money, armor)) = player.map(|p| *p) else {
         return;
     };
     match s.money {
@@ -788,24 +792,6 @@ fn apply_own(
         }
         None if armor.is_some() => {
             commands.entity(e).remove::<Armor>();
-        }
-        _ => {}
-    }
-    match s.arming {
-        Some(since) if interp.running => {
-            let step = command_clock.step().unwrap_or(fixed.timestep()).as_secs_f64().max(1e-6);
-            let time = ServerTime {
-                tick: interp.render_tick + interp.delay / step,
-                step,
-                fixed: fixed.elapsed_secs_f64(),
-            };
-            let since = time.local(since);
-            if arming.is_none_or(|a| (a.since - since).abs() > 0.05) {
-                commands.entity(e).insert(Arming::shown(since));
-            }
-        }
-        None if arming.is_some() => {
-            commands.entity(e).remove::<Arming>();
         }
         _ => {}
     }

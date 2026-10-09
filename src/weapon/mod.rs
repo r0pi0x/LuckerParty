@@ -71,6 +71,7 @@ impl Plugin for WeaponPlugin {
             .add_message::<PlaySound>()
             // The rules' sounds (`map::GameSound`), played here.
             .add_message::<crate::map::GameSound>()
+            .add_message::<crate::map::PredictedSound>()
             .add_systems(FixedLast, crate::map::sound::relay_game_sounds)
             .add_systems(
                 FixedUpdate,
