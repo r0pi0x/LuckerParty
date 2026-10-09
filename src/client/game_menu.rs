@@ -2376,6 +2376,7 @@ fn ui_loaded(
     mut images: ResMut<Assets<Image>>,
     mut fonts: ResMut<Assets<Font>>,
     mut ui_fonts: ResMut<UiFonts>,
+    mut commands: Commands,
 ) {
     let Some(slot) = ui.loading.clone() else { return };
     let Some(loaded) = slot.lock().ok().and_then(|mut s| s.take()) else {
@@ -2409,6 +2410,15 @@ fn ui_loaded(
     let game_ui = Arc::new(game_ui);
     ui.ui = Some(game_ui.clone());
     menu.set_ui(Some(game_ui));
+    // A dialog already open reads its page again: Create Server's Game
+    // page options come with the look.
+    if menu.open && menu.loading.is_none() && menu.page != Page::Main {
+        let (page, create_tab) = (menu.page, menu.create_tab);
+        commands.queue(move |w: &mut World| {
+            open_menu(w, page);
+            w.resource_mut::<GameMenu>().set_create_tab(create_tab);
+        });
+    }
 }
 
 /// Open the menu on a page, reading the settings from the console.
@@ -3506,7 +3516,11 @@ fn page_controls(commands: &mut Commands, ctx: &Ctx, parent: Entity, (w, h): (f3
             "label" => {
                 // Not over a control we draw (the video Advanced dialog's
                 // note sits where its HDR box is).
-                if text.is_empty() || drawn.iter().any(|d| !d.intersect(*r).is_empty()) {
+                let covered = |d: &Rect| {
+                    let i = d.intersect(*r);
+                    !i.is_empty() && i.width() * i.height() > 0.25 * r.width() * r.height()
+                };
+                if text.is_empty() || drawn.iter().any(covered) {
                     continue;
                 }
                 let color = if c.dull { look.dull() } else { look.text() };
@@ -3526,7 +3540,10 @@ fn page_controls(commands: &mut Commands, ctx: &Ctx, parent: Entity, (w, h): (f3
                         ChildOf(e),
                     ));
                 } else {
-                    label(commands, parent, look, rect, text, f, color, align);
+                    let e = label(commands, parent, look, rect, text, f, color, align);
+                    // Words wider than their box in our stand-in faces run over,
+                    // not cut.
+                    commands.entity(e).entry::<Node>().and_modify(|mut n| n.overflow = Overflow::visible());
                 }
             }
             "divider" => {
