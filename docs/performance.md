@@ -723,6 +723,96 @@ seeing each other); the run takes about a minute plus map loading.
 - Checked: against a baseline lowered by 8% for de_dust2 it fails
   (`+8.14%, tolerance 3%: FAIL`, exit 1).
 
+## Light-style hitches (mg_jacks_multigames_v1)
+
+Report: frame p50 ~5 ms but p99 ~20 ms and a constant stream of hitch
+log lines. The map has 379 lights; faces lit by the animated styles 1,
+3, 6 and 10 hold ~83k lightmap texels (150k with block padding) and
+switchable styles 32-35 ~59k more, in a 1024x3171 atlas.
+
+What the hitch frames were (playtest build, 1920x1080, `+mashup_perf_log
+1`, load 13-38): the main world's `Update` took 22-26 ms of thread CPU
+and 200-220M instructions in them against ~12M in an ordinary frame
+(`hitch: ... main world 34.11 ms (cpu 30.73, 217.03M instr ...): Update
+27.15 (cpu 25.74), ...`), and a profile trace put `light_styles::write_patches`
+in the render world at 4.5 ms per frame on average. Timing each light
+step directly: ten steps a second (every pattern letter), 233-665 face
+blocks rewritten each, which cost
+
+- `animate` (main thread): 110-200M instructions a step, 9-37 ms at that
+  load: each texel's light summed from its styles, then encoded for the
+  five images (plain f16, Source LDR flat, three LDR directional pages),
+  with a `powf` per channel in the LDR encoding;
+- `write_patches` (render thread): 1200-2300 `queue.write_texture`
+  calls (a block per image), 17-31M instructions, 4-25 ms: wgpu makes
+  a staging buffer for every call.
+
+Ten of those a second at 200 fps is 5% of frames, hence a p99 four
+times the p50. Nothing else was periodic: with the light steps gone
+the hitch lines that remain have thread CPU far below wall time (the
+loaded box), and instructions per frame no different from the median.
+
+The fix (`map::light_styles`, run-time path only):
+
+- **States kept.** A block's light depends only on the levels of the
+  styles lighting it, and patterns loop through a few letters, so each
+  block state is encoded once (on the compute task pool) and kept
+  (`StyledLightmaps::states`, at most 128 MB; 15 MB on this map once
+  every state has been seen, after the longest pattern's first loop).
+  A step then copies kept bytes.
+- **One upload a step.** The step's blocks are shelf-packed into one
+  buffer (rows 256-byte aligned) for all images (`LightmapUploads`);
+  the render world writes it into one GPU buffer it keeps, then records
+  a buffer-to-texture copy per rectangle and image in one command
+  encoder.
+- **Touching blocks merged.** Blocks side by side with the same rows
+  (then stacked with the same columns) go as one rectangle: 450 blocks
+  become ~165 copies per image here.
+- **Only images something samples.** The plain lightmap is drawn only by
+  standard materials, used when the world material is missing; it is
+  no longer rewritten otherwise (5 images per block to 4).
+- **LDR encoding by table.** `source_ldr_texel` and the directional
+  encoding look up the 4096 stored levels instead of calling `powf`
+  (same bytes: `source_ldr_tables_match_the_formula`); the three
+  directional pages are encoded once per texel, not once per page.
+
+A step now costs the main thread 1-3M instructions (cold: ~20M there
+plus the pool's share) and the render thread 3-8M (400-680 copies,
+~10k instructions each in wgpu; drawing them would remove that: tech-debt.md).
+
+Before (926f4d3's build) and after, same binaries one after the other,
+2400 frames at 1920x1080 each, `mashup_perf_log`'s last line (wall
+times move with the load given: compare instructions):
+
+| map, place | build (load) | frame ms p50 / p90 / p99 / max | main instr less ticks p50 / p99 | render instr p50 / p99 | hitch lines a minute |
+|---|---|---|---|---|---|
+| mg_jacks spawn | before (13) | 17.3 / 28.4 / 54.1 / 706 | 11.7M / 214.9M | 14.4M / 48.6M | 39 |
+| | after (26) | 21.6 / 36.5 / 60.2 / 1591 | 11.1M / 32.2M | 14.3M / 21.3M | 40 |
+| mg_jacks bhop (`setpos -1373 3677 -951`) | before (24) | 16.8 / 28.3 / 75.2 / 1274 | 11.8M / 215.1M | 13.1M / 47.4M | 188 |
+| | after (17) | 17.2 / 28.4 / 95.4 / 917 | 10.8M / 28.1M | 13.0M / 20.1M | 195 |
+| mg_jacks build (`setpos -12068 5061 -100`) | before (18) | 18.4 / 53.3 / 171.6 / 1396 | 13.1M / 223.9M | 17.5M / 55.3M | 322 |
+| | after (13) | 16.8 / 25.5 / 46.2 / 473 | 11.0M / 26.4M | 17.4M / 24.5M | 85 |
+| bhop_myztek spawn | before (17) | 17.0 / 50.6 / 250.3 / 542 | 12.1M / 537.9M | 15.1M / 127.8M | 528 |
+| | after (25) | 21.1 / 43.2 / 69.0 / 659 | 11.3M / 30.1M | 15.1M / 40.6M | 376 |
+| de_dust2 spawn (no styles) | before (36) | 27.5 / 46.8 / 84.6 / 1105 | 13.9M / 29.2M | 17.1M / 18.3M | 31 |
+| | after (31) | 18.2 / 29.7 / 90.8 / 204 | 13.5M / 25.8M | 17.1M / 18.4M | 155 |
+
+The p99 of instructions per frame falls 7-18x on the light-style maps
+(main) and 2-3x (render); p50s are unchanged, and dust2's instructions
+are the same. The wall-time columns and hitch counts (frames over twice
+the median) follow the box's load at 13-36 and say little here; on an
+idle machine the step frames were the p99. Pictures: `refcmp report`
+mean abs diff de_dust2 0.030835 before and after (32 views), de_nuke
+0.023818 (27); bhop_myztek's spawn looks the same.
+
+Regression checks (`map::light_styles` unit tests):
+`animate_packs_the_blocks_whose_style_stepped` (a step's blocks in one
+buffer, rows 256-aligned, bytes as the whole-image encoders write them),
+`touching_blocks_merge_into_one_copy`,
+`shelf_packing_keeps_blocks_apart_and_dense`,
+`source_ldr_tables_match_the_formula`; `kept_states_skip_relighting`
+checks that a state seen before is copied, not worked out again.
+
 ## Test cycle
 
 How long `cargo test` takes to build and run, and why the tests are laid
