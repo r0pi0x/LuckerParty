@@ -93,7 +93,10 @@ fn crowd_throws(movement: &'static str) {
         let weapon = sim.app.world().get::<Loose>(item).unwrap().weapon;
         loose.push((item, weapon));
     }
-    sim.seconds(1.0);
+    // Landed, and still inside the 1 s touch delay (at 1 s one lying at
+    // its dropper's feet may rightly be taken back: the drop is stamped
+    // on the tick's clock now, not a frame ahead of it).
+    sim.seconds(0.9);
     let mut thrown = 0;
     for (k, &p) in players.iter().enumerate() {
         let moved = sim.position(p) - before[k];
@@ -194,4 +197,111 @@ fn shot_weapons_slide_over_displacements() {
         eprintln!("slid {went:.2} m from {at}");
         assert!(went > 2.0, "caught on the displacement at {at}: {went} m");
     }
+}
+
+/// Walk `p` toward `to` until `done`; the ticks it took, None within
+/// `limit`.
+fn walk_to(sim: &mut Sim, p: Entity, to: Vec3, limit: u32, done: impl Fn(&Sim) -> bool) -> Option<u32> {
+    for t in 0..limit {
+        if done(sim) {
+            sim.intent(p).move_axis = Vec2::ZERO;
+            return Some(t);
+        }
+        let d = to - sim.position(p);
+        let mut i = sim.intent(p);
+        i.yaw = (-d.x).atan2(-d.z);
+        i.move_axis = if d.xz().length() > 0.05 { Vec2::Y } else { Vec2::ZERO };
+        drop(i);
+        sim.ticks(1);
+    }
+    sim.intent(p).move_axis = Vec2::ZERO;
+    None
+}
+
+/// On de_dust2's sand slopes, at every terrorist spawn: a rifle thrown
+/// standing, and a pistol thrown running, come to rest and are taken
+/// again by walking back over them; a dead player's rifle is taken by a
+/// teammate who walks over it. With the map loaded after time spent
+/// elsewhere (the main menu), as in the game.
+#[test]
+fn guns_dropped_on_dust2_are_walked_over_and_taken() {
+    use mashup::{core::Health, games::cs_source::weapons::USP};
+    let Some(map) = load("de_dust2") else { return };
+    let mut sim = sim(load("de_dust2").unwrap());
+    sim.seconds(20.0);
+    mashup::swap_map(
+        sim.app.world_mut(),
+        "de_dust2",
+        Some(map),
+        std::time::Duration::from_secs_f64(cs_source::TICK_INTERVAL),
+    );
+    sim.ticks(2);
+    let spawns = spawn_points(&mut sim, 1);
+    let carries = |sim: &Sim, p: Entity, w: Entity| sim.app.world().get::<Inventory>(p).unwrap().weapons.contains(&w);
+    let ticks = |s: f64| (s / cs_source::TICK_INTERVAL).round() as u32;
+    for (k, t) in spawns.iter().enumerate().take(6) {
+        let p = stand(&mut sim, t.translation, 1, t.rotation.to_euler(EulerRot::YXZ).0);
+        sim.seconds(1.5);
+        for (id, running) in [("rifle", false), (USP, true)] {
+            if id == USP {
+                let usp = sim
+                    .app
+                    .world()
+                    .get::<Inventory>(p)
+                    .unwrap()
+                    .weapons
+                    .iter()
+                    .copied()
+                    .find(|w| sim.app.world().get::<Weapon>(*w).unwrap().id == USP);
+                let Some(usp) = usp else { continue };
+                sim.app.world_mut().get_mut::<Inventory>(p).unwrap().wanted = Some(usp);
+                sim.seconds(1.0);
+                // Running when it leaves the hand.
+                sim.intent(p).move_axis = Vec2::Y;
+                sim.seconds(0.5);
+            }
+            let item = drop_weapon(sim.app.world_mut(), p, true).expect("dropped");
+            let weapon = sim.app.world().get::<Loose>(item).unwrap().weapon;
+            sim.intent(p).move_axis = if running { Vec2::Y } else { Vec2::new(0.0, -1.0) };
+            sim.seconds(0.5);
+            sim.intent(p).move_axis = Vec2::ZERO;
+            sim.seconds(1.5);
+            let at = sim.position(item);
+            let took = walk_to(&mut sim, p, at, ticks(5.0), |s| carries(s, p, weapon));
+            assert!(
+                took.is_some(),
+                "spawn {k}: a {id} lying at {at} not taken by walking over it (player at {})",
+                sim.position(p)
+            );
+        }
+        sim.app.world_mut().despawn(p);
+    }
+    // A dead player's rifle (as the dead drop it in rounds: let fall where
+    // they lie), taken by a teammate walking over from another spawn.
+    let (a, b) = (spawns[0].translation, spawns[spawns.len() - 1].translation);
+    let dead = stand(&mut sim, a, 1, 0.0);
+    let taker = stand(&mut sim, b, 1, 0.0);
+    sim.seconds(1.5);
+    // The taker has no primary.
+    let theirs = sim.app.world().get::<Inventory>(taker).unwrap().active.unwrap();
+    sim.app
+        .world_mut()
+        .get_mut::<Inventory>(taker)
+        .unwrap()
+        .weapons
+        .retain(|w| *w != theirs);
+    sim.app.world_mut().despawn(theirs);
+    let rifle = sim.app.world().get::<Inventory>(dead).unwrap().active.unwrap();
+    sim.app.world_mut().get_mut::<Health>(dead).unwrap().current = 0.0;
+    drop_weapon(sim.app.world_mut(), dead, false).expect("the dead drop it");
+    sim.seconds(2.0);
+    let w = sim.app.world_mut();
+    let lying = w
+        .query::<(&Loose, &Transform)>()
+        .iter(w)
+        .find(|(l, _)| l.weapon == rifle)
+        .map(|(_, t)| t.translation)
+        .expect("lying");
+    let took = walk_to(&mut sim, taker, lying, ticks(8.0), |s| carries(s, taker, rifle));
+    assert!(took.is_some(), "the dead's rifle at {lying} not taken");
 }

@@ -364,6 +364,60 @@ fn smoke_cloud_grows_blocks_bots_and_goes() {
     assert_eq!(target(&sim), Some(enemy));
 }
 
+/// The smoke cloud is drawn (spec 7.3): its sprites in the particle pool,
+/// in the cloud, with the cloud's alpha, also on a map loaded after the
+/// game has run a while (the main menu, the last map). The fixed clock
+/// used to start over at a map load while the frame's clock ran on: the
+/// cloud, stamped on the tick's clock and drawn by the frame's, looked
+/// that much older, so after half a minute at the menu it was born fully
+/// faded ("smoke grenades are just not working"), while bots still
+/// couldn't see through it.
+#[test]
+fn smoke_clouds_are_drawn_after_a_map_load() {
+    use mashup::map::particles::{MapParticles, ParticleMaterial, ParticleMaterials, Particles};
+    let mut sim = sim();
+    sim.seconds(30.0);
+    mashup::swap_map(
+        sim.app.world_mut(),
+        "greybox",
+        None,
+        std::time::Duration::from_secs_f64(TICK_INTERVAL),
+    );
+    // Stand-in for the map's material (no install needed).
+    sim.app.insert_resource(ParticleMaterials(MapParticles {
+        materials: vec![ParticleMaterial {
+            name: "particle/particle_smokegrenade1".into(),
+            ..default()
+        }],
+    }));
+    sim.ticks(2);
+    let at = Vec3::new(0.0, 0.06, 4.0);
+    place(&mut sim, SMOKEGRENADE, at, Vec3::ZERO);
+    sim.seconds(1.6);
+    assert_eq!(clouds(&mut sim).len(), 1, "popped");
+    sim.seconds(2.0);
+    let (cloud, _) = clouds(&mut sim).remove(0);
+    let pool = sim.app.world().resource::<Particles>();
+    let sprites: Vec<_> = pool
+        .groups
+        .iter()
+        .flat_map(|g| &g.particles)
+        .filter(|p| p.material == 0)
+        .collect();
+    assert!(sprites.len() >= 32, "{} of 64 sprites drawn", sprites.len());
+    // The inner 70 % at full alpha, the edge fading (spec 7.3).
+    let solid = sprites.iter().filter(|s| s.alpha > 0.99).count();
+    assert!(solid >= 16, "{solid} sprites at full alpha");
+    for s in &sprites {
+        assert!(s.alpha > 0.0 && s.alpha <= 1.0, "a sprite drawn at alpha {}", s.alpha);
+        assert!(
+            s.position.distance(cloud.centre) < 240.0 * UNIT,
+            "a sprite out of the cloud at {}",
+            s.position
+        );
+    }
+}
+
 #[test]
 fn a_new_round_clears_grenades_and_clouds() {
     let mut sim = sim();
@@ -453,4 +507,26 @@ fn he_blasts_shock_hearing_and_shake() {
     assert!(deaf.iter().all(|d| d.target != far));
     assert_eq!(det.len(), 1);
     assert_eq!(det[0].shake, Some(he_shake()));
+}
+
+/// Source's `use <weapon>` draws a carried weapon by name (scripts and
+/// binds use it: `use weapon_smokegrenade`); an unknown or uncarried one
+/// changes nothing.
+#[test]
+fn use_draws_a_carried_weapon_by_name() {
+    use mashup::core::LocalPlayer;
+    let mut sim = sim();
+    let p = holder(&mut sim, greybox::SPAWNS[0], SMOKEGRENADE);
+    sim.app.world_mut().entity_mut(p).insert(LocalPlayer);
+    let run = |sim: &mut Sim, line: &str| {
+        let words: Vec<String> = line.split(' ').map(String::from).collect();
+        mashup::console::execute(sim.app.world_mut(), &words, 0);
+        sim.seconds(1.0);
+    };
+    run(&mut sim, "use weapon_ak47");
+    assert_eq!(active_id(&sim, p), Some(AK47));
+    run(&mut sim, "use weapon_flashbang");
+    assert_eq!(active_id(&sim, p), Some(AK47), "not carried");
+    run(&mut sim, "use weapon_smokegrenade");
+    assert_eq!(active_id(&sim, p), Some(SMOKEGRENADE));
 }

@@ -46,8 +46,8 @@ impl Plugin for SimPlugins {
 /// Put a map in place of the one playing, as the game's `map` does
 /// without the view (the dedicated server's `changelevel`, tests): `data`
 /// for map `id`, or the greybox (None); the tick its game runs at;
-/// everyone respawned in a new game there. A network server keeps its
-/// clock running (`core::set_tick_length`) and takes its clients along
+/// everyone respawned in a new game there. The fixed clock keeps running
+/// (`core::set_tick_length`); a network server takes its clients along
 /// (`net::maps`).
 pub fn swap_map(world: &mut World, id: &str, data: Option<map::MapData>, tick: std::time::Duration) {
     match data {

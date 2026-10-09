@@ -738,7 +738,9 @@ with tests passing and something to see.
      `NetItem` (model, pose, velocity) drawn from snapshots at the render
      tick as `map::loose::ShownItem`s; a detonation as `Detonation` (the
      explosion's look and sound from the grenade's rule), smoke clouds as
-     `NetSmoke` (the client runs its own cloud from the rule), a flash's
+     `NetSmoke` (the client runs its own cloud from the grenade's rule; until a test
+     showed no client drew one, the server named the grenade by its spent
+     entity, no longer a projectile, and sent the wrong rule), a flash's
      blindness and a blast's ringing as `Senses` to the player hit.
    - [x] Dropping: `drop` on a client asks the server (`DropRequest`);
      picking up (walking over, +use) is the server's; `give`, `impulse
@@ -946,8 +948,10 @@ with tests passing and something to see.
      connection, its id and its character: prediction and drawing reset,
      the map fetched as on joining, then in the game again. The server's
      fixed clock keeps running through a map change
-     (`core::set_tick_length`; single player still starts it over), so
-     its time and tick never go back.
+     (`core::set_tick_length`; single player's does too since a drop's
+     touch delay and smoke clouds broke on a clock started over: it fell
+     behind the frame's by the time spent at the menu), so its time and
+     tick never go back.
    - [x] Joining mid-game: everything that lasts is replicated state
      (the round, scores, a player's own money, characters, movers with
      opened doors and broken breakables, props, loose items, the bomb),

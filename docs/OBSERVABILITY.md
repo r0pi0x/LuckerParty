@@ -353,6 +353,16 @@ Only `Reflect`-registered types are visible; register new core components in
   -5 140 0` with `+noclip +god`); with the eye a few units above a surface
   (`+setpos 700 2700 258 +setang 20 140 0`) the strip under the waterline
   shows the water's height fog.
+- Pickups: `mashup_debug_pickup 1` prints (console and log) why the
+  loose weapon nearest the local player is or isn't taken, once per
+  change: `pickup Player: cs_source:weapon_ak47: dropped 0.4 s ago,
+  touchable from 1 s`, `out of reach, 0.31 m from its touch box`, `slot
+  full (cs_source:weapon_m4a1 carried; ...)`, `not in sight from the eye,
+  blocked by <entity>`, `only the other team takes it`, `taken`. `2`
+  does it for every character (a server's remote players and bots);
+  pickups are the server's, so on a network client set it on the server.
+  A negative "dropped ... ago" means the drop and the tick disagree on
+  the time (the bug this was added for).
 - Remote: `curl -s localhost:15702 -d '{"jsonrpc":"2.0","id":1,
   "method":"mashup/console","params":{"line":"getpos; cvarlist sv_"}}'`
   runs a line now and returns the lines it printed.

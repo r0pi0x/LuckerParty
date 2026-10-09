@@ -207,11 +207,14 @@ fn write_smokes(
     mut commands: Commands,
 ) {
     for (e, cloud) in &q {
-        // The grenade it came from (it lies in the cloud), else the first
-        // smoke grenade the registry has.
-        let id = cloud
-            .grenade
-            .and_then(|g| projectiles.get(g).ok().map(|p| p.weapon).or_else(|| weapons.get(g).ok().map(|w| w.id)));
+        // The grenade it came from. Its entity, lying in the cloud, is no
+        // longer a `Projectile` by now: looking only there sent index 0
+        // (not a grenade) and no client ever drew a smoke.
+        let id = cloud.weapon.or_else(|| {
+            cloud
+                .grenade
+                .and_then(|g| projectiles.get(g).ok().map(|p| p.weapon).or_else(|| weapons.get(g).ok().map(|w| w.id)))
+        });
         let index = id.and_then(|id| registry.index(id)).unwrap_or(0);
         commands.entity(e).insert((
             Replicated,
@@ -645,6 +648,7 @@ fn start_smokes(q: Query<(Entity, &NetSmoke), Without<SmokeCloud>>, mut commands
                     started: now - s.age as f64,
                     smoke,
                     grenade: None,
+                    weapon: Some(id),
                 });
             }
         });

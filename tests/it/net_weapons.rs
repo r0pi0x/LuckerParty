@@ -680,3 +680,196 @@ fn bots_shoot_players_over_the_net() {
     assert!(hurt, "the bot's hits reach the client's health");
     assert!(shots > 0, "the client drew the bot's shots");
 }
+
+/// The weapon `id` in `e`'s inventory in `w`.
+fn carried(w: &World, e: Entity, id: &str) -> Option<Entity> {
+    w.get::<Inventory>(e)?
+        .weapons
+        .iter()
+        .copied()
+        .find(|x| w.get::<Weapon>(*x).is_some_and(|x| x.id == id))
+}
+
+/// Who walks: client `i`'s own player, or a character on the server.
+#[derive(Clone, Copy)]
+enum Walker {
+    Client(usize),
+    Server(Entity),
+}
+
+/// Walk `who` toward `to()` (re-aimed each step) until `done`; the steps
+/// it took, None within `limit`.
+fn walk_until(
+    sim: &mut NetSim,
+    who: Walker,
+    to: impl Fn(&mut NetSim) -> Option<Vec3>,
+    limit: u32,
+    done: impl Fn(&mut NetSim) -> bool,
+) -> Option<u32> {
+    let steer = |sim: &mut NetSim, target: Option<Vec3>| {
+        let (world, e) = match who {
+            Walker::Client(i) => {
+                let local = sim.local_player(i).unwrap();
+                (sim.clients[i].app.world_mut(), local)
+            }
+            Walker::Server(e) => (sim.server.app.world_mut(), e),
+        };
+        let at = world.get::<Transform>(e).unwrap().translation;
+        let mut i = world.get_mut::<Intent>(e).unwrap();
+        match target {
+            Some(target) => {
+                let d = target - at;
+                i.yaw = (-d.x).atan2(-d.z);
+                i.move_axis = if d.xz().length() > 0.05 { Vec2::Y } else { Vec2::ZERO };
+            }
+            None => i.move_axis = Vec2::ZERO,
+        }
+    };
+    for t in 0..limit {
+        if done(sim) {
+            steer(sim, None);
+            return Some(t);
+        }
+        let target = to(sim);
+        steer(sim, target);
+        sim.step();
+    }
+    steer(sim, None);
+    None
+}
+
+/// Walked, not placed: a client drops its rifle (`drop`), walks back over
+/// where it sees it lying and the server gives it back once the touch
+/// delay is over; with another primary carried it walks over it and
+/// nothing happens (CS:S's rule). The host (a player on the server
+/// itself, as a listen server has) drops and takes its own the same way.
+#[test]
+fn a_client_and_the_host_walk_back_over_dropped_guns() {
+    use mashup::{core::LocalPlayer, games::cs_source::weapons::M4A1};
+    let mut sim = joined(link(60, 0, 0.0), 50, 1);
+    let me = sim.character_of(0).unwrap();
+    place(&mut sim, 0, Vec3::new(0.0, 1.0, 12.0), 0.0);
+    sim.ticks(60);
+    let seen_lying = |sim: &mut NetSim| -> Option<Vec3> {
+        let w = sim.clients[0].app.world_mut();
+        w.query::<(&ShownItem, &Transform)>()
+            .iter(w)
+            .find(|(s, _)| s.0 == AK47)
+            .map(|(_, t)| t.translation)
+    };
+    for slot_full in [false, true] {
+        let ak = carried(sim.server.app.world(), me, AK47).expect("carries the AK");
+        // Taken back, it isn't drawn (the pistol was): draw it.
+        client_intent(&mut sim, 0).select = Some(0);
+        sim.ticks(10);
+        client_intent(&mut sim, 0).select = None;
+        sim.ticks(70);
+        let held = sim.server.app.world().get::<Inventory>(me).unwrap().active;
+        assert_eq!(
+            held,
+            Some(ak),
+            "holds the AK (slot full {slot_full}), not {:?}",
+            held.and_then(|h| sim.server.app.world().get::<Weapon>(h)).map(|w| w.id)
+        );
+        mashup::console::execute(sim.clients[0].app.world_mut(), &["drop".into()], 0);
+        sim.ticks(30);
+        assert!(
+            carried(sim.server.app.world(), me, AK47).is_none(),
+            "the server dropped it"
+        );
+        let m4 = slot_full.then(|| mashup::weapon::give(sim.server.app.world_mut(), me, M4A1).unwrap());
+        sim.ticks(70);
+        let took = walk_until(
+            &mut sim,
+            Walker::Client(0),
+            seen_lying,
+            if slot_full { 200 } else { 400 },
+            |s| carried(s.server.app.world(), me, AK47).is_some(),
+        );
+        if slot_full {
+            assert_eq!(took, None, "taken over the M4 in its slot");
+            assert!(seen_lying(&mut sim).is_some(), "still drawn lying");
+            let m4 = m4.unwrap();
+            assert!(
+                sim.server
+                    .app
+                    .world()
+                    .get::<Inventory>(me)
+                    .unwrap()
+                    .weapons
+                    .contains(&m4)
+            );
+        } else {
+            assert!(took.is_some(), "walked over it and not given it back");
+            sim.ticks(30);
+            let local = sim.local_player(0).unwrap();
+            assert!(
+                carried(sim.clients[0].app.world(), local, AK47).is_some(),
+                "and the client knows"
+            );
+            sim.ticks(70);
+        }
+    }
+    // The host's own player.
+    let host = sim.server.spawn_character(Vec3::new(-6.0, 1.0, 12.0), source::ID);
+    sim.server.app.world_mut().entity_mut(host).insert(LocalPlayer);
+    sim.ticks(120);
+    let ak = carried(sim.server.app.world(), host, AK47).expect("the host carries an AK");
+    mashup::console::execute(sim.server.app.world_mut(), &["drop".into()], 0);
+    sim.ticks(5);
+    assert!(
+        carried(sim.server.app.world(), host, AK47).is_none(),
+        "the host dropped it"
+    );
+    let lying = |sim: &mut NetSim| -> Option<Vec3> {
+        let w = sim.server.app.world_mut();
+        w.query::<(&mashup::weapon::drop::Loose, &Transform)>()
+            .iter(w)
+            .find(|(l, _)| l.weapon == ak)
+            .map(|(_, t)| t.translation)
+    };
+    sim.ticks(70);
+    let took = walk_until(&mut sim, Walker::Server(host), lying, 400, |s| {
+        carried(s.server.app.world(), host, AK47) == Some(ak)
+    });
+    assert!(took.is_some(), "the host walked over its gun and didn't take it");
+}
+
+/// A smoke grenade going off on the server is drawn on a client: its
+/// cloud starts there with the server's age and its sprites are in the
+/// client's particle pool at the cloud's alpha. (The server named the
+/// grenade by its spent entity, no longer a `Projectile` by then, so it
+/// sent registry index 0, not a grenade, and no client ever drew one.)
+#[test]
+fn a_smoke_cloud_is_drawn_on_clients() {
+    use mashup::{
+        games::cs_source::grenades::SMOKEGRENADE,
+        map::particles::{MapParticles, ParticleMaterial, ParticleMaterials, Particles},
+        weapon::grenade::{SmokeCloud, spawn_projectile},
+    };
+    let mut sim = joined(link(60, 0, 0.0), 51, 1);
+    sim.clients[0].app.insert_resource(ParticleMaterials(MapParticles {
+        materials: vec![ParticleMaterial {
+            name: "particle/particle_smokegrenade1".into(),
+            ..default()
+        }],
+    }));
+    let me = sim.character_of(0).unwrap();
+    let w = sim.server.app.world_mut();
+    let grenade = give(w, me, SMOKEGRENADE).unwrap();
+    spawn_projectile(w, grenade, Vec3::new(0.0, 0.1, 4.0), Vec3::ZERO).unwrap();
+    sim.ticks(64 * 4);
+    let w = sim.clients[0].app.world_mut();
+    let clouds = w.query::<&SmokeCloud>().iter(w).count();
+    assert_eq!(clouds, 1, "the client runs the cloud");
+    let pool = sim.clients[0].app.world().resource::<Particles>();
+    let drawn: Vec<f32> = pool
+        .groups
+        .iter()
+        .flat_map(|g| &g.particles)
+        .filter(|p| p.material == 0)
+        .map(|p| p.alpha)
+        .collect();
+    assert!(drawn.len() >= 32, "{} sprites drawn", drawn.len());
+    assert!(drawn.iter().filter(|a| **a > 0.99).count() >= 16, "{drawn:?}");
+}
