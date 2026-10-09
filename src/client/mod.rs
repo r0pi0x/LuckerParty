@@ -2,6 +2,7 @@
 //! debug tools and agent-facing tools (screenshots, remote inspection).
 //! Simulation code must never depend on this module.
 
+pub mod audio;
 pub mod binds;
 pub mod bomb_fx;
 pub mod buy_menu;
@@ -314,6 +315,7 @@ impl Plugin for ClientPlugin {
                 first_run::FirstRunPlugin,
                 map_screen::MapScreenPlugin,
                 widgets::WidgetsPlugin,
+                audio::SoundOptionsPlugin,
             ))
             .add_systems(PostStartup, spawn_local_player)
             .add_systems(Update, camera_for_local_player)
@@ -448,8 +450,8 @@ fn attach_camera(commands: &mut Commands, player: Entity, debug_view: bool) {
     }
 }
 
-/// The first-person camera's field of view: Source's 90 (horizontal at
-/// 4:3), or the zoom the local player looks through (`weapon::Zoomed`).
+/// The first-person camera's field of view: `fov_desired` (Source's 90,
+/// horizontal at 4:3; `options::PlayerFov`), or the zoom the local player looks through (`weapon::Zoomed`).
 /// Kept vertically, so it is the same on every screen shape; the view
 /// model and sky cameras follow it.
 fn zoom_camera(
@@ -457,6 +459,7 @@ fn zoom_camera(
     spectating: Res<spectate::SpecView>,
     zoomed: Query<&crate::weapon::Zoomed>,
     mut cameras: Query<&mut Projection, With<FirstPersonCamera>>,
+    player_fov: Option<Res<options::PlayerFov>>,
 ) {
     // Spectating in first person: the target's zoom; otherwise none.
     let zoom = match spectate::target_zoom(&spectating, &zoomed) {
@@ -464,7 +467,7 @@ fn zoom_camera(
         None if spectating.pose.is_some() => None,
         None => player.and_then(|z| z.map(|z| z.fov)),
     };
-    let fov_43 = zoom.unwrap_or(90.0);
+    let fov_43 = zoom.unwrap_or_else(|| player_fov.map_or(90.0, |f| f.0));
     let fov = crate::map::view_model::vertical_fov(fov_43).to_radians();
     for mut projection in &mut cameras {
         if let Projection::Perspective(p) = projection.as_ref()

@@ -32,6 +32,7 @@ impl Plugin for ObjectivesHudPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Overlay>()
             .init_resource::<Centre>()
+            .init_resource::<C4ProgressBar>()
             .add_message::<crate::weapon::drop::UsedPickup>()
             .add_systems(Startup, spawn)
             .add_systems(Update, (messages, status, progress, centre, overlay))
@@ -47,11 +48,37 @@ impl Plugin for ObjectivesHudPlugin {
             "1: show the bomb's timer and defuse and the hostages' state (debug).",
             |o| &mut o.0,
         );
+        c4_bar_cvar(app);
     }
+}
+
+/// `cl_c4progressbar` (archived).
+pub(crate) fn c4_bar_cvar(app: &mut App) {
+    app.init_resource::<C4ProgressBar>();
+    resource_cvar::<C4ProgressBar, u8>(
+        app,
+        "cl_c4progressbar",
+        "1: a progress bar while you defuse the bomb (Multiplayer > Advanced).",
+        |o| &mut o.0,
+    );
+    app.world_mut()
+        .resource_mut::<crate::console::Console>()
+        .archive("cl_c4progressbar");
 }
 
 #[derive(Resource, Default)]
 struct Overlay(u8);
+
+/// `cl_c4progressbar` (CS:S's default 1): the progress bar while
+/// defusing; 0 hides it (arming always shows its own).
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct C4ProgressBar(pub u8);
+
+impl Default for C4ProgressBar {
+    fn default() -> Self {
+        Self(1)
+    }
+}
 
 /// The centre message and until when it shows.
 #[derive(Resource, Default)]
@@ -378,7 +405,9 @@ fn progress(
     clock: Res<crate::core::SimClock>,
     mut frame: Query<(&Part, &mut Node, &mut Visibility)>,
     mut fill: Query<&mut Node, (With<FillMarker>, Without<Part>)>,
+    defuse_bar: Option<Res<C4ProgressBar>>,
 ) {
+    let defuse_bar = defuse_bar.is_none_or(|b| b.0 != 0);
     let Some(window) = windows.iter().next() else { return };
     let (w, h) = (window.width(), window.height());
     let now = fixed.elapsed_secs_f64();
@@ -388,6 +417,9 @@ fn progress(
         // network client predicts them).
         if let Some(a) = arming {
             return Some(((clock.now - a.since) / rules.plant_time as f64) as f32);
+        }
+        if !defuse_bar {
+            return None;
         }
         if let Some(d) = defusing {
             return Some(((clock.now - d.started) / (d.ends - d.started).max(1e-6)) as f32);

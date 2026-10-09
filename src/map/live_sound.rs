@@ -107,6 +107,39 @@ pub struct LiveSound {
     audio: Option<(Entity, Arc<Gains>)>,
 }
 
+/// Volume by kind of sound: music (`snd_musicvolume`, set by the
+/// client's options), times the master volume.
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct SoundMix {
+    pub music: f32,
+}
+
+impl Default for SoundMix {
+    fn default() -> Self {
+        Self { music: 1.0 }
+    }
+}
+
+impl SoundMix {
+    /// The gain for a sound entry (a sound script's name or a wave path).
+    pub fn gain(&self, entry: &str) -> f32 {
+        if is_music(entry) { self.music.clamp(0.0, 1.0) } else { 1.0 }
+    }
+}
+
+/// Whether a sound is music: a wave under `music/` (after Source's sound
+/// characters) or an MP3 (CS:S ships none; community maps play their
+/// music as MP3s).
+pub fn is_music(entry: &str) -> bool {
+    let e = entry
+        .trim()
+        .trim_start_matches(|c: char| "*#@<>^)}$!?&".contains(c))
+        .replace('\\', "/")
+        .to_ascii_lowercase();
+    let e = e.strip_prefix("sound/").unwrap_or(&e);
+    e.starts_with("music/") || e.ends_with(".mp3")
+}
+
 /// The long-lived sounds playing now.
 #[derive(Resource, Default)]
 pub struct LiveSounds {
@@ -279,6 +312,7 @@ impl Plugin for LiveSoundPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<SoundControl>()
             .init_resource::<LiveSounds>()
+            .init_resource::<SoundMix>()
             .add_systems(PostUpdate, (control, drive_audio.run_if(resource_exists::<Assets<LiveClip>>)).chain());
     }
 
@@ -446,20 +480,23 @@ fn drive_audio(
     global: Option<Res<bevy::audio::GlobalVolume>>,
     hearing: Res<Hearing>,
     room: Res<RoomDsp>,
+    mix: Option<Res<SoundMix>>,
     mut commands: Commands,
 ) {
     let Some(bank) = bank else { return };
+    let mix = mix.map_or_else(SoundMix::default, |m| *m);
     // Bevy applies the master volume when a sink starts; follow later
     // changes to it (the clip's own gains carry the rest).
     let master = global.map_or(1.0, |g| g.volume.to_linear());
     let ear = Ear::find(listener.iter());
     for s in live.sounds.values_mut() {
+        let volume = s.volume * mix.gain(&s.entry);
         let (left, right, send) = match (s.at, ear) {
             (Some(at), Some(ear)) if !matches!(s.level, SoundLevel::Db(l) if l <= 0.0) => {
                 let (l, r, send) = ear.gains(at, s.follow, s.level);
-                (l * s.volume, r * s.volume, send)
+                (l * volume, r * volume, send)
             }
-            _ => (s.volume, s.volume, AMBIENT_SEND),
+            _ => (volume, volume, AMBIENT_SEND),
         };
         let send = if s.dry { 0.0 } else { send };
         let speed = s.pitch.clamp(1.0, 255.0) / 100.0;

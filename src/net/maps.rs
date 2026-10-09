@@ -92,6 +92,27 @@ impl Default for DownloadSettings {
     }
 }
 
+/// `cl_downloadfilter`, the player's (CS:S's "When a game server tries to
+/// download custom content to your computer"): `all` (the default),
+/// `nosounds`, `mapsonly`, `none`. Servers here only send maps, so only
+/// `none` refuses something: joining a server whose map isn't here fails
+/// as a missing map.
+#[derive(Resource, Clone, Debug, PartialEq)]
+pub struct DownloadFilter(pub String);
+
+impl Default for DownloadFilter {
+    fn default() -> Self {
+        Self("all".into())
+    }
+}
+
+impl DownloadFilter {
+    /// Whether a map may be downloaded.
+    pub fn allows_maps(&self) -> bool {
+        !self.0.trim().eq_ignore_ascii_case("none")
+    }
+}
+
 /// On a server: the map it serves (what `Welcome` and `ChangeLevel` say)
 /// and its file, for clients that download it.
 #[derive(Resource, Clone, Debug, Default)]
@@ -124,6 +145,7 @@ pub struct Upload {
 pub(super) fn plugin(app: &mut App) {
     let server = || resource_equals(NetRole::Server);
     app.init_resource::<DownloadSettings>()
+        .init_resource::<DownloadFilter>()
         .add_systems(Update, watch_map.run_if(server()))
         .add_systems(
             PreUpdate,
@@ -162,6 +184,21 @@ pub(super) fn plugin(app: &mut App) {
         "Largest map the server sends over the connection, MB.",
         |s| &mut s.max_mb,
     );
+    download_filter_cvar(app);
+}
+
+/// `cl_downloadfilter` (archived).
+pub fn download_filter_cvar(app: &mut App) {
+    app.init_resource::<DownloadFilter>();
+    resource_cvar::<DownloadFilter, String>(
+        app,
+        "cl_downloadfilter",
+        "What a server may download to you: all, nosounds, mapsonly, none (servers here send only maps).",
+        |f| &mut f.0,
+    );
+    app.world_mut()
+        .resource_mut::<crate::console::Console>()
+        .archive("cl_downloadfilter");
 }
 
 /// SHA-256 of a file's bytes (the handshake's map hash).
@@ -752,7 +789,8 @@ fn download(world: &mut World, welcome: &Welcome, copy: LocalCopy) -> Fetch {
     let can_save = world
         .get_resource::<MapFiles>()
         .is_some_and(|f| f.cache.is_some());
-    if !can_save || (welcome.download_url.is_empty() && !welcome.allow_download) {
+    let wanted = world.get_resource::<DownloadFilter>().is_none_or(DownloadFilter::allows_maps);
+    if !can_save || !wanted || (welcome.download_url.is_empty() && !welcome.allow_download) {
         let (kind, reason) = match copy {
             LocalCopy::Differs => (JoinFailure::MapDiffers, differs(&map)),
             // CS:S's words.
@@ -868,6 +906,14 @@ mod tests {
         assert_eq!(map_path("cs_source:de_dust2"), "maps/de_dust2.bsp");
         assert!(safe_name("mg_swag_multigames_v1"));
         assert!(!safe_name("../x") && !safe_name("a/b") && !safe_name(".."));
+    }
+
+    #[test]
+    fn the_download_filter_refuses_maps_only_at_none() {
+        for (filter, maps) in [("all", true), ("nosounds", true), ("mapsonly", true), ("none", false), (" NONE ", false)] {
+            assert_eq!(DownloadFilter(filter.into()).allows_maps(), maps, "{filter}");
+        }
+        assert!(DownloadFilter::default().allows_maps(), "CS:S's default: all");
     }
 
     #[test]

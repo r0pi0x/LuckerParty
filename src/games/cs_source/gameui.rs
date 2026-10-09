@@ -4,9 +4,12 @@
 //! under `platform/`), the menu's entries (`resource/GameMenu.res`), the
 //! options pages (`resource/OptionsSub*.res`, the keyboard and video tabs'
 //! Advanced dialogs `OptionsSubKeyboardAdvancedDlg.res` and
-//! `OptionsSubVideoAdvancedDlg.res` too), Create Server's pages
+//! `OptionsSubVideoAdvancedDlg.res`, the multiplayer tab's
+//! `MultiplayerAdvancedDialog.res` too), Create Server's pages
 //! (`resource/CreateMultiplayerGame{Server,Gameplay,Bot}Page.res`) and its
-//! Game page's options (`cfg/settings.scr`), the keyboard page's actions
+//! Game page's options (`cfg/settings.scr`) and Multiplayer > Advanced's
+//! (`cfg/user.scr`, else `cfg/user_default.scr`; one parser,
+//! `scr_settings`), the keyboard page's actions
 //! (`scripts/kb_act.lst`), strings from `gameui_english.txt`,
 //! `valve_english.txt` and `cstrike_english.txt`, and the main menu's look: its background (`materials/console/
 //! background01.vtf` and `background01_widescreen.vtf`, stretched over the
@@ -208,7 +211,7 @@ pub(crate) fn key_actions(text: &str, strings: &HashMap<String, String>) -> Vec<
 }
 
 /// The options pages' and Create Server's layout files, by page.
-const OPTION_PAGES: [(&str, &str); 10] = [
+const OPTION_PAGES: [(&str, &str); 12] = [
     ("keyboard", "resource/optionssubkeyboard.res"),
     // The keyboard tab's Advanced dialog.
     ("keyboard_advanced", "resource/optionssubkeyboardadvanceddlg.res"),
@@ -217,7 +220,10 @@ const OPTION_PAGES: [(&str, &str); 10] = [
     ("video", "resource/optionssubvideo.res"),
     // The video tab's Advanced dialog.
     ("video_advanced", "resource/optionssubvideoadvanceddlg.res"),
+    ("voice", "resource/optionssubvoice.res"),
     ("multiplayer", "resource/optionssubmultiplayer.res"),
+    // The multiplayer tab's Advanced dialog (its list from `USER_SCRIPTS`).
+    ("multiplayer_advanced", "resource/multiplayeradvanceddialog.res"),
     // Create Server's pages: Server, Game (its list from `SERVER_SCRIPTS`),
     // Bot.
     ("create_server", "resource/createmultiplayergameserverpage.res"),
@@ -228,6 +234,10 @@ const OPTION_PAGES: [(&str, &str); 10] = [
 /// Create Server's Game page options: the install's own, else the
 /// default one.
 const SERVER_SCRIPTS: [&str; 2] = ["cfg/settings.scr", "cfg/settings_default.scr"];
+
+/// The multiplayer tab's Advanced dialog's options (the client's own):
+/// the user's script once the game has written it, else the default one.
+const USER_SCRIPTS: [&str; 2] = ["cfg/user.scr", "cfg/user_default.scr"];
 
 /// The loading dialog's layout files, preferred first.
 const LOADING_DIALOGS: [&str; 2] = ["resource/loadingdialognobanner.res", "resource/loadingdialog.res"];
@@ -353,14 +363,18 @@ pub fn load(mount: &Mount) -> Option<GameUi> {
     if scheme.is_none() && menu_root.is_none() {
         return None;
     }
+    // Every copy along the search path, the first one's words winning
+    // (Source merges them: cstrike's `gameui_english.txt` lacks words
+    // hl2's has, e.g. the crosshair colour sliders' labels).
     let mut strings = HashMap::new();
     for file in [
         "resource/gameui_english.txt",
         "resource/valve_english.txt",
         "resource/cstrike_english.txt",
     ] {
-        if let Some(text) = read(file) {
-            for (k, v) in super::radio::localization(&text) {
+        let path = crate::mount::normalize(file);
+        for bytes in mount.layers().filter_map(|l| l.read(&path)?.ok()) {
+            for (k, v) in super::radio::localization(&super::radio::decode(&bytes)) {
                 strings.entry(k).or_insert(v);
             }
         }
@@ -417,16 +431,23 @@ pub fn load(mount: &Mount) -> Option<GameUi> {
     ui.server_settings = SERVER_SCRIPTS
         .iter()
         .find_map(|file| read(file))
-        .map(|text| server_settings(&text, &ui.strings))
+        .map(|text| scr_settings(&text, &ui.strings))
+        .unwrap_or_default();
+    // Multiplayer > Advanced: the same script format.
+    ui.user_settings = USER_SCRIPTS
+        .iter()
+        .find_map(|file| read(file))
+        .map(|text| scr_settings(&text, &ui.strings))
         .unwrap_or_default();
     Some(ui)
 }
 
-/// The options of Create Server's Game page (`cfg/settings.scr`): each
-/// cvar's label (localised), its control and default. The script's form:
-/// `"cvar" { "#Label" { STRING | NUMBER min max | BOOL | LIST "label"
-/// "value" ... } { "default" } }` (a max of -1: none).
-pub(crate) fn server_settings(text: &str, strings: &HashMap<String, String>) -> Vec<ServerSetting> {
+/// The options of a GameUI options script (`.scr`: Create Server's Game
+/// page, `cfg/settings.scr`; Multiplayer > Advanced, `cfg/user.scr`):
+/// each cvar's label (localised), its control and default. The script's
+/// form: `"cvar" { "#Label" { STRING | NUMBER min max | BOOL | LIST
+/// "label" "value" ... } { "default" } }` (a min or max of -1: none).
+pub(crate) fn scr_settings(text: &str, strings: &HashMap<String, String>) -> Vec<ServerSetting> {
     let t = super::surfaceprops::tokens(text);
     let Some(open) = t.iter().position(|s| s == "{") else {
         return Vec::new();
@@ -588,7 +609,7 @@ mod tests {
                 "mp_footsteps" { "Steps" { BOOL } { "1" } }
                 "mp_forcecamera" { "Camera" { LIST "#A" "0" "B" "1" } { "0" } }
             }"##;
-        let o = server_settings(scr, &strings);
+        let o = scr_settings(scr, &strings);
         assert_eq!(o.len(), 5);
         assert_eq!((o[0].cvar.as_str(), o[0].label.as_str()), ("hostname", "Server Name"));
         assert_eq!(o[0].kind, ServerSettingKind::Text);
@@ -601,7 +622,68 @@ mod tests {
             ServerSettingKind::List(vec![("#A".into(), "0".into()), ("B".into(), "1".into())]),
             "unknown tokens stay as written"
         );
-        assert!(server_settings("nothing here", &strings).is_empty());
+        assert!(scr_settings("nothing here", &strings).is_empty());
+    }
+
+    #[test]
+    fn a_user_options_script() {
+        // As the client's own script is laid out: a commented header that
+        // spells the syntax out (braces and all), blocks over several
+        // lines, labels as tokens or words.
+        let strings = HashMap::from([
+            ("my_hand".to_string(), "Hand".to_string()),
+            ("my_left".to_string(), "Left".to_string()),
+        ]);
+        let scr = r##"// A header: "cvar" { "Prompt" { type [ type info ] } { default } }
+            // NUMBER  min max range, use -1 -1 for no limits
+            VERSION 1.0
+
+            DESCRIPTION INFO_OPTIONS
+            {
+                "my_limit"
+                {
+                    "#My_Limit"
+                    { NUMBER 0 4096 }
+                    { "512" }
+                }
+
+                "my_hand"
+                {
+                    "#My_Hand"
+                    {
+                        LIST
+                        "#My_Left" "0"
+                        "#My_Right" "1"
+                    }
+                    { "1" }
+                }
+
+                "my_tag" { "Clan Tag" { LIST "#None" "0" } { "0" } }
+                "my_free" { "Free" { NUMBER -1 -1 } { "3" } }
+                "my_name" { "Name" { STRING } { } }
+                "my_toggle"
+                {
+                    "#My_Toggle"
+                    { BOOL }
+                    { "1" }
+                }
+            }"##;
+        let o = scr_settings(scr, &strings);
+        let cvars: Vec<&str> = o.iter().map(|s| s.cvar.as_str()).collect();
+        assert_eq!(cvars, ["my_limit", "my_hand", "my_tag", "my_free", "my_name", "my_toggle"]);
+        assert_eq!(o[0].kind, ServerSettingKind::Number { min: Some(0.0), max: Some(4096.0) });
+        assert_eq!(o[0].default, "512");
+        assert_eq!(o[1].label, "Hand", "localised");
+        assert_eq!(
+            o[1].kind,
+            ServerSettingKind::List(vec![("#My_Left".into(), "0".into()), ("#My_Right".into(), "1".into())])
+        );
+        assert_eq!(o[1].default, "1");
+        assert_eq!(o[2].label, "Clan Tag", "words stay words");
+        assert_eq!(o[3].kind, ServerSettingKind::Number { min: None, max: None }, "-1 -1: no limits");
+        assert_eq!((o[4].kind.clone(), o[4].default.as_str()), (ServerSettingKind::Text, ""));
+        assert_eq!(o[5].kind, ServerSettingKind::Bool);
+        assert_eq!(o[5].default, "1");
     }
 
     #[test]

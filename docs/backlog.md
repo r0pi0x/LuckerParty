@@ -67,8 +67,17 @@ plan when work starts; delete them when done.
   in CS:S. Ours used the body's centre (36 above the feet) for both.
   Confirmed in CS:S's console: `noclip; setpos -295 1078 500; getpos`
   prints z 564.
-- Options faithful to CS:S: any other option CS:S shows that we lack;
-  defaults as CS:S's.
+- Options faithful to CS:S (done 2026-10-09, to playtest): the Voice
+  tab, Multiplayer > Advanced from `cfg/user.scr`, Create Server's
+  `< Random Map >`, the aspect ratio, and the cvars behind the greyed
+  controls with CS:S's defaults (`fov_desired`, the crosshair's size,
+  thickness, dot and custom colour, `snd_musicvolume`,
+  `snd_mute_losefocus`, `m_filter`, `m_customaccel`, `cl_radar_locked`,
+  `cl_downloadfilter`, water detail, `mp_decals`, `cl_c4progressbar`).
+  What stays greyed and why, the deliberate differences (`con_enable`,
+  `volume`) and the reference captures still needed (slider ranges,
+  the colour list, `cl_crosshairusealpha`'s and `mp_decals`' defaults):
+  docs/plans/active/ui-parity.md.
 
 - Decals persist across rounds (bullet holes, blood), as we believe CS:S
   does (players bind `r_cleardecals`, now there; `mashup_round_cleardecals
@@ -155,13 +164,13 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   issuing their own are in: `bot::radio::obey`, `speak`; checking
   when CS:S bots talk needs that spec). The radar is in (`client/radar.rs`: the map overview turning
   with you, team dots, your place name); its range (2200 units) is a guess.
-- The game menu (Esc; `client/game_menu.rs`: Create Server; bots; team;
+- The game menu (Esc; `client/game_menu/`: Create Server; bots; team;
   options; bug report; quit) is in, in the game's GameUI look
   (`SourceScheme.res` frames and colours, `GameMenu.res` entries), its
   dialogs laid out from the install's `.res` files with VGUI's controls
   (`client/widgets.rs`; docs/plans/active/ui-parity.md). Left: what
-  that plan lists as left (the console as a VGUI frame, Multiplayer >
-  Advanced from `cfg/user.scr`, the greyed controls' cvars), binds for
+  that plan lists as left (the console as a VGUI frame, the greyed
+  controls whose features may come), binds for
   the keyboard actions greyed in the options (`invprev`,
   `+voicerecord`, `autobuy`, ...), comparing the look with CS:S's
   (refcmp has no menu views).

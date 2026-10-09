@@ -475,6 +475,8 @@ pub struct GameUi {
     pub actions: Vec<KeyAction>,
     /// Create Server's Game page options (`cfg/settings.scr`), in order.
     pub server_settings: Vec<ServerSetting>,
+    /// Multiplayer > Advanced's options (`cfg/user.scr`), in order.
+    pub user_settings: Vec<ServerSetting>,
     /// The main menu's background for 4:3 screens and for wider ones,
     /// drawn stretched over the whole screen.
     pub background: Option<UiImage>,
@@ -498,8 +500,9 @@ pub struct GameUi {
     pub server_icons: HashMap<String, UiImage>,
 }
 
-/// An option of Create Server's Game page (a game's server settings
-/// script): the cvar it sets, its label, its control, its default.
+/// An option of a GameUI options script (Create Server's Game page,
+/// Multiplayer > Advanced): the cvar it sets, its label, its control,
+/// its default.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ServerSetting {
     pub cvar: String,
