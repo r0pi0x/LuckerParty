@@ -24,9 +24,24 @@ while read -r _local_ref local_sha _remote_ref remote_sha; do
         echo "$out" >&2
         bad=1
     fi
+    # Personal traces in what's being pushed (commit messages and added
+    # lines): machine paths always, plus the case-insensitive patterns in
+    # the git-ignored .githooks/private-patterns (one extended regex per
+    # line, e.g. a real name), so the names themselves are never committed.
+    patterns='/home/[A-Za-z0-9_.-]+/|/Users/[A-Za-z0-9_.-]+/|[A-Za-z]:\\+Users\\+[A-Za-z0-9_.-]'
+    if [ -f .githooks/private-patterns ]; then
+        extra=$(grep -v -e '^#' -e '^[[:space:]]*$' .githooks/private-patterns | paste -sd'|' -)
+        [ -n "$extra" ] && patterns="$patterns|$extra"
+    fi
+    hits=$(git log -p --no-color --format='%n%B' "$range" | grep -E -i -n -e "^\+.*($patterns)" -e "^[^-+@ ].*($patterns)" | grep -v '^[0-9]*:+++ ' | head -10)
+    if [ -n "$hits" ]; then
+        echo "pre-push: personal traces (paths or private patterns) in what's being pushed:" >&2
+        echo "$hits" | cut -c1-160 >&2
+        bad=1
+    fi
 done
 if [ "$bad" = 1 ]; then
-    echo "pre-push: set TZ=UTC and the repo-local identity, then amend/rebase them; not pushing." >&2
+    echo "pre-push: fix the commits above (TZ=UTC and the repo-local identity; remove personal traces), then amend/rebase them; not pushing." >&2
     exit 1
 fi
 if [ "$pushing" = 1 ]; then

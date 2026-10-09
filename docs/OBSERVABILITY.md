@@ -31,6 +31,11 @@ fails and says how to move it. Test names read `weapons::name` and
 - Fast tier, before every commit (`.githooks/pre-commit`): `cargo test
   --features dev -- --skip heavy::` (unit tests and everything outside
   `heavy`; under a minute when warm).
+- Before every push, `.githooks/pre-push` refuses personal traces in what's
+  pushed (commit messages and added lines): machine paths (`/home/<name>/`,
+  `/Users/<name>/`, `C:\\Users\\<name>`) always, plus the extended regexes in
+  the git-ignored `.githooks/private-patterns` (one per line; e.g. real
+  names), so the names themselves never reach the repository.
 - Before every push, `.githooks/pre-push` also checks the build without
   `--features dev` (`cargo check --lib --bins`; the playtest and release
   builds use that configuration and the tests don't), even with
