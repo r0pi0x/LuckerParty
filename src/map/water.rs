@@ -42,6 +42,13 @@ pub struct MapWaterMaterial {
     /// (screen uv per unit of normal xy).
     pub refract: bool,
     pub refract_amount: f32,
+    /// `$blurrefract`: the refraction is a 5x5 box blur (0.005 uv steps),
+    /// tinted by `refract_tint`, and its distortion isn't faded by the fog
+    /// alpha (spec sections 5 and 6.2).
+    pub blur_refract: bool,
+    /// `$refracttint`, gamma 0..1: applied only with `blur_refract` (the
+    /// shader's quirk).
+    pub refract_tint: [f32; 3],
     /// Planar reflection (a mirrored camera), distorted by `reflect_amount`.
     pub reflect: bool,
     /// The reflection also shows models (props, characters), not just the
@@ -111,6 +118,8 @@ impl Default for MapWaterMaterial {
             scroll2: Vec2::ZERO,
             refract: true,
             refract_amount: 0.0,
+            blur_refract: false,
+            refract_tint: [1.0; 3],
             reflect: false,
             reflect_entities: false,
             reflect_amount: 0.8,
@@ -256,6 +265,34 @@ impl Default for WaterSettings {
     }
 }
 
+/// CS:S's Video > Advanced "Water detail" choices (spec section 1), as
+/// (`r_waterforceexpensive`, `r_waterforcereflectentities`).
+pub const WATER_DETAIL: [(&str, u8, u8); 3] = [
+    ("Simple reflections", 0, 0),
+    ("Reflect world", 1, 0),
+    ("Reflect all", 1, 1),
+];
+
+impl WaterSettings {
+    /// The "Water detail" choice the two cvars make (index into
+    /// `WATER_DETAIL`); an expensive-off, entities-on mix reads as
+    /// "Reflect all", as the menu would show it.
+    pub fn detail(&self) -> usize {
+        match (self.force_expensive != 0, self.reflect_entities != 0) {
+            (false, false) => 0,
+            (true, false) => 1,
+            (_, true) => 2,
+        }
+    }
+
+    /// Set the cvars a "Water detail" choice stands for.
+    pub fn set_detail(&mut self, choice: usize) {
+        let (_, expensive, entities) = WATER_DETAIL[choice.min(WATER_DETAIL.len() - 1)];
+        self.force_expensive = expensive;
+        self.reflect_entities = entities;
+    }
+}
+
 /// The mode for a surface `distance` from the eye, at default settings.
 pub fn water_mode(m: &MapWaterMaterial, distance: f32) -> WaterMode {
     surface_mode(m, &WaterSettings::default(), distance)
@@ -327,6 +364,9 @@ pub struct WaterParams {
     /// Reflection tint: linear (pass 1) and raw (pass 2).
     pub reflect_tint_linear: Vec4,
     pub reflect_tint_raw: Vec4,
+    /// Refraction tint, linear; w = 1 with `$blurrefract` (blur, tint, and
+    /// distortion not faded by the fog alpha).
+    pub refract_tint: Vec4,
     /// The scene's range fog on the surface: linear colour (w = 1 when on),
     /// gamma colour, and start, end (meters), max density.
     pub scene_fog_linear: Vec4,
@@ -570,6 +610,11 @@ fn params(m: &MapWaterMaterial, frames: usize, fog: Option<&super::MapFog>) -> W
         fog_gamma: raw(m.fog_color),
         reflect_tint_linear: lin(m.reflect_tint),
         reflect_tint_raw: raw(m.reflect_tint),
+        refract_tint: if m.blur_refract {
+            lin(m.refract_tint)
+        } else {
+            Vec4::new(1.0, 1.0, 1.0, 0.0)
+        },
         scene_fog_linear: super::fog_color(fog),
         scene_fog_gamma: fog.map_or(Vec4::ZERO, |f| raw(f.color)),
         scene_fog_range: super::fog_range(fog),
@@ -1671,6 +1716,48 @@ mod tests {
                 ..on
             }
         ));
+    }
+
+    /// Video > Advanced "Water detail": the default is CS:S's at DX9
+    /// ("Reflect world"), and each choice sets the two cvars.
+    #[test]
+    fn water_detail_choices() {
+        let mut s = WaterSettings::default();
+        assert_eq!(WATER_DETAIL[s.detail()].0, "Reflect world");
+        for choice in 0..3 {
+            s.set_detail(choice);
+            assert_eq!(s.detail(), choice);
+            assert_eq!((s.force_expensive, s.reflect_entities), (WATER_DETAIL[choice].1, WATER_DETAIL[choice].2));
+        }
+        // "Simple reflections" still reflects a material that forces it
+        // ($forceexpensive defaults on: spec open question 1).
+        s.set_detail(0);
+        let port = MapWaterMaterial {
+            reflect: true,
+            cheap_end: 5000.0,
+            ..default()
+        };
+        assert!(surface_mode(&port, &s, 0.0).reflect);
+        assert!(!reflects_entities(&port, &s));
+    }
+
+    /// `$blurrefract` turns `$refracttint` on (linear, w = 1); without it
+    /// the tint is white and off.
+    #[test]
+    fn refract_tint_needs_blur() {
+        let tinted = MapWaterMaterial {
+            refract_tint: [0.5, 1.0, 0.0],
+            ..default()
+        };
+        let p = params(&tinted, 1, None);
+        assert_eq!(p.refract_tint, Vec4::new(1.0, 1.0, 1.0, 0.0));
+        let blurred = MapWaterMaterial {
+            blur_refract: true,
+            ..tinted
+        };
+        let p = params(&blurred, 1, None);
+        assert!(close(p.refract_tint.x, gamma_to_linear(0.5), 1e-6));
+        assert_eq!((p.refract_tint.y, p.refract_tint.z, p.refract_tint.w), (1.0, 0.0, 1.0));
     }
 
     #[test]
