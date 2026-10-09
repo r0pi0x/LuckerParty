@@ -193,9 +193,13 @@ GameUI loading dialog for joining and map changes (detailed view:
 of the game, predicted bomb arming and defusing, names (`name` over the
 network), chat and radio flood limits, spawns never inside another
 player, `changelevel` to the same map, bot profile names and `kick`,
-decals for late joiners. Next: slice 8 (Find Servers, LAN
-discovery, direct connect UI). Open questions 1, 3 and 4
-still wait on the user; 2 was taken as both (listen first, dedicated too).
+decals for late joiners. Slice 8 done: Find Servers (Favorites,
+History, Lan; Internet waits for a master server), server info queries,
+LAN discovery, passwords. Slice 9 (lobby) dropped: standard CS:S. Left:
+LAN broadcast between two machines (Windows) untested, CS:S's join rules
+(empty team restarts the game) need a spec. Open questions 3 (NAT) and
+4 (server size) still wait on the user; 1 is moot (networking came
+first), 2 was taken as both.
 
 ## 3. Weapons, remaining
 

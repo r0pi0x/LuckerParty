@@ -64,7 +64,7 @@ libc = "0.2"
 # Where Steam is (`HKCU\Software\Valve\Steam` `SteamPath`) for finding the
 # CS:S install (mount::install); already in the tree through winit.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_System_Registry"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Registry"] }
 
 # Binaries without unit tests: `cargo test` skips building a test harness
 # of each (one more link of the game apiece). A binary that gets tests
