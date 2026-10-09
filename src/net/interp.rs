@@ -345,6 +345,7 @@ fn hear_ticks(
     mut bodies: Query<&mut Snapshots<NetBody>>,
     mut movers: Query<&mut Snapshots<NetMover>>,
     mut props: Query<&mut Snapshots<NetProp>>,
+    mut items: Query<&mut Snapshots<super::NetItem>>,
 ) {
     let step = tick_step(&command_clock, &fixed);
     let now = time.elapsed_secs_f64();
@@ -359,6 +360,9 @@ fn hear_ticks(
         }
         for mut p in &mut props {
             p.hold(tick);
+        }
+        for mut i in &mut items {
+            i.hold(tick);
         }
     }
 }

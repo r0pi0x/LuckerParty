@@ -246,6 +246,7 @@ pub(super) fn write_local_intent(
     ),
     zoomed: Query<&crate::weapon::Zoomed, With<LocalPlayer>>,
     spectator: Option<Res<super::spectate::Spectator>>,
+    weapon_menu: Option<Res<super::weapon_select::WeaponMenu>>,
 ) {
     // Every game key is a bind (`binds`): what the keys bound to an action
     // hold.
@@ -265,6 +266,8 @@ pub(super) fn write_local_intent(
         **intent = Intent {
             yaw,
             pitch,
+            // Slot commands (`slot2` from a script) still switch.
+            select: weapon_menu.as_ref().and_then(|m| m.selected_slot()),
             ..default()
         };
         if let Some(h) = held {
@@ -320,13 +323,17 @@ pub(super) fn write_local_intent(
     intent.crouch = bound("+duck");
     intent.sprint = bound("+speed");
     intent.walk = bound("+speed");
-    intent.fire = bound("+attack");
+    // Attack that just picked from the weapon selection doesn't fire.
+    intent.fire = bound("+attack") && !weapon_menu.as_ref().is_some_and(|m| m.swallow_fire);
     intent.secondary = bound("+attack2");
     intent.reload = bound("+reload");
     intent.last_weapon = bound("lastinv");
     intent.use_key = bound("+use");
-    // Number keys pick from the buy, team or radio menu while one is open.
-    intent.select = if menu.is_some_and(|m| m.open)
+    // Number keys pick from the buy, team or radio menu while one is open;
+    // with the weapon selection (`hud_fastswitch 0`) they work through it.
+    intent.select = if let Some(m) = weapon_menu.as_ref().filter(|m| m.takes_slots || m.select.is_some()) {
+        m.selected_slot()
+    } else if menu.is_some_and(|m| m.open)
         || team_menu.is_some_and(|m| m.0)
         || radio_menu.is_some_and(|m| m.0.is_some())
     {

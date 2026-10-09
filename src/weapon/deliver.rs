@@ -7,11 +7,12 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 
 use super::{
+    lagcomp::Rewound,
     random::Rng,
     Armor, DamageEffect, Hitscan, PassMaterials, Penetration, SpreadShape, Swing, WeaponEvent, WeaponEventKind,
 };
 use crate::{
-    core::{Damage, DamageKind, Damageable, FirstTimePredicted, Health, Hitboxes, Hitgroup, Intent, SOLID_LAYERS},
+    core::{Damage, DamageKind, Damageable, FirstTimePredicted, Health, Hitboxes, Hitgroup, Intent, NetRole, SOLID_LAYERS},
     map::{
         PlaySound, PropSurface,
         sound::{SoundBank, SurfaceGrid},
@@ -50,6 +51,7 @@ pub(super) struct World<'w, 's> {
     pub events: MessageWriter<'w, WeaponEvent>,
     play: MessageWriter<'w, PlaySound>,
     first: Res<'w, FirstTimePredicted>,
+    role: Option<Res<'w, NetRole>>,
 }
 
 impl World<'_, '_> {
@@ -59,6 +61,23 @@ impl World<'_, '_> {
             self.play.write(sound);
         }
     }
+
+    /// Tell what a weapon did (marked a replay when the command runs again).
+    pub fn event(&mut self, owner: Entity, weapon: Entity, kind: WeaponEventKind) {
+        self.events.write(WeaponEvent {
+            owner,
+            weapon,
+            kind,
+            replay: !self.first.0,
+        });
+    }
+
+    /// Whether this process decides outcomes (damage, pushes): not a
+    /// network client, which only predicts its own shots
+    /// (`core::authoritative`).
+    pub fn authoritative(&self) -> bool {
+        self.role.as_deref().is_none_or(|r| *r != NetRole::Client)
+    }
 }
 
 /// Everything one firing call needs.
@@ -66,11 +85,59 @@ pub(super) struct Shot<'a, 'w, 's> {
     pub owner: Entity,
     pub weapon: Entity,
     pub eye: Vec3,
+    /// The aim (`aim_of(yaw, pitch)`) and its angles.
     pub aim: Quat,
+    pub yaw: f32,
+    pub pitch: f32,
     pub seed: u32,
     /// The time of the shot (game seconds).
     pub now: f64,
+    /// Characters moved back to where the shooter saw them (lag
+    /// compensation, `lagcomp`): traced as these instead of where they
+    /// are.
+    pub rewound: Vec<Rewound>,
     pub w: &'a mut World<'w, 's>,
+}
+
+/// A shot's aim from its look angles (the same on every machine for the
+/// same angles: a remote client draws others' shots from them).
+pub fn aim_of(yaw: f32, pitch: f32) -> Quat {
+    Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.0)
+}
+
+/// What a ray hits of a character's volume: the nearest hitbox entered
+/// (distance and group) or, without hitboxes, its box.
+fn volume_entry(r: &Rewound, from: Vec3, dir: Dir3, limit: f32) -> Option<(f32, Option<Hitgroup>)> {
+    match &r.hitboxes {
+        Some(boxes) => {
+            let (feet, turn) = r.frame();
+            let (o, d) = (turn * (from - feet), turn * *dir);
+            boxes
+                .iter()
+                .filter_map(|b| Some((b.ray_entry(o, d)?, Some(b.group))))
+                .filter(|(t, _)| *t < limit)
+                .min_by(|a, b| a.0.total_cmp(&b.0))
+        }
+        None => {
+            let b = r.aabb();
+            let (enter, _) = aabb_span(&b, from, *dir)?;
+            (enter < limit).then(|| (enter, Some(hitgroup_at(&b, from + *dir * enter))))
+        }
+    }
+}
+
+/// Where a ray enters and leaves a world box (distances along `dir`, the
+/// entry clamped at 0).
+fn aabb_span(b: &ColliderAabb, from: Vec3, dir: Vec3) -> Option<(f32, f32)> {
+    let centre = (b.min + b.max) / 2.0;
+    let half = (b.max - b.min) / 2.0;
+    crate::core::Hitbox {
+        center: centre,
+        half,
+        rotation: Quat::IDENTITY,
+        group: Hitgroup::Generic,
+    }
+    .ray_span(from, dir)
 }
 
 /// One hit to apply.
@@ -104,11 +171,12 @@ impl Shot<'_, '_, '_> {
     /// box entered decides the hitgroup.
     fn trace(&self, dir: Dir3, start: f32, end: f32, skip: &[Entity]) -> Option<Hit> {
         let from = self.eye + *dir * start;
+        let rewound: Vec<Entity> = self.rewound.iter().map(|r| r.entity).collect();
         let boxed: Vec<Entity> = self
             .w
             .targets
             .iter()
-            .filter(|t| t.hitboxes.is_some() && t.entity != self.owner)
+            .filter(|t| t.hitboxes.is_some() && t.entity != self.owner && !rewound.contains(&t.entity))
             .map(|t| t.entity)
             .collect();
         // The dead are left out entirely (their body is a ragdoll, which
@@ -119,10 +187,12 @@ impl Shot<'_, '_, '_> {
             .iter()
             .filter(|t| t.intent.is_some() && t.health.is_some_and(|h| h.current <= 0.0))
             .map(|t| t.entity);
+        let dead: Vec<Entity> = dead.collect();
         let filter = SpatialQueryFilter::from_excluded_entities(
             std::iter::once(self.owner)
                 .chain(boxed.iter().copied())
-                .chain(dead)
+                .chain(rewound.iter().copied())
+                .chain(dead.iter().copied())
                 .chain(skip.iter().copied()),
         )
         .with_mask(SOLID_LAYERS);
@@ -169,6 +239,21 @@ impl Shot<'_, '_, '_> {
                 });
             }
         }
+        // Characters where the shooter saw them (lag compensation).
+        for r in self.rewound.iter().filter(|r| !skip.contains(&r.entity) && !dead.contains(&r.entity)) {
+            let limit = best.as_ref().map_or(end, |b| b.distance) - start;
+            if let Some((distance, group)) = volume_entry(r, from, dir, limit) {
+                best = Some(Hit {
+                    entity: r.entity,
+                    collider: r.entity,
+                    point: from + *dir * distance,
+                    dir: *dir,
+                    distance: start + distance,
+                    normal: -*dir,
+                    group,
+                });
+            }
+        }
         best
     }
 
@@ -195,6 +280,16 @@ impl Shot<'_, '_, '_> {
     /// eye: past its last hitbox along the ray, or out of its collider.
     fn character_exit(&self, hit: &Hit) -> Option<f32> {
         let dir = Dir3::new(hit.dir).ok()?;
+        if let Some(r) = self.rewound.iter().find(|r| r.entity == hit.entity) {
+            return match &r.hitboxes {
+                Some(boxes) => {
+                    let (feet, turn) = r.frame();
+                    let (o, d) = (turn * (self.eye - feet), turn * *dir);
+                    boxes.iter().filter_map(|b| b.ray_span(o, d)).map(|(_, out)| out).reduce(f32::max)
+                }
+                None => aabb_span(&r.aabb(), self.eye, *dir).map(|(_, out)| out),
+            };
+        }
         if let Some(boxes) = self.w.targets.get(hit.entity).ok().and_then(|t| t.hitboxes) {
             let (o, d) = self.local_ray(hit.entity, self.eye, dir)?;
             return boxes
@@ -264,28 +359,7 @@ impl Shot<'_, '_, '_> {
     /// Fire every pellet of one shot.
     pub fn fire(&mut self, scan: &Hitscan, effect: &DamageEffect, pen: Option<&Penetration>) {
         let mut total: Vec<(Entity, f32, Hitgroup, Vec3, Vec3)> = Vec::new();
-        // The inaccuracy part of a `Disc` is drawn once per shot, shared by
-        // its pellets; each pellet draws its own spread part (a shotgun's
-        // pattern keeps its shape while the whole of it wanders).
-        let mut shared: Option<Vec2> = None;
-        for pellet in 0..scan.pellets.max(1) {
-            let mut rng = Rng::new(self.seed.wrapping_add(1 + pellet));
-            let dir = match scan.spread {
-                SpreadShape::Template(s) => {
-                    let x = rng.range(-0.5, 0.5) + rng.range(-0.5, 0.5);
-                    let y = rng.range(-0.5, 0.5) + rng.range(-0.5, 0.5);
-                    spread_dir(self.aim, s, x, y)
-                }
-                SpreadShape::Disc { inaccuracy, spread } => {
-                    let mut disc = |r: f32| {
-                        let angle = rng.range(0.0, std::f32::consts::TAU);
-                        Vec2::from_angle(angle) * rng.range(0.0, 1.0) * r
-                    };
-                    let base = *shared.get_or_insert_with(|| disc(inaccuracy));
-                    let offset = base + disc(spread);
-                    spread_dir(self.aim, 1.0, offset.x, offset.y)
-                }
-            };
+        for dir in pellet_dirs(self.aim, self.seed, scan.spread, scan.pellets) {
             // The bullet's damage so far (before hitgroups), where the
             // current segment starts and how far it may go, and what it
             // passed.
@@ -316,11 +390,7 @@ impl Shot<'_, '_, '_> {
                         normal,
                     }
                 };
-                self.w.events.write(WeaponEvent {
-                    owner: self.owner,
-                    weapon: self.weapon,
-                    kind,
-                });
+                self.w.event(self.owner, self.weapon, kind);
                 let Some(hit) = hit else { break };
                 self.push(hit.entity, hit.point, hit.dir * effect.impulse);
                 // Falloff again at every hit, by the distance from the eye.
@@ -410,8 +480,10 @@ impl Shot<'_, '_, '_> {
         kind: DamageKind,
         force: Vec3,
     ) {
-        // Damage is dealt once, not again when a command is re-run.
-        if !self.w.first.0 {
+        // Damage is dealt once, not again when a command is re-run, and
+        // only by the server (a client's own shots show their effects;
+        // the hits are the server's).
+        if !self.w.first.0 || !self.w.authoritative() {
             return;
         }
         let mut amount = quantize(raw, quantum);
@@ -435,20 +507,16 @@ impl Shot<'_, '_, '_> {
             kind,
             weapon: None,
         });
-        self.w.events.write(WeaponEvent {
-            owner: self.owner,
-            weapon: self.weapon,
-            kind: WeaponEventKind::Hit {
+        self.w.event(self.owner, self.weapon, WeaponEventKind::Hit {
                 target,
                 amount,
                 hitgroup,
-            },
-        });
+            });
     }
 
     /// Give a dynamic body an impulse at a point.
     fn push(&mut self, body: Entity, at: Vec3, impulse: Vec3) {
-        if impulse == Vec3::ZERO || !self.w.first.0 {
+        if impulse == Vec3::ZERO || !self.w.first.0 || !self.w.authoritative() {
             return;
         }
         if let Ok((rb, mut forces)) = self.w.bodies.get_mut(body)
@@ -495,16 +563,12 @@ impl Shot<'_, '_, '_> {
                 }
             }
         }
-        self.w.events.write(WeaponEvent {
-            owner: self.owner,
-            weapon: self.weapon,
-            kind: WeaponEventKind::Swing {
+        self.w.event(self.owner, self.weapon, WeaponEventKind::Swing {
                 hit: hit.is_some(),
                 secondary,
                 at: hit.as_ref().map(|h| (h.point, h.normal, h.entity)),
                 line,
-            },
-        });
+            });
         let Some(hit) = hit else {
             if let Some(s) = &swing.sound_miss {
                 self.w.sound(PlaySound::at(s.clone(), self.eye));
@@ -559,6 +623,37 @@ impl Shot<'_, '_, '_> {
         }
         true
     }
+}
+
+/// Each pellet's direction for a shot along `aim` with random seed `seed`
+/// (spec 4.2: pellet `i` reseeds with `seed + 1 + i`). The inaccuracy
+/// part of a `Disc` is drawn once per shot, shared by its pellets; each
+/// pellet draws its own spread part (a shotgun's pattern keeps its shape
+/// while the whole of it wanders). The same on every machine for the same
+/// inputs: others' shots are drawn from them.
+pub fn pellet_dirs(aim: Quat, seed: u32, spread: SpreadShape, pellets: u32) -> Vec<Dir3> {
+    let mut shared: Option<Vec2> = None;
+    (0..pellets.max(1))
+        .map(|pellet| {
+            let mut rng = Rng::new(seed.wrapping_add(1 + pellet));
+            match spread {
+                SpreadShape::Template(s) => {
+                    let x = rng.range(-0.5, 0.5) + rng.range(-0.5, 0.5);
+                    let y = rng.range(-0.5, 0.5) + rng.range(-0.5, 0.5);
+                    spread_dir(aim, s, x, y)
+                }
+                SpreadShape::Disc { inaccuracy, spread } => {
+                    let mut disc = |r: f32| {
+                        let angle = rng.range(0.0, std::f32::consts::TAU);
+                        Vec2::from_angle(angle) * rng.range(0.0, 1.0) * r
+                    };
+                    let base = *shared.get_or_insert_with(|| disc(inaccuracy));
+                    let offset = base + disc(spread);
+                    spread_dir(aim, 1.0, offset.x, offset.y)
+                }
+            }
+        })
+        .collect()
 }
 
 /// Backstab facing test: within 36.87° (CS:S measured: 36° backstab, 37°

@@ -208,6 +208,11 @@ pub struct UiFonts {
     /// The game's own font files by scheme name, with their height (480
     /// lines).
     game: HashMap<String, (Handle<Font>, f32)>,
+    /// The same as glyph fonts for `hud_text` (with their height at 480
+    /// lines).
+    game_glyphs: HashMap<String, (super::hud_text::GlyphFont, f32)>,
+    /// The system faces' file bytes, for `hud_text`.
+    face_bytes: HashMap<AssetId<Font>, std::sync::Arc<Vec<u8>>>,
 }
 
 impl UiFonts {
@@ -315,6 +320,28 @@ impl UiFonts {
     /// `WeaponIcons`) and its height at 480 lines.
     pub fn game(&self, name: &str) -> Option<(Handle<Font>, f32)> {
         self.game.get(name).cloned()
+    }
+
+    /// A scheme font as `hud_text` draws it, in a window `height` pixels
+    /// tall: the game's font file (its size proportional to 480 lines)
+    /// or a client scheme font in its system face (sized as `client`
+    /// sizes it), and its cell height in pixels.
+    pub fn hud_font(&self, name: &str, height: f32) -> Option<(super::hud_text::GlyphFont, f32)> {
+        if let Some((font, tall)) = self.game_glyphs.get(name) {
+            return Some((font.clone(), super::hud_text::proportional_tall(*tall, height)));
+        }
+        let sizes = self.sizes(Scheme::Client, name)?;
+        let s = font_for_height(sizes, height)?;
+        let face = self.face(&s.family, s.bold())?;
+        let data = self.face_bytes.get(&face.handle.id())?.clone();
+        let px = crate::map::hud::font_pixels(sizes, height)?;
+        Some((
+            super::hud_text::GlyphFont {
+                data,
+                additive: s.additive,
+            },
+            px,
+        ))
     }
 
     /// Whether the map's HUD fonts are loaded.
@@ -445,6 +472,7 @@ pub(crate) fn line_per_em(ttf: &[u8]) -> Option<f32> {
 fn load_system_faces(fonts: &mut Assets<Font>, ui: &mut UiFonts) {
     let index = index_fonts(&font_dirs());
     let mut loaded: HashMap<PathBuf, (Handle<Font>, f32, String)> = HashMap::new();
+    let mut face_bytes = HashMap::new();
     let mut load = |file: &str, fonts: &mut Assets<Font>| -> Option<(Handle<Font>, f32, String)> {
         let path = index.get(&file.to_lowercase())?;
         if let Some(l) = loaded.get(path) {
@@ -453,7 +481,9 @@ fn load_system_faces(fonts: &mut Assets<Font>, ui: &mut UiFonts) {
         let bytes = std::fs::read(path).ok()?;
         let line = line_per_em(&bytes).unwrap_or(1.2);
         let name = path.file_name()?.to_string_lossy().into_owned();
-        let l = (fonts.add(Font::from_bytes(bytes)), line, name);
+        let handle = fonts.add(Font::from_bytes(bytes.clone()));
+        face_bytes.insert(handle.id(), std::sync::Arc::new(bytes));
+        let l = (handle, line, name);
         loaded.insert(path.clone(), l.clone());
         Some(l)
     };
@@ -497,6 +527,7 @@ fn load_system_faces(fonts: &mut Assets<Font>, ui: &mut UiFonts) {
             }
         }
     }
+    ui.face_bytes = face_bytes;
     // Bevy's default font: the default text face, before any text is
     // laid out (its font collection reads each asset once, on first use).
     if let Some(face) = ui.face(DEFAULT_FAMILY, false)
@@ -513,6 +544,7 @@ fn take_hud_fonts(hud: Option<Res<ActiveHud>>, mut fonts: Option<ResMut<Assets<F
     let Some(hud) = hud else {
         if !ui.game.is_empty() {
             ui.game.clear();
+            ui.game_glyphs.clear();
         }
         return;
     };
@@ -521,6 +553,18 @@ fn take_hud_fonts(hud: Option<Res<ActiveHud>>, mut fonts: Option<ResMut<Assets<F
     }
     ui.client = hud.0.text_fonts.clone();
     ui.game.clear();
+    ui.game_glyphs = hud
+        .0
+        .fonts
+        .iter()
+        .map(|(name, f)| {
+            let glyph = super::hud_text::GlyphFont {
+                data: f.data.clone(),
+                additive: f.additive,
+            };
+            (name.clone(), (glyph, f.tall))
+        })
+        .collect();
     if let Some(fonts) = fonts.as_mut() {
         for (name, f) in &hud.0.fonts {
             ui.game
@@ -614,6 +658,7 @@ mod tests {
                 weight: 700,
                 yres: None,
                 antialias: true,
+                additive: false,
             }],
         );
         assert!((px(ui.client("ChatFont", 960.0, 12.0)) - 15.0).abs() < 1e-3);

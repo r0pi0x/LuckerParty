@@ -31,6 +31,10 @@ fails and says how to move it. Test names read `weapons::name` and
 - Fast tier, before every commit (`.githooks/pre-commit`): `cargo test
   --features dev -- --skip heavy::` (unit tests and everything outside
   `heavy`; under a minute when warm).
+- Before every push, `.githooks/pre-push` also checks the build without
+  `--features dev` (`cargo check --lib --bins`; the playtest and release
+  builds use that configuration and the tests don't), even with
+  `MASHUP_PUSH_TESTS=0`.
 - Full suite, before a push or a merge to main (`.githooks/pre-push`, which
   `MASHUP_PUSH_TESTS=0` skips): `cargo nextest run --features dev`, or
   `cargo test --features dev` without nextest (twice as slow: in one
@@ -374,6 +378,24 @@ teleports snapped, and `carried` (ticks the client's mover step pushed
 its own player). `cargo test --features dev --test it net_interp --
 --nocapture` prints the off-path, per-frame step and error numbers.
 
+Weapons (`tests/it/net_weapons.rs`, `tests/it/heavy/map_net_weapons.rs`):
+what a client's player carries is part of the predicted state
+(`PredictedComponents::encode` includes `weapon::sync`'s blob), so the
+prediction checks above cover clips, timers, punch and zoom too. On the
+server, `weapon::lagcomp::LagCompStats` counts rewinds (`last`: the view
+tick asked for, the tick traced at, characters moved) and each
+character's `HitHistory` has its hit volume per tick (to aim a test shot
+where a client saw someone: interpolate it at that client's
+`InterpClock::render_tick`). Server `WeaponEvent`s say what was fired
+(`Fired`: origin, angles, seed, spread) and hit (`Hit`); a client's
+`WeaponEvent`s with `replay` set come from re-run commands. Messages last
+two updates: gather them after every `NetSim::step` (the tests' `Log`).
+`sv_showlagcompensation 1` logs each rewind (how far back, how many
+moved); the server's `status` ends with a `lagcomp:` line. `cargo test
+--features dev --test it net_weapons -- --nocapture` prints hits with and
+without compensation, rewind times, prediction errors while firing and
+the pellet comparison.
+
 In a game: the perf overlay (`mashup_perf 1`) and the F2 Perf tab show,
 while connected, `net:` (ping, loss, KB/s), `cmds:` (lead in ticks and
 its target, the clock's speed nudge and jumps, the server's buffer of
@@ -391,7 +413,9 @@ and clock jump. `cl_smoothtime` (0.1 s) eases corrections out of the
 view; 0 snaps. Fake network conditions on a client (Source's names; its
 UDP transport only): `net_fakelag <ms>` delays what it receives (ping
 grows by that), `net_fakejitter <ms>` adds up to that much at random,
-`net_fakeloss <percent>` drops packets both ways.
+`net_fakeloss <percent>` drops packets both ways. `cl_lagcompensation 0`
+asks the server to trace your shots against the present; on the server
+`sv_unlag 0` turns lag compensation off, `sv_maxunlag` bounds it (1 s).
 
 Two real games on this box (`--features dev`; each needs its own remote
 port, `MASHUP_REMOTE_PORT`, so both answer `curl`):
@@ -406,7 +430,11 @@ ping), `getpos`, `+moveleft`/`-moveleft`, `setang`, `screenshot
 <file.png>`, `disconnect`. The host's `setpos` moves the host; a client's
 position is predicted and the server's state corrects it (a client's `setpos` snaps back). Add
 `+net_fakelag 100 +net_fakeloss 5 +cl_showerror 1` to the client's line to feel
-a bad link. The dedicated server:
+a bad link. To shoot each other: `setang <pitch> <yaw>` and `+attack`/`-attack`
+through each game's `mashup/console` (aim from the other's `Transform` as
+the client draws it, `world.query` on its `Name`), the host's health from
+its `LocalPlayer`'s `Health`, `+sv_showlagcompensation 1` on the host to
+log each rewind. The dedicated server:
 `cargo run --features dev --bin mashup_server -- -port 27032 +map greybox
 +bot_add` (console on stdin: `status`, `bot_add`, `quit`). Logs show
 `listening on UDP ...`, `<name> joined`, `<name> left`, `disconnected:
@@ -717,6 +745,35 @@ cargo run --features dev --bin refcmp -- capture-ours --only a_sign
   shows the +Z layer.
 - mashup renders views off-screen at 1280x720 (`--views`), matching CS:S's
   framing (90 degrees horizontal at 4:3 = 74 vertical).
+
+### Comparing the HUD (`refcmp hudcmp`)
+
+```
+cargo build --features dev
+cargo run --features dev --bin refcmp -- capture-hud --out <scratch>
+cargo run --features dev --bin refcmp -- hudcmp --out <scratch> --hud-ref <dir>
+```
+
+- `--hud-ref <dir>` holds CS:S captures named `hudref_<state>_<W>x<H>.jpg`
+  (default `<dump>/refcmp/hud/ref`; game imagery, never in the repo). The
+  coordinator takes them with the reference client: de_dust2, a CT with
+  100 health, no armour, $800, the USP drawn and an AK-47 in slot 1;
+  state `ak` with `hud_fastswitch 0` and the selection open on slot 1,
+  `select` open on slot 2; at 1280x720, 1920x1080 and 1024x768.
+- `capture-hud` runs mashup into the same states at the same sizes
+  (`ours_<state>_<W>x<H>.png`; console commands, then `screenshot`).
+- `hudcmp` crops each panel part (health, armour, clock, money and ammo
+  digits and icons, the panel boxes, the selection's numbers, icon, name
+  and box, the pickup history, the radar's box) from both and prints, per
+  part, the offset of ours (the shift that best correlates the two images'
+  HUD-coloured ink) and both ink (or box) rectangles; `hudcmp.txt`,
+  `hudcmp.json` and enlarged crops (reference | ours | overlay: reference
+  red, ours green) go to `<out>/hud/report/`. Different text (the clock,
+  ammo counts) still lines up by its left or right edge.
+- The measured reference rectangles are numbers in
+  `tests/it/heavy/hud_layout.rs`, checked against `game_hud::layout`,
+  `weapon_select::selection_layout` and `history_layout` through
+  `hud_text::ink_rect` (no images needed).
 
 ## Measuring CS:S behaviour live
 

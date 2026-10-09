@@ -27,6 +27,8 @@ renetcode = "2.0"
 # byte for byte (core::PredictedComponents::encode); replicon's format.
 postcard = { version = "1.1", default-features = false, features = ["alloc"] }
 bzip2 = "0.6.1"
+# HUD glyphs rasterized and placed as Source's HUD does (client::hud_text).
+ab_glyph = "0.2.32"
 arboard = "3.6"
 crc32fast = "1.5.2"
 dirs = "7.0.0"

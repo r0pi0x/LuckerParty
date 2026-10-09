@@ -202,6 +202,7 @@ pub(crate) fn fonts(scheme: &Kv) -> HashMap<String, Vec<UiFontSize>> {
                     weight: e.str("weight").and_then(|w| w.trim().parse().ok()).unwrap_or(400),
                     yres,
                     antialias: e.str("antialias").is_some_and(|a| a.trim() != "0"),
+                    additive: e.str("additive").is_some_and(|a| a.trim() != "0"),
                 })
             })
             .collect();

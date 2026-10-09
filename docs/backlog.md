@@ -8,15 +8,6 @@ plan when work starts; delete them when done.
 
 ## 0. Playtest feedback (2026-10-07), top priority
 
-- HUD parity pass at pixel level: health, armour, ammo and money digits
-  and icons look slightly off-centre against CS:S; the weapon selection
-  (inventory) panel doesn't match CS:S's (layout, box sizes, which icons
-  and fonts, highlight, fade). Method: capture the real HUD with refcmp
-  (coordinator: reference client) at 1280x720, 1920x1080 and 4:3, overlay
-  and diff ours per panel (`HudLayout.res` positions, `xpos`/`ypos` with
-  `r`/`c` anchors, proportional scaling, digit and icon offsets), fix
-  until each panel lines up, and keep the captures' diff as a test.
-
 - Decals persist across rounds (bullet holes, blood), as we believe CS:S
   does (players bind `r_cleardecals`, now there; `mashup_round_cleardecals
   1` clears them each round). Left: confirm the game keeps them.
@@ -76,9 +67,10 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
 
 - CS:S HUD: health/armour/ammo/money/round-timer panels, death notices
   and the Tab scoreboard are in (`client/game_hud.rs`,
-  `client/scoreboard.rs`), and the weapon selection
-  (`client/weapon_select.rs`, kill icons standing in for the scripts'
-  selection icons). The team menu is in (M; you start as CT). The radio
+  `client/scoreboard.rs`), and the weapon selection and pickup history
+  (`client/weapon_select.rs`; `hud_fastswitch`), matched to CS:S
+  captures panel by panel (`refcmp hudcmp`). Left of that pass: the
+  radar's look (zoom, translucency, markers) is ours. The team menu is in (M; you start as CT). The radio
   is in (`client/radio.rs`: Z/X/C menus, the calls as console commands,
   "Fire in the hole!" on throws, bots' enemy spotted/down and need
   backup, and bots' own commands and reports: go / stick together /
@@ -136,15 +128,29 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
 
 ## 2c. Multiplayer
 
+- High priority, with the multiplayer slices: loading UI for joining a
+  server and for every map load, so it's always clear what's happening.
+  CS:S's own loading dialog first (parity: connecting, retrieving server
+  info, loading the map, its stages and progress; `map::loading` and the
+  GameUI LoadingDialog already cover map loads from the main menu), shown
+  for `connect`, map changes in a game and the host starting a server,
+  with failures and refusals shown in it (version, map hash, server full,
+  timeouts). Then, as an option (off by default), a detailed view of our
+  own: each load stage with timings, bytes and percentages, and the
+  server's name, map, players and ping while connecting.
+
 Plan: [plans/active/multiplayer.md](plans/active/multiplayer.md)
 (bevy_replicon + renet; Source-style prediction, interpolation and lag
-compensation of our own; slices 0-9). Slices 0-2 done: a listen
+compensation of our own; slices 0-9). Slices 0-4 done: a listen
 server (maxplayers 4; map <name>) and the dedicated mashup_server,
 connect <ip[:port]>, characters replicated, usercmds bound to server
 ticks with clock sync, the client's own movement predicted and
 reconciled (net_graph-style readout, cl_showerror, net_fakelag;
-docs/OBSERVABILITY.md, Network play). Next: slice 3 (interpolation of
-others), then 4 (weapons, predicted). Open questions 1, 3 and 4
+docs/OBSERVABILITY.md, Network play), others interpolated, movers
+and props replicated, weapons predicted with lag-compensated hits
+(per-tick server hitbox poses), others' shots drawn from the server's
+seeds, grenades, drops and pickups. Next: slice 5 (rounds, money,
+buying, objectives, scoreboard, chat, radio). Open questions 1, 3 and 4
 still wait on the user; 2 was taken as both (listen first, dedicated too).
 
 ## 3. Weapons, remaining

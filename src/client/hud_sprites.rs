@@ -4,6 +4,11 @@
 
 use bevy::prelude::*;
 
+use super::{
+    game_hud::scaled,
+    hud_text::{GlyphParams, HudGlyphMaterial},
+};
+
 use crate::{
     core::{Damage, Intent, LocalPlayer},
     map::hud::{ActiveHud, GameHud, HudSprite},
@@ -45,7 +50,7 @@ struct Pain(usize, f32);
 const PAIN_NAMES: [&str; 4] = ["pain_up", "pain_down", "pain_left", "pain_right"];
 
 /// The ammo icon for a weapon (CS:S ammo types by weapon).
-fn ammo_icon(weapon: &str) -> Option<&'static str> {
+pub fn ammo_icon(weapon: &str) -> Option<&'static str> {
     let short = weapon.rsplit([':', '_']).next().unwrap_or(weapon);
     Some(match short {
         "ak47" | "scout" | "g3sg1" => "ammo_762",
@@ -189,8 +194,18 @@ fn update(
     windows: Query<&Window>,
     player: Option<Single<(Option<&Inventory>, Has<Dead>), With<LocalPlayer>>>,
     weapons: Query<&Weapon>,
-    mut icon: Query<(&mut Node, &mut Visibility, Option<&mut ImageNode>, Entity), (With<AmmoIcon>, Without<Pain>)>,
+    mut icon: Query<
+        (
+            &mut Node,
+            &mut Visibility,
+            Option<&MaterialNode<HudGlyphMaterial>>,
+            Entity,
+        ),
+        (With<AmmoIcon>, Without<Pain>),
+    >,
     mut pains: Query<(&Pain, &mut Node, &mut ImageNode), Without<AmmoIcon>>,
+    images: Res<Assets<Image>>,
+    mut materials: ResMut<Assets<HudGlyphMaterial>>,
     mut commands: Commands,
 ) {
     let Some(window) = windows.iter().next() else { return };
@@ -198,34 +213,46 @@ fn update(
     let scale = h / 480.0;
     let game: &GameHud = &hud.0;
     let (inventory, dead) = player.map(|p| *p).unwrap_or((None, true));
-    // Ammo icon.
-    if let (Ok((mut node, mut vis, image_node, e)), Some(panel)) = (icon.single_mut(), game.panels.get("HudAmmo")) {
+    // Ammo icon: the sprite at its size in 480-line pixels, its corner at
+    // the panel's icon position, added to the screen in the panel colour
+    // (black is nothing), as CS:S draws it.
+    if let (Ok((mut node, mut vis, material, e)), Some(panel)) = (icon.single_mut(), game.panels.get("HudAmmo")) {
         let sprite = inventory
             .and_then(|i| i.active)
             .and_then(|w| weapons.get(w).ok())
             .and_then(|w| ammo_icon(w.id))
+            // Ammo types with a glyph are drawn by `game_hud`.
+            .filter(|n| super::game_hud::ammo_glyph(n).is_none() || !game.fonts.contains_key("CSTypeDeath"))
             .and_then(|n| game.sprites.get(n));
-        match sprite.filter(|_| !dead) {
-            Some(s) => {
-                let fg = game.color("FgColor").unwrap_or(Color::srgb_u8(255, 176, 0));
-                let want = image(&hud, s, fg);
-                match (image_node, want) {
-                    (Some(mut current), Some(want)) => {
-                        if current.rect != want.rect {
-                            *current = want;
-                        }
-                    }
-                    (None, Some(want)) => {
-                        commands.entity(e).insert(want);
-                    }
-                    _ => {}
+        let image = sprite
+            .filter(|_| !dead)
+            .and_then(|s| Some((s, hud.1.get(&s.texture)?.clone())));
+        match image {
+            Some((s, image)) => {
+                let fg = game.color("Panel.FgColor").unwrap_or(Color::srgba_u8(255, 176, 0, 120));
+                // The sprite's rectangle of its sheet.
+                let size = images.get(&image).map_or(Vec2::ONE, |i| i.size().as_vec2());
+                let [x, y, sw, sh] = s.rect;
+                let want = HudGlyphMaterial {
+                    params: GlyphParams {
+                        color: fg.to_linear(),
+                        uv: Vec4::new(x / size.x, y / size.y, sw / size.x, sh / size.y),
+                    },
+                    coverage: image,
+                    additive: true,
+                };
+                let same = material
+                    .and_then(|m| materials.get(&m.0))
+                    .is_some_and(|m| m.coverage == want.coverage && m.params == want.params);
+                if !same {
+                    commands.entity(e).insert(MaterialNode(materials.add(want)));
                 }
-                let x = panel.x.resolve(w, scale) + panel.icon.x * scale;
-                let y = panel.y.resolve(h, scale) + panel.icon.y * scale;
-                node.left = px(x);
-                node.top = px(y);
-                node.width = px(s.rect[2] * scale * 0.75);
-                node.height = px(s.rect[3] * scale * 0.75);
+                let r = super::game_hud::panel_rect(panel, w, h);
+                let at = r.min + Vec2::new(scaled(panel.icon.x, scale), scaled(panel.icon.y, scale));
+                node.left = px(at.x);
+                node.top = px(at.y);
+                node.width = px(scaled(s.rect[2], scale));
+                node.height = px(scaled(s.rect[3], scale));
                 *vis = Visibility::Inherited;
             }
             None => *vis = Visibility::Hidden,

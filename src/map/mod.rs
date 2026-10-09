@@ -967,16 +967,22 @@ fn attach_hitboxes(
     }
 }
 
-/// Hitboxes follow the animated skeleton (as the server places them).
+/// Hitboxes follow the animated skeleton (as the server places them),
+/// except where a network server animates the body in the fixed tick
+/// (`SimAnimator`).
+#[allow(clippy::type_complexity)]
 fn pose_hitboxes(
     models: Option<Res<CharacterModels>>,
-    mut characters: Query<(
-        &anim::Animator,
-        &BodyModel,
-        &crate::core::Intent,
-        &ragdoll::SkeletonPose,
-        &mut crate::core::Hitboxes,
-    )>,
+    mut characters: Query<
+        (
+            &anim::Animator,
+            &BodyModel,
+            &crate::core::Intent,
+            &ragdoll::SkeletonPose,
+            &mut crate::core::Hitboxes,
+        ),
+        Without<SimAnimator>,
+    >,
 ) {
     let Some(models) = models else { return };
     for (animator, model, intent, pose, mut hitboxes) in &mut characters {
@@ -989,6 +995,47 @@ fn pose_hitboxes(
         // body turns by its own yaw).
         let Some(frame) = pose.frames.back() else { continue };
         let global = &frame.bones;
+        let turn = Quat::from_rotation_y(animator.yaw.unwrap_or(intent.yaw) - intent.yaw) * m.root.rotation;
+        let scale = m.root.scale.x;
+        for (h, b) in hitboxes.0.iter_mut().zip(&m.boxes) {
+            let Some((q, p)) = global.get(b.bone) else { continue };
+            h.center = turn * (*p + *q * b.center) * scale;
+            h.half = b.half * scale;
+            h.rotation = turn * *q;
+        }
+    }
+}
+
+/// A network server's own animation of a character's body, driven in the
+/// fixed tick from simulation values (games drive it before `SimPose`,
+/// e.g. CS:S's player animation state): the character's hitboxes are
+/// posed from it after every tick (`pose_sim_hitboxes`), not from the
+/// drawn animation (which runs at the frame rate and eases the look), so
+/// what a tick traces and what lag compensation keeps is the tick's own
+/// pose (docs/plans/active/multiplayer.md, slice 4).
+#[derive(Component, Clone, Debug)]
+pub struct SimAnimator(pub anim::Animator);
+
+/// After each tick (`FixedLast`): hitboxes posed from `SimAnimator`s.
+/// Games drive the animators before it; lag compensation records after.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SimPose;
+
+/// Hitboxes from the server's own animation of each body, at the tick's
+/// time (as `pose_hitboxes` does from the drawn one).
+fn pose_sim_hitboxes(
+    models: Option<Res<CharacterModels>>,
+    clock: Res<crate::core::SimClock>,
+    mut characters: Query<(&SimAnimator, &BodyModel, &crate::core::Intent, &mut crate::core::Hitboxes)>,
+) {
+    let Some(models) = models else { return };
+    for (animator, model, intent, mut hitboxes) in &mut characters {
+        let animator = &animator.0;
+        let Some(m) = models.0.get(model.0) else { continue };
+        if animator.main.is_none() || m.boxes.len() != hitboxes.0.len() {
+            continue;
+        }
+        let global = ragdoll::globals(m, &animator.pose(clock.now));
         let turn = Quat::from_rotation_y(animator.yaw.unwrap_or(intent.yaw) - intent.yaw) * m.root.rotation;
         let scale = m.root.scale.x;
         for (h, b) in hitboxes.0.iter_mut().zip(&m.boxes) {
@@ -1857,6 +1904,7 @@ impl Plugin for MapPlugin {
                     .before(crate::core::SimSet::Movement),
             )
             .add_systems(FixedUpdate, fall_out_of_map.after(crate::core::SimSet::Movement))
+            .add_systems(FixedLast, pose_sim_hitboxes.in_set(SimPose))
             .add_systems(
                 FixedUpdate,
                 breakables::round_restart

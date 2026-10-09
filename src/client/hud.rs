@@ -600,7 +600,7 @@ fn hit_marker(
     time: Res<Time>,
 ) {
     let me = local.map(|l| *l);
-    for e in events.read() {
+    for e in events.read().filter(|e| e.shown()) {
         if Some(e.owner) == me && matches!(e.kind, WeaponEventKind::Hit { .. }) {
             marker.left = MARKER_SECONDS;
         }

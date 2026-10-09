@@ -6,6 +6,8 @@
 //! saturation and sharpness and writes side-by-side images. Output goes to a
 //! per-user folder, never the repository (it contains game imagery).
 
+#[path = "shared/hudcmp.rs"]
+mod hudcmp;
 #[path = "shared/rcon.rs"]
 mod rcon;
 use rcon::Rcon;
@@ -24,7 +26,7 @@ use mashup::{
 use serde::Deserialize;
 
 const USAGE: &str = "\
-usage: refcmp [all|capture-ref|capture-ours|report|fit|skyconv|bench|vischeck] [--views <file>] [--only <name>] [--out <dir>] [--keep-running] [-- <mashup args>]
+usage: refcmp [all|capture-ref|capture-ours|report|fit|skyconv|bench|vischeck|capture-hud|hudcmp] [--views <file>] [--only <name>] [--out <dir>] [--hud-ref <dir>] [--keep-running] [-- <mashup args>]
   all            capture both, then report (default)
   capture-ref    capture views in CS:S (Steam must be logged in on this machine)
   capture-ours   capture views in mashup
@@ -38,7 +40,13 @@ usage: refcmp [all|capture-ref|capture-ours|report|fit|skyconv|bench|vischeck] [
   vischeck       render each view, plus views from the map's spawns and nav
                  areas, with visibility culling on and off (no CS:S); every
                  pair must be identical
-  -- <args>      bench, vischeck: pass the rest to mashup (e.g. +r_novis 1)
+  capture-hud    capture our HUD on de_dust2 in the reference HUD states (`ak`:
+                 selection open on slot 1, `select`: on slot 2) at 1280x720,
+                 1920x1080 and 1024x768
+  hudcmp         compare the HUD panel by panel with CS:S captures
+                 (hudref_<state>_<W>x<H>.jpg in --hud-ref): offsets and sizes
+  --hud-ref <dir> HUD reference captures (default: <dump>/refcmp/hud/ref)
+  -- <args>      bench, vischeck, capture-hud: pass the rest to mashup (e.g. +r_novis 1)
   --views <file> views file (default: tools/refcmp/de_dust2.toml)
   --only <name>  only views whose name contains <name>
   --out <dir>    write our captures, reports, bench and vischeck output under
@@ -72,6 +80,8 @@ struct Args {
     keep_running: bool,
     /// Where our side's output goes instead of the dump folder.
     out: Option<PathBuf>,
+    /// HUD reference captures (hudcmp).
+    hud_ref: Option<PathBuf>,
     /// Extra mashup arguments (after `--`).
     extra: Vec<String>,
 }
@@ -83,12 +93,14 @@ fn main() -> ExitCode {
         only: None,
         keep_running: false,
         out: None,
+        hud_ref: None,
         extra: Vec::new(),
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
-            "all" | "capture-ref" | "capture-ours" | "report" | "fit" | "skyconv" | "bench" | "vischeck" => {
+            "all" | "capture-ref" | "capture-ours" | "report" | "fit" | "skyconv" | "bench" | "vischeck"
+            | "capture-hud" | "hudcmp" => {
                 args.command = a
             }
             "--" => args.extra.extend(it.by_ref()),
@@ -96,6 +108,7 @@ fn main() -> ExitCode {
             "--only" => args.only = it.next(),
             "--keep-running" => args.keep_running = true,
             "--out" => args.out = it.next().map(PathBuf::from),
+            "--hud-ref" => args.hud_ref = it.next().map(PathBuf::from),
             _ => {
                 eprintln!("{USAGE}");
                 return ExitCode::from(2);
@@ -112,6 +125,9 @@ fn main() -> ExitCode {
 }
 
 fn run(args: &Args) -> Result<(), String> {
+    if args.command == "capture-hud" || args.command == "hudcmp" {
+        return hud(args);
+    }
     let text = std::fs::read_to_string(&args.views).map_err(|e| format!("{}: {e}", args.views.display()))?;
     let mut file: ViewsFile = toml::from_str(&text).map_err(|e| format!("{}: {e}", args.views.display()))?;
     if let Some(only) = &args.only {
@@ -463,6 +479,85 @@ fn capture_ours_io(
         return Err(format!("mashup exited with {status}"));
     }
     Ok(())
+}
+
+// --------------------------------------------------------------------- HUD
+
+/// The window sizes the HUD reference captures are taken at.
+const HUD_SIZES: [(u32, u32); 3] = [(1280, 720), (1920, 1080), (1024, 768)];
+
+/// What mashup runs to reach each HUD reference state on de_dust2: a
+/// counter-terrorist with 100 health, no armour, $800, the USP drawn and
+/// an AK-47 in slot 1, the round clock near 7:59; `ak`: the weapon
+/// selection open on slot 1, `select`: on slot 2 (hud_fastswitch 0).
+fn hud_state_commands(state: &str) -> Vec<String> {
+    let mut c: Vec<String> = [
+        "+mashup_rounds 1",
+        "+mp_freezetime 0",
+        "+mp_roundtime 8",
+        "+mp_startmoney 800",
+        "+hud_fastswitch 1",
+        "+jointeam 3",
+        "+wait 20",
+        "+give cs_source:weapon_ak47",
+        "+wait 10",
+        "+slot2",
+        "+wait 10",
+        "+hud_fastswitch 0",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    // Let the switch's row fade (for `ak`, the pickup history too), then
+    // open the selection on the slot (fast switch off).
+    c.push(if state == "ak" { "+wait 400" } else { "+wait 30" }.into());
+    c.push(if state == "ak" { "+slot1" } else { "+slot2" }.into());
+    c.push("+wait 5".into());
+    c
+}
+
+fn hud(args: &Args) -> Result<(), String> {
+    let base = match args.out.clone().or_else(|| std::env::var_os("REFCMP_OUT").map(PathBuf::from)) {
+        Some(o) => o.join("hud"),
+        None => default_dump_dir("refcmp").ok_or("no per-user data folder")?.join("hud"),
+    };
+    let ours = base.join("ours");
+    std::fs::create_dir_all(&ours).map_err(|e| format!("{}: {e}", ours.display()))?;
+    if args.command == "capture-hud" {
+        let exe = std::env::current_exe()
+            .map_err(|e| e.to_string())?
+            .with_file_name(if cfg!(windows) { "mashup.exe" } else { "mashup" });
+        warn_if_stale(&exe);
+        for (w, h) in HUD_SIZES {
+            for state in ["ak", "select"] {
+                let path = ours.join(format!("ours_{state}_{w}x{h}.png"));
+                println!("capturing {}", path.display());
+                let mut cmd = Command::new(&exe);
+                // Photographed by the console a few frames after the last
+                // command (the selection closes by itself); a frame limit
+                // in case something stalls.
+                steam_env(&mut cmd).args(["--map", "cs_source:de_dust2", "--window", &format!("{w}x{h}")]);
+                for c in hud_state_commands(state) {
+                    cmd.args(c.split_whitespace());
+                }
+                cmd.arg("+screenshot").arg(&path).args(["+wait", "30", "+quit"]);
+                cmd.args(["--frames", "5000"]);
+                let status = cmd
+                    .args(&args.extra)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::inherit())
+                    .env("RUST_LOG", std::env::var("RUST_LOG").unwrap_or_else(|_| "warn".into()))
+                    .status()
+                    .map_err(|e| format!("{}: {e} (build it first: cargo build --features dev)", exe.display()))?;
+                if !status.success() {
+                    return Err(format!("mashup exited with {status}"));
+                }
+            }
+        }
+        return Ok(());
+    }
+    let reference = args.hud_ref.clone().unwrap_or_else(|| base.join("ref"));
+    hudcmp::run(&reference, &ours, &base.join("report")).map(|_| ())
 }
 
 // ------------------------------------------------------------------ report
