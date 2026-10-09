@@ -163,7 +163,7 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   issuing their own are in: `bot::radio::obey`, `speak`; checking
   when CS:S bots talk needs that spec). The radar is in (`client/radar.rs`: the map overview turning
   with you, team dots, your place name); its range (2200 units) is a guess.
-- The game menu (Esc; `client/game_menu.rs`: Create Server; bots; team;
+- The game menu (Esc; `client/game_menu/`: Create Server; bots; team;
   options; bug report; quit) is in, in the game's GameUI look
   (`SourceScheme.res` frames and colours, `GameMenu.res` entries), its
   dialogs laid out from the install's `.res` files with VGUI's controls
