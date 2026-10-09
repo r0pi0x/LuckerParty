@@ -31,6 +31,10 @@ fails and says how to move it. Test names read `weapons::name` and
 - Fast tier, before every commit (`.githooks/pre-commit`): `cargo test
   --features dev -- --skip heavy::` (unit tests and everything outside
   `heavy`; under a minute when warm).
+- Before every push, `.githooks/pre-push` also checks the build without
+  `--features dev` (`cargo check --lib --bins`; the playtest and release
+  builds use that configuration and the tests don't), even with
+  `MASHUP_PUSH_TESTS=0`.
 - Full suite, before a push or a merge to main (`.githooks/pre-push`, which
   `MASHUP_PUSH_TESTS=0` skips): `cargo nextest run --features dev`, or
   `cargo test --features dev` without nextest (twice as slow: in one

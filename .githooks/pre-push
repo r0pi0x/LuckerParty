@@ -29,6 +29,18 @@ if [ "$bad" = 1 ]; then
     echo "pre-push: set TZ=UTC and the repo-local identity, then amend/rebase them; not pushing." >&2
     exit 1
 fi
+if [ "$pushing" = 1 ]; then
+    # The tests build with --features dev; playtest and release builds
+    # don't. Check that configuration too (always: the suite can't catch
+    # a dev-only dependency).
+    mkdir -p target
+    echo "pre-push: checking the build without --features dev..." >&2
+    if ! cargo check --lib --bins --quiet >target/pre-push-check.log 2>&1; then
+        grep -E "^error" -A6 target/pre-push-check.log | head -30
+        echo "pre-push: the build without --features dev fails (log: target/pre-push-check.log); not pushing." >&2
+        exit 1
+    fi
+fi
 if [ "$pushing" = 1 ] && [ "${MASHUP_PUSH_TESTS:-1}" != 0 ]; then
     mkdir -p target
     log=target/pre-push.log
