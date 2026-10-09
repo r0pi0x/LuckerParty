@@ -63,6 +63,7 @@ pub mod steam;
 pub use live_sound::{LiveSounds, SoundControl, SoundKey, StartSound};
 pub use sound::{GameSound, MapSoundClip, MapSoundEntry, MapSounds, MapSurface, PlaySound, PredictedSound, SoundLevel};
 pub mod shells;
+pub mod sky_occluder;
 pub mod sprite_material;
 pub mod surface_color;
 pub mod view_model;
@@ -1290,6 +1291,11 @@ pub struct MapData {
     /// set, the camera draws the sky only from places that see it, and
     /// clears to black inside solid.
     pub sky_vis: Option<MapSkyVis>,
+    /// The playable world's sky faces as a triangle list (engine space,
+    /// three positions per triangle). They are not drawn; with
+    /// `mashup_skyocclude 1` they hide what lies behind them
+    /// (`sky_occluder`).
+    pub sky_surfaces: Vec<[f32; 3]>,
     /// Precomputed visibility (clusters and potentially visible sets),
     /// when the game's maps have it: parts the camera can't see are hidden.
     pub visibility: Option<Arc<vis::MapVisibility>>,
@@ -1911,6 +1917,7 @@ impl Plugin for MapPlugin {
             .init_resource::<vis::NoVis>()
             .init_resource::<vis::PortalsOpenAll>()
             .init_resource::<vis::Occlusion>()
+            .init_resource::<sky_occluder::SkyOcclusion>()
             .init_resource::<vis::VisStats>()
             .add_message::<decal::PlaceDecal>()
             .add_message::<decal::ClearDecals>()
@@ -2468,6 +2475,18 @@ fn spawn_map(
                 }));
             }
         }
+        // Sky faces, to hide what lies behind them (depth only, when
+        // `mashup_skyocclude` is on: `sky_occluder`).
+        if let Some(mesh) = sky_occluder::mesh(&data.sky_surfaces) {
+            commands.spawn((
+                Name::new("Sky surfaces"),
+                MapPart,
+                sky_occluder::SkyOccluder,
+                Mesh3d(meshes.add(mesh)),
+                Transform::default(),
+                ChildOf(statics),
+            ));
+        }
         // Water surfaces have their own material (map::water).
         let water_drawn = water_materials.is_some() && view == MapDebugView::Normal;
         if water_drawn && let Some(water_materials) = water_materials.as_mut() {
@@ -2608,8 +2627,8 @@ fn spawn_map(
                         selfillum_tint: m
                             .selfillum
                             .map_or(Vec4::ONE, |s| Vec3::from_array(s.tint).extend(1.0)),
-                        fog_color: fog_color(data.fog.as_ref().filter(|_| view == MapDebugView::Normal && !m.skybox)),
-                        fog_range: fog_range(data.fog.as_ref()),
+                        fog_color: fog_color(material_fog(data, view, m.skybox).as_ref()),
+                        fog_range: fog_range(material_fog(data, view, m.skybox).as_ref()),
                         bumped: if bumped { 1.0 } else { 0.0 },
                         normal_g_sign: g_sign,
                         normal_x_sign: std::env::var("MASHUP_NORMAL_X_SIGN")
@@ -3002,6 +3021,20 @@ fn spawn_map(
                 }
             };
             let beam_mesh = meshes.add(beams::beam_mesh());
+            // Hidden where the camera can't see them: the clusters along a
+            // beam (a box every meter), around a glow.
+            let segment_clusters = |a: Vec3, b: Vec3| {
+                let Some(v) = visibility else { return Vec::new() };
+                let steps = (a.distance(b).ceil() as usize).clamp(1, 4096);
+                let mut out = Vec::new();
+                for k in 0..=steps {
+                    let p = a.lerp(b, k as f32 / steps as f32);
+                    v.clusters_in_box(p - Vec3::splat(0.5), p + Vec3::splat(0.5), &mut out);
+                }
+                out.sort_unstable();
+                out.dedup();
+                out
+            };
             for (i, b) in data.beams.iter().enumerate() {
                 let mut e = commands.spawn((
                     Name::new(format!("Beam {i}")),
@@ -3018,6 +3051,7 @@ fn spawn_map(
                     ChildOf(root),
                 ));
                 part(&mut e, b.entity, b.start_on);
+                tag(&mut e, segment_clusters(b.start, b.end));
                 if let Some(h) = &b.spot {
                     let t = &data.textures[h.texture];
                     let mut e = commands.spawn((
@@ -3046,6 +3080,7 @@ fn spawn_map(
                         ChildOf(root),
                     ));
                     part(&mut e, b.entity, b.start_on);
+                    tag(&mut e, segment_clusters(b.start, b.start));
                 }
             }
             for (i, g) in data.glows.iter().enumerate() {
@@ -3073,6 +3108,7 @@ fn spawn_map(
                     ChildOf(root),
                 ));
                 part(&mut e, g.entity, true);
+                tag(&mut e, segment_clusters(g.position, g.position));
             }
         }
         if let Some(rope_materials) = rope_materials.as_mut()
@@ -3138,8 +3174,9 @@ fn spawn_map(
             let mut entities = std::collections::HashMap::new();
             for (prop, mesh) in built.meshes {
                 let clusters = match (visibility, bevy::camera::primitives::MeshAabb::compute_aabb(&mesh)) {
-                    // Physics props' shadows move with them: always drawn.
-                    (Some(v), Some(aabb)) if data.props[prop].physics.is_none() => {
+                    // Physics props' shadows move with them: their
+                    // clusters follow the rebuilt mesh (`update_prop_shadows`).
+                    (Some(v), Some(aabb)) => {
                         vis::box_clusters(v, Vec3::from(aabb.min()), Vec3::from(aabb.max()))
                     }
                     _ => Vec::new(),
@@ -3268,12 +3305,26 @@ fn spawn_map(
         if let Some(solid) = own_solid {
             e.insert(solid);
         }
-        // Props that stay put are hidden where the camera can't see them,
-        // and beyond their fade distance (animated ones move anywhere);
-        // between the near and far fade distances their meshes dither out
-        // (Bevy's visibility range: opaque passes, no sorting).
+        // Props are hidden where the camera can't see them, and beyond
+        // their fade distance; between the near and far fade distances
+        // their meshes dither out (Bevy's visibility range: opaque passes,
+        // no sorting). Props that stay put are tagged once; moving ones
+        // (physics, riders, animated) follow their bounds as they move
+        // (`tag_moved_brush_entities`), as Source culls every entity by
+        // the view's PVS: other rooms' props must not show through the sky.
         let mut fade_range = None;
-        if !prop.skybox && dynamic.is_none() && rider.is_none() && model.rig.is_none() && !merged_world() {
+        let stays_put = dynamic.is_none() && rider.is_none() && model.rig.is_none();
+        if !prop.skybox && !stays_put && !merged_world() && data.visibility.is_some() {
+            let (min, max) = model.bounds;
+            if min.x <= max.x {
+                e.insert((BrushEntityBounds { min, max }, vis::VisClusters::new(Vec::new())));
+            }
+            if let Some((near, far)) = prop.fade {
+                e.insert(vis::FadeDistance(far));
+                fade_range = vis::fade_band(near, far);
+            }
+        }
+        if !prop.skybox && stays_put && !merged_world() {
             let clusters = match data.visibility.as_deref() {
                 Some(v) => {
                     let (lo, hi) = model.bounds;
@@ -3632,7 +3683,7 @@ fn spawn_map(
 /// Comparison hook: MASHUP_MERGED_WORLD=1 spawns the world as one mesh per
 /// material with no visibility culling (as before chunking), for A/B
 /// measurements against `vis`.
-fn merged_world() -> bool {
+pub(crate) fn merged_world() -> bool {
     std::env::var("MASHUP_MERGED_WORLD").is_ok_and(|v| v == "1")
 }
 
@@ -4019,7 +4070,7 @@ fn build_material(m: &MapMesh, textures: &[Handle<Image>], view: MapDebugView, l
 }
 
 /// The material of a prop mesh lit by a light probe (`PropMaterial`),
-/// without its cubemap; `skybox`: in the 3D skybox (no fog there).
+/// without its cubemap; `skybox`: in the 3D skybox (the sky_camera's fog).
 fn lit_prop_material(
     m: &MapMesh,
     textures: &[Handle<Image>],
@@ -4038,8 +4089,8 @@ fn lit_prop_material(
                 Color::srgb_u8(r, g, b).to_linear().to_vec4() * tint
             },
             alpha_cutoff: if let MapAlpha::Mask(c) = m.alpha { c } else { 0.0 },
-            fog_color: fog_color(data.fog.as_ref().filter(|_| view == MapDebugView::Normal && !skybox)),
-            fog_range: fog_range(data.fog.as_ref()),
+            fog_color: fog_color(material_fog(data, view, skybox).as_ref()),
+            fog_range: fog_range(material_fog(data, view, skybox).as_ref()),
             translucent: m.alpha.shader_mode(),
             dynamic: if m.unlit || view != MapDebugView::Normal {
                 0.0
@@ -4151,7 +4202,8 @@ fn update_prop_shadows(
     hidden: Query<&PropIndex, Added<vis::LogicHidden>>,
     mut shown: RemovedComponents<vis::LogicHidden>,
     props: Query<&PropIndex, Without<vis::LogicHidden>>,
-    shadow_vis: Query<Option<&vis::VisClusters>, With<PropShadow>>,
+    mut shadow_vis: Query<Option<&mut vis::VisClusters>, With<PropShadow>>,
+    vis: Option<Res<vis::ActiveVisibility>>,
     shadow_meshes: Query<&Mesh3d, With<PropShadow>>,
     mut images: ResMut<Assets<Image>>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -4206,6 +4258,16 @@ fn update_prop_shadows(
                 // and skipped it while the new mesh wasn't prepared yet).
                 // (The handle keeps the asset alive: the id stays valid.)
                 Ok(handle) => {
+                    // Hidden where the camera can't see where it now lies.
+                    if let Some(v) = vis.as_ref()
+                        && let Some(aabb) = bevy::camera::primitives::MeshAabb::compute_aabb(&mesh)
+                        && let Ok(Some(mut tag)) = shadow_vis.get_mut(e)
+                    {
+                        let clusters = vis::box_clusters(&v.0, Vec3::from(aabb.min()), Vec3::from(aabb.max()));
+                        if !clusters.is_empty() && *tag.clusters != clusters[..] {
+                            tag.clusters = clusters.into_boxed_slice();
+                        }
+                    }
                     let _ = meshes.insert(handle.id(), mesh);
                 }
                 Err(_) => {
@@ -4444,8 +4506,9 @@ fn switch_parts(
     }
 }
 
-/// A brush entity node's (mover, breakable) mesh bounds in its own space:
-/// its `VisClusters` follow it as it moves (`tag_moved_brush_entities`).
+/// A brush entity node's (mover, breakable) or a moving prop's mesh
+/// bounds in its own space: its `VisClusters` follow it as it moves
+/// (`tag_moved_brush_entities`).
 #[derive(Component, Clone, Copy, Debug)]
 pub struct BrushEntityBounds {
     pub min: Vec3,
@@ -4593,6 +4656,26 @@ fn fog_color(fog: Option<&MapFog>) -> Vec4 {
     fog.map_or(Vec4::ZERO, |f| {
         let c = Color::srgb(f.color[0], f.color[1], f.color[2]).to_linear();
         Vec4::new(c.red, c.green, c.blue, 1.0)
+    })
+}
+
+/// The fog a map material gets: the world's, or in the 3D skybox the
+/// sky_camera's own (specs/cs_source/shadows_sky.md: the skybox pass draws
+/// with it), its distances from world scale to the skybox's (divided by
+/// the scale: the sky camera sees the skybox from `eye / scale`). None in
+/// debug views.
+pub fn material_fog(data: &MapData, view: MapDebugView, skybox: bool) -> Option<MapFog> {
+    if view != MapDebugView::Normal {
+        return None;
+    }
+    if !skybox {
+        return data.fog.clone();
+    }
+    let cam = data.sky_camera.as_ref()?;
+    cam.fog.as_ref().map(|f| MapFog {
+        start: f.start / cam.scale,
+        end: f.end / cam.scale,
+        ..f.clone()
     })
 }
 
@@ -4787,6 +4870,59 @@ fn sky_image(sky: &MapSky, textures: &[MapTexture]) -> Image {
         }
     }
     sky_cube_image(size, data, TextureFormat::Rgba8UnormSrgb)
+}
+
+/// How badly one cube layer of the (LDR) sky joins its four neighbours:
+/// the mean colour difference (0-255) across its edges, each side sampled
+/// just inside its own layer and just inside the neighbour, as a GPU
+/// samples the cube. Each layer's orientation (`MapSky::faces`) decides
+/// how the textures meet, so a misturned face shows as a large error.
+pub fn sky_seam_error(sky: &MapSky, textures: &[MapTexture], layer: usize) -> f32 {
+    let mut sky = sky.clone();
+    sky.hdr = None;
+    let image = sky_image(&sky, textures);
+    let size = image.width() as usize;
+    let Some(data) = image.data.as_ref() else { return 0.0 };
+    // A direction's layer and texel, by the GPU cube convention.
+    let sample = |d: Vec3| -> [f32; 3] {
+        let a = d.abs();
+        let (l, u, v, m) = if a.x >= a.y && a.x >= a.z {
+            if d.x > 0.0 { (0, -d.z, -d.y, a.x) } else { (1, d.z, -d.y, a.x) }
+        } else if a.y >= a.z {
+            if d.y > 0.0 { (2, d.x, d.z, a.y) } else { (3, d.x, -d.z, a.y) }
+        } else if d.z > 0.0 {
+            (4, d.x, -d.y, a.z)
+        } else {
+            (5, -d.x, -d.y, a.z)
+        };
+        let px = |c: f32| (((c / m + 1.0) / 2.0 * size as f32) as usize).min(size - 1);
+        let i = ((l * size + px(v)) * size + px(u)) * 4;
+        [data[i] as f32, data[i + 1] as f32, data[i + 2] as f32]
+    };
+    let axis = layer / 2;
+    let sign = if layer % 2 == 0 { 1.0 } else { -1.0 };
+    let eps = 1.5 / size as f32;
+    let (mut total, mut n) = (0.0, 0);
+    for other in (0..3).filter(|a| *a != axis) {
+        let third = 3 - axis - other;
+        for edge in [-1.0f32, 1.0] {
+            for k in 0..64 {
+                let t = (k as f32 + 0.5) / 64.0 * 2.0 - 1.0;
+                let point = |main: f32, side: f32| {
+                    let mut p = Vec3::ZERO;
+                    p[axis] = sign * main;
+                    p[other] = edge * side;
+                    p[third] = t * (1.0 - eps);
+                    p
+                };
+                let inside = sample(point(1.0, 1.0 - eps));
+                let outside = sample(point(1.0 - eps, 1.0));
+                total += (0..3).map(|c| (inside[c] - outside[c]).abs()).sum::<f32>() / 3.0;
+                n += 1;
+            }
+        }
+    }
+    total / n as f32
 }
 
 /// Which texel of a `w` x `h` sky face lands at (x, y) of a `size` cube
@@ -5161,5 +5297,52 @@ mod switch_tests {
         let lit = |on: u8| move |s: &MapLightStyle| if s.style == on { 1.0 } else { 0.0 };
         assert_eq!(l.relit(&lit(32)).0, l.rgb);
         assert_eq!(l.relit(&lit(33)).0, vec![[0.25; 3], [0.75; 3]]);
+    }
+}
+
+#[cfg(test)]
+mod fog_tests {
+    use super::*;
+
+    fn fog(start: f32, end: f32) -> MapFog {
+        MapFog {
+            color: [0.5, 0.6, 0.7],
+            start,
+            end,
+            max_density: 0.8,
+        }
+    }
+
+    /// The world's materials take the world's fog; the 3D skybox's take
+    /// the sky_camera's, its distances in skybox space (divided by the
+    /// scale); debug views none.
+    #[test]
+    fn skybox_materials_take_the_sky_cameras_fog() {
+        let data = MapData {
+            fog: Some(fog(10.0, 100.0)),
+            sky_camera: Some(MapSkyCamera {
+                origin: Vec3::ZERO,
+                scale: 4.0,
+                fog: Some(fog(12.0, 380.0)),
+            }),
+            ..default()
+        };
+        let world = material_fog(&data, MapDebugView::Normal, false).unwrap();
+        assert_eq!((world.start, world.end), (10.0, 100.0));
+        let sky = material_fog(&data, MapDebugView::Normal, true).unwrap();
+        assert_eq!((sky.start, sky.end, sky.max_density), (3.0, 95.0, 0.8));
+        assert_eq!(fog_color(Some(&sky)).w, 1.0, "on");
+        assert!(material_fog(&data, MapDebugView::Albedo, true).is_none());
+        // No sky_camera fog: the skybox is unfogged, whatever the world's.
+        let unfogged = MapData {
+            sky_camera: Some(MapSkyCamera {
+                origin: Vec3::ZERO,
+                scale: 16.0,
+                fog: None,
+            }),
+            ..data
+        };
+        assert!(material_fog(&unfogged, MapDebugView::Normal, true).is_none());
+        assert!(material_fog(&unfogged, MapDebugView::Normal, false).is_some());
     }
 }

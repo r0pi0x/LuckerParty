@@ -556,6 +556,14 @@ pub fn convert_level(bsp: &Bsp, bytes: &[u8], name: &str, hdr: bool) -> (MapData
         let skybox = mover.is_none() && bounds.as_ref().is_some_and(|b| !b.contains(centre));
         let tex = face.texture();
         let flags = tex.flags;
+        // The playable world's sky faces, kept for `map::sky_occluder`.
+        if in_world && !skybox && flags.intersects(TextureFlags::SKY | TextureFlags::SKY2D) {
+            let pts: Vec<Vec3> = face.vertices().map(|v| to_engine(v.position)).collect();
+            for i in 1..pts.len().saturating_sub(1) {
+                data.sky_surfaces
+                    .extend([pts[0], pts[i], pts[i + 1]].map(|p| p.to_array()));
+            }
+        }
         if flags.intersects(NOT_DRAWN) && flags.intersects(NOT_SOLID) {
             continue;
         }

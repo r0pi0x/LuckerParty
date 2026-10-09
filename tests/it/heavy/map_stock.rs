@@ -511,3 +511,32 @@ fn packed_materials_resolve_case_insensitively() {
     let missing: Vec<_> = map.warnings.iter().filter(|w| w.contains("not found")).collect();
     assert!(missing.is_empty(), "{missing:#?}");
 }
+
+/// The seam `map::sky_seam_error` measures for each of the eight ways to
+/// lay a sky's cube layer.
+fn seam_errors(map: &MapData, layer: usize) -> Vec<f32> {
+    let sky = map.sky.as_ref().expect("sky");
+    (0..8u8)
+        .map(|turns| {
+            let mut s = sky.clone();
+            s.faces[layer].1 = turns;
+            mashup::map::sky_seam_error(&s, &map.textures, layer)
+        })
+        .collect()
+}
+
+/// The 2D sky's top face as `refcmp skyconv` fitted it to CS:S joins the
+/// (fitted) side faces best of the eight ways to lay it, on every stock
+/// sky: the measure `map_community::sky_bottom_joins_the_sides` decides
+/// the bottom face's orientation with. (Stock bottoms are one colour.)
+#[test]
+fn sky_top_joins_the_sides() {
+    let up = cs_source::sky::FACES.iter().find(|f| f.0 == "up").unwrap();
+    for name in ["de_dust2", "cs_italy", "de_aztec", "cs_office", "de_inferno", "de_nuke", "cs_militia"] {
+        let Some(map) = load(name) else { return };
+        let errors = seam_errors(&map, up.1);
+        let best = (0..8).min_by(|a, b| errors[*a].total_cmp(&errors[*b])).unwrap();
+        assert_eq!(best, up.2 as usize, "{name}: {errors:?}");
+        assert!(errors[best] * 3.0 < errors.iter().filter(|e| **e != errors[best]).fold(f32::MAX, |a, e| a.min(*e)));
+    }
+}

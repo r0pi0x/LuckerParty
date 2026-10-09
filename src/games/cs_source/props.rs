@@ -553,26 +553,18 @@ fn convert_model_in(
         };
         let tris = verts.as_chunks::<3>().0;
         let tri_ids = ids.as_chunks::<3>().0;
-        // Wind counter-clockwise against the vertex normals: the model's
-        // triangles share one winding, so take the majority over the mesh
-        // and apply it to all. (Deciding per triangle flips good ones where
-        // the normals mislead it, on thin parts and smoothed edges: the
-        // knife blade's back went missing.)
-        let reversed = tris
-            .iter()
-            .map(|tri| {
-                let p = tri.map(|t| place(t));
-                let n: Vec3 = tri.iter().map(|t| to_engine(v(t.normal)).normalize_or_zero()).sum();
-                let face = (p[1] - p[0]).cross(p[2] - p[0]);
-                if face.dot(n) < 0.0 { 1i64 } else { -1 }
-            })
-            .sum::<i64>()
-            > 0;
+        // Studio models share one winding: the file's triangle order (front
+        // faces counter-clockwise once in engine space), whatever their
+        // normals say. Normals don't decide it: the knife view model's
+        // blade and handle have normals against the winding on about half
+        // their triangles (smoothed thin parts), and a majority vote over
+        // the mesh turned it inside out; every other CS:S model already
+        // agreed with the file. `tests/it/heavy/map_de_dust2.rs`
+        // (`view_models_face_outward`) checks the knives.
         for (tri, tri_id) in tris.iter().zip(tri_ids) {
             let p: Vec<Vec3> = tri.iter().map(|t| place(t)).collect();
             let n: Vec<Vec3> = tri.iter().map(|t| to_engine(v(t.normal)).normalize_or_zero()).collect();
-            let order = if reversed { [0, 2, 1] } else { [0, 1, 2] };
-            for i in order {
+            for i in 0..3 {
                 entry.indices.push(entry.positions.len() as u32);
                 entry.positions.push(p[i].to_array());
                 entry.normals.push(n[i].to_array());

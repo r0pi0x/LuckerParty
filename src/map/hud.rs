@@ -468,7 +468,8 @@ pub struct GameUi {
     /// Localised strings by lower-case token (no `#`).
     pub strings: HashMap<String, String>,
     /// Options pages by name (`keyboard`, `mouse`, `audio`, `video`,
-    /// `multiplayer`).
+    /// `multiplayer`), and the keyboard tab's Advanced dialog
+    /// (`keyboard_advanced`).
     pub options: HashMap<String, UiLayout>,
     /// The keyboard page's list: sections and actions, labels localised.
     pub actions: Vec<KeyAction>,

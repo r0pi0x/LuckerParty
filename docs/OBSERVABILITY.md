@@ -121,7 +121,8 @@ Only `Reflect`-registered types are visible; register new core components in
 - `menu [main|newgame|maps|bots|team|options]` opens the game menu (Esc)
   on a page, for screenshots of it: `--window 1280x720 --screenshot
   menu.png +menu options`; `menu keyboard` (or `mouse`, `audio`, `video`,
-  `multiplayer`) opens the options on that tab. Cvars it shows are read
+  `multiplayer`) opens the options on that tab, `menu advanced` the
+  keyboard tab's Advanced dialog. Cvars it shows are read
   when it opens: put `+cl_crosshaircolor 3` before `+menu`. The log
   line `game menu: GameUI look (...)` says the install's look loaded,
   with how many main menu backgrounds and the title it found (else the
@@ -672,6 +673,12 @@ Details and baseline numbers: [performance.md](performance.md).
   culling, as before chunking (A/B comparisons); `MASHUP_MERGE_BRUSHES=0`
   draws every brush entity from its own meshes (no merged combined
   meshes, `map::merge`).
+- `mashup_skyocclude 1` makes sky faces hide what lies behind them even
+  in the view's PVS (`map::sky_occluder`; off by default, unchecked
+  against CS:S). Where something shows through the sky, the remote
+  protocol (section 3) finds it: query meshes with a non-zero
+  `ViewVisibility` and their parents' `Name` (mg_creative's were placed
+  weapons and water surfaces, then not PVS-culled).
 - `refcmp vischeck --views tools/refcmp/<map>.toml` renders the views
   plus views from spawns and nav areas with culling off (`r_novis 1`,
   `r_occlusion 0`) and on (game time

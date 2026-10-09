@@ -100,8 +100,14 @@ pub(super) fn attach_loose(
                 mass: MASS,
                 bounds: (-half, half),
             },
-            MapPart,
-            Visibility::default(),
+            (MapPart, Visibility::default()),
+            // Hidden where the camera can't see it, wherever it goes
+            // (`tag_moved_brush_entities`): placed weapons in other rooms
+            // showed through the sky.
+            (
+                super::BrushEntityBounds { min: -half, max: half },
+                super::vis::VisClusters::new(Vec::new()),
+            ),
         ));
         if let Some(a) = assets.0.get(&item.0) {
             // Its own materials, lit where it lies (probe_lit).

@@ -2,7 +2,8 @@
 //! install as a neutral `map::hud::GameUi`: the GameUI scheme
 //! (`resource/SourceScheme.res` and the `SourceSchemeBase.res` it bases on,
 //! under `platform/`), the menu's entries (`resource/GameMenu.res`), the
-//! options pages (`resource/OptionsSub*.res`), the keyboard page's actions
+//! options pages (`resource/OptionsSub*.res`, the keyboard tab's Advanced
+//! dialog `OptionsSubKeyboardAdvancedDlg.res` too), the keyboard page's actions
 //! (`scripts/kb_act.lst`), strings from `gameui_english.txt`,
 //! `valve_english.txt` and `cstrike_english.txt`, and the new game
 //! dialog's map thumbnails (`materials/vgui/maps/menu_thumb_<map>.vtf`),
@@ -206,8 +207,10 @@ pub(crate) fn key_actions(text: &str, strings: &HashMap<String, String>) -> Vec<
 }
 
 /// The options pages' layout files, by page.
-const OPTION_PAGES: [(&str, &str); 5] = [
+const OPTION_PAGES: [(&str, &str); 6] = [
     ("keyboard", "resource/optionssubkeyboard.res"),
+    // The keyboard tab's Advanced dialog.
+    ("keyboard_advanced", "resource/optionssubkeyboardadvanceddlg.res"),
     ("mouse", "resource/optionssubmouse.res"),
     ("audio", "resource/optionssubaudio.res"),
     ("video", "resource/optionssubvideo.res"),

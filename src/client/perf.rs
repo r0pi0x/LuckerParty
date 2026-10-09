@@ -88,6 +88,15 @@ impl Plugin for PerfPlugin {
                 |v| &mut v.0,
             );
         }
+        if app.world().contains_resource::<crate::map::sky_occluder::SkyOcclusion>() {
+            resource_cvar::<crate::map::sky_occluder::SkyOcclusion, u8>(
+                app,
+                "mashup_skyocclude",
+                "1: sky faces hide what lies behind them (props, water, brush entities in the view's PVS); 0 (default): \
+                 they don't (unchecked against CS:S).",
+                |v| &mut v.0,
+            );
+        }
         water_cvars(app);
         decal_cvars(app);
     }

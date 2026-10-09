@@ -84,8 +84,14 @@ pub fn enable_motion(world: &mut World, node: Entity) -> bool {
     };
     let solid = e.take::<MovingSolid>();
     let brush_collider = e.take::<MapBrushCollider>().is_some();
-    // Shown wherever it goes: no fixed visibility clusters.
-    e.remove::<super::vis::VisClusters>();
+    // Its visibility clusters follow it as it moves; its occluder bounds
+    // were where it stood.
+    let (min, max) = frozen.bounds;
+    e.remove::<super::vis::Occludee>();
+    e.insert(super::BrushEntityBounds { min, max });
+    if !e.contains::<super::vis::VisClusters>() {
+        e.insert(super::vis::VisClusters::new(Vec::new()));
+    }
     e.insert((
         Unfrozen { solid, brush_collider },
         dynamic_body(&frozen.physics, frozen.bounds),
