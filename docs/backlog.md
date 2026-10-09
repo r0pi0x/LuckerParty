@@ -34,6 +34,13 @@ plan when work starts; delete them when done.
   Keyboard > Advanced (fast weapon switch, developer console =
   `con_enable`, ours defaults to 1, CS:S 0): not captured.
 
+- Knife idle: CS:S's knife view model holds still while idle (captures 2,
+  6 and 10 s after drawing it at `setpos -295 1078 120; setang 0 0 0`, CT,
+  identical frames: blade upright, hands unmoved); ours plays a 12.5 s
+  idle that turns the blade sideways. Check which sequence we pick for
+  idle (activity weights, a "look at" sequence vs the plain idle) and
+  whether other view models idle when CS:S's don't.
+
 - mg_item_battle_v4b's items (done 2026-10-09, to playtest): a picked-up
   knife's parented entities follow its carrier (`map::entities` anchors),
   OnPlayerPickup fires, and the entities the items drive work (game_ui,
