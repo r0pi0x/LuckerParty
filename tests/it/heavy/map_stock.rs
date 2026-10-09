@@ -279,13 +279,48 @@ fn water_materials() {
     assert!((water.refract_amount - 5.0).abs() < 1e-6);
     let b = |v: f32| v / 255.0;
     assert_eq!(water.fog_color, [b(21.0), b(48.0), b(52.0)]);
+    assert!((water.fog_start - units(100.0)).abs() < 1e-4 && (water.fog_end - units(500.0)).abs() < 1e-4);
+    let below = water.bottom.as_deref().expect("port bottom material");
+    assert!(below.underwater_overlay.is_some() && (below.fog_start - units(-256.0)).abs() < 1e-4);
+
+    // The spec's table (section 10): de_chateau reflects entities, no
+    // cubemap pass; cs_militia refracts undistorted.
+    let water_of = |map: &MapData, name: &str| {
+        map.meshes
+            .iter()
+            .filter_map(|m| m.water)
+            .map(|i| map.water_materials[i].clone())
+            .find(|w| w.name.contains(name))
+    };
+    let Some(chateau) = load("de_chateau") else { return };
+    let pretty = water_of(&chateau, "water_pretty1").expect("chateau water");
+    assert!(pretty.reflect && pretty.refract && pretty.reflect_entities);
+    assert_eq!((pretty.refract_amount, pretty.reflect_amount), (1.0, 0.3));
+    assert_eq!(pretty.fog_color, [0.05, 0.05, 0.0]);
+    let Some(militia) = load("cs_militia") else { return };
+    let m = water_of(&militia, "militiawater").expect("militia water");
+    assert!(m.refract && !m.reflect && m.envmap.is_some());
+    assert_eq!(m.refract_amount, 0.0);
+    assert!((m.cheap_start - units(512.0)).abs() < 1e-4 && (m.cheap_end - units(960.0)).abs() < 1e-4);
 }
 
-/// Infodecals land on displacement terrain too (cs_compound: 4 of its 6
-/// previously unplaced decals; de_port 5 of 8).
+/// Infodecals find their surfaces: displacement terrain too (cs_compound,
+/// de_port), large faces whose corners are all far from the decal (most of
+/// cs_assault's 45, de_nuke's and de_train's 21 were unplaced before), and
+/// brush entities the decal's probe hits (overlays_decals.md). What's left
+/// sits by props (dust2's window frames), which the probe ignores.
 #[test]
-fn decals_project_onto_displacements() {
-    for (name, most) in [("cs_compound", 2), ("de_port", 3)] {
+fn decals_find_their_surfaces() {
+    for (name, most) in [
+        ("cs_assault", 0),
+        ("cs_compound", 2),
+        ("de_dust", 2),
+        ("de_dust2", 5),
+        ("de_nuke", 0),
+        ("de_port", 0),
+        ("de_tides", 3),
+        ("de_train", 1),
+    ] {
         let Some(map) = load(name) else { return };
         let unplaced: usize = map
             .warnings

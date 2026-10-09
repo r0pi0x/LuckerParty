@@ -102,8 +102,9 @@ impl Plugin for PerfPlugin {
     }
 }
 
-/// `r_cleardecals` and `mashup_round_cleardecals` (`map::decal`).
-fn decal_cvars(app: &mut App) {
+/// `r_cleardecals`, `mashup_round_cleardecals` and `mp_decals`
+/// (`map::decal`).
+pub(crate) fn decal_cvars(app: &mut App) {
     use crate::{
         console::ConsoleAppExt,
         map::decal::{ClearDecals, DecalSettings},
@@ -119,9 +120,15 @@ fn decal_cvars(app: &mut App) {
         "1: remove every impact decal at each round start (the game keeps them until the map changes).",
         |s| &mut s.round_clear,
     );
-    app.world_mut()
-        .resource_mut::<crate::console::Console>()
-        .archive("mashup_round_cleardecals");
+    resource_cvar::<DecalSettings, usize>(
+        app,
+        "mp_decals",
+        "Most bullet hole, slash and blood decals drawn at once; the oldest goes first.",
+        |s| &mut s.limit,
+    );
+    let mut console = app.world_mut().resource_mut::<crate::console::Console>();
+    console.archive("mashup_round_cleardecals");
+    console.archive("mp_decals");
 }
 
 /// Source's water settings (specs/cs_source/water.md section 1) on

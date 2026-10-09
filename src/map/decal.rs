@@ -87,8 +87,8 @@ pub enum DecalGroup {
 #[derive(Resource)]
 pub struct ImpactDecals;
 
-/// Most decals kept; the oldest goes first. (The game's limit is a
-/// client setting, see the spec's open questions.)
+/// Most decals a server keeps for late joiners; the oldest goes first.
+/// (Each client draws at most `DecalSettings::limit`.)
 pub const MAX_DECALS: usize = 512;
 /// Triangles whose plane passes farther than this from the point (meters)
 /// take no part of the decal.
@@ -132,11 +132,23 @@ pub(super) struct DecalSurfaces {
 pub struct ClearDecals;
 
 /// Decal options: `round_clear` (`mashup_round_cleardecals`, default 0)
-/// removes every runtime decal at each round start. The game keeps them
-/// until the map changes.
-#[derive(Resource, Default)]
+/// removes every runtime decal at each round start (the game keeps them
+/// until the map changes); `limit` (`mp_decals`, Source's client setting,
+/// default 200; Multiplayer > Advanced) is the most runtime decals drawn,
+/// the oldest going first.
+#[derive(Resource)]
 pub struct DecalSettings {
     pub round_clear: u8,
+    pub limit: usize,
+}
+
+impl Default for DecalSettings {
+    fn default() -> Self {
+        Self {
+            round_clear: 0,
+            limit: 200,
+        }
+    }
 }
 
 /// A placed runtime decal (its colour part; the depth-only copy is its
@@ -393,8 +405,10 @@ pub(super) fn place_decals(
     meshes: Option<ResMut<Assets<Mesh>>>,
     materials: Option<ResMut<Assets<DecalMaterial>>>,
     fog: Option<Res<super::fog::SceneFog>>,
+    settings: Option<Res<DecalSettings>>,
     mut commands: Commands,
 ) {
+    let limit = settings.map_or(MAX_DECALS, |s| s.limit.min(MAX_DECALS * 8));
     let (Some(surfaces), Some(mut assets), Some(mut meshes), Some(mut materials)) =
         (surfaces, assets, meshes, materials)
     else {
@@ -508,7 +522,7 @@ pub(super) fn place_decals(
         }
         let e = decal_entity.id();
         assets.placed.push_back(e);
-        while assets.placed.len() > MAX_DECALS {
+        while assets.placed.len() > limit {
             if let Some(old) = assets.placed.pop_front() {
                 commands.entity(old).try_despawn();
             }

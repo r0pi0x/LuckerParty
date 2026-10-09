@@ -6,7 +6,7 @@
 //! Each listed face is clipped to the quad, and the pieces reuse the face's
 //! lightmap, like decals.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use bevy::prelude::*;
 use vbsp::Bsp;
@@ -69,9 +69,21 @@ pub fn add_overlays(
         bsp_bytes.get(ofs..ofs + len).unwrap_or(&[])
     };
     let Some(atlas) = data.lightmap.clone() else { return };
-    // Per (texture, in the 3D skybox).
-    let mut meshes: BTreeMap<(String, bool), MapMesh> = BTreeMap::new();
+    // Per (texture, in the 3D skybox, mover).
+    let mut meshes: BTreeMap<(String, bool, Option<usize>), MapMesh> = BTreeMap::new();
     let mut empty = 0;
+    // Faces of drawn brush entities: their placement (models are stored
+    // around their origin) and, for movers, the entity the overlay goes
+    // with (in its own unrotated space, as its faces are drawn).
+    let mut owners: HashMap<usize, ((Quat, Vec3), Option<usize>)> = HashMap::new();
+    for e in super::bsp::brush_entities(bsp).into_iter().filter(|e| e.drawn) {
+        if let Some(m) = bsp.models().nth(e.model) {
+            let first = m.first_face.max(0) as usize;
+            for i in first..first + m.face_count.max(0) as usize {
+                owners.insert(i, (e.transform, e.mover.then_some(e.entity)));
+            }
+        }
+    }
     let bounds = super::bsp::playable_bounds(bsp);
 
     for o in lump.as_chunks::<OVERLAY_SIZE>().0 {
@@ -114,14 +126,25 @@ pub fn add_overlays(
         let mut placed = false;
         for &fi in &faces {
             let Some(face) = bsp.face(fi) else { continue };
-            let slot = layout.face_slots.get(fi).copied().flatten();
+            let owner = owners.get(&fi).copied();
+            let slot = match owner {
+                Some(_) => layout.entity_face_slots.get(&fi).copied(),
+                None => layout.face_slots.get(fi).copied().flatten(),
+            };
+            let ((rotation, offset), mover) = owner.unwrap_or(((Quat::IDENTITY, Vec3::ZERO), None));
+            // World space for clipping; a mover's pieces go back to its space.
+            let place = |v: vbsp::Vector| rotation * Vec3::new(v.x, v.y, v.z) + offset;
+            let home = |p: Vec3| match mover {
+                Some(_) => rotation.inverse() * (p - offset),
+                None => p,
+            };
             let face_normal = face.normal();
-            let fnorm = Vec3::new(face_normal.x, face_normal.y, face_normal.z);
+            let fnorm = rotation * Vec3::new(face_normal.x, face_normal.y, face_normal.z);
             // The face as drawn: for displacements, the raised terrain
             // triangles (not the flat base face, which lies under them),
             // each vertex with its lightmap coordinates.
             for tri3 in face_triangles(&face) {
-                let [pa, pb, pc] = tri3.map(|(v, _)| Vec3::new(v.x, v.y, v.z));
+                let [pa, pb, pc] = tri3.map(|(v, _)| place(v));
                 let mut tnorm = (pb - pa).cross(pc - pa).normalize_or_zero();
                 if tnorm.dot(fnorm) < 0.0 {
                     tnorm = -tnorm;
@@ -130,7 +153,7 @@ pub fn add_overlays(
                 let poly: Vec<(Vec3, Vec2, Vec2)> = tri3
                     .iter()
                     .map(|(v, luxel)| {
-                        let p = Vec3::new(v.x, v.y, v.z);
+                        let p = place(*v);
                         let d = p - origin;
                         (p, Vec2::new(d.dot(basis_u), d.dot(basis_v)), *luxel)
                     })
@@ -156,9 +179,10 @@ pub fn add_overlays(
                         continue;
                     }
                     placed = true;
-                    let mesh = meshes.entry((tex_name.clone(), skybox)).or_insert_with(|| MapMesh {
+                    let mesh = meshes.entry((tex_name.clone(), skybox, mover)).or_insert_with(|| MapMesh {
                         material: format!("decal:overlay:{tex_name}"),
-                        skybox,
+                        skybox: skybox && mover.is_none(),
+                        entity: mover,
                         color: [255, 255, 255],
                         texture: r.texture,
                         alpha: if r.alpha == MapAlpha::Opaque {
@@ -168,14 +192,18 @@ pub fn add_overlays(
                         },
                         ..default()
                     });
-                    let engine_normal = to_engine(vb(tnorm)).normalize_or_zero();
+                    let engine_normal = to_engine(vb(match mover {
+                        Some(_) => rotation.inverse() * tnorm,
+                        None => tnorm,
+                    }))
+                    .normalize_or_zero();
                     let base = mesh.positions.len() as u32;
                     for (p, p2, luxel) in &piece {
                         // Barycentric texture coordinates within the triangle.
                         let w_b = (p2 - a.0).perp_dot(c.0 - a.0) / (b.0 - a.0).perp_dot(c.0 - a.0);
                         let w_c = (b.0 - a.0).perp_dot(*p2 - a.0) / (b.0 - a.0).perp_dot(c.0 - a.0);
                         let uv = a.1 * (1.0 - w_b - w_c) + b.1 * w_b + c.1 * w_c;
-                        mesh.positions.push(to_engine(vb(*p + tnorm * lift)).to_array());
+                        mesh.positions.push(to_engine(vb(home(*p + tnorm * lift))).to_array());
                         mesh.normals.push(engine_normal.to_array());
                         mesh.uvs.push(uv.to_array());
                         let luxel = if slot.is_some() { *luxel } else { Vec2::splat(0.5) };
@@ -203,6 +231,7 @@ pub fn add_overlays(
         }
         if !placed {
             empty += 1;
+            debug!("overlay {tex_name} at {origin}: none of its {} faces meets its quad", faces.len());
         }
     }
     if empty > 0 {

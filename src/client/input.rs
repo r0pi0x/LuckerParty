@@ -22,6 +22,15 @@ pub struct MouseSettings {
     /// the normal one (`zoom_sensitivity_ratio`; CS:S's default 1.2 and the
     /// rule as the community documents it, not measured here).
     pub zoom_ratio: f32,
+    /// `m_filter`: 1 averages each frame's motion with the last frame's
+    /// (CS:S's "smooth out mouse movement over 2 frames").
+    pub filter: u8,
+    /// `m_customaccel`: non-zero accelerates the motion, each axis's
+    /// counts raised to `m_customaccel_exponent` (the options' Mouse
+    /// acceleration check box sets 3; the curve is ours, see
+    /// docs/plans/active/ui-parity.md).
+    pub accel: u8,
+    pub accel_exponent: f32,
 }
 
 impl Default for MouseSettings {
@@ -32,11 +41,27 @@ impl Default for MouseSettings {
             m_yaw: 0.022,
             m_pitch: 0.022,
             zoom_ratio: 1.2,
+            filter: 0,
+            accel: 0,
+            accel_exponent: 1.05,
         }
     }
 }
 
 impl MouseSettings {
+    /// The counts mouse look turns by, from this frame's raw motion:
+    /// filtered with the last frame's (`m_filter`, `last` keeps it), then
+    /// accelerated (`m_customaccel`).
+    pub fn counts(&self, raw: Vec2, last: &mut Vec2) -> Vec2 {
+        let mut c = if self.filter != 0 { (raw + *last) / 2.0 } else { raw };
+        *last = raw;
+        if self.accel != 0 {
+            let e = self.accel_exponent.clamp(0.5, 3.0);
+            c = Vec2::new(c.x.signum() * c.x.abs().powf(e), c.y.signum() * c.y.abs().powf(e));
+        }
+        c
+    }
+
     /// Radians to turn (yaw left, pitch up) for a mouse delta in counts
     /// (x right, y down).
     pub fn look_delta(&self, counts: Vec2) -> Vec2 {
@@ -68,7 +93,7 @@ impl Plugin for LocalInputPlugin {
     }
 }
 
-fn mouse_cvars(app: &mut App) {
+pub(crate) fn mouse_cvars(app: &mut App) {
     use crate::console::{Console, resource_cvar};
     resource_cvar::<MouseSettings, f32>(
         app,
@@ -94,8 +119,34 @@ fn mouse_cvars(app: &mut App) {
         "Extra mouse scale while zoomed (times the zoomed FOV / 90).",
         |m| &mut m.zoom_ratio,
     );
+    resource_cvar::<MouseSettings, u8>(
+        app,
+        "m_filter",
+        "1: smooth mouse look, averaging each frame's motion with the last frame's.",
+        |m| &mut m.filter,
+    );
+    resource_cvar::<MouseSettings, u8>(
+        app,
+        "m_customaccel",
+        "Mouse acceleration: 0 off; else each frame's counts raised to m_customaccel_exponent.",
+        |m| &mut m.accel,
+    );
+    resource_cvar::<MouseSettings, f32>(
+        app,
+        "m_customaccel_exponent",
+        "Mouse acceleration amount: 1 none, higher accelerates more (with m_customaccel).",
+        |m| &mut m.accel_exponent,
+    );
     let mut console = app.world_mut().resource_mut::<Console>();
-    for name in ["sensitivity", "m_yaw", "m_pitch", "zoom_sensitivity_ratio"] {
+    for name in [
+        "sensitivity",
+        "m_yaw",
+        "m_pitch",
+        "zoom_sensitivity_ratio",
+        "m_filter",
+        "m_customaccel",
+        "m_customaccel_exponent",
+    ] {
         console.archive(name);
     }
 }
@@ -247,7 +298,10 @@ pub(super) fn write_local_intent(
     zoomed: Query<&crate::weapon::Zoomed, With<LocalPlayer>>,
     spectator: Option<Res<super::spectate::Spectator>>,
     weapon_menu: Option<Res<super::weapon_select::WeaponMenu>>,
+    mut last_motion: Local<Vec2>,
 ) {
+    // The motion mouse look turns by (`m_filter`, `m_customaccel`).
+    let motion_counts = mouse_settings.counts(motion.delta, &mut last_motion);
     // Every game key is a bind (`binds`): what the keys bound to an action
     // hold.
     let empty = std::collections::BTreeMap::new();
@@ -296,7 +350,7 @@ pub(super) fn write_local_intent(
             axis("+jump", "+duck"),
         );
         let speed = if bound("+speed") { 12.0 } else { 4.0 };
-        freecam.fly(input, mouse_settings.look_delta(motion.delta), speed, time.delta_secs());
+        freecam.fly(input, mouse_settings.look_delta(motion_counts), speed, time.delta_secs());
         let (yaw, pitch) = (intent.yaw, intent.pitch);
         **intent = Intent {
             yaw,
@@ -308,7 +362,7 @@ pub(super) fn write_local_intent(
     intent.move_axis = Vec2::new(axis("+moveright", "+moveleft"), axis("+forward", "+back"));
 
     let zoom = mouse_settings.zoom_scale(zoomed.iter().next().map(|z| z.fov));
-    let turn = mouse_settings.look_delta(motion.delta) * zoom;
+    let turn = mouse_settings.look_delta(motion_counts) * zoom;
     if freelook {
         free.turn(turn, intent.pitch);
     } else {
@@ -373,6 +427,35 @@ mod tests {
         assert_eq!(m.zoom_scale(None), 1.0);
         // AWP first zoom (40 degrees): 1.2 * 40 / 90.
         assert!((m.zoom_scale(Some(40.0)) - 1.2 * 40.0 / 90.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn mouse_filter_and_acceleration_shape_the_motion() {
+        let mut last = Vec2::ZERO;
+        let plain = MouseSettings::default();
+        assert_eq!(plain.counts(Vec2::new(10.0, -4.0), &mut last), Vec2::new(10.0, -4.0), "off: raw");
+        // m_filter: the average of this frame's and the last.
+        let filtered = MouseSettings { filter: 1, ..plain };
+        let mut last = Vec2::ZERO;
+        assert_eq!(filtered.counts(Vec2::new(10.0, 0.0), &mut last), Vec2::new(5.0, 0.0));
+        assert_eq!(filtered.counts(Vec2::new(20.0, 0.0), &mut last), Vec2::new(15.0, 0.0));
+        assert_eq!(filtered.counts(Vec2::ZERO, &mut last), Vec2::new(10.0, 0.0), "eases out");
+        // m_customaccel: fast motion turns more than in proportion, signs kept.
+        let accel = MouseSettings {
+            accel: 3,
+            accel_exponent: 1.2,
+            ..plain
+        };
+        let mut last = Vec2::ZERO;
+        let slow = accel.counts(Vec2::new(2.0, 0.0), &mut last).x;
+        let fast = accel.counts(Vec2::new(-20.0, 0.0), &mut last).x;
+        assert!(fast < 0.0 && -fast / slow > 10.0, "{slow} {fast}");
+        let unaccelerated = MouseSettings {
+            accel: 3,
+            accel_exponent: 1.0,
+            ..plain
+        };
+        assert_eq!(unaccelerated.counts(Vec2::new(7.0, 3.0), &mut last), Vec2::new(7.0, 3.0), "1.0: none");
     }
 
     #[test]

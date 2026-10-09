@@ -131,15 +131,16 @@ Only `Reflect`-registered types are visible; register new core components in
   origin, Source's: the feet. So the same `setpos` line puts our camera
   where CS:S's was (64 above its z standing), and `setpos` with `getpos`'s
   numbers lands a view offset higher, in both games.
-- `menu [main|newgame|game|bot|bots|team|options|extras]` opens the
+- `menu [main|newgame|game|bot|bots|team|options|mpadvanced|extras]` opens the
   game menu (Esc) on a page, for screenshots of it: `--window 1280x720
   --screenshot menu.png +menu options`; `menu newgame` is Create Server
   (`game`, `bot`: its other pages), `menu keyboard` (or `mouse`, `audio`,
-  `video`, `multiplayer`) opens the options on that tab, `menu advanced`
-  the keyboard tab's Advanced dialog, `menu videoadvanced` the video
-  tab's, `menu extras` Lucker Party Options. `menuinput <input>` drives
+  `video`, `voice`, `multiplayer`) opens the options on that tab, `menu
+  advanced` the keyboard tab's Advanced dialog, `menu videoadvanced` the
+  video tab's, `menu mpadvanced` the multiplayer tab's (its list from the
+  install's `cfg/user.scr`), `menu extras` Lucker Party Options. `menuinput <input>` drives
   the open dialog as keys would (`focus <cvar|map|bots|botcount|botteam|
-  difficulty>`, `open` a focused combo box's list, `down`, `up`, `enter`,
+  difficulty|aspect>`, `open` a focused combo box's list, `down`, `up`, `enter`,
   `space`, `escape`, `tab`, `backtab`, `type <text>`, `pick <n>`, `sheet
   <n>`) and prints the focused control: a drop-down open in a screenshot
   is `+menu newgame +menuinput open`. `vgui_windows` lists the frames
@@ -348,7 +349,10 @@ Only `Reflect`-registered types are visible; register new core components in
 - Water (CS:S cvars): `r_WaterDrawReflection 0` / `r_WaterDrawRefraction
   0` turn the planar reflection / refraction off (to tell which one an
   artefact comes from), `mat_drawwater 0` hides water surfaces,
-  `r_waterforcereflectentities 1` reflects models too. Under water the
+  `r_waterforcereflectentities 1` reflects models too (CS:S's "Water
+  detail": Simple reflections = `r_waterforceexpensive 0` and
+  `r_waterforcereflectentities 0`, Reflect world = 1 0, the default,
+  Reflect all = 1 1). Under water the
   material's screen warp shows (de_port: `+setpos 700 2700 235 +setang
   -5 140 0` with `+noclip +god`); with the eye a few units above a surface
   (`+setpos 700 2700 258 +setang 20 140 0`) the strip under the waterline

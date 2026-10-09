@@ -196,6 +196,8 @@ pub fn water_vmt(name: &str, body: &[(String, Node)], lod: (f32, f32)) -> WaterV
         name: name.to_string(),
         refract: texture("$refracttexture").is_some(),
         refract_amount: num("$refractamount", 0.0),
+        blur_refract: flag("$blurrefract"),
+        refract_tint: get("$refracttint").and_then(|v| colour(&v)).unwrap_or([1.0; 3]),
         reflect: texture("$reflecttexture").is_some(),
         reflect_entities: flag("$reflectentities"),
         reflect_amount: num("$reflectamount", 0.8),
@@ -479,6 +481,64 @@ mod tests {
         let (w, normal) = screen_warp_vmt("x", &body);
         assert_eq!((w.scale, w.scroll, w.refract_amount), (Vec2::ONE, Vec2::ZERO, 0.0));
         assert_eq!(normal, "dev/water_normal");
+    }
+
+    /// Every parameter of spec section 2 that changes the picture, and
+    /// their defaults.
+    #[test]
+    fn material_params_per_spec() {
+        let text = r#"
+"Water"
+{
+	"$reflecttexture" "_rt_WaterReflection"
+	"$refracttexture" "_rt_WaterRefraction"
+	"$reflectamount" ".3"
+	"$refractamount" "1"
+	"$reflecttint" "[.5 .6 .7]"
+	"$refracttint" "{255 128 0}"
+	"$blurrefract" 1
+	"$reflectentities" 1
+	"$forcecheap" 1
+	"$fogcolor" "[.05 .05 0]"
+	"$fogstart" 10
+	"$fogend" 200
+	"$cheapwaterstartdistance" 300
+	"$cheapwaterenddistance" 600
+	"$scroll1" "[.01 .02 0]"
+	"$scroll2" "[-.025 .025 0]"
+	"$nofresnel" 1
+	"$reflectblendfactor" ".4"
+	"$normalmap" "nature/water_coast01_normal"
+	"$envmap" "env_cubemap"
+	"$bottommaterial" "dev/dev_waterbeneath2"
+}
+"#;
+        let (_, body) = resolve(text, &|_| None, 0).unwrap();
+        let vmt = water_vmt("x", &body, (0.0, 0.1));
+        let m = &vmt.material;
+        assert!(m.reflect && m.refract && m.reflect_entities && m.force_cheap && m.blur_refract);
+        assert_eq!((m.reflect_amount, m.refract_amount), (0.3, 1.0));
+        assert_eq!(m.reflect_tint, [0.5, 0.6, 0.7]);
+        assert_eq!(m.refract_tint, [1.0, 128.0 / 255.0, 0.0]);
+        assert_eq!(m.fog_color, [0.05, 0.05, 0.0]);
+        let u = METERS_PER_UNIT;
+        assert!((m.fog_start - 10.0 * u).abs() < 1e-6 && (m.fog_end - 200.0 * u).abs() < 1e-6);
+        assert!((m.cheap_start - 300.0 * u).abs() < 1e-6 && (m.cheap_end - 600.0 * u).abs() < 1e-6);
+        assert_eq!((m.scroll1, m.scroll2), (Vec2::new(0.01, 0.02), Vec2::new(-0.025, 0.025)));
+        assert_eq!(m.fixed_reflect_weight, Some(0.4));
+        assert_eq!(vmt.normal_map, "nature/water_coast01_normal");
+        assert_eq!(vmt.envmap.as_deref(), Some("env_cubemap"));
+        assert_eq!(vmt.bottom.as_deref(), Some("dev/dev_waterbeneath2"));
+        // Defaults: no textures (no views), $reflectamount 0.8, white tints,
+        // red fog, a top surface, $forceexpensive on, no blur.
+        let (_, body) = resolve(r#""Water" { }"#, &|_| None, 0).unwrap();
+        let vmt = water_vmt("x", &body, (0.0, 0.1));
+        let m = &vmt.material;
+        assert!(!m.reflect && !m.refract && !m.blur_refract && !m.force_cheap && m.force_expensive && m.above_water);
+        assert_eq!((m.reflect_amount, m.refract_amount), (0.8, 0.0));
+        assert_eq!((m.reflect_tint, m.refract_tint, m.fog_color), ([1.0; 3], [1.0; 3], [1.0, 0.0, 0.0]));
+        assert_eq!(m.fixed_reflect_weight, None);
+        assert_eq!(vmt.normal_map, "dev/water_normal");
     }
 
     #[test]
