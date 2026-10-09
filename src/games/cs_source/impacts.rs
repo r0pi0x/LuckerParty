@@ -127,7 +127,12 @@ fn bullet_impacts(
         if hit.is_none() || in_water(*from, *to, water.as_deref()) {
             continue;
         }
-        let name = surface_of(*hit, *to, &props, &characters, grid.as_deref());
+        // Players' hitboxes are `flesh` (impact_effects.md 3), not the
+        // movement box's `player` (which has no impact sound of its own).
+        let name = match hit {
+            Some(e) if characters.contains(*e) => "flesh".to_string(),
+            _ => surface_of(*hit, *to, &props, &characters, grid.as_deref()),
+        };
         let Some(entry) = surface(&bank.0, &name).and_then(|s| s.bullet_impact.clone()) else {
             continue;
         };

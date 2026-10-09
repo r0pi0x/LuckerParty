@@ -63,3 +63,54 @@ fn getpos_prints_the_eye_and_setpos_takes_the_feet() {
     let at = getpos(&mut sim);
     assert!(at.distance(Vec3::new(-295.0, 1078.0, 564.0)) < 0.02, "noclip: {at}");
 }
+
+/// `thirdperson` with `cam_idealdist 150`, as CS:S's capture on
+/// mg_item_battle_v4b (view about 15.4 degrees down): the camera sits
+/// 64.5 units above the eye, 150 units back along the view from a pivot
+/// 24.7 above the eye, and looks along the view. A ceiling over the eye
+/// stops the pivot short of it.
+#[test]
+fn third_person_camera_sits_as_css_does() {
+    use avian3d::prelude::SpatialQuery;
+    use bevy::ecs::system::RunSystemOnce;
+    use mashup::client::view::{CameraMode, THIRD_PERSON_PIVOT_UP, camera_offset};
+    const U: f32 = 0.0254;
+    let mut sim = Sim::new((GreyboxMapPlugin, SourceMovementPlugin));
+    // High over the greybox: nothing in the way.
+    let origin = Vec3::new(0.0, 40.0, 12.0);
+    let eye = Vec3::Y * 28.0 * U;
+    sim.ticks(1);
+    let mode = CameraMode {
+        third_person: true,
+        ..default()
+    };
+    let at = |sim: &mut Sim, pitch_down: f32, mode: CameraMode| -> Vec3 {
+        let look = Quat::from_euler(EulerRot::YXZ, 0.0, -pitch_down.to_radians(), 0.0);
+        sim.app
+            .world_mut()
+            .run_system_once(move |spatial: SpatialQuery| camera_offset(&mode, origin, eye, look, &spatial, []))
+            .unwrap()
+    };
+    let o = at(&mut sim, 15.4, mode);
+    let above = (o.y - eye.y) / U;
+    assert!((above - 64.5).abs() < 0.3, "{above} units above the eye");
+    let back = (o.z - eye.z) / U;
+    assert!((back - 150.0 * 15.4f32.to_radians().cos()).abs() < 0.1, "{back} back");
+    // Level: the pivot's height.
+    let o = at(&mut sim, 0.0, mode);
+    assert!(((o.y - eye.y) / U - THIRD_PERSON_PIVOT_UP).abs() < 0.01);
+    // The spectators' chase camera has no raise.
+    let o = at(&mut sim, 0.0, CameraMode { pivot_up: 0.0, ..mode });
+    assert!((o.y - eye.y).abs() < 1e-4);
+    // A ceiling 16 units over the eye: the pivot stops under it, less
+    // the camera's radius.
+    sim.app.world_mut().spawn((
+        avian3d::prelude::RigidBody::Static,
+        avian3d::prelude::Collider::cuboid(4.0, 0.2, 4.0),
+        Transform::from_translation(origin + eye + Vec3::Y * (16.0 * U + 0.1)),
+    ));
+    sim.ticks(2);
+    let o = at(&mut sim, 0.0, mode);
+    let above = (o.y - eye.y) / U;
+    assert!(above > 0.0 && above < 16.0 - 0.2 / U + 0.1, "{above} under the ceiling");
+}
