@@ -8,6 +8,14 @@ plan when work starts; delete them when done.
 
 ## 0. Playtest feedback (2026-10-07), top priority
 
+- Props and other models show through the sky on mg_creative_multigames_v8_ns
+  and many other maps, while the world brushes behind the sky correctly don't
+  (e.g. `setpos -6332.74 -3047.50 -9638.97; setang -38.85 18.60 0`).
+  Likely props aren't culled by PVS/areas the way world parts are (props
+  without clusters, or a prop path that skips vis), or the sky doesn't hide
+  what lies behind it the way Source's sky brushes do. Compare with CS:S at
+  that position (coordinator: reference capture), then fix generally.
+
 - mg_item_battle_v4b: picking up a map-made "item" (a knife near spawn
   with map entities parented to it: a car, a jetpack, a cannonball,
   rockets, speed changes) gives nothing: the parented entities don't come
