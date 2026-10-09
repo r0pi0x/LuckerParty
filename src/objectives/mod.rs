@@ -38,10 +38,9 @@ impl Plugin for ObjectivesPlugin {
             .add_message::<crate::map::entities::FireEntityOutput>()
             .add_message::<crate::map::GameSound>()
             .add_message::<crate::map::PlaySound>()
-            .add_systems(
-                FixedUpdate,
-                load_objectives.before(SimSet::Rules).run_if(crate::core::authoritative),
-            );
+            // Everywhere: a network client predicts arming the bomb in the
+            // map's bomb targets.
+            .add_systems(FixedUpdate, load_objectives.before(SimSet::Rules));
         bomb::plugin(app);
         hostages::plugin(app);
     }

@@ -160,6 +160,15 @@ fn single_threaded_schedules(app: &mut App) {
             s.set_executor(SingleThreadedExecutor::new());
         });
     }
+    // On macOS the render world keeps Bevy's executor: it runs on the
+    // pipelined render thread, and the window surface must be created on
+    // the main thread (AppKit's NSView), which only the multi-threaded
+    // executor hands its main-thread systems to; a single-threaded one runs
+    // them where it is and panics ("can only access NSView on the main
+    // thread").
+    if cfg!(any(target_os = "macos", target_os = "ios")) {
+        return;
+    }
     let render: [Interned<dyn ScheduleLabel>; 4] = [
         bevy::render::Render.intern(),
         bevy::render::renderer::RenderGraph.intern(),

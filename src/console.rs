@@ -578,6 +578,8 @@ pub const SERVER_COMMANDS: &[&str] = &[
     "bot_goto",
     "changelevel",
     "mp_restartgame",
+    "kick",
+    "kickid",
 ];
 
 /// `sv_cheats`.

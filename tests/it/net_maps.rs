@@ -243,7 +243,7 @@ fn changelevel_takes_two_clients_along() {
     sim.ticks(200);
     // Some score to lose at the map change.
     let a = sim.character_of(0).unwrap();
-    sim.server.app.world_mut().entity_mut(a).insert(Score { kills: 2, deaths: 1 });
+    sim.server.app.world_mut().entity_mut(a).insert((Score { kills: 2, deaths: 1 }, Money(4321)));
     sim.ticks(20);
     let me = sim.local_player(0).unwrap();
     assert_eq!(sim.clients[0].app.world().get::<NetScore>(me).unwrap().kills, 2);
@@ -291,6 +291,12 @@ fn changelevel_takes_two_clients_along() {
         assert_eq!(w.get::<NetScore>(me).unwrap().kills, 0, "scores start over");
         assert_eq!(w.resource::<RoundState>().number, round.number, "the client's round is the server's");
         assert_eq!(w.resource::<RoundState>().wins, [0, 0]);
+    }
+    // Money starts over too (CS:S's map change is a new game).
+    for i in 0..2 {
+        let c = sim.character_of(i).unwrap();
+        let start = sim.server.app.world().resource::<mashup::rules::rounds::RoundSettings>().start_money;
+        assert_eq!(sim.server.app.world().get::<Money>(c).map(|m| m.0), Some(start), "client {i}'s money");
     }
     // And it plays there: client 0 walks, the server moves it.
     let c = sim.character_of(0).unwrap();
@@ -550,5 +556,217 @@ fn wrong_or_refused_downloads_end_the_join_with_reasons() {
     let v = sim.add_client(|w| w.insert_resource(NetVersion("0.0.1/net0".into())));
     sim.until(300, |s| *s.clients[v].app.world().resource::<NetRole>() == NetRole::Standalone);
     assert_eq!(progress(&sim, v).failure.unwrap().0, JoinFailure::NewServer);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The server's view of client `i`'s character: (connecting, dead, solid,
+/// health).
+fn in_game(sim: &mut NetSim, i: usize) -> (bool, bool, bool, f32) {
+    let c = sim.character_of(i).expect("a character");
+    let w = sim.server.app.world();
+    (
+        w.get::<mashup::core::Connecting>(c).is_some(),
+        w.get::<mashup::rules::Dead>(c).is_some(),
+        w.get::<avian3d::prelude::ColliderDisabled>(c).is_none(),
+        w.get::<mashup::core::Health>(c).unwrap().current,
+    )
+}
+
+/// Hit client `i`'s character on the server; whether it took the damage.
+fn hurts(sim: &mut NetSim, i: usize) -> bool {
+    let c = sim.character_of(i).unwrap();
+    let before = sim.server.app.world().get::<mashup::core::Health>(c).unwrap().current;
+    sim.server.app.world_mut().write_message(mashup::core::Damage {
+        force: Vec3::ZERO,
+        target: c,
+        attacker: None,
+        amount: 0.05,
+        point: Vec3::ZERO,
+        dir: Vec3::X,
+        hitgroup: mashup::core::Hitgroup::Chest,
+        kind: default(),
+        weapon: None,
+    });
+    sim.ticks(2);
+    let after = sim.server.app.world().get::<mashup::core::Health>(c).unwrap().current;
+    after < before
+}
+
+#[test]
+fn a_client_loading_the_map_is_out_of_the_game_until_it_has_it() {
+    let dir = scratch("loading");
+    let install = server_install(&dir);
+    let mut sim = server(install.clone(), "test:alpha", 73);
+    // Deathmatch: a slow client (its load takes 150 frames).
+    let slow = add_client(&mut sim, &install, None);
+    sim.clients[slow].app.insert_resource(harness::MapLoadDelay(150));
+    let loading = sim.until(300, |s| progress(s, slow).stage == JoinStage::LoadingMap);
+    assert!(loading, "the client loads the map");
+    sim.ticks(60);
+    let state = in_game(&mut sim, slow);
+    println!("while loading (deathmatch): connecting, dead, solid, health = {state:?}");
+    assert_eq!(state, (true, true, false, 0.0), "not in the game while loading");
+    assert!(!hurts(&mut sim, slow), "nothing hits a loading player");
+    sim.until_joined(400);
+    sim.ticks(10);
+    let state = in_game(&mut sim, slow);
+    println!("loaded (deathmatch): {state:?}");
+    assert_eq!(state, (false, false, true, 1.0), "spawned at once in deathmatch");
+    assert!(hurts(&mut sim, slow));
+
+    // Rounds, then a map change: one client loads quickly (in the new
+    // game's freeze: it plays the first round), the other slowly (after
+    // the freeze: out until the next round).
+    run(sim.server.app.world_mut(), "mashup_rounds 1; mp_freezetime 3; mp_roundtime 1");
+    let quick = add_client(&mut sim, &install, None);
+    sim.until_joined(600);
+    run(sim.server.app.world_mut(), "mp_restartgame 1");
+    sim.ticks(300);
+    sim.clients[quick].app.insert_resource(harness::MapLoadDelay(30));
+    sim.clients[slow].app.insert_resource(harness::MapLoadDelay(400));
+    harness::begin_level_change(sim.server.app.world_mut(), "test:beta");
+    sim.ticks(5);
+    harness::load_level(sim.server.app.world_mut(), "test:beta", None).unwrap();
+    sim.ticks(3);
+    for i in [quick, slow] {
+        let state = in_game(&mut sim, i);
+        println!("client {i} right after the change: {state:?}");
+        assert!(state.0 && state.1 && !state.2, "client {i} out of the game while it loads");
+    }
+    let joined = |s: &NetSim, i: usize| {
+        s.clients[i]
+            .app
+            .world()
+            .get_resource::<Joined>()
+            .is_some_and(|j| j.map == "test:beta")
+    };
+    assert!(sim.until(200, |s| joined(s, quick)), "the quick client has the map");
+    sim.ticks(10);
+    let phase = sim.server.app.world().resource::<RoundState>().phase;
+    assert!(matches!(phase, mashup::rules::rounds::Phase::Freeze { .. }), "{phase:?}");
+    let state = in_game(&mut sim, quick);
+    println!("the quick client in the freeze: {state:?}");
+    assert_eq!(state, (false, false, true, 1.0), "loaded in the freeze: plays this round");
+    assert!(in_game(&mut sim, slow).0, "the slow one still loading");
+    assert!(!hurts(&mut sim, slow));
+    assert!(sim.until(600, |s| joined(s, slow)), "the slow client has the map");
+    sim.ticks(10);
+    let phase = sim.server.app.world().resource::<RoundState>().phase;
+    let state = in_game(&mut sim, slow);
+    println!("the slow client after the freeze ({phase:?}): {state:?}");
+    assert!(!state.0, "in the game");
+    assert!(
+        matches!(phase, mashup::rules::rounds::Phase::Live { .. }),
+        "the slow client came in after the freeze, the round goes on: {phase:?}"
+    );
+    // Alone on its team: it plays now (coming in dead would hand the round
+    // to the others).
+    assert_eq!(state, (false, false, true, 1.0), "alone on its team: in at once");
+    // A third client on the quick one's team, loading past the freeze of
+    // the next game: its team is alive, so it waits for the next round.
+    let late = add_client(&mut sim, &install, None);
+    sim.clients[late].app.insert_resource(harness::MapLoadDelay(10));
+    let team_of = |sim: &mut NetSim, i: usize| {
+        let c = sim.character_of(i).unwrap();
+        *sim.server.app.world().get::<Team>(c).unwrap()
+    };
+    sim.until_joined(600);
+    sim.ticks(10);
+    let phase = sim.server.app.world().resource::<RoundState>().phase;
+    let mates = (0..3).filter(|i| *i != late).any(|i| team_of(&mut sim, i) == team_of(&mut sim, late));
+    let state = in_game(&mut sim, late);
+    println!("a third client mid-round ({phase:?}, teammates: {mates}): {state:?}");
+    if mates && matches!(phase, mashup::rules::rounds::Phase::Live { .. }) {
+        assert!(!state.0 && state.1, "mid-round with living teammates: out until the next round");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn changelevel_to_the_same_map_makes_clients_reload_it() {
+    let dir = scratch("samemap");
+    let install = server_install(&dir);
+    let mut sim = server(install.clone(), "test:beta", 74);
+    run(sim.server.app.world_mut(), "mashup_rounds 1");
+    add_client(&mut sim, &install, None);
+    sim.until_joined(600);
+    run(sim.server.app.world_mut(), "mp_restartgame 1");
+    sim.ticks(200);
+    let a = sim.character_of(0).unwrap();
+    sim.server.app.world_mut().entity_mut(a).insert(Score { kills: 3, deaths: 0 });
+    sim.ticks(20);
+    let loads = |w: &World| w.get_resource::<mashup::rules::MapLoads>().map_or(0, |l| l.0);
+    let before = loads(sim.clients[0].app.world());
+    let id = sim.clients[0].app.world().resource::<LocalClientId>().0;
+    // `changelevel beta` on beta: the server loads it again.
+    harness::load_level(sim.server.app.world_mut(), "test:beta", None).unwrap();
+    let ok = sim.until(600, |s| {
+        let w = s.clients[0].app.world();
+        loads(w) > before && w.get_resource::<Joined>().is_some_and(|j| j.map == "test:beta")
+    });
+    assert!(ok, "the client loaded beta again and is back in");
+    let p = progress(&sim, 0);
+    println!("client: {:?}, map loads {before} -> {}", stages(&p), loads(sim.clients[0].app.world()));
+    assert!(stages(&p).ends_with(&[JoinStage::ChangingLevel, JoinStage::Verifying, JoinStage::LoadingMap, JoinStage::Joined]));
+    assert_eq!(loads(sim.clients[0].app.world()), before + 1, "loaded once more");
+    let w = sim.clients[0].app.world();
+    assert_eq!(w.resource::<LocalClientId>().0, id, "the same connection");
+    assert!(w.get_resource::<LastDisconnect>().is_none());
+    sim.ticks(60);
+    // A fresh game: the score gone, the player in it.
+    let me = sim.local_player(0).unwrap();
+    assert_eq!(sim.clients[0].app.world().get::<NetScore>(me).unwrap().kills, 0);
+    let c = sim.character_of(0).unwrap();
+    assert!(sim.server.app.world().get::<mashup::core::Connecting>(c).is_none(), "back in the game");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_late_joiner_gets_the_decals() {
+    use mashup::map::decal::{DecalGroup, PlaceDecal};
+    let dir = scratch("decals");
+    let install = server_install(&dir);
+    let mut sim = server(install.clone(), "test:alpha", 75);
+    // Shots marked the walls before anyone joined (as the impact effects
+    // ask for decals); one hit a prop-less spot on the world, one is a
+    // knife slash.
+    for k in 0..3 {
+        sim.server.app.world_mut().write_message(PlaceDecal {
+            target: None,
+            group: DecalGroup::Material('C'),
+            point: Vec3::new(k as f32, 1.0, 5.0),
+            normal: Vec3::NEG_Z,
+            dir: Vec3::Z,
+            spin: false,
+        });
+    }
+    sim.server.app.world_mut().write_message(PlaceDecal {
+        target: None,
+        group: DecalGroup::Named("ManhackCut".into()),
+        point: Vec3::new(0.0, 1.5, 5.0),
+        normal: Vec3::NEG_Z,
+        dir: Vec3::Z,
+        spin: false,
+    });
+    sim.ticks(5);
+    assert_eq!(sim.server.app.world().resource::<mashup::net::decals::DecalLog>().decals.len(), 4);
+    let i = add_client(&mut sim, &install, None);
+    let mut cursor = sim.clients[i].app.world().resource::<bevy::ecs::message::Messages<PlaceDecal>>().get_cursor_current();
+    let mut placed = Vec::new();
+    for _ in 0..300 {
+        sim.step();
+        placed.extend(cursor.read(sim.clients[i].app.world().resource::<bevy::ecs::message::Messages<PlaceDecal>>()).cloned());
+        if placed.len() >= 4 {
+            break;
+        }
+    }
+    println!("the joiner placed {} decals", placed.len());
+    assert_eq!(placed.len(), 4, "the joiner put the server's decals on its world");
+    assert_eq!(placed[0].point, Vec3::new(0.0, 1.0, 5.0));
+    assert!(matches!(&placed[3].group, DecalGroup::Named(n) if n == "ManhackCut"));
+    // A new map starts the log over.
+    harness::load_level(sim.server.app.world_mut(), "test:beta", None).unwrap();
+    sim.ticks(3);
+    assert!(sim.server.app.world().resource::<mashup::net::decals::DecalLog>().decals.is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }

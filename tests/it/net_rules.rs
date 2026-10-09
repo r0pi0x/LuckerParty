@@ -722,3 +722,392 @@ fn a_late_joiner_spectates_until_the_next_round() {
     assert!(w.get::<LocalPlayer>(me).is_some());
     let _ = C4;
 }
+
+/// How many sounds by this entry an app played (`PlaySound`).
+fn played(l: &Log<mashup::map::PlaySound>, entry: &str) -> usize {
+    l.all.iter().filter(|s| s.entry == entry).count()
+}
+
+/// Arming and defusing the bomb are predicted on the client like its
+/// other weapon actions: the progress, the hold, the key presses' sounds
+/// and the bomb leaving its hands show without a round trip, the server's
+/// state agrees with them (no prediction errors), and the planter's and
+/// defuser's own sounds aren't sent back to them.
+#[test]
+fn arming_and_defusing_are_predicted() {
+    let mut sim = rounds(link(100, 0, 0.0), 57, 2, "mp_freezetime 1");
+    assert_eq!(team_of(&mut sim, 1), 1);
+    restart(&mut sim);
+    until_phase(&mut sim, 400, |p| matches!(p, Phase::Live { .. }));
+    sim.ticks(30);
+    place(&mut sim, 1, Vec3::new(0.0, 1.0, 12.0));
+    place(&mut sim, 0, Vec3::new(0.0, 1.0, -20.0));
+    sim.ticks(40);
+    client_intent(&mut sim, 1).select = Some(4);
+    sim.ticks(2);
+    client_intent(&mut sim, 1).select = None;
+    sim.ticks(80);
+    assert!(carried(&mut sim, 1).iter().any(|id| id.ends_with("weapon_c4")));
+    let mut sounds = Log::<mashup::map::PlaySound>::new(&sim, 2);
+    let mut other = Log::<mashup::map::PlaySound>::new(&sim, 1);
+    *sim.clients[1].app.world_mut().resource_mut::<NetGraph>() = NetGraph::default();
+    client_intent(&mut sim, 1).fire = true;
+    // The frame fire is pressed, the client arms: no round trip.
+    sim.step();
+    let me = sim.local_player(1).unwrap();
+    let c = sim.character_of(1).unwrap();
+    assert!(sim.clients[1].app.world().get::<Arming>(me).is_some(), "arming shown at once");
+    assert!(sim.server.app.world().get::<Arming>(c).is_none(), "the server hasn't heard yet");
+    // Held still while arming, as the server holds it.
+    client_intent(&mut sim, 1).move_axis = Vec2::Y;
+    let mut gone_first = false;
+    for _ in 0..260 {
+        sim.step();
+        sounds.poll(&sim);
+        other.poll(&sim);
+        let lost = !carried(&mut sim, 1).iter().any(|id| id.ends_with("weapon_c4"));
+        if lost && sim.server.app.world().resource::<BombState>().planted.is_none() {
+            gone_first = true;
+        }
+        if sim.server.app.world().resource::<BombState>().planted.is_some() {
+            break;
+        }
+    }
+    client_intent(&mut sim, 1).fire = false;
+    client_intent(&mut sim, 1).move_axis = Vec2::ZERO;
+    for _ in 0..40 {
+        sim.step();
+        sounds.poll(&sim);
+        other.poll(&sim);
+    }
+    assert!(sim.server.app.world().resource::<BombState>().planted.is_some(), "planted");
+    assert!(gone_first, "the bomb left the planter's hands before the server's word came");
+    let g = sim.clients[1].app.world().resource::<NetGraph>().clone();
+    let clicks = played(&sounds, "c4.click");
+    println!(
+        "planting at 100 ms: {} prediction errors in {} states; the planter heard {clicks} key presses, the other client {}",
+        g.errors,
+        g.checked,
+        played(&other, "c4.click")
+    );
+    assert_eq!(g.errors, 0, "arming, holding still and the plant predicted exactly");
+    let rules = sim.server.app.world().resource::<mashup::objectives::bomb::BombRules>().clone();
+    assert_eq!(clicks, rules.clicks.len(), "each key press once (predicted, not sent back)");
+    assert!(!carried(&mut sim, 1).iter().any(|id| id.ends_with("weapon_c4")));
+
+    // The defuse: client 0 at the bomb, +use.
+    let bomb_at = {
+        let w = sim.server.app.world_mut();
+        w.query_filtered::<&Transform, With<PlantedBomb>>().iter(w).next().unwrap().translation
+    };
+    place(&mut sim, 0, bomb_at + Vec3::new(0.0, 1.0, 0.9));
+    place(&mut sim, 1, Vec3::new(0.0, 1.0, -25.0));
+    sim.ticks(40);
+    let me0 = sim.character_of(0).unwrap();
+    let eye = {
+        let w = sim.server.app.world();
+        w.get::<Transform>(me0).unwrap().translation + w.get::<mashup::core::MovementState>(me0).unwrap().eye_offset
+    };
+    let d = bomb_at + Vec3::Y * 0.05 - eye;
+    {
+        let mut i = client_intent(&mut sim, 0);
+        i.yaw = (-d.x).atan2(-d.z).rem_euclid(std::f32::consts::TAU);
+        i.pitch = d.y.atan2(d.xz().length());
+    }
+    sim.ticks(20);
+    let mut defuser = Log::<mashup::map::PlaySound>::new(&sim, 1);
+    *sim.clients[0].app.world_mut().resource_mut::<NetGraph>() = NetGraph::default();
+    client_intent(&mut sim, 0).use_key = true;
+    sim.step();
+    let local0 = sim.local_player(0).unwrap();
+    let w = sim.clients[0].app.world();
+    assert!(w.get::<mashup::objectives::bomb::Defusing>(local0).is_some(), "defusing shown at once");
+    assert!(sim.server.app.world().get::<mashup::objectives::bomb::Defusing>(me0).is_none());
+    for _ in 0..800 {
+        sim.step();
+        defuser.poll(&sim);
+        if sim.server.app.world().resource::<BombState>().outcome.is_some() {
+            break;
+        }
+    }
+    client_intent(&mut sim, 0).use_key = false;
+    for _ in 0..30 {
+        sim.step();
+        defuser.poll(&sim);
+    }
+    assert_eq!(sim.server.app.world().resource::<BombState>().outcome, Some(BombOutcome::Defused));
+    let g = sim.clients[0].app.world().resource::<NetGraph>().clone();
+    println!(
+        "defusing at 100 ms: {} prediction errors in {} states; the defuser heard the start {} times",
+        g.errors,
+        g.checked,
+        played(&defuser, "c4.disarmstart")
+    );
+    assert_eq!(g.errors, 0, "the defuse predicted exactly");
+    assert_eq!(played(&defuser, "c4.disarmstart"), 1, "its own start sound once");
+    assert!(sim.clients[0].app.world().get::<mashup::objectives::bomb::Defusing>(local0).is_none());
+}
+
+/// The `name` cvar over the network: a client's new name goes to the
+/// server (setinfo), which renames its character for everyone and tells
+/// everyone "* old changed name to new".
+#[test]
+fn a_client_changes_its_name() {
+    let mut sim = rounds(link(40, 0, 0.0), 58, 2, "");
+    let mut renamed: Vec<Log<mashup::net::NameChanged>> = (1..=2).map(|a| Log::new(&sim, a)).collect();
+    let mut lines: Vec<Log<ChatLine>> = (1..=2).map(|a| Log::new(&sim, a)).collect();
+    client_console(&mut sim, 0, "name \"Alice Liddell\"");
+    for _ in 0..30 {
+        sim.step();
+        for l in renamed.iter_mut() {
+            l.poll(&sim);
+        }
+        for l in lines.iter_mut() {
+            l.poll(&sim);
+        }
+    }
+    let c = sim.character_of(0).unwrap();
+    assert_eq!(sim.server.app.world().get::<mashup::net::NetCharacter>(c).unwrap().name, "Alice Liddell");
+    let text = |l: &ChatLine| l.0.iter().map(|(_, s)| s.as_str()).collect::<String>();
+    for i in 0..2 {
+        assert_eq!(
+            renamed[i].all,
+            vec![mashup::net::NameChanged {
+                old: "Player 1".into(),
+                new: "Alice Liddell".into()
+            }],
+            "client {i}"
+        );
+        let shown: Vec<String> = lines[i].all.iter().map(text).collect();
+        println!("client {i}'s chat: {shown:?}");
+        assert!(shown.iter().any(|s| s == "* Player 1 changed name to Alice Liddell"), "{shown:?}");
+        // The scoreboard and kill feed read the new name.
+        let id = sim.client_id(0);
+        let e = NetSim::owned_by(&mut sim.clients[i], Some(id)).unwrap();
+        let w = sim.clients[i].app.world();
+        assert_eq!(w.get::<mashup::net::NetCharacter>(e).unwrap().name, "Alice Liddell");
+        assert_eq!(w.get::<Name>(e).unwrap().as_str(), "Alice Liddell");
+    }
+    // Its chat lines carry it.
+    let mut logs: Vec<Log<ChatMessage>> = (1..=2).map(|a| Log::new(&sim, a)).collect();
+    client_console(&mut sim, 0, "say hi");
+    for _ in 0..20 {
+        sim.step();
+        for l in logs.iter_mut() {
+            l.poll(&sim);
+        }
+    }
+    assert_eq!(heard(&logs[1]), vec![("Alice Liddell".to_string(), "hi".to_string())]);
+    // The same name again: nothing to tell.
+    client_console(&mut sim, 0, "name \"Alice Liddell\"");
+    for _ in 0..20 {
+        sim.step();
+        renamed[1].poll(&sim);
+    }
+    assert_eq!(renamed[1].all.len(), 1);
+}
+
+/// Flood protection: a burst of chat lines or radio calls from one
+/// player gets through only so far; normal talk always does.
+#[test]
+fn chat_and_radio_floods_are_cut_short() {
+    let mut sim = rounds(link(40, 0, 0.0), 59, 3, "");
+    restart(&mut sim);
+    until_phase(&mut sim, 400, |p| matches!(p, Phase::Live { .. }));
+    let mut logs: Vec<Log<ChatMessage>> = (1..=3).map(|a| Log::new(&sim, a)).collect();
+    let mut calls: Vec<Log<RadioCall>> = (1..=3).map(|a| Log::new(&sim, a)).collect();
+    let mut notices = Log::<Notice>::new(&sim, 1);
+    let run = |sim: &mut NetSim, n: u32, logs: &mut Vec<Log<ChatMessage>>, calls: &mut Vec<Log<RadioCall>>, notices: &mut Log<Notice>| {
+        for _ in 0..n {
+            sim.step();
+            for l in logs.iter_mut() {
+                l.poll(sim);
+            }
+            for l in calls.iter_mut() {
+                l.poll(sim);
+            }
+            notices.poll(sim);
+        }
+    };
+    // Normal talk: a line every two seconds, all of them.
+    for k in 0..4 {
+        client_console(&mut sim, 0, &format!("say line {k}"));
+        run(&mut sim, 128, &mut logs, &mut calls, &mut notices);
+    }
+    assert_eq!(heard(&logs[1]).len(), 4, "normal chat all read");
+    // A flood: twelve lines in one frame.
+    for l in logs.iter_mut() {
+        l.all.clear();
+    }
+    for k in 0..12 {
+        client_console(&mut sim, 0, &format!("say spam {k}"));
+    }
+    run(&mut sim, 30, &mut logs, &mut calls, &mut notices);
+    let got = heard(&logs[1]).len();
+    println!("a flood of 12 lines: {got} read; the sender was told {} times", notices.all.len());
+    assert_eq!(got as f64, mashup::net::chat::SAY_BURST, "only the burst gets through");
+    assert!(!notices.all.is_empty(), "the sender hears why");
+    // A moment later it talks again.
+    run(&mut sim, 128, &mut logs, &mut calls, &mut notices);
+    client_console(&mut sim, 0, "say back again");
+    run(&mut sim, 20, &mut logs, &mut calls, &mut notices);
+    assert_eq!(heard(&logs[1]).last().map(|l| l.1.as_str()), Some("back again"));
+    // Radio: ten calls at once from client 2 (a counter-terrorist like
+    // client 0): its teammate hears the burst.
+    for _ in 0..10 {
+        sim.clients[2].app.world_mut().write_message(RadioRequest {
+            command: "coverme".into(),
+        });
+    }
+    run(&mut sim, 30, &mut logs, &mut calls, &mut notices);
+    let heard_calls = calls[0].all.len();
+    println!("a flood of 10 radio calls: {heard_calls} heard");
+    assert_eq!(heard_calls as f64, mashup::net::chat::RADIO_BURST);
+}
+
+/// Client `i`'s character on the server, by the id it has now.
+fn current_character(sim: &mut NetSim, i: usize) -> Entity {
+    let id = sim.clients[i].app.world().resource::<mashup::net::client::LocalClientId>().0;
+    NetSim::owned_by(&mut sim.server, Some(id)).expect("a character")
+}
+
+/// How far a character walks forward in `ticks` (the host on the server,
+/// or client `i`'s own player as the server has it).
+fn walks(sim: &mut NetSim, who: Option<usize>, ticks: u64) -> f32 {
+    let (e_server, set) = match who {
+        None => {
+            let w = sim.server.app.world_mut();
+            let host = w.query_filtered::<Entity, With<LocalPlayer>>().iter(w).next().unwrap();
+            (host, None)
+        }
+        Some(i) => (current_character(sim, i), Some(i)),
+    };
+    let before = sim.server.app.world().get::<Transform>(e_server).unwrap().translation;
+    let axis = |sim: &mut NetSim, v: Vec2| match set {
+        None => sim.server.app.world_mut().get_mut::<Intent>(e_server).unwrap().move_axis = v,
+        Some(i) => client_intent(sim, i).move_axis = v,
+    };
+    axis(sim, Vec2::Y);
+    sim.ticks(ticks);
+    axis(sim, Vec2::ZERO);
+    sim.ticks(20);
+    let after = sim.server.app.world().get::<Transform>(e_server).unwrap().translation;
+    after.distance(before)
+}
+
+/// The slice 5 report: after a client was killed and reconnected (and a
+/// long session of rounds), neither the host nor the client could walk.
+/// Killed, dropped, back with a new connection, map reloads, restarts:
+/// both walk every time.
+#[test]
+fn everyone_walks_after_deaths_reconnects_and_map_changes() {
+    let mut sim = rounds(link(50, 5, 0.0), 60, 1, "mp_freezetime 1");
+    // A listen server's host.
+    let host = sim.server.spawn_character(Vec3::new(6.0, 1.0, 0.0), source::ID);
+    sim.server.app.world_mut().entity_mut(host).insert((LocalPlayer, Team(1)));
+    let mut next_id = 100;
+    for cycle in 0..4 {
+        restart(&mut sim);
+        until_phase(&mut sim, 400, |p| matches!(p, Phase::Live { .. }));
+        sim.ticks(10);
+        let (h, c) = (walks(&mut sim, None, 64), walks(&mut sim, Some(0), 64));
+        println!("cycle {cycle}: the host walked {h:.2} m, the client {c:.2} m");
+        assert!(h > 1.0, "cycle {cycle}: the host walks ({h} m)");
+        assert!(c > 1.0, "cycle {cycle}: the client walks ({c} m)");
+        // The client is killed (by the host), then leaves and comes back
+        // on a new connection; every other time the map loads again.
+        let victim = current_character(&mut sim, 0);
+        sim.server.app.world_mut().write_message(Damage {
+            force: Vec3::ZERO,
+            target: victim,
+            attacker: Some(host),
+            amount: 10.0,
+            point: Vec3::ZERO,
+            dir: Vec3::X,
+            hitgroup: Hitgroup::Chest,
+            kind: default(),
+            weapon: None,
+        });
+        sim.ticks(30);
+        mashup::net::disconnect(sim.clients[0].app.world_mut(), "Disconnect by user.");
+        sim.ticks(30);
+        if cycle % 2 == 1 {
+            mashup::harness::load_level(sim.server.app.world_mut(), "greybox", None).unwrap();
+            sim.ticks(10);
+        }
+        let link = sim.link.clone();
+        mashup::net::memory::join(sim.clients[0].app.world_mut(), link, next_id).unwrap();
+        next_id += 1;
+        sim.until_joined(600);
+        sim.ticks(30);
+    }
+}
+
+/// What froze the host and a client once (slice 5 notes): two players put
+/// in one spot are each inside the other's box and neither can walk
+/// (Source's stuck test; noclip, which ignores players, still moved).
+/// Spawning now skips spawn points a living player stands on, and the
+/// dead (also those waiting to respawn, unseen) block nobody.
+#[test]
+fn players_never_spawn_inside_each_other() {
+    let mut sim = rounds(link(50, 5, 0.0), 61, 1, "mp_freezetime 1");
+    let host = sim.server.spawn_character(Vec3::new(6.0, 1.0, 0.0), source::ID);
+    sim.server.app.world_mut().entity_mut(host).insert((LocalPlayer, Team(2)));
+    restart(&mut sim);
+    until_phase(&mut sim, 400, |p| matches!(p, Phase::Live { .. }));
+    sim.ticks(10);
+    // The report, reproduced: the client put where the host stands.
+    let at = sim.server.app.world().get::<Transform>(host).unwrap().translation;
+    place(&mut sim, 0, at);
+    sim.ticks(10);
+    let (h, c) = (walks(&mut sim, None, 64), walks(&mut sim, Some(0), 64));
+    println!("one inside the other: the host walked {h:.2} m, the client {c:.2} m");
+    assert!(h < 0.1 && c < 0.1, "stuck in each other (the reported freeze)");
+    // Every counter-terrorist spawn but one taken by someone alive: a
+    // spawn puts the client on the free one, never on another player.
+    let spawns: Vec<Vec3> = {
+        let w = sim.server.app.world_mut();
+        w.query::<(&Transform, &mashup::core::SpawnPoint)>()
+            .iter(w)
+            .filter(|(_, s)| s.team.is_none_or(|t| t == Team(2)))
+            .map(|(t, _)| t.translation)
+            .collect()
+    };
+    assert!(spawns.len() >= 2, "{} spawns", spawns.len());
+    let c = current_character(&mut sim, 0);
+    sim.server.app.world_mut().entity_mut(c).insert(Team(2));
+    for p in &spawns[1..] {
+        let e = sim.server.spawn_character(*p, source::ID);
+        sim.server.app.world_mut().entity_mut(e).insert(Team(2));
+    }
+    place(&mut sim, 0, spawns[0] + Vec3::new(0.0, 0.0, 6.0));
+    {
+        let w = sim.server.app.world_mut();
+        let to = spawns[0] + Vec3::new(3.0, 0.0, 0.0);
+        w.get_mut::<Transform>(host).unwrap().translation = to;
+        if let Some(mut p) = w.get_mut::<Position>(host) {
+            p.0 = to;
+        }
+    }
+    for _ in 0..spawns.len() {
+        mashup::rules::put_at_spawn(sim.server.app.world_mut(), c, false);
+        let there = sim.server.app.world().get::<Transform>(c).unwrap().translation;
+        assert!(there.distance(spawns[0]) < 0.01, "put on the free spawn, not {there}");
+    }
+    // A dead player waiting to respawn (health left, unseen) blocks nobody.
+    let ghost_at = sim.server.app.world().get::<Transform>(c).unwrap().translation;
+    let host_at = sim.server.app.world().get::<Transform>(host).unwrap().translation;
+    let ghost = sim.server.spawn_character(host_at, source::ID);
+    // As the rules leave one (a team change, a new game): dead, its
+    // collider off.
+    sim.server.app.world_mut().entity_mut(ghost).insert((
+        Team(2),
+        mashup::rules::Dead { since: f64::MIN },
+        avian3d::prelude::ColliderDisabled,
+    ));
+    let _ = ghost_at;
+    sim.ticks(70);
+    let h = walks(&mut sim, None, 64);
+    println!("the host with an unseen dead player on it walked {h:.2} m");
+    assert!(h > 1.0, "a dead player doesn't hold the host");
+}

@@ -388,15 +388,45 @@ pub fn begin_level_change(world: &mut World, id: &str) {
     world.insert_resource(crate::map::LoadedMapName(id.to_string()));
 }
 
+/// A test client's map loads take this many frames (a slow machine, a big
+/// map): `serve_maps` loads what the server asks for that many updates
+/// after it asked. 0 (the default without it): at once.
+#[derive(Resource, Clone, Copy, Debug, Default)]
+pub struct MapLoadDelay(pub u32);
+
+/// Map loads waiting for their frame (`MapLoadDelay`): frames left, map,
+/// file.
+#[derive(Resource, Default)]
+struct DelayedLoads(Vec<(u32, String, Option<std::path::PathBuf>)>);
+
 fn load_requested_maps(world: &mut World, mut cursor: Local<bevy::ecs::message::MessageCursor<crate::net::NetEvent>>) {
     let events: Vec<crate::net::NetEvent> = cursor
         .read(world.resource::<Messages<crate::net::NetEvent>>())
         .cloned()
         .collect();
+    let delay = world.get_resource::<MapLoadDelay>().map_or(0, |d| d.0);
+    let mut queue = world.remove_resource::<DelayedLoads>().unwrap_or_default();
     for e in events {
-        if let crate::net::NetEvent::LoadMap { map, file } = e
-            && let Err(err) = load_level(world, &map, file.as_deref())
-        {
+        match e {
+            crate::net::NetEvent::LoadMap { map, file } => queue.0.push((delay, map, file)),
+            // Leaving drops a load still to come.
+            crate::net::NetEvent::Disconnected(_) => queue.0.clear(),
+            _ => {}
+        }
+    }
+    let mut due = Vec::new();
+    queue.0.retain_mut(|(left, map, file)| {
+        if *left == 0 {
+            due.push((map.clone(), file.clone()));
+            false
+        } else {
+            *left -= 1;
+            true
+        }
+    });
+    world.insert_resource(queue);
+    for (map, file) in due {
+        if let Err(err) = load_level(world, &map, file.as_deref()) {
             crate::net::disconnect(world, &format!("couldn't load the server's map {map}: {err}"));
         }
     }

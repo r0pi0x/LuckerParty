@@ -34,6 +34,7 @@ pub mod anchors;
 pub mod chat;
 pub mod client;
 pub mod cvars;
+pub mod decals;
 pub mod game;
 pub mod http;
 pub mod interp;
@@ -71,7 +72,7 @@ pub const PROTOCOL_ID: u64 = 0x4C55_434B_4552_5059;
 /// This build's network version. A server refuses clients of another
 /// version. Bump the suffix when the protocol changes in a way the
 /// replicon protocol hash can't see (a field added to a message).
-pub const NET_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/net8");
+pub const NET_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/net9");
 
 /// The owner id of the listen server's own player (`NetCharacter::owner`).
 /// Remote clients' ids are never 0.
@@ -223,6 +224,14 @@ pub struct ChangeLevel {
     pub tick_nanos: u64,
 }
 
+/// Client -> server: I have the map loaded (`map`, the id the server
+/// offered): put me in the game (`rules::enter_game`). Until then the
+/// server keeps the player out of it (`core::Connecting`).
+#[derive(Message, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct Loaded {
+    pub map: String,
+}
+
 /// Client -> server: send me your map's file (`sv_allowdownload`).
 #[derive(Message, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct MapRequest {
@@ -363,6 +372,11 @@ impl NetCmd {
 pub struct UserCmds {
     /// Oldest first.
     pub cmds: Vec<NetCmd>,
+    /// The client's clock epoch: how often its command clock has jumped
+    /// (`predict::CommandClock::jumps`). The server reports the lead of
+    /// the newest epoch only, so commands sent before a jump never steer
+    /// the clock after it.
+    pub epoch: u32,
 }
 
 /// Commands each `UserCmds` repeats besides the new ones.
@@ -394,9 +408,11 @@ pub struct OwnState {
     /// the newest command's tick less the server's last tick when it
     /// arrived (1: just in time). None: none heard.
     pub lead: Option<i32>,
-    /// The newest command tick heard (the client counts only the leads of
-    /// commands it sent after it last moved its clock).
+    /// The newest command tick heard.
     pub newest: u64,
+    /// The clock epoch `lead` is from (`UserCmds::epoch`): the client
+    /// counts only leads of its present epoch.
+    pub epoch: u32,
     /// The map entity index (`map::MapBrushEntity`) of the mover the
     /// player stands on (`MovementState::ground`, an entity, isn't in
     /// `state`: ids differ), so a correction keeps it riding.
@@ -406,16 +422,13 @@ pub struct OwnState {
     /// Freeze time holds the player until this tick (it may look and pick
     /// a weapon); `held` is the dead's hold (only the look).
     pub frozen_until: Option<u64>,
-    /// Arming or defusing the bomb holds it in place (no moving or
-    /// jumping; `objectives::bomb`).
-    pub still: bool,
     /// What the HUD shows of the player that isn't predicted: its money
-    /// (`weapon::economy::Money`), armour (amount, helmet), whether it has
-    /// a defusal kit, and since when (server tick) it arms the bomb.
+    /// (`weapon::economy::Money`), armour (amount, helmet) and whether it
+    /// has a defusal kit. (Arming and defusing the bomb are predicted:
+    /// `objectives::bomb::Arming`, `Defusing` in `state`.)
     pub money: Option<u32>,
     pub armor: Option<(f32, bool)>,
     pub kit: bool,
-    pub arming: Option<f64>,
     /// Ticks run without this client's command (its last one repeated),
     /// and commands that came after their tick, since it joined.
     pub missed: u32,
@@ -866,6 +879,21 @@ pub struct CvarValues {
     pub values: Vec<(String, String)>,
 }
 
+/// Client -> server: my name is now this (the `name` cvar changed while
+/// connected; Source's setinfo).
+#[derive(Message, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct NameRequest {
+    pub name: String,
+}
+
+/// Server -> every player: someone changed their name (the game's
+/// "* %s1 changed name to %s2").
+#[derive(Message, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct NameChanged {
+    pub old: String,
+    pub new: String,
+}
+
 /// The network's systems, protocol and console commands. With
 /// `RepliconPlugins` and renet's; nothing runs until `listen` or
 /// `connect` (single player stays `NetRole::Standalone`).
@@ -904,6 +932,7 @@ impl Plugin for NetPlugin {
         .make_event_independent::<ChangingLevel>()
         .add_server_event::<ChangeLevel>(Channel::Ordered)
         .make_event_independent::<ChangeLevel>()
+        .add_client_message::<Loaded>(Channel::Ordered)
         .add_client_message::<MapRequest>(Channel::Ordered)
         .add_client_message::<MapAck>(Channel::Unreliable)
         .add_server_message::<MapChunk>(Channel::Ordered)
@@ -959,6 +988,9 @@ impl Plugin for NetPlugin {
         .add_mapped_server_message::<ServerSound>(Channel::Unreliable)
         .add_server_message::<CvarValues>(Channel::Ordered)
         .make_message_independent::<CvarValues>()
+        .add_client_message::<NameRequest>(Channel::Ordered)
+        .add_server_message::<NameChanged>(Channel::Ordered)
+        .make_message_independent::<NameChanged>()
         .add_server_message::<MapHud>(Channel::Ordered)
         .init_resource::<NetSettings>()
         .init_resource::<NetVersion>()
@@ -977,6 +1009,7 @@ impl Plugin for NetPlugin {
         chat::plugin(app);
         cvars::plugin(app);
         maps::plugin(app);
+        decals::plugin(app);
         udp::plugin(app);
         query::plugin(app);
         memory::plugin(app);

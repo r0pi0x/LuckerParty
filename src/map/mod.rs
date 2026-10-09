@@ -46,6 +46,7 @@ pub use material_fx::{DetailMode, MapSelfIllum, MapUvTransform};
 pub mod merge;
 pub mod probe_lit;
 pub mod radio;
+pub mod bot_profiles;
 pub mod nav;
 pub mod particles;
 pub mod tracer;
@@ -60,7 +61,7 @@ pub mod room;
 pub mod soundscape;
 pub mod steam;
 pub use live_sound::{LiveSounds, SoundControl, SoundKey, StartSound};
-pub use sound::{GameSound, MapSoundClip, MapSoundEntry, MapSounds, MapSurface, PlaySound, SoundLevel};
+pub use sound::{GameSound, MapSoundClip, MapSoundEntry, MapSounds, MapSurface, PlaySound, PredictedSound, SoundLevel};
 pub mod shells;
 pub mod sky_occluder;
 pub mod sprite_material;
@@ -1314,6 +1315,8 @@ pub struct MapData {
     pub round_sounds: RoundSounds,
     /// The team radio (commands, menus, chat format), when the game has one.
     pub radio: Option<radio::RadioCommands>,
+    /// The game's bot personalities (bots' names), when it has them.
+    pub bot_profiles: Option<bot_profiles::BotProfiles>,
     /// Gravity for physics bodies, m/s^2 (downward), when the game sets it.
     pub gravity: Option<f32>,
     /// The playable area (engine space, min and max), when the map has a 3D
@@ -3648,6 +3651,9 @@ fn spawn_map(
         if let Some(r) = &data.radio {
             commands.insert_resource(r.clone());
         }
+        if let Some(p) = &data.bot_profiles {
+            commands.insert_resource(p.clone());
+        }
     }
 
     commands.spawn((
@@ -3752,6 +3758,7 @@ pub fn unload_map(world: &mut World) {
     world.remove_resource::<MapWater>();
     world.remove_resource::<RoundSounds>();
     world.remove_resource::<radio::RadioCommands>();
+    world.remove_resource::<bot_profiles::BotProfiles>();
     world.remove_resource::<MapEntities>();
     world.remove_resource::<water::MapWaterRender>();
     world.remove_resource::<water::WaterView>();

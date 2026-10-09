@@ -8,6 +8,17 @@ plan when work starts; delete them when done.
 
 ## 0. Playtest feedback (2026-10-07), top priority
 
+- First run on a new PC: find the CS:S install automatically. Today only
+  `mashup.local.toml` names it; without it the game silently falls back to
+  built-in looks. Find Steam (Windows registry `HKCU\Software\Valve\Steam`
+  `SteamPath`; Linux `~/.steam/steam`, `~/.local/share/Steam`, Flatpak;
+  macOS `~/Library/Application Support/Steam`), read
+  `steamapps/libraryfolders.vdf` for the library holding app 240, then its
+  `appmanifest_240.acf` (installdir, build id for the mount doctor). If not
+  found, a first-run dialog to pick the folder, saved in the user's config
+  folder; an explicit `mashup.local.toml` path still wins. Log clearly
+  which install is used, or that none was found.
+
 - Done 2026-10-09, to playtest and confirm with CS:S captures
   (coordinator): (1) other rooms showing through the sky
   (mg_creative_multigames_v8_ns): placed weapons, water surfaces (one
@@ -185,7 +196,11 @@ buying, objectives, scoreboard, chat and radio; bots with `bot_quota`;
 `changelevel` taking clients along, late joiners' full state, map
 downloads (connection or `sv_downloadurl`, hash-checked, cached) and the
 GameUI loading dialog for joining and map changes (detailed view:
-`mashup_loading_details 1`). Next: slice 8 (Find Servers, LAN
+`mashup_loading_details 1`). Their leftovers too: loading players out
+of the game, predicted bomb arming and defusing, names (`name` over the
+network), chat and radio flood limits, spawns never inside another
+player, `changelevel` to the same map, bot profile names and `kick`,
+decals for late joiners. Next: slice 8 (Find Servers, LAN
 discovery, direct connect UI). Open questions 1, 3 and 4
 still wait on the user; 2 was taken as both (listen first, dedicated too).
 
