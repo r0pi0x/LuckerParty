@@ -2,7 +2,7 @@
 //! this module owns Source's conventions: Z-up inches to Y-up meters, which
 //! surfaces draw and collide, and which entities are spawns.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use bevy::prelude::*;
 use vbsp::{BrushFlags, Bsp, TextureFlags};
@@ -466,6 +466,9 @@ pub fn face_triangles_blend(face: &vbsp::Handle<'_, vbsp::Face>) -> Vec<[(vbsp::
 pub struct LightmapLayout {
     /// Per world face (in `models[0].faces()` order): its block, if lit.
     pub face_slots: Vec<Option<usize>>,
+    /// Drawn brush entities' lit faces (by index in the face lump): their
+    /// blocks.
+    pub entity_face_slots: HashMap<usize, usize>,
     pub placements: Vec<lightmap::Placement>,
     /// Block for drawn faces without lighting.
     pub white: usize,
@@ -514,23 +517,29 @@ pub fn convert_level(bsp: &Bsp, bytes: &[u8], name: &str, hdr: bool) -> (MapData
     let entities = brush_entities(bsp);
     // Movers (doors, buttons, platforms) keep their faces local to their
     // own node (`MapMesh::entity`), so the logic layer can move them.
+    // Brush entity faces' lightmap blocks, by face index (infodecals on
+    // brush entities take them).
+    let mut entity_face_slots: HashMap<usize, usize> = HashMap::new();
     let faces = world
         .faces()
-        .map(|f| (f, None, None))
+        .map(|f| (f, None, None, None))
         .chain(entities.iter().filter(|e| e.drawn).flat_map(|e| {
             bsp.models()
                 .nth(e.model)
                 .into_iter()
-                .flat_map(|m| m.faces().collect::<Vec<_>>())
-                .map(|f| {
+                .flat_map(|m| {
+                    let first = m.first_face.max(0) as usize;
+                    m.faces().enumerate().map(move |(i, f)| (f, first + i)).collect::<Vec<_>>()
+                })
+                .map(|(f, index)| {
                     if e.mover {
-                        (f, Some((Quat::IDENTITY, Vec3::ZERO)), Some(e.entity))
+                        (f, Some((Quat::IDENTITY, Vec3::ZERO)), Some(e.entity), Some(index))
                     } else {
-                        (f, Some(e.transform), None)
+                        (f, Some(e.transform), None, Some(index))
                     }
                 })
         }));
-    for (face, transform, mover) in faces {
+    for (face, transform, mover, face_index) in faces {
         let in_world = transform.is_none();
         // Source-space position of a face vertex (brush entity models are
         // stored around their origin).
@@ -624,6 +633,8 @@ pub fn convert_level(bsp: &Bsp, bytes: &[u8], name: &str, hdr: bool) -> (MapData
         }
         if in_world {
             *face_slots.last_mut().unwrap() = slot;
+        } else if let (Some(i), Some(slot)) = (face_index, slot) {
+            entity_face_slots.insert(i, slot);
         }
         let material = tex.name().to_lowercase();
         // Meshes are per material and per part (world, 3D skybox, or a
@@ -694,6 +705,7 @@ pub fn convert_level(bsp: &Bsp, bytes: &[u8], name: &str, hdr: bool) -> (MapData
     data.meshes = by_material.into_values().filter(|m| !m.indices.is_empty()).collect();
     let layout = LightmapLayout {
         face_slots,
+        entity_face_slots,
         placements,
         white,
     };

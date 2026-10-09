@@ -20,6 +20,8 @@ struct WaterParams {
     fog_gamma: vec4<f32>,
     reflect_tint_linear: vec4<f32>,
     reflect_tint_raw: vec4<f32>,
+    // Linear; w = 1 with $blurrefract.
+    refract_tint: vec4<f32>,
     scene_fog_linear: vec4<f32>,
     scene_fog_gamma: vec4<f32>,
     scene_fog_range: vec4<f32>,
@@ -180,10 +182,27 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let pass1 = params.force_cheap < 0.5 && (params.reflect > 0.5 || params.refract > 0.5);
     var color = vec3<f32>(0.0);
     if pass1 {
-        let offset = s1.a * n1.xy * a0;
+        let blur = params.refract_tint.w > 0.5;
+        // Distortion fades with the fog alpha, except with $blurrefract
+        // (section 5).
+        let offset = s1.a * n1.xy * select(a0, 1.0, blur);
         var refr = vec4<f32>(0.0, 0.0, 0.0, 1.0);
         if params.refract > 0.5 {
-            refr = refraction(refract_base + params.refract_amount * offset, p.y);
+            let uv = refract_base + params.refract_amount * offset;
+            if blur {
+                // $blurrefract (section 6.2): a 5x5 box of 0.005 uv steps,
+                // colour and fog alpha, then $refracttint.
+                var sum = vec4<f32>(0.0);
+                for (var i = -2; i <= 2; i++) {
+                    for (var j = -2; j <= 2; j++) {
+                        sum += refraction(uv + vec2<f32>(f32(i), f32(j)) * 0.005, p.y);
+                    }
+                }
+                refr = sum / 25.0;
+                refr = vec4<f32>(refr.rgb * params.refract_tint.rgb, refr.w);
+            } else {
+                refr = refraction(uv, p.y);
+            }
         }
         var a = refr.w;
         if params.above_water < 0.5 {

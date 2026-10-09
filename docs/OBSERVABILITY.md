@@ -349,7 +349,10 @@ Only `Reflect`-registered types are visible; register new core components in
 - Water (CS:S cvars): `r_WaterDrawReflection 0` / `r_WaterDrawRefraction
   0` turn the planar reflection / refraction off (to tell which one an
   artefact comes from), `mat_drawwater 0` hides water surfaces,
-  `r_waterforcereflectentities 1` reflects models too. Under water the
+  `r_waterforcereflectentities 1` reflects models too (CS:S's "Water
+  detail": Simple reflections = `r_waterforceexpensive 0` and
+  `r_waterforcereflectentities 0`, Reflect world = 1 0, the default,
+  Reflect all = 1 1). Under water the
   material's screen warp shows (de_port: `+setpos 700 2700 235 +setang
   -5 140 0` with `+noclip +god`); with the eye a few units above a surface
   (`+setpos 700 2700 258 +setang 20 140 0`) the strip under the waterline

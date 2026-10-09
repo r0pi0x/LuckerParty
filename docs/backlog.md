@@ -98,8 +98,11 @@ agent worktrees under `.claude/worktrees/` (D: agent-a052e118eeb8d4c8d).
   [plans/active/other-maps.md](plans/active/other-maps.md) (catalog).
   Fixed: aztec's walls, props' ambient light on older maps, brush
   entities, additive glows, HDR skies, start-on switchable lights, murky
-  water, decals on terrain. Left: reference views for aztec, office and
-  nuke (needs the shared game), unplaced decals, a real Water shader.
+  water, decals on terrain, the Water shader (section 8), unplaced
+  infodecals (131 -> 13 over the stock maps: a face was skipped when all
+  its corners were far from the decal; brush entities the decal's probe
+  hits take it). Left: reference views for aztec, office and nuke (needs
+  the shared game), the 13 decals left (section 10).
 
 ## 2. Custom maps and minigames
 
@@ -406,9 +409,11 @@ docs/plans/active/sound.md.
   planar reflection, the cheap cubemap pass, under-water fog (world,
   props, ropes, decals, particles), bottom materials, the
   `$underwateroverlay` screen warp, the intersection view's height fog
-  and the water cvars are in. Left: a Refract shader spec (the warp's
+  the water cvars, `$blurrefract` with `$refracttint` and the "Water
+  detail" choices (`map::water::WATER_DETAIL`, for the Video Advanced
+  menu) are in. Left: a Refract shader spec (the warp's
   strength and blur are guesses: de_port's `water_warp01` looks subtle),
-  `$blurrefract`/`$refracttint` and the `$basetexture` variant, and a
+  the `$basetexture` variant (no stock material uses it), and a
   refcmp comparison of de_port/de_chateau water (no reference captures
   yet; it would settle de_port's dark speckles: refraction lookups at
   `$refractamount` 5 landing on barely submerged shore, which the spec's
@@ -499,9 +504,13 @@ dithered fade bands. Left:
 
 Counts are from de_dust2's entity lump and static prop lump.
 
-- **Remaining decals**: 6 of dust2's 135 sit on props or brush entities
-  rather than world faces. Other maps: assault 45, nuke and train 21
-  each (not on brush entities; see plans/active/other-maps.md).
+- **Remaining decals**: 13 infodecals over the stock maps find no
+  surface (dust2 5, tides 3, compound 2, dust 2, train 1): by props
+  (window frames) or farther than our reach from any face; the probe
+  ignores props; whether the engine puts them on props is open
+  (overlays_decals.md). Overlays with
+  no geometry (train 8, assault 5, others 1) list no faces or faces
+  away from their quad: nothing to draw (see plans/active/other-maps.md).
 - **Verify inferred Source rules** with the comparison tool, using a local
   copy of a map with test entities added where dust2 has no example: floor
   and ceiling decal orientation, decal reach, overall brightness/tonemapping.
