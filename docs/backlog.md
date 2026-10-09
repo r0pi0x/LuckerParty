@@ -17,13 +17,19 @@ plan when work starts; delete them when done.
   from inputs (game_ui, player_speedmod, point_template/env_entity_maker,
   func_physbox, phys_thruster; specs in specs/source/*.md written
   2026-10-08, awaiting review).
-- Inside geometry: with the camera inside a model (the car on
-  mg_item_battle_v4b) its far faces show the sky, and inside big stone
-  brushes the view is black. Check what CS:S shows in the same spots
-  (coordinator: reference captures) — Source culls back faces and draws
-  nothing from inside solid leaves — then match it; if the difference is
-  ours (double-sided materials, sky drawn where the world should be),
-  fix it.
+- Inside geometry, checked against CS:S (2026-10-09, mg_item_battle_v4b,
+  reference captures in the coordinator's target/inside/): inside the stone
+  wall ours already matches (world drawn, sky black). Inside the car
+  (`setpos 2241.89 1311.06 79.39; setang 4.92 181.70 0`) CS:S shows the
+  world through the car with only the hood's inside in view; ours shows
+  the car's insides (wheels, chassis) and no world behind: back faces
+  drawn, a different prop pose, or the parented car placed differently.
+- `setpos` puts our eye lower than CS:S's for the same coordinates (both
+  captures above): check our setpos/getpos convention (feet vs eye,
+  noclip's eye offset) against Source so pasted positions match.
+- Options faithful to CS:S: the Keyboard tab's Advanced dialog ("Fast
+  weapon switch" = `hud_fastswitch`, default 0, and its other entries) and
+  any other option CS:S shows that we lack; defaults as CS:S's.
 
 - Decals persist across rounds (bullet holes, blood), as we believe CS:S
   does (players bind `r_cleardecals`, now there; `mashup_round_cleardecals
