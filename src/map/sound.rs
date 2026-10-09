@@ -381,8 +381,10 @@ fn play_sounds(
     mut sources: ResMut<Assets<LiveClip>>,
     hearing: Res<Hearing>,
     room: Res<RoomDsp>,
+    mix: Option<Res<super::live_sound::SoundMix>>,
     mut seed: Local<u64>,
 ) {
+    let mix = mix.map_or_else(Default::default, |m| *m);
     let Some(bank) = bank else {
         messages.clear();
         return;
@@ -401,7 +403,7 @@ fn play_sounds(
         }
         let wave = entry.waves[((unit() * entry.waves.len() as f32) as usize).min(entry.waves.len() - 1)];
         let clip = &bank.0.clips[wave];
-        let volume = m.volume.unwrap_or_else(|| entry.volume.draw(unit())).clamp(0.0, 1.0);
+        let volume = m.volume.unwrap_or_else(|| entry.volume.draw(unit())).clamp(0.0, 1.0) * mix.gain(&m.entry);
         let drawn = entry.pitch.draw(unit());
         let pitch = m.pitch.unwrap_or(drawn).round().clamp(1.0, 255.0);
         let level = match entry.level {

@@ -32,6 +32,13 @@ pub(super) fn dialog_size(menu: &GameMenu, page: Page) -> (f32, f32) {
             .and_then(|u| u.options.get("video_advanced"))
             .and_then(|l| l.get("OptionsSubVideoAdvancedDlg"))
             .map_or((482.0, 358.0), |c| (c.wide, c.tall)),
+        Page::MultiplayerAdvanced => menu
+            .ui
+            .0
+            .as_ref()
+            .and_then(|u| u.options.get("multiplayer_advanced"))
+            .and_then(|l| l.get("MultiplayerAdvancedDialog"))
+            .map_or((540.0, 376.0), |c| (c.wide, c.tall)),
         Page::Extras => {
             let n = menu.rows().len() as f32;
             (420.0, 44.0 + n * 28.0 + 12.0)
@@ -183,6 +190,7 @@ pub(super) fn dialog(commands: &mut Commands, ctx: &Ctx, page: Page) {
         Page::Settings => menu.text("#GameUI_Options", "Options"),
         Page::KeyboardAdvanced => menu.text("#GameUI_KeyboardAdvanced_Title", "Keyboard - Advanced"),
         Page::VideoAdvanced => menu.text("#GameUI_VideoAdvanced_Title", "Video - Advanced"),
+        Page::MultiplayerAdvanced => menu.text("#GameUI_MultiplayerAdvanced", "Multiplayer Advanced"),
         Page::Extras => "Lucker Party Options".into(),
     };
     let mut spec = FrameSpec::new(page.window());
@@ -220,6 +228,20 @@ pub(super) fn dialog(commands: &mut Commands, ctx: &Ctx, page: Page) {
         }
         Page::KeyboardAdvanced | Page::VideoAdvanced => {
             page_controls(commands, ctx, frame, (w, h));
+        }
+        Page::MultiplayerAdvanced => {
+            // Its list where the layout puts it (`CPanelListPanel`), the
+            // buttons from the layout too.
+            let at = menu
+                .layout()
+                .and_then(|l| l.get("PanelListPanel"))
+                .map(|c| (coord(c.x), coord(c.y), c.wide, c.tall));
+            options_list(commands, ctx, frame, at.unwrap_or((16.0, 56.0, w - 60.0, h - 102.0)));
+            if menu.layout().is_some() {
+                page_controls(commands, ctx, frame, (w, h));
+            } else {
+                dialog_buttons(commands, ctx, frame, (w, h), &[Action::Ok, Action::Cancel]);
+            }
         }
         Page::Extras => {
             column(commands, ctx, frame, (16.0, 36.0, w - 32.0), true);
@@ -268,6 +290,7 @@ pub(super) fn label_of(row: &Row) -> String {
     match row {
         Row::Button { label, .. } | Row::Control { label, .. } | Row::Bind { label, .. } => label.clone(),
         Row::Heading(t) | Row::Info(t) => t.clone(),
+        Row::Greyed { label, .. } => label.clone(),
     }
 }
 
@@ -444,9 +467,12 @@ pub(super) fn page_controls(commands: &mut Commands, ctx: &Ctx, parent: Entity, 
         ctx.rows.iter().position(|r| match r {
             Row::Control { field, .. } => menu.field_name(*field).is_some_and(|f| f.eq_ignore_ascii_case(name)),
             Row::Button {
-                action: Action::VideoAdvanced,
+                action: Action::Ok, ..
+            } if menu.page == Page::MultiplayerAdvanced => name.eq_ignore_ascii_case("OK"),
+            Row::Button {
+                action: Action::Cancel,
                 ..
-            } => name == "AdvancedButton",
+            } if menu.page == Page::MultiplayerAdvanced => name.eq_ignore_ascii_case("Cancel"),
             Row::Button {
                 action: Action::Ok, ..
             } => name == "Button1" && menu.page.over_options(),
@@ -454,6 +480,7 @@ pub(super) fn page_controls(commands: &mut Commands, ctx: &Ctx, parent: Entity, 
                 action: Action::Cancel,
                 ..
             } => name == "Button2" && menu.page.over_options(),
+            Row::Button { action, .. } => advanced_button(action).is_some_and(|b| b == name),
             _ => false,
         })
     };
@@ -606,7 +633,7 @@ pub(super) fn column(commands: &mut Commands, ctx: &Ctx, parent: Entity, (x, y, 
     let mut ry = y;
     for (i, row) in ctx.rows.iter().enumerate() {
         match row {
-            Row::Info(t) | Row::Heading(t) => {
+            Row::Info(t) | Row::Heading(t) | Row::Greyed { label: t, .. } => {
                 label(commands, parent, look, (x, ry, w, row_h - 4.0), t, font.clone(), look.dull(), -1);
             }
             Row::Button { label: text, enabled, action } => {
@@ -633,6 +660,66 @@ pub(super) fn column(commands: &mut Commands, ctx: &Ctx, parent: Entity, (x, y, 
         }
         ry += row_h;
     }
+}
+
+/// A scrolled list of labelled controls (VGUI's `CPanelListPanel`: Create
+/// Server's Game page, Multiplayer > Advanced) at a box in `parent`: the
+/// open list's rows (`GameMenu::list`), each its label and control (a
+/// check box its own words), greyed rows drawn disabled.
+pub(super) fn options_list(commands: &mut Commands, ctx: &Ctx, parent: Entity, (lx, ly, lw, lh): (f32, f32, f32, f32)) {
+    let (look, menu) = (ctx.look, ctx.menu);
+    let list = commands
+        .spawn((
+            Node {
+                border: UiRect::all(px(1.0)),
+                overflow: Overflow::clip(),
+                ..place(look, lx, ly, lw, lh)
+            },
+            bevel(look, false),
+            RelativeCursorPosition::default(),
+            WheelList,
+            ChildOf(parent),
+        ))
+        .id();
+    let (len, shown) = menu.list();
+    let bar_w = look.number("ScrollBar.Wide", 17.0);
+    let row_h = ((lh - 4.0) / shown.max(1) as f32).floor();
+    let font = look.default_font();
+    let inner = lw - bar_w - 4.0;
+    let label_w = (inner * 0.5).round();
+    for (k, i) in (menu.scroll..(menu.scroll + shown).min(len)).enumerate() {
+        let y = 2.0 + k as f32 * row_h;
+        let row = &ctx.rows[i];
+        match row {
+            Row::Control { label: text, control: c, .. } => {
+                if matches!(c, Control::Check(_)) {
+                    control(commands, ctx, list, i, row, (4.0, y, inner - 4.0, 24.0), Some(text), None);
+                } else {
+                    label(commands, list, look, (6.0, y, label_w - 8.0, 24.0), text, font.clone(), look.text(), -1);
+                    control(commands, ctx, list, i, row, (label_w, y, inner - label_w, 24.0), None, None);
+                }
+            }
+            Row::Greyed { label: text, control: c } => {
+                let rect = (label_w, y, inner - label_w, 24.0);
+                match c {
+                    Control::Check(on) => {
+                        widgets::check_button(commands, list, look, (4.0, y, inner - 4.0, 24.0), text, *on, false, false, ());
+                        continue;
+                    }
+                    Control::Combo { text: shown, .. } => {
+                        widgets::combo_box(commands, list, look, rect, shown, false, false, false, ());
+                    }
+                    Control::Text { text: value, .. } => {
+                        widgets::text_entry(commands, list, look, rect, value, None, false, false, ());
+                    }
+                    Control::Radio(_) | Control::Slider { .. } => {}
+                }
+                label(commands, list, look, (6.0, y, label_w - 8.0, 24.0), text, font.clone(), look.disabled(), -1);
+            }
+            _ => {}
+        }
+    }
+    scroll_bar(commands, list, look, (lw - bar_w - 2.0, 0.0, lh - 2.0), (len, shown, menu.scroll));
 }
 
 /// A layout coordinate from its start edge (dialog layouts use plain

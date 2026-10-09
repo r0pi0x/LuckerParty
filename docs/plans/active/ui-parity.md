@@ -7,8 +7,10 @@ behaves as VGUI's controls do; anything Lucker Party adds beyond CS:S
 stays out of CS:S's dialogs (our own dialog, Lucker Party Options, or an
 entry marked as ours).
 
-Status: the widget layer, movable frames, the options dialog, its two
-Advanced dialogs, Create Server, Find Servers (filters, Add Server,
+Status: the widget layer, movable frames, the options dialog (all six
+tabs, Voice greyed), its three Advanced dialogs (Multiplayer > Advanced
+from the install's `cfg/user.scr`), the cvars behind its controls
+(second pass, 2026-10), Create Server, Find Servers (filters, Add Server,
 password), the loading dialog and the first-run dialog are done (first
 pass, 2026-10). What's left is at the end.
 
@@ -51,33 +53,111 @@ from its `.res`, controls mashup lacks greyed.
 |---|---|---|---|
 | Keyboard | `listpanel_keybindlist` | SectionedListPanel | the action list (as before) |
 | | `Defaults`, `KeyAdvancedButton`, `ChangeKeyButton`, `ClearKeyButton` | Button | widget buttons where the file puts them |
-| Keyboard > Advanced | `FastSwitchCheck`, `ConsoleCheck` | CheckButton | check buttons; OK (default) / Cancel; modal over the options |
+| Keyboard > Advanced | `FastSwitchCheck`, `ConsoleCheck` | CheckButton | `hud_fastswitch`, `con_enable`; OK (default) / Cancel; modal over the options |
 | Mouse | `ReverseMouse` | CCvarNegateCheckButton | `m_pitch` negated |
 | | `Slider` + `SensitivityLabel` | CCvarSlider + TextEntry | `sensitivity`: slider with ticks and Low/High; the entry shows the value and sets it when it reads as one in range |
-| | `MouseFilter`, `MouseRaw`, `Joystick*`, `MouseAcceleration*` | CCvarToggleCheckButton / CheckButton / CCvarSlider / TextEntry | greyed (mashup lacks `m_filter`, `m_rawinput`, joysticks); those whose words the install lacks are left out |
+| | `MouseFilter` | CCvarToggleCheckButton | `m_filter` (0): averages this frame's motion with the last's |
+| | `MouseAccelerationCheckbox` + `MouseAccelerationSlider` + `MouseAccelerationLabel` | CheckButton / CCvarSlider / TextEntry | `m_customaccel` (0; ticked: 3), `m_customaccel_exponent` (1.05; slider 1 to 1.4, the entry beside it) |
+| | `MouseRaw`, `Joystick*` | CCvarToggleCheckButton | greyed (see below); those whose words the install lacks are left out |
 | Audio | `SFXSlider` | CCvarSlider | `volume` |
-| | `MusicSlider`, `snd_mute_losefocus` | CCvarSlider / CCvarToggleCheckButton | greyed (no cvar) |
-| | `SpeakerSetup`, `SoundQuality`, `CloseCaptionCheck`, `AudioSpokenLanguage` | ComboBox | greyed |
-| Video | `Resolution` | ComboBox | `mashup_resolution`: the monitor's modes in a drop-down |
+| | `MusicSlider` | CCvarSlider | `snd_musicvolume` (1): sounds under `music/` and MP3s (`map::live_sound::is_music`) |
+| | `snd_mute_losefocus` | CCvarToggleCheckButton | `snd_mute_losefocus` (1): silent while the window is in the background (`client::audio`) |
+| | `SpeakerSetup`, `SoundQuality`, `CloseCaptionCheck`, `AudioSpokenLanguage` | ComboBox | greyed (see below) |
+| Video | `Resolution` | ComboBox | `mashup_resolution`: the monitor's modes in a drop-down, those of the aspect ratio picked |
+| | `AspectRatio` | ComboBox | Normal (4:3), Widescreen 16:9, Widescreen 16:10: filters the resolutions (from the size now; picking one of another ratio moves the size to that ratio's largest, as CS:S's list refills); no cvar |
 | | `DisplayModeCombo` | ComboBox | `mashup_fullscreen`: Full screen, Windowed (and Borderless) |
 | | `AdvancedButton` | Button | opens Video > Advanced |
-| | `AspectRatio`, `GammaButton` | ComboBox / Button | greyed; `VRMode` (no words in the install) left out |
+| | `GammaButton`, `VRMode` | Button / ComboBox | greyed (see below) |
 | Video > Advanced (`OptionsSubVideoAdvancedDlg.res`, 482 x 358) | `AntialiasingMode` | ComboBox | `mat_antialias` (None, 2x, 4x MSAA) |
+| | `WaterDetail` | ComboBox | `r_waterforceexpensive` and `r_waterforcereflectentities` together: Simple reflections (0 0), Reflect world (1 0, the default), Reflect all (1 1) |
 | | `VSync` | ComboBox | `mat_vsync` as Disabled / Enabled |
 | | `HDR` (hidden in the file, shown when the mod has HDR) | ComboBox | `mat_hdr_level` |
-| | `FovSlider` | CCvarSlider (`cvar_name fov_desired`) | greyed (no `fov_desired`) |
-| | `ModelDetail`, `TextureDetail`, `ShaderDetail`, `WaterDetail`, `ShadowDetail`, `ColorCorrection`, `FilteringMode`, `MotionBlur`, `Multicore` | ComboBox | greyed |
-| Multiplayer (`cstrike/resource/OptionsSubMultiplayer.res`) | `CrosshairColorComboBox` | ComboBox | `cl_crosshaircolor` |
+| | `FovSlider` | CCvarSlider (`cvar_name fov_desired`, 75 to 90) | `fov_desired` (90): the world camera unzoomed (`options::PlayerFov`, `client::zoom_camera`); the view model zooms with it as with a scope (`viewmodel_fov` minus 90 minus it); a scope's zoom is its own; zoomed mouse scaling still divides by 90 |
+| | `ModelDetail`, `TextureDetail`, `ShaderDetail`, `ShadowDetail`, `ColorCorrection`, `FilteringMode`, `MotionBlur`, `Multicore` | ComboBox | greyed (see below) |
+| Voice (`OptionsSubVoice.res`; the tab was missing) | `voice_modenable`, `VoiceReceive`, `MicBoost`, `TestMicrophone`, `MicMeter` | CheckButton / CCvarSlider / Button / ImagePanel | the tab, all greyed: mashup has no voice chat |
+| Multiplayer (`cstrike/resource/OptionsSubMultiplayer.res`) | `CrosshairColorComboBox` | ComboBox | `cl_crosshaircolor`: Green, Red, Blue, Yellow, Cyan, Custom (5) |
+| | `Red/Green/Blue Color Slider` | CCvarSlider | `cl_crosshaircolor_r`, `_g`, `_b` (50, 250, 50): the Custom colour |
+| | `Size Slider`, `Thickness Slider` | CCvarSlider | `cl_crosshairsize` (5; 0 to 10), `cl_crosshairthickness` (0.5; 0 to 3): line length and width, 5 and 0.5 our lines as they were |
 | | `Alpha Slider` | CCvarSlider | `cl_crosshairalpha` |
-| | `CrosshairTranslucencyCheckbox`, `CrosshairDynamicCheckbox` | CCvarToggleCheckButton | `cl_crosshairusealpha`, `cl_dynamiccrosshair` |
-| | `CrosshairImage` | CrosshairImagePanelCS | our crosshair preview |
-| | `Size Slider`, `Thickness Slider`, `Red/Green/Blue Color Slider`, `CrosshairDotCheckbox`, `LockRadarRotationCheckbox`, `DownloadFilterCheck` | CCvarSlider / CCvarToggleCheckButton / ComboBox | greyed (mashup's crosshair has `cl_crosshairscale` instead: in Lucker Party Options) |
-| | `ImportSprayImage`, `Advanced`, `ResetStats`, `LogoImage` | Button / ImagePanel | greyed |
+| | `CrosshairTranslucencyCheckbox`, `CrosshairDynamicCheckbox`, `CrosshairDotCheckbox` | CCvarToggleCheckButton | `cl_crosshairusealpha`, `cl_dynamiccrosshair`, `cl_crosshairdot` (0: a centre dot as wide as the lines) |
+| | `CrosshairImage` | CrosshairImagePanelCS | our crosshair preview (all of the above) |
+| | `LockRadarRotationCheckbox` | CCvarToggleCheckButton | `cl_radar_locked` (0): the radar keeps the overview as drawn |
+| | `DownloadFilterCheck` | ComboBox | `cl_downloadfilter` (all, nosounds, mapsonly, none): servers here send only maps, so only "none" refuses (joining then fails as a missing map) |
+| | `Advanced` | Button | opens Multiplayer > Advanced |
+| | `ImportSprayImage`, `ResetStats`, `LogoImage` | Button / ImagePanel | greyed (see below) |
+| Multiplayer > Advanced (`MultiplayerAdvancedDialog.res`, 540 x 376; the list from the install's `cfg/user.scr`, else `cfg/user_default.scr`, read at run time) | `PanelListPanel` | CPanelListPanel | the script's options in its order, as Create Server's Game page reads `settings.scr` (`gameui::scr_settings`, one parser): BOOL a check box, LIST a drop-down, NUMBER / STRING a text entry; those mashup has: `mp_decals` (200: runtime decals drawn, the oldest first; a client cvar here as in Source), `cl_righthand`, `cl_c4progressbar` (1: the defuse bar); the rest greyed showing the script's default (`cl_clanid`, `cl_autowepswitch`, `hud_centerid`, `cl_autohelp`, `hud_takesshots`, `cl_disablefreezecam`, `cl_disablehtmlmotd`, `cl_cloud_settings`); without the install: ours, the weapon hand |
+| | `OK`, `Cancel` | Button | as CS:S's dialog: changes wait for OK, which sets those changed; Cancel (Esc, the X) drops them; modal over the options |
 
 Lucker Party Options (ours, from our main-menu entries): zoom
-sensitivity ratio, room reverb (`dsp_volume`), crosshair scale, weapon
-hand (`cl_righthand`), view model FOV, show FPS. Before they were rows
-on CS:S's tabs.
+sensitivity ratio, room reverb (`dsp_volume`), crosshair scale, view
+model FOV, show FPS. Before they were rows on CS:S's tabs. The weapon
+hand (`cl_righthand`) moved to CS:S's place for it, Multiplayer >
+Advanced.
+
+Every new cvar is archived (saved in config.cfg when it differs from
+its default, `host_writeconfig`) and changes the game at once; their
+defaults are CS:S's (`client::options` tests
+`the_options_cvars_start_as_css_and_persist_in_the_config`).
+
+#### Greyed, and why
+
+| Control | Why it stays greyed |
+|---|---|
+| Mouse `MouseRaw` (`m_rawinput`) | mashup always reads raw device motion (Bevy's mouse motion, no OS acceleration); a check box that changed nothing would mislead |
+| Mouse `Joystick*` | no joystick or gamepad input |
+| Audio `SpeakerSetup` (`snd_surround_speakers`) | the mixer is stereo only |
+| Audio `SoundQuality` | one mixer quality; nothing to pick |
+| Audio `CloseCaptionCheck` | no closed captions |
+| Audio `AudioSpokenLanguage` | one language (the install's English) |
+| Audio `ThirdPartySoundCredits`, Video `ThirdPartyVideoCredits` | links out (URLButton) |
+| Video `VRMode` | no VR (CS:S greys it too without a headset: `#GameUI_NoVRTooltip`) |
+| Video `GammaButton` | needs the gamma dialog (`OptionsSubVideoGammaDlg.res`) and `mat_monitorgamma` through the tonemapping; next pass |
+| Video > Advanced `ModelDetail`, `TextureDetail`, `ShaderDetail` | one detail level: models draw LOD 0, textures their full mips, one shader path |
+| Video > Advanced `ShadowDetail`, `ColorCorrection`, `MotionBlur` | the renderer has no switch for these (no colour correction or motion blur at all) |
+| Video > Advanced `FilteringMode` | texture filtering is fixed when textures load (no anisotropy switch yet) |
+| Video > Advanced `Multicore` | Bevy always renders multi-threaded |
+| Voice (all) | no voice chat |
+| Multiplayer `ImportSprayImage`, `LogoImage` | no sprays |
+| Multiplayer `ResetStats` | no stats |
+| Multiplayer > Advanced `cl_clanid`, `cl_disablehtmlmotd`, `cl_cloud_settings`, `hud_takesshots` | no clans, no MOTD, no Steam Cloud, no end-of-map screenshots |
+| Multiplayer > Advanced `cl_autowepswitch`, `hud_centerid`, `cl_autohelp`, `cl_disablefreezecam` | the features (switching to a better weapon picked up, names of who you aim at, hints, the freeze cam) aren't in mashup yet: backlog |
+
+#### Deliberate differences (CS:S's own, kept apart)
+
+- `con_enable`: ours defaults to 1, CS:S's to 0 (the console opens
+  without ticking "Enable developer console" first). Undecided; the
+  user hasn't chosen, so it stays 1.
+- `volume`: ours starts at 0.5 (`client::audio::DEFAULT_VOLUME`), CS:S's
+  at 1. Undecided.
+- The options dialog applies each change at once (Cancel puts them
+  back); CS:S's waits for OK or Apply. Its Advanced dialogs behave the
+  same way, except Multiplayer > Advanced, which waits for OK as CS:S's.
+
+#### Reference captures needed
+
+What the install's files don't say (CS:S sets it in code) and was
+chosen here; a capture of the reference client would settle each:
+
+- The Multiplayer tab's sliders' ranges: Size (here 0 to 10),
+  Thickness (0 to 3), the colour sliders (0 to 255), and how size and
+  thickness map to pixels (here 5 and 0.5 are our previous lines).
+- The colour drop-down's entries and order (here Green, Red, Blue,
+  Yellow, Cyan, Custom; whether Custom is 5) and whether the colour
+  sliders grey out unless Custom is picked.
+- `cl_crosshairusealpha`'s default (here 0, as before this work).
+- The mouse acceleration slider's range (here 1 to 1.4), what the check
+  box writes to `m_customaccel` (here 3) and the curve itself.
+- `mp_decals`'s default (here 200; `user_default.scr` says 512, which
+  is the script's starting value, not the cvar's).
+- Whether CS:S shows the video Advanced dialog's FOV slider at all
+  (the file has it visible; multiplayer mods may hide it).
+- The Voice tab's layout with its meters, for the greyed look.
+
+The options' words now come from every copy of the strings files along
+the search path (CS:S merges them): cstrike's `gameui_english.txt` lacks
+words hl2's has, so labels that were missing before show (the FOV
+slider's, Motion Blur, Multicore Rendering, the colour sliders' Red /
+Green / Blue, Virtual Reality Mode).
 
 ### Create Server (`CCreateMultiplayerGameDialog`: code; pages `.res`)
 
@@ -88,7 +168,7 @@ frame, a property sheet (Server, Game, Bot), Start (default) / Cancel.
 
 | Page | Control | `.res` class | Now |
 |---|---|---|---|
-| Server (`cstrike/resource/CreateMultiplayerGameServerPage.res`) | `MapList` | ComboBox (not editable) | the maps in a drop-down |
+| Server (`cstrike/resource/CreateMultiplayerGameServerPage.res`) | `MapList` | ComboBox (not editable) | `< Random Map >` (`#GameUI_RandomMap`) first, then the maps; random plays one of them at Start |
 | | `EnableBotsCheck` | CheckButton | include bots |
 | | `BotQuotaCombo` | TextEntry (numeric, 2 chars) | how many (any team: split, the odd one a terrorist) |
 | | `SkillLevel0..3` | RadioButton | the difficulty presets |
@@ -135,17 +215,19 @@ same plus Create Server with the map drop-down open (`+menu newgame
 +menuinput open`), Find Servers with the latency drop-down open
 (`+openserverbrowser lan +serverbrowser filters +serverbrowser latency
 +serverbrowser hover 2`), Video > Advanced, and the browser dragged and
-resized (`+wait 30 +vgui_windows servers 40 30 760 520`).
+resized (`+wait 30 +vgui_windows servers 40 30 760 520`). Second pass
+(the cvars): each options tab (`+wait 60 +menu mouse`, `audio`,
+`video`, `voice`, `multiplayer` with `+cl_crosshaircolor 5
++cl_crosshairdot 1 +cl_crosshairsize 8` before it), `videoadvanced`,
+`mpadvanced`, `advanced`, Create Server's map list open (`+menu
+newgame +menuinput open`: `< Random Map >` first) and `extras`.
 
 ## Left
 
 - The console as CS:S's: a sizeable, movable VGUI frame (`CConsoleDialog`,
   no `.res`: its layout is code) instead of our drop-down.
-- Multiplayer > Advanced (`cfg/user.scr`, the same script format as
-  `settings.scr`: a list of the client's own options).
-- Cvars for greyed controls that matter (`snd_musicvolume`,
-  `fov_desired`, `cl_crosshairsize`/`thickness`/`dot`, `m_rawinput`).
+- The greyed controls whose features mashup may get (gamma, texture
+  filtering, the Multiplayer > Advanced features listed above).
 - Reference captures of CS:S's dialogs to compare with (see the report
   of this work: an open combo box's list colours, the slider's tick
   count, a focused control's ring).
-- A Create Server "< Random Map >" entry (`#GameUI_RandomMap`).

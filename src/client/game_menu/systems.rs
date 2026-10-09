@@ -146,12 +146,14 @@ pub(super) fn open_menu(w: &mut World, page: Page) {
     let (get, binds, known) = {
         let mut names: Vec<String> = SETTINGS
             .iter()
-            .map(|s| s.cvar.to_string())
+            .flat_map(|s| s.cvars().map(str::to_string))
             .chain([ROUNDS_CVAR.to_string(), "bot_reaction".into()])
             .chain(BOT_CVARS.iter().map(|(_, c, _)| c.to_string()))
+            .chain(USER_FALLBACK.iter().map(|(c, ..)| c.to_string()))
             .collect();
         if let Some(ui) = w.get_resource::<MenuUi>().and_then(|u| u.ui.clone()) {
             names.extend(ui.server_settings.iter().map(|s| s.cvar.clone()));
+            names.extend(ui.user_settings.iter().map(|s| s.cvar.clone()));
         }
         let cvars: Vec<_> = {
             let console = w.resource::<Console>();
@@ -188,11 +190,22 @@ pub(super) fn open_menu(w: &mut World, page: Page) {
             )
         })
         .collect();
+    let mut windows = w.query_filtered::<&Window, With<bevy::window::PrimaryWindow>>();
+    let window = windows.iter(w).next().map(|w| w.resolution.physical_size());
     let mut menu = w.resource_mut::<GameMenu>();
     menu.set_counts(bots, players);
     menu.set_binds(binds, known);
     menu.resolutions = crate::client::options::resolutions(&modes);
     menu.open(page, maps, current.as_deref(), |n| get.get(n).cloned());
+    // The aspect ratio of the window as it is when the size is as started.
+    if menu.aspect.is_none()
+        && let Some(size) = window
+    {
+        menu.aspect = aspect_of(&format!("{}x{}", size.x, size.y));
+    }
+    menu.random_seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos() as u64 / 1000);
     // Menus close each other.
     if let Some(mut b) = w.get_resource_mut::<crate::client::buy_menu::BuyMenu>() {
         *b = default();

@@ -60,6 +60,9 @@ pub(super) const ROUNDS_CVAR: &str = "mashup_rounds";
 pub struct NewGame {
     /// Index into `GameMenu::maps`.
     pub map: usize,
+    /// `< Random Map >` picked: Start plays one of the maps at random
+    /// (`GameMenu::random_seed`) instead of `map`.
+    pub random: bool,
     /// Include bots, how many (typed), which team they join (`BOT_TEAMS`).
     pub bots_on: bool,
     pub bot_count: String,
@@ -74,6 +77,7 @@ impl Default for NewGame {
     fn default() -> Self {
         Self {
             map: 0,
+            random: false,
             bots_on: false,
             bot_count: "0".into(),
             bot_team: 0,
@@ -84,6 +88,20 @@ impl Default for NewGame {
 }
 
 impl NewGame {
+    /// The map list's entry shown: 0 `< Random Map >`, else the map's
+    /// index + 1 (None without maps).
+    pub fn map_entry(&self, maps: usize) -> Option<usize> {
+        (maps > 0).then(|| if self.random { 0 } else { self.map.min(maps - 1) + 1 })
+    }
+
+    /// Pick an entry of the map list (`map_entry`).
+    pub fn set_map_entry(&mut self, k: usize) {
+        self.random = k == 0;
+        if k > 0 {
+            self.map = k - 1;
+        }
+    }
+
     /// Bots per team: terrorists, counter-terrorists (any team: split,
     /// the odd one a terrorist).
     pub fn split(&self) -> (u8, u8) {
@@ -103,44 +121,12 @@ impl NewGame {
 /// in a scrolled list, each its label and control (CS:S's
 /// `CPanelListPanel`, where the layout puts it).
 pub(super) fn game_options(commands: &mut Commands, ctx: &Ctx, parent: Entity, (w, h): (f32, f32)) {
-    let (look, menu) = (ctx.look, ctx.menu);
+    let menu = ctx.menu;
     let at = menu
         .layout()
         .and_then(|l| l.get("GameOptions"))
         .map(|c| (coord(c.x), coord(c.y), c.wide, c.tall));
-    let (lx, ly, lw, lh) = at.unwrap_or((10.0, 12.0, w - 20.0, h - 24.0));
-    let list = commands
-        .spawn((
-            Node {
-                border: UiRect::all(px(1.0)),
-                overflow: Overflow::clip(),
-                ..place(look, lx, ly, lw, lh)
-            },
-            bevel(look, false),
-            RelativeCursorPosition::default(),
-            WheelList,
-            ChildOf(parent),
-        ))
-        .id();
-    let (len, shown) = menu.list();
-    let bar_w = look.number("ScrollBar.Wide", 17.0);
-    let row_h = ((lh - 4.0) / shown as f32).floor();
-    let font = look.default_font();
-    let inner = lw - bar_w - 4.0;
-    let label_w = (inner * 0.5).round();
-    for (k, i) in (menu.scroll..(menu.scroll + shown).min(len)).enumerate() {
-        let y = 2.0 + k as f32 * row_h;
-        let row = &ctx.rows[i];
-        if let Row::Control { label: text, control: c, .. } = row {
-            if matches!(c, Control::Check(_)) {
-                control(commands, ctx, list, i, row, (4.0, y, inner - 4.0, 24.0), Some(text), None);
-            } else {
-                label(commands, list, look, (6.0, y, label_w - 8.0, 24.0), text, font.clone(), look.text(), -1);
-                control(commands, ctx, list, i, row, (label_w, y, inner - label_w, 24.0), None, None);
-            }
-        }
-    }
-    scroll_bar(commands, list, look, (lw - bar_w - 2.0, 0.0, lh - 2.0), (len, shown, menu.scroll));
+    options_list(commands, ctx, parent, at.unwrap_or((10.0, 12.0, w - 20.0, h - 24.0)));
 }
 
 impl GameMenu {
@@ -215,7 +201,7 @@ impl GameMenu {
         if self.in_game {
             self.close(out);
         } else {
-            self.loading = self.maps.get(self.new_game.map).cloned();
+            self.loading = self.chosen_map().and_then(|m| self.maps.get(m)).cloned();
             self.page = Page::Main;
         }
     }
@@ -224,6 +210,7 @@ impl GameMenu {
     pub(super) fn quick_setup(&mut self) {
         let map = self.maps.iter().position(|m| m == QUICK_MAP).unwrap_or(0);
         self.new_game.map = map;
+        self.new_game.random = false;
         self.new_game.bots_on = true;
         self.new_game.bot_count = QUICK_BOTS.to_string();
         self.new_game.bot_team = 0;
@@ -243,11 +230,25 @@ impl GameMenu {
         self.new_game.cvars.iter().find(|c| c.cvar == cvar)
     }
 
+    /// The map a new game plays: the one picked, or with `< Random Map >`
+    /// one of them by `random_seed`.
+    pub fn chosen_map(&self) -> Option<usize> {
+        let n = self.maps.len();
+        if n == 0 {
+            return None;
+        }
+        Some(if self.new_game.random {
+            (self.random_seed % n as u64) as usize
+        } else {
+            self.new_game.map.min(n - 1)
+        })
+    }
+
     /// A new game's console lines: settings and the map now, the bots once
     /// the map is in (they spawn at its spawn points).
     pub fn start_lines(&self) -> Option<(Vec<String>, Vec<String>)> {
         let ng = &self.new_game;
-        let map = self.maps.get(ng.map)?;
+        let map = self.maps.get(self.chosen_map()?)?;
         let (_, reaction, aim, turn) = DIFFICULTIES[ng.difficulty];
         let rounds = self
             .server_cvar(ROUNDS_CVAR)

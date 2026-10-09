@@ -1,18 +1,16 @@
 //! Player-facing view settings and debug views: the third-person camera
-//! (`thirdperson` / `firstperson`, `cam_idealdist`), the master `volume`,
-//! and health bars over characters (`mashup_healthbars`).
+//! (`thirdperson` / `firstperson`, `cam_idealdist`) and health bars over
+//! characters (`mashup_healthbars`). (The master `volume` is
+//! `client::audio`'s.)
 
 use std::collections::HashMap;
 
 use avian3d::prelude::*;
-use bevy::{
-    audio::{GlobalVolume, Volume},
-    prelude::*,
-};
+use bevy::prelude::*;
 
 use super::FirstPersonCamera;
 use crate::{
-    console::{Console, ConsoleAppExt, resource_cvar},
+    console::{ConsoleAppExt, resource_cvar},
     core::{Health, Intent, LocalPlayer},
     map::ShowLocalBody,
     rules::Dead,
@@ -23,9 +21,6 @@ const METERS_PER_UNIT: f32 = 0.0254;
 /// Radius of the sphere swept back from the eye to place the camera, so
 /// it stops short of walls (CS:S sweeps a 28-unit box).
 const CAMERA_RADIUS: f32 = 0.2;
-
-/// Sound volume a fresh config starts with (`volume`).
-pub const DEFAULT_VOLUME: f32 = 0.5;
 
 /// First or third person, and how far behind the eye the third-person
 /// camera sits.
@@ -92,7 +87,6 @@ pub struct ViewPlugin;
 impl Plugin for ViewPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CameraMode>()
-            .insert_resource(GlobalVolume::new(Volume::Linear(DEFAULT_VOLUME)))
             .init_resource::<FreeCam>()
             .init_resource::<Watch>()
             .init_resource::<HealthBars>()
@@ -114,24 +108,7 @@ fn view_console(app: &mut App) {
     .console_command("firstperson", "Camera back at the eyes.", |w, _| {
         w.resource_mut::<CameraMode>().third_person = false;
         Ok(None)
-    })
-    .console_cvar(
-        "volume",
-        "Sound volume, 0 to 1.",
-        "0.5",
-        |w| {
-            Some(
-                w.get_resource::<GlobalVolume>()
-                    .map_or(1.0, |g| g.volume.to_linear())
-                    .to_string(),
-            )
-        },
-        |w, v| {
-            let v: f32 = v.trim().parse().map_err(|_| format!("bad value \"{v}\""))?;
-            w.insert_resource(GlobalVolume::new(Volume::Linear(v.clamp(0.0, 1.0))));
-            Ok(())
-        },
-    );
+    });
     resource_cvar::<CameraMode, f32>(
         app,
         "cam_idealdist",
@@ -162,7 +139,6 @@ fn view_console(app: &mut App) {
         "1: health bars above other living characters.",
         |h| &mut h.0,
     );
-    app.world_mut().resource_mut::<Console>().archive("volume");
 }
 
 /// Where the third-person camera sits relative to the eye: `ideal` meters
@@ -361,6 +337,7 @@ fn draw_health_bars(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::console::Console;
 
     #[test]
     fn free_camera_flies_along_its_view() {
@@ -403,19 +380,6 @@ mod tests {
         assert_eq!(mode.ideal_dist, 100.0);
         run(&mut app, "cam_idealyaw 180");
         assert_eq!(app.world().resource::<CameraMode>().ideal_yaw, 180.0);
-    }
-
-    #[test]
-    fn volume_is_clamped_and_archived() {
-        let mut app = app();
-        run(&mut app, "volume 0.25");
-        let v = app.world().resource::<GlobalVolume>().volume.to_linear();
-        assert!((v - 0.25).abs() < 1e-6, "{v}");
-        run(&mut app, "volume 3");
-        assert_eq!(app.world().resource::<GlobalVolume>().volume.to_linear(), 1.0);
-        run(&mut app, "volume -1");
-        assert_eq!(app.world().resource::<GlobalVolume>().volume.to_linear(), 0.0);
-        assert!(app.world().resource::<Console>().cvar("volume").unwrap().archive);
     }
 
     #[test]

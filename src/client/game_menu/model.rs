@@ -16,10 +16,15 @@ pub enum Field {
     BotTeam,
     /// A cvar Create Server sets (index into `NewGame::cvars`).
     ServerCvar(usize),
+    /// A cvar of Multiplayer > Advanced (index into `GameMenu::user_cvars`).
+    UserCvar(usize),
     /// Index into `options::SETTINGS`.
     Setting(usize),
     /// The text entry showing a slider setting's value (`VALUE_ENTRIES`).
     SettingText(usize),
+    /// The video tab's aspect ratio: which window sizes its resolution
+    /// list offers (`ASPECTS`).
+    Aspect,
 }
 
 /// How a control shows its value.
@@ -67,6 +72,8 @@ pub enum Action {
     Advanced,
     /// The video tab's Advanced dialog.
     VideoAdvanced,
+    /// The multiplayer tab's Advanced dialog.
+    MultiplayerAdvanced,
     /// A dialog's OK: keep its changes, close it.
     Ok,
     /// A dialog's Cancel (Esc, its X): its changes undone, closed.
@@ -87,6 +94,8 @@ pub enum Row {
     Heading(String),
     /// Text that can't be focused.
     Info(String),
+    /// A control mashup lacks the cvar for: drawn greyed, not focused.
+    Greyed { label: String, control: Control },
 }
 
 impl Row {
@@ -94,7 +103,7 @@ impl Row {
         match self {
             Row::Button { enabled, .. } => *enabled,
             Row::Control { .. } | Row::Bind { .. } => true,
-            Row::Info(_) | Row::Heading(_) => false,
+            Row::Info(_) | Row::Heading(_) | Row::Greyed { .. } => false,
         }
     }
 
@@ -261,6 +270,9 @@ pub struct GameMenu {
     pub scroll: usize,
     /// Window sizes the video tab offers.
     pub resolutions: Vec<String>,
+    /// The video tab's aspect ratio (`ASPECTS`): its resolution list shows
+    /// those sizes (None: all).
+    pub aspect: Option<usize>,
     /// The options' settings as they were when it opened or was last
     /// applied (`SETTINGS` index, value): its Cancel puts them back.
     pub options_before: Vec<(usize, Option<String>)>,
@@ -268,6 +280,14 @@ pub struct GameMenu {
     pub advanced_before: Vec<(usize, Option<String>)>,
     /// The open combo box's list (its owner: the row).
     pub combo: Option<ComboList>,
+    /// Multiplayer > Advanced's cvars (the install's `cfg/user.scr`, else
+    /// ours): each one's value shown and its value now (None: mashup
+    /// lacks it, greyed). OK sets those changed; Cancel puts the shown
+    /// values back.
+    pub user_cvars: Vec<ServerCvar>,
+    /// Picks Create Server's random map (`< Random Map >`): set each time
+    /// the menu opens.
+    pub random_seed: u64,
     /// The focused text entry's caret and selection.
     pub caret: Caret,
     /// A value entry's text as typed (it sets its setting once it reads
@@ -280,8 +300,20 @@ pub const KEY_ROWS: usize = 14;
 /// Buttons under the keyboard list (Use defaults, Edit key, Clear key,
 /// Advanced).
 pub(super) const KEY_BUTTONS: usize = 4;
+/// Rows of Multiplayer > Advanced's list shown at once.
+pub const ADVANCED_ROWS: usize = 11;
 /// Rows of Create Server's Game page list shown at once.
 pub const GAME_ROWS: usize = 12;
+
+/// The layout control of an options tab's button opening one of its
+/// Advanced dialogs.
+pub(super) fn advanced_button(action: &Action) -> Option<&'static str> {
+    match action {
+        Action::VideoAdvanced => Some("AdvancedButton"),
+        Action::MultiplayerAdvanced => Some("Advanced"),
+        _ => None,
+    }
+}
 
 /// The layout name of the open page (`GameUi::options`).
 pub(super) fn layout_name(page: Page, tab: Tab, create_tab: usize) -> Option<&'static str> {
@@ -289,6 +321,7 @@ pub(super) fn layout_name(page: Page, tab: Tab, create_tab: usize) -> Option<&'s
         Page::Settings => Some(tab.page()),
         Page::KeyboardAdvanced => Some("keyboard_advanced"),
         Page::VideoAdvanced => Some("video_advanced"),
+        Page::MultiplayerAdvanced => Some("multiplayer_advanced"),
         Page::NewGame => Some(["create_server", "create_game", "create_bot"][create_tab.min(2)]),
         _ => None,
     }
@@ -324,7 +357,7 @@ pub(super) fn menu_input(menu: &GameMenu, a: &[String]) -> Result<Input, String>
     let word = a.first().map(|s| s.to_lowercase());
     match word.as_deref() {
         Some("focus") => {
-            let what = a.get(1).map(|s| s.to_lowercase()).ok_or("focus <cvar|map|bots|botcount|botteam|difficulty>")?;
+            let what = a.get(1).map(|s| s.to_lowercase()).ok_or("focus <cvar|map|bots|botcount|botteam|difficulty|aspect>")?;
             let i = rows
                 .iter()
                 .position(|r| match r.field() {
@@ -334,7 +367,9 @@ pub(super) fn menu_input(menu: &GameMenu, a: &[String]) -> Result<Input, String>
                     Some(Field::BotTeam) => what == "botteam",
                     Some(Field::Difficulty(_)) => what == "difficulty",
                     Some(Field::ServerCvar(i)) => menu.new_game.cvars[i].cvar == what,
-                    Some(Field::Setting(i)) => SETTINGS[i].cvar == what,
+                    Some(Field::UserCvar(i)) => menu.user_cvars[i].cvar == what,
+                    Some(Field::Aspect) => what == "aspect",
+                    Some(Field::Setting(i)) => SETTINGS[i].cvars().any(|c| c == what),
                     _ => false,
                 })
                 .ok_or(format!("no control \"{what}\" on this page"))?;
@@ -376,7 +411,8 @@ impl GameMenu {
         if self.main.is_empty() {
             self.main = main_entries(self.ui.0.as_deref());
         }
-        self.values = SETTINGS.iter().map(|s| get(s.cvar)).collect();
+        self.values = SETTINGS.iter().map(|s| s.read(&get)).collect();
+        self.aspect = get("mashup_resolution").and_then(|r| aspect_of(&r));
         let num = |name: &str| get(name).and_then(|v| v.trim().parse::<f32>().ok());
         self.new_game.map = current_map
             .and_then(|m| maps.iter().position(|n| n == m))
@@ -402,6 +438,8 @@ impl GameMenu {
             _ => 0,
         };
         self.new_game.cvars = self.server_cvars(&get);
+        self.new_game.random = false;
+        self.user_cvars = self.user_cvars_now(&get);
         self.go_to(page);
     }
 
@@ -460,19 +498,60 @@ impl GameMenu {
         self.ui.0.as_ref()?.options.get(name)
     }
 
+    /// The control showing an options script's cvar (`.scr`): BOOL a
+    /// check box, LIST a combo box, NUMBER and STRING text entries.
+    pub(super) fn scr_control(&self, c: &ServerCvar) -> Control {
+        match &c.kind {
+            ServerSettingKind::Bool => Control::Check(c.value.trim().parse::<f32>().is_ok_and(|v| v != 0.0)),
+            ServerSettingKind::List(items) => {
+                let entries: Vec<String> = items.iter().map(|(l, _)| self.text(l, l)).collect();
+                let selected = items.iter().position(|(_, v)| v.trim() == c.value.trim());
+                Control::Combo {
+                    text: selected.map_or(c.value.clone(), |s| entries[s].clone()),
+                    entries,
+                    selected,
+                }
+            }
+            ServerSettingKind::Number { .. } => Control::Text {
+                text: c.value.clone(),
+                numeric: true,
+                max: 8,
+            },
+            ServerSettingKind::Text => Control::Text {
+                text: c.value.clone(),
+                numeric: false,
+                max: 64,
+            },
+        }
+    }
+
     /// A control row (its label from the game, else ours).
     pub(super) fn control_row(&self, field: Field) -> Row {
         let text = |t: &str| self.game_text(t);
         let ng = &self.new_game;
         let (label, control) = match field {
-            Field::Map => (
-                self.text("#GameUI_Map", "Map"),
-                Control::Combo {
-                    entries: self.maps.clone(),
-                    selected: (!self.maps.is_empty()).then_some(ng.map),
-                    text: self.maps.get(ng.map).cloned().unwrap_or_else(|| "(no maps found)".into()),
-                },
-            ),
+            Field::Map => {
+                // CS:S's list: `< Random Map >` first, then the maps.
+                let random = self.text("#GameUI_RandomMap", "< Random Map >");
+                let entries: Vec<String> = if self.maps.is_empty() {
+                    Vec::new()
+                } else {
+                    std::iter::once(random.clone()).chain(self.maps.iter().cloned()).collect()
+                };
+                let selected = ng.map_entry(self.maps.len());
+                (
+                    self.text("#GameUI_Map", "Map"),
+                    Control::Combo {
+                        text: match selected {
+                            Some(0) => random,
+                            Some(k) => entries[k].clone(),
+                            None => "(no maps found)".into(),
+                        },
+                        selected,
+                        entries,
+                    },
+                )
+            }
             Field::BotsOn => (
                 self.text("#Cstrike_Bot_IncludeBots", "Include CPU players (bots) in this game"),
                 Control::Check(ng.bots_on),
@@ -500,31 +579,23 @@ impl GameMenu {
                     },
                 )
             }
-            Field::ServerCvar(i) => {
-                let c = &ng.cvars[i];
-                let control = match &c.kind {
-                    ServerSettingKind::Bool => Control::Check(c.value.trim().parse::<f32>().is_ok_and(|v| v != 0.0)),
-                    ServerSettingKind::List(items) => {
-                        let entries: Vec<String> = items.iter().map(|(l, _)| self.text(l, l)).collect();
-                        let selected = items.iter().position(|(_, v)| v.trim() == c.value.trim());
-                        Control::Combo {
-                            text: selected.map_or(c.value.clone(), |s| entries[s].clone()),
-                            entries,
-                            selected,
-                        }
-                    }
-                    ServerSettingKind::Number { .. } => Control::Text {
-                        text: c.value.clone(),
-                        numeric: true,
-                        max: 8,
-                    },
-                    ServerSettingKind::Text => Control::Text {
-                        text: c.value.clone(),
-                        numeric: false,
-                        max: 64,
-                    },
+            Field::ServerCvar(i) | Field::UserCvar(i) => {
+                let c = match field {
+                    Field::ServerCvar(_) => &ng.cvars[i],
+                    _ => &self.user_cvars[i],
                 };
-                (c.label.clone(), control)
+                (c.label.clone(), self.scr_control(c))
+            }
+            Field::Aspect => {
+                let entries: Vec<String> = ASPECTS.iter().map(|(t, o)| self.text(t, o)).collect();
+                (
+                    self.text("#GameUI_AspectRatio", "Aspect Ratio"),
+                    Control::Combo {
+                        text: self.aspect.map_or(String::new(), |k| entries[k].clone()),
+                        selected: self.aspect,
+                        entries,
+                    },
+                )
             }
             Field::Setting(i) | Field::SettingText(i) => {
                 let s = &SETTINGS[i];
@@ -543,8 +614,8 @@ impl GameMenu {
                     }
                 } else if as_combo {
                     let entries: Vec<String> =
-                        s.entries(&self.resolutions, &text).into_iter().map(|(_, l)| l).collect();
-                    let selected = s.entry_index(&v, &self.resolutions);
+                        s.entries(&self.shown_resolutions(), &text).into_iter().map(|(_, l)| l).collect();
+                    let selected = s.entry_index(&v, &self.shown_resolutions());
                     Control::Combo {
                         text: selected.map_or(shown, |k| entries[k].clone()),
                         selected,
@@ -576,6 +647,7 @@ impl GameMenu {
             Page::Settings if self.tab == Tab::Keyboard => self.keyboard_rows(),
             Page::Settings => self.options_rows(),
             Page::KeyboardAdvanced | Page::VideoAdvanced => self.advanced_rows(),
+            Page::MultiplayerAdvanced => self.multiplayer_advanced_rows(),
             Page::Extras => self.extras_rows(),
         }
     }
@@ -603,10 +675,7 @@ impl GameMenu {
         let Some(layout) = self.layout() else { return usize::MAX };
         let name = match row {
             Row::Control { field, .. } => self.field_name(*field),
-            Row::Button {
-                action: Action::VideoAdvanced,
-                ..
-            } => Some("AdvancedButton"),
+            Row::Button { action, .. } => advanced_button(action),
             _ => None,
         };
         name.and_then(|n| layout.controls.iter().position(|c| c.name.eq_ignore_ascii_case(n)))
@@ -623,6 +692,8 @@ impl GameMenu {
             Field::Difficulty(k) => SKILL.get(k).copied(),
             Field::BotTeam => Some("BotJoinTeamCombo"),
             Field::ServerCvar(i) => self.new_game.cvars.get(i).and_then(|c| c.field),
+            Field::UserCvar(_) => None,
+            Field::Aspect => Some("AspectRatio"),
             Field::Setting(i) => SETTINGS[i].field,
             Field::SettingText(i) => VALUE_ENTRIES.iter().find(|(_, c)| *c == SETTINGS[i].cvar).map(|(f, _)| *f),
         }
@@ -632,7 +703,11 @@ impl GameMenu {
     pub(super) fn default_action(&self) -> Option<Action> {
         match self.page {
             Page::NewGame => Some(Action::Start),
-            Page::Settings | Page::KeyboardAdvanced | Page::VideoAdvanced | Page::Extras => Some(Action::Ok),
+            Page::Settings
+            | Page::KeyboardAdvanced
+            | Page::VideoAdvanced
+            | Page::MultiplayerAdvanced
+            | Page::Extras => Some(Action::Ok),
             _ => None,
         }
     }
@@ -1000,6 +1075,7 @@ impl GameMenu {
         match field {
             Field::BotCount => self.new_game.bot_count = text,
             Field::ServerCvar(i) => self.new_game.cvars[i].value = text,
+            Field::UserCvar(i) => self.user_cvars[i].value = text,
             Field::SettingText(i) => {
                 self.editing = Some((field, text.clone()));
                 // Set once it reads as a number in range.
@@ -1028,6 +1104,7 @@ impl GameMenu {
         match self.page {
             Page::Settings if self.tab == Tab::Keyboard => (self.rows().len() - KEY_BUTTONS - 3, KEY_ROWS),
             Page::NewGame if self.create_tab == 1 => (self.rows().len() - 2, GAME_ROWS),
+            Page::MultiplayerAdvanced => (self.rows().len() - 2, ADVANCED_ROWS),
             _ => (0, 0),
         }
     }
@@ -1064,11 +1141,11 @@ impl GameMenu {
         self.scroll = 0;
         match self.page {
             Page::Main => {}
-            Page::KeyboardAdvanced | Page::VideoAdvanced => {
-                let action = if self.page == Page::KeyboardAdvanced {
-                    Action::Advanced
-                } else {
-                    Action::VideoAdvanced
+            Page::KeyboardAdvanced | Page::VideoAdvanced | Page::MultiplayerAdvanced => {
+                let action = match self.page {
+                    Page::KeyboardAdvanced => Action::Advanced,
+                    Page::VideoAdvanced => Action::VideoAdvanced,
+                    _ => Action::MultiplayerAdvanced,
                 };
                 self.page = Page::Settings;
                 self.focus = self
@@ -1092,7 +1169,7 @@ impl GameMenu {
             return;
         };
         match row {
-            Row::Button { enabled: false, .. } | Row::Info(_) | Row::Heading(_) => {}
+            Row::Button { enabled: false, .. } | Row::Info(_) | Row::Heading(_) | Row::Greyed { .. } => {}
             Row::Bind { command, .. } => {
                 self.key_row = Some(i);
                 self.capture = Some(command);
@@ -1154,6 +1231,24 @@ impl GameMenu {
                 self.advanced_before = self.snapshot(|s| s.place == place);
                 self.go_to(page);
             }
+            Action::MultiplayerAdvanced => {
+                // Shows the cvars as they are now.
+                for c in &mut self.user_cvars {
+                    if let Some(b) = &c.before {
+                        c.value = b.clone();
+                    }
+                }
+                self.go_to(Page::MultiplayerAdvanced);
+            }
+            Action::Ok if self.page == Page::MultiplayerAdvanced => {
+                out.lines.extend(self.user_cvar_lines());
+                for c in &mut self.user_cvars {
+                    if c.before.is_some() {
+                        c.before = Some(c.value.clone());
+                    }
+                }
+                self.back();
+            }
             Action::Ok => match self.page {
                 Page::KeyboardAdvanced | Page::VideoAdvanced => {
                     self.advanced_before.clear();
@@ -1191,17 +1286,19 @@ impl GameMenu {
         let ng = &mut self.new_game;
         match field {
             Field::Map => {
-                if !self.maps.is_empty() {
-                    let k = widgets::combo_step(ng.map, self.maps.len(), dir);
-                    ng.map = k;
+                if let Some(at) = ng.map_entry(self.maps.len()) {
+                    ng.set_map_entry(widgets::combo_step(at, self.maps.len() + 1, dir));
                 }
             }
             Field::BotsOn => ng.bots_on = !ng.bots_on,
             Field::BotCount => {}
             Field::Difficulty(k) => ng.difficulty = k,
             Field::BotTeam => ng.bot_team = widgets::combo_step(ng.bot_team, BOT_TEAMS.len(), dir),
-            Field::ServerCvar(i) => {
-                let c = &mut ng.cvars[i];
+            Field::ServerCvar(i) | Field::UserCvar(i) => {
+                let c = match field {
+                    Field::ServerCvar(_) => &mut ng.cvars[i],
+                    _ => &mut self.user_cvars[i],
+                };
                 match &c.kind {
                     ServerSettingKind::Bool => {
                         let on = c.value.trim().parse::<f32>().is_ok_and(|v| v != 0.0);
@@ -1214,11 +1311,15 @@ impl GameMenu {
                     _ => {}
                 }
             }
+            Field::Aspect => {
+                let at = self.aspect.unwrap_or(0);
+                self.pick_aspect(widgets::combo_step(at, ASPECTS.len(), dir), out);
+            }
             Field::Setting(i) | Field::SettingText(i) => {
                 let (Some(setting), Some(Some(current))) = (SETTINGS.get(i), self.values.get(i)) else {
                     return;
                 };
-                let next = setting.step_with(current, dir, &self.resolutions, wrap);
+                let next = setting.step_with(current, dir, &self.shown_resolutions(), wrap);
                 self.set_value(i, next, out);
             }
         }
@@ -1228,21 +1329,26 @@ impl GameMenu {
     pub(super) fn pick(&mut self, field: Field, k: usize, out: &mut Outcome) {
         match field {
             Field::Map => {
-                if k < self.maps.len() {
-                    self.new_game.map = k;
+                if k <= self.maps.len() && !self.maps.is_empty() {
+                    self.new_game.set_map_entry(k);
                 }
             }
             Field::BotTeam => self.new_game.bot_team = k.min(BOT_TEAMS.len() - 1),
-            Field::ServerCvar(i) => {
-                if let ServerSettingKind::List(items) = &self.new_game.cvars[i].kind
+            Field::ServerCvar(i) | Field::UserCvar(i) => {
+                let c = match field {
+                    Field::ServerCvar(_) => &mut self.new_game.cvars[i],
+                    _ => &mut self.user_cvars[i],
+                };
+                if let ServerSettingKind::List(items) = &c.kind
                     && let Some((_, v)) = items.get(k)
                 {
-                    self.new_game.cvars[i].value = v.clone();
+                    c.value = v.clone();
                 }
             }
+            Field::Aspect => self.pick_aspect(k, out),
             Field::Setting(i) => {
                 let none = |_: &str| None;
-                if let Some((v, _)) = SETTINGS[i].entries(&self.resolutions, &none).into_iter().nth(k) {
+                if let Some((v, _)) = SETTINGS[i].entries(&self.shown_resolutions(), &none).into_iter().nth(k) {
                     self.set_value(i, v, out);
                 }
             }

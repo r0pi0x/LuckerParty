@@ -64,6 +64,10 @@ pub const SERVER_PREFIXES: &[&str] = &["sv_", "mp_", "phys_", "bot_", "ammo_"];
 /// replicated all the same.
 pub const SERVER_NAMES: &[&str] = &["mashup_rounds"];
 
+/// The player's own settings with a server prefix (Source's client cvars:
+/// `mp_decals`, Multiplayer > Advanced's decal limit).
+pub const LOCAL_NAMES: &[&str] = &["mp_decals"];
+
 impl CvarScope {
     /// The scope of a cvar named `name`: the server's when it has a server
     /// prefix; of those, bots' settings and secrets stay on the server and
@@ -72,6 +76,8 @@ impl CvarScope {
         let name = name.to_lowercase();
         if SERVER_NAMES.contains(&name.as_str()) {
             CvarScope::Replicated
+        } else if LOCAL_NAMES.contains(&name.as_str()) {
+            CvarScope::Local
         } else if !SERVER_PREFIXES.iter().any(|p| name.starts_with(p)) {
             CvarScope::Local
         } else if name.starts_with("bot_") || name.contains("password") || name.contains("rcon") {
@@ -914,6 +920,7 @@ mod tests {
     fn cvar_scopes_follow_the_server_prefixes() {
         assert_eq!(CvarScope::of("sv_gravity"), CvarScope::Replicated);
         assert_eq!(CvarScope::of("mp_friendlyfire"), CvarScope::Replicated);
+        assert_eq!(CvarScope::of("mp_decals"), CvarScope::Local, "the player's own");
         assert_eq!(CvarScope::of("bot_stop"), CvarScope::Server);
         assert_eq!(CvarScope::of("sv_password"), CvarScope::Server);
         assert_eq!(CvarScope::of("cl_crosshairscale"), CvarScope::Local);

@@ -1,8 +1,42 @@
 //! The options dialog's pages (Keyboard, Mouse, Audio, Video,
 //! Multiplayer) and its two Advanced dialogs: their rows, OK / Cancel /
-//! Apply, the keyboard list and the crosshair preview.
+//! Apply, the keyboard list and the crosshair preview; the multiplayer
+//! tab's Advanced dialog (its options from the install's `cfg/user.scr`).
 
 use super::*;
+
+/// The video tab's aspect ratios (CS:S's words): normal, 16:9, 16:10.
+pub const ASPECTS: [(&str, &str); 3] = [
+    ("#GameUI_AspectNormal", "Normal (4:3)"),
+    ("#GameUI_AspectWide16x9", "Widescreen 16:9"),
+    ("#GameUI_AspectWide16x10", "Widescreen 16:10"),
+];
+
+/// The aspect ratio (`ASPECTS`) of a window size (`1920x1080`): normal up
+/// to 3:2 (4:3, 5:4), 16:10 near 1.6, else wide (16:9 and wider).
+pub fn aspect_of(size: &str) -> Option<usize> {
+    let s = crate::client::options::parse_resolution(size)?;
+    let r = s.x as f32 / s.y as f32;
+    Some(if r < 1.5 {
+        0
+    } else if (r - 1.6).abs() < 0.05 {
+        2
+    } else {
+        1
+    })
+}
+
+/// A fallback option's choices: token, ours, value.
+type Choices = &'static [(&'static str, &'static str, &'static str)];
+
+/// Multiplayer > Advanced without the install's script: ours, in CS:S's
+/// words (cvar, label token, our label, its choices).
+pub(super) const USER_FALLBACK: [(&str, &str, &str, Choices); 1] = [(
+    "cl_righthand",
+    "#Cstrike_Weapon_Alignment",
+    "Weapon alignment",
+    &[("#Cstrike_Left_Handed", "Left handed", "0"), ("#Cstrike_Right_Handed", "Right handed", "1")],
+)];
 
 /// The keyboard list without the game's `kb_act.lst`: what mashup does.
 pub(super) const OUR_ACTIONS: &[(&str, &str)] = &[
@@ -157,6 +191,12 @@ pub(super) fn crosshair_preview(commands: &mut Commands, parent: Entity, look: &
         alpha: get("cl_crosshairalpha").map_or(defaults.alpha, |v| v as u8),
         use_alpha: get("cl_crosshairusealpha").map_or(defaults.use_alpha, |v| v as u8),
         dynamic: get("cl_dynamiccrosshair").map_or(defaults.dynamic, |v| v as u8),
+        size: get("cl_crosshairsize").unwrap_or(defaults.size),
+        thickness: get("cl_crosshairthickness").unwrap_or(defaults.thickness),
+        dot: get("cl_crosshairdot").map_or(defaults.dot, |v| v as u8),
+        r: get("cl_crosshaircolor_r").map_or(defaults.r, |v| v as u8),
+        g: get("cl_crosshaircolor_g").map_or(defaults.g, |v| v as u8),
+        b: get("cl_crosshaircolor_b").map_or(defaults.b, |v| v as u8),
     };
     let e = commands
         .spawn((
@@ -172,6 +212,9 @@ pub(super) fn crosshair_preview(commands: &mut Commands, parent: Entity, look: &
     // As at this window's height, in screen pixels.
     let centre = Vec2::new(w, h) * look.s / 2.0;
     for (offset, size) in c.lines(4.0, look.height) {
+        if size.min_element() <= 0.0 {
+            continue;
+        }
         let at = centre + offset - size / 2.0;
         commands.spawn((
             Node {
@@ -363,7 +406,7 @@ impl GameMenu {
             _ => setting.show(&next, &none) != setting.show(current, &none),
         };
         if changed {
-            out.lines.push(format!("{} {}", setting.cvar, crate::console::quote(&next)));
+            out.lines.extend(setting.lines(&next));
             self.values[i] = Some(next);
         }
     }
@@ -409,10 +452,30 @@ impl GameMenu {
     /// layout's order, OK / Cancel / Apply.
     pub(super) fn options_rows(&self) -> Vec<Row> {
         let mut rows = self.place_rows(Place::Options(self.tab));
-        if self.tab == Tab::Video {
+        if self.tab == Tab::Video && !self.resolutions.is_empty() {
+            // Its aspect ratio, where the layout has it (else after the
+            // resolution).
+            let row = self.control_row(Field::Aspect);
+            let order = self.row_order(&row);
+            let at = if order == usize::MAX {
+                rows.iter()
+                    .position(|r| matches!(r, Row::Control { field: Field::Setting(i), .. } if SETTINGS[*i].cvar == "mashup_resolution"))
+                    .map_or(rows.len(), |p| p + 1)
+            } else {
+                rows.iter().position(|r| self.row_order(r) > order).unwrap_or(rows.len())
+            };
+            rows.insert(at, row);
+        }
+        let advanced = match self.tab {
+            Tab::Video => Some(Action::VideoAdvanced),
+            Tab::Multiplayer => Some(Action::MultiplayerAdvanced),
+            _ => None,
+        };
+        if let Some(action) = advanced {
             // Its Advanced... button, where the layout has it.
-            let at = self.layout().and_then(|l| l.controls.iter().position(|c| c.name == "AdvancedButton"));
-            let b = Self::button_row(&self.text("#GameUI_AdvancedEllipsis", "Advanced..."), Action::VideoAdvanced);
+            let name = advanced_button(&action).unwrap_or_default();
+            let at = self.layout().and_then(|l| l.controls.iter().position(|c| c.name == name));
+            let b = Self::button_row(&self.text("#GameUI_AdvancedEllipsis", "Advanced..."), action);
             let before = at.map_or(rows.len(), |at| {
                 rows.iter()
                     .position(|r| self.row_order(r) > at)
@@ -435,5 +498,108 @@ impl GameMenu {
         rows.push(self.ok_row());
         rows.push(self.cancel_row());
         rows
+    }
+
+    /// Multiplayer > Advanced's cvars: the install's `cfg/user.scr` (else
+    /// ours), each with its value now.
+    pub(super) fn user_cvars_now(&self, get: &dyn Fn(&str) -> Option<String>) -> Vec<ServerCvar> {
+        let script: Vec<crate::map::hud::ServerSetting> = match self.ui.0.as_ref().filter(|u| !u.user_settings.is_empty()) {
+            Some(ui) => ui.user_settings.clone(),
+            None => USER_FALLBACK
+                .iter()
+                .map(|(cvar, token, ours, list)| crate::map::hud::ServerSetting {
+                    cvar: cvar.to_string(),
+                    label: self.text(token, ours),
+                    kind: ServerSettingKind::List(list.iter().map(|(t, o, v)| (self.text(t, o), v.to_string())).collect()),
+                    default: "1".into(),
+                })
+                .collect(),
+        };
+        script
+            .into_iter()
+            .map(|s| {
+                let before = get(&s.cvar);
+                // A list's default is its value (an index into the list
+                // when it isn't one of them).
+                let default = match &s.kind {
+                    ServerSettingKind::List(items) if !items.iter().any(|(_, v)| *v == s.default) => s
+                        .default
+                        .trim()
+                        .parse::<usize>()
+                        .ok()
+                        .and_then(|k| items.get(k))
+                        .map_or(s.default.clone(), |(_, v)| v.clone()),
+                    _ => s.default.clone(),
+                };
+                ServerCvar {
+                    cvar: s.cvar,
+                    label: s.label,
+                    kind: s.kind,
+                    value: before.clone().unwrap_or(default),
+                    before,
+                    page: 0,
+                    field: None,
+                }
+            })
+            .collect()
+    }
+
+    /// Multiplayer > Advanced's rows: its options in the script's order
+    /// (greyed where mashup lacks the cvar), OK, Cancel.
+    pub(super) fn multiplayer_advanced_rows(&self) -> Vec<Row> {
+        let mut rows: Vec<Row> = self
+            .user_cvars
+            .iter()
+            .enumerate()
+            .map(|(i, c)| match c.before {
+                Some(_) => self.control_row(Field::UserCvar(i)),
+                None => Row::Greyed {
+                    label: c.label.clone(),
+                    control: self.scr_control(c),
+                },
+            })
+            .collect();
+        rows.push(self.ok_row());
+        rows.push(self.cancel_row());
+        rows
+    }
+
+    /// Multiplayer > Advanced's OK: the lines setting what changed.
+    pub(super) fn user_cvar_lines(&self) -> Vec<String> {
+        self.user_cvars
+            .iter()
+            .filter(|c| c.before.as_ref().is_some_and(|b| b.trim() != c.value.trim()))
+            .map(|c| format!("{} {}", c.cvar, crate::console::quote(&c.value)))
+            .collect()
+    }
+
+    /// The window sizes the video tab's resolution list shows: those of
+    /// its aspect ratio (all without one; all when none has it).
+    pub fn shown_resolutions(&self) -> Vec<String> {
+        let shown: Vec<String> = self
+            .resolutions
+            .iter()
+            .filter(|r| self.aspect.is_none() || aspect_of(r) == self.aspect)
+            .cloned()
+            .collect();
+        if shown.is_empty() { self.resolutions.clone() } else { shown }
+    }
+
+    /// Pick an aspect ratio: the resolution list shows its sizes; a window
+    /// size of another goes to its largest (as CS:S's list refills).
+    pub(super) fn pick_aspect(&mut self, k: usize, out: &mut Outcome) {
+        if k >= ASPECTS.len() {
+            return;
+        }
+        self.aspect = Some(k);
+        let Some(i) = crate::client::options::setting_index("mashup_resolution") else { return };
+        let shown = self.shown_resolutions();
+        let current = self.values.get(i).cloned().flatten().unwrap_or_default();
+        if !shown.contains(&current)
+            && let Some(first) = shown.first().cloned()
+            && self.values.get(i).is_some_and(Option::is_some)
+        {
+            self.set_value(i, first, out);
+        }
     }
 }

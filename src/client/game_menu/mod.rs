@@ -6,7 +6,8 @@
 //! dialog is a VGUI frame (`widgets`: moved by its title bar, brought to
 //! the front by a click, closed from its X) laid out from the install's
 //! layouts: the options (`OptionsSub*.res` per tab, OK / Cancel / Apply,
-//! the keyboard and video tabs' Advanced dialogs), Create Server (its
+//! the keyboard, video and multiplayer tabs' Advanced dialogs, the last
+//! listing `cfg/user.scr`), Create Server (its
 //! Server, Game and Bot pages: `CreateMultiplayerGame*Page.res`, the Game
 //! page's options from `cfg/settings.scr`); controls the game has and
 //! mashup lacks are drawn greyed. Ours (settings CS:S's options don't
@@ -104,10 +105,10 @@ impl Plugin for GameMenuPlugin {
         );
         app.console_command(
             "menu",
-            "menu [main|newgame|game|bot|bots|team|options|keyboard|mouse|audio|video|multiplayer|advanced|\
-             videoadvanced|extras]: open the game menu (Esc) on a page (newgame: Create Server, game and bot its \
-             other pages; options: on a tab; advanced: the keyboard tab's Advanced dialog, videoadvanced the video \
-             tab's; extras: Lucker Party Options).",
+            "menu [main|newgame|game|bot|bots|team|options|keyboard|mouse|audio|video|voice|multiplayer|advanced|\
+             videoadvanced|mpadvanced|extras]: open the game menu (Esc) on a page (newgame: Create Server, game and \
+             bot its other pages; options: on a tab; advanced: the keyboard tab's Advanced dialog, videoadvanced the \
+             video tab's, mpadvanced the multiplayer tab's; extras: Lucker Party Options).",
             |w, a| {
                 let arg = a.first().map(|s| s.to_lowercase());
                 let tab = TABS.iter().find(|(t, ..)| Some(t.page()) == arg.as_deref()).map(|(t, ..)| *t);
@@ -117,7 +118,7 @@ impl Plugin for GameMenuPlugin {
                     Some("newgame" | "createserver" | "game" | "bot") => Page::NewGame,
                     Some("bots") => Page::Bots,
                     Some("team") => Page::Team,
-                    Some("options" | "settings" | "advanced" | "videoadvanced") => Page::Settings,
+                    Some("options" | "settings" | "advanced" | "videoadvanced" | "mpadvanced") => Page::Settings,
                     Some("extras") => Page::Extras,
                     Some(p) => return Err(format!("no menu page \"{p}\"")),
                 };
@@ -137,6 +138,10 @@ impl Plugin for GameMenuPlugin {
                         menu.set_tab(Tab::Video);
                         menu.press_action(&Action::VideoAdvanced);
                     }
+                    Some("mpadvanced") => {
+                        menu.set_tab(Tab::Multiplayer);
+                        menu.press_action(&Action::MultiplayerAdvanced);
+                    }
                     _ => {}
                 }
                 Ok(None)
@@ -145,7 +150,7 @@ impl Plugin for GameMenuPlugin {
         .console_command(
             "menuinput",
             "menuinput <input>: drive the open game menu as keys and clicks would (screenshots, tests): \
-             focus <cvar|map|bots|botcount|botteam|difficulty> | open (the focused combo box's list) | \
+             focus <cvar|map|bots|botcount|botteam|difficulty|aspect> | open (the focused combo box's list) | \
              down | up | enter | space | escape | tab | backtab | type <text> | pick <n> | sheet <n>; prints \
              the focused control.",
             |w, a| {
@@ -196,6 +201,9 @@ pub enum Page {
     KeyboardAdvanced,
     /// The video tab's Advanced dialog (over the options).
     VideoAdvanced,
+    /// The multiplayer tab's Advanced dialog (over the options; its list
+    /// from the install's `cfg/user.scr`).
+    MultiplayerAdvanced,
     /// Ours: Lucker Party Options (what CS:S's options don't have).
     Extras,
 }
@@ -211,12 +219,13 @@ impl Page {
             Page::Settings => "options",
             Page::KeyboardAdvanced => "keyboardadvanced",
             Page::VideoAdvanced => "videoadvanced",
+            Page::MultiplayerAdvanced => "multiplayeradvanced",
             Page::Extras => "extras",
         }
     }
 
     /// A dialog over the options (modal to them).
     fn over_options(self) -> bool {
-        matches!(self, Page::KeyboardAdvanced | Page::VideoAdvanced)
+        matches!(self, Page::KeyboardAdvanced | Page::VideoAdvanced | Page::MultiplayerAdvanced)
     }
 }

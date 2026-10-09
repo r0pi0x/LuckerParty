@@ -66,8 +66,17 @@ plan when work starts; delete them when done.
   same numbers, which contradicts the captures; capture the text of
   `noclip; setpos -295 1078 500; getpos` and a `getpos` standing on a
   known floor.
-- Options faithful to CS:S: any other option CS:S shows that we lack;
-  defaults as CS:S's.
+- Options faithful to CS:S (done 2026-10-09, to playtest): the Voice
+  tab, Multiplayer > Advanced from `cfg/user.scr`, Create Server's
+  `< Random Map >`, the aspect ratio, and the cvars behind the greyed
+  controls with CS:S's defaults (`fov_desired`, the crosshair's size,
+  thickness, dot and custom colour, `snd_musicvolume`,
+  `snd_mute_losefocus`, `m_filter`, `m_customaccel`, `cl_radar_locked`,
+  `cl_downloadfilter`, water detail, `mp_decals`, `cl_c4progressbar`).
+  What stays greyed and why, the deliberate differences (`con_enable`,
+  `volume`) and the reference captures still needed (slider ranges,
+  the colour list, `cl_crosshairusealpha`'s and `mp_decals`' defaults):
+  docs/plans/active/ui-parity.md.
 
 - Pain sounds when losing health: play CS:S's damage sounds for the
   local player and others (positional), whatever the install's sound
@@ -168,8 +177,8 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   (`SourceScheme.res` frames and colours, `GameMenu.res` entries), its
   dialogs laid out from the install's `.res` files with VGUI's controls
   (`client/widgets.rs`; docs/plans/active/ui-parity.md). Left: what
-  that plan lists as left (the console as a VGUI frame, Multiplayer >
-  Advanced from `cfg/user.scr`, the greyed controls' cvars), binds for
+  that plan lists as left (the console as a VGUI frame, the greyed
+  controls whose features may come), binds for
   the keyboard actions greyed in the options (`invprev`,
   `+voicerecord`, `autobuy`, ...), comparing the look with CS:S's
   (refcmp has no menu views).

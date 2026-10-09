@@ -451,7 +451,8 @@ fn create_server_by_its_controls() {
     // pick the next.
     let map = row_with(&m, Field::Map);
     press(&mut m, &[Input::Click(Target::Row(map), 0)]);
-    assert_eq!(m.combo.map(|c| (c.owner, c.highlight, c.len)), Some((map, 1, 3)));
+    // CS:S's `< Random Map >` first.
+    assert_eq!(m.combo.map(|c| (c.owner, c.highlight, c.len)), Some((map, 2, 4)));
     press(&mut m, &[Input::Down, Input::Activate]);
     assert_eq!((m.new_game.map, m.combo), (2, None));
     // Include bots: their count and difficulty show.
@@ -611,14 +612,11 @@ fn video_options_and_its_advanced_dialog() {
     let o = click_on(&mut m, |m| button(m, Action::Cancel));
     assert_eq!(o.lines, ["mat_antialias 4"]);
     assert_eq!((m.page, m.focus), (Page::Settings, adv));
-    // Show FPS and the hand aren't CS:S's: in our own dialog.
+    // Show FPS isn't CS:S's: in our own dialog.
     assert!(m.rows().iter().all(|r| r.field() != Some(Field::Setting(setting("cl_showfps")))));
     click(&mut m, MainItem::Extras);
     assert_eq!(m.page, Page::Extras);
-    let hand = row_of(&m, "cl_righthand");
-    let o = press(&mut m, &[Input::Click(Target::Row(hand), 0), Input::Click(Target::ComboItem(0), 0)]);
-    assert_eq!(o.lines, ["cl_righthand 0"]);
-    assert!(matches!(control(&m, hand), Control::Combo { text, .. } if text == "Left"));
+    assert!(m.rows().iter().any(|r| r.field() == Some(Field::Setting(setting("cl_showfps")))));
 }
 
 #[test]
@@ -997,4 +995,199 @@ fn menuinput_words() {
     assert_eq!(menu_input(&m, &["pick".into(), "2".into()]), Ok(Input::Click(Target::ComboItem(2), 0)));
     assert!(menu_input(&m, &["focus".into(), "nothing".into()]).is_err());
     assert!(m.describe().starts_with("NewGame, focus 0"));
+}
+
+#[test]
+fn create_server_offers_a_random_map() {
+    let mut m = main_menu();
+    m.random_seed = 8;
+    click(&mut m, MainItem::NewGame);
+    let map = row_with(&m, Field::Map);
+    match control(&m, map) {
+        Control::Combo { entries, selected, .. } => {
+            assert_eq!(entries, ["< Random Map >", "cs_office", "de_dust2", "de_nuke"]);
+            assert_eq!(selected, Some(1), "the first map, not random, at first");
+        }
+        c => panic!("{c:?}"),
+    }
+    press(&mut m, &[Input::Click(Target::Row(map), 0), Input::Click(Target::ComboItem(0), 0)]);
+    assert!(m.new_game.random);
+    assert!(matches!(control(&m, map), Control::Combo { text, selected: Some(0), .. } if text == "< Random Map >"));
+    // Start plays one of the maps, picked by the seed (8 % 3: de_nuke).
+    let o = click_on(&mut m, |m| button(m, Action::Start));
+    assert!(o.lines.contains(&"map de_nuke".to_string()), "{:?}", o.lines);
+    assert_eq!(m.loading.as_deref(), Some("de_nuke"));
+    // Another seed, another map; picking a map leaves random.
+    let mut m = main_menu();
+    m.random_seed = 3;
+    m.new_game.random = true;
+    assert_eq!(m.chosen_map(), Some(0));
+    m.new_game.set_map_entry(3);
+    assert_eq!((m.new_game.random, m.chosen_map()), (false, Some(2)));
+}
+
+#[test]
+fn water_detail_sets_both_water_cvars() {
+    let mut m = GameMenu {
+        in_game: true,
+        ..default()
+    };
+    let water = |n: &str| match n {
+        "r_waterforceexpensive" => Some("1".to_string()),
+        "r_waterforcereflectentities" => Some("0".to_string()),
+        n => get(n),
+    };
+    m.open(Page::Main, vec!["de_dust2".into()], None, water);
+    click(&mut m, MainItem::Options);
+    press(&mut m, &[Input::Click(Target::Tab(3), 0)]);
+    let adv = button(&m, Action::VideoAdvanced);
+    press(&mut m, &[Input::Click(Target::Row(adv), 0)]);
+    let w = row_of(&m, "r_waterforceexpensive r_waterforcereflectentities");
+    assert!(matches!(control(&m, w), Control::Combo { selected: Some(1), text, .. } if text == "Reflect world"));
+    let o = press(&mut m, &[Input::Click(Target::Row(w), 0), Input::Click(Target::ComboItem(2), 0)]);
+    assert_eq!(o.lines, ["r_waterforceexpensive 1", "r_waterforcereflectentities 1"], "Reflect all");
+    let o = press(&mut m, &[Input::Click(Target::Row(w), 0), Input::Click(Target::ComboItem(0), 0)]);
+    assert_eq!(o.lines, ["r_waterforceexpensive 0", "r_waterforcereflectentities 0"], "Simple reflections");
+    // Cancel puts both back.
+    let o = click_on(&mut m, |m| button(m, Action::Cancel));
+    assert_eq!(o.lines, ["r_waterforceexpensive 1", "r_waterforcereflectentities 0"]);
+}
+
+#[test]
+fn the_aspect_ratio_filters_the_resolutions() {
+    let mut m = GameMenu {
+        in_game: true,
+        ..default()
+    };
+    let res = |n: &str| if n == "mashup_resolution" { Some("1920x1080".to_string()) } else { get(n) };
+    m.resolutions = vec!["1920x1080".into(), "1680x1050".into(), "1280x1024".into(), "1280x720".into(), "1024x768".into()];
+    m.open(Page::Main, vec!["de_dust2".into()], None, res);
+    assert_eq!(m.aspect, Some(1), "16:9 from the size now");
+    click(&mut m, MainItem::Options);
+    press(&mut m, &[Input::Click(Target::Tab(3), 0)]);
+    let r = row_of(&m, "mashup_resolution");
+    assert!(matches!(control(&m, r), Control::Combo { entries, .. } if entries == ["1920x1080", "1280x720"]));
+    // Normal (4:3, 5:4): its sizes, and the size goes to its largest.
+    let a = row_with(&m, Field::Aspect);
+    let o = press(&mut m, &[Input::Click(Target::Row(a), 0), Input::Click(Target::ComboItem(0), 0)]);
+    assert_eq!(o.lines, ["mashup_resolution 1280x1024"]);
+    let r = row_of(&m, "mashup_resolution");
+    assert!(matches!(control(&m, r), Control::Combo { entries, .. } if entries == ["1280x1024", "1024x768"]));
+    assert_eq!(aspect_of("1680x1050"), Some(2));
+}
+
+/// Multiplayer > Advanced from a script like the install's
+/// `cfg/user.scr`: the cvars mashup has as controls, the rest greyed.
+fn advanced_menu() -> GameMenu {
+    let list = |pairs: &[(&str, &str)]| ServerSettingKind::List(pairs.iter().map(|(l, v)| (l.to_string(), v.to_string())).collect());
+    let ui = GameUi {
+        user_settings: vec![
+            ServerSetting {
+                cvar: "mp_decals".into(),
+                label: "Decal limit".into(),
+                kind: ServerSettingKind::Number { min: Some(0.0), max: Some(4096.0) },
+                default: "512".into(),
+            },
+            ServerSetting {
+                cvar: "cl_righthand".into(),
+                label: "Weapon alignment".into(),
+                kind: list(&[("Left handed", "0"), ("Right handed", "1")]),
+                default: "0".into(),
+            },
+            ServerSetting {
+                cvar: "cl_clanid".into(),
+                label: "Clan Tag".into(),
+                kind: list(&[("None", "0")]),
+                default: "0".into(),
+            },
+            ServerSetting {
+                cvar: "cl_c4progressbar".into(),
+                label: "Defuse progress bar".into(),
+                kind: ServerSettingKind::Bool,
+                default: "1".into(),
+            },
+            ServerSetting {
+                cvar: "cl_autohelp".into(),
+                label: "Auto-help".into(),
+                kind: ServerSettingKind::Bool,
+                default: "1".into(),
+            },
+        ],
+        ..default()
+    };
+    let mut m = GameMenu {
+        in_game: true,
+        ..default()
+    };
+    m.set_ui(Some(Arc::new(ui)));
+    let has = |n: &str| match n {
+        "mp_decals" => Some("200".to_string()),
+        "cl_c4progressbar" => Some("1".to_string()),
+        n => get(n),
+    };
+    m.open(Page::Main, vec!["de_dust2".into()], None, has);
+    click(&mut m, MainItem::Options);
+    press(&mut m, &[Input::Click(Target::Tab(5), 0)]);
+    assert_eq!(m.tab, Tab::Multiplayer);
+    let adv = button(&m, Action::MultiplayerAdvanced);
+    press(&mut m, &[Input::Click(Target::Row(adv), 0)]);
+    assert_eq!(m.page, Page::MultiplayerAdvanced);
+    m
+}
+
+#[test]
+fn multiplayer_advanced_lists_the_scripts_options() {
+    let mut m = advanced_menu();
+    let rows = m.rows();
+    let labels: Vec<String> = rows.iter().map(crate::client::game_menu::label_of).collect();
+    assert_eq!(labels, ["Decal limit", "Weapon alignment", "Clan Tag", "Defuse progress bar", "Auto-help", "OK", "Cancel"]);
+    // Ours as controls with their values now; mashup lacks the clan tag
+    // and auto-help: greyed, showing the script's defaults, not focused.
+    assert_eq!(control(&m, 0), Control::Text { text: "200".into(), numeric: true, max: 8 });
+    assert!(matches!(control(&m, 1), Control::Combo { text, .. } if text == "Right handed"));
+    assert!(matches!(&rows[2], Row::Greyed { control: Control::Combo { text, .. }, .. } if text == "None"));
+    assert!(matches!(&rows[4], Row::Greyed { control: Control::Check(true), .. }));
+    assert!(!rows[2].focusable() && !rows[4].focusable());
+    assert_eq!(m.list(), (5, ADVANCED_ROWS));
+    // Changes wait for OK (CS:S's dialog): left-handed, fewer decals, no bar.
+    let o = press(&mut m, &[Input::Click(Target::Row(1), 0), Input::Click(Target::ComboItem(0), 0)]);
+    assert!(o.lines.is_empty());
+    press(&mut m, &[Input::Click(Target::Row(0), 0), Input::Edit(Edit::SelectAll), Input::Type("50".into())]);
+    let o = press(&mut m, &[Input::Click(Target::Row(3), 0)]);
+    assert!(o.lines.is_empty());
+    let o = click_on(&mut m, |m| button(m, Action::Ok));
+    assert_eq!(o.lines, ["mp_decals 50", "cl_righthand 0", "cl_c4progressbar 0"]);
+    assert_eq!((m.page, m.focus), (Page::Settings, button(&m, Action::MultiplayerAdvanced)));
+    // Opened again: as they are now; Cancel (Esc) runs nothing.
+    let adv = button(&m, Action::MultiplayerAdvanced);
+    press(&mut m, &[Input::Click(Target::Row(adv), 0)]);
+    assert_eq!(control(&m, 0), Control::Text { text: "50".into(), numeric: true, max: 8 });
+    let o = press(&mut m, &[Input::Click(Target::Row(3), 0), Input::Close]);
+    assert!(o.lines.is_empty());
+    assert_eq!(m.page, Page::Settings);
+    let o = press(&mut m, &[Input::Click(Target::Row(adv), 0), Input::Activate]);
+    assert!(o.lines.is_empty(), "nothing changed: {:?}", o.lines);
+}
+
+#[test]
+fn multiplayer_advanced_without_the_install_has_the_weapon_hand() {
+    let mut m = menu();
+    click(&mut m, MainItem::Options);
+    press(&mut m, &[Input::Click(Target::Tab(5), 0)]);
+    click_on(&mut m, |m| button(m, Action::MultiplayerAdvanced));
+    let hand = row_with(&m, Field::UserCvar(0));
+    assert!(matches!(control(&m, hand), Control::Combo { text, .. } if text == "Right handed"));
+    press(&mut m, &[Input::Click(Target::Row(hand), 0), Input::Click(Target::ComboItem(0), 0)]);
+    let o = click_on(&mut m, |m| button(m, Action::Ok));
+    assert_eq!(o.lines, ["cl_righthand 0"]);
+}
+
+#[test]
+fn the_voice_tab_is_there_and_greyed() {
+    let mut m = menu();
+    click(&mut m, MainItem::Options);
+    press(&mut m, &[Input::Click(Target::Tab(4), 0)]);
+    assert_eq!(m.tab, Tab::Voice);
+    // No voice chat: only the dialog's buttons.
+    assert!(m.rows().iter().all(|r| matches!(r, Row::Button { .. })));
 }

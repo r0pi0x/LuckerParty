@@ -1,5 +1,6 @@
 //! The radar, CS:S style: the map's overview picture under a square in the
-//! HUD's `HudRadar` box, turned so the way you face is up, with you at the
+//! HUD's `HudRadar` box, turned so the way you face is up (or, with
+//! `cl_radar_locked 1`, kept as the overview is drawn), with you at the
 //! centre; teammates always, enemies while you can see them (CS:S shows
 //! enemies any teammate has spotted); your place name (from the nav mesh)
 //! below it, as `HudLocation` does.
@@ -24,6 +25,7 @@ impl Plugin for RadarPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "radar.wgsl");
         app.add_plugins(UiMaterialPlugin::<RadarMaterial>::default());
+        radar_cvars(app);
         app.add_systems(
             Update,
             (
@@ -32,6 +34,39 @@ impl Plugin for RadarPlugin {
                 update.run_if(resource_exists::<ActiveOverview>),
             ),
         );
+    }
+}
+
+/// `cl_radar_locked`.
+pub(crate) fn radar_cvars(app: &mut App) {
+    app.init_resource::<RadarOptions>();
+    crate::console::resource_cvar::<RadarOptions, u8>(
+        app,
+        "cl_radar_locked",
+        "1: the radar doesn't turn with your view (the overview as drawn, north up).",
+        |r| &mut r.locked,
+    );
+    app.world_mut()
+        .resource_mut::<crate::console::Console>()
+        .archive("cl_radar_locked");
+}
+
+/// The radar's options: `cl_radar_locked` (CS:S's default 0: it turns).
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
+pub struct RadarOptions {
+    pub locked: u8,
+}
+
+/// The angle the overview is turned by on the radar (radians): so the way
+/// you face is up (`rotate`: the overview's own flag, its picture turned a
+/// quarter), or none when locked.
+pub fn radar_angle(rotate: bool, locked: bool, yaw: f32) -> f32 {
+    if locked {
+        0.0
+    } else if rotate {
+        -yaw - std::f32::consts::FRAC_PI_2
+    } else {
+        yaw
     }
 }
 
@@ -175,7 +210,7 @@ fn teardown(parts: Query<Entity, With<RadarPart>>, mut commands: Commands) {
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn update(
     overview: Res<ActiveOverview>,
-    (hud, fonts): (Option<Res<ActiveHud>>, Res<super::fonts::UiFonts>),
+    (hud, fonts, options): (Option<Res<ActiveHud>>, Res<super::fonts::UiFonts>, Option<Res<RadarOptions>>),
     nav: Option<Res<NavMesh>>,
     windows: Query<&Window>,
     me: Option<Single<(Entity, &GlobalTransform, &Intent, Option<&Team>, Has<Dead>), With<LocalPlayer>>>,
@@ -250,11 +285,8 @@ fn update(
     let centre = o.pixel(at.translation());
     let Ok(pivot_entity) = pivot.single() else { return };
     // Clockwise by the look yaw puts the way you face at the top.
-    let facing = if o.rotate {
-        -intent.yaw - std::f32::consts::FRAC_PI_2
-    } else {
-        intent.yaw
-    };
+    let locked = options.is_some_and(|r| r.locked != 0);
+    let facing = radar_angle(o.rotate, locked, intent.yaw);
     // Only on a change: a mutable borrow alone re-prepares the material.
     let (centre_uv, span) = (centre / o.size, Vec2::splat(side / k) / o.size);
     if let Ok(m) = map.single()
@@ -354,6 +386,21 @@ fn update(
         let want = fonts.client("ChatFont", window.height(), 12.0);
         if *font != want {
             *font = want;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_locked_radar_keeps_the_overview_still() {
+        for rotate in [false, true] {
+            let turned = (radar_angle(rotate, false, 0.3), radar_angle(rotate, false, 1.3));
+            assert!((turned.0 - turned.1).abs() > 0.9, "unlocked: turns with the view");
+            assert_eq!(radar_angle(rotate, true, 0.3), radar_angle(rotate, true, 1.3), "locked: still");
+            assert_eq!(radar_angle(rotate, true, 2.0), 0.0, "as the overview is drawn");
         }
     }
 }
