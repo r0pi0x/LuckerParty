@@ -214,6 +214,9 @@ impl Default for RoomBus {
 impl RoomBus {
     fn add(&self, frame: u64, v: f32) {
         let slot = &self.ring[(frame % RING as u64) as usize];
+        // Newer toolchains rename this `try_update`; that name is newer
+        // than our rust-version, so keep this one until we raise it.
+        #[allow(deprecated)]
         let _ = slot.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |b| {
             Some((f32::from_bits(b) + v).to_bits())
         });

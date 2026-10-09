@@ -57,7 +57,6 @@ fn surf_ramp(x0: f32, x1: f32) -> MapBrush {
     )
 }
 
-const FLOOR_Y: f32 = -8000.0;
 const SURF_Z: f32 = 4000.0;
 
 fn test_map(mut commands: Commands) {

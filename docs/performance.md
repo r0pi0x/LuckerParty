@@ -28,10 +28,19 @@ Performance").
 - `REFCMP_OUT=<dir>` keeps refcmp's captures and reports in your own
   folder (the CS:S references stay shared).
 
+- Load-independent numbers: `mashup_perf`, `mashup_perf_log`, the F2
+  Perf tab and `refcmp bench` also give percentiles (p50 to p99.9, 1%
+  low fps) of each world's thread CPU time and user-space instructions
+  per frame and per tick (Linux hardware counters), and `bench.json` /
+  `bench.csv`; `mashup_hitch_ratio` logs what a slow frame spent its
+  time on; `perfgate` fails when the simulation's instructions per tick
+  rise ("Load-independent metrics" below).
+
 Frame times move with machine load (other builds on the dev box): compare
 runs taken back to back, and trust ratios more than absolute numbers.
 On a busy box, interleave the builds over several rounds and compare
-medians and minimums ("Frame time pass" below).
+medians and minimums ("Frame time pass" below), or compare
+instructions, which hardly move with load ("Load-independent metrics").
 
 ## Visibility culling (`map::vis`)
 
@@ -574,6 +583,145 @@ worth a look on the physics side. On a quiet machine (load 3) the old
 build drew dust2's 32 views at 4.9 ms a frame (main world 4.3): the
 per-frame cost a 240 Hz monitor (4.2 ms) has to beat; new numbers on a
 quiet machine and on the Windows PC are still to be taken.
+
+## Load-independent metrics
+
+Every number in "Frame time pass" was taken at load 6-33, where single
+runs swing 2-10x. What now measures besides wall time (`src/metrics/`,
+`src/client/frame_metrics.rs`; OBSERVABILITY.md 3c says where each shows):
+
+- **Thread CPU time** of the main world (between marks before `First` and
+  after `Last`), the render world (before `ExtractCommands` to after
+  `Cleanup`, on the render thread) and each tick (`FixedFirst` to
+  `FixedLast`), from `CLOCK_THREAD_CPUTIME_ID` (Windows:
+  `GetThreadTimes`, in 15.6 ms steps).
+- **Hardware counters** (Linux, `perf-event2`, user space only, which
+  `perf_event_paranoid` 2 allows): instructions retired, cycles, cache
+  misses, branch misses, one counter group per thread (one `read` per
+  sample). Unavailable elsewhere: the readouts say why.
+- **Distributions** over the last 4096 frames and ticks: p50, p90, p99,
+  p99.9, max, and "1% low" fps (1000 / the mean of the slowest 1% of
+  frames).
+- **Hitch log** (`mashup_hitch_ratio`, default 2): a frame over twice the
+  median logs its main-world schedules and render sets by wall and CPU
+  ms, ticks run, and with `--features profile` its spans by self time.
+- **`perfgate`**: instructions per tick of fixed headless scenarios
+  against a stored baseline ("Regression gate").
+
+### How stable they are under load
+
+`refcmp bench` (playtest build, 1280x720), the same build three times
+per map at load 8-22 (`ALL` rows: every view's frames together; spread
+= (max - min) / mean over the runs):
+
+| metric | de_dust2 | de_nuke | cs_office (6 runs, load 8-15) |
+|---|---|---|---|
+| frame ms p50 | 3.85-15.36 (141%) | 4.62-15.51 (122%) | 5.03-19.60 (160%) |
+| frame ms p99.9 | 15.9-49.1 (106%) | 8.2-42.1 (151%) | 13.7-100.6 (170%) |
+| main CPU ms p50 | 102% | 105% | 2.44-7.90 (130%) |
+| render CPU ms p50 | 78% | 75% | 4.44-9.85 (90%) |
+| main instructions p50 (less ticks) | 29% | 11% | 8.5-15.2M (60%) |
+| render instructions p50 / p99 | 0.6% / 0.5% | 2.0% / 0.9% | 1.0% / 0.8% |
+| tick instructions (mean, main thread) | 12% | 6.6% | 5.7-6.6M (14%) |
+| GPU ms p50 | 0.22-0.55 (97%) | 83% | 0.25-0.62 |
+
+An earlier round of the same (three runs at load 20-33) gave render
+instructions 0.3-0.8% and frame ms p50 27-87%.
+
+What this says:
+
+- **The render world's instructions per frame are the stable number**
+  (under 1% between runs whose frame times differ 3-4x): compare them
+  between builds. It runs everything on one thread.
+- **The main world's instructions move with load** (5-30%): its
+  parallel queries (transform propagation, visibility) hand chunks to
+  the task pool and the main thread runs whatever share is left when
+  the pool is busy, and frame-rate dependent work (particles, posing,
+  interpolation) scales with the frame time. Its ticks add 2-3 per slow
+  frame, so the bench also reports it less its ticks' instructions
+  (`main_frame_instructions`, "main ins*"), which halves the spread.
+  Main-thread tick counts (`tick ins`) have the same parallel-share
+  problem; `perfgate` counts every thread instead.
+- **CPU time** moves almost as much as wall time on this box (clock
+  speed, caches, hyperthread siblings shared with other builds), and
+  GPU time doubles at load 20 (timestamps include waits). Wall and CPU
+  times are for comparing within one run.
+- One frame time number to watch per run is the 1% low: dust2's run 1
+  ran p50 3.85 ms (260 fps) but 1% low 44 fps.
+
+### Baseline
+
+`refcmp bench`, playtest build at 6b95f1c plus this work, 1280x720,
+three runs; frame ms p50 / p99 / p99.9, 1% low fps, CPU ms p50, main
+instructions less ticks per frame p50 / p99, render instructions per
+frame p50 / p99, mean instructions per tick (main thread), GPU ms p50:
+
+| map, run (load) | frame ms | 1% low | main CPU | render CPU | main instr | render instr | tick instr | GPU |
+|---|---|---|---|---|---|---|---|---|
+| de_dust2 1 (22) | 3.85 / 17.40 / 28.92 | 44 | 1.84 | 3.42 | 6.71M / 13.30M | 13.65M / 17.29M | 3.06M | 0.22 |
+| de_dust2 2 (10) | 5.38 / 8.64 / 15.92 | 88 | 2.96 | 4.72 | 7.29M / 13.58M | 13.71M / 17.20M | 3.07M | 0.25 |
+| de_dust2 3 (22) | 15.36 / 31.33 / 49.09 | 26 | 5.27 | 7.47 | 8.90M / 20.40M | 13.63M / 17.29M | 3.46M | 0.55 |
+| de_nuke 1 (17) | 4.62 / 7.15 / 8.21 | 125 | 1.80 | 4.19 | 7.05M / 15.97M | 18.66M / 28.57M | 5.12M | 0.27 |
+| de_nuke 2 (9) | 6.77 / 11.32 / 17.11 | 75 | 3.13 | 6.14 | 6.74M / 14.36M | 18.91M / 28.32M | 5.12M | 0.26 |
+| de_nuke 3 (18) | 15.51 / 31.51 / 42.13 | 27 | 5.41 | 9.02 | 7.52M / 18.28M | 19.05M / 28.33M | 5.46M | 0.56 |
+| cs_office 2 (8) | 19.60 / 55.91 / 96.45 | 14 | 7.90 | 9.85 | 15.21M / 35.91M | 18.66M / 31.44M | 6.58M | 0.62 |
+| cs_office 3 (15) | 18.54 / 37.23 / 52.94 | 24 | 7.34 | 9.28 | 14.45M / 33.70M | 18.67M / 31.34M | 6.59M | 0.62 |
+| cs_office 4 (9) | 5.30 / 51.82 / 100.61 | 13 | 2.95 | 4.68 | 9.00M / 28.56M | 18.55M / 31.33M | 5.92M | 0.27 |
+| cs_office 5 (9) | 5.03 / 10.83 / 13.70 | 84 | 2.44 | 4.44 | 8.52M / 26.25M | 18.53M / 31.28M | 5.71M | 0.25 |
+
+(Load = the 1-minute average when the run started; cs_office runs 4
+and 5 with the final build, the others with marks between the render
+sets, below.) Read the render instructions and the tick column across
+builds; the main world's instructions only for large changes.
+
+Marks between the render world's sets (each set's share in the hitch
+log) are opt-in, `MASHUP_RENDER_PHASES=1`: with them always on, two of
+five cs_office benches quit on a wgpu validation error ("Indirect draw
+uses bytes 840..4700 using count 193 which overruns indirect buffer of
+size 4660"); without them, and with main's build before this work, none
+of seven did. Extra systems reorder the single-threaded executor's
+ambiguous render systems, so some order of Bevy's render systems
+breaks indirect draws on that map (backlog).
+
+### Regression gate
+
+`perfgate` (src/bin/perfgate.rs) runs three headless scenarios with
+fixed inputs: `greybox` (two characters walking, turning and jumping on
+a fixed pattern), `de_dust2` (rounds, 5 bots a side, `mp_freezetime 2;
+mp_roundtime 2`), `mg_lego_multigames_v2` (the map's logic and props, no
+players), each 300 ticks of warm-up and 2000 measured ticks, on the
+game's single-threaded schedules. It counts user-space instructions per
+tick summed over every thread of the process (`metrics::AllThreads`):
+the main thread alone moves with how much parallel work it picked up,
+the sum doesn't.
+
+Six runs at load 30-33 (playtest build):
+
+| scenario | instructions per tick p50 | total (2000 ticks) | spread of total | main thread total spread | CPU ms p50 spread | wall ms p50 spread |
+|---|---|---|---|---|---|---|
+| greybox | 0.84M | 1.79-1.86G | 3.8% | 4.0% | 30% | 34% |
+| de_dust2 | 17.9M | 35.59-35.86G | 0.8% | 3.7% | 6% | 30% |
+| mg_lego_multigames_v2 | 6.6M | 13.91-14.20G | 2.0% | 2.2% | 2.7% | 61% |
+
+So the gate compares the total: a rise of more than 3% fails (8% for
+greybox, whose small ticks are dominated by the task pools' own
+bookkeeping); the stored numbers are `tools/perfgate/baseline.json`,
+per build profile (counts differ between `playtest` and the dev
+profile's opt-level 1) and noting the CPU (counts also differ between
+CPU models and thread counts: take a baseline on the machine that
+checks). Its de_dust2 p99 is 26-27M per tick (rounds starting, bots
+seeing each other); the run takes about a minute plus map loading.
+
+- Check: `cargo build --profile playtest --bin perfgate &&
+  target/playtest/perfgate` (exit 1 on a rise; `--scenario de_dust2`
+  for one).
+- A wanted rise (or a drop): `target/playtest/perfgate --update`, and
+  commit `tools/perfgate/baseline.json` with the reason; `--tolerance
+  N` with `--update` sets the default tolerance. Scenarios whose map
+  isn't installed are skipped, and so is everything where counters
+  can't open (Windows, `perf_event_paranoid` 3).
+- Checked: against a baseline lowered by 8% for de_dust2 it fails
+  (`+8.14%, tolerance 3%: FAIL`, exit 1).
 
 ## Test cycle
 
