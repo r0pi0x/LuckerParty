@@ -74,7 +74,7 @@ impl Plugin for GameMenuPlugin {
         );
         app.console_command(
             "menu",
-            "menu [main|newgame|maps|bots|team|options|keyboard|mouse|audio|video|multiplayer]: open the game menu (Esc) on a page (options: on a tab).",
+            "menu [main|newgame|maps|bots|team|options|keyboard|mouse|audio|video|multiplayer|advanced]: open the game menu (Esc) on a page (options: on a tab; advanced: the keyboard tab's Advanced dialog).",
             |w, a| {
                 let arg = a.first().map(|s| s.to_lowercase());
                 let tab = TABS.iter().find(|(t, ..)| Some(t.page()) == arg.as_deref()).map(|(t, ..)| *t);
@@ -85,12 +85,23 @@ impl Plugin for GameMenuPlugin {
                     Some("maps") => Page::Maps,
                     Some("bots") => Page::Bots,
                     Some("team") => Page::Team,
-                    Some("options") | Some("settings") => Page::Settings,
+                    Some("options") | Some("settings") | Some("advanced") => Page::Settings,
                     Some(p) => return Err(format!("no menu page \"{p}\"")),
                 };
                 open_menu(w, page);
                 if let Some(tab) = tab {
                     w.resource_mut::<GameMenu>().set_tab(tab);
+                }
+                if arg.as_deref() == Some("advanced") {
+                    let mut menu = w.resource_mut::<GameMenu>();
+                    menu.set_tab(Tab::Keyboard);
+                    if let Some(i) = menu
+                        .rows()
+                        .iter()
+                        .position(|r| matches!(r, Row::Button { action: Action::Advanced, .. }))
+                    {
+                        menu.handle(Input::Click(Target::Row(i), 0));
+                    }
                 }
                 Ok(None)
             },

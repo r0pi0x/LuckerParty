@@ -121,7 +121,8 @@ Only `Reflect`-registered types are visible; register new core components in
 - `menu [main|newgame|maps|bots|team|options]` opens the game menu (Esc)
   on a page, for screenshots of it: `--window 1280x720 --screenshot
   menu.png +menu options`; `menu keyboard` (or `mouse`, `audio`, `video`,
-  `multiplayer`) opens the options on that tab. Cvars it shows are read
+  `multiplayer`) opens the options on that tab, `menu advanced` the
+  keyboard tab's Advanced dialog. Cvars it shows are read
   when it opens: put `+cl_crosshaircolor 3` before `+menu`. The log
   line `game menu: GameUI look (...)` says the install's look loaded,
   with how many main menu backgrounds and the title it found (else the
