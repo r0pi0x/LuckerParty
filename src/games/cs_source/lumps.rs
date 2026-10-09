@@ -107,7 +107,7 @@ mod tests {
         let mut file = vec![0u8; header];
         file[..4].copy_from_slice(b"VBSP");
         file[4..8].copy_from_slice(&20u32.to_le_bytes());
-        let mut put = |file: &mut Vec<u8>, i: usize, data: &[u8], four_cc: u32| {
+        let put = |file: &mut Vec<u8>, i: usize, data: &[u8], four_cc: u32| {
             let ofs = file.len() as u32;
             file.extend_from_slice(data);
             let at = DIRECTORY + i * ENTRY;

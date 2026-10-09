@@ -23,10 +23,19 @@ use crate::{
         FreezeTime, Health, Intent, LocalPlayer, MovementState, NetRole, PredictedComponents, Seed, SimClock, SimSet,
         SimTick, Team, Velocity,
     },
-    objectives::hostages::Hostage,
-    rules::Dead,
+    objectives::{
+        bomb::{Arming, Defusing},
+        hostages::Hostage,
+    },
+    rules::{
+        Dead,
+        rounds::{Phase, RoundState},
+    },
     slots::{Loadout, MovementSlot, set_movement},
-    weapon::Inventory,
+    weapon::{
+        Armor, Inventory,
+        economy::{DefuseKit, Money},
+    },
 };
 
 pub(super) fn plugin(app: &mut App) {
@@ -210,7 +219,18 @@ pub(super) fn stop(world: &mut World) {
                 super::NetHeld,
                 super::NetItem,
                 super::NetSmoke,
+                super::NetScore,
+                super::NetBomb,
+                super::NetHostage,
             )>();
+    }
+    // The round's entity goes.
+    let rounds: Vec<Entity> = world
+        .query_filtered::<Entity, With<super::NetRound>>()
+        .iter(world)
+        .collect();
+    for e in rounds {
+        world.despawn(e);
     }
 }
 
@@ -280,6 +300,8 @@ fn admit(world: &mut World, client: Entity, msg: Join) {
             you: id,
         },
     });
+    // The server's replicated cvars (movement, rules), before it plays.
+    super::cvars::send_all(world, client);
     info!("{name} joined (client {id})");
 }
 
@@ -317,6 +339,7 @@ fn spawn_player(world: &mut World, id: u64, name: &str) -> Entity {
             CommandBuffer::default(),
             OwnStateOut::default(),
             crate::weapon::lagcomp::ViewTick::default(),
+            crate::core::RemotePlayer,
             Replicated,
             NetCharacter {
                 owner: Some(id),
@@ -460,6 +483,16 @@ fn capture_own_states(world: &mut World) {
     let tick_nanos = world.resource::<Time<Fixed>>().timestep().as_nanos() as u64;
     let time_nanos = world.resource::<Time<Fixed>>().elapsed().as_nanos() as u64;
     let frozen = world.get_resource::<FreezeTime>().is_some_and(|f| f.0);
+    // The freeze ends on the first tick at its end time (`rules::rounds`).
+    let frozen_until = match world.get_resource::<RoundState>().map(|r| r.phase) {
+        Some(Phase::Freeze { until }) if frozen => {
+            let dt = clock.delta.as_secs_f64().max(1e-6);
+            let k = ((until - clock.now) / dt - 1e-6).ceil().max(1.0);
+            Some(clock.tick + k as u64)
+        }
+        _ if frozen => Some(u64::MAX),
+        _ => None,
+    };
     let characters: Vec<Entity> = world
         .query_filtered::<Entity, With<OwnStateOut>>()
         .iter(world)
@@ -469,7 +502,12 @@ fn capture_own_states(world: &mut World) {
             let state = registry.encode(world, e);
             let movement = world.get::<MovementSlot>(e).map_or("", |m| m.0).to_string();
             let seed = world.get::<Seed>(e).map_or(0, |s| s.0);
-            let held = frozen || world.get::<Dead>(e).is_some();
+            let held = world.get::<Dead>(e).is_some();
+            let still = world.get::<Arming>(e).is_some() || world.get::<Defusing>(e).is_some();
+            let money = world.get::<Money>(e).map(|m| m.0);
+            let armor = world.get::<Armor>(e).map(|a| (a.amount, a.helmet));
+            let kit = world.get::<DefuseKit>(e).is_some();
+            let arming = world.get::<Arming>(e).map(|a| super::game::tick_of(&clock, a.since));
             let ground = world
                 .get::<MovementState>(e)
                 .and_then(|s| s.ground)
@@ -485,6 +523,12 @@ fn capture_own_states(world: &mut World) {
                 seed,
                 held,
                 ground,
+                frozen_until,
+                still,
+                money,
+                armor,
+                kit,
+                arming,
                 ..default()
             });
         }

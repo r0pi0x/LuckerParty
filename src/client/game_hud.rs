@@ -8,11 +8,14 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
-use super::fonts::UiFonts;
+use super::{
+    fonts::UiFonts,
+    hud_text::{Align, GlyphFont, HudText, width},
+};
 
 use crate::{
     core::{Damage, Died, Health, Hitgroup, LocalPlayer, Team},
-    map::hud::{ActiveHud, GameHud},
+    map::hud::{ActiveHud, GameHud, HudCoord, HudPanel},
     rules::Dead,
     rules::rounds::RoundState,
     weapon::{Armor, Inventory, Magazine, Weapon, economy::Money},
@@ -42,8 +45,8 @@ impl Plugin for GameHudPlugin {
 #[derive(Component)]
 struct GameHudPart;
 
-#[derive(Component, Clone, Copy, PartialEq, Eq)]
-enum Part {
+#[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Part {
     Panel(PanelKind),
     Icon(PanelKind),
     Digits(PanelKind),
@@ -53,7 +56,7 @@ enum Part {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum PanelKind {
+pub enum PanelKind {
     Health,
     Armor,
     Ammo,
@@ -64,7 +67,15 @@ enum PanelKind {
 }
 
 impl PanelKind {
-    fn name(self) -> &'static str {
+    const ALL: [PanelKind; 5] = [
+        PanelKind::Health,
+        PanelKind::Armor,
+        PanelKind::Ammo,
+        PanelKind::Account,
+        PanelKind::Timer,
+    ];
+
+    pub fn name(self) -> &'static str {
         match self {
             PanelKind::Health => "HudHealth",
             PanelKind::Armor => "HudArmor",
@@ -146,60 +157,34 @@ fn color(c: [u8; 4]) -> Color {
     Color::srgba_u8(c[0], c[1], c[2], c[3])
 }
 
-fn build(
-    hud: Res<ActiveHud>,
-    old: Query<Entity, With<GameHudPart>>,
-    mut commands: Commands,
-) {
+fn build(hud: Res<ActiveHud>, old: Query<Entity, With<GameHudPart>>, mut commands: Commands) {
     for e in &old {
         commands.entity(e).despawn();
     }
-    let fg = hud.0.color("FgColor").unwrap_or(Color::srgb_u8(255, 176, 0));
-    let spawn_text = |commands: &mut Commands, part: Part| {
-        commands.spawn((
-            GameHudPart,
-            part,
-            Text::default(),
-            TextColor(fg),
-            Node {
-                position_type: PositionType::Absolute,
-                ..default()
-            },
-            GlobalZIndex(40),
-        ));
+    let absolute = || Node {
+        position_type: PositionType::Absolute,
+        ..default()
     };
-    for kind in [
-        PanelKind::Health,
-        PanelKind::Armor,
-        PanelKind::Ammo,
-        PanelKind::Account,
-        PanelKind::Timer,
-    ] {
-        let Some(panel) = hud.0.panels.get(kind.name()) else {
+    for kind in PanelKind::ALL {
+        if !hud.0.panels.contains_key(kind.name()) {
             continue;
-        };
+        }
         commands.spawn((
             GameHudPart,
             Part::Panel(kind),
-            Node {
-                position_type: PositionType::Absolute,
-                ..default()
-            },
-            BackgroundColor(panel.background.map(color).unwrap_or(Color::NONE)),
+            absolute(),
+            BackgroundColor(Color::NONE),
             GlobalZIndex(39),
         ));
-        spawn_text(&mut commands, Part::Icon(kind));
-        spawn_text(&mut commands, Part::Digits(kind));
+        commands.spawn((GameHudPart, Part::Icon(kind), absolute(), GlobalZIndex(40)));
+        commands.spawn((GameHudPart, Part::Digits(kind), absolute(), GlobalZIndex(40)));
         if kind == PanelKind::Ammo {
-            spawn_text(&mut commands, Part::Digits2(kind));
+            commands.spawn((GameHudPart, Part::Digits2(kind), absolute(), GlobalZIndex(40)));
             commands.spawn((
                 GameHudPart,
                 Part::Bar,
-                Node {
-                    position_type: PositionType::Absolute,
-                    ..default()
-                },
-                BackgroundColor(fg),
+                absolute(),
+                BackgroundColor(Color::NONE),
                 GlobalZIndex(40),
             ));
         }
@@ -311,6 +296,207 @@ pub(super) fn clock_text(seconds: f32) -> String {
     format!("{}:{:02}", s / 60, s % 60)
 }
 
+/// What the panels show; None hides a panel.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct HudValues {
+    /// Health points (alive), and the colour it is drawn in.
+    pub health: Option<(f32, Color)>,
+    /// Armour points and helmet (alive; shown at 0 too, as CS:S does).
+    pub armor: Option<(f32, bool)>,
+    /// Clip and reserve of the drawn weapon.
+    pub ammo: Option<(u32, u32)>,
+    /// Its ammo type's icon (`ammo_45`).
+    pub ammo_icon: Option<&'static str>,
+    pub money: Option<u32>,
+    /// Round seconds left.
+    pub clock: Option<f32>,
+}
+
+/// One drawn part of a panel.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Drawn {
+    /// A filled box (pixels), its colour and corner radius.
+    Box(Rect, Color, f32),
+    Text(HudText),
+}
+
+/// Source's proportional value: virtual units (480 lines) to whole pixels,
+/// truncated as VGUI does.
+pub fn scaled(v: f32, scale: f32) -> f32 {
+    (v * scale).trunc()
+}
+
+/// A panel's box in a `w` x `h` window, whole pixels: `xpos`/`ypos` from
+/// the left (top), centre (`c`) or right (`r`) edge, sizes scaled.
+pub fn panel_rect(panel: &HudPanel, w: f32, h: f32) -> Rect {
+    let s = h / 480.0;
+    let at = |c: HudCoord, length: f32| match c {
+        HudCoord::Start(v) => scaled(v, s),
+        HudCoord::Centre(v) => (length / 2.0).trunc() + scaled(v, s),
+        HudCoord::End(v) => length - scaled(v, s),
+    };
+    let min = Vec2::new(at(panel.x, w), at(panel.y, h));
+    Rect::from_corners(min, min + Vec2::new(scaled(panel.wide, s), scaled(panel.tall, s)))
+}
+
+/// An ammo type's icon as CS:S's ammo panel draws it: a glyph of the
+/// kill-icon face (`csd.ttf`, the `CSTypeDeath` font's file); None for
+/// types it has none for (buckshot), which draw the sprite.
+pub fn ammo_glyph(icon: &str) -> Option<char> {
+    Some(match icon {
+        "ammo_45" => 'M',
+        "ammo_556" => 'N',
+        "ammo_9mm" => 'R',
+        "ammo_57" => 'S',
+        "ammo_357" => 'T',
+        "ammo_50" => 'U',
+        "ammo_762" => 'V',
+        "ammo_338" => 'W',
+        _ => return None,
+    })
+}
+
+/// The ammo glyph's cell height and its offset from the panel's
+/// `icon_xpos`/`icon_ypos`, virtual units: measured on CS:S captures (the
+/// weapon scripts that size it are encrypted).
+const AMMO_GLYPH_TALL: f32 = 55.0;
+const AMMO_GLYPH_OFFSET: Vec2 = Vec2::new(1.5, 4.5);
+
+/// The corner radius of the panels' rounded boxes (VGUI's
+/// `PaintBackgroundType 2`), virtual units (measured on CS:S captures).
+const PANEL_CORNER: f32 = 4.0;
+
+/// Each part the HUD panels draw for `values` in a `w` x `h` window: the
+/// panels' boxes, icons (the scheme's `Icons` glyphs) and numbers
+/// (`HudNumbers`), placed as CS:S places them. `font` resolves a scheme
+/// font to a glyph font and its cell height in pixels (`UiFonts::hud_font`).
+pub fn layout(
+    hud: &GameHud,
+    font: &dyn Fn(&str) -> Option<(GlyphFont, f32)>,
+    w: f32,
+    h: f32,
+    values: &HudValues,
+) -> Vec<(Part, Drawn)> {
+    let s = h / 480.0;
+    // Panels draw in the panel colour (`Panel.FgColor`: the dim orange,
+    // added to the screen).
+    let fg = hud
+        .color("Panel.FgColor")
+        .or_else(|| hud.color("FgColor"))
+        .unwrap_or(Color::srgba_u8(255, 176, 0, 120));
+    let mut out = Vec::new();
+    for kind in PanelKind::ALL {
+        let Some(panel) = hud.panels.get(kind.name()) else { continue };
+        let shown = match kind {
+            PanelKind::Health => values.health.is_some(),
+            PanelKind::Armor => values.armor.is_some(),
+            PanelKind::Ammo => values.ammo.is_some(),
+            PanelKind::Account => values.money.is_some(),
+            PanelKind::Timer => values.clock.is_some(),
+        };
+        if !shown {
+            continue;
+        }
+        let rect = panel_rect(panel, w, h);
+        if let Some(bg) = panel.background {
+            out.push((Part::Panel(kind), Drawn::Box(rect, color(bg), PANEL_CORNER * s)));
+        }
+        let colour = match (kind, values.health) {
+            (PanelKind::Health, Some((_, c))) => c,
+            _ => fg,
+        };
+        let at = |v: Vec2| rect.min + Vec2::new(scaled(v.x, s), scaled(v.y, s));
+        let mut text = |part: Part, font_name: &str, text: String, pos: Vec2, align: Align| {
+            if let Some((font, tall)) = font(font_name) {
+                out.push((
+                    part,
+                    Drawn::Text(HudText {
+                        font,
+                        tall,
+                        text,
+                        color: colour,
+                        at: pos,
+                        align,
+                    }),
+                ));
+            }
+        };
+        // Numbers of up to three digits sit right-aligned in a three-digit
+        // field starting at their position (CS:S's armour "0" sits where
+        // health's last digit does).
+        let field = |at: Vec2| {
+            let digits = font("HudNumbers").map_or(0.0, |(f, tall)| width(&f.data, tall, "000"));
+            at + Vec2::X * digits
+        };
+        let icon_name = match kind {
+            PanelKind::Health => Some("health_icon"),
+            PanelKind::Armor => Some(if values.armor.is_some_and(|a| a.1) {
+                "shield_kevlar"
+            } else {
+                "shield"
+            }),
+            PanelKind::Account => Some("dollar_sign"),
+            PanelKind::Timer => Some("timer_icon"),
+            PanelKind::Ammo => None,
+        };
+        if let Some((icon_font, ch)) = icon_name.and_then(|n| hud.icons.get(n)) {
+            text(Part::Icon(kind), icon_font, ch.to_string(), at(panel.icon), Align::Left);
+        }
+        match kind {
+            PanelKind::Health => {
+                let v = values.health.map_or(0.0, |h| h.0).ceil();
+                text(Part::Digits(kind), "HudNumbers", format!("{v:.0}"), field(at(panel.digit)), Align::Right);
+            }
+            PanelKind::Armor => {
+                let v = values.armor.map_or(0.0, |a| a.0).round();
+                text(Part::Digits(kind), "HudNumbers", format!("{v:.0}"), field(at(panel.digit)), Align::Right);
+            }
+            PanelKind::Ammo => {
+                let (clip, reserve) = values.ammo.unwrap_or_default();
+                text(Part::Digits(kind), "HudNumbers", clip.to_string(), field(at(panel.digit)), Align::Right);
+                text(
+                    Part::Digits2(kind),
+                    "HudNumbers",
+                    reserve.to_string(),
+                    field(at(panel.digit2)),
+                    Align::Right,
+                );
+                // The bar between clip and reserve.
+                let num = |k: &str, d: f32| panel.num(k).unwrap_or(d);
+                let min = at(Vec2::new(num("bar_xpos", 53.0), num("bar_ypos", 3.0)));
+                let size = Vec2::new(scaled(num("bar_width", 2.0), s), scaled(num("bar_height", 20.0), s));
+                out.push((Part::Bar, Drawn::Box(Rect::from_corners(min, min + size), fg, 0.0)));
+            }
+            PanelKind::Account => {
+                let v = values.money.unwrap_or(0);
+                // Right-aligned: the digits end at their position.
+                text(Part::Digits(kind), "HudNumbers", v.to_string(), at(panel.digit), Align::Right);
+            }
+            PanelKind::Timer => {
+                let v = values.clock.map_or(String::new(), clock_text);
+                text(Part::Digits(kind), "HudNumbers", v, at(panel.digit), Align::Left);
+            }
+        }
+        if kind == PanelKind::Ammo
+            && let Some(c) = values.ammo_icon.and_then(ammo_glyph)
+            && let Some((f, _)) = font("CSTypeDeath")
+        {
+            out.push((
+                Part::Icon(kind),
+                Drawn::Text(HudText {
+                    font: f,
+                    tall: super::hud_text::proportional_tall(AMMO_GLYPH_TALL, h),
+                    text: c.to_string(),
+                    color: colour,
+                    at: at(panel.icon + AMMO_GLYPH_OFFSET),
+                    align: Align::Left,
+                }),
+            ));
+        }
+    }
+    out
+}
+
 /// Lay the HUD out for the window and fill in the values.
 #[allow(clippy::type_complexity)]
 fn update(
@@ -330,9 +516,8 @@ fn update(
         Entity,
         &Part,
         &mut Node,
-        Option<&mut Text>,
-        Option<&mut TextFont>,
-        Option<&mut TextColor>,
+        Option<&mut HudText>,
+        Option<&mut BackgroundColor>,
         &mut Visibility,
     )>,
     mut commands: Commands,
@@ -343,14 +528,13 @@ fn update(
     let (w, h) = (window.width(), window.height());
     let scale = h / 480.0;
     let hud = &hud.0;
-    let fg = hud.color("FgColor").unwrap_or(Color::srgb_u8(255, 176, 0));
-    let warn = Color::srgb_u8(255, 0, 0);
-    let font = |name: &str| fonts.game(name);
+    let fg = hud.color("Panel.FgColor").unwrap_or(Color::srgba_u8(255, 176, 0, 120));
+    let warn = hud.color("HudIcon_Red").unwrap_or(Color::srgb_u8(160, 0, 0));
     let health_now = player.as_ref().map(|p| p.0.current);
     let health_colour = flash.colour(
         health_now,
         clock_now.elapsed_secs(),
-        hud.color("HudIcon_Red").unwrap_or(warn),
+        warn,
         hud.color("OrangeDim").unwrap_or(fg),
     );
     let (health, armor, active, dead, money) = match &player {
@@ -358,7 +542,7 @@ fn update(
             let (h, a, inv, dead, money) = **p;
             (
                 Some(h.current * 100.0),
-                a.filter(|a| a.amount > 0.0).map(|a| (a.amount * 100.0, a.helmet)),
+                a.map(|a| (a.amount * 100.0, a.helmet && a.amount > 0.0)),
                 inv.and_then(|i| i.active).and_then(|e| weapons.get(e).ok()),
                 dead,
                 money.map(|m| m.0),
@@ -374,32 +558,29 @@ fn update(
         .and_then(|r| r.clock(time.elapsed_secs_f64()))
         .filter(|_| !planted);
     let ammo = active.and_then(|(_, m)| m).map(|m| (m.clip, m.reserve));
+    let ammo_icon = active.and_then(|(w, _)| super::hud_sprites::ammo_icon(w.id));
     let bars_top = bars.and_then(|b| b.0);
-    for (entity, part, mut node, text, text_font, text_color, mut vis) in &mut parts {
-        let kind = match part {
-            Part::Panel(k) | Part::Icon(k) | Part::Digits(k) | Part::Digits2(k) => Some(*k),
-            Part::Bar => Some(PanelKind::Ammo),
-            Part::Notices => None,
-        };
-        // Spectating with the game's bars: they show the clock; the
-        // money goes with the rest of the player's HUD.
-        let spectating = bars_top.is_some();
-        let shown = match kind {
-            Some(PanelKind::Health) => !dead,
-            Some(PanelKind::Armor) => !dead && armor.is_some(),
-            Some(PanelKind::Ammo) => !dead && ammo.is_some(),
-            Some(PanelKind::Account) => money.is_some() && !spectating,
-            Some(PanelKind::Timer) => clock.is_some() && !spectating,
-            None => true,
-        };
-        *vis = if shown {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
-        if !shown {
-            continue;
-        }
+    // Spectating with the game's bars: they show the clock; the money goes
+    // with the rest of the player's HUD.
+    let spectating = bars_top.is_some();
+    let low = health.is_some_and(|v| v <= LOW_HEALTH);
+    let values = HudValues {
+        health: health.filter(|_| !dead).map(|v| {
+            let c = match health_colour {
+                Some(c) => c,
+                None if low => warn,
+                None => fg,
+            };
+            (v, c)
+        }),
+        armor: if dead { None } else { Some(armor.unwrap_or((0.0, false))) },
+        ammo: ammo.filter(|_| !dead),
+        ammo_icon,
+        money: money.filter(|_| !spectating),
+        clock: clock.filter(|_| !spectating),
+    };
+    let drawn = layout(hud, &|name| fonts.hud_font(name, h), w, h, &values);
+    for (entity, part, mut node, text, background, mut vis) in &mut parts {
         if *part == Part::Notices {
             let Some(panel) = hud.panels.get("HudDeathNotice") else {
                 continue;
@@ -413,100 +594,36 @@ fn update(
             }
             continue;
         }
-        let Some(kind) = kind else { continue };
-        let Some(panel) = hud.panels.get(kind.name()) else {
-            continue;
+        let item = drawn.iter().find(|(p, _)| p == part).map(|(_, d)| d);
+        *vis = if item.is_some() {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
         };
-        let origin = Vec2::new(panel.x.resolve(w, scale), panel.y.resolve(h, scale));
-        let place = |node: &mut Node, at: Vec2| {
-            node.left = px(origin.x + at.x * scale);
-            node.top = px(origin.y + at.y * scale);
-        };
-        let low = health.is_some_and(|v| v <= LOW_HEALTH);
-        match part {
-            Part::Panel(_) => {
-                place(&mut node, Vec2::ZERO);
-                node.width = px(panel.wide * scale);
-                node.height = px(panel.tall * scale);
-                node.border_radius = BorderRadius::all(px(4.0 * scale));
-            }
-            Part::Bar => {
-                // The divider between clip and reserve, as in the game.
-                let x = (panel.digit.x + panel.digit2.x) / 2.0 + 2.0;
-                place(&mut node, Vec2::new(x, 4.0));
-                node.width = px(2.0 * scale);
-                node.height = px((panel.tall - 8.0) * scale);
-            }
-            Part::Icon(_) | Part::Digits(_) | Part::Digits2(_) => {
-                let (font_name, value, at) = match (part, kind) {
-                    (Part::Icon(PanelKind::Health), _) => icon(hud, "health_icon"),
-                    (Part::Icon(PanelKind::Armor), _) => icon(
-                        hud,
-                        if armor.is_some_and(|a| a.1) {
-                            "shield_kevlar"
-                        } else {
-                            "shield"
-                        },
-                    ),
-                    (Part::Digits(PanelKind::Health), _) => (
-                        "HudNumbers".into(),
-                        format!("{:.0}", health.unwrap_or(0.0).ceil()),
-                        panel.digit,
-                    ),
-                    (Part::Digits(PanelKind::Armor), _) => (
-                        "HudNumbers".into(),
-                        format!("{:.0}", armor.map_or(0.0, |a| a.0).round()),
-                        panel.digit,
-                    ),
-                    (Part::Digits(PanelKind::Ammo), _) => (
-                        "HudNumbers".into(),
-                        ammo.map_or(String::new(), |a| a.0.to_string()),
-                        panel.digit,
-                    ),
-                    (Part::Icon(PanelKind::Account), _) => icon(hud, "dollar_sign"),
-                    (Part::Icon(PanelKind::Timer), _) => icon(hud, "timer_icon"),
-                    (Part::Digits(PanelKind::Account), _) => (
-                        "HudNumbers".into(),
-                        money.map_or(String::new(), |m| m.to_string()),
-                        panel.digit,
-                    ),
-                    (Part::Digits(PanelKind::Timer), _) => (
-                        "HudNumbers".into(),
-                        clock.map_or(String::new(), clock_text),
-                        panel.digit,
-                    ),
-                    (Part::Digits2(_), _) => (
-                        "HudNumbers".into(),
-                        ammo.map_or(String::new(), |a| a.1.to_string()),
-                        panel.digit2,
-                    ),
-                    _ => (String::new(), String::new(), Vec2::ZERO),
-                };
-                let at = if matches!(part, Part::Icon(_)) { panel.icon } else { at };
-                place(&mut node, at);
-                // The account's digits end at their position (right-aligned).
-                if kind == PanelKind::Account && matches!(part, Part::Digits(_)) {
-                    node.right = px(w - (origin.x + at.x * scale));
-                    node.left = Val::Auto;
-                }
-                if let Some(mut t) = text
-                    && t.0 != value
+        match item {
+            Some(Drawn::Box(r, c, radius)) => {
+                node.left = px(r.min.x);
+                node.top = px(r.min.y);
+                node.width = px(r.width());
+                node.height = px(r.height());
+                node.border_radius = BorderRadius::all(px(*radius));
+                if let Some(mut b) = background
+                    && b.0 != *c
                 {
-                    t.0 = value;
-                }
-                if let (Some(mut tf), Some((handle, tall))) = (text_font, font(&font_name)) {
-                    tf.font = handle.into();
-                    tf.font_size = FontSize::Px(tall * scale);
-                }
-                if let Some(mut c) = text_color {
-                    c.0 = match (kind, health_colour) {
-                        (PanelKind::Health, Some(flashed)) => flashed,
-                        (PanelKind::Health, None) if low => warn,
-                        _ => fg,
-                    };
+                    b.0 = *c;
                 }
             }
-            Part::Notices => {}
+            Some(Drawn::Text(t)) => match text {
+                Some(mut current) => {
+                    if *current != *t {
+                        *current = t.clone();
+                    }
+                }
+                None => {
+                    commands.entity(entity).insert(t.clone());
+                }
+            },
+            None => {}
         }
     }
 }
@@ -574,14 +691,6 @@ fn round_banner(
         TextLayout::justify(Justify::Center),
         GlobalZIndex(45),
     ));
-}
-
-/// An icon's font and glyph (and an unused offset).
-fn icon(hud: &GameHud, name: &str) -> (String, String, Vec2) {
-    match hud.icons.get(name) {
-        Some((font, ch)) => (font.clone(), ch.to_string(), Vec2::ZERO),
-        None => (String::new(), String::new(), Vec2::ZERO),
-    }
 }
 
 /// The notice lines: attacker, weapon glyph, headshot glyph, victim, in
@@ -691,8 +800,6 @@ mod tests {
         assert_eq!(clock_text(59.2), "1:00");
         assert_eq!(clock_text(5.0), "0:05");
     }
-    use crate::map::hud::{HudCoord, HudPanel};
-
     #[test]
     fn panels_scale_with_window_height() {
         let p = HudPanel {

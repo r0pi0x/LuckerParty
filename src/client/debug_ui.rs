@@ -1013,6 +1013,7 @@ fn perf_tab(ui: &mut egui::Ui, world: &mut World, state: &mut DebugUi) {
         frames.len()
     ));
     frame_graph(ui, &frames);
+    distribution(ui, world);
     // Live, every frame (the readout below is once a second).
     if let (Some(i), Some(f)) = (
         world.get_resource::<crate::map::interp::Interpolation>(),
@@ -1040,7 +1041,15 @@ fn perf_tab(ui: &mut egui::Ui, world: &mut World, state: &mut DebugUi) {
         world,
         state,
         "perf_cvars",
-        &["mashup_perf", "mashup_perf_log", "host_timescale", "mat_vsync", "r_novis", "cl_interpolate"],
+        &[
+            "mashup_perf",
+            "mashup_perf_log",
+            "mashup_hitch_ratio",
+            "host_timescale",
+            "mat_vsync",
+            "r_novis",
+            "cl_interpolate",
+        ],
     );
     cvar_grid(
         ui,
@@ -1060,6 +1069,94 @@ fn perf_tab(ui: &mut egui::Ui, world: &mut World, state: &mut DebugUi) {
              and a short --frames count; tracesum <file> sums it up (docs/OBSERVABILITY.md, section 3c).",
         );
     });
+}
+
+/// Percentiles of every frame and tick metric over the kept frames
+/// (`frame_metrics::FrameMetrics`), and a histogram of frame times.
+fn distribution(ui: &mut egui::Ui, world: &mut World) {
+    if !world.contains_resource::<super::frame_metrics::FrameMetrics>() {
+        return;
+    }
+    let (rows, frame_values) = world.resource_scope::<super::frame_metrics::FrameMetrics, _>(|world, mut m| {
+        let rows = m.stats(world.get_resource::<crate::metrics::TickMetrics>()).to_vec();
+        (rows, m.frame_ms.ring.values().to_vec())
+    });
+    ui.collapsing("Distributions (last frames and ticks)", |ui| {
+        if let Some(f) = rows.iter().find(|r| r.group == "frame") {
+            ui.label(format!(
+                "{} frames; 1% low {:.0} fps. Instructions and CPU time hardly move with the machine's load;                  wall times do (docs/performance.md). Hardware counters: {}",
+                f.p.n,
+                f.p.low_1pct_fps(),
+                crate::metrics::hw_status()
+            ));
+        }
+        histogram(ui, &frame_values);
+        egui::Grid::new("perf_dist").striped(true).num_columns(8).show(ui, |ui| {
+            for h in ["", "metric", "p50", "p90", "p99", "p99.9", "max", "mean"] {
+                ui.strong(h);
+            }
+            ui.end_row();
+            for r in &rows {
+                ui.label(r.group);
+                ui.label(r.name);
+                for v in [r.p.p50, r.p.p90, r.p.p99, r.p.p999, r.p.max, r.p.mean] {
+                    ui.monospace(r.format(v));
+                }
+                ui.end_row();
+            }
+        });
+    });
+}
+
+/// Frame times binned (0.5 ms bins up to the p99.9, then one bin for the
+/// rest), bar heights on a square-root scale so rare slow frames show.
+fn histogram(ui: &mut egui::Ui, values: &[f64]) {
+    let Some(p) = crate::metrics::Percentiles::of(values) else {
+        return;
+    };
+    let top = p.p999.max(1.0);
+    let bins = ((top / 0.5).ceil() as usize).clamp(8, 80);
+    let width_ms = top / bins as f64;
+    let mut counts = vec![0u32; bins + 1];
+    for v in values {
+        counts[((v / width_ms) as usize).min(bins)] += 1;
+    }
+    let width = ui.available_width().max(100.0);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 80.0), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 2.0, egui::Color32::from_black_alpha(160));
+    let most = counts.iter().copied().max().unwrap_or(1).max(1) as f32;
+    let bar = rect.width() / counts.len() as f32;
+    for (i, c) in counts.iter().enumerate() {
+        if *c == 0 {
+            continue;
+        }
+        let h = (*c as f32 / most).sqrt() * (rect.height() - 14.0);
+        let x = rect.left() + i as f32 * bar;
+        let color = if i == bins {
+            egui::Color32::LIGHT_RED
+        } else {
+            egui::Color32::LIGHT_GRAY
+        };
+        painter.rect_filled(
+            egui::Rect::from_min_max(
+                egui::pos2(x + 0.5, rect.bottom() - h),
+                egui::pos2(x + bar - 0.5, rect.bottom()),
+            ),
+            0.0,
+            color,
+        );
+    }
+    painter.text(
+        egui::pos2(rect.left() + 4.0, rect.top() + 2.0),
+        egui::Align2::LEFT_TOP,
+        format!(
+            "frame ms 0 .. {top:.1} (p99.9), last bar: slower; p50 {:.2}, p99 {:.2}",
+            p.p50, p.p99
+        ),
+        egui::FontId::proportional(11.0),
+        egui::Color32::from_gray(170),
+    );
 }
 
 /// Frame times as lines over the last frames, with 16.7 and 33.3 ms

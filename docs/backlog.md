@@ -8,14 +8,45 @@ plan when work starts; delete them when done.
 
 ## 0. Playtest feedback (2026-10-07), top priority
 
-- HUD parity pass at pixel level: health, armour, ammo and money digits
-  and icons look slightly off-centre against CS:S; the weapon selection
-  (inventory) panel doesn't match CS:S's (layout, box sizes, which icons
-  and fonts, highlight, fade). Method: capture the real HUD with refcmp
-  (coordinator: reference client) at 1280x720, 1920x1080 and 4:3, overlay
-  and diff ours per panel (`HudLayout.res` positions, `xpos`/`ypos` with
-  `r`/`c` anchors, proportional scaling, digit and icon offsets), fix
-  until each panel lines up, and keep the captures' diff as a test.
+- Sky: the bottom face (`dn`) of the 2D skybox looks wrongly oriented,
+  perhaps needing a 180° turn seen from above. Check against CS:S with a
+  reference capture looking straight down at the sky (refcmp `skyconv`
+  already fits each face's orientation; check what it says for `dn`).
+- Knife view model: its faces (the handle at least) look inside out.
+  Earlier fix decided winding per mesh by majority (props.rs); check the
+  view model's meshes, its mirroring at `cl_righthand` (a mirrored model
+  must flip winding), and compare with a CS:S capture.
+
+- Props and other models show through the sky on mg_creative_multigames_v8_ns
+  and many other maps, while the world brushes behind the sky correctly don't
+  (e.g. `setpos -6332.74 -3047.50 -9638.97; setang -38.85 18.60 0`).
+  Likely props aren't culled by PVS/areas the way world parts are (props
+  without clusters, or a prop path that skips vis), or the sky doesn't hide
+  what lies behind it the way Source's sky brushes do. Compare with CS:S at
+  that position (coordinator: reference capture), then fix generally.
+
+- mg_item_battle_v4b: picking up a map-made "item" (a knife near spawn
+  with map entities parented to it: a car, a jetpack, a cannonball,
+  rockets, speed changes) gives nothing: the parented entities don't come
+  along and no speed change happens. Needs: entities parented to a weapon
+  following it when a player picks it up (and onto the player's hands),
+  the pickup outputs (OnPlayerPickup) and the entities these maps drive
+  from inputs (game_ui, player_speedmod, point_template/env_entity_maker,
+  func_physbox, phys_thruster; specs in specs/source/*.md written
+  2026-10-08, awaiting review).
+- Inside geometry, checked against CS:S (2026-10-09, mg_item_battle_v4b,
+  reference captures in the coordinator's target/inside/): inside the stone
+  wall ours already matches (world drawn, sky black). Inside the car
+  (`setpos 2241.89 1311.06 79.39; setang 4.92 181.70 0`) CS:S shows the
+  world through the car with only the hood's inside in view; ours shows
+  the car's insides (wheels, chassis) and no world behind: back faces
+  drawn, a different prop pose, or the parented car placed differently.
+- `setpos` puts our eye lower than CS:S's for the same coordinates (both
+  captures above): check our setpos/getpos convention (feet vs eye,
+  noclip's eye offset) against Source so pasted positions match.
+- Options faithful to CS:S: the Keyboard tab's Advanced dialog ("Fast
+  weapon switch" = `hud_fastswitch`, default 0, and its other entries) and
+  any other option CS:S shows that we lack; defaults as CS:S's.
 
 - Decals persist across rounds (bullet holes, blood), as we believe CS:S
   does (players bind `r_cleardecals`, now there; `mashup_round_cleardecals
@@ -76,9 +107,10 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
 
 - CS:S HUD: health/armour/ammo/money/round-timer panels, death notices
   and the Tab scoreboard are in (`client/game_hud.rs`,
-  `client/scoreboard.rs`), and the weapon selection
-  (`client/weapon_select.rs`, kill icons standing in for the scripts'
-  selection icons). The team menu is in (M; you start as CT). The radio
+  `client/scoreboard.rs`), and the weapon selection and pickup history
+  (`client/weapon_select.rs`; `hud_fastswitch`), matched to CS:S
+  captures panel by panel (`refcmp hudcmp`). Left of that pass: the
+  radar's look (zoom, translucency, markers) is ours. The team menu is in (M; you start as CT). The radio
   is in (`client/radio.rs`: Z/X/C menus, the calls as console commands,
   "Fire in the hole!" on throws, bots' enemy spotted/down and need
   backup, and bots' own commands and reports: go / stick together /
@@ -135,6 +167,17 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   render pass.
 
 ## 2c. Multiplayer
+
+- High priority, with the multiplayer slices: loading UI for joining a
+  server and for every map load, so it's always clear what's happening.
+  CS:S's own loading dialog first (parity: connecting, retrieving server
+  info, loading the map, its stages and progress; `map::loading` and the
+  GameUI LoadingDialog already cover map loads from the main menu), shown
+  for `connect`, map changes in a game and the host starting a server,
+  with failures and refusals shown in it (version, map hash, server full,
+  timeouts). Then, as an option (off by default), a detailed view of our
+  own: each load stage with timings, bytes and percentages, and the
+  server's name, map, players and ping while connecting.
 
 Plan: [plans/active/multiplayer.md](plans/active/multiplayer.md)
 (bevy_replicon + renet; Source-style prediction, interpolation and lag
@@ -409,6 +452,16 @@ dithered fade bands. Left:
   props on cs_office never fall asleep (they rock by a tenth of a
   millimetre forever: transform propagation and shadow checks every
   frame).
+- Some order of Bevy's render systems breaks indirect draws on
+  cs_office: with marks between the `Render` sets
+  (`MASHUP_RENDER_PHASES=1`, `client::frame_metrics`) 2 of 5 `refcmp
+  bench` runs quit on "Indirect draw ... overruns indirect buffer"
+  (performance.md, "Load-independent metrics"). Find which ambiguous
+  render systems need an order (Bevy's ambiguity detection on the
+  `Render` schedule), then make the marks default.
+- `perfgate` in the pre-push hook once its run time (about 3 minutes with
+  map loading, playtest build) is acceptable; a Windows-side check needs
+  another counter source (none there yet).
 
 ## 10. Long tail
 

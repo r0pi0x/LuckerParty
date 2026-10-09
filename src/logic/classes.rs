@@ -165,8 +165,9 @@ pub const SETTING_PREFIXES: &[&str] = crate::console::SERVER_PREFIXES;
 
 /// Parts of names a map may never set although their prefix fits:
 /// passwords, remote control, downloads and uploads, logging, bans,
-/// file checks, how the server shows itself to the network, and the
-/// gate on point_servercommand itself.
+/// file checks, how the server shows itself to the network, the gate on
+/// point_servercommand itself, and `sv_cheats` (a map can't hand out
+/// noclip in a network game).
 pub const SETTING_DENY: &[&str] = &[
     "password",
     "rcon",
@@ -182,6 +183,7 @@ pub const SETTING_DENY: &[&str] = &[
     "sv_contact",
     "sv_visiblemaxplayers",
     "servercommand",
+    "sv_cheats",
 ];
 
 /// Bounds a map's value is clamped to for settings where an extreme value

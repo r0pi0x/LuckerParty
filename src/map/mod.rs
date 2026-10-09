@@ -57,7 +57,7 @@ pub mod room;
 pub mod soundscape;
 pub mod steam;
 pub use live_sound::{LiveSounds, SoundControl, SoundKey, StartSound};
-pub use sound::{MapSoundClip, MapSoundEntry, MapSounds, MapSurface, PlaySound, SoundLevel};
+pub use sound::{GameSound, MapSoundClip, MapSoundEntry, MapSounds, MapSurface, PlaySound, SoundLevel};
 pub mod shells;
 pub mod sprite_material;
 pub mod surface_color;

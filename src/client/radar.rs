@@ -96,11 +96,10 @@ fn build(
             Node {
                 position_type: PositionType::Absolute,
                 overflow: Overflow::clip(),
-                border: UiRect::all(px(1.0)),
                 ..default()
             },
+            // A rounded box like the other panels, no frame (as CS:S).
             BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.45)),
-            BorderColor::all(Color::srgba(1.0, 0.69, 0.0, 0.5)),
             GlobalZIndex(38),
         ))
         .id();

@@ -445,7 +445,7 @@ fn map_server_settings_last_until_the_map_unloads() {
     let l = lines(&sim);
     assert!(l.iter().any(|t| t == "point_servercommand: sv_maxvelocity 5000 (was 3500)"), "{l:?}");
     assert!(l.iter().any(|t| t == "point_servercommand: sv_maxvelocity 6000"), "{l:?}");
-    assert!(l.iter().any(|t| t.contains("ignored 'sv_cheats 1' (no such setting)")), "{l:?}");
+    assert!(l.iter().any(|t| t.contains("refused 'sv_cheats 1' (a setting maps may not change)")), "{l:?}");
     assert!(l.iter().any(|t| t.contains("refused 'quit' (not a game setting)")), "{l:?}");
 
     // Another map: the setting goes back to what it was before the first.

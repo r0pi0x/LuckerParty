@@ -61,6 +61,76 @@ struct ViewRun {
     /// Process CPU time when this view's timing started.
     cpu_start: Option<f64>,
     results: Vec<BenchRow>,
+    /// Per-frame metrics of this view and of every view so far, and the
+    /// simulation ticks' totals when this view's timing started.
+    samples: BenchSamples,
+    all: BenchSamples,
+    ticks_start: Option<(u64, crate::metrics::Counts)>,
+}
+
+/// `--bench`: one value per timed frame for each metric
+/// (`frame_metrics::FrameMetrics`), for percentiles.
+#[derive(Default, Clone)]
+struct BenchSamples {
+    series: Vec<(&'static str, Vec<f64>)>,
+}
+
+impl BenchSamples {
+    fn push(&mut self, name: &'static str, v: f64) {
+        match self.series.iter_mut().find(|s| s.0 == name) {
+            Some(s) => s.1.push(v),
+            None => self.series.push((name, vec![v])),
+        }
+    }
+
+    fn extend(&mut self, other: &BenchSamples) {
+        for (n, v) in &other.series {
+            for x in v {
+                self.push(n, *x);
+            }
+        }
+    }
+
+    fn percentiles(&self, name: &str) -> Option<crate::metrics::Percentiles> {
+        self.series
+            .iter()
+            .find(|s| s.0 == name)
+            .and_then(|s| crate::metrics::Percentiles::of(&s.1))
+    }
+
+    /// Every metric's percentiles, in a fixed order.
+    fn summary(&self) -> Vec<(&'static str, crate::metrics::Percentiles)> {
+        BENCH_METRICS
+            .iter()
+            .filter_map(|n| Some((*n, self.percentiles(n)?)))
+            .collect()
+    }
+}
+
+/// What `--bench` records per frame (JSON and CSV keys).
+const BENCH_METRICS: [&str; 14] = [
+    "frame_ms",
+    "main_ms",
+    "main_cpu_ms",
+    "main_instructions",
+    "main_frame_instructions",
+    "main_cycles",
+    "main_cache_misses",
+    "main_branch_misses",
+    "render_ms",
+    "render_cpu_ms",
+    "render_instructions",
+    "render_cycles",
+    "render_cache_misses",
+    "gpu_ms",
+];
+
+/// A view's simulation ticks: count and means per tick.
+#[derive(Clone, Copy, Default, serde::Serialize)]
+struct TickSummary {
+    ticks: u64,
+    cpu_ms_mean: f64,
+    instructions_mean: Option<f64>,
 }
 
 struct BenchRow {
@@ -79,6 +149,8 @@ struct BenchRow {
     /// Process CPU (all threads) and GPU ms per frame, when known.
     cpu: Option<f32>,
     gpu: Option<f32>,
+    dist: Vec<(&'static str, crate::metrics::Percentiles)>,
+    ticks: TickSummary,
 }
 
 #[derive(Component)]
@@ -203,6 +275,9 @@ fn start_views(
         render_times: Vec::new(),
         cpu_start: None,
         results: Vec::new(),
+        samples: BenchSamples::default(),
+        all: BenchSamples::default(),
+        ticks_start: None,
     });
 }
 
@@ -220,6 +295,10 @@ fn run_views(
     diagnostics: Res<bevy::diagnostic::DiagnosticsStore>,
     frame_times: Res<super::perf::FrameTimes>,
     render_time: Res<super::perf::RenderTime>,
+    metrics: (
+        Res<super::frame_metrics::FrameMetrics>,
+        Option<Res<crate::metrics::TickMetrics>>,
+    ),
 ) {
     let Some(mut run) = run else { return };
     if run.waiting {
@@ -228,6 +307,8 @@ fn run_views(
     let Some(view) = run.views.get(run.index).cloned() else {
         if args.0.bench {
             print_bench(&run.results);
+            let overall = run.all.summary();
+            write_bench_files(&run.dir, &run.results, &overall, args.0.view_size.unwrap_or(VIEW_SIZE));
         } else {
             info!("all views captured");
         }
@@ -253,8 +334,35 @@ fn run_views(
         // the previous frame started.
         if run.times.is_empty() {
             run.cpu_start = super::perf::process_cpu_seconds();
+            run.ticks_start = metrics.1.as_ref().map(|t| (t.ticks, t.total));
         }
         run.times.push(time.delta_secs());
+        // The latest complete frame's metrics (the previous frame's).
+        let (m, s) = (&metrics.0, &mut run.samples);
+        s.push("frame_ms", time.delta_secs_f64() * 1e3);
+        s.push("main_ms", m.last.main_ms);
+        s.push("main_cpu_ms", m.last.main.cpu_ns as f64 / 1e6);
+        if let Some(hw) = m.last.main.hw {
+            s.push("main_instructions", hw.instructions as f64);
+            s.push("main_cycles", hw.cycles as f64);
+            s.push("main_cache_misses", hw.cache_misses as f64);
+            s.push("main_branch_misses", hw.branch_misses as f64);
+        }
+        if let Some(i) = m.last.main_frame_instructions {
+            s.push("main_frame_instructions", i as f64);
+        }
+        if let Some(r) = m.last_render {
+            s.push("render_ms", r.ms);
+            s.push("render_cpu_ms", r.counts.cpu_ns as f64 / 1e6);
+            if let Some(hw) = r.counts.hw {
+                s.push("render_instructions", hw.instructions as f64);
+                s.push("render_cycles", hw.cycles as f64);
+                s.push("render_cache_misses", hw.cache_misses as f64);
+            }
+        }
+        if let Some(g) = m.last.gpu_ms {
+            s.push("gpu_ms", g);
+        }
         if let Some((_, main)) = frame_times.frames.back() {
             run.main_times.push(*main);
         }
@@ -267,7 +375,23 @@ fn run_views(
         let avg = t.iter().sum::<f32>() / t.len() as f32;
         let main = std::mem::take(&mut run.main_times);
         let render = std::mem::take(&mut run.render_times);
+        let samples = std::mem::take(&mut run.samples);
+        run.all.extend(&samples);
+        let ticks = match (run.ticks_start.take(), metrics.1.as_ref()) {
+            (Some((n0, c0)), Some(t)) if t.ticks > n0 => {
+                let n = t.ticks - n0;
+                let d = t.total - c0;
+                TickSummary {
+                    ticks: n,
+                    cpu_ms_mean: d.cpu_ns as f64 / 1e6 / n as f64,
+                    instructions_mean: d.hw.map(|h| h.instructions as f64 / n as f64),
+                }
+            }
+            _ => TickSummary::default(),
+        };
         let row = BenchRow {
+            dist: samples.summary(),
+            ticks,
             main: main.iter().sum::<f32>() / main.len().max(1) as f32 * 1e3,
             render: render.iter().sum::<f32>() / render.len().max(1) as f32,
             name: view.name.clone(),
@@ -342,6 +466,121 @@ fn print_bench(rows: &[BenchRow]) {
         mean(&|r| r.meshes.1 as f32),
         mean(&|r| r.meshes.2 as f32) / 1000.0,
     );
+}
+
+type Dist = [(&'static str, crate::metrics::Percentiles)];
+
+/// The distribution table: frame time percentiles and 1% low, each world's
+/// CPU time and instructions per frame (load-independent; compare these
+/// across runs), ticks' mean instructions.
+fn print_bench_dist(rows: &[BenchRow], overall: &Dist) {
+    use crate::metrics::short;
+    println!(
+        "{:<24} {:>8} {:>8} {:>8} {:>8} {:>7} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9}",
+        "view",
+        "p50 ms",
+        "p99 ms",
+        "p99.9 ms",
+        "max ms",
+        "1%low",
+        "main cpu",
+        "rend cpu",
+        "main ins*",
+        "main p99*",
+        "rend ins",
+        "rend p99",
+        "tick ins"
+    );
+    let line = |name: &str, dist: &Dist, tick: Option<f64>| {
+        let get = |k: &str| dist.iter().find(|d| d.0 == k).map(|d| d.1);
+        let f = get("frame_ms").unwrap_or_default();
+        let ms = |k: &str| get(k).map_or("n/a".into(), |p| format!("{:.2}", p.p50));
+        let ins = |k: &str, p99: bool| get(k).map_or("n/a".into(), |p| short(if p99 { p.p99 } else { p.p50 }));
+        println!(
+            "{:<24} {:>8.2} {:>8.2} {:>8.2} {:>8.2} {:>7.0} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9}",
+            name,
+            f.p50,
+            f.p99,
+            f.p999,
+            f.max,
+            f.low_1pct_fps(),
+            ms("main_cpu_ms"),
+            ms("render_cpu_ms"),
+            ins("main_frame_instructions", false),
+            ins("main_frame_instructions", true),
+            ins("render_instructions", false),
+            ins("render_instructions", true),
+            tick.map_or("n/a".into(), short),
+        );
+    };
+    for r in rows {
+        line(&r.name, &r.dist, r.ticks.instructions_mean);
+    }
+    let ticks: Vec<f64> = rows.iter().filter_map(|r| r.ticks.instructions_mean).collect();
+    let tick = (!ticks.is_empty()).then(|| ticks.iter().sum::<f64>() / ticks.len() as f64);
+    line("ALL", overall, tick);
+    println!(
+        "*: main world instructions per frame less its simulation ticks' (tick ins: per tick); hardware counters: {}",
+        crate::metrics::hw_status()
+    );
+}
+
+/// `bench.json` and `bench.csv` in the capture folder: every metric's
+/// percentiles per view and over all views, for scripts.
+fn write_bench_files(dir: &std::path::Path, rows: &[BenchRow], overall: &Dist, size: UVec2) {
+    print_bench_dist(rows, overall);
+    let dist_json = |d: &Dist| {
+        serde_json::Value::Object(
+            d.iter()
+                .map(|(k, p)| (k.to_string(), serde_json::to_value(p).unwrap()))
+                .collect(),
+        )
+    };
+    let views: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "name": r.name,
+                "metrics": dist_json(&r.dist),
+                "ticks": r.ticks,
+                "process_cpu_ms": r.cpu,
+                "meshes_drawn": r.meshes.1,
+                "meshes": r.meshes.0,
+                "triangles_drawn": r.meshes.2,
+                "vis_parts": [r.parts.0, r.parts.1],
+            })
+        })
+        .collect();
+    let json = serde_json::json!({
+        "build": env!("MASHUP_GIT"),
+        "view_size": [size.x, size.y],
+        "hardware_counters": crate::metrics::hw_status(),
+        "views": views,
+        "overall": { "metrics": dist_json(overall) },
+    });
+    let mut csv = String::from("view,metric,n,mean,p50,p90,p99,p99.9,max,worst_1pct_mean\n");
+    let all = rows
+        .iter()
+        .map(|r| (r.name.as_str(), r.dist.as_slice()))
+        .chain(std::iter::once(("ALL", overall)));
+    for (name, dist) in all {
+        for (k, p) in dist {
+            csv += &format!(
+                "{name},{k},{},{},{},{},{},{},{},{}\n",
+                p.n, p.mean, p.p50, p.p90, p.p99, p.p999, p.max, p.worst_1pct_mean
+            );
+        }
+    }
+    for (file, text) in [
+        ("bench.json", serde_json::to_string_pretty(&json).unwrap_or_default()),
+        ("bench.csv", csv),
+    ] {
+        let path = dir.join(file);
+        match std::fs::write(&path, text) {
+            Ok(()) => println!("wrote {}", path.display()),
+            Err(e) => error!("{}: {e}", path.display()),
+        }
+    }
 }
 
 /// A folder name from the current time (UTC seconds since 1970).

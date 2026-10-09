@@ -17,12 +17,14 @@ pub mod game_hud;
 pub mod game_menu;
 pub mod hdr;
 pub mod hud_sprites;
+pub mod hud_text;
 pub mod hud;
 pub mod input;
 pub mod interp;
 pub mod net;
 pub mod objectives_hud;
 pub mod options;
+pub mod frame_metrics;
 pub mod perf;
 pub mod radar;
 pub mod radio;
@@ -280,6 +282,7 @@ impl Plugin for ClientPlugin {
                 hdr::HdrPlugin,
                 options::VideoPlugin,
                 window_icon::WindowIconPlugin,
+                hud_text::HudTextPlugin,
             ))
             .add_plugins((interp::ClientInterpPlugin, net::ClientNetPlugin))
             .add_systems(PostStartup, spawn_local_player)

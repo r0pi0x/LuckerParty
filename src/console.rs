@@ -41,8 +41,9 @@ pub struct Cvar {
 }
 
 /// Who owns a cvar in a network game (docs/plans/active/multiplayer.md,
-/// "Console and cvars"). Nothing acts on it yet: until there is a
-/// network, every cvar is set locally.
+/// "Console and cvars"): a network client can't set the server's
+/// (`execute` refuses), and gets the replicated ones' values from the
+/// server (`net::cvars`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CvarScope {
     /// The player's own (`cl_*`, `m_*`, video, audio, `mashup_*` tools).
@@ -59,13 +60,19 @@ pub enum CvarScope {
 /// these through point_servercommand (`logic::classes::SETTING_PREFIXES`).
 pub const SERVER_PREFIXES: &[&str] = &["sv_", "mp_", "phys_", "bot_", "ammo_"];
 
+/// Game rules of ours without a server prefix that are the server's and
+/// replicated all the same.
+pub const SERVER_NAMES: &[&str] = &["mashup_rounds"];
+
 impl CvarScope {
     /// The scope of a cvar named `name`: the server's when it has a server
     /// prefix; of those, bots' settings and secrets stay on the server and
     /// the rest replicate.
     pub fn of(name: &str) -> Self {
         let name = name.to_lowercase();
-        if !SERVER_PREFIXES.iter().any(|p| name.starts_with(p)) {
+        if SERVER_NAMES.contains(&name.as_str()) {
+            CvarScope::Replicated
+        } else if !SERVER_PREFIXES.iter().any(|p| name.starts_with(p)) {
             CvarScope::Local
         } else if name.starts_with("bot_") || name.contains("password") || name.contains("rcon") {
             CvarScope::Server
@@ -390,7 +397,14 @@ pub fn execute(world: &mut World, words: &[String], depth: usize) {
         return;
     }
     let result = if let Some(cmd) = command {
-        (cmd.run)(world, args)
+        if CHEATS.contains(&name.as_str()) && !cheats_allowed(world) {
+            // Source's words.
+            Err(format!(
+                "Can't use cheat command {name} in multiplayer, unless the server has sv_cheats set to 1."
+            ))
+        } else {
+            (cmd.run)(world, args)
+        }
     } else if let Some(cvar) = cvar {
         if args.is_empty() {
             let value = (cvar.get)(world).unwrap_or_default();
@@ -403,6 +417,11 @@ pub fn execute(world: &mut World, words: &[String], depth: usize) {
                 "\"{}\" = \"{}\"{changed}\n - {}",
                 cvar.name, value, cvar.help
             )))
+        } else if cvar.scope != CvarScope::Local
+            && world.get_resource::<crate::core::NetRole>() == Some(&crate::core::NetRole::Client)
+        {
+            // The server's (sent to us, `net::cvars`), Source's words.
+            Err(format!("Can't change replicated ConVar {} from console of client, only server operator can change its value", cvar.name))
         } else {
             (cvar.set)(world, &args.join(" ")).map(|_| {
                 world.resource_mut::<Console>().dirty = true;
@@ -523,13 +542,51 @@ where
     }
 }
 
+/// Commands that change the simulation for the one who runs them
+/// (Source's FCVAR_CHEAT ones): in a network game (server or client) only
+/// with `sv_cheats 1` on the server (replicated). Single player always
+/// has them.
+pub const CHEATS: &[&str] = &[
+    "noclip",
+    "god",
+    "setpos",
+    "setang",
+    "give",
+    "impulse",
+    "ent_fire",
+    "mashup_hurtme",
+    "mashup_sethealth",
+    "mashup_setarmor",
+    "mashup_setmoney",
+];
+
+/// `sv_cheats`.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Cheats(pub u8);
+
+/// Whether cheat commands work here: single player, or `sv_cheats 1`.
+pub fn cheats_allowed(world: &World) -> bool {
+    world
+        .get_resource::<crate::core::NetRole>()
+        .is_none_or(|r| *r == crate::core::NetRole::Standalone)
+        || world.get_resource::<Cheats>().is_some_and(|c| c.0 != 0)
+}
+
 /// The core commands.
 pub struct ConsolePlugin;
 
 impl Plugin for ConsolePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Console>().add_systems(PreUpdate, run_queue);
+        app.init_resource::<Console>()
+            .init_resource::<Cheats>()
+            .add_systems(PreUpdate, run_queue);
         builtins(app);
+        resource_cvar::<Cheats, u8>(
+            app,
+            "sv_cheats",
+            "1: cheat commands (noclip, god, setpos, give, ...) work in a network game (single player always has them).",
+            |c| &mut c.0,
+        );
     }
 }
 

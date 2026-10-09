@@ -31,6 +31,11 @@ fails and says how to move it. Test names read `weapons::name` and
 - Fast tier, before every commit (`.githooks/pre-commit`): `cargo test
   --features dev -- --skip heavy::` (unit tests and everything outside
   `heavy`; under a minute when warm).
+- Before every push, `.githooks/pre-push` refuses personal traces in what's
+  pushed (commit messages and added lines): machine paths (`/home/<name>/`,
+  `/Users/<name>/`, `C:\\Users\\<name>`) always, plus the extended regexes in
+  the git-ignored `.githooks/private-patterns` (one per line; e.g. real
+  names), so the names themselves never reach the repository.
 - Before every push, `.githooks/pre-push` also checks the build without
   `--features dev` (`cargo check --lib --bins`; the playtest and release
   builds use that configuration and the tests don't), even with
@@ -396,6 +401,21 @@ moved); the server's `status` ends with a `lagcomp:` line. `cargo test
 without compensation, rewind times, prediction errors while firing and
 the pellet comparison.
 
+Rules (`tests/it/net_rules.rs`): a client's `RoundState`, `BuyWindow`,
+`BombState`, `HostageTally`, `PlantedBomb` and its own `Money` are the
+server's, with times on the client's fixed clock: compare a time left
+(e.g. `RoundState::clock`, `PlantedBomb::explode_at` less
+`Time<Fixed>::elapsed`) with the server's at the same step (the client's
+runs about the one-way latency behind). `net::NetScore` on each
+character has the scoreboard's kills, deaths, ping and flags;
+`net::Notice` (a client's) the server's refusals; `net::ChatMessage`
+and `net::RadioCall` who read and heard what. Give `NetSim` clients names
+with `add_client(|w| w.resource_mut::<NetSettings>().name = ...)`; with
+`mashup_rounds 1` set before they join, they join the running round
+dead: `mp_restartgame 1` puts everyone in play. `cargo test --features
+dev --test it net_rules -- --nocapture` prints the clocks and
+scoreboards.
+
 In a game: the perf overlay (`mashup_perf 1`) and the F2 Perf tab show,
 while connected, `net:` (ping, loss, KB/s), `cmds:` (lead in ticks and
 its target, the clock's speed nudge and jumps, the server's buffer of
@@ -434,7 +454,15 @@ a bad link. To shoot each other: `setang <pitch> <yaw>` and `+attack`/`-attack`
 through each game's `mashup/console` (aim from the other's `Transform` as
 the client draws it, `world.query` on its `Name`), the host's health from
 its `LocalPlayer`'s `Health`, `+sv_showlagcompensation 1` on the host to
-log each rewind. The dedicated server:
+log each rewind. Cheat commands (`setpos`, `setang`, `noclip`, `god`,
+`give`, ...) need `+sv_cheats 1` on the host in a network game. A round
+on de_dust2: host `... -port 27031 +name Host +maxplayers 4 +sv_cheats 1
++mashup_rounds 1 +map de_dust2` (`+map cs_source:de_dust2` doesn't load
+from the command line), then `mp_restartgame 1` once the client is in;
+`buymenu`, `buy <weapon>`, `jointeam 2`, `say`/`say_team`,
+`+showscores`/`-showscores` and `screenshot` through each game's
+`mashup/console`. The client's `differences` shows the server's
+replicated values while connected; setting one says it can't. The dedicated server:
 `cargo run --features dev --bin mashup_server -- -port 27032 +map greybox
 +bot_add` (console on stdin: `status`, `bot_add`, `quit`). Logs show
 `listening on UDP ...`, `<name> joined`, `<name> left`, `disconnected:
@@ -474,6 +502,35 @@ Details and baseline numbers: [performance.md](performance.md).
   print them). Time spent putting the map into the world (colliders,
   decal and surface grids) is not in it: time `Sim::new(MapPlugin::new(map))`
   plus a tick.
+- Load-independent numbers (`metrics`, `client::frame_metrics`;
+  performance.md, "Load-independent metrics"): the readout also gives
+  distributions over the last 4096 frames and ticks: `frame ms (N): p50
+  .. p90 .. p99 .. p99.9 .. max ..; 1% low N fps` (1% low = 1000 / the
+  mean of the slowest 1% of frames), then for the main world and the
+  render world (each on its own thread) wall and thread-CPU ms
+  percentiles and, on Linux, `instr` (user-space instructions retired by
+  that thread per frame), IPC and cache misses; `gpu ms` (latest
+  timestamps); `tick (N)`: each simulation tick's main-thread CPU ms and
+  instructions. How to read them: wall ms move with the machine's load
+  (2-10x on the dev box); CPU ms move less (not with waiting or being
+  descheduled, but with caches and clock speed); instructions hardly at
+  all, so compare instructions between runs and builds, and wall times
+  only within one run. CPU far below wall for a world means its thread
+  waited or wasn't scheduled. `hardware counters: unavailable (...)`:
+  the kernel refused them (`/proc/sys/kernel/perf_event_paranoid` above
+  2, a VM without a PMU) or not Linux (Windows has CPU time only, in
+  15.6 ms scheduler steps: read it over many frames).
+- Hitch log: `mashup_hitch_ratio 2` (default; 0 off) logs any frame
+  slower than that many times the median frame (`hitch: frame 41.20 ms =
+  5.1x median 8.07; main world ... (cpu ..., N instr, ... ticks):
+  RunFixedMainLoop 30.10 (cpu 3.00), ...; between frames ...; render
+  world ...: queue ...`): the main world's slowest schedules and the
+  render world's time and, with `MASHUP_RENDER_PHASES=1`, its slowest
+  `Render` sets (opt-in: performance.md, "Baseline"), each with wall
+  and thread CPU ms, at most two lines a second (`(N more since the last)`). A profile
+  build adds the frame's spans with the most self time (`spans by self
+  ms: <system> 12.3 x2, ...`). The F2 Perf tab has the same percentiles as
+  a table, with a frame-time histogram.
 - `mashup_perf_log 1` logs the same readout as one text line a second
   (`mashup_perf: 60 fps  frame 16.67 ms ... | vis: cluster ...`), so runs
   can be compared without reading screenshots (`--frames N ... 2>&1 |
@@ -495,7 +552,24 @@ Details and baseline numbers: [performance.md](performance.md).
   1`, `-- --view-size 3840x2160` to time 4K, `-- +mat_antialias 0`).
   Build first; it runs the mashup next to it (`--profile playtest` for
   optimized numbers). `MASHUP_EXECUTOR=multi` runs Bevy's multi-threaded
-  executor instead of ours (performance.md, "Frame time pass").
+  executor instead of ours (performance.md, "Frame time pass"). A second
+  table gives per view and over all views (`ALL`) frame ms p50/p99/p99.9/max,
+  1% low fps, each world's CPU ms and instructions per frame (p50, p99)
+  and the ticks' mean instructions; `bench.json` and `bench.csv` in the
+  output folder (`<out>/<map>/bench/`) have every metric's n, mean, p50,
+  p90, p99, p99.9, max per view and overall, for scripts
+  (`jq '.overall.metrics.main_instructions.p50' bench.json`).
+- `perfgate` (`src/bin/perfgate.rs`): the instructions-per-tick
+  regression gate: `cargo build --profile playtest --bin perfgate &&
+  target/playtest/perfgate` runs greybox, de_dust2 (rounds, 10 bots) and
+  mg_lego_multigames_v2 headless for 2000 ticks each, prints instructions
+  per tick (all threads: p50, p99, total; main thread) and CPU and wall
+  ms per tick, and exits 1 when a scenario's total rose more than the
+  tolerance above `tools/perfgate/baseline.json` for that build
+  profile. A wanted rise: `perfgate --update` and commit the file, saying
+  why. Skips where counters are unavailable (Windows); `--scenario`,
+  `--ticks`, `--json <file>`. performance.md, "Regression gate", has the
+  spread it was measured with.
 - `r_portalsopenall 1` ignores areaportals (closed doors no longer hide
   what's behind them, no clipping through openings): PVS culling only.
   `mashup_perf 1` shows the camera's area, the areas it reaches and how
@@ -705,6 +779,35 @@ cargo run --features dev --bin refcmp -- capture-ours --only a_sign
   shows the +Z layer.
 - mashup renders views off-screen at 1280x720 (`--views`), matching CS:S's
   framing (90 degrees horizontal at 4:3 = 74 vertical).
+
+### Comparing the HUD (`refcmp hudcmp`)
+
+```
+cargo build --features dev
+cargo run --features dev --bin refcmp -- capture-hud --out <scratch>
+cargo run --features dev --bin refcmp -- hudcmp --out <scratch> --hud-ref <dir>
+```
+
+- `--hud-ref <dir>` holds CS:S captures named `hudref_<state>_<W>x<H>.jpg`
+  (default `<dump>/refcmp/hud/ref`; game imagery, never in the repo). The
+  coordinator takes them with the reference client: de_dust2, a CT with
+  100 health, no armour, $800, the USP drawn and an AK-47 in slot 1;
+  state `ak` with `hud_fastswitch 0` and the selection open on slot 1,
+  `select` open on slot 2; at 1280x720, 1920x1080 and 1024x768.
+- `capture-hud` runs mashup into the same states at the same sizes
+  (`ours_<state>_<W>x<H>.png`; console commands, then `screenshot`).
+- `hudcmp` crops each panel part (health, armour, clock, money and ammo
+  digits and icons, the panel boxes, the selection's numbers, icon, name
+  and box, the pickup history, the radar's box) from both and prints, per
+  part, the offset of ours (the shift that best correlates the two images'
+  HUD-coloured ink) and both ink (or box) rectangles; `hudcmp.txt`,
+  `hudcmp.json` and enlarged crops (reference | ours | overlay: reference
+  red, ours green) go to `<out>/hud/report/`. Different text (the clock,
+  ammo counts) still lines up by its left or right edge.
+- The measured reference rectangles are numbers in
+  `tests/it/heavy/hud_layout.rs`, checked against `game_hud::layout`,
+  `weapon_select::selection_layout` and `history_layout` through
+  `hud_text::ink_rect` (no images needed).
 
 ## Measuring CS:S behaviour live
 

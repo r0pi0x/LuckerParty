@@ -27,6 +27,8 @@ renetcode = "2.0"
 # byte for byte (core::PredictedComponents::encode); replicon's format.
 postcard = { version = "1.1", default-features = false, features = ["alloc"] }
 bzip2 = "0.6.1"
+# HUD glyphs rasterized and placed as Source's HUD does (client::hud_text).
+ab_glyph = "0.2.32"
 arboard = "3.6"
 crc32fast = "1.5.2"
 dirs = "7.0.0"
@@ -48,6 +50,16 @@ vmt-parser = "0.2"
 vtf = "0.4"
 # MP3 sounds packed in community maps (music, minigame sounds).
 symphonia = { version = "0.5.5", default-features = false, features = ["mp3"] }
+
+# Per-thread hardware counters (instructions, cycles, cache and branch
+# misses) for `metrics`; Linux only, elsewhere the metrics say
+# "unavailable".
+[target.'cfg(target_os = "linux")'.dependencies]
+perf-event2 = "0.7.4"
+
+# Per-thread CPU time (`clock_gettime(CLOCK_THREAD_CPUTIME_ID)`).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 # Binaries without unit tests: `cargo test` skips building a test harness
 # of each (one more link of the game apiece). A binary that gets tests
@@ -76,6 +88,11 @@ test = false
 
 [[bin]]
 name = "tracesum"
+test = false
+
+# Instructions-per-tick regression gate (docs/performance.md).
+[[bin]]
+name = "perfgate"
 test = false
 
 [features]

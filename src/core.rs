@@ -374,6 +374,12 @@ pub struct SpawnPoint {
 #[reflect(Component)]
 pub struct LocalPlayer;
 
+/// A character a person plays from another machine (a network server's
+/// client): not this machine's `LocalPlayer`, and not a computer player.
+#[derive(Component, Reflect, Default, Clone, Copy, Debug)]
+#[reflect(Component)]
+pub struct RemotePlayer;
+
 /// Number of fixed ticks simulated so far. Tests and tools use it to step
 /// the simulation by exact ticks.
 #[derive(Resource, Reflect, Default, Clone, Copy, Debug)]

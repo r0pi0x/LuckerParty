@@ -12,7 +12,10 @@ tick it predicts, so riding one is predicted; slice 4 done (2026-10-08):
 weapons predicted on the client (fire, reload, switch, zoom, punch,
 spread, grenade throws) and checked bit for bit, the server's hits lag
 compensated against per-tick hitbox poses, others' shots drawn from the
-server's seeds, grenades, drops and pickups the server's. Recommendation:
+server's seeds, grenades, drops and pickups the server's; slice 5 done
+(2026-10-09): rounds, money, buying, team changes, the bomb, hostages,
+the scoreboard with ping, chat and radio over the network, replicated
+cvars and `sv_cheats`. Recommendation:
 **bevy_replicon + renet (netcode over UDP)** for transport and
 replication; **our own Source-style prediction, interpolation and lag
 compensation** on top. Slices below; slice 0 is refactoring that pays off
@@ -775,10 +778,109 @@ with tests passing and something to see.
      two before (its impacts on others are cosmetic; the server decides);
      the planted bomb, defusing and buying wait for slice 5; `OwnState`
      carries the whole inventory every tick (no delta).
-5. **[ ] Rounds, money, buying, objectives, scoreboard, chat, radio**
+5. **[x] Rounds, money, buying, objectives, scoreboard, chat, radio**
    (M-L, medium). Server-owned round state replicated; buy, team, say,
    radio as requests; bomb and hostages replicated; scoreboard ping;
    cvar replication and `sv_cheats`.
+   Progress (2026-10-09; no spec session for CS:S's join rules yet, so
+   joining mid-round waits for the next round as §3 says):
+   - [x] The round (`net::game`): one replicated entity (`NetRound`:
+     phase, its times as server ticks, round number, wins, why buying is
+     closed, the bomb's outcome, the hostage tally). **Changed from §3
+     ("round state as components"):** a client writes it into single
+     player's own resources (`RoundState`, `BuyWindow`, `FreezeTime`,
+     `RoundOpen`, `BombState`, `HostageTally`) with each time moved onto
+     its fixed clock (`ServerTime`: the server's tick as its updates
+     arrive), so the HUD, scoreboard, spectator bars and buy menu read
+     them unchanged. A round's end comes as `RoundOver` (the banner and
+     announcer).
+   - [x] Money to its owner only, as CS:S shows it: in `OwnState` with
+     armour, the defusal kit and arming (the progress bar). Scores, ping
+     (renet's round trip measured by the server, every 64 ticks), bots,
+     the bomb carrier and kits on every character (`NetScore`); the
+     scoreboard shows the bomb to teammates only, as before.
+   - [x] Requests the server checks: `buy` (console, the buy menu,
+     `buyammo1/2`) as `BuyRequest` (`economy::buy`: buy zone, buy time,
+     money, team-only items; a refusal comes back as `Notice`, the game's
+     hint), `jointeam` as `TeamRequest` (`rules::join_team`, with
+     `mp_limitteams` in network games), `drop` (slice 4), `say`/
+     `say_team` as `SayRequest`, radio commands as `RadioRequest`.
+   - [x] The bomb and hostages: the planted bomb (`NetBomb`: where, its
+     model, its clock and the defuse in server ticks), hostages as
+     characters with `NetHostage` (index, model, leader), every
+     `ObjectiveEvent` and `HostagePenalty` as `ObjectiveNews` (the HUD's
+     words, the LED's beeps), the rules' sounds as `ServerSound` (new
+     `map::GameSound`: the bomb, hostages, explosions from the rules,
+     buying ammo; played locally and sent to clients). The freeze's end
+     is sent as a tick (`OwnState::frozen_until`) so the client releases
+     its hold on the same tick as the server; arming or defusing holds a
+     client's movement like the server's (`OwnState::still`).
+   - [x] Chat and radio (`net::chat`): the server picks who reads a line
+     (`sees_say`: team chat within the team, the living don't read the
+     dead) and sends `ChatMessage` (name, team, alive, place, text) to
+     each, the host's copy locally; the client layer formats it
+     (`SayFormats`). Every `core::Radio` (players', bots', grenade calls)
+     goes as `RadioCall` to the remote players who hear it.
+   - [x] Cvars (`net::cvars`): every `CvarScope::Replicated` value goes to
+     a client when it joins and on change (`CvarValues`); the client sets
+     them, refuses local changes while connected (Source's message), puts
+     back anything that changes one (a slider, a map load) and restores
+     its own on leaving. `mashup_rounds` counts as the server's.
+     `sv_cheats` (replicated) gates `console::CHEATS` (noclip, god,
+     setpos, setang, give, impulse, ent_fire, `mashup_set*`,
+     `mashup_hurtme`) in network games; single player always has them;
+     maps may not set it (point_servercommand).
+   - [x] Spectating while dead works on a client as it was: it targets the
+     interpolated others.
+   - [x] Tests (`tests/it/net_rules.rs`, `NetSim`, greybox with CS:S's
+     weapons and rounds): a full round with two clients at 50±5 ms (the
+     freeze clock on both clients within 0.06 s of the server's, money,
+     buying a Desert Eagle in the freeze, the round going live, a win by
+     elimination, kill reward and win/loss bonuses on both clients, the
+     other's money not shown, both scoreboards 1/0 and 0/1 with ping
+     125 ms, the next round); buying refused outside a buy zone, without
+     the money, the other team's rifle and after the buy time, in the
+     game's words; the bomb planted by one client and defused by the
+     other (the arming bar and the defuse bar shown, client timers within
+     0.07 s of the server's, plant, beeps and the defuse heard on both,
+     the bomb win and plant bonuses); chat, team chat and dead chat read
+     by exactly who should, radio heard by living teammates only;
+     `sv_airaccelerate 100` set on the server reaching the client, which
+     can't change it, 0 prediction errors in 440 states of air
+     strafing, `sv_cheats` gating `give`, the client's own value back on
+     leaving; a late joiner dead and watching someone (drawn where the
+     server has them) until the next round.
+   - [x] Two real games on the dev box on de_dust2 (host `-port 27031
+     +maxplayers 4 +sv_cheats 1 +mashup_rounds 1 +map de_dust2`, the
+     client with `+net_fakelag 100 +net_fakejitter 20 +net_fakeloss 5`):
+     ping ~165-176 ms; `jointeam 2` on the client moved it to the
+     terrorists; `mp_restartgame 1`; both frozen with $800 and the same
+     clock; the client's buy menu in the game's look; `buy deagle; buy
+     vest; buy awp` on the client: the Desert Eagle bought ($150; the old
+     pistol dropped), the rest refused; `say`/`say_team` from the client
+     and `say` from the host: the host read the client's line and its
+     own, not the terrorists' team line; the host shot the client: the
+     round ended on both, money 4350 and 1550 on both sides, both
+     scoreboards 1-0 with the client's ping; the bomb went to the
+     client in the next round ("You have the bomb..."); 12 prediction
+     errors in ~3800 states over the session (restarts, the buy, the
+     death); `disconnect` put the client's `sv_cheats` and
+     `mashup_rounds` back to its own.
+   - Found on the way: `mp_restartgame` timed the restart on the frame
+     clock while the rules compare it with the fixed clock, so a host
+     whose ticks fell behind (a long map load) never restarted; it uses
+     the fixed clock now. `+map cs_source:de_dust2` on the command line
+     doesn't load (`+map de_dust2` does; not looked into). Once, after a
+     client was killed and reconnected and ~30 minutes of rounds, neither
+     the host nor the client moved (cs_source movement only; noclip did);
+     not seen again after restarting both.
+   - Not yet: arming the bomb isn't predicted (a client's hold and the
+     bomb leaving its hands come a round trip late, corrected);
+     objective news and the rules' sounds go to every client (each shows
+     what concerns it); the kill feed still names the local player
+     "Player" (the HUD's, unchanged); radio requests
+     aren't rate-limited; a team change mid-round waits for the next
+     round.
 6. **[ ] Bots on the server** (S, low). They already write `Intent` and
    use the same movement; make sure their perception never reads client
    state and a new `bot_quota` counts humans.
