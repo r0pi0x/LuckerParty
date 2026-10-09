@@ -29,6 +29,7 @@ mod nav;
 mod net;
 mod net_interp;
 mod net_prediction;
+mod net_rules;
 mod net_weapons;
 mod objectives;
 mod phy_spec;

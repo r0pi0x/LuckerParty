@@ -41,15 +41,6 @@ impl Plugin for ChatPlugin {
             .add_systems(PreUpdate, typing.after(InputSystems))
             .add_systems(Update, ((collect, draw_chat, draw_input).chain(), draw_hint));
         for (name, team, help) in [
-            ("say", false, "Say something to everyone."),
-            ("say_team", true, "Say something to your team."),
-        ] {
-            app.console_command(name, help, move |w, a| {
-                say(w, &a.join(" "), team);
-                Ok(None)
-            });
-        }
-        for (name, team, help) in [
             ("messagemode", false, "Type a chat line to everyone (Y)."),
             ("messagemode2", true, "Type a chat line to your team (U)."),
         ] {
@@ -64,14 +55,54 @@ impl Plugin for ChatPlugin {
     }
 }
 
-/// Game messages in the chat, without a window (tests): players joining a
+/// Game messages in the chat, without a window (tests): `say` and
+/// `say_team`, a network game's chat lines and refusals, players joining a
 /// team ("Bot 2 is joining the Terrorist force", the game's own strings,
 /// `map::radio::SayFormats::joins`).
 pub struct GameMessagesPlugin;
 
 impl Plugin for GameMessagesPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<ChatLine>().add_systems(Update, team_joins);
+        app.add_message::<ChatLine>()
+            .add_message::<Hint>()
+            .add_message::<crate::net::ChatMessage>()
+            .add_message::<crate::net::Notice>()
+            .add_message::<crate::map::PlaySound>()
+            .add_systems(Update, (team_joins, heard_says, notices));
+        for (name, team, help) in [
+            ("say", false, "Say something to everyone."),
+            ("say_team", true, "Say something to your team."),
+        ] {
+            app.console_command(name, help, move |w, a| {
+                say(w, &a.join(" "), team);
+                Ok(None)
+            });
+        }
+    }
+}
+
+/// Chat lines the server sent (a network game): in the game's format,
+/// with its sound.
+fn heard_says(
+    mut heard: MessageReader<crate::net::ChatMessage>,
+    radio: Option<Res<crate::map::radio::RadioCommands>>,
+    mut chat: MessageWriter<ChatLine>,
+    mut play: MessageWriter<crate::map::PlaySound>,
+) {
+    let formats = radio.map(|r| r.say.clone()).unwrap_or_default();
+    for m in heard.read() {
+        let runs = formats.line(&m.name, &m.text, m.team, m.alive, m.team_only, m.place.as_deref());
+        chat.write(ChatLine(runs, m.team.map(Team)));
+        if let Some(s) = &formats.sound {
+            play.write(crate::map::PlaySound::ui(s.clone()));
+        }
+    }
+}
+
+/// Why the server refused a request (a buy, a team), as a hint.
+fn notices(mut notices: MessageReader<crate::net::Notice>, mut hints: MessageWriter<Hint>) {
+    for n in notices.read() {
+        hints.write(Hint(n.text.clone()));
     }
 }
 
@@ -79,21 +110,26 @@ impl Plugin for GameMessagesPlugin {
 /// map's strings are loaded).
 fn team_joins(
     radio: Option<Res<crate::map::radio::RadioCommands>>,
-    who: Query<(Entity, &Team, Option<&Name>, Has<LocalPlayer>), With<crate::core::Intent>>,
+    who: Query<
+        (Entity, &Team, Option<&Name>, Has<LocalPlayer>, Option<&crate::net::NetCharacter>),
+        With<crate::core::Intent>,
+    >,
     mut known: Local<std::collections::HashMap<Entity, u8>>,
     mut chat: MessageWriter<ChatLine>,
 ) {
     let Some(radio) = radio else { return };
     let mut now = std::collections::HashMap::with_capacity(known.len());
-    for (e, team, name, local) in &who {
+    for (e, team, name, local, net) in &who {
         now.insert(e, team.0);
         if known.get(&e) == Some(&team.0) {
             continue;
         }
-        let name = match (local, name) {
-            (true, _) => "Player".to_string(),
-            (false, Some(n)) => n.to_string(),
-            (false, None) => e.to_string(),
+        // A network game names everyone (us too) as the server does.
+        let name = match (local, net, name) {
+            (_, Some(c), _) => c.name.clone(),
+            (true, None, _) => "Player".to_string(),
+            (false, None, Some(n)) => n.to_string(),
+            (false, None, None) => e.to_string(),
         };
         if let Some(runs) = radio.say.join(&name, team.0) {
             chat.write(ChatLine(runs, Some(*team)));
@@ -118,6 +154,17 @@ const MAX_SAY: usize = 127;
 pub fn say(w: &mut World, text: &str, team_only: bool) {
     let text = text.trim();
     if text.is_empty() {
+        return;
+    }
+    // A network game: the server says who reads it (a listen server's
+    // host too: replicon hands its request to the server).
+    if w.get_resource::<crate::core::NetRole>()
+        .is_some_and(|r| *r != crate::core::NetRole::Standalone)
+    {
+        w.write_message(crate::net::SayRequest {
+            text: crate::net::chat::clean_say(text),
+            team_only,
+        });
         return;
     }
     type Me<'a> = (

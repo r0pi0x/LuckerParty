@@ -18,7 +18,7 @@ use crate::{
     character::character_bundle,
     console::resource_cvar,
     core::{Damage, Died, Health, Intent, LocalPlayer, MaxSpeed, MovementState, SimSet, SpawnPoint, Team},
-    map::{BodyName, PlaySound, nav::NavMesh},
+    map::{BodyName, GameSound, PlaySound, nav::NavMesh},
     slots::{Loadout, MovementSlot, set_movement},
     weapon::Inventory,
 };
@@ -99,6 +99,18 @@ pub struct Hostage {
     progress: (Vec3, f32),
 }
 
+impl Hostage {
+    /// A hostage as a network client shows it (the server leads it):
+    /// which one and whom it follows.
+    pub fn shown(index: usize, leader: Option<Entity>) -> Self {
+        Self {
+            index,
+            leader,
+            ..default()
+        }
+    }
+}
+
 /// This round's hostages: how many, rescued, killed.
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HostageTally {
@@ -174,7 +186,7 @@ pub(super) fn use_hostages(
     spatial: SpatialQuery,
     rules: Res<HostageRules>,
     mut events: MessageWriter<ObjectiveEvent>,
-    mut play: MessageWriter<PlaySound>,
+    mut play: MessageWriter<GameSound>,
 ) {
     if hostages.is_empty() {
         return;
@@ -229,19 +241,19 @@ pub(super) fn use_hostages(
                 first,
             });
             if first && let Some(s) = &rules.sounds.announce_touched {
-                play.write(PlaySound::ui(s.clone()));
+                play.write(GameSound(PlaySound::ui(s.clone())));
             }
             &rules.sounds.start_follow
         };
         if let Some(s) = sound {
-            play.write(PlaySound {
+            play.write(GameSound(PlaySound {
                 pitch: None,
                 entry: s.clone(),
                 at: Some(ht.translation),
                 volume: None,
                 source: Some(found),
                 channel: Some(2),
-            });
+            }));
         }
     }
 }
@@ -350,7 +362,7 @@ fn rescue(
     rules: Res<HostageRules>,
     mut tally: ResMut<HostageTally>,
     mut events: MessageWriter<ObjectiveEvent>,
-    mut play: MessageWriter<PlaySound>,
+    mut play: MessageWriter<GameSound>,
     mut commands: Commands,
 ) {
     for (e, h, t, state, health) in &hostages {
@@ -372,7 +384,7 @@ fn rescue(
         tally.rescued += 1;
         commands.entity(e).despawn();
         if let Some(s) = &rules.sounds.announce_rescued {
-            play.write(PlaySound::ui(s.clone()));
+            play.write(GameSound(PlaySound::ui(s.clone())));
         }
         events.write(ObjectiveEvent::HostageRescued {
             hostage: e,
@@ -393,7 +405,7 @@ fn hurt(
     mut tally: ResMut<HostageTally>,
     mut events: MessageWriter<ObjectiveEvent>,
     mut penalties: MessageWriter<HostagePenalty>,
-    mut play: MessageWriter<PlaySound>,
+    mut play: MessageWriter<GameSound>,
     mut commands: Commands,
 ) {
     for d in damage.read() {
@@ -402,14 +414,14 @@ fn hurt(
             continue;
         }
         if let Some(s) = &rules.sounds.pain {
-            play.write(PlaySound {
+            play.write(GameSound(PlaySound {
                 pitch: None,
                 entry: s.clone(),
                 at: Some(t.translation),
                 volume: None,
                 source: Some(d.target),
                 channel: Some(2),
-            });
+            }));
         }
         events.write(ObjectiveEvent::HostageHurt {
             hostage: d.target,
@@ -423,7 +435,7 @@ fn hurt(
         }
         tally.killed += 1;
         if let Some(s) = &rules.sounds.announce_killed {
-            play.write(PlaySound::ui(s.clone()));
+            play.write(GameSound(PlaySound::ui(s.clone())));
         }
         events.write(ObjectiveEvent::HostageKilled {
             hostage: d.entity,

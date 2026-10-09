@@ -26,3 +26,6 @@
 /tests/rez_format.rs
 /tests/mount_combat_arms.rs
 /docs/plans/active/mvp-combat-arms-slice.md
+
+# Local-only list of private words the pre-push hook refuses (one regex per line).
+/.githooks/private-patterns

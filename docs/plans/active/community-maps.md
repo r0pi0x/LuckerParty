@@ -191,8 +191,13 @@ prop_ragdoll),
 [game_entities.md](../../../specs/source/game_entities.md)
 (player_speedmod, game_ui, env_fade, game_score, env_hudhint,
 env_explosion, func_wall_toggle, func_conveyor). Each lists the CS:S
-differences to measure under "Open questions". Not yet specced:
-info_particle_system, env_smokestack, phys_constraint/ballsocket.
+differences to measure under "Open questions". Also
+[particles_and_smoke.md](../../../specs/source/particles_and_smoke.md)
+(info_particle_system, env_smokestack, env_particlelight, env_smoketrail)
+and [physics_constraints.md](../../../specs/source/physics_constraints.md)
+(phys_constraint, _ballsocket, _hinge, _slideconstraint,
+_lengthconstraint, _pulleyconstraint, _ragdollconstraint, phys_spring,
+phys_constraintsystem, info_constraint_anchor).
 
 Spawns: every map has spawn points; 14 have only one team's (bhop_, kz_,
 some mg_: the game puts everyone on the team that has spawns).

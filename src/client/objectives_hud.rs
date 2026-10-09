@@ -143,7 +143,7 @@ fn messages(
     mut events: MessageReader<ObjectiveEvent>,
     mut penalties: MessageReader<HostagePenalty>,
     local: Option<Single<(Entity, Option<&Team>), With<LocalPlayer>>>,
-    names: Query<(Option<&Name>, Has<LocalPlayer>)>,
+    names: Query<(Option<&Name>, Has<LocalPlayer>, Option<&crate::net::NetCharacter>)>,
     rules: Res<BombRules>,
     mut centre: ResMut<Centre>,
     mut hints: MessageWriter<Hint>,
@@ -153,8 +153,10 @@ fn messages(
     let now = time.elapsed_secs();
     let (me, team) = local.map_or((Entity::PLACEHOLDER, None), |l| (l.0, l.1.copied()));
     let name = |e: Entity| match names.get(e) {
-        Ok((_, true)) => "Player".to_string(),
-        Ok((Some(n), _)) => n.to_string(),
+        // A network game names everyone as the server does.
+        Ok((_, _, Some(c))) => c.name.clone(),
+        Ok((_, true, None)) => "Player".to_string(),
+        Ok((Some(n), _, None)) => n.to_string(),
         _ => format!("{e}"),
     };
     let carriers = team == Some(rules.carrier_team);

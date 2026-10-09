@@ -121,6 +121,22 @@ pub const INSUFFICIENT_FUNDS: &str = "You have insufficient funds.";
 /// Why buying fails with no room left (CS:S's words).
 pub const CANNOT_CARRY: &str = "You cannot carry any more.";
 
+/// A network client's buy: what it asks the server for (`net` sends it,
+/// the server runs `buy` and says why not).
+#[derive(Message, Clone, Debug, PartialEq)]
+pub struct BuyRequested(pub String);
+
+/// Buy `name` for `owner` as a player asks for it: on a network client,
+/// a request to the server (`BuyRequested`; Ok(None), the server answers
+/// a refusal with a hint), else `buy`.
+pub fn buy_or_ask(world: &mut World, owner: Entity, name: &str) -> Result<Option<String>, String> {
+    if world.get_resource::<crate::core::NetRole>() == Some(&crate::core::NetRole::Client) {
+        world.write_message(BuyRequested(name.to_string()));
+        return Ok(None);
+    }
+    buy(world, owner, name).map(Some)
+}
+
 /// Buy `name` (a weapon ID, `weapon_ak47`, `ak47`, `vest`, `vesthelm`,
 /// `defuser`, or ammo: `AMMO_BUYS`) for `owner`: checks the window and the
 /// money, replaces a weapon in the same slot (dropped, as CS:S does).
@@ -286,14 +302,20 @@ fn buy_ammo(world: &mut World, owner: Entity, slot: u8, fill: bool) -> Result<St
     }
     if let Some(entry) = sound.filter(|_| world.contains_resource::<Messages<crate::map::PlaySound>>()) {
         let at = world.get::<Transform>(owner).map(|t| t.translation);
-        world.write_message(crate::map::PlaySound {
+        let sound = crate::map::PlaySound {
             pitch: None,
             entry,
             at,
             volume: None,
             source: Some(owner),
             channel: None,
-        });
+        };
+        // The rules' sound: a network server's clients hear it too.
+        if world.contains_resource::<Messages<crate::map::GameSound>>() {
+            world.write_message(crate::map::GameSound(sound));
+        } else {
+            world.write_message(sound);
+        }
     }
     Ok(format!("bought {bought} box{}", if bought == 1 { "" } else { "es" }))
 }

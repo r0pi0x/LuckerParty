@@ -8,6 +8,46 @@ plan when work starts; delete them when done.
 
 ## 0. Playtest feedback (2026-10-07), top priority
 
+- Sky: the bottom face (`dn`) of the 2D skybox looks wrongly oriented,
+  perhaps needing a 180° turn seen from above. Check against CS:S with a
+  reference capture looking straight down at the sky (refcmp `skyconv`
+  already fits each face's orientation; check what it says for `dn`).
+- Knife view model: its faces (the handle at least) look inside out.
+  Earlier fix decided winding per mesh by majority (props.rs); check the
+  view model's meshes, its mirroring at `cl_righthand` (a mirrored model
+  must flip winding), and compare with a CS:S capture.
+
+- Props and other models show through the sky on mg_creative_multigames_v8_ns
+  and many other maps, while the world brushes behind the sky correctly don't
+  (e.g. `setpos -6332.74 -3047.50 -9638.97; setang -38.85 18.60 0`).
+  Likely props aren't culled by PVS/areas the way world parts are (props
+  without clusters, or a prop path that skips vis), or the sky doesn't hide
+  what lies behind it the way Source's sky brushes do. Compare with CS:S at
+  that position (coordinator: reference capture), then fix generally.
+
+- mg_item_battle_v4b: picking up a map-made "item" (a knife near spawn
+  with map entities parented to it: a car, a jetpack, a cannonball,
+  rockets, speed changes) gives nothing: the parented entities don't come
+  along and no speed change happens. Needs: entities parented to a weapon
+  following it when a player picks it up (and onto the player's hands),
+  the pickup outputs (OnPlayerPickup) and the entities these maps drive
+  from inputs (game_ui, player_speedmod, point_template/env_entity_maker,
+  func_physbox, phys_thruster; specs in specs/source/*.md written
+  2026-10-08, awaiting review).
+- Inside geometry, checked against CS:S (2026-10-09, mg_item_battle_v4b,
+  reference captures in the coordinator's target/inside/): inside the stone
+  wall ours already matches (world drawn, sky black). Inside the car
+  (`setpos 2241.89 1311.06 79.39; setang 4.92 181.70 0`) CS:S shows the
+  world through the car with only the hood's inside in view; ours shows
+  the car's insides (wheels, chassis) and no world behind: back faces
+  drawn, a different prop pose, or the parented car placed differently.
+- `setpos` puts our eye lower than CS:S's for the same coordinates (both
+  captures above): check our setpos/getpos convention (feet vs eye,
+  noclip's eye offset) against Source so pasted positions match.
+- Options faithful to CS:S: the Keyboard tab's Advanced dialog ("Fast
+  weapon switch" = `hud_fastswitch`, default 0, and its other entries) and
+  any other option CS:S shows that we lack; defaults as CS:S's.
+
 - Decals persist across rounds (bullet holes, blood), as we believe CS:S
   does (players bind `r_cleardecals`, now there; `mashup_round_cleardecals
   1` clears them each round). Left: confirm the game keeps them.

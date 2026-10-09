@@ -1103,6 +1103,7 @@ fn explosions(
     rule: Option<Res<ExplosionRule>>,
     mut world: GrenadeWorld,
     mut rng: ResMut<GrenadeRng>,
+    mut sounds: MessageWriter<crate::map::GameSound>,
 ) {
     let Some(rule) = rule else {
         events.clear();
@@ -1126,15 +1127,16 @@ fn explosions(
             &mut world,
             &mut rng.0,
         );
+        // The rules' (map logic's, the bomb's): clients hear it too.
         if let Some(s) = &e.sound {
-            world.play.write(PlaySound {
+            sounds.write(crate::map::GameSound(PlaySound {
                 pitch: None,
                 entry: s.clone(),
                 at: Some(origin),
                 volume: None,
                 source: e.inflictor,
                 channel: None,
-            });
+            }));
         }
         world.detonated.write(Detonated {
             kind: GrenadeKind::Blast,
