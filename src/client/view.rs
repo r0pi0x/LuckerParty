@@ -42,13 +42,13 @@ pub struct CameraMode {
     pub pivot_up: f32,
 }
 
-/// How far above the eye CS:S's third-person camera turns about, units.
-/// Measured on one capture (mg_item_battle_v4b, `cam_idealdist 150`, the
-/// view about 15 degrees down): CS:S's camera sat 64.5 units above the
-/// eye, 24.7 above a camera 150 units straight back along the view, and
-/// looked parallel to the view (the player's head under the crosshair,
-/// not on it). docs/tech-debt.md has what is left to check.
-pub const THIRD_PERSON_PIVOT_UP: f32 = 24.7;
+/// How far above the eye CS:S's third-person camera turns about, units:
+/// none. CS:S with `thirdperson; cam_idealdist 150` at `setang 0` puts its
+/// camera (`getpos`) at the eye's height, 150 units straight back
+/// (de_dust2 CT spawn, 2026-10-09). An earlier capture that seemed to need
+/// a raise was taken while CS:S's camera was still easing from a steeper
+/// view (its angles lag the view's unless `cam_snapto 1`; we don't lag).
+pub const THIRD_PERSON_PIVOT_UP: f32 = 0.0;
 
 impl Default for CameraMode {
     fn default() -> Self {

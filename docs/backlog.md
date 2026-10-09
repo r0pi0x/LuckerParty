@@ -57,11 +57,9 @@ plan when work starts; delete them when done.
   view's origin (the eye; in third person the camera: CS:S's third-person
   `getpos` was exactly its camera). So one `setpos` line gives the same
   view in both, and `setpos` with `getpos`'s numbers lands 64 higher, as
-  in CS:S. Ours used the body's centre (36 above the feet) for both. To
-  confirm: the coordinator noted CS:S's setpos-then-getpos returning the
-  same numbers, which contradicts the captures; capture the text of
-  `noclip; setpos -295 1078 500; getpos` and a `getpos` standing on a
-  known floor.
+  in CS:S. Ours used the body's centre (36 above the feet) for both.
+  Confirmed in CS:S's console: `noclip; setpos -295 1078 500; getpos`
+  prints z 564.
 - Options faithful to CS:S: any other option CS:S shows that we lack;
   defaults as CS:S's.
 

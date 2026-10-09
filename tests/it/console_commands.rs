@@ -64,11 +64,8 @@ fn getpos_prints_the_eye_and_setpos_takes_the_feet() {
     assert!(at.distance(Vec3::new(-295.0, 1078.0, 564.0)) < 0.02, "noclip: {at}");
 }
 
-/// `thirdperson` with `cam_idealdist 150`, as CS:S's capture on
-/// mg_item_battle_v4b (view about 15.4 degrees down): the camera sits
-/// 64.5 units above the eye, 150 units back along the view from a pivot
-/// 24.7 above the eye, and looks along the view. A ceiling over the eye
-/// stops the pivot short of it.
+/// `thirdperson` with `cam_idealdist 150`, as CS:S's `getpos` shows: the
+/// camera sits 150 units straight back along the view from the eye.
 #[test]
 fn third_person_camera_sits_as_css_does() {
     use avian3d::prelude::SpatialQuery;
@@ -91,26 +88,15 @@ fn third_person_camera_sits_as_css_does() {
             .run_system_once(move |spatial: SpatialQuery| camera_offset(&mode, origin, eye, look, &spatial, []))
             .unwrap()
     };
-    let o = at(&mut sim, 15.4, mode);
-    let above = (o.y - eye.y) / U;
-    assert!((above - 64.5).abs() < 0.3, "{above} units above the eye");
-    let back = (o.z - eye.z) / U;
-    assert!((back - 150.0 * 15.4f32.to_radians().cos()).abs() < 0.1, "{back} back");
-    // Level: the pivot's height.
+    // Level: at the eye's height, 150 units back (CS:S's `getpos` in
+    // third person at `setang 0`).
     let o = at(&mut sim, 0.0, mode);
     assert!(((o.y - eye.y) / U - THIRD_PERSON_PIVOT_UP).abs() < 0.01);
-    // The spectators' chase camera has no raise.
-    let o = at(&mut sim, 0.0, CameraMode { pivot_up: 0.0, ..mode });
-    assert!((o.y - eye.y).abs() < 1e-4);
-    // A ceiling 16 units over the eye: the pivot stops under it, less
-    // the camera's radius.
-    sim.app.world_mut().spawn((
-        avian3d::prelude::RigidBody::Static,
-        avian3d::prelude::Collider::cuboid(4.0, 0.2, 4.0),
-        Transform::from_translation(origin + eye + Vec3::Y * (16.0 * U + 0.1)),
-    ));
-    sim.ticks(2);
-    let o = at(&mut sim, 0.0, mode);
+    assert!((((o.z - eye.z) / U) - 150.0).abs() < 0.1, "150 back");
+    // Looking down: straight back along the view.
+    let o = at(&mut sim, 15.4, mode);
     let above = (o.y - eye.y) / U;
-    assert!(above > 0.0 && above < 16.0 - 0.2 / U + 0.1, "{above} under the ceiling");
+    assert!((above - 150.0 * 15.4f32.to_radians().sin()).abs() < 0.3, "{above} units above the eye");
+    let back = (o.z - eye.z) / U;
+    assert!((back - 150.0 * 15.4f32.to_radians().cos()).abs() < 0.1, "{back} back");
 }
