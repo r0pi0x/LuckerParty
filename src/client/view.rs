@@ -32,7 +32,18 @@ pub struct CameraMode {
     /// Degrees the third-person camera orbits around the player
     /// (cam_idealyaw; 180 looks at your front).
     pub ideal_yaw: f32,
+    /// CS:S units the third-person camera's pivot sits above the eye
+    /// (`THIRD_PERSON_PIVOT_UP`; the spectator's chase camera has none).
+    pub pivot_up: f32,
 }
+
+/// How far above the eye CS:S's third-person camera turns about, units.
+/// Measured on one capture (mg_item_battle_v4b, `cam_idealdist 150`, the
+/// view about 15 degrees down): CS:S's camera sat 64.5 units above the
+/// eye, 24.7 above a camera 150 units straight back along the view, and
+/// looked parallel to the view (the player's head under the crosshair,
+/// not on it). docs/tech-debt.md has what is left to check.
+pub const THIRD_PERSON_PIVOT_UP: f32 = 24.7;
 
 impl Default for CameraMode {
     fn default() -> Self {
@@ -40,6 +51,7 @@ impl Default for CameraMode {
             third_person: false,
             ideal_dist: 150.0,
             ideal_yaw: 0.0,
+            pivot_up: THIRD_PERSON_PIVOT_UP,
         }
     }
 }
@@ -150,7 +162,7 @@ pub fn third_person_offset(look: Quat, ideal: f32, hit: Option<f32>) -> Vec3 {
 
 /// The camera's view direction: the look, turned by `cam_idealyaw` in
 /// third person.
-pub(super) fn camera_look(mode: &CameraMode, look: Quat) -> Quat {
+pub fn camera_look(mode: &CameraMode, look: Quat) -> Quat {
     if mode.third_person {
         Quat::from_rotation_y(mode.ideal_yaw.to_radians()) * look
     } else {
@@ -193,7 +205,7 @@ fn eye_under_ceiling(eye: f32, hit: Option<f32>) -> f32 {
     }
 }
 
-pub(super) fn camera_offset(
+pub fn camera_offset(
     mode: &CameraMode,
     origin: Vec3,
     eye: Vec3,
@@ -209,22 +221,21 @@ pub(super) fn camera_offset(
         return eye;
     };
     let filter = SpatialQueryFilter::from_excluded_entities(characters).with_mask(crate::core::SOLID_LAYERS);
-    let config = ShapeCastConfig {
-        max_distance: ideal,
-        ignore_origin_penetration: true,
-        ..default()
+    let sweep = |from: Vec3, dir: Dir3, max_distance: f32| {
+        let config = ShapeCastConfig {
+            max_distance,
+            ignore_origin_penetration: true,
+            ..default()
+        };
+        spatial
+            .cast_shape(&Collider::sphere(CAMERA_RADIUS), from, Quat::IDENTITY, dir, &config, &filter)
+            .map(|h| h.distance)
     };
-    let hit = spatial
-        .cast_shape(
-            &Collider::sphere(CAMERA_RADIUS),
-            origin + eye,
-            Quat::IDENTITY,
-            dir,
-            &config,
-            &filter,
-        )
-        .map(|h| h.distance);
-    eye + third_person_offset(look, ideal, hit)
+    // The pivot: up from the eye, short of a ceiling.
+    let up = mode.pivot_up.max(0.0) * METERS_PER_UNIT;
+    let pivot = eye + Vec3::Y * up.min(sweep(origin + eye, Dir3::Y, up).unwrap_or(up));
+    let hit = sweep(origin + pivot, dir, ideal);
+    pivot + third_person_offset(look, ideal, hit)
 }
 
 /// Draw the local player's body in third person while alive.

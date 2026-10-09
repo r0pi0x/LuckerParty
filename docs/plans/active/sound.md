@@ -85,6 +85,34 @@ Started 2026-10-05, from specs/cs_source/sounds.md.
    map uses them), "!" sentences, the vo .wav -> .mp3 switch, what plays
    from a stock map trigger we don't have (prop OnHealthChanged, bomb
    explosion, env_fire).
+7. [x] Damage and death (`games/cs_source/pain.rs`; the install's
+   game_sounds.txt, the only manifest file defining them: CS:S's manifest
+   leaves out hl2's game_sounds_player.txt). Entries found and used:
+   `Player.DamageKevlar` (CHAN_BODY, kevlar1-5), `Player.DamageHelmet`
+   (CHAN_BODY, bhit_helmet-1), `Player.DamageHeadShot` and
+   `Player.DeathHeadShot` (CHAN_VOICE, headshot1-2), `Player.Death`
+   (CHAN_VOICE, death1-6), `Player.FallDamage` (CHAN_BODY, damage1-3),
+   all CompatibilityAttenuation 1.0; `Flesh.BulletImpact`
+   (game_sounds_physics.txt, the `flesh` surface's bulletimpact) stays the
+   shot's own client-side impact; shots on players now take the
+   hitboxes' `flesh` (impact_effects.md 3), not the movement box's
+   `player`, which has no bulletimpact (they were silent). Defined, unused: `Player.FallGib`,
+   `Player.PlasmaDamage`/`SonicDamage` (null waves), `Player.DrownStart`/
+   `DrownContinue` (no drowning yet). Rules (tech-debt.md): helmet ->
+   DamageHelmet, bare head -> DamageHeadShot unless it kills, covered body
+   -> DamageKevlar, fall damage taken -> FallDamage, death -> Death or
+   DeathHeadShot; from the victim, positional for others and centred for
+   the victim; hurt sounds are the server's `GameSound` (every client
+   once), deaths play from `core::Died` on each side. Reference checks for
+   the coordinator (CS:S, `sv_soundemitter_trace 1` on a listen server,
+   bots as victims): (a) body shot with and without kevlar, (b) headshot
+   with and without helmet, non-lethal and lethal (does a killing
+   headshot play DamageHeadShot, DeathHeadShot or both; does a death by
+   a headshot also play `Player.Death`), (c) a leg shot in kevlar, (d)
+   knife and HE hits on kevlar, (e) a fall that hurts and one that kills,
+   (f) whether the shooter's own client gets the hurt sound (trace on the
+   shooter's client vs a third client), (g) a shotgun's pellets on one
+   armoured player: one sound or several.
 5. [x] Weapon sounds: fire, empty click, deploy, knife swings, reload parts at their animation times (sounds aren't yet tied to view-model events).
 
 Measurements to take (probe server): the distance curves, CS:S footstep

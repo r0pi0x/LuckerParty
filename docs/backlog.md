@@ -43,11 +43,7 @@ plan when work starts; delete them when done.
   (31 units above the feet standing) turned to its yaw: CS:S's captures
   of the car knife (first person at `setang 30 0 0`, third person) match
   it exactly (the car on the floor, roof at the shoulders); at the feet
-  the car sank to the knees. Left: playtest the cars and jetpack. Our
-  third-person camera sits about 26 units lower than CS:S's for the same
-  player and `cam_idealdist 150` (CS:S's `getpos` printed its camera at
-  z 192.55, 64.5 above the eye): check CS:S's third-person camera (its
-  pivot or offset).
+  the car sank to the knees. Left: playtest the cars and jetpack.
 - Inside geometry, checked against CS:S (2026-10-09, mg_item_battle_v4b,
   reference captures in the coordinator's target/inside/): inside the stone
   wall ours already matches (world drawn, sky black). Inside the car
@@ -77,15 +73,6 @@ plan when work starts; delete them when done.
   `volume`) and the reference captures still needed (slider ranges,
   the colour list, `cl_crosshairusealpha`'s and `mp_decals`' defaults):
   docs/plans/active/ui-parity.md.
-
-- Pain sounds when losing health: play CS:S's damage sounds for the
-  local player and others (positional), whatever the install's sound
-  scripts give for each case: bullet hits on flesh, kevlar and helmet,
-  headshots, fall damage, burning/drowning if any, and the death sounds;
-  who hears what (the victim, the attacker, everyone nearby) and any
-  per-player cooldown as CS:S does (check against a capture or a spec;
-  CS:S has no voiced pain grunts for bullets, as we believe). Over the
-  network the server sends them like the other damage events.
 
 - Decals persist across rounds (bullet holes, blood), as we believe CS:S
   does (players bind `r_cleardecals`, now there; `mashup_round_cleardecals

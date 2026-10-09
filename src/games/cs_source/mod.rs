@@ -22,6 +22,7 @@ pub mod movement;
 pub mod nav;
 pub mod objectives;
 pub mod overlays;
+pub mod pain;
 pub mod pak;
 pub mod phy;
 pub mod player_anim;
