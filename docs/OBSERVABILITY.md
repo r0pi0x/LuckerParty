@@ -426,7 +426,11 @@ ping), `getpos`, `+moveleft`/`-moveleft`, `setang`, `screenshot
 <file.png>`, `disconnect`. The host's `setpos` moves the host; a client's
 position is predicted and the server's state corrects it (a client's `setpos` snaps back). Add
 `+net_fakelag 100 +net_fakeloss 5 +cl_showerror 1` to the client's line to feel
-a bad link. The dedicated server:
+a bad link. To shoot each other: `setang <pitch> <yaw>` and `+attack`/`-attack`
+through each game's `mashup/console` (aim from the other's `Transform` as
+the client draws it, `world.query` on its `Name`), the host's health from
+its `LocalPlayer`'s `Health`, `+sv_showlagcompensation 1` on the host to
+log each rewind. The dedicated server:
 `cargo run --features dev --bin mashup_server -- -port 27032 +map greybox
 +bot_add` (console on stdin: `status`, `bot_add`, `quit`). Logs show
 `listening on UDP ...`, `<name> joined`, `<name> left`, `disconnected:

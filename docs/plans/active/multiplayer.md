@@ -750,11 +750,24 @@ with tests passing and something to see.
      hits are the server's confirmations (6 of 6); an HE grenade: the
      throw predicted with 0 errors, no projectile on the client, drawn
      in flight on the other, one detonation heard; a drop asked for, seen
-     lying by the other client, picked up again by walking over it.
+     lying by the other client, picked up again by walking over it; a bot
+     on the server shoots a client: its health drops and the client draws
+     the bot's shots (bots' rounds go out as `FireBullets` like anyone's).
      `tests/it/heavy/map_net_weapons.rs` (de_dust2, the install's player
      models): head shots at a player as seen standing, fired once it has
      ducked on the server, at 100 ms: 6 of 6 heads with lag
      compensation, 0 of 6 without.
+   - [x] Two real games on the dev box (host `-port 27047 +map greybox
+     +sv_showlagcompensation 1`, the client with `+net_fakelag 100
+     +net_fakejitter 20 +net_fakeloss 5 +cl_showerror 1`), the client
+     aimed at the host as it drew it over the remote protocol (`setang`,
+     `+attack`/`-attack`): ping ~150 ms, shots rewound 280-306 ms; the
+     host standing: 3 of 3 hit (killed: "You killed Host" in the client's
+     feed, its hit marker); strafing left and right: 12 of 12 hit, 3 of
+     12 with `sv_unlag 0`; the client's ammo counted down and reloaded as
+     predicted; prediction errors: one at the join and a burst of five
+     while a screenshot stalled the client (its late commands were
+     repeated by the server, as designed), none while firing otherwise.
    - Not yet: the knife's box sweep (when its line misses) and grenades'
      blast traces aren't rewound; others' reload, draw and knife sounds
      aren't sent (only their fire sounds, from `FireBullets`); a client's

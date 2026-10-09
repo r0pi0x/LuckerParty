@@ -637,3 +637,46 @@ fn dropping_asks_the_server_and_picking_up_is_its() {
     assert!(ids(sim.clients[0].app.world(), local).contains(&AK47));
     assert_eq!(ids(sim.clients[0].app.world(), local), ids(sim.server.app.world(), me));
 }
+
+#[test]
+fn bots_shoot_players_over_the_net() {
+    let mut sim = joined(link(80, 0, 0.0), 49, 1);
+    let me = sim.character_of(0).unwrap();
+    let team = *sim.server.app.world().get::<mashup::core::Team>(me).unwrap();
+    let other = mashup::core::Team(if team.0 == 1 { 2 } else { 1 });
+    let bot = mashup::bot::add_bot(sim.server.app.world_mut(), other).unwrap();
+    {
+        let mut c = sim.server.app.world_mut().resource_mut::<mashup::bot::BotConfig>();
+        c.stop = 1;
+        c.grenades = 0;
+    }
+    sim.ticks(10);
+    // Face to face across the open floor, the bot held still.
+    let w = sim.server.app.world_mut();
+    for (e, at) in [(bot, Vec3::new(0.0, 1.0, 2.0)), (me, Vec3::new(0.0, 1.0, 12.0))] {
+        w.get_mut::<Transform>(e).unwrap().translation = at;
+        if let Some(mut p) = w.get_mut::<Position>(e) {
+            p.0 = at;
+        }
+    }
+    let id = sim.client_id(0);
+    let mut drawn = Log::<WeaponEvent>::new(&sim, 1);
+    let mut hurt = false;
+    for _ in 0..640 {
+        step(&mut sim, &mut [&mut drawn]);
+        let local = sim.local_player(0).unwrap();
+        hurt |= sim.clients[0].app.world().get::<mashup::core::Health>(local).unwrap().current < 1.0;
+        if hurt {
+            break;
+        }
+    }
+    let seen = NetSim::owned_by(&mut sim.clients[0], None).expect("the bot is drawn");
+    let shots = drawn
+        .all
+        .iter()
+        .filter(|e| e.owner == seen && matches!(e.kind, WeaponEventKind::Shot { .. }))
+        .count();
+    println!("a bot shot client {id}: its shots drawn {shots} traces, hurt {hurt}");
+    assert!(hurt, "the bot's hits reach the client's health");
+    assert!(shots > 0, "the client drew the bot's shots");
+}
