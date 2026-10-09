@@ -8,6 +8,23 @@ plan when work starts; delete them when done.
 
 ## 0. Playtest feedback (2026-10-07), top priority
 
+- mg_item_battle_v4b: picking up a map-made "item" (a knife near spawn
+  with map entities parented to it: a car, a jetpack, a cannonball,
+  rockets, speed changes) gives nothing: the parented entities don't come
+  along and no speed change happens. Needs: entities parented to a weapon
+  following it when a player picks it up (and onto the player's hands),
+  the pickup outputs (OnPlayerPickup) and the entities these maps drive
+  from inputs (game_ui, player_speedmod, point_template/env_entity_maker,
+  func_physbox, phys_thruster; specs in specs/source/*.md written
+  2026-10-08, awaiting review).
+- Inside geometry: with the camera inside a model (the car on
+  mg_item_battle_v4b) its far faces show the sky, and inside big stone
+  brushes the view is black. Check what CS:S shows in the same spots
+  (coordinator: reference captures) — Source culls back faces and draws
+  nothing from inside solid leaves — then match it; if the difference is
+  ours (double-sided materials, sky drawn where the world should be),
+  fix it.
+
 - Decals persist across rounds (bullet holes, blood), as we believe CS:S
   does (players bind `r_cleardecals`, now there; `mashup_round_cleardecals
   1` clears them each round). Left: confirm the game keeps them.
