@@ -29,8 +29,8 @@ use bevy::{
 };
 
 use super::hearing::{Hearing, HearingMix, Muffle};
-use super::room::{AMBIENT_SEND, RoomBus, RoomDsp, RoomSend, distance_send};
-use super::sound::{METERS_PER_UNIT, MapSoundClip, SoundBank, SoundLevel, SoundListener, distance_gain, pan};
+use super::room::{AMBIENT_SEND, RoomBus, RoomDsp, RoomSend};
+use super::sound::{Ear, MapSoundClip, SoundBank, SoundLevel, SoundListener};
 
 /// Who a long-lived sound belongs to (chosen by its owner).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -440,7 +440,7 @@ fn control(
 fn drive_audio(
     mut live: ResMut<LiveSounds>,
     bank: Option<Res<SoundBank>>,
-    listener: Query<&GlobalTransform, With<SoundListener>>,
+    listener: Query<(&GlobalTransform, Option<&ChildOf>), With<SoundListener>>,
     mut sinks: Query<&mut AudioSink>,
     mut clips: ResMut<Assets<LiveClip>>,
     global: Option<Res<bevy::audio::GlobalVolume>>,
@@ -452,15 +452,12 @@ fn drive_audio(
     // Bevy applies the master volume when a sink starts; follow later
     // changes to it (the clip's own gains carry the rest).
     let master = global.map_or(1.0, |g| g.volume.to_linear());
-    let ear = listener.iter().next();
+    let ear = Ear::find(listener.iter());
     for s in live.sounds.values_mut() {
         let (left, right, send) = match (s.at, ear) {
             (Some(at), Some(ear)) if !matches!(s.level, SoundLevel::Db(l) if l <= 0.0) => {
-                let to = at - ear.translation();
-                let units = to.length() / METERS_PER_UNIT;
-                let g = distance_gain(s.level, units) * s.volume;
-                let (pl, pr) = pan(to.normalize_or_zero(), ear.right().as_vec3());
-                (g * pl, g * pr, distance_send(units))
+                let (l, r, send) = ear.gains(at, s.follow, s.level);
+                (l * s.volume, r * s.volume, send)
             }
             _ => (s.volume, s.volume, AMBIENT_SEND),
         };

@@ -892,3 +892,59 @@ fn use_pickup_swaps_the_gun_looked_at_when_enabled() {
     let loose: Vec<Entity> = w.query::<&Loose>().iter(w).map(|l| l.weapon).collect();
     assert_eq!(loose, vec![m4], "the M4 lies loose");
 }
+
+/// Run a tick; the `PlaySound`s still held (this tick's and the last's).
+fn sounds_this_tick(sim: &mut Sim) -> Vec<mashup::map::PlaySound> {
+    use bevy::ecs::message::{MessageCursor, Messages};
+    sim.ticks(1);
+    let m = sim.app.world().resource::<Messages<mashup::map::PlaySound>>();
+    MessageCursor::<mashup::map::PlaySound>::default().read(m).cloned().collect()
+}
+
+/// The local player's own AK-47 shot while strafing is heard centred:
+/// shots are emitted from the simulation's latest tick while the camera
+/// (the listener) is drawn a tick behind (`map::interp`), a few
+/// centimetres to the side, which panned the shot fully into one ear.
+/// Another player's shot from the side still pans.
+#[test]
+fn own_gunfire_is_centred_while_strafing_others_pan() {
+    use mashup::map::{SoundLevel, sound::Ear};
+    let mut sim = sim();
+    let p = sim.spawn_character(greybox::SPAWNS[0], placeholder::ID);
+    sim.ticks(1);
+    sim.intent(p).move_axis = Vec2::X;
+    sim.intent(p).fire = true;
+    let mut shot = None;
+    for _ in 0..200 {
+        if let Some(s) = sounds_this_tick(&mut sim)
+            .into_iter()
+            .find(|s| s.source == Some(p) && s.entry.contains("AK47"))
+        {
+            shot = Some(s);
+            break;
+        }
+    }
+    let shot = shot.expect("the AK-47 never sounded");
+    let v = sim.velocity(p);
+    assert!(v.xz().length() > 3.0, "strafing: {v}");
+    // The ear a tick behind the shot, facing the way the player looks.
+    let at = shot.at.expect("a spatial shot");
+    let look = sim.app.world().get::<Intent>(p).unwrap().look_rotation();
+    let ear_at = GlobalTransform::from(Transform::from_translation(at - v * TICK_INTERVAL as f32).with_rotation(look));
+    let level = SoundLevel::Db(140.0);
+    let mine = Ear {
+        at: ear_at,
+        owner: Some(p),
+    };
+    let (l, r, _) = mine.gains(at, shot.source, level);
+    assert!((l - r).abs() < 1e-4 && l > 0.99, "own shot centred: {l} {r}");
+    // The same shot from someone else's ears a tick behind (a spectator
+    // at the shooter's eye) is centred too: too close to pan.
+    let theirs = Ear { owner: None, ..mine };
+    let (l, r, _) = theirs.gains(at, shot.source, level);
+    assert!((l - r).abs() < 0.5, "a shot at the ear barely pans: {l} {r}");
+    // Another player's shot 10 m to the right pans right.
+    let right = ear_at.right().as_vec3();
+    let (l, r, _) = mine.gains(ear_at.translation() + right * 10.0, Some(Entity::PLACEHOLDER), level);
+    assert!(r > 0.9 && l < 0.1, "a shot from the right: {l} {r}");
+}

@@ -509,7 +509,11 @@ two spawns), plus traces of a `--features profile` build.
   receiver blurs over several), and a redrawn cell writes only its part
   of the atlas image, which stays in the main world for that: 1.0 ms a
   frame (2.7 ms when all seven redraw). mg_kommando has 74 props a frame
-  riding its train and rotators, which do move.
+  riding its train and rotators, which do move. A redrawn shadow
+  rewrites its own mesh asset in place (a new `Mesh3d` handle each frame
+  made Bevy re-specialize the entity, and under the single-threaded
+  executors a moving prop's shadow was never drawn until it rested;
+  `tests/it/prop_shadows.rs`).
 - **Resolution** barely matters on the dev box's RTX 3080: GPU time for
   the survey views 0.37 ms at 1280x720, 0.40 at 1920x1080, 0.49 at
   2560x1440, 0.53 at 3840x2160 (`--view-size`), frame times unchanged
