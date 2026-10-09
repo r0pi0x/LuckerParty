@@ -2,12 +2,13 @@
 //! install as a neutral `map::hud::GameUi`: the GameUI scheme
 //! (`resource/SourceScheme.res` and the `SourceSchemeBase.res` it bases on,
 //! under `platform/`), the menu's entries (`resource/GameMenu.res`), the
-//! options pages (`resource/OptionsSub*.res`, the keyboard tab's Advanced
-//! dialog `OptionsSubKeyboardAdvancedDlg.res` too), the keyboard page's actions
+//! options pages (`resource/OptionsSub*.res`, the keyboard and video tabs'
+//! Advanced dialogs `OptionsSubKeyboardAdvancedDlg.res` and
+//! `OptionsSubVideoAdvancedDlg.res` too), Create Server's pages
+//! (`resource/CreateMultiplayerGame{Server,Gameplay,Bot}Page.res`) and its
+//! Game page's options (`cfg/settings.scr`), the keyboard page's actions
 //! (`scripts/kb_act.lst`), strings from `gameui_english.txt`,
-//! `valve_english.txt` and `cstrike_english.txt`, and the new game
-//! dialog's map thumbnails (`materials/vgui/maps/menu_thumb_<map>.vtf`),
-//! and the main menu's look: its background (`materials/console/
+//! `valve_english.txt` and `cstrike_english.txt`, and the main menu's look: its background (`materials/console/
 //! background01.vtf` and `background01_widescreen.vtf`, stretched over the
 //! screen) and the game's title (`gameinfo.txt`'s `title` and `title2`) in
 //! the client scheme's `ClientTitleFont` (`resource/clientscheme.res`, its
@@ -29,7 +30,7 @@ use std::collections::HashMap;
 
 use super::hud::Kv;
 use crate::{
-    map::hud::{GameUi, GameUiItem, KeyAction, UiImage, UiSound},
+    map::hud::{GameUi, GameUiItem, KeyAction, ServerSetting, ServerSettingKind, UiImage, UiSound},
     mount::Mount,
 };
 
@@ -206,18 +207,27 @@ pub(crate) fn key_actions(text: &str, strings: &HashMap<String, String>) -> Vec<
         .collect()
 }
 
-/// The options pages' layout files, by page.
-const OPTION_PAGES: [(&str, &str); 6] = [
+/// The options pages' and Create Server's layout files, by page.
+const OPTION_PAGES: [(&str, &str); 10] = [
     ("keyboard", "resource/optionssubkeyboard.res"),
     // The keyboard tab's Advanced dialog.
     ("keyboard_advanced", "resource/optionssubkeyboardadvanceddlg.res"),
     ("mouse", "resource/optionssubmouse.res"),
     ("audio", "resource/optionssubaudio.res"),
     ("video", "resource/optionssubvideo.res"),
+    // The video tab's Advanced dialog.
+    ("video_advanced", "resource/optionssubvideoadvanceddlg.res"),
     ("multiplayer", "resource/optionssubmultiplayer.res"),
+    // Create Server's pages: Server, Game (its list from `SERVER_SCRIPTS`),
+    // Bot.
+    ("create_server", "resource/createmultiplayergameserverpage.res"),
+    ("create_game", "resource/createmultiplayergamegameplaypage.res"),
+    ("create_bot", "resource/createmultiplayergamebotpage.res"),
 ];
 
-const THUMB_PREFIX: &str = "materials/vgui/maps/menu_thumb_";
+/// Create Server's Game page options: the install's own, else the
+/// default one.
+const SERVER_SCRIPTS: [&str; 2] = ["cfg/settings.scr", "cfg/settings_default.scr"];
 
 /// The loading dialog's layout files, preferred first.
 const LOADING_DIALOGS: [&str; 2] = ["resource/loadingdialognobanner.res", "resource/loadingdialog.res"];
@@ -403,47 +413,77 @@ pub fn load(mount: &Mount) -> Option<GameUi> {
         }
     }
     main_menu_look(mount, &mut ui);
-    // Thumbnails: small pictures, decoded once.
-    for (entry, _) in mount.entries() {
-        let Some(map) = entry
-            .path
-            .strip_prefix(THUMB_PREFIX)
-            .and_then(|p| p.strip_suffix(".vtf"))
-        else {
-            continue;
-        };
-        if ui.thumbnails.contains_key(map) {
-            continue;
-        }
-        let Ok(bytes) = mount.read(&entry.path) else { continue };
-        let Some(image) = vtf::from_bytes(&bytes)
-            .ok()
-            .and_then(|v| v.highres_image.decode(0).ok())
-            .map(|i| i.to_rgba8())
-        else {
-            continue;
-        };
-        let (width, height) = (image.width(), image.height());
-        ui.thumbnails.insert(map.to_string(), crop_padding(width, height, image.into_raw()));
-    }
+    // Create Server's Game page: the server's own script first.
+    ui.server_settings = SERVER_SCRIPTS
+        .iter()
+        .find_map(|file| read(file))
+        .map(|text| server_settings(&text, &ui.strings))
+        .unwrap_or_default();
     Some(ui)
 }
 
-/// A picture without the plain rows padding its foot (the thumbnails
-/// keep a 4:3 shot in a square texture).
-pub(crate) fn crop_padding(width: u32, height: u32, mut rgba8: Vec<u8>) -> UiImage {
-    let row = (width * 4) as usize;
-    let plain = |r: &[u8]| r.chunks_exact(4).all(|p| p == &r[..4]);
-    let mut rows = height as usize;
-    while rows > 1 && rgba8.get((rows - 1) * row..rows * row).is_some_and(plain) {
-        rows -= 1;
+/// The options of Create Server's Game page (`cfg/settings.scr`): each
+/// cvar's label (localised), its control and default. The script's form:
+/// `"cvar" { "#Label" { STRING | NUMBER min max | BOOL | LIST "label"
+/// "value" ... } { "default" } }` (a max of -1: none).
+pub(crate) fn server_settings(text: &str, strings: &HashMap<String, String>) -> Vec<ServerSetting> {
+    let t = super::surfaceprops::tokens(text);
+    let Some(open) = t.iter().position(|s| s == "{") else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut i = open + 1;
+    let get = |i: usize| t.get(i).map(String::as_str).unwrap_or("");
+    while i < t.len() && get(i) != "}" {
+        // "cvar" { "label" { type ... } { "default" } }
+        let cvar = get(i).to_string();
+        if get(i + 1) != "{" {
+            break;
+        }
+        let label = localise(get(i + 2), strings);
+        if get(i + 3) != "{" {
+            break;
+        }
+        let mut j = i + 4;
+        let kind_word = get(j).to_uppercase();
+        j += 1;
+        let mut args = Vec::new();
+        while j < t.len() && get(j) != "}" {
+            args.push(get(j).to_string());
+            j += 1;
+        }
+        j += 1; // the type's closing brace
+        let num = |s: Option<&String>| s.and_then(|v| v.parse::<f32>().ok()).filter(|v| *v >= 0.0);
+        let kind = match kind_word.as_str() {
+            "NUMBER" => ServerSettingKind::Number {
+                min: num(args.first()),
+                max: num(args.get(1)),
+            },
+            "BOOL" => ServerSettingKind::Bool,
+            "LIST" => ServerSettingKind::List(args.chunks_exact(2).map(|p| (p[0].clone(), p[1].clone())).collect()),
+            _ => ServerSettingKind::Text,
+        };
+        let mut default = String::new();
+        if get(j) == "{" {
+            default = if get(j + 1) == "}" { String::new() } else { get(j + 1).to_string() };
+            while j < t.len() && get(j) != "}" {
+                j += 1;
+            }
+            j += 1;
+        }
+        // The setting's own closing brace.
+        while j < t.len() && get(j) != "}" {
+            j += 1;
+        }
+        out.push(ServerSetting {
+            cvar,
+            label,
+            kind,
+            default,
+        });
+        i = j + 1;
     }
-    rgba8.truncate(rows * row);
-    UiImage {
-        width,
-        height: rows as u32,
-        rgba8,
-    }
+    out
 }
 
 #[cfg(test)]
@@ -536,11 +576,32 @@ mod tests {
     }
 
     #[test]
-    fn thumbnails_lose_their_plain_foot() {
-        // 2x4: two picture rows, two white ones.
-        let px = [[1, 2, 3, 255], [4, 5, 6, 255], [7, 8, 9, 255], [1, 1, 1, 255], [255; 4], [255; 4], [255; 4], [255; 4]];
-        let pic = crop_padding(2, 4, px.concat());
-        assert_eq!((pic.width, pic.height, pic.rgba8.len()), (2, 2, 16));
+    fn the_create_server_game_page_options() {
+        let strings = HashMap::from([("valve_hostname".to_string(), "Server Name".to_string())]);
+        let scr = r##"VERSION 1.0
+            DESCRIPTION SERVER_OPTIONS
+            {
+                "hostname" { "#Valve_Hostname" { STRING } { "Counter-Strike Source" } }
+                "maxplayers" { "#Valve_Max_Players" { NUMBER 1 32 } { "32" } }
+                "mp_timelimit" { "Time" { NUMBER 0 -1 } { "20" } }
+                // a comment
+                "mp_footsteps" { "Steps" { BOOL } { "1" } }
+                "mp_forcecamera" { "Camera" { LIST "#A" "0" "B" "1" } { "0" } }
+            }"##;
+        let o = server_settings(scr, &strings);
+        assert_eq!(o.len(), 5);
+        assert_eq!((o[0].cvar.as_str(), o[0].label.as_str()), ("hostname", "Server Name"));
+        assert_eq!(o[0].kind, ServerSettingKind::Text);
+        assert_eq!(o[0].default, "Counter-Strike Source");
+        assert_eq!(o[1].kind, ServerSettingKind::Number { min: Some(1.0), max: Some(32.0) });
+        assert_eq!(o[2].kind, ServerSettingKind::Number { min: Some(0.0), max: None }, "-1: no limit");
+        assert_eq!(o[3].kind, ServerSettingKind::Bool);
+        assert_eq!(
+            o[4].kind,
+            ServerSettingKind::List(vec![("#A".into(), "0".into()), ("B".into(), "1".into())]),
+            "unknown tokens stay as written"
+        );
+        assert!(server_settings("nothing here", &strings).is_empty());
     }
 
     #[test]

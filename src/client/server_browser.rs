@@ -30,7 +30,7 @@ use bevy::{
     input::{
         ButtonState,
         keyboard::{Key, KeyboardInput},
-        mouse::{AccumulatedMouseScroll, MouseScrollUnit},
+        mouse::AccumulatedMouseScroll,
     },
     prelude::*,
     ui::RelativeCursorPosition,
@@ -38,7 +38,8 @@ use bevy::{
 
 use super::{
     fonts::UiFonts,
-    game_menu::{GameMenu, Look, bevel, frame, label, place},
+    game_menu::GameMenu,
+    widgets::{self, Caret, ComboEvent, ComboKey, ComboList, Edit, FrameSpec, Look, Windows, bevel, label, place},
 };
 use crate::{
     console::{Console, ConsoleAppExt},
@@ -59,7 +60,15 @@ impl Plugin for ServerBrowserPlugin {
             .add_systems(Startup, load_saved)
             .add_systems(
                 Update,
-                (record_history, sync_results, keys, pointer, run_requests, draw)
+                (
+                    record_history,
+                    sync_results,
+                    follow_size,
+                    keys,
+                    pointer,
+                    run_requests,
+                    draw,
+                )
                     .chain()
                     .after(super::game_menu::MenuSystems),
             );
@@ -86,7 +95,8 @@ impl Plugin for ServerBrowserPlugin {
             "serverbrowser <input>: drive the open server browser as a click or key would (testing): \
              row <n> | doubleclick <n> | connect | refresh | quickrefresh | addserver | filters | \
              sort <name|players|map|latency|...> | tab <lan|favorites|history> | type <text> | enter | escape | \
-             delete | down | up; prints its rows.",
+             delete | down | up | latency (opens its list) | hover <n> | pick <n> | check <notfull|notempty|\
+             nopassword> | map | maxplayers (their text entries) | next (Tab) | space; prints its rows.",
             |w, a| {
                 let input = browser_input(a)?;
                 let out = w.resource_mut::<ServerBrowser>().handle(input);
@@ -294,10 +304,33 @@ pub enum Target {
     Scroll(i32),
     Button(ButtonId),
     Field(Field),
-    /// The latency combo's arrows.
-    Latency(i32),
+    /// The latency filter's combo box (a click opens its list).
+    Latency,
+    /// An entry of the open list.
+    ComboItem(usize),
+    /// Anywhere outside the open list (closes it).
+    Outside,
     Check(Check),
 }
+
+/// A control the keyboard is on (other than a text entry, `typing`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Focus {
+    List,
+    Latency,
+    Check(Check),
+    Button(ButtonId),
+}
+
+/// The browser's frame (`widgets::Windows`).
+pub const WINDOW: widgets::WindowId = "servers";
+/// Its dialogs' frames.
+const ADD_WINDOW: widgets::WindowId = "addserver";
+const PASSWORD_WINDOW: widgets::WindowId = "password";
+
+/// The browser's smallest size, scheme pixels (`CServerBrowserDialog`'s
+/// minimum: its layout's own size).
+pub const MIN_SIZE: Vec2 = Vec2::new(640.0, 384.0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Check {
@@ -339,6 +372,21 @@ pub enum Input {
     Backspace,
     Type(String),
     Scroll(i32),
+    /// The pointer over a control (an open list's entries highlight).
+    Hover(Target),
+    /// Tab (+1) / Shift+Tab (-1): the next control.
+    Tab(i32),
+    /// Space: the focused control (ticks, opens the list, presses).
+    Space,
+    /// An editing key in the text entry typed into.
+    Edit(Edit),
+    /// Ctrl+C / Ctrl+X there.
+    Copy,
+    Cut,
+    /// A text entry clicked at a char.
+    Caret(Field, usize),
+    /// A column's header edge dragged: its width (scheme pixels).
+    ColumnWidth(Column, f32),
 }
 
 /// Queries the browser asks for.
@@ -357,6 +405,8 @@ pub struct Outcome {
     pub requests: Vec<Request>,
     /// Favourites or history changed: write them out.
     pub save: bool,
+    /// Text for the clipboard (copied or cut).
+    pub clipboard: Option<String>,
 }
 
 /// Rows shown at once (without and with the filters), as the list's
@@ -383,6 +433,18 @@ pub struct ServerBrowser {
     pub dialog: Dialog,
     /// The text box typing goes into.
     pub typing: Option<Field>,
+    /// Its caret and selection.
+    pub caret: Caret,
+    /// The control the keyboard is on otherwise (Tab moves it).
+    pub focus: Option<Focus>,
+    /// The latency filter's open list.
+    pub combo: Option<ComboList>,
+    /// Columns given a width by dragging their header's edge (scheme
+    /// pixels).
+    pub widths: Vec<(Column, f32)>,
+    /// How much bigger than its layout the frame was made (scheme pixels):
+    /// the list grows, the buttons and filters follow its corners.
+    pub grow: Vec2,
     /// The open tab's rows, filtered and sorted (`set_results`).
     pub rows: Vec<ServerRow>,
     /// Rows before filtering (for "Servers (n)").
@@ -575,8 +637,79 @@ impl ServerBrowser {
 
     /// Rows the list shows at once.
     pub fn shown_rows(&self) -> usize {
-        let list_h = if self.filters.shown { 134.0 } else { 226.0 };
+        let list_h = if self.filters.shown { 134.0 } else { 226.0 } + self.grow.y;
         ((list_h - HEADER_H - 2.0) / ROW_H).floor().max(1.0) as usize
+    }
+
+    /// A column's width: dragged, else its own (0: the rest).
+    pub fn column_width(&self, column: Column, own: f32) -> f32 {
+        self.widths.iter().find(|(c, _)| *c == column).map_or(own, |(_, w)| *w)
+    }
+
+    /// The controls in tab order (`tabPosition`): the page's buttons,
+    /// the filters when shown, the list.
+    fn tab_order(&self) -> Vec<Option<Focus>> {
+        let mut order = vec![
+            Some(Focus::Button(ButtonId::Connect)),
+            Some(Focus::Button(ButtonId::Refresh)),
+            Some(Focus::Button(if self.tab == Tab::Favorites {
+                ButtonId::AddServer
+            } else {
+                ButtonId::QuickRefresh
+            })),
+            Some(Focus::Button(ButtonId::Filters)),
+        ];
+        if self.filters.shown {
+            order.extend([
+                None, // the map text entry
+                None, // the max players one
+                Some(Focus::Latency),
+                Some(Focus::Check(Check::NotFull)),
+                Some(Focus::Check(Check::NotEmpty)),
+                Some(Focus::Check(Check::NoPassword)),
+            ]);
+        }
+        order.push(Some(Focus::List));
+        order
+    }
+
+    /// Tab from the control on now.
+    fn tab_focus(&mut self, dir: i32) {
+        // Text entries stand in the order as None slots, in turn.
+        let order = self.tab_order();
+        let fields = [Field::MapFilter, Field::MaxPlayers];
+        let slots: Vec<(Option<Focus>, Option<Field>)> = {
+            let mut k = 0;
+            order
+                .iter()
+                .map(|o| match o {
+                    Some(f) => (Some(*f), None),
+                    None => {
+                        k += 1;
+                        (None, Some(fields[k - 1]))
+                    }
+                })
+                .collect()
+        };
+        let now = slots
+            .iter()
+            .position(|(f, t)| (f.is_some() && *f == self.focus) || (t.is_some() && *t == self.typing));
+        let indices: Vec<usize> = (0..slots.len()).collect();
+        let next = widgets::focus_step(&indices, now, dir).unwrap_or(0);
+        let (focus, typing) = slots[next];
+        self.focus = focus;
+        self.set_typing(typing);
+    }
+
+    /// Typing goes into a text entry now (all its text selected, as
+    /// VGUI's on focus), or none.
+    fn set_typing(&mut self, field: Option<Field>) {
+        self.typing = field;
+        if field.is_some() {
+            self.focus = None;
+            let n = self.field_mut().map_or(0, |t| t.chars().count());
+            self.caret = Caret { at: n, anchor: 0 };
+        }
     }
 
     /// The line for an empty list.
@@ -665,7 +798,7 @@ impl ServerBrowser {
                 name: row.map(|r| r.name).unwrap_or_default(),
                 text: String::new(),
             };
-            self.typing = Some(Field::Password);
+            self.set_typing(Some(Field::Password));
             return;
         }
         self.connect(addr, None, out);
@@ -724,6 +857,10 @@ impl ServerBrowser {
             self.handle_dialog(input, &mut out);
             return out;
         }
+        if self.combo.is_some() {
+            self.handle_combo(input);
+            return out;
+        }
         match input {
             Input::Click(Target::Tab(tab)) => self.set_tab(tab, &mut out),
             Input::Click(Target::Header(column)) => {
@@ -736,7 +873,8 @@ impl ServerBrowser {
                 self.rows = rows;
             }
             Input::Click(Target::Row(i)) => {
-                self.typing = None;
+                self.set_typing(None);
+                self.focus = Some(Focus::List);
                 if let Some(r) = self.rows.get(i) {
                     self.selected = Some(r.addr);
                 }
@@ -751,21 +889,54 @@ impl ServerBrowser {
                 let max = self.rows.len().saturating_sub(self.shown_rows());
                 self.scroll = (self.scroll as i32 + step).clamp(0, max as i32) as usize;
             }
-            Input::Click(Target::Button(b)) => self.button(b, &mut out),
-            Input::Click(Target::Field(f)) => self.typing = Some(f),
-            Input::Click(Target::Latency(step)) => {
-                self.filters.latency = (self.filters.latency as i32 + step).rem_euclid(LATENCIES.len() as i32) as usize;
+            Input::Click(Target::Button(b)) => {
+                self.focus = Some(Focus::Button(b));
+                self.set_typing(None);
+                self.button(b, &mut out);
             }
-            Input::Click(Target::Check(c)) => {
-                let f = &mut self.filters;
-                match c {
-                    Check::NotEmpty => f.not_empty = !f.not_empty,
-                    Check::NotFull => f.not_full = !f.not_full,
-                    Check::NoPassword => f.no_password = !f.no_password,
+            Input::Click(Target::Field(f)) => {
+                if self.typing != Some(f) {
+                    self.set_typing(Some(f));
                 }
             }
+            Input::Caret(f, at) => {
+                if self.typing == Some(f) {
+                    self.caret = Caret { at, anchor: at };
+                }
+            }
+            Input::Click(Target::Latency) => {
+                self.set_typing(None);
+                self.focus = Some(Focus::Latency);
+                self.combo = Some(ComboList::open(0, LATENCIES.len(), self.filters.latency));
+            }
+            Input::Click(Target::Check(c)) => {
+                self.set_typing(None);
+                self.focus = Some(Focus::Check(c));
+                self.toggle(c);
+            }
+            Input::Click(Target::ComboItem(_) | Target::Outside) | Input::Hover(_) => {}
+            Input::ColumnWidth(column, w) => {
+                let w = w.max(16.0).round();
+                self.widths.retain(|(c, _)| *c != column);
+                self.widths.push((column, w));
+            }
+            Input::Tab(dir) => self.tab_focus(dir),
+            Input::Space => match (self.typing, self.focus) {
+                (Some(_), _) => self.edit(Edit::Insert(" ".into())),
+                (None, Some(Focus::Latency)) => {
+                    self.combo = Some(ComboList::open(0, LATENCIES.len(), self.filters.latency));
+                }
+                (None, Some(Focus::Check(c))) => self.toggle(c),
+                (None, Some(Focus::Button(b))) => self.button(b, &mut out),
+                _ => {}
+            },
+            Input::Up | Input::Down if self.focus == Some(Focus::Latency) => {
+                let dir = if input == Input::Up { -1 } else { 1 };
+                self.filters.latency = widgets::combo_step(self.filters.latency, LATENCIES.len(), dir);
+            }
             Input::Up | Input::Down => {
-                self.typing = None;
+                self.set_typing(None);
+                self.focus = Some(Focus::List);
                 let n = self.rows.len();
                 if n > 0 {
                     let at = self.selected.and_then(|a| self.rows.iter().position(|r| r.addr == a));
@@ -785,24 +956,26 @@ impl ServerBrowser {
             }
             Input::Enter => {
                 if self.typing.is_some() {
-                    self.typing = None;
+                    self.set_typing(None);
+                } else if let Some(Focus::Button(b)) = self.focus {
+                    self.button(b, &mut out);
                 } else if let Some(addr) = self.selected_row().map(|r| r.addr) {
+                    // Connect, the default button.
                     self.join(addr, &mut out);
                 }
             }
             Input::Escape => {
                 if self.typing.is_some() {
-                    self.typing = None;
+                    self.set_typing(None);
                 } else {
                     self.open = false;
                 }
             }
+            Input::Delete if self.typing.is_some() => self.edit(Edit::Delete),
             Input::Delete => {
                 // Ours: Delete takes the selected server off Favorites or
                 // History (CS:S: its right-click menu).
-                if self.typing.is_none()
-                    && let Some(addr) = self.selected
-                {
+                if let Some(addr) = self.selected {
                     let list = match self.tab {
                         Tab::Favorites => Some(&mut self.favorites),
                         Tab::History => Some(&mut self.history),
@@ -817,20 +990,81 @@ impl ServerBrowser {
                     }
                 }
             }
-            Input::Backspace => {
-                if let Some(f) = self.field_mut() {
-                    f.pop();
-                }
-            }
-            Input::Type(t) => {
-                if let Some(f) = self.field_mut() {
-                    type_into(f, &t);
-                }
-            }
+            Input::Backspace => self.edit(Edit::Backspace),
+            Input::Type(t) => self.edit(Edit::Insert(t)),
+            Input::Edit(e) => self.edit(e),
+            Input::Copy | Input::Cut => self.copy(input == Input::Cut, &mut out),
         }
         out
     }
 
+    /// A check box ticked or not.
+    fn toggle(&mut self, c: Check) {
+        let f = &mut self.filters;
+        match c {
+            Check::NotEmpty => f.not_empty = !f.not_empty,
+            Check::NotFull => f.not_full = !f.not_full,
+            Check::NoPassword => f.no_password = !f.no_password,
+        }
+    }
+
+    /// The latency list open: its keys, the pointer on it, the wheel; a
+    /// click elsewhere closes it.
+    fn handle_combo(&mut self, input: Input) {
+        let Some(mut list) = self.combo else { return };
+        let event = match input {
+            Input::Up => list.key(ComboKey::Up),
+            Input::Down => list.key(ComboKey::Down),
+            Input::Enter | Input::Space => list.key(ComboKey::Enter),
+            Input::Escape => list.key(ComboKey::Escape),
+            Input::Hover(Target::ComboItem(k)) => {
+                list.hover(k);
+                ComboEvent::Open
+            }
+            Input::Click(Target::ComboItem(k)) => ComboEvent::Pick(k),
+            Input::Click(_) | Input::Tab(_) => ComboEvent::Close,
+            Input::Scroll(n) => {
+                list.wheel(n);
+                ComboEvent::Open
+            }
+            _ => ComboEvent::Open,
+        };
+        match event {
+            ComboEvent::Open => self.combo = Some(list),
+            ComboEvent::Close => self.combo = None,
+            ComboEvent::Pick(k) => {
+                self.combo = None;
+                self.filters.latency = k.min(LATENCIES.len() - 1);
+            }
+        }
+    }
+
+    /// An edit to the text entry typed into.
+    fn edit(&mut self, edit: Edit) {
+        let mut caret = self.caret;
+        if let Some(f) = self.field_mut() {
+            caret.edit(f, edit, 128);
+        }
+        self.caret = caret;
+    }
+
+    /// Copy (or cut) the typed text's selection.
+    fn copy(&mut self, cut: bool, out: &mut Outcome) {
+        // A password never leaves its box.
+        if self.typing == Some(Field::Password) {
+            return;
+        }
+        let caret = self.caret;
+        let Some(text) = self.field_mut().map(|t| caret.selected(t).to_string()) else {
+            return;
+        };
+        if !text.is_empty() {
+            out.clipboard = Some(text);
+            if cut {
+                self.edit(Edit::Delete);
+            }
+        }
+    }
     fn field_mut(&mut self) -> Option<&mut String> {
         match self.typing? {
             Field::MapFilter => Some(&mut self.filters.map),
@@ -869,7 +1103,7 @@ impl ServerBrowser {
                     error: None,
                 };
                 self.found = None;
-                self.typing = Some(Field::AddAddress);
+                self.set_typing(Some(Field::AddAddress));
             }
             ButtonId::Filters => {
                 self.filters.shown = !self.filters.shown;
@@ -891,17 +1125,22 @@ impl ServerBrowser {
             | Input::Click(Target::Button(ButtonId::AddCancel))
             | Input::Click(Target::Button(ButtonId::PasswordCancel))
             | Input::Click(Target::Button(ButtonId::Close)) => close(self),
-            Input::Type(t) => {
-                if let Some(f) = self.field_mut() {
-                    type_into(f, &t);
+            Input::Type(t) => self.edit(Edit::Insert(t)),
+            Input::Backspace => self.edit(Edit::Backspace),
+            Input::Delete => self.edit(Edit::Delete),
+            Input::Edit(e) => self.edit(e),
+            Input::Space => self.edit(Edit::Insert(" ".into())),
+            Input::Copy | Input::Cut => self.copy(input == Input::Cut, out),
+            Input::Click(Target::Field(f)) => {
+                if self.typing != Some(f) {
+                    self.set_typing(Some(f));
                 }
             }
-            Input::Backspace => {
-                if let Some(f) = self.field_mut() {
-                    f.pop();
+            Input::Caret(f, at) => {
+                if self.typing == Some(f) {
+                    self.caret = Caret { at, anchor: at };
                 }
             }
-            Input::Click(Target::Field(f)) => self.typing = Some(f),
             Input::Enter | Input::Click(Target::Button(ButtonId::AddOk | ButtonId::PasswordConnect)) => {
                 match self.dialog.clone() {
                     Dialog::AddServer { text, .. } => match crate::net::parse_address(&text) {
@@ -1079,16 +1318,6 @@ fn escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-/// Typed text into a box: no control characters, at most 128 bytes.
-fn type_into(field: &mut String, s: &str) {
-    for c in s.chars().filter(|c| !c.is_control()) {
-        if field.len() + c.len_utf8() > 128 {
-            return;
-        }
-        field.push(c);
-    }
-}
-
 /// "5:04 PM"-like time a server was last played: here, how long ago.
 pub fn last_played_text(then: u64, now: u64) -> String {
     if then == 0 {
@@ -1124,6 +1353,19 @@ fn browser_input(a: &[String]) -> Result<Input, String> {
         Some("find") => button(ButtonId::AddFind),
         Some("addselected") => button(ButtonId::AddSelected),
         Some("type") => Ok(Input::Type(a[1..].join(" "))),
+        Some("latency") => Ok(Input::Click(Target::Latency)),
+        Some("pick") => Ok(Input::Click(Target::ComboItem(n(1)?))),
+        Some("hover") => Ok(Input::Hover(Target::ComboItem(n(1)?))),
+        Some("check") => match a.get(1).map(|s| s.to_lowercase()).as_deref() {
+            Some("notfull") => Ok(Input::Click(Target::Check(Check::NotFull))),
+            Some("notempty") => Ok(Input::Click(Target::Check(Check::NotEmpty))),
+            Some("nopassword") => Ok(Input::Click(Target::Check(Check::NoPassword))),
+            _ => Err("check notfull|notempty|nopassword".into()),
+        },
+        Some("map") => Ok(Input::Click(Target::Field(Field::MapFilter))),
+        Some("maxplayers") => Ok(Input::Click(Target::Field(Field::MaxPlayers))),
+        Some("next") => Ok(Input::Tab(1)),
+        Some("space") => Ok(Input::Space),
         Some("enter") => Ok(Input::Enter),
         Some("escape") => Ok(Input::Escape),
         Some("delete") => Ok(Input::Delete),
@@ -1261,6 +1503,11 @@ fn apply(input: Input, browser: &mut ResMut<ServerBrowser>, console: &mut Consol
     if out.save {
         save(browser);
     }
+    if let Some(text) = out.clipboard
+        && let Err(e) = arboard::Clipboard::new().and_then(|mut c| c.set_text(text))
+    {
+        warn!("clipboard: {e}");
+    }
 }
 
 /// Queries the browser asked for.
@@ -1281,36 +1528,81 @@ fn run_requests(mut inbox: ResMut<RequestInbox>, lan: Res<LanSettings>, mut quer
 #[derive(Resource, Default)]
 struct RequestInbox(Vec<Request>);
 
-/// Keys: typing into the focused box, arrows, Enter, Esc, Delete, F5.
+/// Whether the browser takes the keys: open, in front of the menu's
+/// dialog (when one is open too), no first-run dialog over it.
+fn has_keys(
+    browser: &ServerBrowser,
+    menu: Option<&GameMenu>,
+    windows: Option<&Windows>,
+    first_run: Option<&super::first_run::FirstRun>,
+) -> bool {
+    if !browser.open || first_run.is_some_and(|f| f.open) {
+        return false;
+    }
+    match menu.filter(|m| m.open && m.page != super::game_menu::Page::Main) {
+        Some(m) => windows.is_none_or(|w| w.front(&[WINDOW, m.page.window()]) == Some(WINDOW)),
+        None => true,
+    }
+}
+
+/// Keys: typing and editing in the focused box (Shift selects, Ctrl+A,
+/// Ctrl+C, Ctrl+X, Ctrl+V), Tab, Space, arrows, Enter, Esc, Delete, F5.
 #[allow(clippy::too_many_arguments)]
 fn keys(
     mut events: MessageReader<KeyboardInput>,
+    held: Res<ButtonInput<KeyCode>>,
     console_ui: Res<super::console::ConsoleUi>,
     mut browser: ResMut<ServerBrowser>,
     mut console: ResMut<Console>,
     mut inbox: ResMut<RequestInbox>,
+    (menu, windows, first_run): (
+        Option<Res<GameMenu>>,
+        Option<Res<Windows>>,
+        Option<Res<super::first_run::FirstRun>>,
+    ),
 ) {
-    if !browser.open || console_ui.open {
+    if console_ui.open || !has_keys(&browser, menu.as_deref(), windows.as_deref(), first_run.as_deref()) {
         events.clear();
         return;
     }
-    let typing = browser.typing.is_some();
+    let shift = held.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+    let ctrl = held.any_pressed([
+        KeyCode::ControlLeft,
+        KeyCode::ControlRight,
+        KeyCode::SuperLeft,
+        KeyCode::SuperRight,
+    ]);
     for e in events.read() {
         if e.state != ButtonState::Pressed {
             continue;
         }
+        let typing = browser.typing.is_some();
         let input = match (&e.logical_key, e.key_code) {
             (_, KeyCode::Enter | KeyCode::NumpadEnter) => Input::Enter,
             (_, KeyCode::Escape) => Input::Escape,
+            (_, KeyCode::Tab) => Input::Tab(if shift { -1 } else { 1 }),
             (_, KeyCode::ArrowUp) => Input::Up,
             (_, KeyCode::ArrowDown) => Input::Down,
+            (_, KeyCode::ArrowLeft) if typing => Input::Edit(Edit::Left(shift)),
+            (_, KeyCode::ArrowRight) if typing => Input::Edit(Edit::Right(shift)),
+            (_, KeyCode::Home) if typing => Input::Edit(Edit::Home(shift)),
+            (_, KeyCode::End) if typing => Input::Edit(Edit::End(shift)),
+            (_, KeyCode::KeyA) if typing && ctrl => Input::Edit(Edit::SelectAll),
+            (_, KeyCode::KeyC) if typing && ctrl => Input::Copy,
+            (_, KeyCode::KeyX) if typing && ctrl => Input::Cut,
+            (_, KeyCode::KeyV) if typing && ctrl => {
+                let text = arboard::Clipboard::new()
+                    .and_then(|mut c| c.get_text())
+                    .unwrap_or_default();
+                Input::Type(text.lines().next().unwrap_or("").to_string())
+            }
             (_, KeyCode::PageUp) => Input::Scroll(-(browser.shown_rows() as i32)),
             (_, KeyCode::PageDown) => Input::Scroll(browser.shown_rows() as i32),
             (_, KeyCode::Delete) => Input::Delete,
             (_, KeyCode::F5) => Input::Click(Target::Button(ButtonId::Refresh)),
             (Key::Backspace, _) => Input::Backspace,
-            (Key::Space, _) if typing => Input::Type(" ".into()),
-            (Key::Character(s), _) if typing => Input::Type(s.to_string()),
+            (Key::Space, _) => Input::Space,
+            (Key::Character(s), _) if typing && !ctrl => Input::Type(s.to_string()),
             _ => continue,
         };
         apply(input, &mut browser, &mut console, &mut inbox);
@@ -1325,50 +1617,122 @@ struct Hit(Target);
 #[derive(Component)]
 struct WheelList;
 
+/// A text entry: a click places its caret at the char under it.
+#[derive(Component, Clone)]
+struct TextHit {
+    field: Field,
+    shown: String,
+    width: f32,
+}
+
+/// A column header's right edge: dragging it sizes the column.
+#[derive(Component, Clone, Copy)]
+struct ColumnGrip {
+    column: Column,
+    width: f32,
+}
+
 /// Clicks (a second click on a row soon after the first joins it), the
-/// wheel over the list.
+/// pointer over an open list, a click into a text entry, a column's
+/// edge dragged, the wheel over the list (or the open list).
 #[allow(clippy::too_many_arguments)]
 fn pointer(
     hits: Query<(&Interaction, &Hit), Changed<Interaction>>,
+    texts: Query<(&Interaction, &TextHit, &RelativeCursorPosition), Changed<Interaction>>,
+    grips: Query<(&Interaction, &ColumnGrip), Changed<Interaction>>,
     lists: Query<&RelativeCursorPosition, With<WheelList>>,
     scroll: Option<Res<AccumulatedMouseScroll>>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    window: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    fonts: Res<UiFonts>,
     time: Res<Time<Real>>,
     mut browser: ResMut<ServerBrowser>,
     mut console: ResMut<Console>,
     mut inbox: ResMut<RequestInbox>,
     mut last_click: Local<Option<(usize, f64)>>,
+    mut sizing: Local<Option<(Column, f32, f32)>>,
 ) {
     if !browser.open {
+        *sizing = None;
         return;
     }
+    let win = window.iter().next();
+    let height = win.map_or(720.0, Window::height);
+    let scale = (height / 720.0).clamp(0.6, 3.0);
     let now = time.elapsed_secs_f64();
     let mut inputs = Vec::new();
     for (i, hit) in &hits {
-        if *i != Interaction::Pressed {
-            continue;
-        }
-        if let Target::Row(r) = hit.0 {
-            if last_click.is_some_and(|(at, t)| at == r && now - t < 0.4) {
-                inputs.push(Input::DoubleClick(r));
-                *last_click = None;
-                continue;
+        match i {
+            Interaction::Hovered => inputs.push(Input::Hover(hit.0)),
+            Interaction::Pressed => {
+                if let Target::Row(r) = hit.0 {
+                    if last_click.is_some_and(|(at, t)| at == r && now - t < 0.4) {
+                        inputs.push(Input::DoubleClick(r));
+                        *last_click = None;
+                        continue;
+                    }
+                    *last_click = Some((r, now));
+                }
+                inputs.push(Input::Click(hit.0));
             }
-            *last_click = Some((r, now));
+            Interaction::None => {}
         }
-        inputs.push(Input::Click(hit.0));
+    }
+    for (i, hit, at) in &texts {
+        if *i == Interaction::Pressed
+            && let Some(p) = at.normalized
+        {
+            let font = fonts.source("Default", height, scale, (16.0, false));
+            let caret = (browser.typing == Some(hit.field)).then_some(browser.caret);
+            let at = widgets::caret_from_click(&fonts, &font, scale, &hit.shown, hit.width, p.x + 0.5, caret);
+            inputs.push(Input::Caret(hit.field, at));
+        }
+    }
+    // A column's edge: held, it follows the pointer.
+    let x = win.and_then(Window::cursor_position).map(|p| p.x);
+    for (i, grip) in &grips {
+        if *i == Interaction::Pressed
+            && let Some(x) = x
+        {
+            *sizing = Some((grip.column, grip.width, x));
+        }
+    }
+    if let Some((column, width, from)) = *sizing {
+        if !mouse.pressed(MouseButton::Left) {
+            *sizing = None;
+        } else if let Some(x) = x {
+            let w = (width + (x - from) / scale).round();
+            if browser.column_width(column, -1.0) != w {
+                inputs.push(Input::ColumnWidth(column, w));
+            }
+        }
     }
     if let Some(scroll) = scroll
         && scroll.delta.y != 0.0
-        && lists.iter().any(|l| l.cursor_over())
     {
-        let notches = match scroll.unit {
-            MouseScrollUnit::Line => scroll.delta.y.round(),
-            MouseScrollUnit::Pixel => (scroll.delta.y / 40.0).round(),
-        } as i32;
-        inputs.push(Input::Scroll(-notches * 3));
+        let notches = widgets::wheel_notches(&scroll);
+        if browser.combo.is_some() {
+            inputs.push(Input::Scroll(-notches));
+        } else if lists.iter().any(|l| l.cursor_over()) {
+            inputs.push(Input::Scroll(-notches * 3));
+        }
     }
     for input in inputs {
         apply(input, &mut browser, &mut console, &mut inbox);
+    }
+}
+
+/// The frame made bigger: the list grows with it.
+fn follow_size(windows: Res<Windows>, mut browser: ResMut<ServerBrowser>, mut seen: Local<u64>) {
+    if windows.resized == *seen {
+        return;
+    }
+    *seen = windows.resized;
+    let grow = windows
+        .size(WINDOW)
+        .map_or(Vec2::ZERO, |s| (s - MIN_SIZE).max(Vec2::ZERO));
+    if browser.grow != grow {
+        browser.grow = grow;
     }
 }
 
@@ -1383,6 +1747,51 @@ struct BrowserRoot;
 struct BrowserIcons {
     from: Option<Arc<GameUi>>,
     icons: std::collections::HashMap<String, Handle<Image>>,
+}
+
+/// How a control follows its parent's corners as the frame grows
+/// (VGUI's `pinCorner`: 0 top left, 1 top right, 2 bottom left, 3 bottom
+/// right; `autoResize`: 0 none, 1 right, 2 down, 3 both).
+fn grown(rect: (f32, f32, f32, f32), pin: u8, resize: u8, grow: Vec2) -> (f32, f32, f32, f32) {
+    let (mut x, mut y, mut w, mut h) = rect;
+    if pin == 1 || pin == 3 {
+        x += grow.x;
+    }
+    if pin >= 2 {
+        y += grow.y;
+    }
+    if resize & 1 != 0 {
+        w += grow.x;
+    }
+    if resize & 2 != 0 {
+        h += grow.y;
+    }
+    (x, y, w, h)
+}
+
+/// A layout's control box (x, y, wide, tall) by name, else `fallback`;
+/// moved and sized as the frame grew (its `pinCorner` and `autoResize`,
+/// else `fallback_pin`'s).
+fn rect_in(
+    layout: Option<&UiLayout>,
+    name: &str,
+    fallback: (f32, f32, f32, f32),
+    fallback_pin: (u8, u8),
+    grow: Vec2,
+) -> (f32, f32, f32, f32) {
+    let c = layout.and_then(|l| l.get(name));
+    let num = |key: &str, or: u8| {
+        c.and_then(|c| c.keys.get(key))
+            .and_then(|v| v.trim().parse::<u8>().ok())
+            .unwrap_or(if c.is_some() { 0 } else { or })
+    };
+    let rect = rect_of(layout, name, fallback);
+    grown(
+        rect,
+        num("pincorner", fallback_pin.0),
+        num("autoresize", fallback_pin.1),
+        grow,
+    )
 }
 
 /// A layout's control box (x, y, wide, tall) by name, else `fallback`.
@@ -1409,7 +1818,8 @@ fn text_of(b: &ServerBrowser, layout: Option<&UiLayout>, name: &str, token: &str
         .unwrap_or_else(|| b.text(token, ours))
 }
 
-/// A VGUI button that reports `target`.
+/// A VGUI button that reports `target` (focused: ringed; `default`: the
+/// dialog's Enter button; `latched`: a toggle button held down).
 #[allow(clippy::too_many_arguments)]
 fn button(
     commands: &mut Commands,
@@ -1418,59 +1828,18 @@ fn button(
     rect: (f32, f32, f32, f32),
     text: &str,
     target: Target,
-    enabled: bool,
-    pressed: bool,
+    b: &ServerBrowser,
+    (enabled, default, latched): (bool, bool, bool),
 ) {
-    let (x, y, w, h) = rect;
-    let mut e = commands.spawn((
-        Node {
-            border: UiRect::all(px(1.0)),
-            ..place(look, x, y, w, h)
-        },
-        bevel(look, !pressed),
-        BackgroundColor(look.color("Button.BgColor", [0, 0, 0, 0])),
-        ChildOf(parent),
-    ));
-    if enabled {
-        e.insert((Hit(target), Button, Interaction::default()));
-    }
-    let e = e.id();
-    let font = look.font("Default", (16.0, false));
-    if enabled {
-        let color = look.color("Button.TextColor", [255, 255, 255, 255]);
-        label(commands, e, look, (6.0, 0.0, w - 12.0, h - 2.0), text, font, color, -1);
-    } else {
-        engraved(commands, e, look, (6.0, 0.0, w - 12.0, h - 2.0), text, font, -1);
-    }
+    let focused = matches!(target, Target::Button(id) if b.focus == Some(Focus::Button(id)));
+    let state = widgets::ButtonState::enabled(enabled)
+        .focused(focused)
+        .default_button(default)
+        .latched(latched);
+    widgets::button(commands, parent, look, rect, text, state, -1, Hit(target));
 }
 
-/// Disabled text as VGUI draws it: the second disabled colour a pixel
-/// down and right, the first over it.
-fn engraved(
-    commands: &mut Commands,
-    parent: Entity,
-    look: &Look,
-    (x, y, w, h): (f32, f32, f32, f32),
-    text: &str,
-    font: TextFont,
-    align: i32,
-) {
-    let under = look.color("Label.DisabledFgColor2", [30, 30, 30, 255]);
-    label(
-        commands,
-        parent,
-        look,
-        (x + 1.0, y + 1.0, w, h),
-        text,
-        font.clone(),
-        under,
-        align,
-    );
-    label(commands, parent, look, (x, y, w, h), text, font, look.disabled(), align);
-}
-
-/// A text box: sunken, its text (dots for a password), a caret when it
-/// takes typing.
+/// A text entry that takes typing, with its caret when typed into.
 #[allow(clippy::too_many_arguments)]
 fn text_box(
     commands: &mut Commands,
@@ -1479,168 +1848,33 @@ fn text_box(
     rect: (f32, f32, f32, f32),
     text: &str,
     field: Field,
-    focused: bool,
+    b: &ServerBrowser,
     hidden: bool,
 ) {
-    let (x, y, w, h) = rect;
-    let e = commands
-        .spawn((
-            Node {
-                border: UiRect::all(px(1.0)),
-                ..place(look, x, y, w, h)
-            },
-            bevel(look, false),
-            BackgroundColor(look.sunken_bg()),
-            Hit(Target::Field(field)),
-            Button,
-            Interaction::default(),
-            ChildOf(parent),
-        ))
-        .id();
+    let caret = (b.typing == Some(field)).then_some(b.caret);
     let shown = if hidden {
         "*".repeat(text.chars().count())
     } else {
         text.to_string()
     };
-    let shown = if focused { format!("{shown}_") } else { shown };
-    label(
+    widgets::text_entry(
         commands,
-        e,
+        parent,
         look,
-        (4.0, 0.0, w - 8.0, h - 2.0),
-        &shown,
-        look.font("Default", (16.0, false)),
-        look.color("TextEntry.TextColor", [221, 221, 221, 255]),
-        -1,
-    );
-}
-
-/// A check box and its words.
-fn check(
-    commands: &mut Commands,
-    parent: Entity,
-    look: &Look,
-    rect: (f32, f32, f32, f32),
-    text: &str,
-    on: bool,
-    which: Check,
-) {
-    let (x, y, w, h) = rect;
-    let e = commands
-        .spawn((
-            place(look, x, y, w, h),
-            Hit(Target::Check(which)),
-            Button,
-            Interaction::default(),
-            ChildOf(parent),
-        ))
-        .id();
-    let b = commands
-        .spawn((
-            Node {
-                border: UiRect::all(px(1.0)),
-                ..place(look, 2.0, (h - 14.0) / 2.0, 14.0, 14.0)
-            },
-            BorderColor {
-                top: look.color("CheckButton.Border1", [40, 40, 40, 196]),
-                left: look.color("CheckButton.Border1", [40, 40, 40, 196]),
-                bottom: look.color("CheckButton.Border2", [200, 200, 200, 196]),
-                right: look.color("CheckButton.Border2", [200, 200, 200, 196]),
-            },
-            BackgroundColor(look.color("CheckButton.BgColor", [0, 0, 0, 128])),
-            ChildOf(e),
-        ))
-        .id();
-    if on {
-        commands.spawn((
-            place(look, 3.0, 3.0, 6.0, 6.0),
-            BackgroundColor(look.color("CheckButton.Check", [255, 255, 255, 255])),
-            ChildOf(b),
-        ));
-    }
-    label(
-        commands,
-        e,
-        look,
-        (22.0, 0.0, w - 22.0, h),
+        rect,
         text,
-        look.font("Default", (16.0, false)),
-        look.color("CheckButton.TextColor", [255, 255, 255, 255]),
-        -1,
-    );
-}
-
-/// A combo box showing a value: sunken, the arrow at the right steps it
-/// (clicks on the left half step back).
-#[allow(clippy::too_many_arguments)]
-fn combo(
-    commands: &mut Commands,
-    parent: Entity,
-    look: &Look,
-    rect: (f32, f32, f32, f32),
-    value: &str,
-    target: Option<fn(i32) -> Target>,
-) {
-    let (x, y, w, h) = rect;
-    let e = commands
-        .spawn((
-            Node {
-                border: UiRect::all(px(1.0)),
-                ..place(look, x, y, w, h)
+        caret,
+        hidden,
+        true,
+        (
+            Hit(Target::Field(field)),
+            TextHit {
+                field,
+                shown,
+                width: rect.2,
             },
-            bevel(look, false),
-            BackgroundColor(look.sunken_bg()),
-            ChildOf(parent),
-        ))
-        .id();
-    let enabled = target.is_some();
-    let color = if enabled {
-        look.color("TextEntry.TextColor", [221, 221, 221, 255])
-    } else {
-        look.disabled()
-    };
-    label(
-        commands,
-        e,
-        look,
-        (4.0, 0.0, w - 24.0, h - 2.0),
-        value,
-        look.font("Default", (16.0, false)),
-        color,
-        -1,
+        ),
     );
-    let arrow = look.color("ComboBoxButton.ArrowColor", [190, 190, 190, 255]);
-    let a = commands
-        .spawn((
-            Node {
-                border: UiRect::all(px(1.0)),
-                ..place(look, w - 20.0, 1.0, 18.0, h - 4.0)
-            },
-            bevel(look, true),
-            ChildOf(e),
-        ))
-        .id();
-    label(
-        commands,
-        a,
-        look,
-        (0.0, 0.0, 16.0, h - 6.0),
-        "\u{25BC}",
-        look.font("Marlett", (10.0, false)),
-        if enabled { arrow } else { look.disabled() },
-        0,
-    );
-    if let Some(t) = target {
-        for (hx, hw, step) in [(0.0, (w - 20.0) / 2.0, -1), ((w - 20.0) / 2.0, w - (w - 20.0) / 2.0, 1)] {
-            commands.spawn((
-                place(look, hx, 0.0, hw, h),
-                Hit(t(step)),
-                Button,
-                Interaction::default(),
-                ChildOf(e),
-            ));
-        }
-    }
 }
 
 fn icon(
@@ -1687,25 +1921,37 @@ fn draw(
     fonts: Res<UiFonts>,
     hud: Option<Res<crate::map::hud::ActiveHud>>,
     shown: Query<Entity, With<BrowserRoot>>,
-    windows: Query<&Window>,
+    windows_q: Query<&Window>,
+    mut windows: ResMut<Windows>,
     mut icons: ResMut<BrowserIcons>,
     mut images: ResMut<Assets<Image>>,
-    mut last_size: Local<Vec2>,
+    mut last: Local<(Vec2, bool, bool)>,
     mut last_minute: Local<u64>,
     mut commands: Commands,
 ) {
-    let size = windows
+    let size = windows_q
         .iter()
         .next()
         .map_or(Vec2::new(640.0, 480.0), |w| Vec2::new(w.width(), w.height()));
-    let resized = (size - *last_size).abs().max_element() > 0.5;
+    let resized = (size - last.0).abs().max_element() > 0.5;
     // History's "min ago" moves on.
     let minute = unix_now() / 60;
     let ticked = browser.open && browser.tab == Tab::History && minute != *last_minute;
     if !browser.is_changed() && !resized && !ticked {
         return;
     }
-    *last_size = size;
+    // Opened, or a dialog opened: in front.
+    let dialog = browser.dialog != Dialog::None;
+    if browser.open && !last.1 {
+        windows.raise(WINDOW);
+    }
+    if dialog && !last.2 {
+        windows.raise(match browser.dialog {
+            Dialog::AddServer { .. } => ADD_WINDOW,
+            _ => PASSWORD_WINDOW,
+        });
+    }
+    *last = (size, browser.open, dialog);
     *last_minute = minute;
     for e in &shown {
         commands.entity(e).despawn();
@@ -1746,130 +1992,92 @@ fn draw(
                 height: percent(100.0),
                 ..default()
             },
-            // Over the menu (46), under the scoreboard and the console.
+            // The frames inside stack with the menu's (`widgets`); the
+            // root itself catches nothing.
+            bevy::ui::FocusPolicy::Pass,
             GlobalZIndex(47),
         ))
         .id();
     let layouts = ui.as_ref().map(|u| &u.servers);
     let dialog = layouts.and_then(|l| l.get("dialog"));
     let page = layouts.and_then(|l| l.get(if browser.filters.shown { "page_filters" } else { "page" }));
-    // The frame: the file's size, wide enough for its tabs.
+    let grow = browser.grow;
+    // The frame: the file's size, wide enough for its tabs; bigger as
+    // the user made it.
     let (_, _, fw, fh) = rect_of(dialog, "CServerBrowserDialog", (0.0, 0.0, 640.0, 384.0));
-    let (tx, ty, tw, th) = rect_of(dialog, "GameTabs", (8.0, 44.0, 624.0, 306.0));
-    let (w, h) = (fw.max(tx + tw + 8.0), fh.max(ty + th + 34.0));
-    let title = browser.text("#ServerBrowser_Servers", "Servers");
-    let f = frame(&mut commands, root, &look, size, (w, h), &title);
-    // The close box (Frame's).
-    button(
-        &mut commands,
-        f,
-        &look,
-        (w - 26.0, 6.0, 20.0, 18.0),
-        "x",
-        Target::Button(ButtonId::Close),
-        true,
-        false,
+    let (tx, ty, tw, th) = rect_in(dialog, "GameTabs", (8.0, 44.0, 624.0, 306.0), (0, 3), grow);
+    let (w, h) = (
+        fw.max(tx + tw - grow.x + 8.0) + grow.x,
+        fh.max(ty + th - grow.y + 34.0) + grow.y,
     );
-    // The tabs over the page.
-    let font = look.font("Default", (16.0, false));
-    let mut x = tx;
-    for (tab, token, ours) in TABS {
-        let text = browser.text(token, ours);
-        let tab_w = (text.chars().count() as f32 * 8.5 + 24.0).max(56.0);
-        let open = tab == browser.tab;
-        let (y, th) = if open { (ty + 1.0, 27.0) } else { (ty + 4.0, 24.0) };
-        let mut e = commands.spawn((
-            Node {
-                border: UiRect {
-                    left: px(1.0),
-                    right: px(1.0),
-                    top: px(1.0),
-                    bottom: px(0.0),
-                },
-                ..place(&look, x, y, tab_w - 2.0, th)
-            },
-            bevel(&look, true),
-            BackgroundColor(if open { look.frame_bg() } else { Color::NONE }),
-            ZIndex(if open { 2 } else { 0 }),
-            ChildOf(f),
-        ));
-        if tab.enabled() {
-            e.insert((Hit(Target::Tab(tab)), Button, Interaction::default()));
-        }
-        let e = e.id();
-        let color = if open {
-            look.color("PropertySheet.SelectedTextColor", [255, 255, 255, 255])
-        } else {
-            look.color("PropertySheet.TextColor", [221, 221, 221, 255])
-        };
-        if tab.enabled() {
-            label(
-                &mut commands,
-                e,
-                &look,
-                (0.0, 0.0, tab_w - 4.0, th - 1.0),
-                &text,
-                font.clone(),
-                color,
-                0,
-            );
-        } else {
-            engraved(
-                &mut commands,
-                e,
-                &look,
-                (0.0, 0.0, tab_w - 4.0, th - 1.0),
-                &text,
-                font.clone(),
-                0,
-            );
-        }
-        x += tab_w;
+    let title = browser.text("#ServerBrowser_Servers", "Servers");
+    let parts = widgets::frame(
+        &mut commands,
+        root,
+        &look,
+        FrameSpec::new(WINDOW).sizeable(MIN_SIZE),
+        (w, h),
+        &title,
+    );
+    let f = parts.frame;
+    if let Some(close) = parts.close {
+        commands.entity(close).insert(Hit(Target::Button(ButtonId::Close)));
     }
+    // The tabs over the page.
+    let names: Vec<(String, bool)> = TABS
+        .iter()
+        .map(|(t, token, ours)| (browser.text(token, ours), t.enabled()))
+        .collect();
+    let open = TABS.iter().position(|t| t.0 == browser.tab).unwrap_or(0);
+    widgets::tabs(&mut commands, f, &look, (tx, ty), &names, open, None, |i| {
+        Hit(Target::Tab(TABS[i].0))
+    });
     // The page: its box, then the list and buttons inside it.
     let (_, py, _, ph) = rect_of(page, "InternetGames", (0.0, 28.0, 624.0, 278.0));
     let page_e = commands
         .spawn((
             Node {
                 border: UiRect::all(px(1.0)),
-                ..place(&look, tx, ty + py, tw, ph)
+                ..place(&look, tx, ty + py, tw, ph + grow.y)
             },
             bevel(&look, true),
             BackgroundColor(Color::NONE),
             ChildOf(f),
         ))
         .id();
-    let list_rect = rect_of(
+    let list_rect = rect_in(
         page,
         "gamelist",
         (0.0, 8.0, 624.0, if browser.filters.shown { 134.0 } else { 226.0 }),
+        (0, 3),
+        grow,
     );
     server_list(&mut commands, page_e, &look, &browser, &icons, list_rect);
     page_buttons(&mut commands, page_e, &look, &browser, page);
     if browser.filters.shown {
-        filter_controls(&mut commands, page_e, &look, &browser, page);
+        filter_controls(&mut commands, page_e, root, &look, &browser, page);
     }
     // The status line.
-    let status = rect_of(dialog, "StatusLabel", (11.0, 356.0, 544.0, 24.0));
+    let status = rect_in(dialog, "StatusLabel", (11.0, 356.0, 544.0, 24.0), (2, 1), grow);
     label(
         &mut commands,
         f,
         &look,
         status,
         &browser.status(),
-        font.clone(),
+        look.default_font(),
         look.text(),
         -1,
     );
     match &browser.dialog {
         Dialog::None => {}
-        Dialog::AddServer { .. } => add_server_dialog(&mut commands, root, &look, &browser, &icons, size),
-        Dialog::Password { .. } => password_dialog(&mut commands, root, &look, &browser, size),
+        Dialog::AddServer { .. } => add_server_dialog(&mut commands, root, &look, &browser, &icons),
+        Dialog::Password { .. } => password_dialog(&mut commands, root, &look, &browser),
     }
 }
 
-/// The list: column headers (sorting), rows, a scroll bar, the empty
-/// list's line.
+/// The list: column headers (sorting, their edges sizing them), rows, a
+/// scroll bar, the empty list's line.
 fn server_list(
     commands: &mut Commands,
     parent: Entity,
@@ -1892,15 +2100,24 @@ fn server_list(
             ChildOf(parent),
         ))
         .id();
+    if b.focus == Some(Focus::List) {
+        commands
+            .entity(list)
+            .insert(Outline::new(px(1.0), px(0.0), look.dark()));
+    }
     let bar_w = look.number("ScrollBar.Wide", 17.0);
     let inner = lw - 2.0 - bar_w;
-    let columns = b.columns();
+    let columns: Vec<(Column, String, f32)> = b
+        .columns()
+        .into_iter()
+        .map(|(c, t, w)| (c, t, b.column_width(c, w)))
+        .collect();
     let fixed: f32 = columns.iter().map(|c| c.2).sum();
     let widths: Vec<f32> = columns
         .iter()
         .map(|c| if c.2 == 0.0 { (inner - fixed).max(60.0) } else { c.2 })
         .collect();
-    let font = look.font("Default", (16.0, false));
+    let font = look.default_font();
     let small = look.font("DefaultSmall", (13.0, false));
     // Headers.
     let mut x = 0.0;
@@ -1919,7 +2136,6 @@ fn server_list(
                 ChildOf(list),
             ))
             .id();
-        let sorted = b.sort.map(|s| s.0) == Some(*column);
         match column {
             Column::Password => icon(
                 commands,
@@ -1940,27 +2156,47 @@ fn server_list(
                 look.text(),
             ),
             _ => {
-                let arrow = match b.sort {
-                    Some((c, desc)) if sorted && c == *column => {
-                        if desc {
-                            " \u{25BC}"
-                        } else {
-                            " \u{25B2}"
-                        }
-                    }
-                    _ => "",
-                };
                 label(
                     commands,
                     e,
                     look,
-                    (4.0, 0.0, cw - 8.0, HEADER_H - 2.0),
-                    &format!("{text}{arrow}"),
+                    (4.0, 0.0, cw - 20.0, HEADER_H - 2.0),
+                    text,
                     small.clone(),
                     look.text(),
                     -1,
                 );
+                // The sort arrow at the header's right.
+                if let Some((c, desc)) = b.sort
+                    && c == *column
+                {
+                    let arrow = if desc { "\u{25BC}" } else { "\u{25B2}" };
+                    label(
+                        commands,
+                        e,
+                        look,
+                        (cw - 16.0, 0.0, 12.0, HEADER_H - 2.0),
+                        arrow,
+                        look.font("Marlett", (8.0, false)),
+                        look.text(),
+                        0,
+                    );
+                }
             }
+        }
+        // Its right edge sizes it (not the one that takes the rest).
+        if !matches!(column, Column::Password | Column::Bots | Column::Name) {
+            commands.spawn((
+                place(look, x + cw - 3.0, 0.0, 6.0, HEADER_H),
+                ColumnGrip {
+                    column: *column,
+                    width: *cw,
+                },
+                Button,
+                Interaction::default(),
+                ZIndex(3),
+                ChildOf(list),
+            ));
         }
         x += cw;
     }
@@ -2133,10 +2369,11 @@ fn scroll_bar(
 }
 
 /// The page's buttons: those the open tab shows, where the file puts
-/// them.
+/// them (following the frame's bottom right corner as it grows).
 fn page_buttons(commands: &mut Commands, parent: Entity, look: &Look, b: &ServerBrowser, page: Option<&UiLayout>) {
+    let g = b.grow;
     let has_selection = b.selected.is_some_and(|a| b.rows.iter().any(|r| r.addr == a));
-    let connect = rect_of(page, "ConnectButton", (550.0, 244.0, 67.0, 24.0));
+    let connect = rect_in(page, "ConnectButton", (550.0, 244.0, 67.0, 24.0), (3, 0), g);
     button(
         commands,
         parent,
@@ -2144,11 +2381,11 @@ fn page_buttons(commands: &mut Commands, parent: Entity, look: &Look, b: &Server
         connect,
         &text_of(b, page, "ConnectButton", "#ServerBrowser_Connect", "Connect"),
         Target::Button(ButtonId::Connect),
-        has_selection,
-        false,
+        b,
+        (has_selection, true, false),
     );
     // Internet's "Refresh all" is the others' "Refresh".
-    let refresh = rect_of(page, "RefreshButton", (453.0, 244.0, 95.0, 24.0));
+    let refresh = rect_in(page, "RefreshButton", (453.0, 244.0, 95.0, 24.0), (3, 0), g);
     let refresh_text = if b.tab == Tab::Internet {
         text_of(b, page, "RefreshButton", "#ServerBrowser_RefreshAll", "Refresh all")
     } else {
@@ -2161,11 +2398,11 @@ fn page_buttons(commands: &mut Commands, parent: Entity, look: &Look, b: &Server
         refresh,
         &refresh_text,
         Target::Button(ButtonId::Refresh),
-        true,
-        false,
+        b,
+        (true, false, false),
     );
-    if b.tab == Tab::Favorites {
-        let add = rect_of(page, "AddServerButton", (349.0, 244.0, 100.0, 24.0));
+    let right_x = if b.tab == Tab::Favorites {
+        let add = rect_in(page, "AddServerButton", (349.0, 244.0, 100.0, 24.0), (3, 0), g);
         button(
             commands,
             parent,
@@ -2173,11 +2410,12 @@ fn page_buttons(commands: &mut Commands, parent: Entity, look: &Look, b: &Server
             add,
             &text_of(b, page, "AddServerButton", "#ServerBrowser_AddServer", "Add a Server"),
             Target::Button(ButtonId::AddServer),
-            true,
-            false,
+            b,
+            (true, false, false),
         );
+        add.0
     } else {
-        let quick = rect_of(page, "RefreshQuickButton", (345.0, 244.0, 105.0, 24.0));
+        let quick = rect_in(page, "RefreshQuickButton", (345.0, 244.0, 105.0, 24.0), (3, 0), g);
         button(
             commands,
             parent,
@@ -2191,11 +2429,12 @@ fn page_buttons(commands: &mut Commands, parent: Entity, look: &Look, b: &Server
                 "Quick refresh",
             ),
             Target::Button(ButtonId::QuickRefresh),
-            !b.rows.is_empty(),
-            false,
+            b,
+            (!b.rows.is_empty(), false, false),
         );
-    }
-    let filter = rect_of(page, "Filter", (140.0, 244.0, 108.0, 24.0));
+        quick.0
+    };
+    let filter = rect_in(page, "Filter", (140.0, 244.0, 108.0, 24.0), (2, 0), g);
     // The file puts Filters after the simplified list box, which only
     // Internet has: here it starts at the left.
     let filter = (8.0, filter.1, filter.2, filter.3);
@@ -2206,22 +2445,17 @@ fn page_buttons(commands: &mut Commands, parent: Entity, look: &Look, b: &Server
         filter,
         &text_of(b, page, "Filter", "#ServerBrowser_Filters", "Filters"),
         Target::Button(ButtonId::Filters),
-        true,
-        b.filters.shown,
+        b,
+        (true, false, b.filters.shown),
     );
     if b.filters.active() {
-        let (_, y, _, h) = rect_of(page, "FilterString", (250.0, 244.0, 90.0, 24.0));
+        let (_, y, _, h) = rect_in(page, "FilterString", (250.0, 244.0, 90.0, 24.0), (2, 1), g);
         let x = filter.0 + filter.2 + 4.0;
-        let right = if b.tab == Tab::Favorites {
-            rect_of(page, "AddServerButton", (349.0, 0.0, 0.0, 0.0)).0
-        } else {
-            rect_of(page, "RefreshQuickButton", (345.0, 0.0, 0.0, 0.0)).0
-        };
         label(
             commands,
             parent,
             look,
-            (x, y, (right - x - 4.0).max(20.0), h),
+            (x, y, (right_x - x - 4.0).max(20.0), h),
             &b.filter_text(),
             look.font("DefaultSmall", (13.0, false)),
             look.dull(),
@@ -2231,10 +2465,20 @@ fn page_buttons(commands: &mut Commands, parent: Entity, look: &Look, b: &Server
 }
 
 /// The filters (shown): game, location and anti-cheat as they are
-/// (greyed: LAN servers have none of those), map, latency, max players,
-/// the three checks.
-fn filter_controls(commands: &mut Commands, parent: Entity, look: &Look, b: &ServerBrowser, page: Option<&UiLayout>) {
-    let font = look.font("Default", (16.0, false));
+/// (greyed: LAN servers have none of those), map, latency (a drop-down),
+/// max players, the three checks; under the list, following the frame's
+/// bottom as it grows.
+fn filter_controls(
+    commands: &mut Commands,
+    parent: Entity,
+    root: Entity,
+    look: &Look,
+    b: &ServerBrowser,
+    page: Option<&UiLayout>,
+) {
+    let g = b.grow;
+    let at = |name: &str, fallback: (f32, f32, f32, f32)| rect_in(page, name, fallback, (2, 0), g);
+    let font = look.default_font();
     for (name, token, ours, fallback) in [
         (
             "GameFilterLabel",
@@ -2269,65 +2513,76 @@ fn filter_controls(commands: &mut Commands, parent: Entity, look: &Look, b: &Ser
         ),
     ] {
         let greyed = matches!(name, "LocationFilterLabel" | "SecureFilterLabel");
-        let (rect, text) = (rect_of(page, name, fallback), text_of(b, page, name, token, ours));
+        let (rect, text) = (at(name, fallback), text_of(b, page, name, token, ours));
         if greyed {
-            engraved(commands, parent, look, rect, &text, font.clone(), 1);
+            widgets::engraved(commands, parent, look, rect, &text, font.clone(), 1);
         } else {
             label(commands, parent, look, rect, &text, font.clone(), look.text(), 1);
         }
     }
     let all = b.text("#ServerBrowser_All", "<All>");
-    combo(
-        commands,
-        parent,
-        look,
-        rect_of(page, "GameFilter", (60.0, 150.0, 164.0, 24.0)),
-        &all,
-        None,
-    );
-    combo(
-        commands,
-        parent,
-        look,
-        rect_of(page, "LocationFilter", (311.0, 180.0, 112.0, 24.0)),
-        &all,
-        None,
-    );
-    combo(
-        commands,
-        parent,
-        look,
-        rect_of(page, "SecureFilter", (311.0, 210.0, 112.0, 24.0)),
-        &all,
-        None,
-    );
+    for (name, fallback) in [
+        ("GameFilter", (60.0, 150.0, 164.0, 24.0)),
+        ("LocationFilter", (311.0, 180.0, 112.0, 24.0)),
+        ("SecureFilter", (311.0, 210.0, 112.0, 24.0)),
+    ] {
+        widgets::combo_box(
+            commands,
+            parent,
+            look,
+            at(name, fallback),
+            &all,
+            false,
+            false,
+            false,
+            (),
+        );
+    }
     let (_, token, ours) = LATENCIES[b.filters.latency.min(LATENCIES.len() - 1)];
-    combo(
+    let ping = at("PingFilter", (311.0, 150.0, 112.0, 24.0));
+    widgets::combo_box(
         commands,
         parent,
         look,
-        rect_of(page, "PingFilter", (311.0, 150.0, 112.0, 24.0)),
+        ping,
         &b.text(token, ours),
-        Some(Target::Latency),
+        true,
+        b.combo.is_some(),
+        b.focus == Some(Focus::Latency),
+        Hit(Target::Latency),
     );
+    if let Some(list) = &b.combo {
+        let entries: Vec<String> = LATENCIES.iter().map(|(_, t, o)| b.text(t, o)).collect();
+        widgets::combo_popup(
+            commands,
+            parent,
+            root,
+            look,
+            ping,
+            &entries,
+            list,
+            |k| Hit(Target::ComboItem(k)),
+            Hit(Target::Outside),
+        );
+    }
     text_box(
         commands,
         parent,
         look,
-        rect_of(page, "MapFilter", (60.0, 180.0, 164.0, 24.0)),
+        at("MapFilter", (60.0, 180.0, 164.0, 24.0)),
         &b.filters.map,
         Field::MapFilter,
-        b.typing == Some(Field::MapFilter),
+        b,
         false,
     );
     text_box(
         commands,
         parent,
         look,
-        rect_of(page, "MaxPlayerFilter", (160.0, 210.0, 64.0, 24.0)),
+        at("MaxPlayerFilter", (160.0, 210.0, 64.0, 24.0)),
         &b.filters.max_players,
         Field::MaxPlayers,
-        b.typing == Some(Field::MaxPlayers),
+        b,
         false,
     );
     for (name, token, ours, fallback, on, which) in [
@@ -2356,60 +2611,42 @@ fn filter_controls(commands: &mut Commands, parent: Entity, look: &Look, b: &Ser
             Check::NoPassword,
         ),
     ] {
-        let (x, y, w, h) = rect_of(page, name, fallback);
-        check(
+        let (x, y, w, h) = at(name, fallback);
+        widgets::check_button(
             commands,
             parent,
             look,
-            (x, y, w.min(624.0 - x - 4.0), h),
+            (x, y, w.min(624.0 + g.x - x - 4.0), h),
             &text_of(b, page, name, token, ours),
             on,
-            which,
+            true,
+            b.focus == Some(Focus::Check(which)),
+            Hit(Target::Check(which)),
         );
     }
 }
 
-/// A dialog frame of a layout, centred.
+/// A dialog frame of a layout (modal over the browser), its size from the
+/// layout, its close box Cancel.
 fn dialog_frame(
     commands: &mut Commands,
     root: Entity,
     look: &Look,
-    size: Vec2,
-    layout: Option<&UiLayout>,
-    name: &str,
+    (id, layout, name): (widgets::WindowId, Option<&UiLayout>, &str),
     fallback: (f32, f32),
     title: &str,
 ) -> Entity {
     let (_, _, w, h) = rect_of(layout, name, (0.0, 0.0, fallback.0, fallback.1));
-    let f = frame(commands, root, look, size, (w, h), title);
-    // Opaque: the list under a modal dialog would show through the
-    // scheme's see-through frame colour.
-    let bg = look.frame_bg().to_srgba();
-    let solid = Color::srgb(bg.red * 0.7, bg.green * 0.7, bg.blue * 0.7);
-    commands.entity(f).insert((ZIndex(10), BackgroundColor(solid)));
-    button(
-        commands,
-        f,
-        look,
-        (w - 26.0, 6.0, 20.0, 18.0),
-        "x",
-        Target::Button(ButtonId::Close),
-        true,
-        false,
-    );
-    f
+    let parts = widgets::frame(commands, root, look, FrameSpec::new(id).modal(), (w, h), title);
+    if let Some(close) = parts.close {
+        commands.entity(close).insert(Hit(Target::Button(ButtonId::Close)));
+    }
+    parts.frame
 }
 
 /// Add a Server: the address box, add it or find games at it, the
 /// server found (select it to add it; ours: double-click joins it).
-fn add_server_dialog(
-    commands: &mut Commands,
-    root: Entity,
-    look: &Look,
-    b: &ServerBrowser,
-    icons: &BrowserIcons,
-    size: Vec2,
-) {
+fn add_server_dialog(commands: &mut Commands, root: Entity, look: &Look, b: &ServerBrowser, icons: &BrowserIcons) {
     let Dialog::AddServer {
         text,
         selected,
@@ -2428,13 +2665,11 @@ fn add_server_dialog(
         commands,
         root,
         look,
-        size,
-        layout,
-        "DialogAddServer",
+        (ADD_WINDOW, layout, "DialogAddServer"),
         (572.0, 390.0),
         &title,
     );
-    let font = look.font("Default", (16.0, false));
+    let font = look.default_font();
     label(
         commands,
         f,
@@ -2458,9 +2693,10 @@ fn add_server_dialog(
         rect_of(layout, "ServerNameText", (20.0, 74.0, 330.0, 24.0)),
         text,
         Field::AddAddress,
-        b.typing == Some(Field::AddAddress),
+        b,
         false,
     );
+    let has_text = !text.trim().is_empty();
     button(
         commands,
         f,
@@ -2474,8 +2710,8 @@ fn add_server_dialog(
             "Add this address to favorites",
         ),
         Target::Button(ButtonId::AddOk),
-        !text.trim().is_empty(),
-        false,
+        b,
+        (has_text, true, false),
     );
     button(
         commands,
@@ -2490,8 +2726,8 @@ fn add_server_dialog(
             "Find games at this address...",
         ),
         Target::Button(ButtonId::AddFind),
-        !text.trim().is_empty(),
-        false,
+        b,
+        (has_text, false, false),
     );
     button(
         commands,
@@ -2500,8 +2736,8 @@ fn add_server_dialog(
         rect_of(layout, "CancelButton", (482.0, 131.0, 64.0, 24.0)),
         &text_of(b, layout, "CancelButton", "#ServerBrowser_Cancel", "Cancel"),
         Target::Button(ButtonId::AddCancel),
-        true,
-        false,
+        b,
+        (true, false, false),
     );
     // The examples, one per line (or the address's error).
     let (ex, ey, ew, _) = rect_of(layout, "ExampleLabel", (22.0, 106.0, 328.0, 74.0));
@@ -2536,32 +2772,15 @@ fn add_server_dialog(
     let tab_text = b
         .text("#ServerBrowser_ServersCount", "Servers (%s1)")
         .replace("%s1", &b.found.iter().filter(|r| r.responded).count().to_string());
-    let tab = commands
-        .spawn((
-            Node {
-                border: UiRect {
-                    left: px(1.0),
-                    right: px(1.0),
-                    top: px(1.0),
-                    bottom: px(0.0),
-                },
-                ..place(look, gx, gy + 1.0, 110.0, 27.0)
-            },
-            bevel(look, true),
-            BackgroundColor(look.frame_bg()),
-            ZIndex(2),
-            ChildOf(f),
-        ))
-        .id();
-    label(
+    widgets::tabs(
         commands,
-        tab,
+        f,
         look,
-        (0.0, 0.0, 106.0, 26.0),
-        &tab_text,
-        font.clone(),
-        look.white(),
+        (gx, gy + 1.0),
+        &[(tab_text, true)],
         0,
+        Some(110.0),
+        |_| (),
     );
     let (_, sy, _, sh) = rect_of(layout, "Servers", (0.0, 28.0, 526.0, 122.0));
     let list = commands
@@ -2687,13 +2906,13 @@ fn add_server_dialog(
             "Add selected game server to favorites",
         ),
         Target::Button(ButtonId::AddSelected),
-        *selected && b.found.as_ref().is_some_and(|r| r.responded),
-        false,
+        b,
+        (*selected && b.found.as_ref().is_some_and(|r| r.responded), false, false),
     );
 }
 
 /// The server wants a password: its name, the password box, Connect.
-fn password_dialog(commands: &mut Commands, root: Entity, look: &Look, b: &ServerBrowser, size: Vec2) {
+fn password_dialog(commands: &mut Commands, root: Entity, look: &Look, b: &ServerBrowser) {
     let Dialog::Password { name, text, .. } = &b.dialog else {
         return;
     };
@@ -2706,13 +2925,11 @@ fn password_dialog(commands: &mut Commands, root: Entity, look: &Look, b: &Serve
         commands,
         root,
         look,
-        size,
-        layout,
-        "DialogServerPassword",
+        (PASSWORD_WINDOW, layout, "DialogServerPassword"),
         (290.0, 176.0),
         &title,
     );
-    let font = look.font("Default", (16.0, false));
+    let font = look.default_font();
     label(
         commands,
         f,
@@ -2756,7 +2973,7 @@ fn password_dialog(commands: &mut Commands, root: Entity, look: &Look, b: &Serve
         rect_of(layout, "PasswordEntry", (86.0, 96.0, 186.0, 24.0)),
         text,
         Field::Password,
-        b.typing == Some(Field::Password),
+        b,
         true,
     );
     button(
@@ -2766,8 +2983,8 @@ fn password_dialog(commands: &mut Commands, root: Entity, look: &Look, b: &Serve
         rect_of(layout, "ConnectButton", (116.0, 136.0, 74.0, 24.0)),
         &text_of(b, layout, "ConnectButton", "#ServerBrowser_Connect", "Connect"),
         Target::Button(ButtonId::PasswordConnect),
-        true,
-        false,
+        b,
+        (true, true, false),
     );
     button(
         commands,
@@ -2776,11 +2993,10 @@ fn password_dialog(commands: &mut Commands, root: Entity, look: &Look, b: &Serve
         rect_of(layout, "CancelButton", (198.0, 136.0, 74.0, 24.0)),
         &text_of(b, layout, "CancelButton", "#ServerBrowser_Cancel", "Cancel"),
         Target::Button(ButtonId::PasswordCancel),
-        true,
-        false,
+        b,
+        (true, false, false),
     );
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

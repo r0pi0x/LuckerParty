@@ -453,7 +453,7 @@ pub struct ActiveHud(pub Arc<GameHud>, pub HashMap<usize, Handle<Image>>);
 /// A game's own game menu and options dialog look (Source's GameUI), read
 /// from the install once, independent of the map: the scheme's colours,
 /// numbers and fonts, the menu's entries, the options pages' layouts and
-/// the keyboard page's action list, localised strings, map thumbnails, and
+/// the keyboard page's action list, localised strings, Create Server's pages and options, and
 /// the main menu's background pictures and title.
 #[derive(Clone, Debug, Default)]
 pub struct GameUi {
@@ -473,8 +473,8 @@ pub struct GameUi {
     pub options: HashMap<String, UiLayout>,
     /// The keyboard page's list: sections and actions, labels localised.
     pub actions: Vec<KeyAction>,
-    /// Map thumbnails by lower-case map name.
-    pub thumbnails: HashMap<String, UiImage>,
+    /// Create Server's Game page options (`cfg/settings.scr`), in order.
+    pub server_settings: Vec<ServerSetting>,
     /// The main menu's background for 4:3 screens and for wider ones,
     /// drawn stretched over the whole screen.
     pub background: Option<UiImage>,
@@ -496,6 +496,29 @@ pub struct GameUi {
     /// The server browser's icons by name (`password`, `bots`, and their
     /// `_column` header versions).
     pub server_icons: HashMap<String, UiImage>,
+}
+
+/// An option of Create Server's Game page (a game's server settings
+/// script): the cvar it sets, its label, its control, its default.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ServerSetting {
+    pub cvar: String,
+    pub label: String,
+    pub kind: ServerSettingKind,
+    pub default: String,
+}
+
+/// How a server option is set.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ServerSettingKind {
+    /// Typed text.
+    Text,
+    /// A typed number (its limits, when it has them).
+    Number { min: Option<f32>, max: Option<f32> },
+    /// A check box: 0 or 1.
+    Bool,
+    /// A combo box: each entry's label (a `#token` or words) and value.
+    List(Vec<(String, String)>),
 }
 
 /// What an interface sound is for.

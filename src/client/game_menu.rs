@@ -2,17 +2,22 @@
 //! drawn as CS:S's GameUI draws it. Out of a game (startup without a map,
 //! after `disconnect`) it is the main menu: always open, over the game's
 //! background picture, the game's title over its entries, in-game entries
-//! hidden. In a game: the entries at the left over the darkened game, each
-//! dialog a frame in the middle of the screen (title bar, raised borders,
-//! the options' tabs), in the install's GameUI scheme (`map::hud::GameUi`:
-//! `SourceScheme.res` colours, numbers and fonts, `GameMenu.res` entries
-//! with ours added, the keyboard tab's `kb_act.lst` actions, localised
-//! words, map thumbnails); without the install, in built-in colours and
-//! words. The game keeps running while it is open; the mouse is free, so
-//! the local player's input is ignored (`input::write_local_intent`). Every
-//! choice is a console line (`map`, `bot_add`, `bind`, cvars ...), so the
-//! menu holds no game logic: the model (`GameMenu::handle`) turns keys
-//! and clicks into those lines, and is unit-tested without a window.
+//! hidden. In a game: the entries at the left over the darkened game. Each
+//! dialog is a VGUI frame (`widgets`: moved by its title bar, brought to
+//! the front by a click, closed from its X) laid out from the install's
+//! layouts: the options (`OptionsSub*.res` per tab, OK / Cancel / Apply,
+//! the keyboard and video tabs' Advanced dialogs), Create Server (its
+//! Server, Game and Bot pages: `CreateMultiplayerGame*Page.res`, the Game
+//! page's options from `cfg/settings.scr`); controls the game has and
+//! mashup lacks are drawn greyed. Ours (settings CS:S's options don't
+//! have) are in our own dialog, Lucker Party Options, from our entries.
+//! In the install's GameUI scheme (`map::hud::GameUi`); without the
+//! install, in built-in colours and words, controls in a column. The game
+//! keeps running while it is open; the mouse is free, so the local
+//! player's input is ignored (`input::write_local_intent`). Every choice
+//! is a console line (`map`, `bot_add`, `bind`, cvars ...), so the menu
+//! holds no game logic: the model (`GameMenu::handle`) turns keys and
+//! clicks into those lines, and is unit-tested without a window.
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -20,22 +25,31 @@ use std::{
 };
 
 use bevy::{
-    input::mouse::{AccumulatedMouseScroll, MouseScrollUnit},
+    input::{
+        ButtonState,
+        keyboard::{Key, KeyboardInput},
+        mouse::AccumulatedMouseScroll,
+    },
     prelude::*,
     text::LineBreak,
     ui::RelativeCursorPosition,
     window::CursorOptions,
 };
 
+pub(super) use super::widgets::{Look, bevel, label, place};
 use super::{
     binds,
     fonts::UiFonts,
-    options::{KEYBOARD_ADVANCED, SETTINGS, SettingKind, TABS, Tab, setting_index},
+    options::{Place, SETTINGS, SettingKind, TABS, Tab, VALUE_ENTRIES},
+    widgets::{
+        self, ButtonState as Btn, Caret, ComboEvent, ComboKey, ComboList, Edit, FrameSpec, SliderDrag, SliderOwner,
+        SliderTrack, WindowId, Windows,
+    },
 };
 use crate::{
     console::{Console, ConsoleAppExt},
     core::{Intent, Team},
-    map::hud::{GameUi, KeyAction},
+    map::hud::{GameUi, KeyAction, ServerSettingKind, UiControl, UiKind, UiLayout},
 };
 
 pub struct GameMenuPlugin;
@@ -54,6 +68,7 @@ impl Plugin for GameMenuPlugin {
                 (
                     ui_loaded,
                     keys.before(super::console::toggle),
+                    text_keys,
                     pointer,
                     sync,
                     cursor,
@@ -74,36 +89,62 @@ impl Plugin for GameMenuPlugin {
         );
         app.console_command(
             "menu",
-            "menu [main|newgame|maps|bots|team|options|keyboard|mouse|audio|video|multiplayer|advanced]: open the game menu (Esc) on a page (options: on a tab; advanced: the keyboard tab's Advanced dialog).",
+            "menu [main|newgame|game|bot|bots|team|options|keyboard|mouse|audio|video|multiplayer|advanced|\
+             videoadvanced|extras]: open the game menu (Esc) on a page (newgame: Create Server, game and bot its \
+             other pages; options: on a tab; advanced: the keyboard tab's Advanced dialog, videoadvanced the video \
+             tab's; extras: Lucker Party Options).",
             |w, a| {
                 let arg = a.first().map(|s| s.to_lowercase());
                 let tab = TABS.iter().find(|(t, ..)| Some(t.page()) == arg.as_deref()).map(|(t, ..)| *t);
                 let page = match arg.as_deref() {
                     _ if tab.is_some() => Page::Settings,
                     None | Some("main") => Page::Main,
-                    Some("newgame") => Page::NewGame,
-                    Some("maps") => Page::Maps,
+                    Some("newgame" | "createserver" | "game" | "bot") => Page::NewGame,
                     Some("bots") => Page::Bots,
                     Some("team") => Page::Team,
-                    Some("options") | Some("settings") | Some("advanced") => Page::Settings,
+                    Some("options" | "settings" | "advanced" | "videoadvanced") => Page::Settings,
+                    Some("extras") => Page::Extras,
                     Some(p) => return Err(format!("no menu page \"{p}\"")),
                 };
                 open_menu(w, page);
+                let mut menu = w.resource_mut::<GameMenu>();
                 if let Some(tab) = tab {
-                    w.resource_mut::<GameMenu>().set_tab(tab);
+                    menu.set_tab(tab);
                 }
-                if arg.as_deref() == Some("advanced") {
-                    let mut menu = w.resource_mut::<GameMenu>();
-                    menu.set_tab(Tab::Keyboard);
-                    if let Some(i) = menu
-                        .rows()
-                        .iter()
-                        .position(|r| matches!(r, Row::Button { action: Action::Advanced, .. }))
-                    {
-                        menu.handle(Input::Click(Target::Row(i), 0));
+                match arg.as_deref() {
+                    Some("game") => menu.set_create_tab(1),
+                    Some("bot") => menu.set_create_tab(2),
+                    Some("advanced") => {
+                        menu.set_tab(Tab::Keyboard);
+                        menu.press_action(&Action::Advanced);
                     }
+                    Some("videoadvanced") => {
+                        menu.set_tab(Tab::Video);
+                        menu.press_action(&Action::VideoAdvanced);
+                    }
+                    _ => {}
                 }
                 Ok(None)
+            },
+        )
+        .console_command(
+            "menuinput",
+            "menuinput <input>: drive the open game menu as keys and clicks would (screenshots, tests): \
+             focus <cvar|map|bots|botcount|botteam|difficulty> | open (the focused combo box's list) | \
+             down | up | enter | space | escape | tab | backtab | type <text> | pick <n> | sheet <n>; prints \
+             the focused control.",
+            |w, a| {
+                let input = menu_input(&w.resource::<GameMenu>(), a)?;
+                let mut menu = w.resource_mut::<GameMenu>();
+                let mut next = menu.clone();
+                let out = next.handle(input);
+                *menu = next;
+                let state = menu.describe();
+                let mut console = w.resource_mut::<Console>();
+                for line in out.lines {
+                    console.submit(line);
+                }
+                Ok(Some(state))
             },
         )
         .console_command("gameui_activate", "Open the game menu (Esc).", |w, _| {
@@ -133,27 +174,45 @@ pub struct MenuSystems;
 pub enum Page {
     #[default]
     Main,
+    /// Create Server (its page: `GameMenu::create_tab`).
     NewGame,
-    /// The map list, picked for a new game.
-    Maps,
     Bots,
     Team,
     /// The options dialog (its tab: `GameMenu::tab`).
     Settings,
     /// The keyboard tab's Advanced dialog (over the options).
     KeyboardAdvanced,
+    /// The video tab's Advanced dialog (over the options).
+    VideoAdvanced,
+    /// Ours: Lucker Party Options (what CS:S's options don't have).
+    Extras,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum Mode {
-    #[default]
-    Deathmatch,
-    Rounds,
+impl Page {
+    /// Its frame (`widgets::Windows` keeps where it was dragged).
+    pub fn window(self) -> WindowId {
+        match self {
+            Page::Main => "main",
+            Page::NewGame => "createserver",
+            Page::Bots => "bots",
+            Page::Team => "team",
+            Page::Settings => "options",
+            Page::KeyboardAdvanced => "keyboardadvanced",
+            Page::VideoAdvanced => "videoadvanced",
+            Page::Extras => "extras",
+        }
+    }
+
+    /// A dialog over the options (modal to them).
+    fn over_options(self) -> bool {
+        matches!(self, Page::KeyboardAdvanced | Page::VideoAdvanced)
+    }
 }
 
 /// Bot skill presets: reaction seconds, aim error degrees, turn rate
 /// degrees per second (`bot_reaction`, `bot_aim_error`, `bot_turn_rate`).
-/// Normal is the bots' default (`bot::BotConfig`).
+/// Normal is the bots' default (`bot::BotConfig`). Create Server's four
+/// difficulty buttons pick one (`#Cstrike_Bot_Difficulty0..3`).
 pub const DIFFICULTIES: [(&str, f32, f32, f32); 4] = [
     ("Easy", 0.6, 5.0, 220.0),
     ("Normal", 0.35, 2.5, 360.0),
@@ -161,29 +220,87 @@ pub const DIFFICULTIES: [(&str, f32, f32, f32); 4] = [
     ("Expert", 0.12, 0.75, 720.0),
 ];
 const NORMAL: usize = 1;
-/// Bots per team a new game offers at most.
-const MAX_BOTS: u8 = 15;
+/// Bots a new game offers at most (the box takes two digits).
+const MAX_BOTS: u8 = 30;
+
+/// Create Server's pages: the token of each tab and our word.
+pub const CREATE_TABS: [(&str, &str); 3] = [("#GameUI_Server", "Server"), ("#GameUI_Game", "Game"), ("", "Bot")];
+
+/// Which team bots join (Create Server's Bot page): any (split between
+/// them), terrorists, counter-terrorists.
+pub const BOT_TEAMS: [(&str, &str); 3] = [
+    ("", "Any"),
+    ("#Cstrike_Team_T", "Terrorists"),
+    ("#Cstrike_Team_CT", "Counter-Terrorists"),
+];
+
+/// A cvar Create Server sets when it starts (the Game page's options
+/// from the install's `settings.scr`, the Bot page's cvars, ours): its
+/// value shown and the one before.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ServerCvar {
+    pub cvar: String,
+    pub label: String,
+    pub kind: ServerSettingKind,
+    pub value: String,
+    /// Its value when the dialog opened (None: mashup lacks it, greyed).
+    pub before: Option<String>,
+    /// The page it's on (index into `CREATE_TABS`).
+    pub page: usize,
+    /// The layout control showing it (Bot page), else a row of the Game
+    /// page's list.
+    pub field: Option<&'static str>,
+}
+
+/// The Bot page's cvars, by its layout's controls (fieldName, cvar, kind).
+const BOT_CVARS: [(&str, &str, &str); 2] = [
+    ("BotPrefixEntry", "bot_prefix", "#CStrike_Bot_NamePrefix"),
+    ("BotJoinAfterPlayerCheck", "bot_join_after_player", "#CStrike_Bot_JoinAfterPlayer"),
+];
+
+/// Ours on the Game page, after the game's own: rounds or deathmatch.
+const ROUNDS_CVAR: &str = "mashup_rounds";
 
 /// What a new game starts with.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NewGame {
     /// Index into `GameMenu::maps`.
     pub map: usize,
-    pub mode: Mode,
-    pub bots_t: u8,
-    pub bots_ct: u8,
+    /// Include bots, how many (typed), which team they join (`BOT_TEAMS`).
+    pub bots_on: bool,
+    pub bot_count: String,
+    pub bot_team: usize,
     /// Index into `DIFFICULTIES`.
     pub difficulty: usize,
+    /// The Game and Bot pages' cvars.
+    pub cvars: Vec<ServerCvar>,
 }
 
 impl Default for NewGame {
     fn default() -> Self {
         Self {
             map: 0,
-            mode: Mode::Deathmatch,
-            bots_t: 0,
-            bots_ct: 0,
+            bots_on: false,
+            bot_count: "0".into(),
+            bot_team: 0,
             difficulty: NORMAL,
+            cvars: Vec::new(),
+        }
+    }
+}
+
+impl NewGame {
+    /// Bots per team: terrorists, counter-terrorists (any team: split,
+    /// the odd one a terrorist).
+    pub fn split(&self) -> (u8, u8) {
+        if !self.bots_on {
+            return (0, 0);
+        }
+        let n = self.bot_count.trim().parse::<u8>().unwrap_or(0).min(MAX_BOTS);
+        match self.bot_team {
+            1 => (n, 0),
+            2 => (0, n),
+            _ => (n.div_ceil(2), n / 2),
         }
     }
 }
@@ -196,7 +313,7 @@ pub enum MainItem {
     Disconnect,
     /// The server browser (`openserverbrowser`).
     FindServers,
-    /// The game's "Create Server": our new game page.
+    /// Create Server.
     NewGame,
     Bots,
     Team,
@@ -209,6 +326,8 @@ pub enum MainItem {
     Greybox,
     /// Ours: open the console (`toggleconsole`).
     Console,
+    /// Ours: Lucker Party Options.
+    Extras,
 }
 
 /// The game's entries without its menu file, in CS:S's order and words:
@@ -225,19 +344,20 @@ pub const MAIN: [(MainItem, &str, bool); 7] = [
 
 /// Ours, after the game's entries (and a gap): item, text, shown only in a
 /// game.
-pub const OURS: [(MainItem, &str, bool); 5] = [
+pub const OURS: [(MainItem, &str, bool); 6] = [
     (MainItem::QuickStart, "Quick Start", false),
     (MainItem::Greybox, "Greybox Test Map", false),
     (MainItem::Bots, "Bots", true),
     (MainItem::Team, "Team", true),
+    (MainItem::Extras, "Lucker Party Options", false),
     (MainItem::Console, "Console", false),
 ];
 
-/// The map a quick start plays (rounds, `QUICK_BOTS` normal bots per
-/// team: terrorists, counter-terrorists besides you); the first map when
-/// the install lacks it.
+/// The map a quick start plays (rounds, `QUICK_BOTS` normal bots: five
+/// terrorists and four counter-terrorists besides you); the first map
+/// when the install lacks it.
 pub const QUICK_MAP: &str = "de_dust2";
-const QUICK_BOTS: (u8, u8) = (5, 4);
+const QUICK_BOTS: u8 = 9;
 
 impl MainItem {
     fn page(self) -> Option<Page> {
@@ -246,6 +366,7 @@ impl MainItem {
             MainItem::Bots => Some(Page::Bots),
             MainItem::Team => Some(Page::Team),
             MainItem::Options => Some(Page::Settings),
+            MainItem::Extras => Some(Page::Extras),
             _ => None,
         }
     }
@@ -279,10 +400,10 @@ impl MainEntry {
 
 /// Every left-hand entry, shown or not: the game's (`GameMenu.res`) that
 /// mashup has, in its order and words (built-in ones in CS:S's order
-/// without the file); then, after a gap, ours (quick
-/// start, the greybox, bots, team, console). Entries mashup can't do
-/// (player list, achievements, benchmark ...) are left out.
-/// `GameMenu::entries` picks those shown in or out of a game.
+/// without the file); then, after a gap, ours (quick start, the greybox,
+/// bots, team, our options, console). Entries mashup can't do (player
+/// list, achievements, benchmark ...) are left out. `GameMenu::entries`
+/// picks those shown in or out of a game.
 pub fn main_entries(ui: Option<&GameUi>) -> Vec<MainEntry> {
     let builtin = |item: MainItem| {
         let (_, label, in_game) = MAIN.iter().find(|(m, ..)| *m == item).copied().unwrap_or((item, "", false));
@@ -348,25 +469,58 @@ pub fn main_entries(ui: Option<&GameUi>) -> Vec<MainEntry> {
     out
 }
 
-/// A value a row changes.
+/// A value a control changes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Field {
+    /// Create Server's Server page: the map, include bots, how many, the
+    /// difficulty buttons (0 to 3).
     Map,
-    Mode,
-    BotsT,
-    BotsCt,
-    Difficulty,
+    BotsOn,
+    BotCount,
+    Difficulty(usize),
+    /// Its Bot page: which team bots join.
+    BotTeam,
+    /// A cvar Create Server sets (index into `NewGame::cvars`).
+    ServerCvar(usize),
     /// Index into `options::SETTINGS`.
     Setting(usize),
+    /// The text entry showing a slider setting's value (`VALUE_ENTRIES`).
+    SettingText(usize),
+}
+
+/// How a control shows its value.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Control {
+    /// A combo box: its entries and the one shown (None: none of them,
+    /// `text` shown).
+    Combo {
+        entries: Vec<String>,
+        selected: Option<usize>,
+        text: String,
+    },
+    Check(bool),
+    /// One of a group of radio buttons.
+    Radio(bool),
+    Slider {
+        fraction: f32,
+        text: String,
+    },
+    /// A text entry (`numeric`: digits only; at most `max` chars).
+    Text {
+        text: String,
+        numeric: bool,
+        max: usize,
+    },
 }
 
 /// What pressing a button row does.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     Main(MainItem),
+    /// Back to the main page (Bots, Team).
     Back,
+    /// Create Server's Start.
     Start,
-    PickMap(usize),
     /// Run a console line; close the menu too when set.
     Run(String, bool),
     /// Wait for a key for the selected keyboard action.
@@ -377,17 +531,21 @@ pub enum Action {
     DefaultBinds,
     /// The keyboard tab's Advanced dialog.
     Advanced,
-    /// Its OK: keep its changes.
-    AdvancedOk,
-    /// Its Cancel (and Esc): its settings back as they were.
-    AdvancedCancel,
+    /// The video tab's Advanced dialog.
+    VideoAdvanced,
+    /// A dialog's OK: keep its changes, close it.
+    Ok,
+    /// A dialog's Cancel (Esc, its X): its changes undone, closed.
+    Cancel,
+    /// The options' Apply: keep the changes so far, stay open.
+    Apply,
 }
 
-/// A row of a page.
+/// A row of a page: its controls in tab order.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Row {
     Button { label: String, action: Action, enabled: bool },
-    Value { label: String, value: String, field: Field },
+    Control { label: String, field: Field, control: Control },
     /// A keyboard action: its description, console line and keys (as
     /// shown); `known`: mashup has the command.
     Bind { label: String, command: String, keys: String, known: bool },
@@ -401,8 +559,15 @@ impl Row {
     fn focusable(&self) -> bool {
         match self {
             Row::Button { enabled, .. } => *enabled,
-            Row::Value { .. } | Row::Bind { .. } => true,
+            Row::Control { .. } | Row::Bind { .. } => true,
             Row::Info(_) | Row::Heading(_) => false,
+        }
+    }
+
+    fn field(&self) -> Option<Field> {
+        match self {
+            Row::Control { field, .. } => Some(*field),
+            _ => None,
         }
     }
 }
@@ -414,37 +579,64 @@ pub enum Target {
     Main(usize),
     /// A row of the open page.
     Row(usize),
-    /// An options tab (index into `options::TABS`).
+    /// A tab of the open dialog's property sheet (options, Create Server).
     Tab(usize),
     /// A list's scroll bar (the click's step says how far).
     Scroll,
     /// The loading dialog's Cancel button.
     Cancel,
+    /// An entry of the open combo box's list.
+    ComboItem(usize),
+    /// Anywhere outside the open combo box's list (closes it).
+    Outside,
+    /// The open dialog's close box (its X).
+    Close,
 }
 
 /// A key or pointer event for the menu.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Input {
     Up,
     Down,
     Left,
     Right,
-    /// Enter or Space.
+    /// Enter: the focused button or list row, else the dialog's default
+    /// button (OK, Start).
     Activate,
+    /// Space: the focused control (ticks a check box, opens a combo box,
+    /// presses a button).
+    Space,
     /// Backspace: back to the main page.
     Back,
-    /// Esc: close (or stop waiting for a key).
+    /// Esc: cancel (close a combo box's list, stop waiting for a key,
+    /// cancel the dialog, close the menu in a game).
     Close,
     Hover(Target),
-    /// A click: on the row itself (0) or its `<` (-1) / `>` (+1) arrow; on
-    /// the scroll bar, rows to scroll.
+    /// A click: on a row, a tab, the scroll bar (its step: rows), a combo
+    /// box's list entry, outside an open list.
     Click(Target, i32),
-    /// A typed letter or digit: jumps the map list.
+    /// A typed letter or digit: jumps a combo box's list or the focused
+    /// one.
     Char(char),
-    /// Tab (+1) / Shift+Tab (-1): the next options tab.
+    /// Text typed or pasted into the focused text entry.
+    Type(String),
+    /// An editing key in the focused text entry.
+    Edit(Edit),
+    /// Ctrl+C / Ctrl+X in the focused text entry.
+    Copy,
+    Cut,
+    /// The caret placed in a text entry row (a click on its char).
+    Caret(usize, usize),
+    /// Ctrl+Tab (+1) / Ctrl+Shift+Tab (-1): the property sheet's next tab.
     NextTab(i32),
-    /// The wheel over a list: rows to scroll.
+    /// Tab (+1) / Shift+Tab (-1): the next control in the tab order.
+    Focus(i32),
+    /// A row focused (scripts: `menuinput focus`).
+    FocusRow(usize),
+    /// The wheel over a list or an open combo box's list: rows to scroll.
     Scroll(i32),
+    /// The wheel over a combo box row: steps it.
+    Wheel(usize, i32),
     /// A slider row pressed or dragged at a position (0 to 1).
     Slide(usize, f32),
     /// The key, button or wheel notch pressed while waiting for one (a
@@ -461,6 +653,8 @@ pub struct Outcome {
     pub after_load: Vec<String>,
     /// The menu closed: back to playing.
     pub close: bool,
+    /// Text for the clipboard (copied or cut).
+    pub clipboard: Option<String>,
 }
 
 /// The game's GameUI look and words, shared (compared by identity).
@@ -504,6 +698,8 @@ pub struct GameMenu {
     /// Loadable maps (`maps`).
     pub maps: Vec<String>,
     pub new_game: NewGame,
+    /// Create Server's page (index into `CREATE_TABS`).
+    pub create_tab: usize,
     /// Each setting's current value (`options::SETTINGS` order), None if
     /// its cvar isn't registered.
     pub values: Vec<Option<String>>,
@@ -526,22 +722,32 @@ pub struct GameMenu {
     pub capture: Option<String>,
     /// The keyboard list's selected row (Edit key / Clear key act on it).
     pub key_row: Option<usize>,
-    /// The first row of the open list shown (keyboard actions, maps).
+    /// The first row of the open list shown (keyboard actions, Create
+    /// Server's Game page).
     pub scroll: usize,
     /// Window sizes the video tab offers.
     pub resolutions: Vec<String>,
-    /// The Advanced dialog's settings as it opened (`SETTINGS` index,
-    /// value), for its Cancel.
+    /// The options' settings as they were when it opened or was last
+    /// applied (`SETTINGS` index, value): its Cancel puts them back.
+    pub options_before: Vec<(usize, Option<String>)>,
+    /// The same for the Advanced dialog open over it.
     pub advanced_before: Vec<(usize, Option<String>)>,
+    /// The open combo box's list (its owner: the row).
+    pub combo: Option<ComboList>,
+    /// The focused text entry's caret and selection.
+    pub caret: Caret,
+    /// A value entry's text as typed (it sets its setting once it reads
+    /// as one), while focused.
+    pub editing: Option<(Field, String)>,
 }
 
-/// Map list rows shown at once.
-pub const MAP_ROWS: usize = 16;
 /// Keyboard list rows shown at once.
 pub const KEY_ROWS: usize = 14;
 /// Buttons under the keyboard list (Use defaults, Edit key, Clear key,
 /// Advanced).
 const KEY_BUTTONS: usize = 4;
+/// Rows of Create Server's Game page list shown at once.
+pub const GAME_ROWS: usize = 12;
 
 /// The keyboard list without the game's `kb_act.lst`: what mashup does.
 const OUR_ACTIONS: &[(&str, &str)] = &[
@@ -580,6 +786,17 @@ const OUR_ACTIONS: &[(&str, &str)] = &[
     ("+freelook", "Free look"),
 ];
 
+/// The layout name of the open page (`GameUi::options`).
+fn layout_name(page: Page, tab: Tab, create_tab: usize) -> Option<&'static str> {
+    match page {
+        Page::Settings => Some(tab.page()),
+        Page::KeyboardAdvanced => Some("keyboard_advanced"),
+        Page::VideoAdvanced => Some("video_advanced"),
+        Page::NewGame => Some(["create_server", "create_game", "create_bot"][create_tab.min(2)]),
+        _ => None,
+    }
+}
+
 impl GameMenu {
     /// Open on a page with the current settings: `get` reads a cvar,
     /// `current_map` is the loaded map's name.
@@ -591,10 +808,10 @@ impl GameMenu {
         get: impl Fn(&str) -> Option<String>,
     ) {
         self.open = true;
-        self.page = page;
         self.focus = 0;
         self.capture = None;
         self.scroll = 0;
+        self.combo = None;
         if self.main.is_empty() {
             self.main = main_entries(self.ui.0.as_deref());
         }
@@ -604,11 +821,6 @@ impl GameMenu {
             .and_then(|m| maps.iter().position(|n| n == m))
             .unwrap_or(0);
         self.maps = maps;
-        self.new_game.mode = if num("mashup_rounds").unwrap_or(0.0) != 0.0 {
-            Mode::Rounds
-        } else {
-            Mode::Deathmatch
-        };
         // The preset nearest the bots' reaction now.
         if let Some(r) = num("bot_reaction") {
             self.new_game.difficulty = (0..DIFFICULTIES.len())
@@ -620,15 +832,89 @@ impl GameMenu {
                 .unwrap_or(NORMAL);
         }
         // As many bots as there are now (`set_counts` first).
-        self.new_game.bots_t = self.bots[0].min(MAX_BOTS as usize) as u8;
-        self.new_game.bots_ct = self.bots[1].min(MAX_BOTS as usize) as u8;
-        if page == Page::Maps {
-            self.focus = self.new_game.map;
+        let bots = (self.bots[0] + self.bots[1]).min(MAX_BOTS as usize);
+        self.new_game.bots_on = bots > 0;
+        self.new_game.bot_count = bots.to_string();
+        self.new_game.bot_team = match self.bots {
+            [_, 0] if bots > 0 => 1,
+            [0, _] if bots > 0 => 2,
+            _ => 0,
+        };
+        self.new_game.cvars = self.server_cvars(&get);
+        self.go_to(page);
+    }
+
+    /// Show a page, its first control focused (the options remember what
+    /// they were, for Cancel).
+    fn go_to(&mut self, page: Page) {
+        if matches!(page, Page::Settings | Page::Extras) && self.page != page && !self.page.over_options() {
+            self.options_before = self.snapshot(|_| true);
         }
-        self.focus = self.first_focusable_from(self.focus, 1);
+        self.page = page;
+        self.scroll = 0;
+        self.combo = None;
         self.key_row = None;
+        self.focus = self.first_focusable_from(0, 1);
         self.select_focused_key();
+        self.focus_changed();
         self.keep_visible();
+    }
+
+    /// Settings' values now (those `which` picks).
+    fn snapshot(&self, which: impl Fn(&super::options::Setting) -> bool) -> Vec<(usize, Option<String>)> {
+        SETTINGS
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| which(s))
+            .map(|(i, _)| (i, self.values.get(i).cloned().flatten()))
+            .collect()
+    }
+
+    /// Create Server's cvars: the install's Game page options (else none),
+    /// ours, the Bot page's; each with its value now.
+    fn server_cvars(&self, get: &dyn Fn(&str) -> Option<String>) -> Vec<ServerCvar> {
+        let mut out: Vec<ServerCvar> = Vec::new();
+        if let Some(ui) = self.ui.0.as_ref() {
+            for s in &ui.server_settings {
+                let before = get(&s.cvar);
+                out.push(ServerCvar {
+                    cvar: s.cvar.clone(),
+                    label: s.label.clone(),
+                    kind: s.kind.clone(),
+                    value: before.clone().unwrap_or_else(|| s.default.clone()),
+                    before,
+                    page: 1,
+                    field: None,
+                });
+            }
+        }
+        let before = get(ROUNDS_CVAR);
+        out.push(ServerCvar {
+            cvar: ROUNDS_CVAR.into(),
+            label: "Rounds (off: deathmatch; Lucker Party)".into(),
+            kind: ServerSettingKind::Bool,
+            value: before.clone().unwrap_or_else(|| "0".into()),
+            before,
+            page: 1,
+            field: None,
+        });
+        for (field, cvar, token) in BOT_CVARS {
+            let before = get(cvar);
+            out.push(ServerCvar {
+                cvar: cvar.into(),
+                label: self.text(token, cvar),
+                kind: if cvar == "bot_prefix" {
+                    ServerSettingKind::Text
+                } else {
+                    ServerSettingKind::Bool
+                },
+                value: before.clone().unwrap_or_default(),
+                before,
+                page: 2,
+                field: Some(field),
+            });
+        }
+        out
     }
 
     /// The game's look and words (None: ours).
@@ -646,13 +932,30 @@ impl GameMenu {
 
     /// Show an options tab.
     pub fn set_tab(&mut self, tab: Tab) {
+        if self.page != Page::Settings {
+            return;
+        }
         self.tab = tab;
         self.capture = None;
+        self.combo = None;
         self.scroll = 0;
         self.key_row = None;
         self.focus = self.first_focusable_from(0, 1);
         self.select_focused_key();
+        self.focus_changed();
         self.keep_visible();
+    }
+
+    /// Show a page of Create Server.
+    pub fn set_create_tab(&mut self, tab: usize) {
+        if self.page != Page::NewGame {
+            return;
+        }
+        self.create_tab = tab.min(CREATE_TABS.len() - 1);
+        self.combo = None;
+        self.scroll = 0;
+        self.focus = self.first_focusable_from(0, 1);
+        self.focus_changed();
     }
 
     /// The bots and players per team now (for the bots and team pages; a new
@@ -673,6 +976,12 @@ impl GameMenu {
 
     fn game_text(&self, token: &str) -> Option<String> {
         self.ui.0.as_ref().and_then(|u| u.string(token)).map(str::to_string)
+    }
+
+    /// The open page's layout from the install.
+    pub fn layout(&self) -> Option<&UiLayout> {
+        let name = layout_name(self.page, self.tab, self.create_tab)?;
+        self.ui.0.as_ref()?.options.get(name)
     }
 
     /// The keyboard list: the game's actions, then ours it lacks.
@@ -740,6 +1049,7 @@ impl GameMenu {
         let was_open = self.open;
         self.open = false;
         self.capture = None;
+        self.combo = None;
         was_open
     }
 
@@ -751,13 +1061,14 @@ impl GameMenu {
         self.open = true;
         self.page = Page::Main;
         self.capture = None;
+        self.combo = None;
         self.scroll = 0;
         self.focus = self.first_focusable_from(0, 1);
     }
 
-    /// Start the new game set up on the new game page: from a game, close
-    /// (the old map plays until the new one is in); from the main menu,
-    /// show it loading.
+    /// Start the new game set up in Create Server: from a game, close (the
+    /// old map plays until the new one is in); from the main menu, show it
+    /// loading.
     fn start(&mut self, out: &mut Outcome) {
         let Some((lines, after)) = self.start_lines() else {
             return;
@@ -768,35 +1079,210 @@ impl GameMenu {
             self.close(out);
         } else {
             self.loading = self.maps.get(self.new_game.map).cloned();
+            self.page = Page::Main;
         }
     }
 
-    /// The quick start's settings on the new game page.
+    /// The quick start's settings in Create Server.
     fn quick_setup(&mut self) {
         let map = self.maps.iter().position(|m| m == QUICK_MAP).unwrap_or(0);
-        self.new_game = NewGame {
-            map,
-            mode: Mode::Rounds,
-            bots_t: QUICK_BOTS.0,
-            bots_ct: QUICK_BOTS.1,
-            difficulty: NORMAL,
-        };
+        self.new_game.map = map;
+        self.new_game.bots_on = true;
+        self.new_game.bot_count = QUICK_BOTS.to_string();
+        self.new_game.bot_team = 0;
+        self.new_game.difficulty = NORMAL;
+        // Rounds; the rest as they are.
+        for c in &mut self.new_game.cvars {
+            c.value = if c.cvar == ROUNDS_CVAR {
+                "1".into()
+            } else {
+                c.before.clone().unwrap_or_default()
+            };
+        }
     }
 
-    /// The rows of the open page (the left-hand entries on the main page).
+    /// The value of a cvar Create Server sets, as shown.
+    fn server_cvar(&self, cvar: &str) -> Option<&ServerCvar> {
+        self.new_game.cvars.iter().find(|c| c.cvar == cvar)
+    }
+
+    /// A control row (its label from the game, else ours).
+    fn control_row(&self, field: Field) -> Row {
+        let text = |t: &str| self.game_text(t);
+        let ng = &self.new_game;
+        let (label, control) = match field {
+            Field::Map => (
+                self.text("#GameUI_Map", "Map"),
+                Control::Combo {
+                    entries: self.maps.clone(),
+                    selected: (!self.maps.is_empty()).then_some(ng.map),
+                    text: self.maps.get(ng.map).cloned().unwrap_or_else(|| "(no maps found)".into()),
+                },
+            ),
+            Field::BotsOn => (
+                self.text("#Cstrike_Bot_IncludeBots", "Include CPU players (bots) in this game"),
+                Control::Check(ng.bots_on),
+            ),
+            Field::BotCount => (
+                self.text("#Cstrike_Bot_NumberOfBots", "Number of CPU players"),
+                Control::Text {
+                    text: ng.bot_count.clone(),
+                    numeric: true,
+                    max: 2,
+                },
+            ),
+            Field::Difficulty(k) => (
+                self.text(&format!("#Cstrike_Bot_Difficulty{k}"), DIFFICULTIES[k].0),
+                Control::Radio(ng.difficulty == k),
+            ),
+            Field::BotTeam => {
+                let entries: Vec<String> = BOT_TEAMS.iter().map(|(t, o)| self.text(t, o)).collect();
+                (
+                    self.text("#CStrike_Bot_JoinTeam", "Bots join team"),
+                    Control::Combo {
+                        text: entries[ng.bot_team].clone(),
+                        entries,
+                        selected: Some(ng.bot_team),
+                    },
+                )
+            }
+            Field::ServerCvar(i) => {
+                let c = &ng.cvars[i];
+                let control = match &c.kind {
+                    ServerSettingKind::Bool => Control::Check(c.value.trim().parse::<f32>().is_ok_and(|v| v != 0.0)),
+                    ServerSettingKind::List(items) => {
+                        let entries: Vec<String> = items.iter().map(|(l, _)| self.text(l, l)).collect();
+                        let selected = items.iter().position(|(_, v)| v.trim() == c.value.trim());
+                        Control::Combo {
+                            text: selected.map_or(c.value.clone(), |s| entries[s].clone()),
+                            entries,
+                            selected,
+                        }
+                    }
+                    ServerSettingKind::Number { .. } => Control::Text {
+                        text: c.value.clone(),
+                        numeric: true,
+                        max: 8,
+                    },
+                    ServerSettingKind::Text => Control::Text {
+                        text: c.value.clone(),
+                        numeric: false,
+                        max: 64,
+                    },
+                };
+                (c.label.clone(), control)
+            }
+            Field::Setting(i) | Field::SettingText(i) => {
+                let s = &SETTINGS[i];
+                let label = s.token.and_then(|t| self.game_text(t)).unwrap_or_else(|| s.label.to_string());
+                let v = self.values.get(i).cloned().flatten().unwrap_or_default();
+                let shown = s.show(&v, &text);
+                let as_combo = self.shown_as_combo(i);
+                let control = if field == Field::SettingText(i) {
+                    Control::Text {
+                        text: match &self.editing {
+                            Some((f, typed)) if *f == field => typed.clone(),
+                            _ => shown,
+                        },
+                        numeric: true,
+                        max: 8,
+                    }
+                } else if as_combo {
+                    let entries: Vec<String> =
+                        s.entries(&self.resolutions, &text).into_iter().map(|(_, l)| l).collect();
+                    let selected = s.entry_index(&v, &self.resolutions);
+                    Control::Combo {
+                        text: selected.map_or(shown, |k| entries[k].clone()),
+                        selected,
+                        entries,
+                    }
+                } else {
+                    match s.kind {
+                        SettingKind::Range { .. } => Control::Slider {
+                            fraction: s.fraction(&v).unwrap_or(0.0),
+                            text: shown,
+                        },
+                        _ => Control::Check(s.checked(&v)),
+                    }
+                };
+                (label, control)
+            }
+        };
+        Row::Control { label, field, control }
+    }
+
+    /// Whether setting `i` shows as a combo box: choices, window sizes,
+    /// and a check box setting the game's layout shows as one (VSync).
+    fn shown_as_combo(&self, i: usize) -> bool {
+        let s = &SETTINGS[i];
+        match s.kind {
+            SettingKind::Choice(_) | SettingKind::Resolution => true,
+            SettingKind::Toggle => s
+                .field
+                .and_then(|f| self.settings_layout(s.place)?.get(f))
+                .is_some_and(|c| class_of(c).eq_ignore_ascii_case("ComboBox")),
+            _ => false,
+        }
+    }
+
+    /// The layout a place's settings are on.
+    fn settings_layout(&self, place: Place) -> Option<&UiLayout> {
+        let name = match place {
+            Place::Options(tab) => tab.page(),
+            Place::KeyboardAdvanced => "keyboard_advanced",
+            Place::VideoAdvanced => "video_advanced",
+            Place::Extras => return None,
+        };
+        self.ui.0.as_ref()?.options.get(name)
+    }
+
+    /// The settings of a place that mashup has, in its layout's order
+    /// (else ours), with the text entries showing slider values.
+    fn place_rows(&self, place: Place) -> Vec<Row> {
+        let mut fields: Vec<(usize, Field)> = Vec::new();
+        let layout = self.settings_layout(place);
+        let order = |name: &str| {
+            layout
+                .and_then(|l| l.controls.iter().position(|c| c.name.eq_ignore_ascii_case(name)))
+                .unwrap_or(usize::MAX)
+        };
+        for (i, s) in SETTINGS.iter().enumerate() {
+            if s.place != place || self.values.get(i).cloned().flatten().is_none() {
+                continue;
+            }
+            // In a layout without its control: not shown (the game has no
+            // place for it).
+            if layout.is_some() && s.field.is_some_and(|f| order(f) == usize::MAX) {
+                continue;
+            }
+            fields.push((s.field.map_or(i, order), Field::Setting(i)));
+            if let Some((entry, _)) = VALUE_ENTRIES.iter().find(|(_, cvar)| *cvar == s.cvar)
+                && (layout.is_none() || order(entry) != usize::MAX)
+            {
+                fields.push((order(entry), Field::SettingText(i)));
+            }
+        }
+        if layout.is_some() {
+            fields.sort_by_key(|(o, _)| *o);
+        }
+        // Without the layout the value entry is the slider's own number.
+        fields
+            .into_iter()
+            .filter(|(_, f)| layout.is_some() || !matches!(f, Field::SettingText(_)))
+            .map(|(_, f)| self.control_row(f))
+            .collect()
+    }
+
+    /// The rows of the open page (the left-hand entries on the main page),
+    /// in tab order.
     pub fn rows(&self) -> Vec<Row> {
         let button = |label: &str, action: Action| Row::Button {
             label: label.to_string(),
             action,
             enabled: true,
         };
-        let value = |label: &str, value: String, field: Field| Row::Value {
-            label: label.to_string(),
-            value,
-            field,
-        };
-        let ok = || button(&self.text("#GameUI_OK", "OK"), Action::Back);
-        let ng = &self.new_game;
+        let ok = || button(&self.text("#GameUI_OK", "OK"), Action::Ok);
+        let cancel = || button(&self.text("#GameUI_Cancel", "Cancel"), Action::Cancel);
         match self.page {
             Page::Main => self
                 .entries()
@@ -807,39 +1293,35 @@ impl GameMenu {
                     enabled: e.enabled,
                 })
                 .collect(),
-            Page::NewGame => vec![
-                value(
-                    "Map",
-                    self.maps.get(ng.map).cloned().unwrap_or_else(|| "(no maps found)".into()),
-                    Field::Map,
-                ),
-                value(
-                    "Mode",
-                    match ng.mode {
-                        Mode::Deathmatch => "Deathmatch",
-                        Mode::Rounds => "Rounds",
+            Page::NewGame => {
+                let mut rows: Vec<Row> = match self.create_tab {
+                    0 => {
+                        let mut r = vec![self.control_row(Field::Map), self.control_row(Field::BotsOn)];
+                        if self.new_game.bots_on {
+                            r.push(self.control_row(Field::BotCount));
+                            r.extend((0..DIFFICULTIES.len()).map(|k| self.control_row(Field::Difficulty(k))));
+                        }
+                        r
                     }
-                    .into(),
-                    Field::Mode,
-                ),
-                value("Terrorist bots", ng.bots_t.to_string(), Field::BotsT),
-                value("Counter-terrorist bots", ng.bots_ct.to_string(), Field::BotsCt),
-                value("Bot difficulty", DIFFICULTIES[ng.difficulty].0.into(), Field::Difficulty),
-                Row::Button {
-                    label: "Start".into(),
+                    page => {
+                        let mut r = Vec::new();
+                        if page == 2 {
+                            r.push(self.control_row(Field::BotTeam));
+                        }
+                        for (i, c) in self.new_game.cvars.iter().enumerate() {
+                            if c.page == page && c.before.is_some() {
+                                r.push(self.control_row(Field::ServerCvar(i)));
+                            }
+                        }
+                        r
+                    }
+                };
+                rows.push(Row::Button {
+                    label: self.text("#GameUI_Start", "Start"),
                     action: Action::Start,
                     enabled: !self.maps.is_empty(),
-                },
-                button(&self.text("#GameUI_Cancel", "Back"), Action::Back),
-            ],
-            Page::Maps => {
-                let mut rows: Vec<Row> = self
-                    .maps
-                    .iter()
-                    .enumerate()
-                    .map(|(i, m)| button(m, Action::PickMap(i)))
-                    .collect();
-                rows.push(button(&self.text("#GameUI_Cancel", "Back"), Action::Back));
+                });
+                rows.push(cancel());
                 rows
             }
             Page::Bots => vec![
@@ -850,7 +1332,7 @@ impl GameMenu {
                 button("Add a terrorist bot", Action::Run("bot_add 1".into(), false)),
                 button("Add a counter-terrorist bot", Action::Run("bot_add 2".into(), false)),
                 button("Kick all bots", Action::Run("bot_kick".into(), false)),
-                ok(),
+                button(&self.text("#GameUI_Close", "Close"), Action::Back),
             ],
             Page::Team => vec![
                 button("Terrorists", Action::Run("jointeam 2".into(), true)),
@@ -865,7 +1347,7 @@ impl GameMenu {
                         true,
                     ),
                 ),
-                button(&self.text("#GameUI_Cancel", "Back"), Action::Back),
+                button(&self.text("#GameUI_Cancel", "Cancel"), Action::Back),
             ],
             Page::Settings if self.tab == Tab::Keyboard => {
                 let mut rows: Vec<Row> = self
@@ -898,41 +1380,123 @@ impl GameMenu {
                     enabled: selected,
                 });
                 rows.push(button(&self.text("#GameUI_AdvancedEllipsis", "Advanced..."), Action::Advanced));
-                rows.push(ok());
-                rows
-            }
-            Page::KeyboardAdvanced => {
-                let text = |t: &str| self.game_text(t);
-                let mut rows: Vec<Row> = self
-                    .advanced_settings()
-                    .into_iter()
-                    .map(|(i, label)| match self.values.get(i).cloned().flatten() {
-                        Some(v) => value(&label, SETTINGS[i].show(&v, &text), Field::Setting(i)),
-                        None => Row::Info(format!("{label}: not available")),
-                    })
-                    .collect();
-                rows.push(button(&self.text("#GameUI_OK", "OK"), Action::AdvancedOk));
-                rows.push(button(&self.text("#GameUI_Cancel", "Cancel"), Action::AdvancedCancel));
+                rows.extend(self.dialog_buttons());
                 rows
             }
             Page::Settings => {
-                let text = |t: &str| self.game_text(t);
-                let mut rows: Vec<Row> = SETTINGS
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, s)| s.tab == self.tab)
-                    .map(|(i, s)| {
-                        let label = s.token.and_then(|t| self.game_text(t)).unwrap_or_else(|| s.label.to_string());
-                        match self.values.get(i).cloned().flatten() {
-                            Some(v) => value(&label, s.show(&v, &text), Field::Setting(i)),
-                            None => Row::Info(format!("{label}: not available")),
-                        }
-                    })
-                    .collect();
+                let mut rows = self.place_rows(Place::Options(self.tab));
+                if self.tab == Tab::Video {
+                    // Its Advanced... button, where the layout has it.
+                    let at = self.layout().and_then(|l| l.controls.iter().position(|c| c.name == "AdvancedButton"));
+                    let b = button(&self.text("#GameUI_AdvancedEllipsis", "Advanced..."), Action::VideoAdvanced);
+                    let before = at.map_or(rows.len(), |at| {
+                        rows.iter()
+                            .position(|r| self.row_order(r) > at)
+                            .unwrap_or(rows.len())
+                    });
+                    rows.insert(before, b);
+                }
+                rows.extend(self.dialog_buttons());
+                rows
+            }
+            Page::KeyboardAdvanced | Page::VideoAdvanced => {
+                let place = if self.page == Page::KeyboardAdvanced {
+                    Place::KeyboardAdvanced
+                } else {
+                    Place::VideoAdvanced
+                };
+                let mut rows = self.place_rows(place);
                 rows.push(ok());
+                rows.push(cancel());
+                rows
+            }
+            Page::Extras => {
+                let mut rows = self.place_rows(Place::Extras);
+                for (i, s) in SETTINGS.iter().enumerate() {
+                    if s.place == Place::Extras && self.values.get(i).cloned().flatten().is_none() {
+                        rows.push(Row::Info(format!("{}: not available", s.label)));
+                    }
+                }
+                rows.push(ok());
+                rows.push(cancel());
                 rows
             }
         }
+    }
+
+    /// The options' OK, Cancel and Apply (Apply greyed with nothing to
+    /// apply).
+    fn dialog_buttons(&self) -> Vec<Row> {
+        let changed = self.options_before.iter().any(|(i, v)| self.values.get(*i) != Some(v));
+        vec![
+            Row::Button {
+                label: self.text("#GameUI_OK", "OK"),
+                action: Action::Ok,
+                enabled: true,
+            },
+            Row::Button {
+                label: self.text("#GameUI_Cancel", "Cancel"),
+                action: Action::Cancel,
+                enabled: true,
+            },
+            Row::Button {
+                label: self.text("#GameUI_Apply", "Apply"),
+                action: Action::Apply,
+                enabled: changed,
+            },
+        ]
+    }
+
+    /// Where a row's control is in the open page's layout (its index).
+    fn row_order(&self, row: &Row) -> usize {
+        let Some(layout) = self.layout() else { return usize::MAX };
+        let name = match row {
+            Row::Control { field, .. } => self.field_name(*field),
+            Row::Button {
+                action: Action::VideoAdvanced,
+                ..
+            } => Some("AdvancedButton"),
+            _ => None,
+        };
+        name.and_then(|n| layout.controls.iter().position(|c| c.name.eq_ignore_ascii_case(n)))
+            .unwrap_or(usize::MAX)
+    }
+
+    /// The layout control showing a field (its `fieldName`).
+    pub fn field_name(&self, field: Field) -> Option<&'static str> {
+        const SKILL: [&str; 4] = ["SkillLevel0", "SkillLevel1", "SkillLevel2", "SkillLevel3"];
+        match field {
+            Field::Map => Some("MapList"),
+            Field::BotsOn => Some("EnableBotsCheck"),
+            Field::BotCount => Some("BotQuotaCombo"),
+            Field::Difficulty(k) => SKILL.get(k).copied(),
+            Field::BotTeam => Some("BotJoinTeamCombo"),
+            Field::ServerCvar(i) => self.new_game.cvars.get(i).and_then(|c| c.field),
+            Field::Setting(i) => SETTINGS[i].field,
+            Field::SettingText(i) => VALUE_ENTRIES.iter().find(|(_, c)| *c == SETTINGS[i].cvar).map(|(f, _)| *f),
+        }
+    }
+
+    /// The default button of the open page (Enter presses it).
+    fn default_action(&self) -> Option<Action> {
+        match self.page {
+            Page::NewGame => Some(Action::Start),
+            Page::Settings | Page::KeyboardAdvanced | Page::VideoAdvanced | Page::Extras => Some(Action::Ok),
+            _ => None,
+        }
+    }
+
+    /// The open page's state in words (`menuinput`).
+    pub fn describe(&self) -> String {
+        let rows = self.rows();
+        let focused = rows.get(self.focus).map(|r| match r {
+            Row::Control { label, control, .. } => format!("{label}: {control:?}"),
+            other => label_of(other),
+        });
+        let combo = self.combo.map_or(String::new(), |c| {
+            format!(", list open on entry {} of {}", c.highlight, c.len)
+        });
+        format!("{:?}, focus {} ({}){combo}", self.page, self.focus, focused.unwrap_or_default())
     }
 
     /// Apply an input; the console lines it produces.
@@ -941,7 +1505,10 @@ impl GameMenu {
         if self.open && self.failure.is_some() {
             // The failure's dialog: Close (its button, Esc, Enter) leaves
             // the main menu.
-            if matches!(input, Input::Click(Target::Cancel, _) | Input::Close | Input::Activate) {
+            if matches!(
+                input,
+                Input::Click(Target::Cancel | Target::Close, _) | Input::Close | Input::Activate
+            ) {
                 self.failure = None;
                 self.loading = None;
             }
@@ -971,40 +1538,79 @@ impl GameMenu {
             }
             return out;
         }
+        if self.combo.is_some() {
+            self.handle_combo(input, &mut out);
+            return out;
+        }
         let rows = self.rows();
+        let focused = rows.get(self.focus).cloned();
+        let text_focused = matches!(focused, Some(Row::Control { control: Control::Text { .. }, .. }));
         match input {
-            Input::Close | Input::Back if self.page == Page::KeyboardAdvanced => self.cancel_advanced(&mut out),
+            Input::Close if self.page != Page::Main && self.default_action().is_some() => {
+                self.press_action_into(&Action::Cancel, &mut out)
+            }
+            Input::Click(Target::Close, _) => {
+                if self.default_action().is_some() {
+                    self.press_action_into(&Action::Cancel, &mut out);
+                } else {
+                    self.back();
+                }
+            }
             // The main menu stays: Esc only closes its dialogs.
             Input::Close if !self.in_game => self.back(),
             Input::Close => self.close(&mut out),
-            Input::Back => self.back(),
-            Input::Up => self.focus = self.first_focusable_from(self.focus + rows.len() - 1, -1),
-            Input::Down => self.focus = self.first_focusable_from(self.focus + 1, 1),
-            Input::Left | Input::Right => {
-                let dir = if input == Input::Left { -1 } else { 1 };
-                if self.page == Page::Maps {
-                    // A screenful at a time.
-                    let n = self.maps.len() as i32;
-                    if self.focus < self.maps.len() && n > 0 {
-                        self.focus = (self.focus as i32 + dir * MAP_ROWS as i32).clamp(0, n - 1) as usize;
+            Input::Back if !text_focused => self.back(),
+            Input::Back => self.edit(Edit::Backspace, &mut out),
+            Input::Up | Input::Down => {
+                let dir = if input == Input::Up { -1 } else { 1 };
+                match focused.as_ref() {
+                    Some(Row::Control {
+                        field,
+                        control: Control::Combo { .. } | Control::Slider { .. },
+                        ..
+                    }) if self.page != Page::Main => self.change(*field, dir, false, &mut out),
+                    _ => {
+                        let n = rows.len().max(1);
+                        self.focus = self.first_focusable_from((self.focus + if dir < 0 { n - 1 } else { 1 }) % n, dir);
+                        self.focus_changed();
                     }
-                } else if let Some(Row::Value { field, .. }) = rows.get(self.focus) {
-                    self.change(*field, dir, &mut out);
                 }
             }
-            Input::Activate => self.activate(self.focus, 0, &mut out),
+            Input::Left | Input::Right => {
+                let dir = if input == Input::Left { -1 } else { 1 };
+                match focused.as_ref() {
+                    Some(Row::Control {
+                        control: Control::Text { .. },
+                        ..
+                    }) => self.edit(if dir < 0 { Edit::Left(false) } else { Edit::Right(false) }, &mut out),
+                    Some(Row::Control { field, control, .. }) if !matches!(control, Control::Check(_) | Control::Radio(_)) => {
+                        self.change(*field, dir, false, &mut out)
+                    }
+                    _ => {}
+                }
+            }
+            Input::Activate => match focused.as_ref() {
+                Some(Row::Button { .. } | Row::Bind { .. }) => self.activate(self.focus, &mut out),
+                _ if self.page == Page::Main => self.activate(self.focus, &mut out),
+                _ => {
+                    if let Some(action) = self.default_action() {
+                        self.press_action_into(&action, &mut out);
+                    }
+                }
+            },
+            Input::Space => {
+                if text_focused {
+                    self.edit(Edit::Insert(" ".into()), &mut out);
+                } else {
+                    self.activate(self.focus, &mut out);
+                }
+            }
             Input::Hover(Target::Main(i)) => {
                 if self.page == Page::Main && rows.get(i).is_some_and(Row::focusable) {
                     self.focus = i;
                 }
             }
-            Input::Hover(Target::Row(i)) => {
-                // Lists select by click, not by hover.
-                let list = matches!(rows.get(i), Some(Row::Bind { .. }));
-                if self.page != Page::Main && !list && rows.get(i).is_some_and(Row::focusable) {
-                    self.focus = i;
-                }
-            }
+            // Dialogs focus by click (and Tab), not by hover.
             Input::Hover(_) => {}
             Input::Click(Target::Main(i), _) => {
                 if let Some(e) = self.entries().get(i).filter(|e| e.enabled) {
@@ -1014,39 +1620,81 @@ impl GameMenu {
                     self.main(e.item, &mut out);
                 }
             }
-            Input::Click(Target::Row(i), step) => {
+            Input::Click(Target::Row(i), _) => {
                 if self.page != Page::Main && rows.get(i).is_some_and(Row::focusable) {
                     // A list row: the first click selects, the next edits.
                     if matches!(rows[i], Row::Bind { .. }) && self.key_row != Some(i) {
                         self.focus = i;
                         self.key_row = Some(i);
                     } else {
+                        let was = self.focus;
                         self.focus = i;
-                        self.activate(i, step, &mut out);
+                        if was != i {
+                            self.focus_changed();
+                        }
+                        // A click into a text entry focuses it (`Caret`
+                        // places the caret).
+                        if !matches!(rows[i], Row::Control { control: Control::Text { .. }, .. }) {
+                            self.activate(i, &mut out);
+                        }
                     }
                 }
             }
-            Input::Click(Target::Tab(i), _) => {
-                if self.page == Page::Settings
-                    && let Some((tab, ..)) = TABS.get(i)
-                {
-                    self.set_tab(*tab);
+            Input::Click(Target::Tab(i), _) => match self.page {
+                Page::Settings => {
+                    if let Some((tab, ..)) = TABS.get(i) {
+                        self.set_tab(*tab);
+                    }
                 }
-            }
-            // Only while loading (above).
-            Input::Click(Target::Cancel, _) => {}
+                Page::NewGame => self.set_create_tab(i),
+                _ => {}
+            },
+            // Only while loading (above) or with a list open.
+            Input::Click(Target::Cancel | Target::ComboItem(_) | Target::Outside, _) => {}
             Input::Click(Target::Scroll, step) | Input::Scroll(step) => {
                 let (len, shown) = self.list();
                 self.scroll = (self.scroll as i32 + step).clamp(0, len.saturating_sub(shown) as i32) as usize;
                 return out;
             }
-            Input::NextTab(dir) => {
-                if self.page == Page::Settings {
-                    self.set_tab(self.tab.step(dir));
+            Input::Wheel(i, notches) => {
+                if let Some(Row::Control {
+                    field,
+                    control: Control::Combo { .. },
+                    ..
+                }) = rows.get(i)
+                {
+                    self.focus = i;
+                    self.change(*field, -notches, false, &mut out);
+                }
+            }
+            Input::NextTab(dir) => match self.page {
+                Page::Settings => self.set_tab(self.tab.step(dir)),
+                Page::NewGame => {
+                    let n = CREATE_TABS.len() as i32;
+                    self.set_create_tab((self.create_tab as i32 + dir).rem_euclid(n) as usize)
+                }
+                _ => {}
+            },
+            Input::Focus(dir) => {
+                if self.page != Page::Main {
+                    let order: Vec<usize> = (0..rows.len()).filter(|&i| rows[i].focusable()).collect();
+                    if let Some(next) = widgets::focus_step(&order, Some(self.focus), dir) {
+                        self.focus = next;
+                        self.focus_changed();
+                    }
+                } else {
+                    let n = rows.len().max(1);
+                    self.focus = self.first_focusable_from((self.focus as i32 + dir).rem_euclid(n as i32) as usize, dir);
+                }
+            }
+            Input::FocusRow(i) => {
+                if rows.get(i).is_some_and(Row::focusable) && self.focus != i {
+                    self.focus = i;
+                    self.focus_changed();
                 }
             }
             Input::Slide(i, f) => {
-                if let Some(Row::Value {
+                if let Some(Row::Control {
                     field: Field::Setting(s),
                     ..
                 }) = rows.get(i)
@@ -1058,33 +1706,160 @@ impl GameMenu {
             }
             Input::BindKey(_) => {}
             Input::Char(c) => {
-                // Jump to the next map starting with it.
-                let on_map = self.page == Page::Maps
-                    || (self.page == Page::NewGame && matches!(rows.get(self.focus), Some(Row::Value { field: Field::Map, .. })));
-                if on_map && !self.maps.is_empty() {
-                    let c = c.to_ascii_lowercase();
-                    let from = if self.page == Page::Maps {
-                        self.focus
-                    } else {
-                        self.new_game.map
-                    };
-                    let n = self.maps.len();
-                    if let Some(i) = (1..=n)
-                        .map(|k| (from + k) % n)
-                        .find(|&i| self.maps[i].to_ascii_lowercase().starts_with(c))
-                    {
-                        if self.page == Page::Maps {
-                            self.focus = i;
-                        } else {
-                            self.new_game.map = i;
+                if text_focused {
+                    self.edit(Edit::Insert(c.to_string()), &mut out);
+                } else if let Some(Row::Control {
+                    field,
+                    control: Control::Combo { entries, selected, .. },
+                    ..
+                }) = focused.as_ref()
+                    && let Some(k) = jump(entries, selected.unwrap_or(0), c)
+                {
+                    self.pick(*field, k, &mut out);
+                }
+            }
+            Input::Type(s) => {
+                if text_focused {
+                    self.edit(Edit::Insert(s), &mut out);
+                }
+            }
+            Input::Edit(e) => {
+                if text_focused {
+                    self.edit(e, &mut out);
+                }
+            }
+            Input::Copy | Input::Cut => {
+                if let Some(Row::Control {
+                    control: Control::Text { text, .. },
+                    ..
+                }) = focused.as_ref()
+                {
+                    let selected = self.caret.selected(text).to_string();
+                    if !selected.is_empty() {
+                        out.clipboard = Some(selected);
+                        if input == Input::Cut {
+                            self.edit(Edit::Delete, &mut out);
                         }
                     }
+                }
+            }
+            Input::Caret(i, at) => {
+                if matches!(rows.get(i), Some(Row::Control { control: Control::Text { .. }, .. })) {
+                    if self.focus != i {
+                        self.focus = i;
+                        self.focus_changed();
+                    }
+                    self.caret = Caret { at, anchor: at };
                 }
             }
         }
         self.select_focused_key();
         self.keep_visible();
         out
+    }
+
+    /// Input while a combo box's list is open: it takes the keys, the
+    /// pointer on its entries and the wheel; a click elsewhere closes it.
+    fn handle_combo(&mut self, input: Input, out: &mut Outcome) {
+        let Some(mut list) = self.combo else { return };
+        let event = match input {
+            Input::Up => list.key(ComboKey::Up),
+            Input::Down => list.key(ComboKey::Down),
+            Input::Activate | Input::Space => list.key(ComboKey::Enter),
+            Input::Close | Input::Back => list.key(ComboKey::Escape),
+            Input::Hover(Target::ComboItem(k)) => {
+                list.hover(k);
+                ComboEvent::Open
+            }
+            Input::Click(Target::ComboItem(k), _) => ComboEvent::Pick(k),
+            Input::Click(..) | Input::Focus(_) | Input::NextTab(_) => ComboEvent::Close,
+            Input::Scroll(n) => {
+                list.wheel(n);
+                ComboEvent::Open
+            }
+            Input::Char(c) => {
+                if let Some(Row::Control {
+                    control: Control::Combo { entries, .. },
+                    ..
+                }) = self.rows().get(list.owner)
+                    && let Some(k) = jump(entries, list.highlight, c)
+                {
+                    list.select(k);
+                }
+                ComboEvent::Open
+            }
+            _ => ComboEvent::Open,
+        };
+        match event {
+            ComboEvent::Open => self.combo = Some(list),
+            ComboEvent::Close => self.combo = None,
+            ComboEvent::Pick(k) => {
+                self.combo = None;
+                if let Some(field) = self.rows().get(list.owner).and_then(Row::field) {
+                    self.pick(field, k, out);
+                }
+            }
+        }
+    }
+
+    /// The focus moved: a text entry selects all its text (VGUI), a list
+    /// open closes.
+    fn focus_changed(&mut self) {
+        self.combo = None;
+        self.editing = None;
+        if let Some(Row::Control {
+            control: Control::Text { text, .. },
+            ..
+        }) = self.rows().get(self.focus)
+        {
+            let n = text.chars().count();
+            self.caret = Caret { at: n, anchor: 0 };
+        }
+    }
+
+    /// An edit to the focused text entry; the value follows.
+    fn edit(&mut self, edit: Edit, out: &mut Outcome) {
+        let rows = self.rows();
+        let Some(Row::Control {
+            field,
+            control: Control::Text { text, numeric, max },
+            ..
+        }) = rows.get(self.focus)
+        else {
+            return;
+        };
+        let mut text = text.clone();
+        let edit = match edit {
+            Edit::Insert(s) if *numeric => Edit::Insert(s.chars().filter(|c| c.is_ascii_digit() || *c == '.').collect()),
+            e => e,
+        };
+        let mut caret = self.caret;
+        let changed = caret.edit(&mut text, edit, 256);
+        if text.chars().count() > *max {
+            return;
+        }
+        self.caret = caret;
+        if changed {
+            self.set_text(*field, text, out);
+        }
+    }
+
+    /// A text entry's new text.
+    fn set_text(&mut self, field: Field, text: String, out: &mut Outcome) {
+        match field {
+            Field::BotCount => self.new_game.bot_count = text,
+            Field::ServerCvar(i) => self.new_game.cvars[i].value = text,
+            Field::SettingText(i) => {
+                self.editing = Some((field, text.clone()));
+                // Set once it reads as a number in range.
+                if let (SettingKind::Range { min, max, .. }, Ok(v)) = (SETTINGS[i].kind, text.trim().parse::<f32>())
+                    && (min..=max).contains(&v)
+                {
+                    self.set_value(i, text.trim().to_string(), out);
+                }
+            }
+            _ => {}
+        }
     }
 
     /// The focused keyboard action is the selected one.
@@ -1100,8 +1875,8 @@ impl GameMenu {
     /// The open list's length and rows shown (0, 0 without one).
     pub fn list(&self) -> (usize, usize) {
         match self.page {
-            Page::Maps => (self.maps.len(), MAP_ROWS),
-            Page::Settings if self.tab == Tab::Keyboard => (self.rows().len() - KEY_BUTTONS - 1, KEY_ROWS),
+            Page::Settings if self.tab == Tab::Keyboard => (self.rows().len() - KEY_BUTTONS - 3, KEY_ROWS),
+            Page::NewGame if self.create_tab == 1 => (self.rows().len() - 2, GAME_ROWS),
             _ => (0, 0),
         }
     }
@@ -1123,77 +1898,44 @@ impl GameMenu {
         self.scroll = self.scroll.min(len.saturating_sub(shown));
     }
 
-    /// The Advanced dialog's settings, in the game's order (its layout's
-    /// check boxes, else `options::KEYBOARD_ADVANCED`'s): index in
-    /// `SETTINGS` and label (the layout's text, else the setting's).
-    pub fn advanced_settings(&self) -> Vec<(usize, String)> {
-        let layout = self.ui.0.as_ref().and_then(|u| u.options.get("keyboard_advanced"));
-        let named = |field: &str| {
-            KEYBOARD_ADVANCED
-                .iter()
-                .find(|(f, _)| f.eq_ignore_ascii_case(field))
-                .and_then(|(_, cvar)| setting_index(cvar))
-        };
-        let from_layout: Vec<(usize, String)> = layout
-            .map(|l| {
-                l.controls
-                    .iter()
-                    .filter(|c| matches!(&c.kind, crate::map::hud::UiKind::Other(k) if k.eq_ignore_ascii_case("CheckButton")))
-                    .filter_map(|c| Some((named(&c.name)?, c.text.clone())))
-                    .collect()
-            })
-            .unwrap_or_default();
-        if !from_layout.is_empty() {
-            return from_layout;
-        }
-        KEYBOARD_ADVANCED
-            .iter()
-            .filter_map(|(field, _)| named(field))
-            .map(|i| {
-                let s = &SETTINGS[i];
-                (i, s.token.and_then(|t| self.game_text(t)).unwrap_or_else(|| s.label.to_string()))
-            })
-            .collect()
-    }
-
-    /// Cancel the Advanced dialog: its settings back as they were.
-    fn cancel_advanced(&mut self, out: &mut Outcome) {
-        for (s, before) in std::mem::take(&mut self.advanced_before) {
-            if let Some(v) = before {
+    /// Put settings back as they were.
+    fn restore(&mut self, before: Vec<(usize, Option<String>)>, out: &mut Outcome) {
+        for (s, before) in before {
+            if let Some(v) = before
+                && self.values.get(s) != Some(&Some(v.clone()))
+            {
                 self.set_value(s, v, out);
             }
         }
-        self.back_to_keyboard();
-    }
-
-    /// From the Advanced dialog back to the keyboard tab, its button
-    /// focused.
-    fn back_to_keyboard(&mut self) {
-        self.page = Page::Settings;
-        self.tab = Tab::Keyboard;
-        self.focus = self
-            .rows()
-            .iter()
-            .position(|r| matches!(r, Row::Button { action: Action::Advanced, .. }))
-            .unwrap_or(0);
     }
 
     fn close(&mut self, out: &mut Outcome) {
         self.open = false;
         self.capture = None;
+        self.combo = None;
         out.close = true;
     }
 
-    /// Back to the main page, its entry focused (to the new game page from
-    /// the map list).
+    /// Back to the main page, its entry focused (from an Advanced dialog:
+    /// the options, its button focused).
     fn back(&mut self) {
         self.capture = None;
+        self.combo = None;
         self.scroll = 0;
         match self.page {
             Page::Main => {}
-            Page::Maps => {
-                self.page = Page::NewGame;
-                self.focus = 0;
+            Page::KeyboardAdvanced | Page::VideoAdvanced => {
+                let action = if self.page == Page::KeyboardAdvanced {
+                    Action::Advanced
+                } else {
+                    Action::VideoAdvanced
+                };
+                self.page = Page::Settings;
+                self.focus = self
+                    .rows()
+                    .iter()
+                    .position(|r| matches!(r, Row::Button { action: a, .. } if *a == action))
+                    .unwrap_or(0);
             }
             page => {
                 self.focus = self.entries().iter().position(|e| e.item.page() == Some(page)).unwrap_or(0);
@@ -1204,11 +1946,18 @@ impl GameMenu {
 
     fn main(&mut self, item: MainItem, out: &mut Outcome) {
         if let Some(page) = item.page() {
-            self.page = page;
-            self.scroll = 0;
-            self.key_row = None;
-            self.focus = self.first_focusable_from(0, 1);
-            self.select_focused_key();
+            // Another dialog in its place: changes made so far stay (CS:S
+            // keeps both open; here the one shown gives way).
+            if page != self.page {
+                self.advanced_before.clear();
+                self.options_before.clear();
+            }
+            if page == Page::NewGame {
+                self.create_tab = 0;
+            }
+            if self.page != page {
+                self.go_to(page);
+            }
             return;
         }
         match item {
@@ -1239,12 +1988,14 @@ impl GameMenu {
             }
             MainItem::Console => out.lines.push("toggleconsole".into()),
             MainItem::FindServers => out.lines.push("openserverbrowser".into()),
-            MainItem::NewGame | MainItem::Bots | MainItem::Team | MainItem::Options => {}
+            MainItem::NewGame | MainItem::Bots | MainItem::Team | MainItem::Options | MainItem::Extras => {}
         }
     }
 
-    /// Press row `i` (`step` -1/+1: its arrows).
-    fn activate(&mut self, i: usize, step: i32, out: &mut Outcome) {
+    /// Press row `i` (Space, a click): a button presses, a check box
+    /// ticks, a radio button picks, a combo box opens its list, a list row
+    /// waits for a key.
+    fn activate(&mut self, i: usize, out: &mut Outcome) {
         let Some(row) = self.rows().into_iter().nth(i) else {
             return;
         };
@@ -1254,92 +2005,156 @@ impl GameMenu {
                 self.key_row = Some(i);
                 self.capture = Some(command);
             }
-            Row::Value { field, .. } => {
-                if step == 0 && field == Field::Map && !self.maps.is_empty() {
-                    self.page = Page::Maps;
-                    self.focus = self.new_game.map;
-                } else {
-                    self.change(field, if step == 0 { 1 } else { step }, out);
-                }
-            }
-            Row::Button { action, .. } => match action {
-                Action::Main(item) => self.main(item, out),
-                Action::Back => self.back(),
-                Action::PickMap(m) => {
-                    self.new_game.map = m;
-                    self.page = Page::NewGame;
-                    self.focus = 0;
-                }
-                Action::Run(line, close) => {
-                    out.lines.push(line);
-                    if close {
-                        self.close(out);
+            Row::Control { field, control, .. } => match control {
+                Control::Combo { entries, selected, .. } => {
+                    if !entries.is_empty() {
+                        self.combo = Some(ComboList::open(i, entries.len(), selected.unwrap_or(0)));
                     }
                 }
-                Action::Start => self.start(out),
-                Action::EditKey => {
-                    if let Some(Row::Bind { command, .. }) = self.key_row.and_then(|r| self.rows().into_iter().nth(r)) {
-                        self.capture = Some(command);
-                    }
-                }
-                Action::ClearKey => {
-                    if let Some(Row::Bind { command, .. }) = self.key_row.and_then(|r| self.rows().into_iter().nth(r))
-                        && let Some(line) = binds::clear_line(&self.binds, &command)
-                    {
-                        self.binds.retain(|_, v| !v.trim().eq_ignore_ascii_case(command.trim()));
-                        out.lines.push(line);
-                    }
-                }
-                Action::DefaultBinds => {
-                    binds::bind_defaults(&mut self.binds, true);
-                    out.lines.push("binddefaults".into());
-                }
-                Action::Advanced => {
-                    self.advanced_before = self
-                        .advanced_settings()
-                        .into_iter()
-                        .map(|(s, _)| (s, self.values.get(s).cloned().flatten()))
-                        .collect();
-                    self.page = Page::KeyboardAdvanced;
-                    self.focus = self.first_focusable_from(0, 1);
-                }
-                Action::AdvancedOk => {
-                    self.advanced_before.clear();
-                    self.back_to_keyboard();
-                }
-                Action::AdvancedCancel => self.cancel_advanced(out),
+                Control::Check(_) | Control::Radio(_) => self.change(field, 1, true, out),
+                Control::Slider { .. } | Control::Text { .. } => {}
             },
+            Row::Button { action, .. } => self.press_action_into(&action, out),
         }
     }
 
-    /// Step a value; settings apply at once.
-    fn change(&mut self, field: Field, dir: i32, out: &mut Outcome) {
+    /// Press a button by what it does (`menu advanced` opens a dialog so).
+    pub fn press_action(&mut self, action: &Action) -> Outcome {
+        let mut out = Outcome::default();
+        self.press_action_into(action, &mut out);
+        out
+    }
+
+    fn press_action_into(&mut self, action: &Action, out: &mut Outcome) {
+        match action.clone() {
+            Action::Main(item) => self.main(item, out),
+            Action::Back => self.back(),
+            Action::Run(line, close) => {
+                out.lines.push(line);
+                if close {
+                    self.close(out);
+                }
+            }
+            Action::Start => self.start(out),
+            Action::EditKey => {
+                if let Some(Row::Bind { command, .. }) = self.key_row.and_then(|r| self.rows().into_iter().nth(r)) {
+                    self.capture = Some(command);
+                }
+            }
+            Action::ClearKey => {
+                if let Some(Row::Bind { command, .. }) = self.key_row.and_then(|r| self.rows().into_iter().nth(r))
+                    && let Some(line) = binds::clear_line(&self.binds, &command)
+                {
+                    self.binds.retain(|_, v| !v.trim().eq_ignore_ascii_case(command.trim()));
+                    out.lines.push(line);
+                }
+            }
+            Action::DefaultBinds => {
+                binds::bind_defaults(&mut self.binds, true);
+                out.lines.push("binddefaults".into());
+            }
+            Action::Advanced | Action::VideoAdvanced => {
+                let (page, place) = if *action == Action::Advanced {
+                    (Page::KeyboardAdvanced, Place::KeyboardAdvanced)
+                } else {
+                    (Page::VideoAdvanced, Place::VideoAdvanced)
+                };
+                self.advanced_before = self.snapshot(|s| s.place == place);
+                self.go_to(page);
+            }
+            Action::Ok => match self.page {
+                Page::KeyboardAdvanced | Page::VideoAdvanced => {
+                    self.advanced_before.clear();
+                    self.back();
+                }
+                _ => {
+                    self.options_before.clear();
+                    self.back();
+                }
+            },
+            Action::Cancel => match self.page {
+                Page::KeyboardAdvanced | Page::VideoAdvanced => {
+                    let before = std::mem::take(&mut self.advanced_before);
+                    self.restore(before, out);
+                    self.back();
+                }
+                Page::Settings | Page::Extras => {
+                    let before = std::mem::take(&mut self.options_before);
+                    self.restore(before, out);
+                    self.back();
+                }
+                _ => self.back(),
+            },
+            Action::Apply => {
+                self.options_before = self.snapshot(|_| true);
+            }
+        }
+    }
+
+    /// Step a value (`dir`), a check box ticked or radio picked; `wrap`:
+    /// choices wrap round (else stop at their ends, as a combo box
+    /// stepped). Settings apply at once (the options' Cancel puts them
+    /// back).
+    fn change(&mut self, field: Field, dir: i32, wrap: bool, out: &mut Outcome) {
         let ng = &mut self.new_game;
-        let bots = |n: u8| (n as i32 + dir).clamp(0, MAX_BOTS as i32) as u8;
         match field {
             Field::Map => {
                 if !self.maps.is_empty() {
-                    ng.map = (ng.map as i32 + dir).rem_euclid(self.maps.len() as i32) as usize;
+                    let k = widgets::combo_step(ng.map, self.maps.len(), dir);
+                    ng.map = k;
                 }
             }
-            Field::Mode => {
-                ng.mode = match ng.mode {
-                    Mode::Deathmatch => Mode::Rounds,
-                    Mode::Rounds => Mode::Deathmatch,
+            Field::BotsOn => ng.bots_on = !ng.bots_on,
+            Field::BotCount => {}
+            Field::Difficulty(k) => ng.difficulty = k,
+            Field::BotTeam => ng.bot_team = widgets::combo_step(ng.bot_team, BOT_TEAMS.len(), dir),
+            Field::ServerCvar(i) => {
+                let c = &mut ng.cvars[i];
+                match &c.kind {
+                    ServerSettingKind::Bool => {
+                        let on = c.value.trim().parse::<f32>().is_ok_and(|v| v != 0.0);
+                        c.value = if on { "0" } else { "1" }.into();
+                    }
+                    ServerSettingKind::List(items) => {
+                        let at = items.iter().position(|(_, v)| v.trim() == c.value.trim()).unwrap_or(0);
+                        c.value = items[widgets::combo_step(at, items.len(), dir)].1.clone();
+                    }
+                    _ => {}
                 }
             }
-            Field::BotsT => ng.bots_t = bots(ng.bots_t),
-            Field::BotsCt => ng.bots_ct = bots(ng.bots_ct),
-            Field::Difficulty => {
-                ng.difficulty = (ng.difficulty as i32 + dir).clamp(0, DIFFICULTIES.len() as i32 - 1) as usize
-            }
-            Field::Setting(i) => {
+            Field::Setting(i) | Field::SettingText(i) => {
                 let (Some(setting), Some(Some(current))) = (SETTINGS.get(i), self.values.get(i)) else {
                     return;
                 };
-                let next = setting.step(current, dir, &self.resolutions);
+                let next = setting.step_with(current, dir, &self.resolutions, wrap);
                 self.set_value(i, next, out);
             }
+        }
+    }
+
+    /// Pick entry `k` of a combo box.
+    fn pick(&mut self, field: Field, k: usize, out: &mut Outcome) {
+        match field {
+            Field::Map => {
+                if k < self.maps.len() {
+                    self.new_game.map = k;
+                }
+            }
+            Field::BotTeam => self.new_game.bot_team = k.min(BOT_TEAMS.len() - 1),
+            Field::ServerCvar(i) => {
+                if let ServerSettingKind::List(items) = &self.new_game.cvars[i].kind
+                    && let Some((_, v)) = items.get(k)
+                {
+                    self.new_game.cvars[i].value = v.clone();
+                }
+            }
+            Field::Setting(i) => {
+                let none = |_: &str| None;
+                if let Some((v, _)) = SETTINGS[i].entries(&self.resolutions, &none).into_iter().nth(k) {
+                    self.set_value(i, v, out);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1365,16 +2180,25 @@ impl GameMenu {
         let ng = &self.new_game;
         let map = self.maps.get(ng.map)?;
         let (_, reaction, aim, turn) = DIFFICULTIES[ng.difficulty];
-        let lines = vec![
-            "bot_kick".to_string(),
-            format!("mashup_rounds {}", (ng.mode == Mode::Rounds) as u8),
+        let rounds = self
+            .server_cvar(ROUNDS_CVAR)
+            .is_some_and(|c| c.value.trim().parse::<f32>().is_ok_and(|v| v != 0.0));
+        let mut lines = vec!["bot_kick".to_string(), format!("{ROUNDS_CVAR} {}", rounds as u8)];
+        // The Game and Bot pages' cvars that changed.
+        for c in &ng.cvars {
+            if c.cvar != ROUNDS_CVAR && c.before.as_ref().is_some_and(|b| b.trim() != c.value.trim()) {
+                lines.push(format!("{} {}", c.cvar, crate::console::quote(&c.value)));
+            }
+        }
+        lines.extend([
             format!("bot_reaction {reaction}"),
             format!("bot_aim_error {aim}"),
             format!("bot_turn_rate {turn}"),
             format!("map {}", crate::console::quote(map)),
-        ];
-        let after = std::iter::repeat_n("bot_add 1".to_string(), ng.bots_t as usize)
-            .chain(std::iter::repeat_n("bot_add 2".to_string(), ng.bots_ct as usize))
+        ]);
+        let (t, ct) = ng.split();
+        let after = std::iter::repeat_n("bot_add 1".to_string(), t as usize)
+            .chain(std::iter::repeat_n("bot_add 2".to_string(), ct as usize))
             .collect();
         Some((lines, after))
     }
@@ -1390,6 +2214,70 @@ impl GameMenu {
             .map(|k| (i as i32 + dir * k as i32).rem_euclid(n as i32) as usize)
             .find(|&r| rows[r].focusable())
             .unwrap_or(0)
+    }
+}
+
+/// The next entry after `from` starting with `c` (wrapping), as VGUI's
+/// combo boxes jump on a typed letter.
+fn jump(entries: &[String], from: usize, c: char) -> Option<usize> {
+    let n = entries.len();
+    let c = c.to_ascii_lowercase();
+    (1..=n)
+        .map(|k| (from + k) % n)
+        .find(|&i| entries[i].to_ascii_lowercase().starts_with(c))
+}
+
+/// A layout control's VGUI class (`ComboBox`, `CCvarSlider` ...).
+pub(super) fn class_of(c: &UiControl) -> &str {
+    match &c.kind {
+        UiKind::Other(class) => class,
+        UiKind::Label => "Label",
+        UiKind::Button => "Button",
+        UiKind::Image => "ImagePanel",
+        UiKind::RichText => "RichText",
+        UiKind::Panel => "Panel",
+        UiKind::Divider => "Divider",
+        UiKind::Frame => "Frame",
+    }
+}
+
+/// `menuinput`'s words as an input.
+fn menu_input(menu: &GameMenu, a: &[String]) -> Result<Input, String> {
+    let rows = menu.rows();
+    let word = a.first().map(|s| s.to_lowercase());
+    match word.as_deref() {
+        Some("focus") => {
+            let what = a.get(1).map(|s| s.to_lowercase()).ok_or("focus <cvar|map|bots|botcount|botteam|difficulty>")?;
+            let i = rows
+                .iter()
+                .position(|r| match r.field() {
+                    Some(Field::Map) => what == "map",
+                    Some(Field::BotsOn) => what == "bots",
+                    Some(Field::BotCount) => what == "botcount",
+                    Some(Field::BotTeam) => what == "botteam",
+                    Some(Field::Difficulty(_)) => what == "difficulty",
+                    Some(Field::ServerCvar(i)) => menu.new_game.cvars[i].cvar == what,
+                    Some(Field::Setting(i)) => SETTINGS[i].cvar == what,
+                    _ => false,
+                })
+                .ok_or(format!("no control \"{what}\" on this page"))?;
+            Ok(Input::FocusRow(i))
+        }
+        Some("open") => Ok(Input::Space),
+        Some("down") => Ok(Input::Down),
+        Some("up") => Ok(Input::Up),
+        Some("enter") => Ok(Input::Activate),
+        Some("space") => Ok(Input::Space),
+        Some("escape") => Ok(Input::Close),
+        Some("tab") => Ok(Input::Focus(1)),
+        Some("backtab") => Ok(Input::Focus(-1)),
+        Some("type") => Ok(Input::Type(a[1..].join(" "))),
+        Some("pick") => Ok(Input::Click(
+            Target::ComboItem(a.get(1).and_then(|n| n.parse().ok()).ok_or("pick <n>")?),
+            0,
+        )),
+        Some("sheet") => Ok(Input::Click(Target::Tab(a.get(1).and_then(|n| n.parse().ok()).ok_or("sheet <n>")?), 0)),
+        _ => Err("menuinput focus <control> | open | down | up | enter | space | escape | tab | backtab | type <text> | pick <n> | sheet <n>".into()),
     }
 }
 
@@ -1411,14 +2299,11 @@ struct AfterLoad {
 #[derive(Resource, Default)]
 struct RegrabCursor(bool);
 
-/// The install's GameUI look, read in the background at startup, and its
-/// map thumbnails as images.
+/// The install's GameUI look, read in the background at startup.
 #[derive(Resource, Default)]
 struct MenuUi {
     loading: Option<Arc<Mutex<Option<Option<GameUi>>>>>,
     ui: Option<Arc<GameUi>>,
-    /// By map: the picture and its height over its width.
-    thumbs: HashMap<String, (Handle<Image>, f32)>,
     /// The main menu's backgrounds: 4:3, widescreen.
     backgrounds: [Option<Handle<Image>>; 2],
     /// The title's font, its height in scheme pixels and its line height
@@ -1501,11 +2386,6 @@ fn ui_loaded(
         info!("game menu: no GameUI files in the install, built-in look");
         return;
     };
-    for (map, pic) in &game_ui.thumbnails {
-        let handle = ui_image(pic, &mut images);
-        ui.thumbs
-            .insert(map.clone(), (handle, pic.height as f32 / pic.width.max(1) as f32));
-    }
     ui.backgrounds = [&game_ui.background, &game_ui.background_wide].map(|p| p.as_ref().map(|p| ui_image(p, &mut images)));
     ui.title_font = game_ui
         .title_font
@@ -1516,12 +2396,12 @@ fn ui_loaded(
         });
     ui_fonts.set_source(&game_ui);
     info!(
-        "game menu: GameUI look ({} entries, {} keyboard actions, {} option pages, {} map thumbnails, \
-         {} main menu backgrounds, title {:?}{})",
+        "game menu: GameUI look ({} entries, {} keyboard actions, {} option and Create Server pages, {} server \
+         options, {} main menu backgrounds, title {:?}{})",
         game_ui.menu.len(),
         game_ui.actions.len(),
         game_ui.options.len(),
-        game_ui.thumbnails.len(),
+        game_ui.server_settings.len(),
         ui.backgrounds.iter().flatten().count(),
         game_ui.title,
         if ui.title_font.is_some() { " in its font" } else { "" },
@@ -1534,14 +2414,18 @@ fn ui_loaded(
 /// Open the menu on a page, reading the settings from the console.
 fn open_menu(w: &mut World, page: Page) {
     let (get, binds, known) = {
+        let mut names: Vec<String> = SETTINGS
+            .iter()
+            .map(|s| s.cvar.to_string())
+            .chain([ROUNDS_CVAR.to_string(), "bot_reaction".into()])
+            .chain(BOT_CVARS.iter().map(|(_, c, _)| c.to_string()))
+            .collect();
+        if let Some(ui) = w.get_resource::<MenuUi>().and_then(|u| u.ui.clone()) {
+            names.extend(ui.server_settings.iter().map(|s| s.cvar.clone()));
+        }
         let cvars: Vec<_> = {
             let console = w.resource::<Console>();
-            SETTINGS
-                .iter()
-                .map(|s| s.cvar)
-                .chain(["mashup_rounds", "bot_reaction"])
-                .filter_map(|n| console.cvar(n).cloned())
-                .collect()
+            names.iter().filter_map(|n| console.cvar(n).cloned()).collect()
         };
         let console = w.resource::<Console>();
         let binds = console.binds.clone();
@@ -1589,6 +2473,11 @@ fn open_menu(w: &mut World, page: Page) {
     if let Some(mut r) = w.get_resource_mut::<super::radio::RadioMenu>() {
         r.0 = None;
     }
+    if page != Page::Main
+        && let Some(mut windows) = w.get_resource_mut::<Windows>()
+    {
+        windows.raise(page.window());
+    }
     w.resource_mut::<RegrabCursor>().0 = false;
 }
 
@@ -1634,6 +2523,7 @@ pub(super) fn joining(w: &mut World, label: &str) {
     menu.open = true;
     menu.page = Page::Main;
     menu.capture = None;
+    menu.combo = None;
 }
 
 /// Joining (or the game) failed: the loading dialog says why, in the
@@ -1722,6 +2612,42 @@ fn apply(input: Input, menu: &mut ResMut<GameMenu>, console: &mut Console, after
     if out.close {
         regrab.0 = true;
     }
+    if let Some(text) = out.clipboard
+        && let Err(e) = arboard::Clipboard::new().and_then(|mut c| c.set_text(text))
+    {
+        warn!("clipboard: {e}");
+    }
+}
+
+/// Whether the menu's dialog takes the keys: no other window over it
+/// (the server browser in front, the first-run dialog).
+fn menu_has_keys(
+    menu: &GameMenu,
+    browser: Option<&super::server_browser::ServerBrowser>,
+    first_run: Option<&super::first_run::FirstRun>,
+    windows: Option<&Windows>,
+) -> bool {
+    if first_run.is_some_and(|f| f.open) {
+        return false;
+    }
+    if !browser.is_some_and(|b| b.open) {
+        return true;
+    }
+    // The browser and a dialog of the menu both open: the front one.
+    menu.page != Page::Main
+        && windows.is_some_and(|w| w.front(&[super::server_browser::WINDOW, menu.page.window()]) == Some(menu.page.window()))
+}
+
+/// The focused row is a text entry (typing goes to it: `text_keys`).
+fn typing(menu: &GameMenu) -> bool {
+    menu.combo.is_none()
+        && matches!(
+            menu.rows().get(menu.focus),
+            Some(Row::Control {
+                control: Control::Text { .. },
+                ..
+            })
+        )
 }
 
 const LETTERS: [(KeyCode, char); 36] = [
@@ -1763,10 +2689,12 @@ const LETTERS: [(KeyCode, char); 36] = [
     (KeyCode::Digit9, '9'),
 ];
 
-/// Esc opens and closes the menu; arrows, Enter, Space, Backspace, Tab and
-/// letters drive it; while a keyboard action waits for a key, the next
-/// key, button or wheel notch is its new key. Runs before the console's
-/// toggle, so the Esc that closes the console doesn't open the menu.
+/// Esc opens and closes the menu; arrows, Enter, Space, Backspace, Tab
+/// (Ctrl+Tab: the property sheet's tabs) and letters drive it; while a
+/// keyboard action waits for a key, the next key, button or wheel notch
+/// is its new key. Typing into a text entry is `text_keys`'. Runs before
+/// the console's toggle, so the Esc that closes the console doesn't open
+/// the menu.
 #[allow(clippy::too_many_arguments)]
 fn keys(
     keys: Res<ButtonInput<KeyCode>>,
@@ -1777,11 +2705,13 @@ fn keys(
     mut after: ResMut<AfterLoad>,
     mut regrab: ResMut<RegrabCursor>,
     mut commands: Commands,
-    browser: Option<Res<super::server_browser::ServerBrowser>>,
-    first_run: Option<Res<super::first_run::FirstRun>>,
+    (browser, first_run, windows): (
+        Option<Res<super::server_browser::ServerBrowser>>,
+        Option<Res<super::first_run::FirstRun>>,
+        Option<Res<Windows>>,
+    ),
 ) {
-    // The server browser or first-run dialog over the menu takes the keys.
-    if ui.open || browser.is_some_and(|b| b.open) || first_run.is_some_and(|f| f.open) {
+    if ui.open || !menu_has_keys(&menu, browser.as_deref(), first_run.as_deref(), windows.as_deref()) {
         return;
     }
     if !menu.open {
@@ -1802,60 +2732,134 @@ fn keys(
         }
         return;
     }
-    let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+    let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+    let ctrl = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
+    let tab = if shift { -1 } else { 1 };
+    let text = typing(&menu);
     let mut inputs = Vec::new();
     for (key, input) in [
-        (KeyCode::Escape, Input::Close),
-        (KeyCode::ArrowUp, Input::Up),
-        (KeyCode::ArrowDown, Input::Down),
-        (KeyCode::ArrowLeft, Input::Left),
-        (KeyCode::ArrowRight, Input::Right),
-        (KeyCode::Enter, Input::Activate),
-        (KeyCode::NumpadEnter, Input::Activate),
-        (KeyCode::Space, Input::Activate),
-        (KeyCode::Backspace, Input::Back),
-        (KeyCode::Tab, Input::NextTab(if shift { -1 } else { 1 })),
-        (KeyCode::PageUp, Input::Scroll(-(KEY_ROWS as i32))),
-        (KeyCode::PageDown, Input::Scroll(KEY_ROWS as i32)),
+        (KeyCode::Escape, Some(Input::Close)),
+        (KeyCode::ArrowUp, Some(Input::Up)),
+        (KeyCode::ArrowDown, Some(Input::Down)),
+        (KeyCode::ArrowLeft, (!text).then_some(Input::Left)),
+        (KeyCode::ArrowRight, (!text).then_some(Input::Right)),
+        (KeyCode::Enter, Some(Input::Activate)),
+        (KeyCode::NumpadEnter, Some(Input::Activate)),
+        (KeyCode::Space, (!text).then_some(Input::Space)),
+        (KeyCode::Backspace, (!text).then_some(Input::Back)),
+        (KeyCode::Tab, Some(if ctrl { Input::NextTab(tab) } else { Input::Focus(tab) })),
+        (KeyCode::PageUp, Some(Input::Scroll(-(KEY_ROWS as i32)))),
+        (KeyCode::PageDown, Some(Input::Scroll(KEY_ROWS as i32))),
     ] {
-        if keys.just_pressed(key) {
+        if keys.just_pressed(key)
+            && let Some(input) = input
+        {
             inputs.push(input);
         }
     }
-    inputs.extend(LETTERS.iter().filter(|(k, _)| keys.just_pressed(*k)).map(|(_, c)| Input::Char(*c)));
+    if !text && !ctrl {
+        inputs.extend(LETTERS.iter().filter(|(k, _)| keys.just_pressed(*k)).map(|(_, c)| Input::Char(*c)));
+    }
     for input in inputs {
         apply(input, &mut menu, &mut console, &mut after, &mut regrab);
     }
 }
 
-/// What a UI node stands for: a row (step 0) or one of its arrows.
+/// Typing into the focused text entry: characters, Backspace, Delete,
+/// the arrows, Home and End (Shift selects), Ctrl+A, Ctrl+C, Ctrl+X,
+/// Ctrl+V.
+#[allow(clippy::too_many_arguments)]
+fn text_keys(
+    mut events: MessageReader<KeyboardInput>,
+    held: Res<ButtonInput<KeyCode>>,
+    ui: Res<super::console::ConsoleUi>,
+    mut menu: ResMut<GameMenu>,
+    mut console: ResMut<Console>,
+    mut after: ResMut<AfterLoad>,
+    mut regrab: ResMut<RegrabCursor>,
+    (browser, first_run, windows): (
+        Option<Res<super::server_browser::ServerBrowser>>,
+        Option<Res<super::first_run::FirstRun>>,
+        Option<Res<Windows>>,
+    ),
+) {
+    let live = menu.open
+        && !ui.open
+        && menu.capture.is_none()
+        && typing(&menu)
+        && menu_has_keys(&menu, browser.as_deref(), first_run.as_deref(), windows.as_deref());
+    if !live {
+        events.clear();
+        return;
+    }
+    let shift = held.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+    let ctrl = held.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight, KeyCode::SuperLeft, KeyCode::SuperRight]);
+    for e in events.read() {
+        if e.state != ButtonState::Pressed {
+            continue;
+        }
+        let input = match (&e.logical_key, e.key_code) {
+            (_, KeyCode::KeyA) if ctrl => Input::Edit(Edit::SelectAll),
+            (_, KeyCode::KeyC) if ctrl => Input::Copy,
+            (_, KeyCode::KeyX) if ctrl => Input::Cut,
+            (_, KeyCode::KeyV) if ctrl => {
+                let text = arboard::Clipboard::new().and_then(|mut c| c.get_text()).unwrap_or_default();
+                Input::Type(text.lines().next().unwrap_or("").to_string())
+            }
+            (_, KeyCode::ArrowLeft) => Input::Edit(Edit::Left(shift)),
+            (_, KeyCode::ArrowRight) => Input::Edit(Edit::Right(shift)),
+            (_, KeyCode::Home) => Input::Edit(Edit::Home(shift)),
+            (_, KeyCode::End) => Input::Edit(Edit::End(shift)),
+            (_, KeyCode::Delete) => Input::Edit(Edit::Delete),
+            (Key::Backspace, _) => Input::Edit(Edit::Backspace),
+            (Key::Space, _) => Input::Type(" ".into()),
+            (Key::Character(s), _) if !ctrl => Input::Type(s.to_string()),
+            _ => continue,
+        };
+        apply(input, &mut menu, &mut console, &mut after, &mut regrab);
+    }
+}
+
+/// What a UI node stands for: a row (step 0) or one of its parts.
 #[derive(Component, Clone, Copy)]
 struct Hit(Target, i32);
 
-/// A slider's track: pressing or dragging along it sets its row's value.
+/// A combo box row the wheel steps.
 #[derive(Component, Clone, Copy)]
-struct SliderTrack(usize);
+struct WheelCombo(usize);
+
+/// A text entry row: a click places its caret.
+#[derive(Component, Clone)]
+struct TextHit {
+    row: usize,
+    shown: String,
+    width: f32,
+}
 
 /// A list the wheel scrolls.
 #[derive(Component)]
 struct WheelList;
 
 /// Hovering focuses, clicking presses, the wheel scrolls a list under the
-/// mouse, a pressed slider follows the mouse.
+/// mouse (or an open combo box's list, or steps a combo box), a held
+/// slider follows the mouse.
 #[allow(clippy::too_many_arguments)]
 fn pointer(
     hits: Query<(&Interaction, &Hit), Changed<Interaction>>,
-    sliders: Query<(&Interaction, &SliderTrack, &RelativeCursorPosition)>,
+    texts: Query<(&Interaction, &TextHit, &RelativeCursorPosition), Changed<Interaction>>,
     lists: Query<&RelativeCursorPosition, With<WheelList>>,
+    combos: Query<(&WheelCombo, &RelativeCursorPosition)>,
     scroll: Option<Res<AccumulatedMouseScroll>>,
+    slider: Res<SliderDrag>,
+    fonts: Res<UiFonts>,
+    windows_q: Query<&Window>,
     mut menu: ResMut<GameMenu>,
     mut console: ResMut<Console>,
     mut after: ResMut<AfterLoad>,
     mut regrab: ResMut<RegrabCursor>,
-    browser: Option<Res<super::server_browser::ServerBrowser>>,
-    first_run: Option<Res<super::first_run::FirstRun>>,
+    (browser, first_run): (Option<Res<super::server_browser::ServerBrowser>>, Option<Res<super::first_run::FirstRun>>),
 ) {
-    if !menu.open || menu.capture.is_some() || browser.is_some_and(|b| b.open) || first_run.is_some_and(|f| f.open) {
+    if !menu.open || menu.capture.is_some() || first_run.is_some_and(|f| f.open) {
         return;
     }
     let mut inputs: Vec<Input> = hits
@@ -1866,23 +2870,44 @@ fn pointer(
             Interaction::None => None,
         })
         .collect();
-    for (i, track, at) in &sliders {
+    let height = windows_q.iter().next().map_or(720.0, Window::height);
+    for (i, hit, at) in &texts {
         if *i == Interaction::Pressed
             && let Some(p) = at.normalized
         {
-            inputs.push(Input::Slide(track.0, p.x + 0.5));
+            let look = Look {
+                ui: menu.ui.0.as_deref(),
+                fonts: &fonts,
+                s: (height / 720.0).clamp(0.6, 3.0),
+                height,
+                accent: Color::WHITE,
+            };
+            let caret = (menu.focus == hit.row).then_some(menu.caret);
+            let at = widgets::caret_from_click(&fonts, &look.default_font(), look.s, &hit.shown, hit.width, p.x + 0.5, caret);
+            inputs.push(Input::Click(Target::Row(hit.row), 0));
+            inputs.push(Input::Caret(hit.row, at));
         }
+    }
+    if let Some((SliderOwner::Menu, row, f)) = slider.at
+        && slider.is_changed()
+    {
+        inputs.push(Input::Slide(row, f));
     }
     if let Some(scroll) = scroll
         && scroll.delta.y != 0.0
-        && lists.iter().any(|l| l.cursor_over())
     {
-        let notches = match scroll.unit {
-            MouseScrollUnit::Line => scroll.delta.y.round(),
-            MouseScrollUnit::Pixel => (scroll.delta.y / 40.0).round(),
-        } as i32;
-        inputs.push(Input::Scroll(-notches * 3));
+        let notches = widgets::wheel_notches(&scroll);
+        if menu.combo.is_some() {
+            inputs.push(Input::Scroll(-notches));
+        } else if lists.iter().any(|l| l.cursor_over()) {
+            inputs.push(Input::Scroll(-notches * 3));
+        } else if let Some((c, _)) = combos.iter().find(|(_, r)| r.cursor_over()) {
+            inputs.push(Input::Wheel(c.0, notches));
+        }
     }
+    // The browser in front of the dialog: its own (Bevy's picking already
+    // stops at the frame in front).
+    let _ = browser;
     for input in inputs {
         apply(input, &mut menu, &mut console, &mut after, &mut regrab);
     }
@@ -1985,197 +3010,38 @@ fn after_load(w: &mut World) {
 #[derive(Component)]
 struct MenuRoot;
 
-/// Colours, sizes and fonts: the GameUI scheme's, else built in.
-pub(super) struct Look<'a> {
-    pub ui: Option<&'a GameUi>,
-    pub fonts: &'a UiFonts,
-    /// Pixels per scheme pixel (GameUI is drawn in screen pixels; larger
-    /// windows scale it up).
-    pub s: f32,
-    pub height: f32,
-    pub accent: Color,
+/// What a page is drawn with: the root (open lists' outside clicks), the
+/// look, the menu and its rows.
+struct Ctx<'a> {
+    root: Entity,
+    look: &'a Look<'a>,
+    menu: &'a GameMenu,
+    rows: &'a [Row],
 }
 
-impl<'a> Look<'a> {
-    pub(super) fn color(&self, name: &str, fallback: [u8; 4]) -> Color {
-        let [r, g, b, a] = self.ui.and_then(|u| u.color(name)).unwrap_or(fallback);
-        Color::srgba_u8(r, g, b, a)
-    }
-
-    pub(super) fn number(&self, name: &str, fallback: f32) -> f32 {
-        self.ui.and_then(|u| u.numbers.get(name).copied()).unwrap_or(fallback)
-    }
-
-    /// Built in colours stand in for the scheme's: a darker panel, our
-    /// accent for selections.
-    pub(super) fn has_scheme(&self) -> bool {
-        self.ui.is_some_and(|u| !u.colors.is_empty())
-    }
-
-    /// A GameUI scheme font (`Default`, `UiBold`, `MenuLarge`) at this
-    /// window's size: `fallback` scheme pixels tall and bold when the
-    /// scheme lacks it.
-    pub(super) fn font(&self, name: &str, fallback: (f32, bool)) -> TextFont {
-        self.fonts.source(name, self.height, self.s, fallback)
-    }
-
-    pub(super) fn frame_bg(&self) -> Color {
-        if self.has_scheme() {
-            self.color("Frame.BgColor", [160, 160, 160, 128])
-        } else {
-            Color::srgba_u8(28, 28, 28, 230)
+/// A dialog's size in scheme pixels: the layout's frame when it has one.
+fn dialog_size(menu: &GameMenu, page: Page) -> (f32, f32) {
+    match page {
+        // CS:S's options and Create Server dialogs: their pages
+        // (`OptionsSubMultiplayer.res`: 496 x 314; Create Server's: 332 x
+        // 364) in a property sheet, the buttons under it.
+        Page::Settings => (512.0, 406.0),
+        Page::NewGame => (348.0, 460.0),
+        // The layout reaches to 264 x 124.
+        Page::KeyboardAdvanced => (280.0, 134.0),
+        Page::VideoAdvanced => menu
+            .ui
+            .0
+            .as_ref()
+            .and_then(|u| u.options.get("video_advanced"))
+            .and_then(|l| l.get("OptionsSubVideoAdvancedDlg"))
+            .map_or((482.0, 358.0), |c| (c.wide, c.tall)),
+        Page::Extras => {
+            let n = menu.rows().len() as f32;
+            (420.0, 44.0 + n * 28.0 + 12.0)
         }
+        _ => (360.0, 230.0),
     }
-
-    pub(super) fn bright(&self) -> Color {
-        self.color("Border.Bright", [200, 200, 200, 196])
-    }
-
-    pub(super) fn dark(&self) -> Color {
-        self.color("Border.Dark", [40, 40, 40, 196])
-    }
-
-    pub(super) fn text(&self) -> Color {
-        self.color("Label.TextColor", [221, 221, 221, 255])
-    }
-
-    pub(super) fn dull(&self) -> Color {
-        self.color("Label.TextDullColor", [190, 190, 190, 255])
-    }
-
-    pub(super) fn disabled(&self) -> Color {
-        self.color("Label.DisabledFgColor1", [117, 117, 117, 255])
-    }
-
-    pub(super) fn white(&self) -> Color {
-        self.color("Label.TextBrightColor", [255, 255, 255, 255])
-    }
-
-    pub(super) fn selected_bg(&self) -> Color {
-        if self.has_scheme() {
-            self.color("SectionedListPanel.SelectedBgColor", [255, 155, 0, 255])
-        } else {
-            self.accent
-        }
-    }
-
-    pub(super) fn selected_text(&self) -> Color {
-        self.color("SectionedListPanel.SelectedTextColor", [0, 0, 0, 255])
-    }
-
-    pub(super) fn sunken_bg(&self) -> Color {
-        self.color("TextEntry.BgColor", [0, 0, 0, 128])
-    }
-
-    pub(super) fn px(&self, v: f32) -> Val {
-        px((v * self.s).round())
-    }
-}
-
-/// An absolutely placed box, in scheme pixels, inside `parent`.
-pub(super) fn place(look: &Look, x: f32, y: f32, w: f32, h: f32) -> Node {
-    Node {
-        position_type: PositionType::Absolute,
-        left: look.px(x),
-        top: look.px(y),
-        width: look.px(w),
-        height: look.px(h),
-        ..default()
-    }
-}
-
-/// Raised (lit top-left) or sunken (lit bottom-right) VGUI borders.
-pub(super) fn bevel(look: &Look, raised: bool) -> BorderColor {
-    let (a, b) = if raised {
-        (look.bright(), look.dark())
-    } else {
-        (look.dark(), look.bright())
-    };
-    BorderColor {
-        top: a,
-        left: a,
-        bottom: b,
-        right: b,
-    }
-}
-
-/// Text in a box: one line, vertically centred, `align` -1 left, 0
-/// centre, 1 right.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn label(
-    commands: &mut Commands,
-    parent: Entity,
-    look: &Look,
-    (x, y, w, h): (f32, f32, f32, f32),
-    text: &str,
-    font: TextFont,
-    color: Color,
-    align: i32,
-) -> Entity {
-    let node = Node {
-        display: Display::Flex,
-        align_items: AlignItems::Center,
-        justify_content: match align {
-            -1 => JustifyContent::FlexStart,
-            0 => JustifyContent::Center,
-            _ => JustifyContent::FlexEnd,
-        },
-        overflow: Overflow::clip(),
-        ..place(look, x, y, w, h)
-    };
-    let e = commands.spawn((node, ChildOf(parent))).id();
-    commands.spawn((
-        Text::new(text),
-        font,
-        TextColor(color),
-        TextLayout::new(Justify::Left, LineBreak::NoWrap),
-        ChildOf(e),
-    ));
-    e
-}
-
-/// A VGUI button: raised borders, its text, lit when focused.
-#[allow(clippy::too_many_arguments)]
-fn button(
-    commands: &mut Commands,
-    parent: Entity,
-    look: &Look,
-    rect: (f32, f32, f32, f32),
-    text: &str,
-    hit: Hit,
-    focused: bool,
-    enabled: bool,
-) -> Entity {
-    let (x, y, w, h) = rect;
-    let bg = look.color("Button.BgColor", [0, 0, 0, 0]);
-    let focus_bg = if look.has_scheme() {
-        Color::srgba(1.0, 1.0, 1.0, 0.12)
-    } else {
-        look.accent.with_alpha(0.15)
-    };
-    let e = commands
-        .spawn((
-            Node {
-                border: UiRect::all(px(1.0)),
-                ..place(look, x, y, w, h)
-            },
-            bevel(look, true),
-            BackgroundColor(if focused { focus_bg } else { bg }),
-            hit,
-            Button,
-            Interaction::default(),
-            ChildOf(parent),
-        ))
-        .id();
-    let color = if !enabled {
-        look.disabled()
-    } else if focused {
-        look.white()
-    } else {
-        look.color("Button.TextColor", [255, 255, 255, 255])
-    };
-    label(commands, e, look, (6.0, 0.0, w - 12.0, h - 2.0), text, look.font("Default", (16.0, false)), color, -1);
-    e
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2186,19 +3052,27 @@ fn draw(
     hud: Option<Res<crate::map::hud::ActiveHud>>,
     details: Res<LoadingDetails>,
     shown: Query<Entity, With<MenuRoot>>,
-    windows: Query<&Window>,
-    mut last_size: Local<Vec2>,
+    windows_q: Query<&Window>,
+    mut windows: ResMut<Windows>,
+    mut last: Local<(Vec2, Option<Page>)>,
     mut commands: Commands,
 ) {
-    let size = windows
+    let size = windows_q
         .iter()
         .next()
         .map_or(Vec2::new(640.0, 480.0), |w| Vec2::new(w.width(), w.height()));
-    let resized = (size - *last_size).abs().max_element() > 0.5;
+    let resized = (size - last.0).abs().max_element() > 0.5;
     if !menu.is_changed() && !resized && !hud.as_ref().is_some_and(|h| h.is_changed()) && !details.is_changed() {
         return;
     }
-    *last_size = size;
+    // A dialog opened (or another in its place): in front.
+    let page = (menu.open && menu.page != Page::Main).then_some(menu.page);
+    if page != last.1
+        && let Some(p) = page
+    {
+        windows.raise(p.window());
+    }
+    *last = (size, page);
     for e in &shown {
         commands.entity(e).despawn();
     }
@@ -2217,7 +3091,6 @@ fn draw(
         height: size.y,
         accent,
     };
-    let thumbs = menu_ui.as_ref().map(|u| &u.thumbs);
     // In a game the game shows through, darkened (GameUI's backdrop); at
     // the main menu the game's background picture covers the screen (or
     // black without it).
@@ -2238,7 +3111,8 @@ fn draw(
                 ..default()
             },
             BackgroundColor(backdrop),
-            // Over the HUD (40-45), under the scoreboard and the console.
+            // Over the HUD (40-45), under the frames (`widgets::FRAME_Z`),
+            // the scoreboard and the console.
             GlobalZIndex(46),
         ))
         .id();
@@ -2262,11 +3136,11 @@ fn draw(
     }
     let title_font = menu_ui.as_ref().and_then(|u| u.title_font.clone());
     if let Some(failure) = &menu.failure {
-        failure_frame(&mut commands, root, &menu, &look, size, failure);
+        failure_frame(&mut commands, root, &menu, &look, failure);
         return;
     }
     if let Some(map) = &menu.loading {
-        loading_frame(&mut commands, root, &menu, &look, size, map);
+        loading_frame(&mut commands, root, &menu, &look, map);
         if details.0 != 0 {
             details_panel(&mut commands, root, &look, size);
         }
@@ -2276,91 +3150,530 @@ fn draw(
     if menu.page == Page::Main {
         return;
     }
-    let (w, h) = match menu.page {
-        Page::Settings | Page::Maps => (532.0, 410.0),
-        // The game's layout reaches to 264 x 124.
-        Page::KeyboardAdvanced => (280.0, 134.0),
-        Page::NewGame => (560.0, 280.0),
-        _ => (360.0, 230.0),
+    let rows = menu.rows();
+    let ctx = Ctx {
+        root,
+        look: &look,
+        menu: &menu,
+        rows: &rows,
     };
-    let title = match menu.page {
+    // An Advanced dialog shows over the options.
+    if menu.page.over_options() {
+        let mut under = menu.clone();
+        under.page = Page::Settings;
+        under.combo = None;
+        under.focus = usize::MAX;
+        let under_rows = under.rows();
+        let c = Ctx {
+            root,
+            look: &look,
+            menu: &under,
+            rows: &under_rows,
+        };
+        dialog(&mut commands, &c, Page::Settings);
+    }
+    dialog(&mut commands, &ctx, menu.page);
+}
+
+/// One of the menu's dialogs in its frame.
+fn dialog(commands: &mut Commands, ctx: &Ctx, page: Page) {
+    let (look, menu) = (ctx.look, ctx.menu);
+    let (w, h) = dialog_size(menu, page);
+    let title = match page {
         Page::Main => String::new(),
         Page::NewGame => menu.text("#GameUI_CreateServer", "Create Server"),
-        Page::Maps => "Choose a Map".into(),
         Page::Bots => "Bots".into(),
         Page::Team => "Choose a Team".into(),
         Page::Settings => menu.text("#GameUI_Options", "Options"),
         Page::KeyboardAdvanced => menu.text("#GameUI_KeyboardAdvanced_Title", "Keyboard - Advanced"),
+        Page::VideoAdvanced => menu.text("#GameUI_VideoAdvanced_Title", "Video - Advanced"),
+        Page::Extras => "Lucker Party Options".into(),
     };
-    let frame = frame(&mut commands, root, &look, size, (w, h), &title);
-    let rows = menu.rows();
-    match menu.page {
+    let mut spec = FrameSpec::new(page.window());
+    if page.over_options() {
+        spec = spec.modal();
+    }
+    let parts = widgets::frame(commands, ctx.root, look, spec, (w, h), &title);
+    let frame = parts.frame;
+    if let Some(close) = parts.close {
+        commands.entity(close).insert(Hit(Target::Close, 0));
+    }
+    match page {
         Page::Settings => {
-            tabs(&mut commands, frame, &look, &menu, w);
-            let content = commands
-                .spawn((
-                    Node {
-                        border: UiRect::all(px(1.0)),
-                        ..place(&look, 8.0, 56.0, w - 16.0, h - 56.0 - 40.0)
-                    },
-                    bevel(&look, true),
-                    ChildOf(frame),
-                ))
-                .id();
+            let names: Vec<(String, bool)> = TABS.iter().map(|(_, t, o)| (menu.text(t, o), true)).collect();
+            widgets::tabs(commands, frame, look, (8.0, 30.0), &names, menu.tab.index(), Some(96.0), |i| Hit(Target::Tab(i), 0));
+            let content = sheet_page(commands, frame, look, (8.0, 57.0, w - 16.0, h - 57.0 - 36.0));
             if menu.tab == Tab::Keyboard {
-                keyboard_tab(&mut commands, content, &look, &menu, &rows);
+                keyboard_tab(commands, content, look, menu, ctx.rows);
             } else {
-                if menu.tab == Tab::Multiplayer {
-                    setting_rows(&mut commands, content, &look, &menu, &rows, (20.0, 14.0, w - 56.0 - 104.0));
-                    crosshair_preview(&mut commands, content, &look, &menu, (w - 16.0 - 104.0, 14.0));
-                } else {
-                    setting_rows(&mut commands, content, &look, &menu, &rows, (20.0, 14.0, w - 56.0));
-                }
+                page_controls(commands, ctx, content, (w - 16.0, h - 57.0 - 36.0));
             }
-            let ok = rows.len() - 1;
-            button(
-                &mut commands,
-                frame,
-                &look,
-                (w - 8.0 - 80.0, h - 8.0 - 24.0, 80.0, 24.0),
-                &label_of(&rows[ok]),
-                Hit(Target::Row(ok), 0),
-                menu.focus == ok,
-                true,
-            );
-            if menu.tab != Tab::Keyboard {
-                label(
-                    &mut commands,
-                    frame,
-                    &look,
-                    (12.0, h - 8.0 - 24.0, w - 120.0, 24.0),
-                    "Changes apply at once; config.cfg keeps them.",
-                    look.font("DefaultSmall", (13.0, false)),
-                    look.dull(),
-                    -1,
-                );
-            }
+            dialog_buttons(commands, ctx, frame, (w, h), &[Action::Ok, Action::Cancel, Action::Apply]);
         }
-        Page::Maps => map_list(&mut commands, frame, &look, &menu, &rows, thumbs, (w, h)),
-        Page::KeyboardAdvanced => advanced_dialog(&mut commands, frame, &look, &menu, &rows),
-        _ => {
-            if menu.page == Page::NewGame {
-                setting_rows(&mut commands, frame, &look, &menu, &rows, (16.0, 36.0, w - 32.0 - 152.0));
-                if let Some(map) = menu.maps.get(menu.new_game.map) {
-                    thumbnail(&mut commands, frame, &look, thumbs, map, (w - 16.0 - 136.0, 36.0, 136.0));
-                }
+        Page::NewGame => {
+            let names: Vec<(String, bool)> = CREATE_TABS.iter().map(|(t, o)| (menu.text(t, o), true)).collect();
+            widgets::tabs(commands, frame, look, (8.0, 30.0), &names, menu.create_tab, None, |i| Hit(Target::Tab(i), 0));
+            let size = (w - 16.0, h - 57.0 - 38.0);
+            let content = sheet_page(commands, frame, look, (8.0, 57.0, size.0, size.1));
+            if menu.create_tab == 1 {
+                game_options(commands, ctx, content, size);
             } else {
-                setting_rows(&mut commands, frame, &look, &menu, &rows, (16.0, 36.0, w - 32.0));
+                page_controls(commands, ctx, content, size);
             }
+            dialog_buttons(commands, ctx, frame, (w, h), &[Action::Start, Action::Cancel]);
         }
+        Page::KeyboardAdvanced | Page::VideoAdvanced => {
+            page_controls(commands, ctx, frame, (w, h));
+        }
+        Page::Extras => {
+            column(commands, ctx, frame, (16.0, 36.0, w - 32.0), true);
+            dialog_buttons(commands, ctx, frame, (w, h), &[Action::Ok, Action::Cancel]);
+        }
+        _ => column(commands, ctx, frame, (16.0, 36.0, w - 32.0), false),
+    }
+}
+
+/// A property sheet's page: a raised box under its tabs.
+fn sheet_page(commands: &mut Commands, frame: Entity, look: &Look, (x, y, w, h): (f32, f32, f32, f32)) -> Entity {
+    commands
+        .spawn((
+            Node {
+                border: UiRect::all(px(1.0)),
+                ..place(look, x, y, w, h)
+            },
+            bevel(look, true),
+            ChildOf(frame),
+        ))
+        .id()
+}
+
+/// A dialog's buttons at its bottom right (OK, Cancel, Apply; Start,
+/// Cancel), the default one ringed.
+fn dialog_buttons(commands: &mut Commands, ctx: &Ctx, frame: Entity, (w, h): (f32, f32), actions: &[Action]) {
+    let default = ctx.menu.default_action();
+    let mut x = w - 8.0 - (72.0 + 6.0) * actions.len() as f32 + 6.0;
+    for action in actions {
+        if let Some((i, Row::Button { label, enabled, .. })) = ctx
+            .rows
+            .iter()
+            .enumerate()
+            .find(|(_, r)| matches!(r, Row::Button { action: a, .. } if a == action))
+        {
+            let state = Btn::enabled(*enabled)
+                .focused(ctx.menu.focus == i)
+                .default_button(default.as_ref() == Some(action));
+            widgets::button(commands, frame, ctx.look, (x, h - 8.0 - 24.0, 72.0, 24.0), label, state, 0, Hit(Target::Row(i), 0));
+        }
+        x += 78.0;
     }
 }
 
 fn label_of(row: &Row) -> String {
     match row {
-        Row::Button { label, .. } | Row::Value { label, .. } | Row::Bind { label, .. } => label.clone(),
+        Row::Button { label, .. } | Row::Control { label, .. } | Row::Bind { label, .. } => label.clone(),
         Row::Heading(t) | Row::Info(t) => t.clone(),
     }
+}
+
+/// A row's control at a box (scheme pixels in `parent`): a combo box (its
+/// list when open), check box, radio button, slider (its Low / High words
+/// under it when the layout gives them), text entry. `text`: a check
+/// box's words (the layout's), else none.
+#[allow(clippy::too_many_arguments)]
+fn control(
+    commands: &mut Commands,
+    ctx: &Ctx,
+    parent: Entity,
+    i: usize,
+    row: &Row,
+    rect: (f32, f32, f32, f32),
+    text: Option<&str>,
+    layout: Option<&UiControl>,
+) {
+    let (look, menu) = (ctx.look, ctx.menu);
+    let Row::Control { label: name, control, .. } = row else {
+        return;
+    };
+    let focused = menu.focus == i;
+    let (x, y, w, h) = rect;
+    match control {
+        Control::Combo { entries, text: shown, .. } => {
+            let open = menu.combo.filter(|c| c.owner == i);
+            let ch = h.min(24.0);
+            widgets::combo_box(
+                commands,
+                parent,
+                look,
+                (x, y, w, ch),
+                shown,
+                true,
+                open.is_some(),
+                focused,
+                (Hit(Target::Row(i), 0), WheelCombo(i), RelativeCursorPosition::default()),
+            );
+            if let Some(list) = open {
+                widgets::combo_popup(
+                    commands,
+                    parent,
+                    ctx.root,
+                    look,
+                    (x, y, w, ch),
+                    entries,
+                    &list,
+                    |k| Hit(Target::ComboItem(k), 0),
+                    Hit(Target::Outside, 0),
+                );
+            }
+        }
+        Control::Check(on) => {
+            widgets::check_button(
+                commands,
+                parent,
+                look,
+                rect,
+                text.unwrap_or(""),
+                *on,
+                true,
+                focused,
+                Hit(Target::Row(i), 0),
+            );
+        }
+        Control::Radio(on) => {
+            widgets::radio_button(
+                commands,
+                parent,
+                look,
+                rect,
+                text.unwrap_or(name),
+                *on,
+                true,
+                focused,
+                Hit(Target::Row(i), 0),
+            );
+        }
+        Control::Slider { fraction, .. } => {
+            let track_h = 24.0;
+            widgets::slider(
+                commands,
+                parent,
+                look,
+                (x, y, w, track_h),
+                *fraction,
+                11,
+                true,
+                SliderTrack {
+                    owner: SliderOwner::Menu,
+                    id: i,
+                    inset: 0.0,
+                },
+            );
+            if focused {
+                commands.spawn((
+                    place(look, x, y, w, track_h),
+                    Outline::new(px(1.0), px(0.0), look.dark()),
+                    ChildOf(parent),
+                ));
+            }
+            // VGUI's slider words under its ends (`leftText`, `rightText`).
+            let words = |key: &str| {
+                layout
+                    .and_then(|c| c.keys.get(key))
+                    .map(|t| match t.strip_prefix('#') {
+                        Some(_) => menu.text(t, ""),
+                        None => t.clone(),
+                    })
+                    .filter(|t| !t.is_empty() && t.parse::<f32>().is_err())
+            };
+            if h >= 36.0 {
+                let font = look.font("DefaultSmall", (13.0, false));
+                if let Some(t) = words("lefttext") {
+                    label(commands, parent, look, (x, y + track_h, w / 2.0, 14.0), &t, font.clone(), look.text(), -1);
+                }
+                if let Some(t) = words("righttext") {
+                    label(commands, parent, look, (x + w / 2.0, y + track_h, w / 2.0, 14.0), &t, font, look.text(), 1);
+                }
+            }
+        }
+        Control::Text { text: value, .. } => {
+            let caret = focused.then_some(menu.caret);
+            widgets::text_entry(
+                commands,
+                parent,
+                look,
+                (x, y, w, h.min(24.0)),
+                value,
+                caret,
+                false,
+                true,
+                (
+                    Hit(Target::Row(i), 0),
+                    TextHit {
+                        row: i,
+                        shown: value.clone(),
+                        width: w,
+                    },
+                ),
+            );
+        }
+    }
+}
+
+/// Whether a layout control is a page or frame part, not a control drawn
+/// on it.
+fn frame_part(c: &UiControl, (w, h): (f32, f32)) -> bool {
+    let class = class_of(c);
+    let x = coord(c.x);
+    let y = coord(c.y);
+    matches!(c.kind, UiKind::Frame)
+        || matches!(class, "BuildModeDialog" | "Menu" | "FrameSystemButton" | "CPanelListPanel")
+        || c.name.starts_with("frame_")
+        || (c.wide >= w - 24.0 && c.tall >= h - 64.0)
+        || x >= w
+        || y >= h
+}
+
+/// The open page's controls where the game's layout puts them: those
+/// mashup has as working controls, the rest greyed (labels as they are);
+/// without the layout, a column.
+fn page_controls(commands: &mut Commands, ctx: &Ctx, parent: Entity, (w, h): (f32, f32)) {
+    let (look, menu) = (ctx.look, ctx.menu);
+    let Some(layout) = menu.layout() else {
+        column(commands, ctx, parent, (20.0, 14.0, w - 40.0), menu.page.over_options());
+        return;
+    };
+    let rects = layout.rects(Rect::new(0.0, 0.0, w, h), 1.0);
+    let font = look.default_font();
+    // Each row's control, by its field's name.
+    let row_at = |name: &str| {
+        ctx.rows.iter().position(|r| match r {
+            Row::Control { field, .. } => menu.field_name(*field).is_some_and(|f| f.eq_ignore_ascii_case(name)),
+            Row::Button {
+                action: Action::VideoAdvanced,
+                ..
+            } => name == "AdvancedButton",
+            Row::Button {
+                action: Action::Ok, ..
+            } => name == "Button1" && menu.page.over_options(),
+            Row::Button {
+                action: Action::Cancel,
+                ..
+            } => name == "Button2" && menu.page.over_options(),
+            _ => false,
+        })
+    };
+    let drawn: Vec<Rect> = layout
+        .controls
+        .iter()
+        .zip(&rects)
+        .filter(|(c, _)| row_at(&c.name).is_some())
+        .map(|(_, r)| *r)
+        .collect();
+    // Controls whose label the install has no words for (VR mode): left
+    // out with it, as the game hides what it doesn't offer.
+    let unworded: Vec<&str> = layout
+        .controls
+        .iter()
+        .filter(|c| c.text.starts_with('#'))
+        .filter_map(|c| c.keys.get("associate").map(String::as_str))
+        .collect();
+    for (c, r) in layout.controls.iter().zip(&rects) {
+        let rect = (r.min.x, r.min.y, r.width(), r.height());
+        let row = row_at(&c.name);
+        if frame_part(c, (w, h)) || (!c.visible && row.is_none()) {
+            continue;
+        }
+        if row.is_none() && unworded.iter().any(|n| n.eq_ignore_ascii_case(&c.name)) {
+            continue;
+        }
+        let class = class_of(c);
+        if let Some(i) = row {
+            match &ctx.rows[i] {
+                Row::Button { label: text, enabled, action } => {
+                    let state = Btn::enabled(*enabled)
+                        .focused(menu.focus == i)
+                        .default_button(matches!(action, Action::Ok));
+                    widgets::button(commands, parent, look, rect, text, state, 0, Hit(Target::Row(i), 0));
+                }
+                row => {
+                    let text = (!c.text.is_empty() && !c.text.starts_with('#')).then_some(c.text.as_str());
+                    control(commands, ctx, parent, i, row, rect, text, Some(c));
+                }
+            }
+            continue;
+        }
+        let text = if c.text.starts_with('#') { "" } else { c.text.as_str() };
+        match class.to_ascii_lowercase().as_str() {
+            "label" => {
+                // Not over a control we draw (the video Advanced dialog's
+                // note sits where its HDR box is).
+                if text.is_empty() || drawn.iter().any(|d| !d.intersect(*r).is_empty()) {
+                    continue;
+                }
+                let color = if c.dull { look.dull() } else { look.text() };
+                let f = c.font.as_deref().map_or_else(|| font.clone(), |n| look.font(n, (13.0, false)));
+                let align = match c.align {
+                    crate::map::hud::UiAlign::East | crate::map::hud::UiAlign::NorthEast | crate::map::hud::UiAlign::SouthEast => 1,
+                    crate::map::hud::UiAlign::Center | crate::map::hud::UiAlign::North | crate::map::hud::UiAlign::South => 0,
+                    _ => -1,
+                };
+                if c.wrap || r.height() > 30.0 {
+                    let e = commands.spawn((place(look, rect.0, rect.1, rect.2, rect.3), ChildOf(parent))).id();
+                    commands.spawn((
+                        Text::new(text),
+                        f,
+                        TextColor(color),
+                        TextLayout::new(Justify::Left, LineBreak::WordBoundary),
+                        ChildOf(e),
+                    ));
+                } else {
+                    label(commands, parent, look, rect, text, f, color, align);
+                }
+            }
+            "divider" => {
+                commands.spawn((
+                    Node {
+                        border: UiRect::all(px(1.0)),
+                        ..place(look, rect.0, rect.1, rect.2, 2.0)
+                    },
+                    bevel(look, false),
+                    ChildOf(parent),
+                ));
+            }
+            "button" | "urlbutton" | "togglebutton" => {
+                if !text.is_empty() {
+                    widgets::button(commands, parent, look, rect, text, Btn::enabled(false), 0, ());
+                }
+            }
+            // Without words (tokens this install lacks) a greyed box says
+            // nothing: left out.
+            "checkbutton" | "ccvartogglecheckbutton" | "ccvarnegatecheckbutton" if !text.is_empty() => {
+                widgets::check_button(commands, parent, look, rect, text, false, false, false, ());
+            }
+            "radiobutton" if !text.is_empty() => {
+                widgets::radio_button(commands, parent, look, rect, text, false, false, false, ());
+            }
+            "combobox" | "clabeledcommandcombobox" => {
+                widgets::combo_box(commands, parent, look, (rect.0, rect.1, rect.2, rect.3.min(24.0)), "", false, false, false, ());
+            }
+            "ccvarslider" | "slider" => {
+                widgets::slider(
+                    commands,
+                    parent,
+                    look,
+                    (rect.0, rect.1, rect.2, 24.0),
+                    0.0,
+                    11,
+                    false,
+                    SliderTrack {
+                        owner: SliderOwner::Menu,
+                        id: usize::MAX,
+                        inset: 0.0,
+                    },
+                );
+            }
+            "textentry" => {
+                widgets::text_entry(commands, parent, look, (rect.0, rect.1, rect.2, rect.3.min(24.0)), "", None, false, false, ());
+            }
+            "crosshairimagepanelcs" => crosshair_preview(commands, parent, look, menu, rect),
+            "imagepanel" => {
+                commands.spawn((
+                    Node {
+                        border: UiRect::all(px(1.0)),
+                        ..place(look, rect.0, rect.1, rect.2, rect.3)
+                    },
+                    bevel(look, false),
+                    BackgroundColor(look.sunken_bg()),
+                    ChildOf(parent),
+                ));
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Rows of labelled controls in a column at (x, y), `w` wide: ours (Lucker
+/// Party Options), the Bots and Team pages, and pages without the
+/// install's layout; `buttons`: the dialog draws its own buttons.
+fn column(commands: &mut Commands, ctx: &Ctx, parent: Entity, (x, y, w): (f32, f32, f32), buttons: bool) {
+    let (look, menu) = (ctx.look, ctx.menu);
+    let row_h = 28.0;
+    let font = look.font("Default", (16.0, false));
+    let label_w = (w * 0.45).round();
+    let control_w = (w - label_w).min(220.0);
+    let mut ry = y;
+    for (i, row) in ctx.rows.iter().enumerate() {
+        match row {
+            Row::Info(t) | Row::Heading(t) => {
+                label(commands, parent, look, (x, ry, w, row_h - 4.0), t, font.clone(), look.dull(), -1);
+            }
+            Row::Button { label: text, enabled, action } => {
+                if buttons && matches!(action, Action::Ok | Action::Cancel | Action::Apply | Action::Start) {
+                    continue;
+                }
+                let state = Btn::enabled(*enabled).focused(menu.focus == i);
+                widgets::button(commands, parent, look, (x, ry, w.min(260.0), 24.0), text, state, -1, Hit(Target::Row(i), 0));
+            }
+            Row::Bind { .. } => continue,
+            Row::Control { label: text, control: c, .. } => {
+                if matches!(c, Control::Check(_) | Control::Radio(_)) {
+                    control(commands, ctx, parent, i, row, (x, ry, w, 24.0), Some(text), None);
+                } else {
+                    label(commands, parent, look, (x, ry, label_w, 24.0), text, font.clone(), look.text(), -1);
+                    let slider = matches!(c, Control::Slider { .. });
+                    let cw = if slider { control_w - 48.0 } else { control_w };
+                    control(commands, ctx, parent, i, row, (x + label_w, ry, cw, 24.0), None, None);
+                    if let Control::Slider { text: value, .. } = c {
+                        label(commands, parent, look, (x + label_w + control_w - 44.0, ry, 44.0, 24.0), value, font.clone(), look.text(), 1);
+                    }
+                }
+            }
+        }
+        ry += row_h;
+    }
+}
+
+/// Create Server's Game page: the game's server options (`settings.scr`)
+/// in a scrolled list, each its label and control (CS:S's
+/// `CPanelListPanel`, where the layout puts it).
+fn game_options(commands: &mut Commands, ctx: &Ctx, parent: Entity, (w, h): (f32, f32)) {
+    let (look, menu) = (ctx.look, ctx.menu);
+    let at = menu
+        .layout()
+        .and_then(|l| l.get("GameOptions"))
+        .map(|c| (coord(c.x), coord(c.y), c.wide, c.tall));
+    let (lx, ly, lw, lh) = at.unwrap_or((10.0, 12.0, w - 20.0, h - 24.0));
+    let list = commands
+        .spawn((
+            Node {
+                border: UiRect::all(px(1.0)),
+                overflow: Overflow::clip(),
+                ..place(look, lx, ly, lw, lh)
+            },
+            bevel(look, false),
+            RelativeCursorPosition::default(),
+            WheelList,
+            ChildOf(parent),
+        ))
+        .id();
+    let (len, shown) = menu.list();
+    let bar_w = look.number("ScrollBar.Wide", 17.0);
+    let row_h = ((lh - 4.0) / shown as f32).floor();
+    let font = look.default_font();
+    let inner = lw - bar_w - 4.0;
+    let label_w = (inner * 0.5).round();
+    for (k, i) in (menu.scroll..(menu.scroll + shown).min(len)).enumerate() {
+        let y = 2.0 + k as f32 * row_h;
+        let row = &ctx.rows[i];
+        if let Row::Control { label: text, control: c, .. } = row {
+            if matches!(c, Control::Check(_)) {
+                control(commands, ctx, list, i, row, (4.0, y, inner - 4.0, 24.0), Some(text), None);
+            } else {
+                label(commands, list, look, (6.0, y, label_w - 8.0, 24.0), text, font.clone(), look.text(), -1);
+                control(commands, ctx, list, i, row, (label_w, y, inner - label_w, 24.0), None, None);
+            }
+        }
+    }
+    scroll_bar(commands, list, look, (lw - bar_w - 2.0, 0.0, lh - 2.0), (len, shown, menu.scroll));
 }
 
 /// The left-hand entries, as GameUI's game menu: at the left inset, one
@@ -2464,25 +3777,28 @@ fn main_list(
     }
 }
 
+/// A layout coordinate from its start edge (dialog layouts use plain
+/// numbers).
+fn coord(c: crate::map::hud::HudCoord) -> f32 {
+    match c {
+        crate::map::hud::HudCoord::Start(v) | crate::map::hud::HudCoord::Centre(v) | crate::map::hud::HudCoord::End(v) => v,
+    }
+}
+
 /// A map the main menu started is loading: GameUI's loading dialog (its
 /// layout from the install, `GameUi::loading`: the frame, the stage line,
 /// the progress bar, Cancel), the menu's entries hidden. The stage and
 /// the bar follow the load (`loading_progress`).
-fn loading_frame(commands: &mut Commands, root: Entity, menu: &GameMenu, look: &Look, size: Vec2, map: &str) {
+fn loading_frame(commands: &mut Commands, root: Entity, menu: &GameMenu, look: &Look, map: &str) {
     let layout = look.ui.and_then(|u| u.loading.as_ref());
     let at = |name: &str, fallback: (f32, f32, f32, f32)| {
         layout
             .and_then(|l| l.get(name))
-            .map_or(fallback, |c| (start(c.x), start(c.y), c.wide, c.tall))
+            .map_or(fallback, |c| (coord(c.x), coord(c.y), c.wide, c.tall))
     };
-    fn start(c: crate::map::hud::HudCoord) -> f32 {
-        match c {
-            crate::map::hud::HudCoord::Start(v) | crate::map::hud::HudCoord::Centre(v) | crate::map::hud::HudCoord::End(v) => v,
-        }
-    }
     let (_, _, w, h) = at("LoadingDialog", (0.0, 0.0, 380.0, 112.0));
     let title = menu.text("#GameUI_Loading", "Loading...");
-    let f = frame(commands, root, look, size, (w, h), &title);
+    let f = widgets::frame(commands, root, look, FrameSpec::new("loading").no_close(), (w, h), &title).frame;
     let info = label(
         commands,
         f,
@@ -2521,15 +3837,15 @@ fn loading_frame(commands: &mut Commands, root: Entity, menu: &GameMenu, look: &
     ));
     let cancel = layout.and_then(|l| l.get("CancelButton"));
     let text = cancel.map_or_else(|| menu.text("#GameUI_Cancel", "Cancel"), |c| c.text.clone());
-    button(
+    widgets::button(
         commands,
         f,
         look,
         at("CancelButton", (288.0, 64.0, 72.0, 24.0)),
         &text,
+        Btn::enabled(true).default_button(true),
+        0,
         Hit(Target::Cancel, 0),
-        false,
-        true,
     );
 }
 
@@ -2695,17 +4011,20 @@ fn details_panel(commands: &mut Commands, root: Entity, look: &Look, size: Vec2)
 
 /// Why joining failed, in the loading dialog: "Disconnected", the reason
 /// (wrapped), Close.
-fn failure_frame(commands: &mut Commands, root: Entity, menu: &GameMenu, look: &Look, size: Vec2, text: &str) {
+fn failure_frame(commands: &mut Commands, root: Entity, menu: &GameMenu, look: &Look, text: &str) {
     let (w, h) = (380.0, 150.0);
     let title = menu.text("#GameUI_Disconnected", "Disconnected");
-    let f = frame(commands, root, look, size, (w, h), &title);
+    let parts = widgets::frame(commands, root, look, FrameSpec::new("loading"), (w, h), &title);
+    if let Some(close) = parts.close {
+        commands.entity(close).insert(Hit(Target::Close, 0));
+    }
     let body = commands
         .spawn((
             Node {
                 overflow: Overflow::clip(),
                 ..place(look, 20.0, 34.0, w - 40.0, h - 34.0 - 40.0)
             },
-            ChildOf(f),
+            ChildOf(parts.frame),
         ))
         .id();
     commands.spawn((
@@ -2716,15 +4035,15 @@ fn failure_frame(commands: &mut Commands, root: Entity, menu: &GameMenu, look: &
         ChildOf(body),
     ));
     let close = menu.text("#GameUI_Close", "Close");
-    button(
+    widgets::button(
         commands,
-        f,
+        parts.frame,
         look,
         (w - 20.0 - 72.0, h - 34.0, 72.0, 24.0),
         &close,
+        Btn::enabled(true).default_button(true),
+        0,
         Hit(Target::Cancel, 0),
-        true,
-        true,
     );
 }
 
@@ -2818,8 +4137,8 @@ fn loading_progress(
 }
 
 /// The interface's sounds (`GameUi::sounds`): the rollover as the
-/// pointer comes onto another entry, the click as one is pressed, the
-/// release as it is let go.
+/// pointer comes onto an entry or button, the click as one is pressed,
+/// the release as it is let go.
 fn menu_sounds(
     menu: Res<GameMenu>,
     menu_ui: Option<Res<MenuUi>>,
@@ -2845,6 +4164,10 @@ fn menu_sounds(
     };
     let (hovered, pressed) = &mut *last;
     for (interaction, hit) in &hits {
+        // The outside of an open list isn't a button.
+        if matches!(hit.0, Target::Outside) {
+            continue;
+        }
         match interaction {
             Interaction::Hovered => {
                 if *pressed == Some(hit.0) {
@@ -2864,76 +4187,6 @@ fn menu_sounds(
             Interaction::None if *hovered == Some(hit.0) => *hovered = None,
             Interaction::None => {}
         }
-    }
-}
-
-/// A GameUI frame centred on the screen: its background, raised borders,
-/// title. Returns the frame (children placed in scheme pixels from its
-/// corner).
-pub(super) fn frame(commands: &mut Commands, root: Entity, look: &Look, size: Vec2, (w, h): (f32, f32), title: &str) -> Entity {
-    let x = ((size.x / look.s - w) / 2.0).max(0.0);
-    let y = ((size.y / look.s - h) / 2.0).max(0.0);
-    let e = commands
-        .spawn((
-            Node {
-                border: UiRect::all(px(1.0)),
-                ..place(look, x, y, w, h)
-            },
-            bevel(look, true),
-            BackgroundColor(look.frame_bg()),
-            ChildOf(root),
-        ))
-        .id();
-    let inset = look.number("Frame.TitleTextInsetX", 16.0);
-    label(
-        commands,
-        e,
-        look,
-        (inset, 4.0, w - inset - 32.0, 22.0),
-        title,
-        look.font("UiBold", (12.0, true)),
-        look.color("FrameTitleBar.TextColor", [255, 255, 255, 255]),
-        -1,
-    );
-    e
-}
-
-/// The options' tabs over the page (PropertySheet): raised, the open one
-/// joined to the page below.
-fn tabs(commands: &mut Commands, frame: Entity, look: &Look, menu: &GameMenu, w: f32) {
-    let mut x = 8.0;
-    let font = look.font("Default", (16.0, false));
-    let tab_w = ((w - 16.0) / TABS.len() as f32).min(96.0);
-    for (i, (tab, token, ours)) in TABS.iter().enumerate() {
-        let open = *tab == menu.tab;
-        let (y, h) = if open { (30.0, 27.0) } else { (33.0, 23.0) };
-        let e = commands
-            .spawn((
-                Node {
-                    border: UiRect {
-                        left: px(1.0),
-                        right: px(1.0),
-                        top: px(1.0),
-                        bottom: px(0.0),
-                    },
-                    ..place(look, x, y, tab_w - 2.0, h)
-                },
-                bevel(look, true),
-                BackgroundColor(if open { look.frame_bg() } else { Color::NONE }),
-                Hit(Target::Tab(i), 0),
-                Button,
-                Interaction::default(),
-                ZIndex(if open { 2 } else { 0 }),
-                ChildOf(frame),
-            ))
-            .id();
-        let color = if open {
-            look.color("PropertySheet.SelectedTextColor", [255, 255, 255, 255])
-        } else {
-            look.color("PropertySheet.TextColor", [221, 221, 221, 255])
-        };
-        label(commands, e, look, (0.0, 0.0, tab_w - 4.0, h - 1.0), &menu.text(token, ours), font.clone(), color, 0);
-        x += tab_w;
     }
 }
 
@@ -3000,13 +4253,7 @@ fn keyboard_tab(commands: &mut Commands, content: Entity, look: &Look, menu: &Ga
     let rect = |name: &str, fallback: (f32, f32, f32, f32)| {
         layout
             .and_then(|l| l.get(name))
-            .map_or(fallback, |c| {
-                let num = |h: crate::map::hud::HudCoord| match h {
-                    crate::map::hud::HudCoord::Start(v) => v,
-                    _ => 0.0,
-                };
-                (num(c.x), num(c.y), c.wide, c.tall)
-            })
+            .map_or(fallback, |c| (coord(c.x), coord(c.y), c.wide, c.tall))
     };
     let (lx, ly, lw, lh) = rect("listpanel_keybindlist", (8.0, 10.0, 480.0, 258.0));
     let (len, shown) = menu.list();
@@ -3093,218 +4340,14 @@ fn keyboard_tab(commands: &mut Commands, content: Entity, look: &Look, menu: &Ga
     for (k, name) in names.iter().enumerate() {
         let i = len + k;
         let Row::Button { label: text, enabled, .. } = &rows[i] else { continue };
-        button(commands, content, look, rect(name, fallback[k]), text, Hit(Target::Row(i), 0), menu.focus == i, *enabled);
+        let state = Btn::enabled(*enabled).focused(menu.focus == i);
+        widgets::button(commands, content, look, rect(name, fallback[k]), text, state, 0, Hit(Target::Row(i), 0));
     }
 }
 
-/// The keyboard tab's Advanced dialog: its check boxes (text to their
-/// right) and OK / Cancel where the game's layout puts them.
-fn advanced_dialog(commands: &mut Commands, frame: Entity, look: &Look, menu: &GameMenu, rows: &[Row]) {
-    let layout = menu.ui.0.as_ref().and_then(|u| u.options.get("keyboard_advanced"));
-    let rect = |name: &str, fallback: (f32, f32, f32, f32)| {
-        layout.and_then(|l| l.get(name)).map_or(fallback, |c| {
-            let num = |h: crate::map::hud::HudCoord| match h {
-                crate::map::hud::HudCoord::Start(v) => v,
-                _ => 0.0,
-            };
-            (num(c.x), num(c.y), c.wide, c.tall)
-        })
-    };
-    let font = look.font("Default", (16.0, false));
-    let mut boxes = 0;
-    for (i, row) in rows.iter().enumerate() {
-        let focused = menu.focus == i;
-        match row {
-            Row::Value {
-                label: text,
-                field: Field::Setting(s),
-                ..
-            } => {
-                let field = KEYBOARD_ADVANCED
-                    .iter()
-                    .find(|(_, cvar)| SETTINGS[*s].cvar == *cvar)
-                    .map_or("", |(f, _)| *f);
-                let (x, y, w, h) = rect(field, (20.0, 38.0 + 28.0 * boxes as f32, 240.0, 24.0));
-                boxes += 1;
-                let on = menu.values[*s].as_deref().is_some_and(|v| SETTINGS[*s].checked(v));
-                check_box(commands, frame, look, (x, y), i, on, focused);
-                let color = if focused { look.white() } else { look.text() };
-                label(commands, frame, look, (x + 22.0, y, w - 22.0, h), text, font.clone(), color, -1);
-            }
-            Row::Info(t) => {
-                let (x, y) = (20.0, 38.0 + 28.0 * boxes as f32);
-                boxes += 1;
-                label(commands, frame, look, (x, y, 240.0, 24.0), t, font.clone(), look.dull(), -1);
-            }
-            Row::Button { label: text, action, .. } => {
-                let (name, fallback) = match action {
-                    Action::AdvancedOk => ("Button1", (95.0, 100.0, 80.0, 24.0)),
-                    _ => ("Button2", (182.0, 100.0, 80.0, 24.0)),
-                };
-                button(commands, frame, look, rect(name, fallback), text, Hit(Target::Row(i), 0), focused, true);
-            }
-            _ => {}
-        }
-    }
-}
-
-/// Rows of labelled controls (sliders, check boxes, choices, buttons) in a
-/// column at (x, y), `w` wide; the last row (OK / Back) on the options
-/// page is the dialog's own button, drawn by the caller.
-fn setting_rows(commands: &mut Commands, parent: Entity, look: &Look, menu: &GameMenu, rows: &[Row], (x, y, w): (f32, f32, f32)) {
-    let row_h = 28.0;
-    let font = look.font("Default", (16.0, false));
-    let controls = if menu.page == Page::Settings { rows.len() - 1 } else { rows.len() };
-    let label_w = (w * 0.45).round();
-    let control_w = (w - label_w).min(220.0);
-    for (i, row) in rows.iter().enumerate().take(controls) {
-        let ry = y + i as f32 * row_h;
-        let focused = menu.focus == i;
-        match row {
-            Row::Info(t) | Row::Heading(t) => {
-                label(commands, parent, look, (x, ry, w, row_h - 4.0), t, font.clone(), look.dull(), -1);
-            }
-            Row::Button { label: text, enabled, .. } => {
-                button(commands, parent, look, (x, ry, w.min(260.0), 24.0), text, Hit(Target::Row(i), 0), focused, *enabled);
-            }
-            Row::Bind { .. } => {}
-            Row::Value { label: text, value, field } => {
-                let color = if focused { look.white() } else { look.text() };
-                label(commands, parent, look, (x, ry, label_w, 24.0), text, font.clone(), color, -1);
-                let cx = x + label_w;
-                let kind = match field {
-                    Field::Setting(s) => Some(SETTINGS[*s].kind),
-                    _ => None,
-                };
-                match kind {
-                    Some(SettingKind::Range { .. }) => {
-                        let Field::Setting(s) = field else { unreachable!() };
-                        let f = menu.values[*s].as_deref().and_then(|v| SETTINGS[*s].fraction(v)).unwrap_or(0.0);
-                        slider(commands, parent, look, (cx, ry, control_w - 48.0), i, f, focused);
-                        label(commands, parent, look, (cx + control_w - 44.0, ry, 44.0, 24.0), value, font.clone(), color, 1);
-                    }
-                    Some(SettingKind::Toggle | SettingKind::Negate) => {
-                        let Field::Setting(s) = field else { unreachable!() };
-                        let on = menu.values[*s].as_deref().is_some_and(|v| SETTINGS[*s].checked(v));
-                        check_box(commands, parent, look, (cx, ry), i, on, focused);
-                    }
-                    _ => combo(commands, parent, look, (cx, ry, control_w), i, value, focused),
-                }
-            }
-        }
-    }
-}
-
-/// A slider: its track and nob; pressing or dragging sets the value.
-fn slider(commands: &mut Commands, parent: Entity, look: &Look, (x, y, w): (f32, f32, f32), row: usize, f: f32, focused: bool) {
-    let e = commands
-        .spawn((
-            place(look, x, y, w, 24.0),
-            SliderTrack(row),
-            RelativeCursorPosition::default(),
-            Button,
-            Interaction::default(),
-            BackgroundColor(if focused { Color::srgba(1.0, 1.0, 1.0, 0.06) } else { Color::NONE }),
-            ChildOf(parent),
-        ))
-        .id();
-    commands.spawn((
-        Node {
-            border: UiRect::all(px(1.0)),
-            ..place(look, 4.0, 10.0, w - 8.0, 4.0)
-        },
-        bevel(look, false),
-        BackgroundColor(look.color("Slider.TrackColor", [31, 31, 31, 255])),
-        ChildOf(e),
-    ));
-    let nob_x = 4.0 + (w - 8.0 - 8.0) * f;
-    commands.spawn((
-        Node {
-            border: UiRect::all(px(1.0)),
-            ..place(look, nob_x, 3.0, 8.0, 18.0)
-        },
-        bevel(look, true),
-        BackgroundColor(look.color("Slider.NobColor", [108, 108, 108, 255])),
-        ChildOf(e),
-    ));
-}
-
-/// A check box: a sunken square, ticked when on.
-fn check_box(commands: &mut Commands, parent: Entity, look: &Look, (x, y): (f32, f32), row: usize, on: bool, focused: bool) {
-    let e = commands
-        .spawn((
-            Node {
-                border: UiRect::all(px(1.0)),
-                ..place(look, x, y + 4.0, 16.0, 16.0)
-            },
-            BorderColor {
-                top: look.color("CheckButton.Border1", [40, 40, 40, 196]),
-                left: look.color("CheckButton.Border1", [40, 40, 40, 196]),
-                bottom: look.color("CheckButton.Border2", [200, 200, 200, 196]),
-                right: look.color("CheckButton.Border2", [200, 200, 200, 196]),
-            },
-            BackgroundColor(if focused {
-                Color::srgba(1.0, 1.0, 1.0, 0.15)
-            } else {
-                look.color("CheckButton.BgColor", [0, 0, 0, 128])
-            }),
-            Hit(Target::Row(row), 0),
-            Button,
-            Interaction::default(),
-            ChildOf(parent),
-        ))
-        .id();
-    if on {
-        commands.spawn((
-            place(look, 3.0, 3.0, 8.0, 8.0),
-            BackgroundColor(look.color("CheckButton.Check", [255, 255, 255, 255])),
-            ChildOf(e),
-        ));
-    }
-}
-
-/// A choice, as a combo box: a sunken box with the value, arrows either
-/// side stepping it.
-fn combo(commands: &mut Commands, parent: Entity, look: &Look, (x, y, w): (f32, f32, f32), row: usize, value: &str, focused: bool) {
-    let e = commands
-        .spawn((
-            Node {
-                border: UiRect::all(px(1.0)),
-                ..place(look, x, y, w, 24.0)
-            },
-            bevel(look, false),
-            BackgroundColor(if focused {
-                Color::srgba(1.0, 1.0, 1.0, 0.12)
-            } else {
-                look.sunken_bg()
-            }),
-            Hit(Target::Row(row), 0),
-            Button,
-            Interaction::default(),
-            ChildOf(parent),
-        ))
-        .id();
-    let font = look.font("Default", (16.0, false));
-    let color = look.color("TextEntry.TextColor", [221, 221, 221, 255]);
-    label(commands, e, look, (20.0, 0.0, w - 42.0, 22.0), value, font.clone(), color, 0);
-    let arrow = look.color("ComboBoxButton.ArrowColor", [190, 190, 190, 255]);
-    for (ax, text, step) in [(0.0, "\u{25C4}", -1), (w - 20.0, "\u{25BA}", 1)] {
-        let a = commands
-            .spawn((
-                place(look, ax, 0.0, 18.0, 22.0),
-                Hit(Target::Row(row), step),
-                Button,
-                Interaction::default(),
-                ChildOf(e),
-            ))
-            .id();
-        label(commands, a, look, (0.0, 0.0, 18.0, 22.0), text, font.clone(), arrow, 0);
-    }
-}
-
-/// The crosshair as the multiplayer tab's settings draw it, on a dark
-/// square.
-fn crosshair_preview(commands: &mut Commands, parent: Entity, look: &Look, menu: &GameMenu, (x, y): (f32, f32)) {
+/// The crosshair as the multiplayer tab's settings draw it, in the
+/// layout's crosshair box.
+fn crosshair_preview(commands: &mut Commands, parent: Entity, look: &Look, menu: &GameMenu, (x, y, w, h): (f32, f32, f32, f32)) {
     let get = |cvar: &str| {
         SETTINGS
             .iter()
@@ -3320,12 +4363,11 @@ fn crosshair_preview(commands: &mut Commands, parent: Entity, look: &Look, menu:
         use_alpha: get("cl_crosshairusealpha").map_or(defaults.use_alpha, |v| v as u8),
         dynamic: get("cl_dynamiccrosshair").map_or(defaults.dynamic, |v| v as u8),
     };
-    let side = 88.0;
     let e = commands
         .spawn((
             Node {
                 border: UiRect::all(px(1.0)),
-                ..place(look, x, y, side, side)
+                ..place(look, x, y, w, h)
             },
             bevel(look, false),
             BackgroundColor(Color::srgb(0.25, 0.27, 0.3)),
@@ -3333,7 +4375,7 @@ fn crosshair_preview(commands: &mut Commands, parent: Entity, look: &Look, menu:
         ))
         .id();
     // As at this window's height, in screen pixels.
-    let centre = Vec2::splat(side * look.s / 2.0);
+    let centre = Vec2::new(w, h) * look.s / 2.0;
     for (offset, size) in c.lines(4.0, look.height) {
         let at = centre + offset - size / 2.0;
         commands.spawn((
@@ -3351,124 +4393,36 @@ fn crosshair_preview(commands: &mut Commands, parent: Entity, look: &Look, menu:
     }
 }
 
-/// A map's thumbnail (`menu_thumb_<map>`, else the game's default one),
-/// `side` scheme pixels wide at (x, y), as tall as its picture.
-fn thumbnail(
-    commands: &mut Commands,
-    parent: Entity,
-    look: &Look,
-    thumbs: Option<&HashMap<String, (Handle<Image>, f32)>>,
-    map: &str,
-    (x, y, side): (f32, f32, f32),
-) {
-    let Some((image, aspect)) = thumbs.and_then(|t| t.get(&map.to_lowercase()).or_else(|| t.get("default"))) else {
-        return;
-    };
-    commands.spawn((
-        Node {
-            border: UiRect::all(px(1.0)),
-            ..place(look, x, y, side, (side * aspect).round())
-        },
-        bevel(look, false),
-        ImageNode::new(image.clone()),
-        ChildOf(parent),
-    ));
-}
-
-/// The map list: a scrolled list with a scroll bar, the focused map's
-/// thumbnail beside it, Back under it.
-#[allow(clippy::too_many_arguments)]
-fn map_list(
-    commands: &mut Commands,
-    frame: Entity,
-    look: &Look,
-    menu: &GameMenu,
-    rows: &[Row],
-    thumbs: Option<&HashMap<String, (Handle<Image>, f32)>>,
-    (w, h): (f32, f32),
-) {
-    let (len, shown) = menu.list();
-    let font = look.font("Default", (16.0, false));
-    let (lx, ly, lw) = (12.0, 36.0, 300.0);
-    let row_h = 20.0;
-    let lh = shown as f32 * row_h + 4.0;
-    let list = commands
-        .spawn((
-            Node {
-                border: UiRect::all(px(1.0)),
-                ..place(look, lx, ly, lw, lh)
-            },
-            bevel(look, false),
-            BackgroundColor(look.color("ListPanel.BgColor", [0, 0, 0, 128])),
-            RelativeCursorPosition::default(),
-            WheelList,
-            ChildOf(frame),
-        ))
-        .id();
-    let bar_w = look.number("ScrollBar.Wide", 17.0);
-    if len == 0 {
-        label(commands, list, look, (8.0, 4.0, lw - 16.0, row_h), "No maps found in the install.", font.clone(), look.dull(), -1);
-    }
-    for (k, i) in (menu.scroll..(menu.scroll + shown).min(len)).enumerate() {
-        let focused = menu.focus == i;
-        let chosen = menu.new_game.map == i;
-        let e = commands
-            .spawn((
-                place(look, 1.0, 1.0 + k as f32 * row_h, lw - bar_w - 4.0, row_h),
-                BackgroundColor(if focused { look.selected_bg() } else { Color::NONE }),
-                Hit(Target::Row(i), 0),
-                Button,
-                Interaction::default(),
-                ChildOf(list),
-            ))
-            .id();
-        let color = if focused {
-            look.selected_text()
-        } else if chosen {
-            look.white()
-        } else {
-            look.color("ListPanel.TextColor", [221, 221, 221, 255])
-        };
-        label(commands, e, look, (6.0, 0.0, lw - bar_w - 12.0, row_h), &label_of(&rows[i]), font.clone(), color, -1);
-    }
-    scroll_bar(commands, list, look, (lw - bar_w - 2.0, 0.0, lh - 2.0), (len, shown, menu.scroll));
-    if let Some(map) = menu.maps.get(menu.focus.min(len.saturating_sub(1))) {
-        thumbnail(commands, frame, look, thumbs, map, (lx + lw + 16.0, ly, (w - lx - lw - 32.0).min(192.0)));
-        label(
-            commands,
-            frame,
-            look,
-            (lx + lw + 16.0, ly + 160.0, w - lx - lw - 32.0, 24.0),
-            map,
-            look.font("DefaultBold", (16.0, true)),
-            look.white(),
-            -1,
-        );
-    }
-    let hint = if len > shown {
-        format!("{len} maps; wheel or the bar scrolls, a letter jumps")
-    } else {
-        format!("{len} maps; a letter jumps")
-    };
-    label(commands, frame, look, (lx, ly + lh + 6.0, lw, 20.0), &hint, look.font("DefaultSmall", (13.0, false)), look.dull(), -1);
-    // Back.
-    let back = rows.len() - 1;
-    button(
-        commands,
-        frame,
-        look,
-        (w - 8.0 - 80.0, h - 8.0 - 24.0, 80.0, 24.0),
-        &label_of(&rows[back]),
-        Hit(Target::Row(back), 0),
-        menu.focus == back,
-        true,
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map::hud::GameUiItem;
+    use crate::client::options::setting_index;
+    use crate::map::hud::{GameUiItem, ServerSetting};
+
+    const CVARS: [(&str, &str); 14] = [
+        ("sensitivity", "3"),
+        ("m_pitch", "0.022"),
+        ("zoom_sensitivity_ratio", "1.2"),
+        ("volume", "1"),
+        ("viewmodel_fov", "54"),
+        ("cl_righthand", "1"),
+        ("cl_showfps", "0"),
+        ("mat_vsync", "1"),
+        ("mat_antialias", "4"),
+        ("mashup_resolution", ""),
+        ("mashup_rounds", "1"),
+        ("bot_reaction", "0.35"),
+        ("hud_fastswitch", "0"),
+        ("con_enable", "1"),
+    ];
+
+    fn get(n: &str) -> Option<String> {
+        CVARS
+            .iter()
+            .chain(&[("hostname", "Mine"), ("mp_friendlyfire", "0"), ("bot_prefix", "")])
+            .find(|(k, _)| *k == n)
+            .map(|(_, v)| v.to_string())
+    }
 
     /// The menu opened in a game (Esc).
     fn menu() -> GameMenu {
@@ -3476,26 +4430,7 @@ mod tests {
             in_game: true,
             ..default()
         };
-        let cvars = [
-            ("sensitivity", "3"),
-            ("m_pitch", "0.022"),
-            ("zoom_sensitivity_ratio", "1.2"),
-            ("volume", "1"),
-            ("viewmodel_fov", "54"),
-            ("cl_righthand", "1"),
-            ("cl_showfps", "0"),
-            ("mat_vsync", "1"),
-            ("mashup_rounds", "1"),
-            ("bot_reaction", "0.35"),
-            ("hud_fastswitch", "0"),
-            ("con_enable", "1"),
-        ];
-        m.open(
-            Page::Main,
-            vec!["cs_office".into(), "de_dust2".into(), "de_nuke".into()],
-            Some("de_dust2"),
-            |n| cvars.iter().find(|(k, _)| *k == n).map(|(_, v)| v.to_string()),
-        );
+        m.open(Page::Main, vec!["cs_office".into(), "de_dust2".into(), "de_nuke".into()], Some("de_dust2"), get);
         m
     }
 
@@ -3608,25 +4543,46 @@ mod tests {
     fn press(m: &mut GameMenu, inputs: &[Input]) -> Outcome {
         let mut all = Outcome::default();
         for i in inputs {
-            let o = m.handle(*i);
+            let o = m.handle(i.clone());
             all.lines.extend(o.lines);
             all.after_load.extend(o.after_load);
             all.close |= o.close;
+            all.clipboard = o.clipboard.or(all.clipboard);
         }
         all
+    }
+
+    /// Click the row `row` finds.
+    fn click_on(m: &mut GameMenu, row: impl Fn(&GameMenu) -> usize) -> Outcome {
+        let i = row(m);
+        press(m, &[Input::Click(Target::Row(i), 0)])
     }
 
     fn setting(cvar: &str) -> usize {
         SETTINGS.iter().position(|s| s.cvar == cvar).unwrap()
     }
 
-    /// The row of the open page with this setting.
+    /// The row of the open page with this field.
+    fn row_with(m: &GameMenu, field: Field) -> usize {
+        m.rows().iter().position(|r| r.field() == Some(field)).unwrap_or_else(|| panic!("no {field:?}"))
+    }
+
     fn row_of(m: &GameMenu, cvar: &str) -> usize {
-        let i = setting(cvar);
+        row_with(m, Field::Setting(setting(cvar)))
+    }
+
+    fn button(m: &GameMenu, action: Action) -> usize {
         m.rows()
             .iter()
-            .position(|r| matches!(r, Row::Value { field: Field::Setting(s), .. } if *s == i))
+            .position(|r| matches!(r, Row::Button { action: a, .. } if *a == action))
             .unwrap()
+    }
+
+    fn control(m: &GameMenu, i: usize) -> Control {
+        match &m.rows()[i] {
+            Row::Control { control, .. } => control.clone(),
+            r => panic!("{r:?}"),
+        }
     }
 
     #[test]
@@ -3635,9 +4591,9 @@ mod tests {
         assert!(m.open);
         assert_eq!((m.page, m.focus), (Page::Main, 0));
         assert_eq!(m.new_game.map, 1, "the loaded map");
-        assert_eq!(m.new_game.mode, Mode::Rounds);
         assert_eq!(m.new_game.difficulty, NORMAL);
-        // No crosshair colour cvar given: shown as not available.
+        assert!(!m.new_game.bots_on, "no bots in the game now");
+        // No crosshair colour cvar given: not available.
         assert_eq!(m.values[setting("cl_crosshaircolor")], None);
         assert_eq!(m.entries().len(), MAIN.len() + OURS.len());
     }
@@ -3648,13 +4604,13 @@ mod tests {
         let m = menu();
         assert_eq!(
             shown(&m),
-            [Resume, Disconnect, FindServers, NewGame, BugReport, Options, Quit, QuickStart, Greybox, Bots, Team, Console]
+            [Resume, Disconnect, FindServers, NewGame, BugReport, Options, Quit, QuickStart, Greybox, Bots, Team, Extras, Console]
         );
         let e = m.entries();
         assert!(e[2].gap && e[2].enabled, "a gap under Disconnect, then Find Servers");
         assert!(e[7].gap, "ours after a gap");
         let m = main_menu();
-        assert_eq!(shown(&m), [FindServers, NewGame, BugReport, Options, Quit, QuickStart, Greybox, Console]);
+        assert_eq!(shown(&m), [FindServers, NewGame, BugReport, Options, Quit, QuickStart, Greybox, Extras, Console]);
         let e = m.entries();
         assert!(!e[0].gap, "no gap over the first entry");
         assert_eq!(m.focus, 0, "the first entry: Find Servers");
@@ -3679,7 +4635,7 @@ mod tests {
         let mut m = main_menu();
         let o = press(&mut m, &[Input::Close]);
         assert!(!o.close && m.open && m.page == Page::Main, "Esc does nothing there");
-        // Esc closes a dialog, back to the main menu.
+        // Esc cancels a dialog, back to the main menu.
         click(&mut m, MainItem::Options);
         assert_eq!(m.page, Page::Settings);
         let o = press(&mut m, &[Input::Close]);
@@ -3698,9 +4654,9 @@ mod tests {
     fn create_server_starts_a_map_from_the_main_menu() {
         let mut m = main_menu();
         click(&mut m, MainItem::NewGame);
-        assert_eq!(m.page, Page::NewGame);
-        let start = m.rows().iter().position(|r| matches!(r, Row::Button { action: Action::Start, .. })).unwrap();
-        let o = press(&mut m, &[Input::Click(Target::Row(start), 0)]);
+        assert_eq!((m.page, m.create_tab), (Page::NewGame, 0));
+        // Enter: Start, the default button.
+        let o = press(&mut m, &[Input::Activate]);
         assert_eq!(o.lines.last().map(String::as_str), Some("map cs_office"));
         // The menu stays up, loading, and takes no input until the map is in.
         assert!(!o.close && m.open);
@@ -3721,7 +4677,8 @@ mod tests {
             o.lines,
             ["bot_kick", "mashup_rounds 1", "bot_reaction 0.35", "bot_aim_error 2.5", "bot_turn_rate 360", "map de_dust2"]
         );
-        assert_eq!(o.after_load.len(), (QUICK_BOTS.0 + QUICK_BOTS.1) as usize);
+        assert_eq!(o.after_load.len(), QUICK_BOTS as usize);
+        assert_eq!(o.after_load.iter().filter(|l| *l == "bot_add 1").count(), 5, "five terrorists, four CTs");
         assert_eq!(m.loading.as_deref(), Some(QUICK_MAP));
         let mut m = main_menu();
         let o = click(&mut m, MainItem::Greybox);
@@ -3812,7 +4769,9 @@ mod tests {
         // The info line can't be focused.
         assert_eq!(m.focus, 1);
         press(&mut m, &[Input::Up]);
-        assert_eq!(m.focus, 4, "wraps past the info line to OK");
+        assert_eq!(m.focus, 4, "wraps past the info line to Close");
+        press(&mut m, &[Input::Focus(1)]);
+        assert_eq!(m.focus, 1, "Tab wraps too");
         press(&mut m, &[Input::Back]);
         assert_eq!((m.page, m.focus), (Page::Main, at(&m, MainItem::Bots)), "back on its entry");
         // Up past ours to Quit.
@@ -3852,159 +4811,247 @@ mod tests {
         assert_eq!(press(&mut m, &[Input::Click(Target::Row(2), 0)]).lines, ["jointeam 3"]);
     }
 
+    /// Create Server driven as CS:S's: the map from its drop-down, bots
+    /// included, how many typed, a difficulty button, the Bot page's team,
+    /// the Game page's options; Start sets what changed, loads the map,
+    /// then adds the bots.
     #[test]
-    fn a_new_game_loads_the_map_then_adds_bots() {
+    fn create_server_by_its_controls() {
         let mut m = menu();
-        click(&mut m, MainItem::NewGame);
-        assert_eq!(m.page, Page::NewGame);
-        // Map: one to the right (de_nuke); mode back to deathmatch; 2 T,
-        // 1 CT; hard.
-        let o = press(
-            &mut m,
-            &[
-                Input::Right,
-                Input::Down,
-                Input::Right,
-                Input::Down,
-                Input::Right,
-                Input::Right,
-                Input::Down,
-                Input::Click(Target::Row(3), 1),
-                Input::Click(Target::Row(4), 1),
+        let ui = GameUi {
+            server_settings: vec![
+                ServerSetting {
+                    cvar: "hostname".into(),
+                    label: "Server Name".into(),
+                    kind: ServerSettingKind::Text,
+                    default: "Counter-Strike Source".into(),
+                },
+                ServerSetting {
+                    cvar: "mp_friendlyfire".into(),
+                    label: "Friendly fire".into(),
+                    kind: ServerSettingKind::Bool,
+                    default: "0".into(),
+                },
+                ServerSetting {
+                    cvar: "mp_timelimit".into(),
+                    label: "Time limit".into(),
+                    kind: ServerSettingKind::Number { min: Some(0.0), max: None },
+                    default: "20".into(),
+                },
             ],
-        );
+            ..default()
+        };
+        m.set_ui(Some(Arc::new(ui)));
+        m.open(Page::Main, vec!["cs_office".into(), "de_dust2".into(), "de_nuke".into()], Some("de_dust2"), get);
+        click(&mut m, MainItem::NewGame);
+        // The map: a click opens its list on the map now, Down and Enter
+        // pick the next.
+        let map = row_with(&m, Field::Map);
+        press(&mut m, &[Input::Click(Target::Row(map), 0)]);
+        assert_eq!(m.combo.map(|c| (c.owner, c.highlight, c.len)), Some((map, 1, 3)));
+        press(&mut m, &[Input::Down, Input::Activate]);
+        assert_eq!((m.new_game.map, m.combo), (2, None));
+        // Include bots: their count and difficulty show.
+        assert!(m.rows().iter().all(|r| r.field() != Some(Field::BotCount)));
+        click_on(&mut m, |m| row_with(m, Field::BotsOn));
+        let count = row_with(&m, Field::BotCount);
+        // Tab to the count (its text selected), type over it; only digits.
+        press(&mut m, &[Input::Focus(1)]);
+        assert_eq!(m.focus, count);
+        press(&mut m, &[Input::Type("3x".into())]);
+        assert_eq!(m.new_game.bot_count, "3");
+        press(&mut m, &[Input::Type("45".into())]);
+        assert_eq!(m.new_game.bot_count, "3", "two digits at most");
+        click_on(&mut m, |m| row_with(m, Field::Difficulty(2)));
+        assert_eq!(m.new_game.difficulty, 2);
+        assert_eq!(control(&m, row_with(&m, Field::Difficulty(2))), Control::Radio(true));
+        // The Bot page: counter-terrorists only.
+        press(&mut m, &[Input::Click(Target::Tab(2), 0)]);
+        assert_eq!(m.create_tab, 2);
+        let team = row_with(&m, Field::BotTeam);
+        press(&mut m, &[Input::Click(Target::Row(team), 0), Input::Click(Target::ComboItem(2), 0)]);
+        assert_eq!(m.new_game.bot_team, 2);
+        // The Game page: friendly fire on (Ctrl+Tab back to it).
+        press(&mut m, &[Input::NextTab(-1)]);
+        assert_eq!(m.create_tab, 1);
+        let rows = m.rows();
+        let ff = rows
+            .iter()
+            .position(|r| matches!(r, Row::Control { label, .. } if label == "Friendly fire"))
+            .unwrap();
+        assert!(!rows.iter().any(|r| matches!(r, Row::Control { label, .. } if label == "Time limit")), "mashup lacks it");
+        let o = press(&mut m, &[Input::Click(Target::Row(ff), 0)]);
         assert!(o.lines.is_empty(), "nothing runs before Start: {:?}", o.lines);
-        assert_eq!(
-            m.new_game,
-            NewGame {
-                map: 2,
-                mode: Mode::Deathmatch,
-                bots_t: 2,
-                bots_ct: 1,
-                difficulty: 2,
-            }
-        );
-        let o = press(&mut m, &[Input::Click(Target::Row(5), 0)]);
+        let o = click_on(&mut m, |m| button(m, Action::Start));
         assert_eq!(
             o.lines,
             [
                 "bot_kick",
-                "mashup_rounds 0",
+                "mashup_rounds 1",
+                "mp_friendlyfire 1",
                 "bot_reaction 0.2",
                 "bot_aim_error 1.5",
                 "bot_turn_rate 540",
                 "map de_nuke",
             ]
         );
-        assert_eq!(o.after_load, ["bot_add 1", "bot_add 1", "bot_add 2"]);
+        assert_eq!(o.after_load, ["bot_add 2", "bot_add 2", "bot_add 2"]);
         assert!(o.close && !m.open);
     }
 
     #[test]
-    fn bot_counts_and_difficulty_stay_in_range() {
+    fn create_servers_combo_boxes_take_the_wheel_letters_and_escape() {
         let mut m = menu();
         click(&mut m, MainItem::NewGame);
-        for _ in 0..3 {
-            press(&mut m, &[Input::Click(Target::Row(2), -1), Input::Click(Target::Row(4), -1)]);
-        }
-        assert_eq!((m.new_game.bots_t, m.new_game.difficulty), (0, 0));
-        for _ in 0..40 {
-            press(&mut m, &[Input::Click(Target::Row(2), 1), Input::Click(Target::Row(4), 1)]);
-        }
-        assert_eq!((m.new_game.bots_t, m.new_game.difficulty), (MAX_BOTS, 3));
-    }
-
-    #[test]
-    fn the_map_list_picks_by_key_letter_and_click() {
-        let mut m = menu();
-        { click(&mut m, MainItem::NewGame); press(&mut m, &[Input::Activate]) };
-        assert_eq!((m.page, m.focus), (Page::Maps, 1), "on the chosen map");
-        press(&mut m, &[Input::Char('c'), Input::Activate]);
-        assert_eq!((m.page, m.new_game.map), (Page::NewGame, 0));
-        press(&mut m, &[Input::Click(Target::Row(0), 0), Input::Click(Target::Row(2), 0)]);
-        assert_eq!((m.page, m.new_game.map), (Page::NewGame, 2));
-        // Letters on the map row jump too.
-        press(&mut m, &[Input::Char('d')]);
+        let map = row_with(&m, Field::Map);
+        // Closed and focused: Up/Down and the wheel step it, no wrapping.
+        press(&mut m, &[Input::FocusRow(map), Input::Down, Input::Down, Input::Down]);
+        assert_eq!(m.new_game.map, 2);
+        press(&mut m, &[Input::Wheel(map, 1)]);
         assert_eq!(m.new_game.map, 1);
-        // Backspace from the map list goes back to the new game page.
-        press(&mut m, &[Input::Activate, Input::Back]);
-        assert_eq!(m.page, Page::NewGame);
-    }
-
-    #[test]
-    fn long_map_lists_scroll_with_the_focus_wheel_and_bar() {
-        let mut m = GameMenu::default();
-        let maps: Vec<String> = (0..50).map(|i| format!("map{i:02}")).collect();
-        m.open(Page::Maps, maps, Some("map45"), |_| None);
-        assert_eq!(m.focus, 45);
-        assert_eq!(m.scroll, 45 + 1 - MAP_ROWS, "the chosen map shows");
-        press(&mut m, &[Input::Scroll(-100)]);
-        assert_eq!((m.scroll, m.focus), (0, 45), "the wheel scrolls without moving the focus");
-        press(&mut m, &[Input::Click(Target::Scroll, MAP_ROWS as i32)]);
-        assert_eq!(m.scroll, MAP_ROWS);
-        press(&mut m, &[Input::Scroll(1000)]);
-        assert_eq!(m.scroll, 50 - MAP_ROWS, "not past the end");
-        // Left and right go a screenful at a time.
-        press(&mut m, &[Input::Left]);
-        assert_eq!(m.focus, 45 - MAP_ROWS);
-        press(&mut m, &[Input::Left, Input::Left, Input::Left]);
-        assert_eq!((m.focus, m.scroll), (0, 0));
-        // A click picks.
-        press(&mut m, &[Input::Click(Target::Row(3), 0)]);
-        assert_eq!((m.page, m.new_game.map), (Page::NewGame, 3));
+        // A letter jumps.
+        press(&mut m, &[Input::Char('c')]);
+        assert_eq!(m.new_game.map, 0);
+        // Open: hover highlights, Esc closes without a pick, a click outside
+        // too.
+        press(&mut m, &[Input::Space, Input::Hover(Target::ComboItem(2))]);
+        assert_eq!(m.combo.map(|c| c.highlight), Some(2));
+        press(&mut m, &[Input::Close]);
+        assert_eq!((m.combo, m.new_game.map, m.page), (None, 0, Page::NewGame), "Esc closed only the list");
+        press(&mut m, &[Input::Space, Input::Click(Target::Outside, 0)]);
+        assert_eq!((m.combo, m.new_game.map), (None, 0));
+        // Its wheel scrolls the list, not the value.
+        press(&mut m, &[Input::Space, Input::Scroll(1)]);
+        assert_eq!(m.new_game.map, 0);
+        press(&mut m, &[Input::Char('d'), Input::Activate]);
+        assert_eq!(m.new_game.map, 1, "a letter in the open list, Enter picks");
     }
 
     #[test]
     fn no_maps_no_start() {
         let mut m = GameMenu::default();
         m.open(Page::NewGame, Vec::new(), None, |_| None);
-        let start = m.rows().iter().position(|r| matches!(r, Row::Button { action: Action::Start, .. }));
-        let o = press(&mut m, &[Input::Click(Target::Row(start.unwrap()), 0)]);
+        let start = button(&m, Action::Start);
+        let o = press(&mut m, &[Input::Click(Target::Row(start), 0)]);
         assert!(o.lines.is_empty() && m.open);
-        // Activating the map row doesn't open an empty list.
+        // The empty map box doesn't open a list.
         press(&mut m, &[Input::Click(Target::Row(0), 0)]);
-        assert_eq!(m.page, Page::NewGame);
+        assert_eq!((m.page, m.combo), (Page::NewGame, None));
     }
 
     #[test]
-    fn settings_set_their_cvars_at_once() {
+    fn options_ok_cancel_and_apply() {
         let mut m = menu();
         click(&mut m, MainItem::Options);
         assert_eq!((m.page, m.tab), (Page::Settings, Tab::Keyboard));
+        let apply = button(&m, Action::Apply);
+        assert!(matches!(m.rows()[apply], Row::Button { enabled: false, .. }), "nothing to apply yet");
         press(&mut m, &[Input::NextTab(1)]);
-        assert_eq!((m.tab, m.focus), (Tab::Mouse, 0));
-        let o = press(&mut m, &[Input::Right, Input::Right, Input::Down, Input::Activate, Input::Down, Input::Left]);
-        assert_eq!(
-            o.lines,
-            ["sensitivity 3.1", "sensitivity 3.2", "m_pitch -0.022", "zoom_sensitivity_ratio 1.1"]
-        );
-        // A slider pressed halfway.
-        let o = press(&mut m, &[Input::Slide(0, 1.0), Input::Slide(0, 1.0)]);
-        assert_eq!(o.lines, ["sensitivity 20.0"], "once: dragging to the same place sets nothing");
-        // Audio: volume stops at 1.
-        press(&mut m, &[Input::Click(Target::Tab(2), 0)]);
-        assert_eq!(m.tab, Tab::Audio);
-        let o = press(&mut m, &[Input::Right]);
-        assert!(o.lines.is_empty(), "{:?}", o.lines);
-        // Multiplayer: hand, a choice, wrapping; shown by name.
-        press(&mut m, &[Input::NextTab(1), Input::NextTab(1)]);
-        assert_eq!(m.tab, Tab::Multiplayer);
-        let hand = row_of(&m, "cl_righthand");
-        let o = press(&mut m, &[Input::Click(Target::Row(hand), 1)]);
-        assert_eq!(o.lines, ["cl_righthand 0"]);
-        assert!(matches!(&m.rows()[hand], Row::Value { value, .. } if value == "Left"));
-        // Crosshair colour isn't registered here: not focusable, skipped.
-        assert!(matches!(m.rows()[0], Row::Info(_)));
-        assert_eq!(m.focus, hand);
-        // Video: a check box flips.
-        press(&mut m, &[Input::NextTab(-1)]);
-        let vsync = row_of(&m, "mat_vsync");
-        let o = press(&mut m, &[Input::Click(Target::Row(vsync), 0), Input::Click(Target::Row(vsync), 0)]);
-        assert_eq!(o.lines, ["mat_vsync 0", "mat_vsync 1"]);
-        // OK goes back.
-        let ok = m.rows().len() - 1;
-        press(&mut m, &[Input::Click(Target::Row(ok), 0)]);
+        assert_eq!(m.tab, Tab::Mouse);
+        // Reverse mouse, then the sensitivity slider pressed at its end and
+        // dragged: once per change.
+        let reverse = row_of(&m, "m_pitch");
+        let o = press(&mut m, &[Input::Click(Target::Row(reverse), 0)]);
+        assert_eq!(o.lines, ["m_pitch -0.022"]);
+        let slider = row_of(&m, "sensitivity");
+        let o = press(&mut m, &[Input::Slide(slider, 1.0), Input::Slide(slider, 1.0), Input::Slide(slider, 0.0)]);
+        assert_eq!(o.lines, ["sensitivity 20.0", "sensitivity 0.1"]);
+        // Focused, Right steps it.
+        assert_eq!(press(&mut m, &[Input::Right]).lines, ["sensitivity 0.2"]);
+        // Apply keeps them; Cancel puts back only what changed after.
+        let apply = button(&m, Action::Apply);
+        assert!(matches!(m.rows()[apply], Row::Button { enabled: true, .. }));
+        press(&mut m, &[Input::Click(Target::Row(apply), 0)]);
+        assert!(matches!(m.rows()[apply], Row::Button { enabled: false, .. }), "applied");
+        assert_eq!(press(&mut m, &[Input::FocusRow(slider), Input::Right]).lines, ["sensitivity 0.3"]);
+        let o = click_on(&mut m, |m| button(m, Action::Cancel));
+        assert_eq!(o.lines, ["sensitivity 0.2"]);
         assert_eq!(m.page, Page::Main);
+        // OK keeps; Esc is Cancel.
+        click(&mut m, MainItem::Options);
+        press(&mut m, &[Input::Click(Target::Tab(1), 0)]);
+        let reverse = row_of(&m, "m_pitch");
+        press(&mut m, &[Input::Click(Target::Row(reverse), 0)]);
+        assert!(click_on(&mut m, |m| button(m, Action::Ok)).lines.is_empty());
+        click(&mut m, MainItem::Options);
+        press(&mut m, &[Input::Click(Target::Tab(1), 0), Input::Click(Target::Row(reverse), 0)]);
+        assert_eq!(press(&mut m, &[Input::Close]).lines, ["m_pitch 0.022"], "back to what OK kept");
+        // The close box is Cancel too.
+        click(&mut m, MainItem::Options);
+        press(&mut m, &[Input::Click(Target::Tab(1), 0), Input::Click(Target::Row(reverse), 0)]);
+        assert_eq!(press(&mut m, &[Input::Click(Target::Close, 0)]).lines, ["m_pitch 0.022"]);
+        assert!(m.open && m.in_game, "the menu stays");
+    }
+
+    #[test]
+    fn video_options_and_its_advanced_dialog() {
+        let mut m = menu();
+        m.resolutions = vec!["1920x1080".into(), "1280x720".into()];
+        click(&mut m, MainItem::Options);
+        press(&mut m, &[Input::Click(Target::Tab(3), 0)]);
+        assert_eq!(m.tab, Tab::Video);
+        // The resolution's drop-down lists the window sizes.
+        let res = row_of(&m, "mashup_resolution");
+        press(&mut m, &[Input::Click(Target::Row(res), 0)]);
+        assert_eq!(m.combo.map(|c| c.len), Some(2));
+        let o = press(&mut m, &[Input::Click(Target::ComboItem(1), 0)]);
+        assert_eq!(o.lines, ["mashup_resolution 1280x720"]);
+        // Advanced...: vsync as a drop-down, antialiasing; Cancel puts them
+        // back, the options stay open.
+        let adv = button(&m, Action::VideoAdvanced);
+        press(&mut m, &[Input::Click(Target::Row(adv), 0)]);
+        assert_eq!(m.page, Page::VideoAdvanced);
+        let aa = row_of(&m, "mat_antialias");
+        assert!(matches!(control(&m, aa), Control::Combo { selected: Some(2), .. }));
+        let o = press(&mut m, &[Input::Click(Target::Row(aa), 0), Input::Up, Input::Up, Input::Activate]);
+        assert_eq!(o.lines, ["mat_antialias 0"]);
+        let o = click_on(&mut m, |m| button(m, Action::Cancel));
+        assert_eq!(o.lines, ["mat_antialias 4"]);
+        assert_eq!((m.page, m.focus), (Page::Settings, adv));
+        // Show FPS and the hand aren't CS:S's: in our own dialog.
+        assert!(m.rows().iter().all(|r| r.field() != Some(Field::Setting(setting("cl_showfps")))));
+        click(&mut m, MainItem::Extras);
+        assert_eq!(m.page, Page::Extras);
+        let hand = row_of(&m, "cl_righthand");
+        let o = press(&mut m, &[Input::Click(Target::Row(hand), 0), Input::Click(Target::ComboItem(0), 0)]);
+        assert_eq!(o.lines, ["cl_righthand 0"]);
+        assert!(matches!(control(&m, hand), Control::Combo { text, .. } if text == "Left"));
+    }
+
+    #[test]
+    fn the_sensitivity_text_entry_beside_its_slider() {
+        // With the game's mouse layout: the slider and the text entry.
+        let mut layout = UiLayout::default();
+        for (name, kind) in [("ReverseMouse", "CCvarNegateCheckButton"), ("Slider", "CCvarSlider"), ("SensitivityLabel", "TextEntry")] {
+            layout
+                .controls
+                .push(UiControl::new(name, UiKind::Other(kind.into()), 0.0, 0.0, 100.0, 24.0));
+        }
+        let ui = GameUi {
+            options: HashMap::from([("mouse".to_string(), layout)]),
+            ..default()
+        };
+        let mut m = menu();
+        m.set_ui(Some(Arc::new(ui)));
+        click(&mut m, MainItem::Options);
+        press(&mut m, &[Input::Click(Target::Tab(1), 0)]);
+        let entry = row_with(&m, Field::SettingText(setting("sensitivity")));
+        assert!(matches!(control(&m, entry), Control::Text { text, .. } if text == "3.0"));
+        // A click places the caret; the text typed sets the cvar once it
+        // reads as a number in range.
+        press(&mut m, &[Input::Click(Target::Row(entry), 0), Input::Caret(entry, 3), Input::Edit(Edit::Home(true))]);
+        assert_eq!(m.caret, Caret { at: 0, anchor: 3 });
+        let o = press(&mut m, &[Input::Copy]);
+        assert_eq!(o.clipboard.as_deref(), Some("3.0"));
+        let o = press(&mut m, &[Input::Type("2".into()), Input::Type("5".into())]);
+        assert_eq!(o.lines, ["sensitivity 2"], "25 is out of range");
+        assert!(matches!(control(&m, entry), Control::Text { text, .. } if text == "25"), "as typed");
+        assert_eq!(m.values[setting("sensitivity")].as_deref(), Some("2"));
+        // Without the layout no entry: the slider shows the number.
+        let mut m = menu();
+        click(&mut m, MainItem::Options);
+        press(&mut m, &[Input::Click(Target::Tab(1), 0)]);
+        assert!(m.rows().iter().all(|r| !matches!(r.field(), Some(Field::SettingText(_)))));
     }
 
     fn keyboard() -> GameMenu {
@@ -4030,7 +5077,7 @@ mod tests {
         assert!(matches!(&rows[0], Row::Heading(t) if t == "Movement"));
         assert!(matches!(&rows[bind_row(&m, "+jump")], Row::Bind { keys, known: true, .. } if keys == "MWHEELDOWN, MWHEELUP, SPACE"));
         assert_eq!(m.focus, 1, "the first action, past the heading");
-        assert_eq!(m.list(), (rows.len() - 5, KEY_ROWS));
+        assert_eq!(m.list(), (rows.len() - 7, KEY_ROWS));
     }
 
     /// Keyboard > Advanced...: CS:S's two check boxes (fast weapon switch,
@@ -4039,21 +5086,15 @@ mod tests {
     #[test]
     fn the_keyboard_tabs_advanced_dialog() {
         let mut m = keyboard();
-        let advanced = |m: &GameMenu| {
-            m.rows()
-                .iter()
-                .position(|r| matches!(r, Row::Button { action: Action::Advanced, .. }))
-                .unwrap()
-        };
-        let at = advanced(&m);
+        let at = button(&m, Action::Advanced);
         press(&mut m, &[Input::Click(Target::Row(at), 0)]);
         assert_eq!(m.page, Page::KeyboardAdvanced);
         let rows = m.rows();
         let labels: Vec<String> = rows.iter().map(label_of).collect();
         assert_eq!(labels, ["Fast weapon switch", "Enable developer console", "OK", "Cancel"]);
-        assert!(matches!(&rows[0], Row::Value { value, .. } if value == "Off"), "{:?}", rows[0]);
+        assert!(matches!(&rows[0], Row::Control { control: Control::Check(false), .. }), "{:?}", rows[0]);
         assert_eq!(m.focus, 0);
-        let o = press(&mut m, &[Input::Activate]);
+        let o = press(&mut m, &[Input::Space]);
         assert_eq!(o.lines, ["hud_fastswitch 1"]);
         let o = press(&mut m, &[Input::Click(Target::Row(1), 0)]);
         assert_eq!(o.lines, ["con_enable 0"]);
@@ -4061,13 +5102,14 @@ mod tests {
         let o = press(&mut m, &[Input::Click(Target::Row(3), 0)]);
         assert_eq!(o.lines, ["hud_fastswitch 0", "con_enable 1"]);
         assert_eq!((m.page, m.tab, m.focus), (Page::Settings, Tab::Keyboard, at));
-        // OK keeps the change; Esc on the dialog cancels it, leaving the
-        // options open.
-        press(&mut m, &[Input::Activate, Input::Activate]);
-        let o = press(&mut m, &[Input::Click(Target::Row(2), 0)]);
+        // Enter on the check box: OK, the default button, keeps it.
+        press(&mut m, &[Input::Activate, Input::Space]);
+        let o = press(&mut m, &[Input::Activate]);
         assert!(o.lines.is_empty());
+        assert_eq!(m.page, Page::Settings);
         assert_eq!(m.values[setting_index("hud_fastswitch").unwrap()].as_deref(), Some("1"));
-        press(&mut m, &[Input::Activate, Input::Down, Input::Activate]);
+        // Esc on the dialog cancels it, leaving the options open.
+        press(&mut m, &[Input::Activate, Input::Focus(1), Input::Space]);
         let o = press(&mut m, &[Input::Close]);
         assert_eq!(o.lines, ["con_enable 1"]);
         assert!(m.open && m.page == Page::Settings);
@@ -4095,8 +5137,7 @@ mod tests {
         // Edit key and Clear key act on the selected action.
         let duck = bind_row(&m, "+duck");
         press(&mut m, &[Input::Click(Target::Row(duck), 0)]);
-        let rows = m.rows();
-        let edit = rows.iter().position(|r| matches!(r, Row::Button { action: Action::EditKey, .. })).unwrap();
+        let edit = button(&m, Action::EditKey);
         let clear = edit + 1;
         let o = press(&mut m, &[Input::Click(Target::Row(clear), 0)]);
         assert_eq!(o.lines, ["unbind ctrl"]);
@@ -4148,7 +5189,7 @@ mod tests {
         use MainItem::*;
         assert_eq!(
             items,
-            [Resume, Disconnect, FindServers, NewGame, BugReport, Options, Quit, QuickStart, Greybox, Bots, Team, Console]
+            [Resume, Disconnect, FindServers, NewGame, BugReport, Options, Quit, QuickStart, Greybox, Bots, Team, Extras, Console]
         );
         assert_eq!(e[3].label, "CREATE SERVER", "the game's words");
         assert!(e[2].gap && !e[2].gap_in_game_only, "the file's blank entry");
@@ -4198,16 +5239,17 @@ mod tests {
     }
 
     #[test]
-    fn hover_moves_focus_only_on_its_page() {
+    fn hover_moves_focus_only_on_the_main_page() {
         let mut m = menu();
         let options = at(&m, MainItem::Options);
         press(&mut m, &[Input::Hover(Target::Main(options))]);
         assert_eq!(m.focus, options);
         press(&mut m, &[Input::Activate, Input::NextTab(1)]);
         assert_eq!(m.page, Page::Settings);
-        // The left-hand list doesn't take the focus from the dialog.
-        press(&mut m, &[Input::Hover(Target::Main(1)), Input::Hover(Target::Row(2))]);
-        assert_eq!(m.focus, 2);
+        let focus = m.focus;
+        // Neither the left-hand list nor a hover takes the dialog's focus.
+        press(&mut m, &[Input::Hover(Target::Main(1)), Input::Hover(Target::Row(focus + 1))]);
+        assert_eq!(m.focus, focus);
     }
 
     #[test]
@@ -4341,5 +5383,16 @@ mod tests {
         let o = click(&mut m, MainItem::BugReport);
         assert_eq!(o.lines, ["bugreport"]);
         assert!(o.close && !m.open);
+    }
+
+    #[test]
+    fn menuinput_words() {
+        let mut m = menu();
+        click(&mut m, MainItem::NewGame);
+        assert_eq!(menu_input(&m, &["focus".into(), "map".into()]), Ok(Input::FocusRow(0)));
+        assert_eq!(menu_input(&m, &["open".into()]), Ok(Input::Space));
+        assert_eq!(menu_input(&m, &["pick".into(), "2".into()]), Ok(Input::Click(Target::ComboItem(2), 0)));
+        assert!(menu_input(&m, &["focus".into(), "nothing".into()]).is_err());
+        assert!(m.describe().starts_with("NewGame, focus 0"));
     }
 }

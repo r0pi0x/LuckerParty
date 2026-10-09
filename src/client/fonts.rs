@@ -344,6 +344,49 @@ impl UiFonts {
         ))
     }
 
+    /// Where each char boundary of `text` falls in `font`, window pixels
+    /// from its start (one more than the chars): text entries place their
+    /// caret and selection by it. A face without its bytes (Bevy's
+    /// default) guesses half an em a char.
+    pub fn char_offsets(&self, font: &TextFont, text: &str) -> Vec<f32> {
+        use ab_glyph::{Font as _, FontRef, ScaleFont as _};
+        let em = match font.font_size {
+            FontSize::Px(px) => px,
+            _ => 16.0,
+        };
+        let face = match &font.font {
+            bevy::text::FontSource::Handle(h) => self.face_bytes.get(&h.id()),
+            _ => None,
+        }
+        .and_then(|bytes| FontRef::try_from_slice(bytes).ok());
+        let mut out = Vec::with_capacity(text.chars().count() + 1);
+        let mut x = 0.0;
+        out.push(0.0);
+        match face {
+            Some(f) => {
+                let upem = f.units_per_em().unwrap_or(1000.0);
+                let scaled = f.as_scaled(ab_glyph::PxScale::from(em * f.height_unscaled() / upem));
+                let mut last = None;
+                for c in text.chars() {
+                    let id = scaled.glyph_id(c);
+                    if let Some(prev) = last {
+                        x += scaled.kern(prev, id);
+                    }
+                    x += scaled.h_advance(id);
+                    last = Some(id);
+                    out.push(x);
+                }
+            }
+            None => {
+                for _ in text.chars() {
+                    x += em * 0.5;
+                    out.push(x);
+                }
+            }
+        }
+        out
+    }
+
     /// Whether the map's HUD fonts are loaded.
     pub fn has_game_fonts(&self) -> bool {
         !self.game.is_empty()

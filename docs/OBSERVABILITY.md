@@ -118,11 +118,24 @@ Only `Reflect`-registered types are visible; register new core components in
   action from the start, e.g. to fire in a `--screenshot` run; held
   console actions work without mouse capture. Automated runs never write
   config.cfg, and only archived cvars are saved there.
-- `menu [main|newgame|maps|bots|team|options]` opens the game menu (Esc)
-  on a page, for screenshots of it: `--window 1280x720 --screenshot
-  menu.png +menu options`; `menu keyboard` (or `mouse`, `audio`, `video`,
-  `multiplayer`) opens the options on that tab, `menu advanced` the
-  keyboard tab's Advanced dialog. Cvars it shows are read
+- `menu [main|newgame|game|bot|bots|team|options|extras]` opens the
+  game menu (Esc) on a page, for screenshots of it: `--window 1280x720
+  --screenshot menu.png +menu options`; `menu newgame` is Create Server
+  (`game`, `bot`: its other pages), `menu keyboard` (or `mouse`, `audio`,
+  `video`, `multiplayer`) opens the options on that tab, `menu advanced`
+  the keyboard tab's Advanced dialog, `menu videoadvanced` the video
+  tab's, `menu extras` Lucker Party Options. `menuinput <input>` drives
+  the open dialog as keys would (`focus <cvar|map|bots|botcount|botteam|
+  difficulty>`, `open` a focused combo box's list, `down`, `up`, `enter`,
+  `space`, `escape`, `tab`, `backtab`, `type <text>`, `pick <n>`, `sheet
+  <n>`) and prints the focused control: a drop-down open in a screenshot
+  is `+menu newgame +menuinput open`. `vgui_windows` lists the frames
+  (place, size, stacking); `vgui_windows <frame> <x> <y> [<wide> <tall>]`
+  moves one as a title-bar drag would (and sizes a sizeable one), e.g.
+  `+openserverbrowser lan +wait 30 +vgui_windows servers 40 30 760 520`.
+  The widget state machines (drop-down, slider, text entry, Tab order,
+  frame drags and stacking) are unit-tested in `client::widgets`, the
+  dialogs driven by scripted input in `tests/it/menus.rs`. Cvars it shows are read
   when it opens: put `+cl_crosshaircolor 3` before `+menu`. The log
   line `game menu: GameUI look (...)` says the install's look loaded,
   with how many main menu backgrounds and the title it found (else the
@@ -553,7 +566,9 @@ limited per address and in total). `openserverbrowser [lan|favorites|history]`
 (the main menu's Find Servers) opens the browser; `serverbrowser <input>`
 drives it as a click or key would (`row <n>`, `doubleclick <n>`,
 `connect`, `refresh`, `filters`, `sort <column>`, `tab <name>`, `type
-<text>`, `enter`, `escape`, `addserver`, `find`, `delete`) and prints its
+<text>`, `enter`, `escape`, `addserver`, `find`, `delete`, `latency` (its
+drop-down's list), `hover <n>`, `pick <n>`, `check <name>`, `map`,
+`maxplayers` (their text entries), `next` (Tab), `space`) and prints its
 rows (through `mashup/console` for screenshots); in a test, the model is
 `client::server_browser::ServerBrowser` (`handle` an `Input`, its `rows`,
 `set_results` from `net::query::ServerQueries::results`); favourites and

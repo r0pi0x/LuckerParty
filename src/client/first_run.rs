@@ -24,7 +24,8 @@ use bevy::{
 
 use super::{
     fonts::UiFonts,
-    game_menu::{GameMenu, Look, UiText, bevel, frame, label, place},
+    game_menu::{GameMenu, UiText},
+    widgets::{self, Caret, Edit, FrameSpec, Look, label},
 };
 use crate::{
     console::ConsoleAppExt,
@@ -107,6 +108,8 @@ pub struct FirstRun {
     /// Why the last try didn't find the game.
     pub message: Option<String>,
     pub focus: Target,
+    /// The folder box's caret and selection.
+    pub caret: Caret,
     /// The game's look, when it comes (after a folder checks out).
     pub ui: UiText,
 }
@@ -125,13 +128,20 @@ pub enum Input {
     Type(String),
     Backspace,
     Clear,
-    /// Enter: presses the focused button (Retry from the box).
+    /// An editing key in the box.
+    Edit(Edit),
+    /// Enter: presses the focused button (Retry from the box: the default
+    /// button).
     Enter,
+    /// Space: presses the focused button.
+    Space,
     /// Esc: Continue Without.
     Escape,
-    /// Tab: the next control.
-    Tab,
+    /// Tab (+1) / Shift+Tab (-1): the next control.
+    Tab(i32),
     Click(Target),
+    /// A click into the box at a char.
+    Caret(usize),
 }
 
 /// What the dialog asks for.
@@ -148,31 +158,38 @@ impl FirstRun {
         if !self.open {
             return None;
         }
+        let edit = |f: &mut Self, e: Edit| {
+            f.focus = Target::Field;
+            let mut caret = f.caret;
+            caret.edit(&mut f.text, e, 1024);
+            f.caret = caret;
+        };
         match input {
-            Input::Type(s) => {
-                self.focus = Target::Field;
-                for c in s.chars().filter(|c| !c.is_control()) {
-                    if self.text.len() + c.len_utf8() > 1024 {
-                        break;
-                    }
-                    self.text.push(c);
-                }
+            Input::Type(s) => edit(self, Edit::Insert(s)),
+            Input::Backspace => edit(self, Edit::Backspace),
+            Input::Edit(e) => edit(self, e),
+            Input::Clear => {
+                self.text.clear();
+                self.caret = Caret::default();
             }
-            Input::Backspace => {
-                self.text.pop();
-            }
-            Input::Clear => self.text.clear(),
-            Input::Tab => {
-                self.focus = match self.focus {
-                    Target::Field => Target::Retry,
-                    Target::Retry => Target::Continue,
-                    Target::Continue => Target::Field,
+            Input::Tab(dir) => {
+                const ORDER: [Target; 3] = [Target::Field, Target::Retry, Target::Continue];
+                self.focus = widgets::focus_step(&ORDER, Some(self.focus), dir).unwrap_or_default();
+                if self.focus == Target::Field {
+                    // VGUI selects a text entry's text as Tab comes to it.
+                    self.caret = Caret {
+                        at: self.text.chars().count(),
+                        anchor: 0,
+                    };
                 }
             }
             Input::Click(Target::Field) => self.focus = Target::Field,
+            Input::Caret(at) => self.caret = Caret { at, anchor: at },
+            Input::Space if self.focus == Target::Field => edit(self, Edit::Insert(" ".into())),
+            Input::Space if self.focus == Target::Continue => self.close(),
             Input::Escape | Input::Click(Target::Continue) => self.close(),
             Input::Enter if self.focus == Target::Continue => self.close(),
-            Input::Enter | Input::Click(Target::Retry) => {
+            Input::Enter | Input::Space | Input::Click(Target::Retry) => {
                 let folder = self.text.trim().trim_matches('"').trim();
                 return Some(if folder.is_empty() { Request::Search } else { Request::Use(folder.to_string()) });
             }
@@ -284,7 +301,8 @@ fn startup(args: Option<Res<super::ClientArgs>>, mut first_run: ResMut<FirstRun>
     }
 }
 
-/// Keys: typing and pasting into the box, Enter, Esc, Tab.
+/// Keys: typing, editing (Shift selects, Ctrl+A) and pasting into the
+/// box, Enter, Space, Esc, Tab.
 fn keys(
     mut events: MessageReader<KeyboardInput>,
     held: Res<ButtonInput<KeyCode>>,
@@ -297,6 +315,7 @@ fn keys(
         return;
     }
     let ctrl = held.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight, KeyCode::SuperLeft, KeyCode::SuperRight]);
+    let shift = held.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
     for e in events.read() {
         if e.state != ButtonState::Pressed {
             continue;
@@ -306,12 +325,18 @@ fn keys(
                 let text = arboard::Clipboard::new().and_then(|mut c| c.get_text()).unwrap_or_default();
                 Input::Type(text.lines().next().unwrap_or("").to_string())
             }
+            (_, KeyCode::KeyA) if ctrl => Input::Edit(Edit::SelectAll),
             (_, KeyCode::KeyU) if ctrl => Input::Clear,
             (_, KeyCode::Enter | KeyCode::NumpadEnter) => Input::Enter,
             (_, KeyCode::Escape) => Input::Escape,
-            (_, KeyCode::Tab) => Input::Tab,
+            (_, KeyCode::Tab) => Input::Tab(if shift { -1 } else { 1 }),
+            (_, KeyCode::ArrowLeft) => Input::Edit(Edit::Left(shift)),
+            (_, KeyCode::ArrowRight) => Input::Edit(Edit::Right(shift)),
+            (_, KeyCode::Home) => Input::Edit(Edit::Home(shift)),
+            (_, KeyCode::End) => Input::Edit(Edit::End(shift)),
+            (_, KeyCode::Delete) => Input::Edit(Edit::Delete),
             (Key::Backspace, _) => Input::Backspace,
-            (Key::Space, _) => Input::Type(" ".into()),
+            (Key::Space, _) => Input::Space,
             (Key::Character(s), _) if !ctrl => Input::Type(s.to_string()),
             _ => continue,
         };
@@ -322,7 +347,19 @@ fn keys(
 #[derive(Component, Clone, Copy)]
 struct Hit(Target);
 
-fn pointer(hits: Query<(&Interaction, &Hit), Changed<Interaction>>, first_run: Res<FirstRun>, mut commands: Commands) {
+/// The folder box: a click places the caret at the char under it.
+#[derive(Component, Clone)]
+struct BoxText(String);
+
+#[allow(clippy::too_many_arguments)]
+fn pointer(
+    hits: Query<(&Interaction, &Hit), Changed<Interaction>>,
+    boxes: Query<(&Interaction, &BoxText, &bevy::ui::RelativeCursorPosition), Changed<Interaction>>,
+    fonts: Res<UiFonts>,
+    window: Query<&Window>,
+    first_run: Res<FirstRun>,
+    mut commands: Commands,
+) {
     if !first_run.open {
         return;
     }
@@ -330,6 +367,18 @@ fn pointer(hits: Query<(&Interaction, &Hit), Changed<Interaction>>, first_run: R
         if *i == Interaction::Pressed {
             let input = Input::Click(hit.0);
             commands.queue(move |w: &mut World| apply(w, input));
+        }
+    }
+    let height = window.iter().next().map_or(720.0, Window::height);
+    let s = (height / 720.0).clamp(0.6, 3.0);
+    for (i, text, at) in &boxes {
+        if *i == Interaction::Pressed
+            && let Some(p) = at.normalized
+        {
+            let font = fonts.source("Default", height, s, (16.0, false));
+            let caret = (first_run.focus == Target::Field).then_some(first_run.caret);
+            let at = widgets::caret_from_click(&fonts, &font, s, &text.0, W - 40.0, p.x + 0.5, caret);
+            commands.queue(move |w: &mut World| apply(w, Input::Caret(at)));
         }
     }
 }
@@ -381,16 +430,25 @@ fn draw(
         .spawn((
             FirstRunRoot,
             Node { position_type: PositionType::Absolute, width: percent(100.0), height: percent(100.0), ..default() },
-            // Modal over the menu (46) and the server browser (47), under
-            // the console.
+            // Modal over the menu and the server browser: the screen under
+            // it darkened and its clicks caught, under the console.
             BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.35)),
-            GlobalZIndex(48),
+            bevy::ui::FocusPolicy::Block,
+            Interaction::default(),
+            GlobalZIndex(widgets::POPUP_Z - 20),
         ))
         .id();
-    let dialog = frame(&mut commands, root, &look, size, (W, H), &format!("{NAME} Not Found"));
-    // Opaque, as the browser's modal dialogs.
-    let bg = look.frame_bg().to_srgba();
-    commands.entity(dialog).insert(BackgroundColor(Color::srgb(bg.red * 0.7, bg.green * 0.7, bg.blue * 0.7)));
+    let dialog = widgets::frame(
+        &mut commands,
+        root,
+        &look,
+        FrameSpec::new("firstrun").modal().no_close(),
+        (W, H),
+        &format!("{NAME} Not Found"),
+    )
+    .frame;
+    // Over the modal frames' own stacking: the root's.
+    commands.entity(dialog).insert(GlobalZIndex(widgets::POPUP_Z - 10));
     let text_font = look.font("Default", (16.0, false));
     let lines = [
         format!("{NAME} wasn't found on this computer. Lucker Party plays with its"),
@@ -415,34 +473,18 @@ fn draw(
             -1,
         );
     }
-    // The folder box.
-    let (bx, by, bw, bh) = (20.0, 122.0, W - 40.0, 24.0);
-    let field = commands
-        .spawn((
-            Node { border: UiRect::all(px(1.0)), ..place(&look, bx, by, bw, bh) },
-            bevel(&look, false),
-            BackgroundColor(look.sunken_bg()),
-            Hit(Target::Field),
-            Button,
-            Interaction::default(),
-            ChildOf(dialog),
-        ))
-        .id();
-    let shown_text = if f.focus == Target::Field { format!("{}_", f.text) } else { f.text.clone() };
-    // The end of a long path shows, as a text entry scrolled to its caret.
-    let max_chars = ((bw - 8.0) / 7.5) as usize;
-    let count = shown_text.chars().count();
-    let shown_text: String =
-        if count > max_chars { shown_text.chars().skip(count - max_chars).collect() } else { shown_text };
-    label(
+    // The folder box (a long path scrolls to show its caret).
+    let caret = (f.focus == Target::Field).then_some(f.caret);
+    widgets::text_entry(
         &mut commands,
-        field,
+        dialog,
         &look,
-        (4.0, 0.0, bw - 8.0, bh - 2.0),
-        &shown_text,
-        text_font.clone(),
-        look.color("TextEntry.TextColor", [221, 221, 221, 255]),
-        -1,
+        (20.0, 122.0, W - 40.0, 24.0),
+        &f.text,
+        caret,
+        false,
+        true,
+        (Hit(Target::Field), BoxText(f.text.clone())),
     );
     if let Some(message) = &f.message {
         // Two lines at most, broken at a space.
@@ -475,38 +517,13 @@ fn draw(
     let mut x = W - 20.0;
     for (target, text, w) in buttons.iter().rev() {
         x -= w;
-        button(&mut commands, dialog, &look, (x, H - 46.0, *w, 26.0), text, *target, f.focus == *target);
+        let state = widgets::ButtonState::enabled(true)
+            .focused(f.focus == *target)
+            .default_button(*target == Target::Retry);
+        widgets::button(&mut commands, dialog, &look, (x, H - 46.0, *w, 26.0), text, state, 0, Hit(*target));
         x -= 10.0;
     }
 }
-
-/// A VGUI button: raised, lit when focused.
-fn button(
-    commands: &mut Commands,
-    parent: Entity,
-    look: &Look,
-    rect: (f32, f32, f32, f32),
-    text: &str,
-    target: Target,
-    focused: bool,
-) {
-    let (x, y, w, h) = rect;
-    let bg = if focused { Color::srgba(1.0, 1.0, 1.0, 0.12) } else { look.color("Button.BgColor", [0, 0, 0, 0]) };
-    let e = commands
-        .spawn((
-            Node { border: UiRect::all(px(1.0)), ..place(look, x, y, w, h) },
-            bevel(look, true),
-            BackgroundColor(bg),
-            Hit(target),
-            Button,
-            Interaction::default(),
-            ChildOf(parent),
-        ))
-        .id();
-    let color = if focused { look.white() } else { look.color("Button.TextColor", [255, 255, 255, 255]) };
-    label(commands, e, look, (6.0, 0.0, w - 12.0, h - 2.0), text, look.font("Default", (16.0, false)), color, 0);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -539,8 +556,8 @@ mod tests {
         f.handle(Input::Type("ab".into()));
         f.handle(Input::Backspace);
         assert_eq!(f.text, "a");
-        f.handle(Input::Tab);
-        f.handle(Input::Tab);
+        f.handle(Input::Tab(1));
+        f.handle(Input::Tab(1));
         assert_eq!(f.focus, Target::Continue);
         assert_eq!(f.handle(Input::Enter), None);
         assert!(!f.open);

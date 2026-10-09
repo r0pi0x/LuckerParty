@@ -135,17 +135,16 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   issuing their own are in: `bot::radio::obey`, `speak`; checking
   when CS:S bots talk needs that spec). The radar is in (`client/radar.rs`: the map overview turning
   with you, team dots, your place name); its range (2200 units) is a guess.
-- The game menu (Esc; `client/game_menu.rs`: new game with map, mode,
-  bots per team and difficulty; bots; team; options; bug report; quit)
-  is in, in the game's GameUI look (`SourceScheme.res` frames and
-  colours, `GameMenu.res` entries, tabbed options: keyboard binds from
-  `kb_act.lst`, mouse, audio, video, crosshair; a scrolled map list with
-  thumbnails). Left: placing the mouse, audio, video and multiplayer
-  tabs' controls where their `OptionsSub*.res` put them (ours are a
-  column), OK / Cancel / Apply (changes apply at once now), dragging
-  frames, the keyboard tab's "Advanced" dialog, binds for the actions
-  greyed in it (`invprev`, `+voicerecord`, `autobuy`, ...), comparing
-  the look with CS:S's (refcmp has no menu views).
+- The game menu (Esc; `client/game_menu.rs`: Create Server; bots; team;
+  options; bug report; quit) is in, in the game's GameUI look
+  (`SourceScheme.res` frames and colours, `GameMenu.res` entries), its
+  dialogs laid out from the install's `.res` files with VGUI's controls
+  (`client/widgets.rs`; docs/plans/active/ui-parity.md). Left: what
+  that plan lists as left (the console as a VGUI frame, Multiplayer >
+  Advanced from `cfg/user.scr`, the greyed controls' cvars), binds for
+  the keyboard actions greyed in the options (`invprev`,
+  `+voicerecord`, `autobuy`, ...), comparing the look with CS:S's
+  (refcmp has no menu views).
 - The main menu is in: startup without a map shows CS:S's (its
   background picture, the title in its logo font, `GameMenu.res`'s
   entries; Resume and Disconnect only in a game, Find Servers greyed),

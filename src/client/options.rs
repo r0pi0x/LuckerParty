@@ -75,208 +75,199 @@ pub enum SettingKind {
     Resolution,
 }
 
+/// Where a setting is shown: an options tab, one of the options' own
+/// dialogs, or ours (settings CS:S's options don't have, kept out of its
+/// dialogs: the main menu's "Lucker Party Options").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Place {
+    Options(Tab),
+    /// The keyboard tab's Advanced dialog.
+    KeyboardAdvanced,
+    /// The video tab's Advanced dialog.
+    VideoAdvanced,
+    Extras,
+}
+
 /// A setting on the options page: one cvar (archived, so config.cfg keeps
 /// it).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Setting {
-    pub tab: Tab,
+    pub place: Place,
     pub cvar: &'static str,
+    /// The control of the game's layout that shows it (its `fieldName` in
+    /// `OptionsSub*.res`); None: placed in a column (ours, or without the
+    /// install's layouts).
+    pub field: Option<&'static str>,
     /// The game's text for it (`#GameUI_...`), when it has one.
     pub token: Option<&'static str>,
     pub label: &'static str,
     pub kind: SettingKind,
 }
 
-const HDR_LEVELS: &[(&str, &str)] = &[("0", "None"), ("1", "Bloom"), ("2", "Full")];
+/// A check box setting shown in a combo box (the video Advanced dialog's
+/// Wait for vertical sync).
+pub const ON_OFF: &[(&str, &str)] = &[("0", "#GameUI_Disabled|Disabled"), ("1", "#GameUI_Enabled|Enabled")];
 
-pub const SETTINGS: &[Setting] = &[
-    Setting {
-        tab: Tab::Mouse,
-        cvar: "sensitivity",
-        token: Some("#GameUI_MouseSensitivity"),
-        label: "Mouse sensitivity",
-        kind: SettingKind::Range {
-            min: 0.1,
-            max: 20.0,
-            step: 0.1,
-            decimals: 1,
-        },
-    },
-    Setting {
-        tab: Tab::Mouse,
-        cvar: "m_pitch",
-        token: Some("#GameUI_ReverseMouse"),
-        label: "Reverse mouse",
-        kind: SettingKind::Negate,
-    },
-    Setting {
-        tab: Tab::Mouse,
-        cvar: "zoom_sensitivity_ratio",
-        token: None,
-        label: "Zoom sensitivity ratio",
-        kind: SettingKind::Range {
-            min: 0.1,
-            max: 4.0,
-            step: 0.1,
-            decimals: 1,
-        },
-    },
-    Setting {
-        tab: Tab::Audio,
-        cvar: "volume",
-        token: Some("#GameUI_SoundEffectVolume"),
-        label: "Game volume",
-        kind: SettingKind::Range {
-            min: 0.0,
-            max: 1.0,
-            step: 0.05,
-            decimals: 2,
-        },
-    },
-    Setting {
-        tab: Tab::Audio,
-        cvar: "dsp_volume",
-        token: None,
-        label: "Room reverb level",
-        kind: SettingKind::Range {
-            min: 0.0,
-            max: 2.0,
-            step: 0.1,
-            decimals: 1,
-        },
-    },
-    Setting {
-        tab: Tab::Video,
-        cvar: "mashup_resolution",
-        token: Some("#GameUI_Resolution"),
-        label: "Resolution",
-        kind: SettingKind::Resolution,
-    },
-    Setting {
-        tab: Tab::Video,
-        cvar: "mashup_fullscreen",
-        token: Some("#GameUI_DisplayMode"),
-        label: "Display mode",
-        kind: SettingKind::Choice(&[
-            ("0", "#GameUI_Windowed|Windowed"),
-            ("1", "#GameUI_Fullscreen|Full screen"),
-            ("2", "Borderless full screen"),
-        ]),
-    },
-    Setting {
-        tab: Tab::Video,
-        cvar: "mat_vsync",
-        token: Some("#GameUI_Wait_For_VSync"),
-        label: "Wait for vertical sync",
-        kind: SettingKind::Toggle,
-    },
-    Setting {
-        tab: Tab::Video,
-        cvar: "mat_antialias",
-        token: None,
-        label: "Antialiasing (MSAA)",
-        kind: SettingKind::Choice(&[("0", "None"), ("2", "2x"), ("4", "4x")]),
-    },
-    Setting {
-        tab: Tab::Video,
-        cvar: "mat_hdr_level",
-        token: Some("#GameUI_HDR"),
-        label: "High dynamic range (next map)",
-        kind: SettingKind::Choice(HDR_LEVELS),
-    },
-    Setting {
-        tab: Tab::Video,
-        cvar: "cl_showfps",
-        token: None,
-        label: "Show FPS",
-        kind: SettingKind::Choice(&[("0", "Off"), ("1", "On"), ("2", "Detailed")]),
-    },
-    Setting {
-        tab: Tab::Multiplayer,
-        cvar: "cl_crosshaircolor",
-        token: None,
-        label: "Crosshair colour",
-        kind: SettingKind::Choice(&[
-            ("0", "Green"),
-            ("1", "Red"),
-            ("2", "Blue"),
-            ("3", "Yellow"),
-            ("4", "Cyan"),
-        ]),
-    },
-    Setting {
-        tab: Tab::Multiplayer,
-        cvar: "cl_crosshairscale",
-        token: Some("#GameUI_CrosshairSize"),
-        label: "Size",
-        kind: SettingKind::Choice(&[("0", "Auto"), ("1200", "Small"), ("768", "Medium"), ("600", "Large")]),
-    },
-    Setting {
-        tab: Tab::Multiplayer,
-        cvar: "cl_crosshairusealpha",
-        token: Some("#GameUI_CrosshairBlend"),
-        label: "Translucent",
-        kind: SettingKind::Toggle,
-    },
-    Setting {
-        tab: Tab::Multiplayer,
-        cvar: "cl_crosshairalpha",
-        token: None,
-        label: "Opacity",
-        kind: SettingKind::Range {
-            min: 0.0,
-            max: 255.0,
-            step: 5.0,
-            decimals: 0,
-        },
-    },
-    Setting {
-        tab: Tab::Multiplayer,
-        cvar: "cl_dynamiccrosshair",
-        token: Some("#GameUI_CrosshairDynamic"),
-        label: "Dynamic",
-        kind: SettingKind::Toggle,
-    },
-    Setting {
-        tab: Tab::Multiplayer,
-        cvar: "cl_righthand",
-        token: None,
-        label: "Weapon hand",
-        kind: SettingKind::Choice(&[("0", "Left"), ("1", "Right")]),
-    },
-    Setting {
-        tab: Tab::Multiplayer,
-        cvar: "viewmodel_fov",
-        token: None,
-        label: "View model FOV",
-        kind: SettingKind::Range {
-            min: 40.0,
-            max: 90.0,
-            step: 1.0,
-            decimals: 0,
-        },
-    },
-    // The keyboard tab's Advanced dialog (`KEYBOARD_ADVANCED`).
-    Setting {
-        tab: Tab::Keyboard,
-        cvar: "hud_fastswitch",
-        token: Some("#GameUI_FastSwitchCheck"),
-        label: "Fast weapon switch",
-        kind: SettingKind::Toggle,
-    },
-    Setting {
-        tab: Tab::Keyboard,
-        cvar: "con_enable",
-        token: Some("#GameUI_DeveloperConsoleCheck"),
-        label: "Enable developer console",
-        kind: SettingKind::Toggle,
-    },
+const HDR_LEVELS: &[(&str, &str)] = &[
+    ("0", "#GameUI_hdr_level0|None"),
+    ("1", "#GameUI_hdr_level1|Bloom"),
+    ("2", "#GameUI_hdr_level2|Full"),
 ];
 
-/// The keyboard tab's Advanced dialog: each check box of the game's
-/// layout (`resource/OptionsSubKeyboardAdvancedDlg.res`, by `fieldName`)
-/// and the cvar it sets, in CS:S's order.
-pub const KEYBOARD_ADVANCED: [(&str, &str); 2] = [("FastSwitchCheck", "hud_fastswitch"), ("ConsoleCheck", "con_enable")];
+const fn setting(
+    place: Place,
+    cvar: &'static str,
+    field: Option<&'static str>,
+    token: Option<&'static str>,
+    label: &'static str,
+    kind: SettingKind,
+) -> Setting {
+    Setting {
+        place,
+        cvar,
+        field,
+        token,
+        label,
+        kind,
+    }
+}
+
+const fn range(min: f32, max: f32, step: f32, decimals: usize) -> SettingKind {
+    SettingKind::Range {
+        min,
+        max,
+        step,
+        decimals,
+    }
+}
+
+use Place::{Extras, KeyboardAdvanced, Options, VideoAdvanced};
+
+/// Every setting, in each place's order (the game's layouts place those
+/// with a `field`; a setting whose cvar mashup lacks shows greyed).
+pub const SETTINGS: &[Setting] = &[
+    // Mouse (`OptionsSubMouse.res`): the slider and the text entry beside
+    // it (`VALUE_ENTRIES`) both show the sensitivity.
+    setting(Options(Tab::Mouse), "m_pitch", Some("ReverseMouse"), Some("#GameUI_ReverseMouse"), "Reverse mouse", SettingKind::Negate),
+    setting(Options(Tab::Mouse), "m_filter", Some("MouseFilter"), Some("#GameUI_MouseFilter"), "Mouse filter", SettingKind::Toggle),
+    setting(Options(Tab::Mouse), "m_rawinput", Some("MouseRaw"), Some("#GameUI_MouseRaw"), "Raw mouse input", SettingKind::Toggle),
+    setting(Options(Tab::Mouse), "sensitivity", Some("Slider"), Some("#GameUI_MouseSensitivity"), "Mouse sensitivity", range(0.1, 20.0, 0.1, 1)),
+    // Audio (`OptionsSubAudio.res`).
+    setting(Options(Tab::Audio), "volume", Some("SFXSlider"), Some("#GameUI_SoundEffectVolume"), "Game volume", range(0.0, 1.0, 0.05, 2)),
+    setting(Options(Tab::Audio), "snd_musicvolume", Some("MusicSlider"), Some("#GameUI_MusicVolume"), "Music volume", range(0.0, 1.0, 0.05, 2)),
+    setting(
+        Options(Tab::Audio),
+        "snd_mute_losefocus",
+        Some("snd_mute_losefocus"),
+        Some("#GameUI_SndMuteLoseFocus"),
+        "Mute sound when the game loses focus",
+        SettingKind::Toggle,
+    ),
+    // Video (`OptionsSubVideo.res`).
+    setting(Options(Tab::Video), "mashup_resolution", Some("Resolution"), Some("#GameUI_Resolution"), "Resolution", SettingKind::Resolution),
+    setting(
+        Options(Tab::Video),
+        "mashup_fullscreen",
+        Some("DisplayModeCombo"),
+        Some("#GameUI_DisplayMode"),
+        "Display mode",
+        SettingKind::Choice(&[
+            ("1", "#GameUI_Fullscreen|Fullscreen"),
+            ("0", "#GameUI_Windowed|Windowed"),
+            ("2", "Borderless fullscreen"),
+        ]),
+    ),
+    // Its Advanced dialog (`OptionsSubVideoAdvancedDlg.res`).
+    setting(
+        VideoAdvanced,
+        "mat_antialias",
+        Some("AntialiasingMode"),
+        Some("#GameUI_Antialiasing_Mode"),
+        "Antialiasing mode",
+        SettingKind::Choice(&[("0", "#GameUI_None|None"), ("2", "2x MSAA"), ("4", "4x MSAA")]),
+    ),
+    setting(VideoAdvanced, "mat_vsync", Some("VSync"), Some("#GameUI_Wait_For_VSync"), "Wait for vertical sync", SettingKind::Toggle),
+    setting(VideoAdvanced, "mat_hdr_level", Some("HDR"), Some("#GameUI_HDR"), "High dynamic range (next map)", SettingKind::Choice(HDR_LEVELS)),
+    setting(VideoAdvanced, "fov_desired", Some("FovSlider"), Some("#GameUI_FOV"), "Field of view", range(75.0, 90.0, 1.0, 0)),
+    // Multiplayer (`OptionsSubMultiplayer.res`).
+    setting(
+        Options(Tab::Multiplayer),
+        "cl_crosshaircolor",
+        Some("CrosshairColorComboBox"),
+        None,
+        "Crosshair colour",
+        SettingKind::Choice(&[
+            ("0", "#Cstrike_Crosshair_Green|Green"),
+            ("1", "#Cstrike_Crosshair_Red|Red"),
+            ("2", "#Cstrike_Crosshair_Blue|Blue"),
+            ("3", "#Cstrike_Crosshair_Yellow|Yellow"),
+            ("4", "#Cstrike_Crosshair_LtBlue|Cyan"),
+        ]),
+    ),
+    setting(Options(Tab::Multiplayer), "cl_crosshairsize", Some("Size Slider"), Some("#GameUI_CrosshairSize"), "Size", range(0.0, 3.0, 1.0, 0)),
+    setting(
+        Options(Tab::Multiplayer),
+        "cl_crosshairthickness",
+        Some("Thickness Slider"),
+        Some("#GameUI_CrosshairThickness"),
+        "Thickness",
+        range(0.0, 3.0, 0.5, 1),
+    ),
+    setting(Options(Tab::Multiplayer), "cl_crosshairalpha", Some("Alpha Slider"), None, "Opacity", range(0.0, 255.0, 5.0, 0)),
+    setting(
+        Options(Tab::Multiplayer),
+        "cl_crosshairusealpha",
+        Some("CrosshairTranslucencyCheckbox"),
+        Some("#GameUI_CrosshairBlend"),
+        "Translucent",
+        SettingKind::Toggle,
+    ),
+    setting(
+        Options(Tab::Multiplayer),
+        "cl_dynamiccrosshair",
+        Some("CrosshairDynamicCheckbox"),
+        Some("#GameUI_CrosshairDynamic"),
+        "Dynamic",
+        SettingKind::Toggle,
+    ),
+    setting(Options(Tab::Multiplayer), "cl_crosshairdot", Some("CrosshairDotCheckbox"), Some("#GameUI_CrosshairDot"), "Dot", SettingKind::Toggle),
+    setting(
+        Options(Tab::Multiplayer),
+        "cl_radar_locked",
+        Some("LockRadarRotationCheckbox"),
+        Some("#Cstrike_RadarLocked"),
+        "Lock radar rotation",
+        SettingKind::Toggle,
+    ),
+    // The keyboard tab's Advanced dialog (`OptionsSubKeyboardAdvancedDlg.res`).
+    setting(KeyboardAdvanced, "hud_fastswitch", Some("FastSwitchCheck"), Some("#GameUI_FastSwitchCheck"), "Fast weapon switch", SettingKind::Toggle),
+    setting(
+        KeyboardAdvanced,
+        "con_enable",
+        Some("ConsoleCheck"),
+        Some("#GameUI_DeveloperConsoleCheck"),
+        "Enable developer console",
+        SettingKind::Toggle,
+    ),
+    // Ours: what CS:S's options don't have.
+    setting(Extras, "zoom_sensitivity_ratio", None, None, "Zoom sensitivity ratio", range(0.1, 4.0, 0.1, 1)),
+    setting(Extras, "dsp_volume", None, None, "Room reverb level", range(0.0, 2.0, 0.1, 1)),
+    setting(
+        Extras,
+        "cl_crosshairscale",
+        None,
+        None,
+        "Crosshair scale",
+        SettingKind::Choice(&[("0", "Auto"), ("1200", "Small"), ("768", "Medium"), ("600", "Large")]),
+    ),
+    setting(Extras, "cl_righthand", None, None, "Weapon hand", SettingKind::Choice(&[("0", "Left"), ("1", "Right")])),
+    setting(Extras, "viewmodel_fov", None, None, "View model FOV", range(40.0, 90.0, 1.0, 0)),
+    setting(Extras, "cl_showfps", None, None, "Show FPS", SettingKind::Choice(&[("0", "Off"), ("1", "On"), ("2", "Detailed")])),
+];
+
+/// Text entries beside a slider that show its value (`fieldName` of the
+/// entry, the slider's cvar): VGUI's options pair them.
+pub const VALUE_ENTRIES: [(&str, &str); 1] = [("SensitivityLabel", "sensitivity")];
 
 /// A setting's index in `SETTINGS` by its cvar.
 pub fn setting_index(cvar: &str) -> Option<usize> {
@@ -297,6 +288,12 @@ impl Setting {
     /// clamped in ranges, flipping check boxes); `choices` are the window
     /// sizes for `Resolution`.
     pub fn step(&self, current: &str, dir: i32, choices: &[String]) -> String {
+        self.step_with(current, dir, choices, true)
+    }
+
+    /// As `step`; `wrap` false: choices stop at their ends (a combo box
+    /// stepped with the arrow keys).
+    pub fn step_with(&self, current: &str, dir: i32, choices: &[String], wrap: bool) -> String {
         match self.kind {
             SettingKind::Range {
                 min,
@@ -313,7 +310,8 @@ impl Setting {
             SettingKind::Choice(list) => {
                 let i = list.iter().position(|(v, _)| *v == current.trim()).unwrap_or(0) as i32;
                 let n = list.len() as i32;
-                list[(i + dir).rem_euclid(n) as usize].0.to_string()
+                let next = if wrap { (i + dir).rem_euclid(n) } else { (i + dir).clamp(0, n - 1) };
+                list[next as usize].0.to_string()
             }
             SettingKind::Toggle => if is_on(current) { "0" } else { "1" }.to_string(),
             SettingKind::Negate => {
@@ -358,6 +356,28 @@ impl Setting {
                 }
             }
         }
+    }
+
+    /// A combo box's entries: values and their words (a check box shown as
+    /// a combo: Disabled, Enabled; window sizes from `choices`). Empty for
+    /// sliders and check boxes.
+    pub fn entries(&self, choices: &[String], text: &dyn Fn(&str) -> Option<String>) -> Vec<(String, String)> {
+        match self.kind {
+            SettingKind::Choice(list) => list.iter().map(|(v, l)| (v.to_string(), choice_label(l, text))).collect(),
+            SettingKind::Toggle => ON_OFF.iter().map(|(v, l)| (v.to_string(), choice_label(l, text))).collect(),
+            SettingKind::Resolution => choices.iter().map(|c| (c.clone(), c.clone())).collect(),
+            SettingKind::Range { .. } | SettingKind::Negate => Vec::new(),
+        }
+    }
+
+    /// Which of `entries` a value is.
+    pub fn entry_index(&self, value: &str, choices: &[String]) -> Option<usize> {
+        let none = |_: &str| None;
+        let v = value.trim();
+        self.entries(choices, &none).iter().position(|(e, _)| match self.kind {
+            SettingKind::Toggle => (e == "1") == is_on(v),
+            _ => e == v,
+        })
     }
 
     /// A check box's state.
@@ -636,7 +656,7 @@ mod tests {
         assert_eq!(mode.show("0", &none), "Windowed");
         let game = |t: &str| (t == "#GameUI_Windowed").then(|| "WINDOWED".to_string());
         assert_eq!(mode.show("0", &game), "WINDOWED");
-        assert_eq!(mode.show("2", &game), "Borderless full screen");
+        assert_eq!(mode.show("2", &game), "Borderless fullscreen");
     }
 
     #[test]
@@ -655,13 +675,33 @@ mod tests {
     }
 
     #[test]
-    fn every_setting_is_on_a_tab_other_than_the_keyboards() {
+    fn every_tab_has_settings_and_the_games_layout_places_them() {
         // The keyboard tab's own are its Advanced dialog's.
-        let keyboard: Vec<&str> = SETTINGS.iter().filter(|s| s.tab == Tab::Keyboard).map(|s| s.cvar).collect();
-        assert_eq!(keyboard, KEYBOARD_ADVANCED.map(|(_, cvar)| cvar));
+        assert!(SETTINGS.iter().all(|s| s.place != Place::Options(Tab::Keyboard)));
         for (tab, ..) in TABS.iter().skip(1) {
-            assert!(SETTINGS.iter().any(|s| s.tab == *tab), "{tab:?} has settings");
+            assert!(SETTINGS.iter().any(|s| s.place == Place::Options(*tab)), "{tab:?} has settings");
+        }
+        // Each of the game's dialogs names its controls; ours have none.
+        for s in SETTINGS {
+            assert_eq!(s.field.is_none(), s.place == Place::Extras, "{}", s.cvar);
         }
         assert_eq!(Tab::Keyboard.step(-1), Tab::Multiplayer);
+    }
+
+    #[test]
+    fn a_combo_box_lists_a_settings_values() {
+        let vsync = setting("mat_vsync");
+        let e = vsync.entries(&[], &none);
+        assert_eq!(e, [("0".to_string(), "Disabled".to_string()), ("1".into(), "Enabled".into())]);
+        assert_eq!(vsync.entry_index("1", &[]), Some(1));
+        let r = setting("mashup_resolution");
+        let sizes = ["1920x1080".to_string(), "1280x720".into()];
+        assert_eq!(r.entries(&sizes, &none).len(), 2);
+        assert_eq!(r.entry_index("1280x720", &sizes), Some(1));
+        assert_eq!(r.entry_index("", &sizes), None, "as started: none picked");
+        // Stepped as a combo box: no wrapping.
+        let aa = setting("mat_antialias");
+        assert_eq!(aa.step_with("4", 1, &[], false), "4");
+        assert!(setting("sensitivity").entries(&[], &none).is_empty());
     }
 }

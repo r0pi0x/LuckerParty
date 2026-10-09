@@ -39,6 +39,7 @@ pub mod team_menu;
 pub mod vgui;
 pub mod view;
 pub mod weapon_select;
+pub mod widgets;
 pub mod window_icon;
 
 use std::path::PathBuf;
@@ -312,6 +313,7 @@ impl Plugin for ClientPlugin {
                 server_browser::ServerBrowserPlugin,
                 first_run::FirstRunPlugin,
                 map_screen::MapScreenPlugin,
+                widgets::WidgetsPlugin,
             ))
             .add_systems(PostStartup, spawn_local_player)
             .add_systems(Update, camera_for_local_player)

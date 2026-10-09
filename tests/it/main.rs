@@ -23,6 +23,7 @@ mod logic_physics;
 mod map_game_entities;
 mod map_logic;
 mod map_sound_fx;
+mod menus;
 mod metrics;
 mod mount_cs_source;
 mod mount_install;
