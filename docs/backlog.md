@@ -128,15 +128,29 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
 
 ## 2c. Multiplayer
 
+- High priority, with the multiplayer slices: loading UI for joining a
+  server and for every map load, so it's always clear what's happening.
+  CS:S's own loading dialog first (parity: connecting, retrieving server
+  info, loading the map, its stages and progress; `map::loading` and the
+  GameUI LoadingDialog already cover map loads from the main menu), shown
+  for `connect`, map changes in a game and the host starting a server,
+  with failures and refusals shown in it (version, map hash, server full,
+  timeouts). Then, as an option (off by default), a detailed view of our
+  own: each load stage with timings, bytes and percentages, and the
+  server's name, map, players and ping while connecting.
+
 Plan: [plans/active/multiplayer.md](plans/active/multiplayer.md)
 (bevy_replicon + renet; Source-style prediction, interpolation and lag
-compensation of our own; slices 0-9). Slices 0-2 done: a listen
+compensation of our own; slices 0-9). Slices 0-4 done: a listen
 server (maxplayers 4; map <name>) and the dedicated mashup_server,
 connect <ip[:port]>, characters replicated, usercmds bound to server
 ticks with clock sync, the client's own movement predicted and
 reconciled (net_graph-style readout, cl_showerror, net_fakelag;
-docs/OBSERVABILITY.md, Network play). Next: slice 3 (interpolation of
-others), then 4 (weapons, predicted). Open questions 1, 3 and 4
+docs/OBSERVABILITY.md, Network play), others interpolated, movers
+and props replicated, weapons predicted with lag-compensated hits
+(per-tick server hitbox poses), others' shots drawn from the server's
+seeds, grenades, drops and pickups. Next: slice 5 (rounds, money,
+buying, objectives, scoreboard, chat, radio). Open questions 1, 3 and 4
 still wait on the user; 2 was taken as both (listen first, dedicated too).
 
 ## 3. Weapons, remaining
@@ -386,11 +400,18 @@ dithered fade bands. Left:
   (props touching clusters the roof can't see) before changing anything.
   cs_compound and de_port pass.
 - Measure on the Windows PC (`refcmp bench` there) and set a budget.
-- Frame-time follow-ups (performance.md, "Cheap wins found"): take
-  before/after numbers on a quiet machine; props as hierarchies of their
-  own (cheaper collider propagation) without changing how physics props
-  settle; skip posing bodies nobody sees (hidden local body, culled bots)
-  if hitboxes and muzzles don't read the joints.
+- Frame-time follow-ups (performance.md, "Frame time pass"): before/after
+  numbers on a quiet machine and on the Windows PC (`refcmp bench`, also
+  `MASHUP_EXECUTOR=multi`, `-- --view-size 3840x2160`); props as
+  hierarchies of their own (cheaper collider propagation) without
+  changing how physics props settle; fewer cameras per frame (the view
+  model camera runs its passes and an MSAA copy even with nothing on its
+  layer; shells and the under-water overlay draw there too); a render
+  scale (`mat_render_scale`) only if a GPU turns out to be the limit (the
+  dev box's RTX 3080 draws dust2 at 4K in about 1.5 ms); seven physics
+  props on cs_office never fall asleep (they rock by a tenth of a
+  millimetre forever: transform propagation and shadow checks every
+  frame).
 
 ## 10. Long tail
 

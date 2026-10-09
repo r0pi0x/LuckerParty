@@ -1988,6 +1988,13 @@ fn step(
         .collect();
     let mover_velocity = |e: Entity| movers.get(e).map_or(Vec3::ZERO, |(_, m)| to_source(m.velocity));
     for (entity, intent, mut me, mut transform, mut vel, mut state, weapon_speed, mut base, gravity, touch) in &mut q {
+        // The mover stood on isn't part of the saved form (an entity): a
+        // network client restores it into `MovementState::ground` after a
+        // correction (`net::movers::restore_ground`). Otherwise the two
+        // are the same here (written together at the end of each step).
+        if me.ground_entity.is_none() && state.ground.is_some() {
+            me.ground_entity = state.ground;
+        }
         let mut others: Vec<MapBrush> = boxes
             .iter()
             .filter(|(e, _)| *e != entity)

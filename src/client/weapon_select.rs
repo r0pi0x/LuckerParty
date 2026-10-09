@@ -240,7 +240,7 @@ fn show_deploys(
         return;
     };
     for e in events.read() {
-        if e.owner == me && matches!(e.kind, WeaponEventKind::Deployed) && !menu.takes_slots {
+        if e.shown() && e.owner == me && matches!(e.kind, WeaponEventKind::Deployed) && !menu.takes_slots {
             menu.highlighted = Some(e.weapon);
             menu.choosing = false;
             menu.shown_for = Some(0.0);

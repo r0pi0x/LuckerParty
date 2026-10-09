@@ -805,8 +805,11 @@ fn turn_bodies(
             .and_then(|a| a.yaw)
             .unwrap_or(view.map_or(intent.yaw, |v| v.now.yaw));
         for c in children {
-            if let Ok(mut t) = bodies.get_mut(*c) {
-                t.rotation = Quat::from_rotation_y(yaw);
+            let turned = Quat::from_rotation_y(yaw);
+            if let Ok(mut t) = bodies.get_mut(*c)
+                && t.rotation != turned
+            {
+                t.rotation = turned;
             }
         }
     }
@@ -880,29 +883,63 @@ fn attach_held(
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DriveAnimation;
 
+/// Bodies no camera saw last frame are posed every this many frames
+/// (staggered by entity), not every frame.
+pub const UNSEEN_POSE_INTERVAL: u32 = 4;
+
 /// Pose each animated body's joints from its character's `Animator`.
+///
+/// Only bodies some camera drew last frame (`ViewVisibility` of their
+/// meshes) are posed every frame; the rest (bots out of view, the hidden
+/// local body) every `UNSEEN_POSE_INTERVAL` frames, so their joints (and
+/// what hangs on them: the held weapon and its muzzle) are never far
+/// behind. Hitboxes don't read the joints (they pose from
+/// `ragdoll::SkeletonPose`, every tick). Bodies aren't culled by their
+/// joints (their bounds are the mesh's, at the body), so posing late
+/// doesn't hide one. Without a camera (headless) every body is posed.
 fn pose_bodies(
     time: Res<Time>,
     characters: Query<(&anim::Animator, &Children)>,
-    bodies: Query<&CharacterBody>,
+    bodies: Query<(Entity, &CharacterBody, Option<&Children>)>,
+    seen: Query<&ViewVisibility, With<Mesh3d>>,
+    cameras: Query<(), With<Camera>>,
+    mut frame: Local<u32>,
     mut joints: Query<&mut Transform, With<BodyJoint>>,
 ) {
     let now = time.elapsed_secs_f64();
+    *frame = frame.wrapping_add(1);
+    let culling = !cameras.is_empty();
     for (animator, children) in &characters {
-        let Some(body) = children.iter().find_map(|c| bodies.get(c).ok()) else {
+        let Some((body_entity, body, parts)) = children.iter().find_map(|c| bodies.get(c).ok()) else {
             continue;
         };
         if animator.main.is_none() {
             continue;
         }
+        if culling
+            && !body_seen(parts, &seen)
+            && !frame.wrapping_add(body_entity.index_u32()).is_multiple_of(UNSEEN_POSE_INTERVAL)
+        {
+            continue;
+        }
         let pose = animator.pose(now);
         for (joint, (q, p)) in body.joints.iter().zip(pose) {
-            if let Ok(mut t) = joints.get_mut(*joint) {
+            if let Ok(mut t) = joints.get_mut(*joint)
+                && (t.rotation != q || t.translation != p)
+            {
                 t.rotation = q;
                 t.translation = p;
             }
         }
     }
+}
+
+/// Whether any of a body's meshes was drawn by some camera last frame.
+fn body_seen(parts: Option<&Children>, seen: &Query<&ViewVisibility, With<Mesh3d>>) -> bool {
+    parts
+        .into_iter()
+        .flatten()
+        .any(|p| seen.get(*p).is_ok_and(|v| v.get()))
 }
 
 /// Characters get their team's hitboxes from the loaded character models.
@@ -930,16 +967,22 @@ fn attach_hitboxes(
     }
 }
 
-/// Hitboxes follow the animated skeleton (as the server places them).
+/// Hitboxes follow the animated skeleton (as the server places them),
+/// except where a network server animates the body in the fixed tick
+/// (`SimAnimator`).
+#[allow(clippy::type_complexity)]
 fn pose_hitboxes(
     models: Option<Res<CharacterModels>>,
-    mut characters: Query<(
-        &anim::Animator,
-        &BodyModel,
-        &crate::core::Intent,
-        &ragdoll::SkeletonPose,
-        &mut crate::core::Hitboxes,
-    )>,
+    mut characters: Query<
+        (
+            &anim::Animator,
+            &BodyModel,
+            &crate::core::Intent,
+            &ragdoll::SkeletonPose,
+            &mut crate::core::Hitboxes,
+        ),
+        Without<SimAnimator>,
+    >,
 ) {
     let Some(models) = models else { return };
     for (animator, model, intent, pose, mut hitboxes) in &mut characters {
@@ -952,6 +995,47 @@ fn pose_hitboxes(
         // body turns by its own yaw).
         let Some(frame) = pose.frames.back() else { continue };
         let global = &frame.bones;
+        let turn = Quat::from_rotation_y(animator.yaw.unwrap_or(intent.yaw) - intent.yaw) * m.root.rotation;
+        let scale = m.root.scale.x;
+        for (h, b) in hitboxes.0.iter_mut().zip(&m.boxes) {
+            let Some((q, p)) = global.get(b.bone) else { continue };
+            h.center = turn * (*p + *q * b.center) * scale;
+            h.half = b.half * scale;
+            h.rotation = turn * *q;
+        }
+    }
+}
+
+/// A network server's own animation of a character's body, driven in the
+/// fixed tick from simulation values (games drive it before `SimPose`,
+/// e.g. CS:S's player animation state): the character's hitboxes are
+/// posed from it after every tick (`pose_sim_hitboxes`), not from the
+/// drawn animation (which runs at the frame rate and eases the look), so
+/// what a tick traces and what lag compensation keeps is the tick's own
+/// pose (docs/plans/active/multiplayer.md, slice 4).
+#[derive(Component, Clone, Debug)]
+pub struct SimAnimator(pub anim::Animator);
+
+/// After each tick (`FixedLast`): hitboxes posed from `SimAnimator`s.
+/// Games drive the animators before it; lag compensation records after.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SimPose;
+
+/// Hitboxes from the server's own animation of each body, at the tick's
+/// time (as `pose_hitboxes` does from the drawn one).
+fn pose_sim_hitboxes(
+    models: Option<Res<CharacterModels>>,
+    clock: Res<crate::core::SimClock>,
+    mut characters: Query<(&SimAnimator, &BodyModel, &crate::core::Intent, &mut crate::core::Hitboxes)>,
+) {
+    let Some(models) = models else { return };
+    for (animator, model, intent, mut hitboxes) in &mut characters {
+        let animator = &animator.0;
+        let Some(m) = models.0.get(model.0) else { continue };
+        if animator.main.is_none() || m.boxes.len() != hitboxes.0.len() {
+            continue;
+        }
+        let global = ragdoll::globals(m, &animator.pose(clock.now));
         let turn = Quat::from_rotation_y(animator.yaw.unwrap_or(intent.yaw) - intent.yaw) * m.root.rotation;
         let scale = m.root.scale.x;
         for (h, b) in hitboxes.0.iter_mut().zip(&m.boxes) {
@@ -1820,6 +1904,7 @@ impl Plugin for MapPlugin {
                     .before(crate::core::SimSet::Movement),
             )
             .add_systems(FixedUpdate, fall_out_of_map.after(crate::core::SimSet::Movement))
+            .add_systems(FixedLast, pose_sim_hitboxes.in_set(SimPose))
             .add_systems(
                 FixedUpdate,
                 breakables::round_restart
@@ -2907,6 +2992,11 @@ fn spawn_map(
                 atlas: built.atlas,
                 atlas_image: atlas_handle,
                 material,
+                built: built
+                    .cells
+                    .iter()
+                    .map(|c| (c.prop, (data.props[c.prop].translation, data.props[c.prop].rotation)))
+                    .collect(),
                 cells: built.cells.into_iter().map(|c| (c.prop, c)).collect(),
                 entities,
                 root: statics,
@@ -3864,11 +3954,18 @@ struct ShadowState {
     cells: std::collections::HashMap<usize, shadows::Cell>,
     entities: std::collections::HashMap<usize, Entity>,
     root: Entity,
+    /// Where each caster was when its shadow was last drawn.
+    built: std::collections::HashMap<usize, (Vec3, Quat)>,
 }
 
 /// Redraw the shadows of physics props that moved (silhouette and mesh);
 /// a prop the logic hid (broken, killed) hides its shadow until it shows
-/// again (a round restart).
+/// again (a round restart). Props that only jitter in place (resting
+/// physics props that never fall asleep: seven on cs_office, every frame)
+/// keep their shadow until they have moved by a quarter of a shadow texel
+/// (`shadows::moved_visibly`), and a redrawn cell updates only its part of
+/// the atlas image: with seven props rebuilt and the whole atlas converted
+/// every frame this cost 16 ms a frame there.
 #[allow(clippy::type_complexity)]
 fn update_prop_shadows(
     mut commands: Commands,
@@ -3901,11 +3998,18 @@ fn update_prop_shadows(
                 .insert(if on { Visibility::Inherited } else { Visibility::Hidden });
         }
     }
-    let mut atlas_dirty = false;
+    let mut redrawn: Vec<shadows::Cell> = Vec::new();
     for (index, t) in &moved {
         let Some(cell) = state.cells.get(&index.0).copied() else {
             continue;
         };
+        let model = &state.data.models[state.data.props[index.0].model];
+        if let Some(&from) = state.built.get(&index.0)
+            && !shadows::moved_visibly(model.bounds, cell.size, from, (t.translation, t.rotation))
+        {
+            continue;
+        }
+        state.built.insert(index.0, (t.translation, t.rotation));
         let mesh = shadows::rebuild(
             &state.data,
             &state.settings,
@@ -3915,7 +4019,7 @@ fn update_prop_shadows(
             t.translation,
             t.rotation,
         );
-        atlas_dirty = true;
+        redrawn.push(cell);
         match (mesh, state.entities.get(&index.0).copied()) {
             (Some(mesh), Some(e)) => {
                 commands.entity(e).insert(Mesh3d(meshes.add(mesh)));
@@ -3942,8 +4046,17 @@ fn update_prop_shadows(
             (None, None) => {}
         }
     }
-    if atlas_dirty && let Some(mut image) = images.get_mut(&state.atlas_image) {
-        image.data = Some(state.atlas.bytes());
+    if !redrawn.is_empty()
+        && let Some(mut image) = images.get_mut(&state.atlas_image)
+    {
+        match image.data.as_mut() {
+            Some(bytes) => {
+                for cell in &redrawn {
+                    state.atlas.write_bytes(bytes, cell.at, cell.size);
+                }
+            }
+            None => image.data = Some(state.atlas.bytes()),
+        }
     }
 }
 
@@ -4728,6 +4841,95 @@ fn follow_sky_camera(
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod pose_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// One bone whose pose is always (identity, (1, 2, 3)).
+    fn animator() -> anim::Animator {
+        let pose = (Quat::IDENTITY, Vec3::new(1.0, 2.0, 3.0));
+        let set = anim::AnimSet {
+            defaults: vec![pose],
+            bases: vec![vec![pose]],
+            animations: vec![anim::Animation {
+                frames: 1,
+                fps: 30.0,
+                ..default()
+            }],
+            sequences: vec![anim::Sequence {
+                grid: (1, 1),
+                anims: vec![0],
+                looping: true,
+                bone_weights: vec![1.0],
+                ..default()
+            }],
+            ..default()
+        };
+        let mut a = anim::Animator::new(Arc::new(set));
+        a.play(0, 0.0);
+        a
+    }
+
+    /// A character with a one-joint body and one mesh part drawn or not;
+    /// returns the joint.
+    fn spawn_character(app: &mut App, drawn: bool) -> Entity {
+        let world = app.world_mut();
+        let character = world.spawn(animator()).id();
+        let body = world.spawn(ChildOf(character)).id();
+        let joint = world.spawn((BodyJoint(0), Transform::default(), ChildOf(body))).id();
+        let seen = if drawn { ViewVisibility::VISIBLE } else { ViewVisibility::HIDDEN };
+        world.spawn((Mesh3d::default(), seen, ChildOf(body)));
+        world.entity_mut(body).insert(CharacterBody {
+            model: 0,
+            joints: vec![joint],
+            held: None,
+        });
+        joint
+    }
+
+    /// Frames out of `n` in which the joint was posed.
+    fn posed_frames(app: &mut App, joint: Entity, n: u32) -> u32 {
+        let mut posed = 0;
+        for _ in 0..n {
+            app.world_mut().get_mut::<Transform>(joint).unwrap().translation = Vec3::ZERO;
+            app.update();
+            posed += (app.world().get::<Transform>(joint).unwrap().translation == Vec3::new(1.0, 2.0, 3.0)) as u32;
+        }
+        posed
+    }
+
+    fn app(camera: bool) -> App {
+        let mut app = App::new();
+        app.init_resource::<Time>().add_systems(Update, pose_bodies);
+        if camera {
+            app.world_mut().spawn(Camera::default());
+        }
+        app
+    }
+
+    #[test]
+    fn unseen_bodies_are_not_posed_every_frame() {
+        let mut app = app(true);
+        let seen = spawn_character(&mut app, true);
+        let unseen = spawn_character(&mut app, false);
+        let n = 8 * UNSEEN_POSE_INTERVAL;
+        assert_eq!(posed_frames(&mut app, seen, n), n, "a drawn body is posed every frame");
+        assert_eq!(
+            posed_frames(&mut app, unseen, n),
+            n / UNSEEN_POSE_INTERVAL,
+            "a body no camera drew is posed every {UNSEEN_POSE_INTERVAL} frames"
+        );
+    }
+
+    #[test]
+    fn without_cameras_every_body_is_posed() {
+        let mut app = app(false);
+        let unseen = spawn_character(&mut app, false);
+        assert_eq!(posed_frames(&mut app, unseen, 8), 8);
     }
 }
 

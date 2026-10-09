@@ -187,6 +187,9 @@ pub struct NetSim {
     pub clients: Vec<Sim>,
     pub link: Arc<Mutex<Link>>,
     setup: Setup,
+    /// Real time per `step` (a frame everywhere): a tick unless
+    /// `set_frame` says otherwise.
+    frame: Duration,
 }
 
 impl NetSim {
@@ -213,6 +216,7 @@ impl NetSim {
             clients: Vec::new(),
             link,
             setup,
+            frame: Duration::from_secs_f64(1.0 / DEFAULT_TICK_HZ),
         };
         for _ in 0..clients {
             sim.add_client(|_| {});
@@ -228,6 +232,7 @@ impl NetSim {
             app.add_plugins(crate::net::NetPlugin);
             setup(app);
         });
+        client.app.insert_resource(TimeUpdateStrategy::ManualDuration(self.frame));
         before(client.app.world_mut());
         let id = self.clients.len() as u64 + 1;
         crate::net::memory::join(client.app.world_mut(), self.link.clone(), id).expect("join");
@@ -240,9 +245,19 @@ impl NetSim {
         i as u64 + 1
     }
 
-    /// One tick everywhere: the link's clock, the server, every client.
+    /// Every app's frame from now on (s): e.g. 1/240 for frames between
+    /// ticks, as a game draws them. `step` then advances by that.
+    pub fn set_frame(&mut self, secs: f64) {
+        self.frame = Duration::from_secs_f64(secs);
+        for sim in std::iter::once(&mut self.server).chain(&mut self.clients) {
+            sim.app.insert_resource(TimeUpdateStrategy::ManualDuration(self.frame));
+        }
+    }
+
+    /// One frame everywhere (a tick unless `set_frame` changed it): the
+    /// link's clock, the server, every client.
     pub fn step(&mut self) {
-        let dt = Duration::from_secs_f64(1.0 / DEFAULT_TICK_HZ);
+        let dt = self.frame;
         self.link.lock().unwrap().advance(dt);
         self.server.app.update();
         for c in &mut self.clients {

@@ -31,6 +31,10 @@ fails and says how to move it. Test names read `weapons::name` and
 - Fast tier, before every commit (`.githooks/pre-commit`): `cargo test
   --features dev -- --skip heavy::` (unit tests and everything outside
   `heavy`; under a minute when warm).
+- Before every push, `.githooks/pre-push` also checks the build without
+  `--features dev` (`cargo check --lib --bins`; the playtest and release
+  builds use that configuration and the tests don't), even with
+  `MASHUP_PUSH_TESTS=0`.
 - Full suite, before a push or a merge to main (`.githooks/pre-push`, which
   `MASHUP_PUSH_TESTS=0` skips): `cargo nextest run --features dev`, or
   `cargo test --features dev` without nextest (twice as slow: in one
@@ -361,19 +365,57 @@ confirmed: compare them with the server's state at the same tick
 client runs ahead). `cargo test --features dev --test it net_prediction
 -- --nocapture` prints the numbers per latency, jitter and loss.
 
+Interpolation and movers (`tests/it/net_interp.rs`, at 240 frames a
+second with `NetSim::set_frame(1.0 / 240.0)`): `net::interp::InterpClock`
+has the render tick others are drawn at (fractional, server ticks) and
+the delay; `net::interp::Snapshots<NetBody>` on another player's character
+(and `<NetMover>`, `<NetProp>` on the mover and prop proxies) holds what
+arrived, by server tick. To check a drawn path, record the server's
+position per `SimTick` and compare the client's drawn `Transform` with
+the server's between the two ticks around the render tick; `NetGraph`
+counts frames extrapolated or held past the newest snapshot and
+teleports snapped, and `carried` (ticks the client's mover step pushed
+its own player). `cargo test --features dev --test it net_interp --
+--nocapture` prints the off-path, per-frame step and error numbers.
+
+Weapons (`tests/it/net_weapons.rs`, `tests/it/heavy/map_net_weapons.rs`):
+what a client's player carries is part of the predicted state
+(`PredictedComponents::encode` includes `weapon::sync`'s blob), so the
+prediction checks above cover clips, timers, punch and zoom too. On the
+server, `weapon::lagcomp::LagCompStats` counts rewinds (`last`: the view
+tick asked for, the tick traced at, characters moved) and each
+character's `HitHistory` has its hit volume per tick (to aim a test shot
+where a client saw someone: interpolate it at that client's
+`InterpClock::render_tick`). Server `WeaponEvent`s say what was fired
+(`Fired`: origin, angles, seed, spread) and hit (`Hit`); a client's
+`WeaponEvent`s with `replay` set come from re-run commands. Messages last
+two updates: gather them after every `NetSim::step` (the tests' `Log`).
+`sv_showlagcompensation 1` logs each rewind (how far back, how many
+moved); the server's `status` ends with a `lagcomp:` line. `cargo test
+--features dev --test it net_weapons -- --nocapture` prints hits with and
+without compensation, rewind times, prediction errors while firing and
+the pellet comparison.
+
 In a game: the perf overlay (`mashup_perf 1`) and the F2 Perf tab show,
 while connected, `net:` (ping, loss, KB/s), `cmds:` (lead in ticks and
 its target, the clock's speed nudge and jumps, the server's buffer of
-our commands, missed and late) and `prediction:` (errors per second and
+our commands, missed and late), `prediction:` (errors per second and
 their worst, totals, commands replayed, the view's correction still
-being eased out); `status` on a client prints the prediction line too,
+being eased out) and `interp:` (how far in the past others are drawn,
+the update interval, characters drawn, snapshots buffered ahead of the
+render time and how far ahead the newest is, frames extrapolated or
+held, snaps, movers stepped and ticks the player was carried);
+`cl_interp` (0.1 s), `cl_interp_ratio` (2), `cl_extrapolate` (1) and
+`cl_extrapolate_amount` (0.25 s) set the drawing; `status` on a client prints the prediction and interp lines too,
 on a server each player's buffered and missed commands. `cl_showerror 1`
 logs every prediction error (tick, metres, which components differed)
 and clock jump. `cl_smoothtime` (0.1 s) eases corrections out of the
 view; 0 snaps. Fake network conditions on a client (Source's names; its
 UDP transport only): `net_fakelag <ms>` delays what it receives (ping
 grows by that), `net_fakejitter <ms>` adds up to that much at random,
-`net_fakeloss <percent>` drops packets both ways.
+`net_fakeloss <percent>` drops packets both ways. `cl_lagcompensation 0`
+asks the server to trace your shots against the present; on the server
+`sv_unlag 0` turns lag compensation off, `sv_maxunlag` bounds it (1 s).
 
 Two real games on this box (`--features dev`; each needs its own remote
 port, `MASHUP_REMOTE_PORT`, so both answer `curl`):
@@ -388,7 +430,11 @@ ping), `getpos`, `+moveleft`/`-moveleft`, `setang`, `screenshot
 <file.png>`, `disconnect`. The host's `setpos` moves the host; a client's
 position is predicted and the server's state corrects it (a client's `setpos` snaps back). Add
 `+net_fakelag 100 +net_fakeloss 5 +cl_showerror 1` to the client's line to feel
-a bad link. The dedicated server:
+a bad link. To shoot each other: `setang <pitch> <yaw>` and `+attack`/`-attack`
+through each game's `mashup/console` (aim from the other's `Transform` as
+the client draws it, `world.query` on its `Name`), the host's health from
+its `LocalPlayer`'s `Health`, `+sv_showlagcompensation 1` on the host to
+log each rewind. The dedicated server:
 `cargo run --features dev --bin mashup_server -- -port 27032 +map greybox
 +bot_add` (console on stdin: `status`, `bot_add`, `quit`). Logs show
 `listening on UDP ...`, `<name> joined`, `<name> left`, `disconnected:
@@ -414,7 +460,8 @@ is refused with a message.
 Details and baseline numbers: [performance.md](performance.md).
 
 - `mashup_perf 1` (2: every render pass) shows frame times (avg, p95,
-  max), the main world's CPU time, GPU time per render pass, entity,
+  max), the main world's CPU time and the render world's time (its
+  `Render` schedule), GPU time per render pass, entity,
   mesh and triangle counts and visibility culling (camera cluster,
   clusters and map parts potentially visible), and what changes each
   frame (transforms written, under the map's root, mesh and material
@@ -435,11 +482,14 @@ Details and baseline numbers: [performance.md](performance.md).
   -- --nocapture` prints a walking, ducking camera eye per frame at 240 fps on the CS:S
   tick with it on and off.
 - `refcmp bench --views tools/refcmp/<map>.toml` times 200 frames at each
-  view (vsync off) and prints a table (frame, main-world CPU, process CPU
-  and GPU ms; with pipelined rendering a frame takes the longer of the
-  main world and the render world); `-- <args>` passes options to
-  mashup (e.g. `-- +r_novis 1`). Build first; it runs the mashup next to
-  it (`--profile playtest` for optimized numbers).
+  view (vsync off) and prints a table (frame, main-world CPU, render-world
+  (its `Render` schedule), process CPU and GPU ms; with pipelined
+  rendering a frame takes about the longer of the main world and the
+  render world); `-- <args>` passes options to mashup (e.g. `-- +r_novis
+  1`, `-- --view-size 3840x2160` to time 4K, `-- +mat_antialias 0`).
+  Build first; it runs the mashup next to it (`--profile playtest` for
+  optimized numbers). `MASHUP_EXECUTOR=multi` runs Bevy's multi-threaded
+  executor instead of ours (performance.md, "Frame time pass").
 - `r_portalsopenall 1` ignores areaportals (closed doors no longer hide
   what's behind them, no clipping through openings): PVS culling only.
   `mashup_perf 1` shows the camera's area, the areas it reaches and how
@@ -481,6 +531,12 @@ Details and baseline numbers: [performance.md](performance.md).
   `TRACE_CHROME=target/t.json target/playtest/mashup --map cs_source:de_dust2 --frames 400`,
   then `cargo build --profile playtest --bin tracesum` and
   `target/playtest/tracesum target/t.json --skip 200`.
+  Read systems' own spans, not schedules' self time: writing the trace
+  stalls every thread now and then (2-3 ms gaps without any span), which
+  lands in whichever schedule was running, and tracing makes a frame of
+  ~1500 small systems about twice as slow. For `--bench` runs, start
+  mashup itself (`--views <refcmp's views.json> --bench`); through
+  refcmp the trace came out empty.
   The profile build replaces `target/playtest/mashup`: copy it aside
   or rebuild without the feature before benchmarking. Tracy instead:
   `--features bevy/trace_tracy` and the Tracy profiler (not set up on the

@@ -328,7 +328,7 @@ fn drive(
     mut commands: Commands,
 ) {
     let (dt, now) = (time.delta_secs(), time.elapsed_secs_f64());
-    let events: Vec<&WeaponEvent> = events.read().collect();
+    let events: Vec<&WeaponEvent> = events.read().filter(|e| e.shown()).collect();
     for (e, inventory, health, view, dice, zoomed) in &mut characters {
         let (Some(mut view), Some(mut dice)) = (view, dice) else {
             commands.entity(e).insert((

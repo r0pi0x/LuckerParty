@@ -3,6 +3,8 @@
 //! follows) driving each character's `Animator`. The plugin also drives
 //! hostages (`hostage_anim`).
 
+use std::sync::Arc;
+
 use bevy::prelude::*;
 
 use crate::{
@@ -539,6 +541,93 @@ fn hold_weapons(
     }
 }
 
+/// What weapons did this update, per owner: shots (with the hand that
+/// fired), reload parts, throws.
+#[derive(Default)]
+struct Happened {
+    fired: Vec<(Entity, &'static str)>,
+    reloaded: Vec<(Entity, &'static str)>,
+    threw: Vec<Entity>,
+}
+
+type WeaponsQuery<'w, 's> = Query<'w, 's, (&'static Weapon, Option<&'static crate::weapon::grenade::Throwable>)>;
+type LoadingQuery<'w, 's> =
+    Query<'w, 's, (Option<&'static crate::weapon::ShellReload>, Option<&'static crate::weapon::Magazine>)>;
+
+impl Happened {
+    fn of(all: &[&WeaponEvent], weapons: &WeaponsQuery, loading: &LoadingQuery) -> Self {
+        let mut h = Self::default();
+        for ev in all {
+            let (shells, magazine) = loading.get(ev.weapon).unwrap_or((None, None));
+            match ev.kind {
+                WeaponEventKind::Shot { .. } | WeaponEventKind::Swing { .. } | WeaponEventKind::ArmingStarted => {
+                    let dual = weapons.get(ev.weapon).is_ok_and(|(w, _)| w.id == super::weapons::ELITE);
+                    let side = match magazine {
+                        Some(m) if dual => {
+                            if super::weapons::elite_right_hand(m.clip) {
+                                "_R"
+                            } else {
+                                "_L"
+                            }
+                        }
+                        _ => "",
+                    };
+                    h.fired.push((ev.owner, side));
+                }
+                WeaponEventKind::ReloadStarted => {
+                    h.reloaded.push((ev.owner, if shells.is_some() { "_start" } else { "" }));
+                }
+                WeaponEventKind::ShellInserting => h.reloaded.push((ev.owner, "_loop")),
+                WeaponEventKind::Reloaded if shells.is_some() => h.reloaded.push((ev.owner, "_end")),
+                WeaponEventKind::Thrown => h.threw.push(ev.owner),
+                _ => {}
+            }
+        }
+        h
+    }
+
+    fn find(list: &[(Entity, &'static str)], e: Entity) -> Option<&'static str> {
+        list.iter().rev().find(|(o, _)| *o == e).map(|(_, p)| *p)
+    }
+}
+
+/// One character's update: its state and inputs into its animator.
+#[allow(clippy::too_many_arguments)]
+fn animate(
+    e: Entity,
+    state: &mut PlayerAnim,
+    animator: &mut Animator,
+    look: crate::map::interp::EyeView,
+    velocity: &Velocity,
+    movement: &MovementState,
+    weapon: Option<(&Weapon, Option<&crate::weapon::grenade::Throwable>)>,
+    happened: &Happened,
+    dt: f32,
+    now: f64,
+) {
+    let jumped = state.was_on_ground && !movement.on_ground && velocity.y > 0.0;
+    state.was_on_ground = movement.on_ground;
+    // Our axes to the game's: forward at yaw 0 is -Z (+X there), left is
+    // -X (+Y there).
+    let inputs = Inputs {
+        eye_yaw: look.yaw.to_degrees(),
+        eye_pitch: -look.pitch.to_degrees(),
+        velocity: Vec2::new(-velocity.z, -velocity.x) / UNIT,
+        ducked: movement.crouching,
+        on_ground: movement.on_ground,
+        jumped,
+        fired: Happened::find(&happened.fired, e).is_some(),
+        reloaded: Happened::find(&happened.reloaded, e).is_some(),
+        reload_part: Happened::find(&happened.reloaded, e).unwrap_or(""),
+        shot_side: Happened::find(&happened.fired, e).unwrap_or(""),
+        primed: weapon.and_then(|(_, t)| t).is_some_and(|t| t.primed()),
+        threw: happened.threw.contains(&e),
+    };
+    let suffix = suffix(weapon.map(|(w, _)| w.id));
+    state.update(animator, &inputs, suffix, dt, now);
+    animator.yaw = Some(state.feet_yaw.to_radians());
+}
+
 #[allow(clippy::type_complexity)]
 fn drive(
     time: Res<Time>,
@@ -553,46 +642,13 @@ fn drive(
         Option<&Inventory>,
         Option<&crate::map::interp::RenderedView>,
     ), Without<crate::objectives::hostages::Hostage>>,
-    weapons: Query<(&Weapon, Option<&crate::weapon::grenade::Throwable>)>,
-    loading: Query<(Option<&crate::weapon::ShellReload>, Option<&crate::weapon::Magazine>)>,
+    weapons: WeaponsQuery,
+    loading: LoadingQuery,
     mut events: MessageReader<WeaponEvent>,
     mut commands: Commands,
 ) {
-    let all: Vec<&WeaponEvent> = events.read().collect();
-    let threw: Vec<Entity> = all
-        .iter()
-        .filter(|e| matches!(e.kind, WeaponEventKind::Thrown))
-        .map(|e| e.owner)
-        .collect();
-    // Shots (with the hand) and reload parts per owner.
-    let mut fired: Vec<(Entity, &'static str)> = Vec::new();
-    let mut reloaded: Vec<(Entity, &'static str)> = Vec::new();
-    for ev in &all {
-        let (shells, magazine) = loading.get(ev.weapon).unwrap_or((None, None));
-        match ev.kind {
-            WeaponEventKind::Shot { .. } | WeaponEventKind::Swing { .. } | WeaponEventKind::ArmingStarted => {
-                let dual = weapons.get(ev.weapon).is_ok_and(|(w, _)| w.id == super::weapons::ELITE);
-                let side = match magazine {
-                    Some(m) if dual => {
-                        if super::weapons::elite_right_hand(m.clip) {
-                            "_R"
-                        } else {
-                            "_L"
-                        }
-                    }
-                    _ => "",
-                };
-                fired.push((ev.owner, side));
-            }
-            WeaponEventKind::ReloadStarted => {
-                reloaded.push((ev.owner, if shells.is_some() { "_start" } else { "" }));
-            }
-            WeaponEventKind::ShellInserting => reloaded.push((ev.owner, "_loop")),
-            WeaponEventKind::Reloaded if shells.is_some() => reloaded.push((ev.owner, "_end")),
-            _ => {}
-        }
-    }
-    let find = |list: &[(Entity, &'static str)], e: Entity| list.iter().rev().find(|(o, _)| *o == e).map(|(_, p)| *p);
+    let all: Vec<&WeaponEvent> = events.read().filter(|e| e.shown()).collect();
+    let happened = Happened::of(&all, &weapons, &loading);
     let (dt, now) = (time.delta_secs(), time.elapsed_secs_f64());
     for (e, mut animator, state, intent, velocity, movement, health, inventory, view) in &mut characters {
         let Some(mut state) = state else {
@@ -603,35 +659,79 @@ fn drive(
             state.reset = true;
             continue;
         }
-        let jumped = state.was_on_ground && !movement.on_ground && velocity.y > 0.0;
-        state.was_on_ground = movement.on_ground;
         // The look as drawn (eased between ticks, `map::interp`), as the
         // client's animation state takes it (specs/cs_source/animation.md
-        // 12). Our axes to the game's: forward at yaw 0 is -Z (+X there),
-        // left is -X (+Y there).
+        // 12).
         let look = crate::map::interp::eye_view(view, intent, movement);
-        let inputs = Inputs {
-            eye_yaw: look.yaw.to_degrees(),
-            eye_pitch: -look.pitch.to_degrees(),
-            velocity: Vec2::new(-velocity.z, -velocity.x) / UNIT,
-            ducked: movement.crouching,
-            on_ground: movement.on_ground,
-            jumped,
-            fired: find(&fired, e).is_some(),
-            reloaded: find(&reloaded, e).is_some(),
-            reload_part: find(&reloaded, e).unwrap_or(""),
-            shot_side: find(&fired, e).unwrap_or(""),
-            primed: false,
-            threw: threw.contains(&e),
-        };
         let weapon = inventory.and_then(|i| i.active).and_then(|w| weapons.get(w).ok());
-        let inputs = Inputs {
-            primed: weapon.and_then(|(_, t)| t).is_some_and(|t| t.primed()),
-            ..inputs
+        animate(e, &mut state, &mut animator, look, velocity, movement, weapon, &happened, dt, now);
+    }
+}
+
+/// A network server's own animation state of a body (`map::SimAnimator`).
+#[derive(Component, Debug, Clone, Default)]
+pub struct SimPlayerAnim(pub PlayerAnim);
+
+/// A network server animates every body again in the fixed tick, from
+/// the tick's own values (the look as simulated, the tick's shots), into
+/// its `map::SimAnimator`, which poses the hitboxes the next tick traces
+/// and lag compensation keeps (`map::SimPose`). What is drawn keeps its
+/// own animation (`drive`).
+pub struct SimAnimPlugin;
+
+impl Plugin for SimAnimPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_message::<WeaponEvent>().add_systems(
+            FixedLast,
+            drive_sim
+                .before(crate::map::SimPose)
+                .run_if(resource_equals(crate::core::NetRole::Server)),
+        );
+    }
+}
+
+#[allow(clippy::type_complexity)]
+fn drive_sim(
+    clock: Res<crate::core::SimClock>,
+    mut characters: Query<(
+        Entity,
+        &Animator,
+        Option<&mut crate::map::SimAnimator>,
+        Option<&mut SimPlayerAnim>,
+        &Intent,
+        &Velocity,
+        &MovementState,
+        Option<&Health>,
+        Option<&Inventory>,
+    ), Without<crate::objectives::hostages::Hostage>>,
+    weapons: WeaponsQuery,
+    loading: LoadingQuery,
+    mut events: MessageReader<WeaponEvent>,
+    mut commands: Commands,
+) {
+    let all: Vec<&WeaponEvent> = events.read().filter(|e| e.shown()).collect();
+    let happened = Happened::of(&all, &weapons, &loading);
+    let (dt, now) = (clock.dt(), clock.now);
+    for (e, drawn, sim, state, intent, velocity, movement, health, inventory) in &mut characters {
+        let (Some(mut sim), Some(mut state)) = (sim, state) else {
+            commands.entity(e).insert((
+                crate::map::SimAnimator(Animator::new(drawn.set.clone())),
+                SimPlayerAnim::default(),
+            ));
+            continue;
         };
-        let suffix = suffix(weapon.map(|(w, _)| w.id));
-        state.update(&mut animator, &inputs, suffix, dt, now);
-        animator.yaw = Some(state.feet_yaw.to_radians());
+        if !Arc::ptr_eq(&sim.0.set, &drawn.set) {
+            // Another model (a team change).
+            sim.0 = Animator::new(drawn.set.clone());
+            state.0 = PlayerAnim::default();
+        }
+        if health.is_some_and(|h| h.current <= 0.0) {
+            state.0.reset = true;
+            continue;
+        }
+        let look = crate::map::interp::eye_view(None, intent, movement);
+        let weapon = inventory.and_then(|i| i.active).and_then(|w| weapons.get(w).ok());
+        animate(e, &mut state.0, &mut sim.0, look, velocity, movement, weapon, &happened, dt, now);
     }
 }
 

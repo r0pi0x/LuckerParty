@@ -433,7 +433,7 @@ fn bind_globals(m: &MapCharacterModel) -> Vec<(Quat, Vec3)> {
 }
 
 /// Parent-relative bone transforms to skeleton space.
-fn globals(m: &MapCharacterModel, local: &[(Quat, Vec3)]) -> Vec<(Quat, Vec3)> {
+pub(super) fn globals(m: &MapCharacterModel, local: &[(Quat, Vec3)]) -> Vec<(Quat, Vec3)> {
     let mut out: Vec<(Quat, Vec3)> = Vec::with_capacity(local.len());
     for (b, (q, p)) in m.bones.iter().zip(local) {
         out.push(match b.parent.and_then(|i| out.get(i)) {
@@ -1091,7 +1091,11 @@ fn pose_ragdolls(
                 Some((pq, pp)) => (pq.inverse() * q, pq.inverse() * (p - pp)),
                 None => (q, p),
             };
-            if let Some(mut t) = drawn.joints.get(bone).and_then(|j| joints.get_mut(*j).ok()) {
+            // Only real changes: a ragdoll at rest leaves its joints (and
+            // transform propagation under them) alone.
+            if let Some(mut t) = drawn.joints.get(bone).and_then(|j| joints.get_mut(*j).ok())
+                && (t.rotation != local.0 || t.translation != local.1)
+            {
                 t.rotation = local.0;
                 t.translation = local.1;
             }

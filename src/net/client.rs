@@ -16,6 +16,7 @@ use super::{
 };
 use crate::{
     character::character_bundle,
+    map::interp::NetDrawn,
     core::{Intent, LocalPlayer, MovementState, NetRole, Team, Velocity},
     rules::Dead,
     weapon::Inventory,
@@ -143,8 +144,17 @@ pub(super) fn stop(world: &mut World) {
     world.remove_resource::<Joined>();
     world.remove_resource::<RefusedReason>();
     super::predict::reset(world);
+    super::interp::reset(world);
+    super::weapons::reset(world);
     let remote: Vec<Entity> = world.query_filtered::<Entity, With<Remote>>().iter(world).collect();
     for e in remote {
+        // The weapons built here for what it carries go with it.
+        let weapons = world.get::<Inventory>(e).map(|i| i.weapons.clone()).unwrap_or_default();
+        for w in weapons {
+            if let Ok(w) = world.get_entity_mut(w) {
+                w.despawn();
+            }
+        }
         if let Ok(e) = world.get_entity_mut(e) {
             e.despawn();
         }
@@ -241,7 +251,8 @@ fn check_map(world: &mut World) {
 }
 
 /// A character from the server: the components the client draws it with
-/// (no movement: the server moves it), ours marked `LocalPlayer`.
+/// (no movement: the server moves it), ours marked `LocalPlayer`, others
+/// drawn from snapshots (`NetDrawn`, `interp`).
 fn character_arrived(
     add: On<Add, NetCharacter>,
     q: Query<(&NetCharacter, Option<&NetBody>, Option<&Team>)>,
@@ -262,11 +273,13 @@ fn character_arrived(
     .insert(Name::new(c.name.clone()));
     if me.is_some_and(|me| c.owner == Some(me.0)) {
         e.insert(LocalPlayer);
+    } else {
+        e.insert(NetDrawn);
     }
 }
 
-/// Characters where the server says they are, with their look (others'
-/// only: ours is our mouse) and state.
+/// Our own character where the server says it is until it is predicted
+/// (others are drawn from snapshots: `interp::draw_others`).
 #[allow(clippy::type_complexity)]
 fn apply_bodies(
     mut q: Query<
@@ -276,17 +289,15 @@ fn apply_bodies(
             &mut Transform,
             &mut Velocity,
             &mut MovementState,
-            &mut Intent,
-            Has<LocalPlayer>,
             Has<Dead>,
             Has<crate::slots::MovementSlot>,
         ),
-        With<Remote>,
+        (With<Remote>, Without<NetDrawn>),
     >,
     time: Res<Time<Fixed>>,
     mut commands: Commands,
 ) {
-    for (e, body, mut t, mut v, mut s, mut intent, local, dead, predicted) in &mut q {
+    for (e, body, mut t, mut v, mut s, dead, predicted) in &mut q {
         let dead_now = body.flags & body_flags::DEAD != 0;
         if dead_now != dead {
             if dead_now {
@@ -312,10 +323,5 @@ fn apply_bodies(
         s.crouching = on(body_flags::CROUCHING);
         s.on_ladder = on(body_flags::ON_LADDER);
         s.eye_offset = Vec3::from_array(body.eye);
-        if !local {
-            intent.yaw = body.yaw;
-            intent.pitch = body.pitch;
-            intent.crouch = s.crouching;
-        }
     }
 }

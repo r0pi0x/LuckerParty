@@ -85,7 +85,7 @@ fn spawn_effects(
     mut commands: Commands,
 ) {
     let me = local.map(|l| *l);
-    for e in events.read() {
+    for e in events.read().filter(|e| e.shown()) {
         let WeaponEventKind::Shot { from, to, hit, normal } = &e.kind else {
             continue;
         };

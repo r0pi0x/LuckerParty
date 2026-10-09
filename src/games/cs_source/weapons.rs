@@ -15,8 +15,9 @@
 use bevy::prelude::*;
 
 use crate::{
-    core::{Intent, MovementState, PredictedAppExt, Velocity},
+    core::{Intent, MovementState, Velocity},
     weapon::{
+        CarriedAppExt, NetPart,
         AltModes, Burst, CharacterPass, DamageEffect, FireTiming, HitgroupScale, Hitscan, Inventory, Magazine, Melee,
         PassMaterial, PassMaterials, Penetration, RegisterWeapons, ShellReload, SpreadShape, StartingWeapons, Swing,
         Trigger, ViewPunch, Weapon, WeaponEvent, WeaponEventKind, WeaponFrame, WeaponSounds, Zoom,
@@ -266,14 +267,16 @@ impl Plugin for CsWeaponsPlugin {
                 crate::core::Predict::Weapons,
                 (before_shots.before(WeaponFrame), after_shots.after(WeaponFrame)),
             )
-            .predicted::<Inaccuracy>()
-            .predicted::<Recoil>()
+            .predicted_part::<Inaccuracy>()
+            .predicted_part::<Recoil>()
             .add_plugins((
                 super::impacts::ImpactSoundsPlugin,
                 super::impact_effects::ImpactEffectsPlugin,
                 super::grenades::GrenadesPlugin,
                 super::fire::FirePlugin,
                 super::objectives::CsObjectivesPlugin,
+                // A network server's per-tick body animation, for hitboxes.
+                super::player_anim::SimAnimPlugin,
             ))
             .insert_resource(pass_materials());
         let mut start = app.world_mut().get_resource_or_init::<StartingWeapons>();
@@ -2043,6 +2046,32 @@ impl Inaccuracy {
     }
 }
 
+impl NetPart for Inaccuracy {
+    /// The penalty, on the ground last tick, last tick's vertical speed.
+    type Net = (f32, bool, f32);
+    fn net(&self) -> Self::Net {
+        (self.value, self.on_ground, self.fall_speed)
+    }
+    fn set_net(&mut self, (value, on_ground, fall_speed): Self::Net) {
+        self.value = value;
+        self.on_ground = on_ground;
+        self.fall_speed = fall_speed;
+    }
+}
+
+impl NetPart for Recoil {
+    /// Shots so far, the last one's time, the sideways direction.
+    type Net = (u32, f64, f32);
+    fn net(&self) -> Self::Net {
+        (self.shots, self.last_shot, self.direction)
+    }
+    fn set_net(&mut self, (shots, last_shot, direction): Self::Net) {
+        self.shots = shots;
+        self.last_shot = last_shot;
+        self.direction = direction;
+    }
+}
+
 /// Airborne decay of the penalty's excess per 0.015 s tick (measured M1:
 /// toward the crouched rest after a jump, 10 % left after 1.05 s; a fall
 /// without a jump stays at the standing rest, so the rest is a floor).
@@ -2125,7 +2154,10 @@ fn decay_punch(p: Vec2, dt: f32) -> Vec2 {
 /// Before the weapon frame: punch decays, the penalty recovers, and the
 /// active weapon's spread is set from the penalty and the movement term.
 fn before_shots(
-    mut owners: Query<(&Inventory, &MovementState, &Velocity, &Intent, Option<&mut ViewPunch>)>,
+    mut owners: Query<
+        (&Inventory, &MovementState, &Velocity, &Intent, Option<&mut ViewPunch>),
+        Without<crate::map::interp::NetDrawn>,
+    >,
     mut weapons: Query<(&Weapon, &mut Inaccuracy, &mut Hitscan, Option<&AltModes>)>,
     clock: Res<crate::core::SimClock>,
 ) {

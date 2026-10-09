@@ -1,11 +1,18 @@
 # Plan: multiplayer
 
-Status: slice 0 done but per-tick server hitbox poses (moved to slice 4;
-2026-10-08); slice 1 done (2026-10-08): a listen server and a dedicated
+Status: slice 0 done (its per-tick server hitbox poses came with slice
+4); slice 1 done (2026-10-08): a listen server and a dedicated
 server, direct-IP connect, characters replicated and drawn where the
 server puts them; slice 2 done (2026-10-08): usercmds bound to server
 ticks, clock sync, the client's own movement predicted and reconciled
-(weapons wait for slice 4). Recommendation:
+(weapons wait for slice 4); slice 3 done (2026-10-08): others and
+physics props drawn 0.1 s in the past from snapshots keyed by server
+tick, movers replicated by motion state and stepped by the client to the
+tick it predicts, so riding one is predicted; slice 4 done (2026-10-08):
+weapons predicted on the client (fire, reload, switch, zoom, punch,
+spread, grenade throws) and checked bit for bit, the server's hits lag
+compensated against per-tick hitbox poses, others' shots drawn from the
+server's seeds, grenades, drops and pickups the server's. Recommendation:
 **bevy_replicon + renet (netcode over UDP)** for transport and
 replication; **our own Source-style prediction, interpolation and lag
 compensation** on top. Slices below; slice 0 is refactoring that pays off
@@ -129,11 +136,11 @@ must pose hitboxes per tick from simulation values, not from the drawn
 | Own weapon frame: switching, firing timing, ammo in clip, reload timing, spread/recoil (shared seed), zoom | predicted |
 | Own fire effects: muzzle flash, view model anim, fire sound, tracers, bullet impacts and decals from your own trace | predicted, first time only |
 | Damage, health, armour, death, kills, score | server only (hit marker on server confirmation) |
-| Others' shots: sound, muzzle flash, tracer, impacts | server event with the shot's seed; each client re-traces locally for impacts (to confirm by spec) |
+| Others' shots: sound, muzzle flash, tracer, impacts | server event with the shot's seed; each client re-traces locally for impacts (slice 4: `FireBullets`, the same pellets as the server's) |
 | Money, buying, rounds, timers, objectives (bomb, hostages) | server only; buy menu sends a request |
 | Bots | server only (they are just replicated characters) |
 | Logic entities (I/O, triggers, movers, breakables, fire) | server only; movers' transforms and visible state replicated |
-| Physics props, dropped weapons, grenades in flight | server only, interpolated (grenade throw not predicted in v1) |
+| Physics props, dropped weapons, grenades in flight | server only, interpolated (the throw itself is predicted: pin, release, redraw) |
 | Gibs, shells, particles, ragdolls, decals | client only, from replicated events or deaths (CS:S ragdolls are client-side) |
 | Sounds | own predicted ones locally; the rest from server events or replicated state (ambient loops from logic state) |
 
@@ -410,9 +417,9 @@ with tests passing and something to see.
      from the name (`SERVER_PREFIXES`); not acted on yet.
    - [x] Pose history keyed by tick (`PoseFrame::tick`,
      `SkeletonPose::at_tick`), kept 1 s (`sv_maxunlag`).
-   - [ ] Hitboxes posed per tick from simulation values (not the drawn,
-     client-rate animation): moved to slice 4 with lag compensation; it
-     means driving body animation in the fixed tick.
+   - [x] Hitboxes posed per tick from simulation values (not the drawn,
+     client-rate animation): done in slice 4 (a network server's
+     `map::SimAnimator`).
    - [x] Tests: `tests/it/prediction.rs` (100 commands of walking,
      jumping, ducking, an AK-47 spray and weapon switches replayed through
      `core::predict` from saved state: bit-identical, no sounds or damage;
@@ -553,20 +560,221 @@ with tests passing and something to see.
      machinery is there: `Predict::Select`/`Weapons` run in the replay;
      slice 4 registers the weapon components with `predicted_net` and
      sends them); the server's movement cvars aren't sent (slice 5's
-     replicated cvars); movers don't move on a client (slice 3), so
-     riding one mispredicts; `OwnState` is the whole state each tick, no
-     delta.
-3. **[ ] Interpolation of others** (M, medium). Snapshot buffers keyed by
+     replicated cvars); `OwnState` is the whole state each tick, no
+     delta. (Movers: slice 3.)
+3. **[x] Interpolation of others** (M, medium). Snapshot buffers keyed by
    server tick feeding `map::interp`'s `Interpolated`/`RenderedView`,
    `cl_interp`, brush entities, props and loose items replicated and
    eased, other players' bodies animating from replicated state.
-4. **[ ] Weapons** (L, high). Inventory and weapon state for the owner,
+   Progress (2026-10-08):
+   - [x] Snapshots by server tick (`net::interp::Snapshots`): replicon's
+     write functions for `NetBody`, `NetMover` and `NetProp` also keep
+     each value by its message tick, which the server keeps equal to its
+     `SimClock::tick` (`server::lock_replication_tick`). The server sends
+     a mutate message every tick (replicon's `track_mutate_messages`), so
+     a tick heard without a value for an entity is one it held still at
+     (a held copy), and a character that starts walking after standing
+     isn't smeared from where it stood.
+   - [x] The render clock (`InterpClock`). **Changed from §1 and the
+     task's "predicted time less the delay":** others are drawn at the
+     server's clock as the arrivals show it (an average of tick time less
+     arrival time, eased in at most 5 % of real time so it never steps
+     back), less the delay, as Source's client clock does; the predicted
+     tick runs ahead of every snapshot by the round trip. Delay
+     `max(cl_interp, cl_interp_ratio × update interval)` with Source's
+     defaults 0.1 s and 2 (VDC, "Source Multiplayer Networking").
+   - [x] Drawing (`interp::draw_others`): between the two snapshots around
+     the render tick, linear (positions, velocity, eye height; look the
+     short way round; flags at the newer one's tick); a jump faster than
+     `map::interp::SNAP_SPEED` or a death/respawn between them is drawn at
+     once. **Changed from §1:** past the newest snapshot others carry on
+     along their velocity for `cl_extrapolate_amount` (0.25 s, Source's
+     default), then hold, instead of "at most one snapshot": with a 0.1 s
+     delay that only happens after ~6 lost ticks in a row.
+   - [x] Others' bodies animate from the drawn state: `Transform`,
+     `Velocity` (speed), `MovementState` (crouch, ground, ladder, eye),
+     look in `Intent` and `RenderedView`, `Dead`; the tick blend
+     (`map::interp`) skips them (`NetDrawn`).
+   - [x] Moving brushes. **Changed from §1/§3 ("interpolated"):** the
+     server replicates each pusher's motion state (`NetMover`: pose,
+     velocity, local time, move end and goal, flags) and the client steps
+     it, with the logic's own arithmetic (`movers::Stepper`), to the tick
+     it predicts, then pushes its own player with the logic's push code
+     (`logic::push_players`, shared; `logic::carry_player`) before its
+     movement, in live and replayed ticks; `OwnState::ground` (the mover's
+     map index) keeps it riding after a correction. Movers are drawn at
+     the predicted tick (eased between ticks). Interpolating them in the
+     past (Source) would put the client's own player out of step with what
+     it stands on, and every ride would mispredict.
+   - [x] Physics props (`net::props`): `NetProp` (pose, velocity, shown,
+     solid); a client's copies are kinematic and drawn from snapshots at
+     the render tick. Loose items wait for slice 4 (a client has none).
+   - [x] Found on the way: the physics' transform sync turns a -0.0 in a
+     body's position into 0.0, but only when the body moved more than
+     avian's tolerance since the physics last had it, which a replay
+     can't know: a player at exactly 0 on an axis never matched again.
+     A predicted player's position is written with +0.0 at the end of
+     every tick and replay in a network game (`net::canonical_position`).
+   - [x] Readout: `NetGraph`'s `interp:` line (delay, update interval,
+     snapshots ahead, newest ahead, frames extrapolated/held, snaps,
+     movers, ticks carried) in the perf overlay and F2 Perf tab; cvars
+     `cl_interp`, `cl_interp_ratio`, `cl_extrapolate`,
+     `cl_extrapolate_amount`.
+   - [x] Tests (`tests/it/net_interp.rs`, `NetSim` at 240 frames a
+     second): another player walking a curve at 50±10 ms, 100±40 ms 10 %
+     loss and 150±60 ms 20 % loss is drawn exactly on the server's path
+     without loss (0.000 mm off) and within 8 mm with loss (a lost
+     snapshot bridged by a line), moving every frame (0 still frames,
+     mean 26.7 mm, max 28.1 mm a frame), 0 frames extrapolated, 3-7
+     snapshots buffered ahead; its speed, look and crouch are drawn; a
+     3 m teleport is drawn at once; a crate the server lifts falls on the
+     server's path; riding a lift up and back down at 50, 100±20 and
+     150±40 ms mispredicts only when the lift starts (1-2 errors per
+     ride, inside the first round trip; 0.04 m, eased) and ends on the
+     server's state bit for bit (before: an error every tick of the ride).
+   - [x] Two real games on the dev box (host `-port 27031` strafing left
+     and right, the client with `+net_fakelag 100 +net_fakejitter 20
+     +net_fakeloss 5`): ping ~150-175 ms, the host drawn 100 ms behind
+     with 3-4 snapshots ahead (the listen server sends every ~28 ms at
+     its frame rate), 15 of ~1900 frames extrapolated, no prediction
+     errors on the client's own walking.
+   - Not yet: parented brushes and breakables aren't stepped ahead (they
+     hold their last snapshot until the next); a mover starting,
+     reversing after its wait, blocked by someone else or a train at a
+     path corner mispredicts for a round trip; model doors
+     (`prop_door_rotating`), window panes, prop skins/sequences aren't
+     replicated (slice 7's late join needs them as state); others riding
+     a mover are drawn in the past on a mover drawn in the present.
+4. **[x] Weapons** (L, high). Inventory and weapon state for the owner,
    predicted firing (timing, ammo, spread, punch, effects first time),
    hitboxes posed per tick from simulation values (from slice 0),
    server hit detection with lag compensation, shot events to others with
    seeds, impacts and tracers for others' shots, damage/death/kill feed
    from the server, grenades thrown server-side and interpolated,
    dropping and picking up. Needs the weapon-prediction spec session.
+   Progress (2026-10-08; no spec session yet: what is predicted and what
+   the server sends follows the plan's table, the Valve Developer Wiki's
+   "Prediction", "Lag compensation" and "Source Multiplayer Networking"
+   pages, and specs/cs_source/weapons.md 2, 4.2 and 4.6; where those are
+   silent the choice is ours and marked here):
+   - [x] Replay events: `WeaponEvent::replay` marks what a re-run command
+     writes (recoil still reads it); effects, sounds, view model, HUD,
+     body animation and ragdoll pushes skip it. Damage, armour and pushes
+     only where `core::authoritative` (a client deals none: test).
+   - [x] What a client's player carries goes with its `OwnState`
+     (`weapon::sync`, registered with the new
+     `PredictedAppExt::predicted_codec`): each weapon as its registry
+     index and the changing state of its predicted parts (`NetPart`:
+     `WeaponState`, clip and reserve, mode, CS:S's accuracy and recoil,
+     grenade count and throw), the active, last and wanted weapons as
+     indices, the timers and button edges; `ViewPunch` and `Zoomed` with
+     `predicted_net`. **Changed from §3 ("inventory and weapon state for
+     the owner" as replicated components):** the client's weapons are its
+     own entities built from the registry (`weapon::spawn_weapon`), rebuilt
+     when the server's list differs (a pickup, a buy, a drop, a respawn);
+     no entity ids on the wire. Giving, equipping, picking up and dropping
+     run only on the server.
+   - [x] The weapon frame predicted: selection, firing (timing, clip,
+     spread from the command's seed, punch and recoil, inaccuracy),
+     reloads (both kinds), zoom and the sniper unzoom, bursts, and the
+     grenade throw (`throw_frame` moved into `core::Predict::Weapons`, on
+     `SimClock`; the projectile and the radio call are the server's). Own
+     shots' tracers, impacts, sounds and view-model animation show the
+     first time a command runs.
+   - [x] Lag compensation (`weapon::lagcomp`). **Changed from §1 ("N's
+     tick − the shooter's interp delay"):** each `NetCmd` carries the
+     render tick the client drew others at when it made the command
+     (`view_tick`, fractional; Source's command tick less its lerp: in our
+     model the command tick runs ahead of the server by the round trip, so
+     "tick − delay" would be wrong by that much); the server keeps it on
+     the character (`ViewTick`, at most the command's own tick). The
+     server keeps every living character's hit volume per tick for
+     `sv_maxunlag` (`HitHistory`: origin, look yaw, box, hitboxes),
+     recorded after the tick, so tick T's is what clients draw for T. A
+     remote player's shot or swing traces others as they were at its view
+     tick, between the two kept ticks around it, not further back than
+     `sv_maxunlag`, not across a 64-unit jump between two ticks
+     (`rewind`). **Changed from Source:** nothing is moved and restored:
+     the trace tests the rewound volumes in place of the characters'
+     colliders (hitboxes; a model-less character its box). Bots and a
+     listen server's host aren't rewound (no latency). Cvars `sv_unlag`,
+     `sv_maxunlag`, `sv_showlagcompensation` (logs each rewind), client
+     `cl_lagcompensation`; `LagCompStats` and a `lagcomp` line in the
+     server's `status`.
+   - [x] Per-tick server hitbox poses (slice 0's last item): on a network
+     server CS:S's player animation state runs again in the fixed tick
+     from the tick's own values (the look as simulated, its shots and
+     reloads) into a second animator (`map::SimAnimator`,
+     `player_anim::SimAnimPlugin`), and the hitboxes are posed from it
+     after every tick (`map::SimPose`), before the history records them;
+     the drawn animation is untouched. Single player keeps posing
+     hitboxes from the drawn animation (as before).
+   - [x] Others' weapons: `NetHeld` (held weapon's registry index, mode,
+     pin out) on every character; a client puts one weapon built from the
+     registry in their hands (`weapon::remote::show_held`: the body's
+     world model, silencer and animations), never running their weapon
+     frame (the weapon systems leave out `NetDrawn` characters). Each
+     round fired becomes `FireBullets` to every other client (shooter,
+     weapon, origin, angles after punch, spread seed, inaccuracy and
+     spread, mode; unreliable, as Source's temporary entities): the client
+     traces the same pellets (`weapon::pellet_dirs`, shared with the
+     server) through its own world with no damage, so tracers, impacts,
+     decals and the fire sound show, and plays the body's fire gesture.
+     Reloads, swings, pin pulls and throws come as `WeaponFx` for the
+     body's animation.
+   - [x] Outcomes from the server: `Killed` (kill feed and the client's
+     own ragdoll, pushed by the killing hit), `HitConfirm` to the shooter
+     (hit marker), health replicated as before.
+   - [x] Grenades: thrown by the server, in flight and loose weapons as
+     `NetItem` (model, pose, velocity) drawn from snapshots at the render
+     tick as `map::loose::ShownItem`s; a detonation as `Detonation` (the
+     explosion's look and sound from the grenade's rule), smoke clouds as
+     `NetSmoke` (the client runs its own cloud from the rule), a flash's
+     blindness and a blast's ringing as `Senses` to the player hit.
+   - [x] Dropping: `drop` on a client asks the server (`DropRequest`);
+     picking up (walking over, +use) is the server's; `give`, `impulse
+     101` and `buy` are refused on a client (buying is slice 5).
+   - [x] Tests (`tests/it/net_weapons.rs`, `NetSim`, greybox with CS:S's
+     weapons): a client tapping single AK-47 shots at a player running
+     across its view 10 m away, aimed where it draws it, hits 6 of 6 at
+     100 and 150 ms with lag compensation (rewound 336 and 426 ms; the
+     line of fire within 9 and 6 cm of the body's centre as seen) and 0
+     of 6 with `sv_unlag 0`; `sv_maxunlag 0.05` holds every rewind at
+     48 ms (0 of 6 hit); 1100 ticks of shotgun pumps, an AK-47 spray
+     walking and jumping, reloads, switches, AWP zoom and unzoom and
+     pistol taps at 100 ms: 0 prediction errors in 1160 states, clips,
+     reserves and punch the server's bit for bit; another client draws
+     25 of 25 traces (two 9-pellet shotgun blasts, an AK-47 spray) in the
+     server's directions exactly (0 rad); a dead player holding fire
+     fires nothing on either side; a client writes no damage, and its
+     hits are the server's confirmations (6 of 6); an HE grenade: the
+     throw predicted with 0 errors, no projectile on the client, drawn
+     in flight on the other, one detonation heard; a drop asked for, seen
+     lying by the other client, picked up again by walking over it; a bot
+     on the server shoots a client: its health drops and the client draws
+     the bot's shots (bots' rounds go out as `FireBullets` like anyone's).
+     `tests/it/heavy/map_net_weapons.rs` (de_dust2, the install's player
+     models): head shots at a player as seen standing, fired once it has
+     ducked on the server, at 100 ms: 6 of 6 heads with lag
+     compensation, 0 of 6 without.
+   - [x] Two real games on the dev box (host `-port 27047 +map greybox
+     +sv_showlagcompensation 1`, the client with `+net_fakelag 100
+     +net_fakejitter 20 +net_fakeloss 5 +cl_showerror 1`), the client
+     aimed at the host as it drew it over the remote protocol (`setang`,
+     `+attack`/`-attack`): ping ~150 ms, shots rewound 280-306 ms; the
+     host standing: 3 of 3 hit (killed: "You killed Host" in the client's
+     feed, its hit marker); strafing left and right: 12 of 12 hit, 3 of
+     12 with `sv_unlag 0`; the client's ammo counted down and reloaded as
+     predicted; prediction errors: one at the join and a burst of five
+     while a screenshot stalled the client (its late commands were
+     repeated by the server, as designed), none while firing otherwise.
+   - Not yet: the knife's box sweep (when its line misses) and grenades'
+     blast traces aren't rewound; others' reload, draw and knife sounds
+     aren't sent (only their fire sounds, from `FireBullets`); a client's
+     own trace tests others' colliders where they were drawn a frame or
+     two before (its impacts on others are cosmetic; the server decides);
+     the planted bomb, defusing and buying wait for slice 5; `OwnState`
+     carries the whole inventory every tick (no delta).
 5. **[ ] Rounds, money, buying, objectives, scoreboard, chat, radio**
    (M-L, medium). Server-owned round state replicated; buy, team, say,
    radio as requests; bomb and hostages replicated; scoreboard ping;
