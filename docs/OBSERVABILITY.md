@@ -532,6 +532,12 @@ Details and baseline numbers: [performance.md](performance.md).
   assets modified). `mashup_perf 3` also logs each second which entities
   (by name) write transforms: anything writing every frame for nothing
   costs transform propagation and GPU re-preparation.
+- Load times: a Source map load logs `<map>: loaded in <total> s
+  (<slowest stages>)` and keeps every stage's seconds in
+  `MapData::load_times` (`map::loading::LoadTimer`; a heavy test can
+  print them). Time spent putting the map into the world (colliders,
+  decal and surface grids) is not in it: time `Sim::new(MapPlugin::new(map))`
+  plus a tick.
 - Load-independent numbers (`metrics`, `client::frame_metrics`;
   performance.md, "Load-independent metrics"): the readout also gives
   distributions over the last 4096 frames and ticks: `frame ms (N): p50

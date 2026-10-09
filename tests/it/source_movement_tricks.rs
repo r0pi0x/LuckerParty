@@ -16,19 +16,15 @@ use mashup::{
 
 const M: f32 = 0.0254;
 
-/// A convex brush from Source-space planes (n . p <= d) and bounds.
-fn brush(planes: &[(Vec3, f32)], lo: Vec3, hi: Vec3) -> MapBrush {
-    let (a, b) = (to_engine(lo), to_engine(hi));
-    MapBrush {
-        planes: planes
+/// A convex brush from Source-space planes (n . p <= d), with bevels as a
+/// map's brushes have them (`MapBrush::from_planes`).
+fn brush(planes: &[(Vec3, f32)]) -> MapBrush {
+    MapBrush::from_planes(
+        planes
             .iter()
             .map(|(n, d)| (Vec3::new(n.x, n.z, -n.y).normalize(), d * M))
             .collect(),
-        min: a.min(b),
-        max: a.max(b),
-        ladder: false,
-        surface: None,
-    }
+    )
 }
 
 fn block(lo: Vec3, hi: Vec3) -> MapBrush {
@@ -43,18 +39,13 @@ const SURF_DEPTH: f32 = 512.0;
 fn surf_ramp(x0: f32, x1: f32) -> MapBrush {
     let t = SURF_ANGLE.to_radians();
     let n = Vec3::new(0.0, -t.sin(), t.cos());
-    let top = SURF_DEPTH * t.tan();
-    brush(
-        &[
-            (n, 0.0),
-            (Vec3::Y, SURF_DEPTH),
-            (Vec3::NEG_Z, 0.0),
-            (Vec3::X, x1),
-            (Vec3::NEG_X, -x0),
-        ],
-        Vec3::new(x0, 0.0, 0.0),
-        Vec3::new(x1, SURF_DEPTH, top),
-    )
+    brush(&[
+        (n, 0.0),
+        (Vec3::Y, SURF_DEPTH),
+        (Vec3::NEG_Z, 0.0),
+        (Vec3::X, x1),
+        (Vec3::NEG_X, -x0),
+    ])
 }
 
 const SURF_Z: f32 = 4000.0;
@@ -79,7 +70,63 @@ fn test_map(mut commands: Commands) {
     brushes.push(angled_wall(Vec3::new(0.0, -5000.0, 0.0), 30.0));
     brushes.push(angled_wall(Vec3::new(2000.0, -5000.0, 0.0), 30.0));
     brushes.push(angled_wall(Vec3::new(2000.0, -5000.0, 0.0), -40.0));
+    brushes.extend(curved_ramp());
     commands.insert_resource(MapBrushes(brushes));
+}
+
+/// Far from the origin (where f32 positions are coarse) and high up, as
+/// surf_sedona's ramps are: a surf ramp that curves, made of
+/// `CURVE_SEGMENTS` wedges like `surf_ramp`'s (slope facing their left),
+/// each turned `CURVE_TURN` degrees to the right of the last, mitred so
+/// neighbouring faces meet along a shared edge: a concave curve, each face
+/// rising across the path of a player going straight on the one before.
+const CURVE_AT: Vec3 = Vec3::new(9000.0, -12000.0, 14000.0);
+const CURVE_SEGMENTS: usize = 8;
+const CURVE_LEN: f32 = 512.0;
+const CURVE_TURN: f32 = -5.0;
+/// Deep enough not to slide off its foot while crossing it.
+const CURVE_DEPTH: f32 = 2048.0;
+
+/// Where segment `k` starts and its direction, Source space.
+fn curve_segment(k: usize) -> (Vec3, Vec3) {
+    let dir = |j: usize| {
+        let yaw = (j as f32 * CURVE_TURN).to_radians();
+        Vec3::new(yaw.cos(), yaw.sin(), 0.0)
+    };
+    let at = (0..k).fold(CURVE_AT, |at, j| at + dir(j) * CURVE_LEN);
+    (at, dir(k))
+}
+
+/// The joint where segment `k` starts: a vertical plane through its start
+/// halfway between its direction and the one before (normal forward).
+fn curve_joint(k: usize) -> Vec3 {
+    let dir = curve_segment(k).1;
+    if k == 0 || k == CURVE_SEGMENTS {
+        let last = curve_segment(k.saturating_sub(1)).1;
+        return if k == 0 { dir } else { last };
+    }
+    (curve_segment(k - 1).1 + dir).normalize()
+}
+
+fn curved_ramp() -> Vec<MapBrush> {
+    let t = SURF_ANGLE.to_radians();
+    (0..CURVE_SEGMENTS)
+        .map(|k| {
+            let (at, dir) = curve_segment(k);
+            let (end, _) = curve_segment(k + 1);
+            // Up the slope, horizontally.
+            let up = Vec3::new(-dir.y, dir.x, 0.0);
+            let n = up * -t.sin() + Vec3::Z * t.cos();
+            let (start, finish) = (curve_joint(k), curve_joint(k + 1));
+            brush(&[
+                (n, n.dot(at)),
+                (up, up.dot(at) + CURVE_DEPTH),
+                (Vec3::NEG_Z, -at.z),
+                (finish, finish.dot(end)),
+                (-start, -start.dot(at)),
+            ])
+        })
+        .collect()
 }
 
 /// A wall 32 thick, 512 long and 256 high through `at`, its face normal
@@ -97,14 +144,7 @@ fn angled_wall(at: Vec3, deg: f32) -> MapBrush {
         (Vec3::Z, 256.0),
         (Vec3::NEG_Z, 0.0),
     ];
-    let corners: Vec<Vec3> = [-1.0f32, 1.0]
-        .iter()
-        .flat_map(|a| [0.0f32, 32.0].map(move |b| (a, b)))
-        .flat_map(|(a, b)| [0.0f32, 256.0].map(move |z| at + t * (a * 256.0) - n * b + Vec3::Z * z))
-        .collect();
-    let lo = corners.iter().fold(Vec3::splat(f32::MAX), |m, c| m.min(*c));
-    let hi = corners.iter().fold(Vec3::splat(f32::MIN), |m, c| m.max(*c));
-    brush(&planes, lo, hi)
+    brush(&planes)
 }
 
 struct TestMap;
@@ -245,6 +285,70 @@ fn surfing_slides_along_a_ramp_and_across_a_seam() {
         "not riding the face: z {} vs face {face}",
         f.z
     );
+}
+
+/// The curved ramp far from the origin (`curved_ramp`): sliding along it
+/// crosses every crease between its brushes without a sudden stop, with
+/// and without the strafe key into the ramp held. Far out, a velocity just
+/// clipped along the face used to read as going into it again (f32
+/// rounding of the end point), so the next bump hit the same plane at
+/// once and two copies of one plane zeroed the velocity: a dead stop on
+/// most surf_sedona ramps.
+/// The curved ramp's segment over which `feet` are.
+fn segment_at(feet: Vec3) -> usize {
+    (0..CURVE_SEGMENTS)
+        .rev()
+        .find(|&k| (feet - curve_segment(k).0).dot(curve_joint(k)) >= 0.0)
+        .unwrap_or(0)
+}
+
+#[test]
+fn surfing_far_from_the_origin_crosses_creases() {
+    let t = SURF_ANGLE.to_radians();
+    for strafe in [false, true] {
+        let (at, _) = curve_segment(0);
+        let y = 1000.0;
+        let mut pl = Player::at(at + Vec3::new(64.0, y - 30.0, y * t.tan() + 30.0));
+        pl.set_vel(Vec3::new(2000.0, 0.0, 0.0));
+        let mut prev = 2000.0f32;
+        let mut furthest = 0;
+        for tick in 0..(3 * 64) {
+            let v = pl.vel();
+            let yaw = v.y.atan2(v.x).to_degrees();
+            pl.look_yaw(yaw);
+            // Strafe left (toward the ramp's slope) to stay up, as surfers
+            // do, while below the middle.
+            let (s, dir) = curve_segment(segment_at(pl.feet()));
+            let low = (pl.feet() - s).dot(Vec3::new(-dir.y, dir.x, 0.0)) < CURVE_DEPTH / 2.0;
+            pl.sim.intent(pl.p).move_axis = Vec2::new(if strafe && low { -1.0 } else { 0.0 }, 0.0);
+            pl.sim.ticks(1);
+            let speed = pl.vel().length();
+            let f = pl.feet();
+            let seg = segment_at(f);
+            furthest = furthest.max(seg);
+            if seg + 1 >= CURVE_SEGMENTS {
+                break;
+            }
+            assert!(
+                speed > prev * 0.9,
+                "strafe {strafe}, tick {tick}: speed {prev} -> {speed} at {f} over segment {seg}"
+            );
+            prev = speed;
+            // Riding the face (within a box's reach of it), not off it.
+            let (s, dir) = curve_segment(seg);
+            let up = Vec3::new(-dir.y, dir.x, 0.0);
+            let n = up * -t.sin() + Vec3::Z * t.cos();
+            let above = (f - s).dot(n);
+            let upslope = (f - s).dot(up);
+            assert!((0.0..CURVE_DEPTH).contains(&upslope), "strafe {strafe}, tick {tick}: left the ramp at {f}");
+            assert!((0.0..60.0).contains(&above), "strafe {strafe}, tick {tick}: {above} off the face at {f}");
+        }
+        assert!(
+            furthest + 1 >= CURVE_SEGMENTS,
+            "strafe {strafe}: only reached segment {furthest} ({})",
+            pl.feet()
+        );
+    }
 }
 
 /// Distance of a jump from a 250 run-up (KZ measure: horizontal distance

@@ -945,8 +945,7 @@ with tests passing and something to see.
      `serverbrowser_english.txt` and the column icons (read at run time
      through `GameUi`); built-in sizes and words without the install.
      Tabs Internet (greyed: there is no master server to list internet
-     servers; the plan's Lucker Party lobby (slice 9) or a master server
-     of our own would fill it), Favorites, History, Lan. Columns password,
+     servers; a master server of our own would fill it), Favorites, History, Lan. Columns password,
      bots, "Servers (n)", game, players, map, latency (History: last
      played); a header click sorts, again reverses (unsorted: by
      latency). Filters as the original's panel: map, latency, max
@@ -990,15 +989,15 @@ with tests passing and something to see.
      local servers (the host firewall drops it; unicast to the LAN address
      answers), so the scan found them on 127.0.0.1: broadcast between two
      machines (Windows) is still to be seen.
-   - Not yet: Internet (a master server or the lobby), the server's
+   - Not yet: Internet (a master server), the server's
      player list and rules (`A2S_PLAYER`, `A2S_RULES`; Source's Game Info
      dialog and right-click menu), the browser's filters and column
      widths saved, a LAN scan refreshing on its own, the add server
      dialog's list for more than one server per address.
-9. **[ ] Lucker Party lobby and party flow** (L, design-dependent). Party
-   host = listen server or a hosted server; lobby, loadout/minigame
-   rotation chosen by the server (README: the server owns the loadout),
-   possibly Steam networking or a relay for NAT, secure connect tokens.
+9. **[-] Lucker Party lobby and party flow** (dropped for now, by the
+   user's decision: multiplayer stays standard CS:S — servers, Find
+   Servers, `connect`, map rotation by the server's cvars). Revisit if
+   Lucker Party later needs parties, minigame rotation or NAT relays.
 
 ## 6. Open questions for the user
 

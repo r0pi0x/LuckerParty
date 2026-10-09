@@ -88,6 +88,7 @@ mod heavy {
     mod map_props;
     mod map_sound_stock;
     mod map_stock;
+    mod map_surf;
     mod map_vis;
     mod map_visuals;
 }

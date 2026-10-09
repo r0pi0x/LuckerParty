@@ -40,7 +40,7 @@ fn lightmap_at_point() {
     let m = mount::open(&config.game_path("cs_source").unwrap()).unwrap();
     let bytes = m.read("maps/de_dust2.bsp").unwrap();
     let bsp = vbsp::Bsp::read(&bytes).unwrap();
-    let lump = lightmap::lighting_lump(&bytes);
+    let lump = lightmap::lighting_lump(&bytes, false);
     let world = bsp.models().next().unwrap();
     for face in world.faces() {
         let n = face.normal();
@@ -107,7 +107,7 @@ fn lightmap_at_points() {
     let m = mount::open(&config.game_path("cs_source").unwrap()).unwrap();
     let bytes = m.read("maps/de_dust2.bsp").unwrap();
     let bsp = vbsp::Bsp::read(&bytes).unwrap();
-    let lump = lightmap::lighting_lump(&bytes);
+    let lump = lightmap::lighting_lump(&bytes, false);
     let world = bsp.models().next().unwrap();
     let mut out = Vec::new();
     for p in &points {
@@ -172,7 +172,7 @@ fn lightmap_block_at_point() {
     let m = mount::open(&config.game_path("cs_source").unwrap()).unwrap();
     let bytes = m.read("maps/de_dust2.bsp").unwrap();
     let bsp = vbsp::Bsp::read(&bytes).unwrap();
-    let lump = lightmap::lighting_lump(&bytes);
+    let lump = lightmap::lighting_lump(&bytes, false);
     for face in bsp.models().next().unwrap().faces() {
         let n = face.normal();
         let n = Vec3::new(n.x, n.y, n.z);
@@ -220,7 +220,7 @@ fn lightmap_face_raw() {
     let m = mount::open(&config.game_path("cs_source").unwrap()).unwrap();
     let bytes = m.read("maps/de_dust2.bsp").unwrap();
     let bsp = vbsp::Bsp::read(&bytes).unwrap();
-    let lump = lightmap::lighting_lump(&bytes);
+    let lump = lightmap::lighting_lump(&bytes, false);
     for face in bsp.models().next().unwrap().faces() {
         let n = face.normal();
         let n = Vec3::new(n.x, n.y, n.z);

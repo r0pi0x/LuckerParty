@@ -1334,6 +1334,8 @@ pub struct MapData {
     /// Gib lists for breaking brushes, and how gibs move.
     pub gibs: Vec<breakables::MapGibSet>,
     pub gib_physics: Option<breakables::MapGibPhysics>,
+    /// Seconds each loading stage took (`loading::LoadTimer`), in order.
+    pub load_times: Vec<(&'static str, f32)>,
 }
 
 /// A muzzle flash: view-facing additive sprites strung out along the
@@ -4495,46 +4497,20 @@ fn convex_planes(model: &MapModel, share: f32) -> Option<Vec<(Vec3, f32)>> {
     (total > 0.0 && on >= share * total).then_some(planes)
 }
 
-/// Model-space planes placed in the world, with the bounding box's planes
-/// added as bevels (so box sweeps stop at corners like Source's brushes).
+/// Model-space planes placed in the world, with bevel planes added (so box
+/// sweeps stop at edges and corners like Source's brushes:
+/// `MapBrush::from_planes`).
 fn place_brush(planes: &[(Vec3, f32)], translation: Vec3, rotation: Quat, surface: Option<String>) -> MapBrush {
-    let mut world: Vec<(Vec3, f32)> = planes
+    let world: Vec<(Vec3, f32)> = planes
         .iter()
         .map(|(n, d)| {
             let n2 = rotation * *n;
             (n2, d + n2.dot(translation))
         })
         .collect();
-    // Corners: intersections of plane triples that lie inside all planes.
-    let mut corners = Vec::new();
-    for i in 0..world.len() {
-        for j in i + 1..world.len() {
-            for k in j + 1..world.len() {
-                let ((n1, d1), (n2, d2), (n3, d3)) = (world[i], world[j], world[k]);
-                let denom = n1.dot(n2.cross(n3));
-                if denom.abs() < 1e-6 {
-                    continue;
-                }
-                let p = (n2.cross(n3) * d1 + n3.cross(n1) * d2 + n1.cross(n2) * d3) / denom;
-                if world.iter().all(|(n, d)| n.dot(p) <= d + 1e-3) {
-                    corners.push(p);
-                }
-            }
-        }
-    }
-    let min = corners.iter().fold(Vec3::splat(f32::MAX), |a, c| a.min(*c));
-    let max = corners.iter().fold(Vec3::splat(f32::MIN), |a, c| a.max(*c));
-    for (n, d) in MapBrush::from_box(min, max).planes {
-        if !world.iter().any(|(m, e)| m.dot(n) > 0.9999 && (e - d).abs() < 1e-4) {
-            world.push((n, d));
-        }
-    }
     MapBrush {
-        planes: world,
-        min,
-        max,
-        ladder: false,
         surface,
+        ..MapBrush::from_planes(world)
     }
 }
 
