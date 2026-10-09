@@ -8,47 +8,75 @@ plan when work starts; delete them when done.
 
 ## 0. Playtest feedback (2026-10-07), top priority
 
-- Done 2026-10-09, to playtest and confirm with CS:S captures
-  (coordinator): (1) other rooms showing through the sky
+- Done 2026-10-09, checked against the coordinator's CS:S captures the
+  same day: (1) other rooms showing through the sky
   (mg_creative_multigames_v8_ns): placed weapons, water surfaces (one
   mesh per material across rooms), beams/glows and moving props weren't
-  PVS-culled; now they are (`vis`). Capture: CS:S at `setpos -6332.74
-  -3047.50 -9638.97; setang -38.85 18.60 0` (nothing in the sky). Open:
-  whether CS:S also hides things *in* the PVS behind a sky face; our
-  `mashup_skyocclude 1` does (`map::sky_occluder`), off by default.
-  Capture: a prop in view behind a sky face from a leaf whose PVS holds
-  it. (2) The 2D sky's `dn` face turned half a turn (the seam measure
-  that confirms `up` on every sky; `cs_source::sky::FACES`). Capture:
-  CS:S looking straight down from noclip over a map with a pictured
-  bottom (gg_lego_spacetower2's down-under sky), `refcmp skyconv` view.
-  (3) The knife view model's triangles keep the file's winding (a
-  majority vote over normals turned its mesh inside out). Capture: the
-  knife drawn, right-handed. (4) The 3D skybox takes the sky_camera's fog
-  (start/end divided by its scale, max density); not `fogblend` (only
-  mg_kommando sets it; how the game blends `fogcolor2` by `fogdir` is
-  unspecified). Capture: dust2 from `setpos -295 1078 500; setang 3 0 0`
-  to check the haze and the scale. (5) Keyboard > Advanced (fast weapon
-  switch, developer console = `con_enable`, ours defaults to 1, CS:S 0).
+  PVS-culled; now they are (`vis`). Confirmed: CS:S at `setpos -6332.74
+  -3047.50 -9638.97; setang -38.85 18.60 0` shows the same sky view as
+  ours (nothing in the sky). Open: whether CS:S also hides things *in* the
+  PVS behind a sky face; our `mashup_skyocclude 1` does
+  (`map::sky_occluder`), off by default. Capture: a prop in view behind a
+  sky face from a leaf whose PVS holds it. (2) The 2D sky's `dn` face
+  turned half a turn (`cs_source::sky::FACES`). Not captured yet: CS:S
+  looking straight down from noclip over a map with a pictured bottom
+  (gg_lego_spacetower2's down-under sky), `refcmp skyconv` view. (3) The
+  knife view model: confirmed (de_dust2, `setpos -295 1078 120; setang 0
+  0 0`, both hands): the same blade (tan camouflage, serrated back edge),
+  hands and placement. Its plain silver look in our earlier shot was the
+  CT spawn's shade, not the model. Its idle (12.5 s, 151 frames) turns the
+  blade sideways for a while; CS:S's two captures happened to be upright.
+  Capture to confirm: the knife held 5-10 s after drawing it. (4) The 3D
+  skybox's fog (sky_camera fog start/end divided by its scale, max
+  density): confirmed, the distant hills' haze at `setpos -295 1078 500;
+  setang 3 0 0` (noclip) matches within a few levels of 255; the
+  start/end scale stays. Not `fogblend` (only mg_kommando sets it). (5)
+  Keyboard > Advanced (fast weapon switch, developer console =
+  `con_enable`, ours defaults to 1, CS:S 0): not captured.
 
 - mg_item_battle_v4b's items (done 2026-10-09, to playtest): a picked-up
   knife's parented entities follow its carrier (`map::entities` anchors),
   OnPlayerPickup fires, and the entities the items drive work (game_ui,
   player_speedmod, point_template/env_entity_maker, func_physbox,
   phys_thruster/keepupright; docs/plans/active/community-maps.md, "Map
-  entities"). Left: how the item sits in CS:S's hands (we put it at the
-  carrier's feet, turned to its yaw), playtest the cars and jetpack.
+  entities"). The carried item sits at the middle of the carrier's box
+  (31 units above the feet standing) turned to its yaw: CS:S's captures
+  of the car knife (first person at `setang 30 0 0`, third person) match
+  it exactly (the car on the floor, roof at the shoulders); at the feet
+  the car sank to the knees. Left: playtest the cars and jetpack. Our
+  third-person camera sits about 26 units lower than CS:S's for the same
+  player and `cam_idealdist 150` (CS:S's `getpos` printed its camera at
+  z 192.55, 64.5 above the eye): check CS:S's third-person camera (its
+  pivot or offset).
 - Inside geometry, checked against CS:S (2026-10-09, mg_item_battle_v4b,
   reference captures in the coordinator's target/inside/): inside the stone
   wall ours already matches (world drawn, sky black). Inside the car
   (`setpos 2241.89 1311.06 79.39; setang 4.92 181.70 0`) CS:S shows the
-  world through the car with only the hood's inside in view; ours shows
-  the car's insides (wheels, chassis) and no world behind: back faces
-  drawn, a different prop pose, or the parented car placed differently.
-- `setpos` puts our eye lower than CS:S's for the same coordinates (both
-  captures above): check our setpos/getpos convention (feet vs eye,
-  noclip's eye offset) against Source so pasted positions match.
+  world through the car with only the hood's inside in view; ours showed
+  the car's insides (wheels, chassis) and no world behind. Retake: our
+  `setpos` put the eye 36 units lower than CS:S's then (below).
+- `setpos`/`getpos` follow CS:S (2026-10-09, reference captures): `setpos`
+  takes the feet (Source's origin; CS:S's camera was 64 above the z
+  given, standing and in noclip, on two captures) and `getpos` prints the
+  view's origin (the eye; in third person the camera: CS:S's third-person
+  `getpos` was exactly its camera). So one `setpos` line gives the same
+  view in both, and `setpos` with `getpos`'s numbers lands 64 higher, as
+  in CS:S. Ours used the body's centre (36 above the feet) for both. To
+  confirm: the coordinator noted CS:S's setpos-then-getpos returning the
+  same numbers, which contradicts the captures; capture the text of
+  `noclip; setpos -295 1078 500; getpos` and a `getpos` standing on a
+  known floor.
 - Options faithful to CS:S: any other option CS:S shows that we lack;
   defaults as CS:S's.
+
+- Pain sounds when losing health: play CS:S's damage sounds for the
+  local player and others (positional), whatever the install's sound
+  scripts give for each case: bullet hits on flesh, kevlar and helmet,
+  headshots, fall damage, burning/drowning if any, and the death sounds;
+  who hears what (the victim, the attacker, everyone nearby) and any
+  per-player cooldown as CS:S does (check against a capture or a spec;
+  CS:S has no voiced pain grunts for bullets, as we believe). Over the
+  network the server sends them like the other damage events.
 
 - Decals persist across rounds (bullet holes, blood), as we believe CS:S
   does (players bind `r_cleardecals`, now there; `mashup_round_cleardecals

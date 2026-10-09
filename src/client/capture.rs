@@ -604,7 +604,10 @@ fn report_text(w: &mut World, note: &str) -> String {
     let player = w.query_filtered::<Entity, With<LocalPlayer>>().iter(w).next();
     if let Some(p) = player {
         if let (Some(t), Some(i)) = (w.get::<Transform>(p), w.get::<crate::core::Intent>(p)) {
-            let s = Vec3::new(t.translation.x, -t.translation.z, t.translation.y) / 0.0254;
+            // The feet, as setpos takes them (a line to paste back).
+            let feet = t.translation
+                + w.get::<crate::core::MovementState>(p).map_or(Vec3::ZERO, |s| Vec3::Y * s.hull_min.y);
+            let s = Vec3::new(feet.x, -feet.z, feet.y) / 0.0254;
             out += &format!(
                 "setpos {:.2} {:.2} {:.2};setang {:.2} {:.2} 0.00\n",
                 s.x,
