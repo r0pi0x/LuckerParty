@@ -54,12 +54,20 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
 /// 53, 51/55, 54) with auto exposure and bloom. Maps without HDR lighting
 /// load as LDR at any level, as in the game.
 pub fn load_level(mount: &Mount, name: &str, hdr_level: u8) -> Result<MapData, String> {
+    crate::map::loading::report(0.02, "LoadingProgress_LoadMap");
+    let path = format!("maps/{name}.bsp");
+    let bytes = mount.read(&path).map_err(|e| format!("{path}: {e}"))?;
+    load_level_bytes(mount, name, bytes, hdr_level)
+}
+
+/// `load_level` from the map file's bytes (a copy downloaded from a
+/// server, in the content cache), its content from `mount`.
+pub fn load_level_bytes(mount: &Mount, name: &str, bytes: Vec<u8>, hdr_level: u8) -> Result<MapData, String> {
     // Stages for a loading screen, worded as the game words them
     // (`map::loading`; the fractions are rough shares of the time).
     use crate::map::loading::report;
     report(0.02, "LoadingProgress_LoadMap");
     let path = format!("maps/{name}.bsp");
-    let bytes = mount.read(&path).map_err(|e| format!("{path}: {e}"))?;
     // What the network handshake compares (`MapData::file_hash`).
     let file_hash: [u8; 32] = sha2::Digest::finalize(<sha2::Sha256 as sha2::Digest>::new_with_prefix(&bytes)).into();
     // Community maps often ship LZMA-compressed lumps; our own lump

@@ -1764,6 +1764,42 @@ struct MapLoad {
     task: bevy::tasks::Task<Result<crate::map::MapData, String>>,
 }
 
+/// Load map `id` in the background (from `file` when given: a copy
+/// downloaded from a server), then swap it in place (`finish_map_load`):
+/// everyone respawns at the new spawn points.
+pub(super) fn start_map_load(w: &mut World, id: &str, file: Option<std::path::PathBuf>) {
+    w.insert_resource(crate::map::LoadedMapName(id.to_string()));
+    // At the HDR level set now (mat_hdr_level), as the game does.
+    let hdr_level = w.get_resource::<super::hdr::HdrSettings>().map_or(0, |s| s.level);
+    crate::map::loading::reset();
+    let task = bevy::tasks::AsyncComputeTaskPool::get().spawn({
+        let id = id.to_string();
+        async move {
+            match file {
+                Some(f) => crate::games::load_map_file(&id, &f, hdr_level),
+                None => crate::games::load_map_level(&id, hdr_level),
+            }
+        }
+    });
+    w.insert_resource(MapLoad { id: id.to_string(), task });
+}
+
+/// The server's map, for joining it (`net::NetEvent::LoadMap`): the
+/// greybox at once, another in the background (from the downloaded file
+/// when there is one). The handshake checks the result.
+pub(super) fn load_server_map(w: &mut World, map: &str, file: Option<std::path::PathBuf>) {
+    if map == crate::net::GREYBOX {
+        load_greybox(w);
+        return;
+    }
+    let id = if map.contains(':') {
+        map.to_string()
+    } else {
+        format!("cs_source:{map}")
+    };
+    start_map_load(w, &id, file);
+}
+
 /// Swap in a map once its background load finishes.
 fn finish_map_load(w: &mut World) {
     let Some(mut load) = w.get_resource_mut::<MapLoad>() else {
@@ -1781,8 +1817,21 @@ fn finish_map_load(w: &mut World) {
                 .print(crate::console::Level::Error, format!("map {id}: {e}"));
             super::game_menu::map_load_failed(w);
             // Joining a server needs its map.
-            if w.get_resource::<crate::core::NetRole>() == Some(&crate::core::NetRole::Client) {
-                crate::net::disconnect(w, &format!("couldn't load the server's map {id}: {e}"));
+            match w.get_resource::<crate::core::NetRole>() {
+                Some(crate::core::NetRole::Client) => {
+                    crate::net::disconnect(w, &format!("couldn't load the server's map {id}: {e}"));
+                }
+                Some(crate::core::NetRole::Server) => {
+                    // Still on the map that plays (its players were told of a
+                    // change: `net::maps` calls it off).
+                    let back = w
+                        .get_resource::<crate::map::MapFile>()
+                        .map(|f| format!("cs_source:{}", f.name))
+                        .unwrap_or_else(|| GREYBOX.into());
+                    w.insert_resource(crate::map::LoadedMapName(back));
+                    super::game_menu::entered_game(w);
+                }
+                _ => {}
             }
             return;
         }
@@ -1794,7 +1843,10 @@ fn finish_map_load(w: &mut World) {
     );
     crate::greybox::unload(w);
     crate::map::change_map(w, data, crate::map::MapDebugView::Normal);
-    w.insert_resource(Time::<Fixed>::from_seconds(crate::games::cs_source::TICK_INTERVAL));
+    crate::core::set_tick_length(
+        w,
+        std::time::Duration::from_secs_f64(crate::games::cs_source::TICK_INTERVAL),
+    );
     // Follow the map's presentation (Source LDR: no tonemapping).
     let tonemapping = w.resource::<crate::map::ActiveMapLook>().0.tonemapping;
     let cams: Vec<Entity> = w
@@ -1825,7 +1877,7 @@ pub(super) fn load_greybox(w: &mut World) {
     crate::greybox::respawn(w);
     w.remove_resource::<crate::map::ActiveMapLook>();
     w.insert_resource(crate::map::LoadedMapName(GREYBOX.into()));
-    w.insert_resource(Time::<Fixed>::from_hz(crate::DEFAULT_TICK_HZ));
+    crate::core::set_tick_length(w, std::time::Duration::from_secs_f64(1.0 / crate::DEFAULT_TICK_HZ));
     let cams: Vec<Entity> = w
         .query_filtered::<Entity, With<super::FirstPersonCamera>>()
         .iter(w)
@@ -2062,9 +2114,13 @@ fn client_commands(app: &mut App) {
     )
     .console_command(
         "map",
-        "map <name>: load a CS:S map (Tab lists the install's maps); map greybox: mashup's test map.",
+        "map <name>: load a CS:S map (Tab lists the install's maps); map greybox: mashup's test map. \
+         Hosting, it takes the players along (as changelevel); on a client, it leaves the server first.",
         |w, a| {
-            let name = a.first().ok_or("map <name>")?;
+            let name = a.first().ok_or("map <name>")?.clone();
+            if w.get_resource::<crate::core::NetRole>() == Some(&crate::core::NetRole::Client) {
+                crate::net::disconnect(w, crate::net::client::BY_USER);
+            }
             if name.eq_ignore_ascii_case(GREYBOX) {
                 w.resource_mut::<Console>().submit("bot_kick");
                 load_greybox(w);
@@ -2072,22 +2128,35 @@ fn client_commands(app: &mut App) {
                 super::net::listen_if_hosting(w);
                 return Ok(Some("loaded the greybox".into()));
             }
-            if !map_names().is_empty() && !map_names().iter().any(|m| m == name) {
+            if !map_names().is_empty() && !map_names().iter().any(|m| *m == name) {
                 return Err(format!("no map \"{name}\" in the install"));
             }
-            // Load in the background, then swap in place (finish_map_load):
-            // everyone respawns at the new spawn points.
             let id = format!("cs_source:{name}");
-            w.insert_resource(crate::map::LoadedMapName(id.clone()));
-            // At the HDR level set now (mat_hdr_level), as the game does.
-            let hdr_level = w.get_resource::<super::hdr::HdrSettings>().map_or(0, |s| s.level);
-            crate::map::loading::reset();
-            let task = bevy::tasks::AsyncComputeTaskPool::get().spawn({
-                let id = id.clone();
-                async move { crate::games::load_map_level(&id, hdr_level) }
-            });
-            w.insert_resource(MapLoad { id: id.clone(), task });
+            start_map_load(w, &id, None);
             Ok(Some(format!("loading {id}...")))
+        },
+    )
+    .console_command(
+        "changelevel",
+        "changelevel <name>: the server moves to another map; connected players load it and play on there \
+         (bots stay).",
+        |w, a| {
+            let name = a.first().ok_or("changelevel <name>")?.clone();
+            if w.get_resource::<crate::core::NetRole>() != Some(&crate::core::NetRole::Server) {
+                // Source's words.
+                return Err("Can't changelevel, not running server.".into());
+            }
+            if name.eq_ignore_ascii_case(GREYBOX) {
+                load_greybox(w);
+                super::game_menu::entered_game(w);
+                return Ok(Some("changed level to the greybox".into()));
+            }
+            if !map_names().is_empty() && !map_names().iter().any(|m| *m == name) {
+                return Err(format!("no map \"{name}\" in the install"));
+            }
+            let id = format!("cs_source:{name}");
+            start_map_load(w, &id, None);
+            Ok(Some(format!("changing level to {id}...")))
         },
     )
     .console_command(

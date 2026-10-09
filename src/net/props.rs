@@ -39,7 +39,9 @@ pub(super) fn plugin(app: &mut App) {
                 .in_set(RunFixedMainLoopSystems::AfterFixedMainLoop)
                 .after(InterpSystems::Ease)
                 .after(super::interp::draw_others)
-                .run_if(resource_equals(NetRole::Client)),
+                .run_if(resource_equals(NetRole::Client))
+                // The props are the map's: not while another map is loaded.
+                .run_if(resource_exists::<super::client::Joined>),
         );
 }
 

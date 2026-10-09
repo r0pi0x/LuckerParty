@@ -15,7 +15,11 @@ compensated against per-tick hitbox poses, others' shots drawn from the
 server's seeds, grenades, drops and pickups the server's; slice 5 done
 (2026-10-09): rounds, money, buying, team changes, the bomb, hostages,
 the scoreboard with ping, chat and radio over the network, replicated
-cvars and `sv_cheats`. Recommendation:
+cvars and `sv_cheats`; slice 6 done (2026-10-09): bots on the server
+with `bot_quota`; slice 7 done (2026-10-09): `changelevel` takes clients
+along, late joiners get the whole state, maps downloaded (connection or
+`sv_downloadurl`) and checked, the loading dialog for joining and map
+changes. Recommendation:
 **bevy_replicon + renet (netcode over UDP)** for transport and
 replication; **our own Source-style prediction, interpolation and lag
 compensation** on top. Slices below; slice 0 is refactoring that pays off
@@ -881,13 +885,128 @@ with tests passing and something to see.
      "Player" (the HUD's, unchanged); radio requests
      aren't rate-limited; a team change mid-round waits for the next
      round.
-6. **[ ] Bots on the server** (S, low). They already write `Intent` and
+6. **[x] Bots on the server** (S, low). They already write `Intent` and
    use the same movement; make sure their perception never reads client
    state and a new `bot_quota` counts humans.
-7. **[ ] Maps: change, mid-game join, download** (M, medium).
+   Progress (2026-10-09):
+   - [x] Bots are the server's characters like the host's (they were
+     replicated since slice 1): names ("Bot N"), teams, "BOT" in the
+     scoreboard's latency column (`score_flags::BOT`), their shots as
+     `FireBullets`, kills as `Killed`, radio as `RadioCall` to the
+     teammates who hear it. Their perception reads only the server's
+     simulation (positions in the fixed tick, the server's sounds and
+     sight traces): nothing of a client's.
+   - [x] `bot_quota` and `bot_quota_mode` (normal, fill, match; CS:S's
+     names): a network server keeps the quota (`bot::keep_quota`, one bot
+     added or kicked a frame, added to the smaller team, kicked from the
+     bigger); `bot_add` (`bot::add_bot`) raises it, `bot_kick` sets it to
+     0, `bot_kick <name>` kicks one and lowers it; fill counts the host
+     and remote players. Single player never enforces it (bots as
+     before). A server starting with bots already in keeps them
+     (`sync_quota`). A kicked bot drops the bomb it carries; its weapons
+     go with it.
+   - [x] A client can't run server commands (`console::SERVER_COMMANDS`:
+     `bot_add`, `bot_kick`, `bot_give`, `bot_goto`, `changelevel`,
+     `mp_restartgame`) or set `bot_*` cvars (server scope, refused as
+     before).
+   - [x] Deterministic: bot seeds come from their number and team (as
+     before), the same with and without clients connected; two runs of
+     the same network game put the bots in the same places bit for bit.
+   - [x] Tests (`tests/it/net_bots.rs`, `NetSim`, greybox): two clients
+     see both bots with the server's names, teams and positions (within
+     5 cm) and "BOT"; their `bot_add`, `bot_kick` and `bot_quota` are
+     refused; `bot_kick "Bot 1"` kicks one on every side; two bots 12 m
+     apart fight with two clients connected: each client saw the kill,
+     drew the bots' shots (27), heard their radio ("enemyspot",
+     "enemydown") and shows 1-0 / 0-1 on its scoreboard; `bot_quota 3`,
+     `bot_kick`, `bot_add` x2; fill 4: 4, 3, 2 bots as clients join, 3
+     again when one leaves; match 2 with one human: 2. Cost: two clients
+     on the greybox, the server's frame 1.40 ms mean (1.63 p95) without
+     bots, 1.66 ms (1.99 p95) with ten bots fighting; each client receives
+     ~37 KB/s with ten bots (debug build).
+   - Not yet: bot names from CS:S's bot profiles; `bot_join_after_player`;
+     `kick` for players.
+7. **[x] Maps: change, mid-game join, download** (M, medium).
    `changelevel` (new; `map` today) with everyone reloading, late join
    with full state (logic state as components), map download with hash check and bz2
    (custom-maps step 6), the mount doctor check before joining.
+   Progress (2026-10-09):
+   - [x] The offer (`net::maps`): the server serves the map it has loaded
+     (`ServedMap`: id, SHA-256 of the file, size, the file to send);
+     `Welcome` carries it with `sv_downloadurl`, `sv_allowdownload`, the
+     server's `hostname`, players and `maxplayers`.
+   - [x] Map changes: `changelevel <map>` (and `map <map>` while hosting)
+     in the game, `changelevel`/`map` on the dedicated server (loaded in
+     the background, swapped in with `swap_map`). `watch_map` tells
+     clients when the load starts (`ChangingLevel`) and, once the new map
+     is in, starts a new game there (the rules' `new_game`, scores
+     cleared, players' queued commands and intents dropped, uploads
+     stopped) and sends `ChangeLevel`; a failed load calls the change off
+     (clients go back to the map they're on). A client keeps its
+     connection, its id and its character: prediction and drawing reset,
+     the map fetched as on joining, then in the game again. The server's
+     fixed clock keeps running through a map change
+     (`core::set_tick_length`; single player still starts it over), so
+     its time and tick never go back.
+   - [x] Joining mid-game: everything that lasts is replicated state
+     (the round, scores, a player's own money, characters, movers with
+     opened doors and broken breakables, props, loose items, the bomb),
+     so a late joiner sees it at once. **Changed from §3:** no separate
+     "logic state as components" pass was needed for brush entities;
+     model doors and window panes still aren't replicated (tech debt).
+   - [x] The client's copy (`maps::Fetch`): the loaded map if it is the
+     same file; else the copy the game would load (`MapFiles::read`: the
+     install, its downloads, the content cache) or the cache's own,
+     hashed in the background; else a download: `sv_downloadurl` first
+     (`<url>/maps/<name>.bsp.bz2`, then `.bsp`; `net::http`, plain HTTP
+     as the game's), then over the connection if `sv_allowdownload`
+     (`MapRequest`, 16 KB `MapChunk`s, at most 256 KB beyond the
+     client's `MapAck`, `net_maxfilesize`, refusals as `MapDenied`). What
+     arrives must have the offer's size and hash, is written to the
+     content cache (`maps/<name>.bsp`, noted in `index.toml` with its
+     SHA-256 and source) and loaded from that file
+     (`NetEvent::LoadMap`, `games::load_map_file`). A web copy with the
+     wrong hash falls back to the server's when it sends maps.
+     **Changed from custom-maps.md:** the cache keeps one copy per name
+     (`maps/<name>.bsp`, replaced by a newer download), not one per hash.
+   - [x] Refusals with reasons (`client::JoinProgress::failure`,
+     `JoinFailure`): another map file and none to fetch ("Your map
+     [maps/x.bsp] differs from the server's."), none and no downloads
+     ("Missing map maps/x.bsp, disconnecting"), a download that failed
+     (the HTTP error, the server's refusal) or arrived wrong, a full
+     server, an older or newer server, a timeout (also a server that
+     never welcomes us: 20 s).
+   - [x] The loading dialog (backlog 2c): the main menu's GameUI loading
+     dialog for `connect` (connecting, retrieving server info), a
+     server's map change ("Server is changing level..."), downloads
+     ("Verifying and downloading resources...", the bar following the
+     bytes), the map's own load stages, a host's own map change, and
+     "Starting local game server..." when `maxplayers` > 1, all in the
+     game's words; Cancel disconnects. Failures in it ("Disconnected",
+     the game's strings where it has one: server full, older/newer
+     server, timeout, the download errors; else the server's or our
+     words; Close). `mashup_loading_details 1` (off by default) adds a
+     panel: each stage's time, bytes and percentage, the server's name,
+     address, map, players and ping.
+   - [x] Tests (`tests/it/net_maps.rs`, maps built in code from a folder
+     of files: `harness::TestMaps`): a map change takes two clients
+     along (told while it loads, the same connection and id, both on the
+     new map's file, the round restarted at 0-0 and scores cleared, a
+     client walking 9.3 m there with 2 of 537 states mispredicted); a
+     late joiner sees the round score 3-2, its money, a bot's 4/1, a door
+     opened and a breakable broken; a client with no copy downloads the
+     220 KB map over the connection, caches and loads it, and joins from
+     the cache next time without downloading; another downloads it from
+     a local HTTP server as `.bsp.bz2` (sv_allowdownload 0); a web copy
+     of another version is refused ("differs from the server's ...
+     refused", .bz2 then .bsp asked for, nothing kept), no downloads is
+     "Missing map", a map over `net_maxfilesize` the server's refusal,
+     another build "newer server". Unit tests: the HTTP client (chunked,
+     404), download checks, refusal kinds, the dialog's lines and the
+     failure dialog.
+   - Not yet: the mount doctor check before joining; content besides the
+     map file (custom materials, models, sounds); a changelevel to the
+     same map file doesn't reload clients; decals for late joiners.
 8. **[ ] Find Servers, LAN discovery, direct connect UI** (M, low). LAN
    broadcast query (a small UDP info request on the server port, like
    Source's A2S_INFO in spirit), the Find Servers page in the GameUI

@@ -1,13 +1,18 @@
 //! The dedicated server: the simulation and `net` with no window, Source's
-//! srcds in spirit. Console on stdin (`status`, `bot_add`, `quit`, any
-//! cvar), output on stdout.
+//! srcds in spirit. Console on stdin (`status`, `bot_add`, `bot_quota`,
+//! `changelevel`, `quit`, any cvar), output on stdout.
 //!
 //!   mashup_server [-port <n>] [+map <name>] [+maxplayers <n>] [+<command> ...]
 //!
 //! `+map greybox` (the default) or a CS:S map from the install
-//! (`+map de_dust2`). Players join with `connect <ip>:<port>`.
+//! (`+map de_dust2`). Players join with `connect <ip>:<port>`;
+//! `changelevel <map>` (or `map <map>`) moves them all to another map.
 
-use std::{io::BufRead, sync::Mutex, sync::mpsc, time::Duration};
+use std::{
+    io::BufRead,
+    sync::{Arc, Mutex, mpsc},
+    time::Duration,
+};
 
 use bevy::{app::ScheduleRunnerPlugin, prelude::*};
 use mashup::{
@@ -24,8 +29,8 @@ const USAGE: &str = "\
 usage: mashup_server [-port <n>] [+map <name>] [+maxplayers <n>] [+<command> [args...]]
   -port <n>        UDP port (hostport; default 27015)
   +map <name>      greybox (default) or a CS:S map from the install, e.g. de_dust2
-  +<command>       any console command or cvar, e.g. +maxplayers 8 +bot_add
-Type console commands on stdin: status, bot_add, bot_kick, maxplayers, quit.";
+  +<command>       any console command or cvar, e.g. +maxplayers 8 +bot_quota 4
+Type console commands on stdin: status, bot_add, bot_kick, bot_quota, changelevel <map>, quit.";
 
 struct Options {
     map: String,
@@ -87,7 +92,8 @@ fn main() {
     app.add_plugins(bevy::log::LogPlugin::default());
     let map_id = net::normalize_map(&options.map);
     if map_id == net::GREYBOX {
-        app.add_plugins(GreyboxMapPlugin)
+        // The map systems too: `changelevel` loads one later.
+        app.add_plugins((GreyboxMapPlugin, MapPlugin::empty()))
             .insert_resource(Time::<Fixed>::from_hz(mashup::DEFAULT_TICK_HZ));
     } else {
         let id = if map_id.contains(':') {
@@ -120,6 +126,23 @@ fn main() {
     .insert_resource(Loadout {
         movement: cs_source::movement::ID,
     })
+    // The served map's file (clients without it download it), as the game
+    // reads it.
+    .insert_resource(net::maps::MapFiles {
+        read: Arc::new(games::map_file_bytes),
+        cache: mashup::mount::config::content_dir(cs_source::GAME),
+    })
+    .add_systems(Update, finish_level_change)
+    .console_command(
+        "changelevel",
+        "changelevel <map>: move the server and its players to another map (greybox or a CS:S map).",
+        |w, a| change_level(w, a.first().ok_or("changelevel <map>")?),
+    )
+    .console_command(
+        "map",
+        "map <map>: the same as changelevel on a dedicated server.",
+        |w, a| change_level(w, a.first().ok_or("map <map>")?),
+    )
     // A dedicated server takes eight players unless told otherwise.
     .insert_resource(NetSettings {
         maxplayers: 8,
@@ -158,6 +181,78 @@ fn main() {
 /// Lines typed on stdin.
 #[derive(Resource)]
 struct Stdin(Mutex<mpsc::Receiver<String>>);
+
+/// A map loading in the background for `changelevel`.
+#[derive(Resource)]
+struct LevelLoad {
+    id: String,
+    task: bevy::tasks::Task<Result<mashup::map::MapData, String>>,
+}
+
+/// `changelevel <map>`: the greybox at once; a CS:S map loaded in the
+/// background (the game plays on), then swapped in (`finish_level_change`).
+fn change_level(world: &mut World, name: &str) -> Result<Option<String>, String> {
+    let id = net::normalize_map(name);
+    if id == net::GREYBOX {
+        mashup::swap_map(
+            world,
+            net::GREYBOX,
+            None,
+            Duration::from_secs_f64(1.0 / mashup::DEFAULT_TICK_HZ),
+        );
+        return Ok(Some("changed level to the greybox".into()));
+    }
+    let id = if id.contains(':') {
+        id
+    } else {
+        format!("{}:{id}", cs_source::GAME)
+    };
+    if world.contains_resource::<LevelLoad>() {
+        return Err("a map is loading already".into());
+    }
+    // Clients hear of it now (`net::maps`: the map's name changes first).
+    world.insert_resource(LoadedMapName(id.clone()));
+    let task = bevy::tasks::AsyncComputeTaskPool::get().spawn({
+        let id = id.clone();
+        async move { games::load_map_level(&id, 0) }
+    });
+    world.insert_resource(LevelLoad { id: id.clone(), task });
+    Ok(Some(format!("changing level to {id}...")))
+}
+
+fn finish_level_change(world: &mut World) {
+    let Some(mut load) = world.get_resource_mut::<LevelLoad>() else {
+        return;
+    };
+    let Some(result) = bevy::tasks::block_on(bevy::tasks::poll_once(&mut load.task)) else {
+        return;
+    };
+    let id = load.id.clone();
+    world.remove_resource::<LevelLoad>();
+    match result {
+        Ok(data) => {
+            let summary = format!("loaded {id}: {} spawns", data.spawns.len());
+            mashup::swap_map(
+                world,
+                &id,
+                Some(data),
+                Duration::from_secs_f64(cs_source::TICK_INTERVAL),
+            );
+            world.resource_mut::<Console>().info(summary);
+        }
+        Err(e) => {
+            // Back to the map that plays: clients never left it.
+            let back = world
+                .get_resource::<mashup::map::MapFile>()
+                .map(|f| format!("{}:{}", cs_source::GAME, f.name))
+                .unwrap_or_else(|| net::GREYBOX.into());
+            world.insert_resource(LoadedMapName(back));
+            world
+                .resource_mut::<Console>()
+                .print(mashup::console::Level::Error, format!("changelevel {id}: {e}"));
+        }
+    }
+}
 
 fn read_stdin(stdin: Res<Stdin>, mut console: ResMut<Console>) {
     let rx = stdin.0.lock().unwrap();

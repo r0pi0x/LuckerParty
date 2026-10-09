@@ -397,7 +397,13 @@ pub fn execute(world: &mut World, words: &[String], depth: usize) {
         return;
     }
     let result = if let Some(cmd) = command {
-        if CHEATS.contains(&name.as_str()) && !cheats_allowed(world) {
+        if SERVER_COMMANDS.contains(&name.as_str())
+            && world.get_resource::<crate::core::NetRole>() == Some(&crate::core::NetRole::Client)
+        {
+            Err(format!(
+                "Can't use server command {name} from a client: only the server operator can run it."
+            ))
+        } else if CHEATS.contains(&name.as_str()) && !cheats_allowed(world) {
             // Source's words.
             Err(format!(
                 "Can't use cheat command {name} in multiplayer, unless the server has sv_cheats set to 1."
@@ -558,6 +564,20 @@ pub const CHEATS: &[&str] = &[
     "mashup_sethealth",
     "mashup_setarmor",
     "mashup_setmoney",
+];
+
+/// Commands that change the server's game (bots, the map): a network
+/// client can't run them (its world isn't the game's; the server's
+/// operator runs them on the server's console).
+pub const SERVER_COMMANDS: &[&str] = &[
+    "bot_add",
+    "bot_add_t",
+    "bot_add_ct",
+    "bot_kick",
+    "bot_give",
+    "bot_goto",
+    "changelevel",
+    "mp_restartgame",
 ];
 
 /// `sv_cheats`.

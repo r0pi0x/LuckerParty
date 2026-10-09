@@ -175,8 +175,10 @@ ourselves, so each can be checked in mashup and measured in real CS:S.
    player_weaponstrip, placed `weapon_*` entities as loose weapons (back
    each round), players' AddOutput gravity/basevelocity/health/origin and
    SetDamageFilter (no-fall filters).
-6. [ ] Networking, then server-sent map download (hash check, bz2):
-   [multiplayer.md](multiplayer.md) slice 7.
+6. [x] Networking, then server-sent map download (hash check, bz2):
+   [multiplayer.md](multiplayer.md) slice 7 (2026-10-09: over the
+   connection or `sv_downloadurl`, SHA-256 checked, cached as
+   `maps/<name>.bsp` with an `index.toml` entry; one copy per name).
 7. [ ] Per-map extra mounts; a mashup package format.
 
 ## Decision log

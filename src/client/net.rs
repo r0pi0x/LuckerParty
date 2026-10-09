@@ -1,20 +1,32 @@
 //! What the game does about the network (`net`): load the server's map
-//! when it asks, leave the menu once joined, and come back to the main
-//! menu (a fresh local player on the greybox) when dropped.
+//! when it asks (by name, or a copy it downloaded), show joining and the
+//! server's map changes in the loading dialog (`game_menu`), leave the
+//! menu once joined, and come back to the main menu (a fresh local player
+//! on the greybox) when dropped, with why in the dialog.
+
+use std::sync::Arc;
 
 use bevy::prelude::*;
 
 use crate::{
     console::{Console, Level},
     core::{LocalPlayer, NetRole},
-    net::{GREYBOX, NetEvent, NetSettings},
+    net::{NetEvent, NetSettings, maps::MapFiles},
 };
 
 pub struct ClientNetPlugin;
 
 impl Plugin for ClientNetPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, react);
+        // Map files as the game loads them (the install, its downloads,
+        // mashup's content cache), for the server's offer and the client's
+        // checks and downloads.
+        let game = crate::games::cs_source::GAME;
+        app.insert_resource(MapFiles {
+            read: Arc::new(crate::games::map_file_bytes),
+            cache: crate::mount::config::content_dir(game),
+        })
+        .add_systems(Update, react);
     }
 }
 
@@ -32,16 +44,19 @@ fn react(world: &mut World, mut cursor: Local<bevy::ecs::message::MessageCursor<
             }
             NetEvent::Connecting(addr) => {
                 world.resource_mut::<Console>().info(format!("Connecting to {addr}..."));
+                super::game_menu::joining(world, &addr.to_string());
             }
-            NetEvent::LoadMap(map) => {
-                let name = if map == GREYBOX {
-                    GREYBOX.to_string()
-                } else {
-                    map.rsplit(':').next().unwrap_or(&map).to_string()
-                };
+            NetEvent::LoadMap { map, file } => {
+                super::console::load_server_map(world, &map, file);
+                let name = crate::net::maps::map_name(&map).to_string();
+                super::game_menu::joining(world, &name);
+            }
+            NetEvent::ChangingLevel(map) => {
                 world
                     .resource_mut::<Console>()
-                    .submit(format!("map {}", crate::console::quote(&name)));
+                    .info(format!("The server is changing level to {map}..."));
+                let name = crate::net::maps::map_name(&map).to_string();
+                super::game_menu::joining(world, &name);
             }
             NetEvent::Joined { map } => {
                 world
@@ -60,18 +75,29 @@ fn react(world: &mut World, mut cursor: Local<bevy::ecs::message::MessageCursor<
 }
 
 /// After leaving a server: our own player back on the greybox behind the
-/// main menu, as `disconnect` leaves single player.
+/// main menu, as `disconnect` leaves single player; the dialog shows why
+/// if the game ended on its own (`net::client::JoinProgress::failure`).
 fn back_to_menu(world: &mut World) {
+    let failed = world
+        .get_resource::<crate::net::client::JoinProgress>()
+        .is_some_and(|p| p.failure.is_some());
     let has_player = world
         .query_filtered::<(), With<LocalPlayer>>()
         .iter(world)
         .next()
         .is_some();
     if has_player {
+        if failed {
+            super::game_menu::left_game(world);
+            super::game_menu::show_failure(world);
+        }
         return;
     }
     super::console::load_greybox(world);
     super::game_menu::left_game(world);
+    if failed {
+        super::game_menu::show_failure(world);
+    }
     if let Err(e) = world.run_system_cached(super::spawn_local_player) {
         error!("spawning the local player: {e}");
     }

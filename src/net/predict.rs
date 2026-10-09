@@ -338,7 +338,12 @@ pub(super) fn plugin(app: &mut App) {
         .init_resource::<NetGraph>()
         .add_systems(
             PreUpdate,
-            receive_own_states.after(ClientSystems::Receive).run_if(client()),
+            // Only once in the game: while the server's map loads here, its
+            // states are of a player on a map we don't have yet.
+            receive_own_states
+                .after(ClientSystems::Receive)
+                .run_if(client())
+                .run_if(resource_exists::<super::client::Joined>),
         )
         .add_systems(
             RunFixedMainLoop,

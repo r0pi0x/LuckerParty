@@ -15,7 +15,7 @@ use bevy_replicon_renet::{
 
 use super::{
     HOST_ID, Join, NET_VERSION, NetBody, NetCharacter, NetCmd, NetEvent, NetSettings, NetVersion, OwnState,
-    PROTOCOL_ID, Refused, UserCmds, Welcome, body_flags, current_map,
+    PROTOCOL_ID, Refused, UserCmds, body_flags,
 };
 use crate::{
     character::character_bundle,
@@ -173,6 +173,8 @@ pub fn start(world: &mut World) -> Result<(), String> {
     let config = super::connection_config(world);
     world.insert_resource(RenetServer::new(config));
     world.insert_resource(NetRole::Server);
+    // Bots added before serving stay (`bot_quota` counts them).
+    crate::bot::sync_quota(world);
     Ok(())
 }
 
@@ -284,21 +286,11 @@ fn admit(world: &mut World, client: Entity, msg: Join) {
             character,
         },
     ));
-    let map = current_map(world);
-    let map_hash = if map == super::GREYBOX {
-        None
-    } else {
-        world.get_resource::<crate::map::MapFile>().and_then(|f| f.hash)
-    };
-    let tick_nanos = world.resource::<Time<Fixed>>().timestep().as_nanos() as u64;
+    // The served map (its offer: name, hash, size, where to download it).
+    let welcome = super::maps::welcome(world, id);
     world.commands().server_trigger(ToClients {
         targets: SendTargets::Single(ClientId::Client(client)),
-        message: Welcome {
-            map,
-            map_hash,
-            tick_nanos,
-            you: id,
-        },
+        message: welcome,
     });
     // The server's replicated cvars (movement, rules), before it plays.
     super::cvars::send_all(world, client);
