@@ -335,7 +335,7 @@ fn commands_cant_speed_a_player_up() {
                 ..default()
             })
             .collect();
-        sim.clients[0].app.world_mut().write_message(UserCmds { cmds });
+        sim.clients[0].app.world_mut().write_message(UserCmds { cmds, epoch: 0 });
         sim.step();
         let v = sim.server.app.world().get::<mashup::core::Velocity>(theirs).unwrap().0;
         fastest = fastest.max(Vec2::new(v.x, v.z).length());
@@ -349,4 +349,33 @@ fn commands_cant_speed_a_player_up() {
     let b = sim.server.app.world().get::<CommandBuffer>(theirs).unwrap();
     assert!(b.early > 0, "commands beyond the buffer's reach were dropped");
     assert!(b.queued.len() as u64 <= mashup::net::server::MAX_AHEAD + 1);
+}
+
+/// A clock thrown far off (a long hitch while joining runs a second of
+/// ticks at once) comes back in one jump and settles: commands sent
+/// before the jump (still on their way, far ahead) never steer it again
+/// (`UserCmds::epoch`). Seen live: a client's clock jumping back and
+/// forth by ever more, thousands of ticks a minute later.
+#[test]
+fn a_clock_thrown_off_settles_in_one_jump() {
+    let mut sim = joined(link(70, 10, 0.0), 13, 1);
+    for (k, off) in [(0, 64i64), (1, 200), (2, -40)] {
+        let before = sim.clients[0].app.world().resource::<CommandClock>().jumps;
+        {
+            let mut clock = sim.clients[0].app.world_mut().resource_mut::<CommandClock>();
+            let t = clock.tick.unwrap();
+            clock.tick = Some((t as i64 + off) as u64);
+        }
+        sim.ticks(400);
+        let clock = sim.clients[0].app.world().resource::<CommandClock>().clone();
+        let jumps = clock.jumps - before;
+        println!("case {k}: thrown {off:+} ticks: {jumps} jumps, lead {:.1} (target {:.1})", clock.lead, clock.target());
+        assert!(jumps <= 2, "case {k}: {jumps} jumps");
+        assert!((clock.lead - clock.target()).abs() < 2.0, "case {k}: settled at lead {}", clock.lead);
+    }
+    // And it predicts right again.
+    reset_graph(&mut sim, 0);
+    run_script(&mut sim, 0, 200);
+    let g = graph(&sim, 0);
+    assert!(g.checked > 100 && g.errors <= 1, "{} errors in {}", g.errors, g.checked);
 }

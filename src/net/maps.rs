@@ -102,6 +102,15 @@ pub struct ServedMap {
     pub bytes: Option<Arc<Vec<u8>>>,
     /// A map whose load clients were told of (`ChangingLevel`).
     announced: Option<String>,
+    /// The map loads counted when it was served (`rules::MapLoads`): a
+    /// later count with the same map is the same map loaded again
+    /// (`changelevel` to it), which clients load again too.
+    loads: u32,
+}
+
+/// Maps loaded so far here (`rules::MapLoads`).
+fn map_loads(world: &World) -> u32 {
+    world.get_resource::<crate::rules::MapLoads>().map_or(0, |l| l.0)
 }
 
 /// On a client's server-side entity: the map file being sent to it.
@@ -218,6 +227,7 @@ fn serve(world: &World, id: &str, hash: Option<[u8; 32]>) -> ServedMap {
         size: bytes.as_ref().map_or(0, |b| b.len() as u64),
         bytes,
         announced: None,
+        loads: map_loads(world),
     }
 }
 
@@ -280,13 +290,15 @@ fn watch_map(world: &mut World) {
         // A change that never came (the load failed): clients told of it
         // go back to the map they're on (`ChangeLevel` with it).
         Some(s) if s.map == id && s.hash == hash && s.announced.is_some() => (false, true),
-        Some(s) if s.map == id && s.hash == hash => return,
+        // The same map loaded again: a new game there, clients reload it.
+        Some(s) if s.map == id && s.hash == hash && s.loads == map_loads(world) => return,
         Some(_) => (false, false),
         None => (true, false),
     };
     let s = if cancelled {
         let mut s = world.resource::<ServedMap>().clone();
         s.announced = None;
+        s.loads = map_loads(world);
         s
     } else {
         serve(world, &id, hash)
@@ -689,9 +701,11 @@ pub(super) fn step(world: &mut World) {
 /// name and let the hash decide.
 fn start(world: &mut World, welcome: &Welcome) -> Fetch {
     let map = welcome.map.clone();
+    let reload = world.get_resource::<Handshake>().is_some_and(|h| h.reload);
     match super::map_matches(world, &map, welcome.map_hash) {
-        // Already here: nothing to load (`client::check_map` joins).
-        Some(true) => {
+        // Already here: nothing to load (`client::check_map` joins),
+        // unless the server loaded it again (a fresh game: so do we).
+        Some(true) if !reload => {
             super::client::set_stage(world, JoinStage::LoadingMap);
             return Fetch::Loading;
         }
@@ -718,6 +732,12 @@ pub fn differs(map: &str) -> String {
 /// Ask the game to load the map (from `file`), and wait for it.
 fn load(world: &mut World, map: &str, file: Option<PathBuf>) -> Fetch {
     super::client::set_stage(world, JoinStage::LoadingMap);
+    // In once the game has loaded a map since (`client::check_map`): the
+    // same map loaded again too.
+    let loads = map_loads(world);
+    if let Some(mut h) = world.get_resource_mut::<Handshake>() {
+        h.loads_before = Some(loads);
+    }
     world.write_message(NetEvent::LoadMap {
         map: map.to_string(),
         file,

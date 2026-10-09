@@ -73,7 +73,7 @@ fn screen(
     rules: Option<Res<BombRules>>,
     hud: Option<Res<ActiveHud>>,
     fonts: Res<super::fonts::UiFonts>,
-    fixed: Res<Time<Fixed>>,
+    clock: Res<crate::core::SimClock>,
     spec: Option<Res<super::spectate::SpecView>>,
     local: Query<Entity, With<LocalPlayer>>,
     characters: Query<(Entity, Option<&Arming>, Has<ViewModelScreen>), With<Intent>>,
@@ -117,7 +117,8 @@ fn screen(
     for (e, arming, has) in &characters {
         let mine = Some(e) == me;
         if mine && let Some(a) = arming {
-            text = rules.screen_text((fixed.elapsed_secs_f64() - a.since) as f32);
+            // Arming's time is the simulation's (a network client predicts it).
+            text = rules.screen_text((clock.now - a.since) as f32);
         }
         if mine && !has {
             commands.entity(e).insert(ViewModelScreen {

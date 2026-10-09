@@ -383,7 +383,7 @@ fn live_outcome(world: &mut World, time_up: bool) -> Option<(Option<Team>, Round
 fn team_counts(world: &mut World) -> ([u32; 2], [u32; 2]) {
     let (mut alive, mut present) = ([0; 2], [0; 2]);
     for (team, health, dead) in world
-        .query_filtered::<(&Team, &Health, Has<Dead>), Without<Hostage>>()
+        .query_filtered::<(&Team, &Health, Has<Dead>), (Without<Hostage>, Without<crate::core::Connecting>)>()
         .iter(world)
     {
         if let Some(s) = side(*team) {
@@ -451,7 +451,12 @@ fn start_round(world: &mut World, s: &RoundSettings, now: f64, fresh: bool) {
     // Everyone back at their spawns: the dead (or everyone, at the start
     // of a game) with fresh weapons, survivors with theirs.
     let all: Vec<(Entity, bool)> = world
-        .query_filtered::<(Entity, Has<Dead>), (With<Intent>, With<Health>, Without<Hostage>)>()
+        .query_filtered::<(Entity, Has<Dead>), (
+            With<Intent>,
+            With<Health>,
+            Without<Hostage>,
+            Without<crate::core::Connecting>,
+        )>()
         .iter(world)
         .collect();
     for (e, dead) in all {

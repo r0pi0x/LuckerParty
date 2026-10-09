@@ -243,6 +243,25 @@ impl Args {
 #[derive(Resource, Clone)]
 pub struct ClientArgs(pub Args);
 
+/// What the HUD (kill feed, chat, radio, scoreboard) calls a character:
+/// the server's name in a network game (`net::NetCharacter`, ours too);
+/// in single player our own player by the `name` cvar ("Player" unless
+/// set), others by their `Name`, else their id.
+pub fn shown_name(
+    e: Entity,
+    local: bool,
+    net: Option<&crate::net::NetCharacter>,
+    name: Option<&Name>,
+    settings: Option<&crate::net::NetSettings>,
+) -> String {
+    match (net, local, name) {
+        (Some(c), ..) => c.name.clone(),
+        (None, true, _) => settings.map_or_else(|| "Player".to_string(), |s| s.name.clone()),
+        (None, false, Some(n)) => n.to_string(),
+        (None, false, None) => e.to_string(),
+    }
+}
+
 pub struct ClientPlugin {
     pub args: Args,
 }

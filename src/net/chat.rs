@@ -12,11 +12,21 @@
 //!   throws' calls are) and sends each call to the players who hear it
 //!   (`map::radio::hears`: living teammates) as `RadioCall`, which their
 //!   client plays as its own `core::Radio`.
+//! - **Flood protection**: each player may say a few lines (and radio
+//!   calls) in a burst, then one a second (`Flood`; a call every 1.5 s);
+//!   more are dropped, with a word to the sender. Bots aren't limited.
+//! - **Names**: the `name` cvar changed while connected goes to the server
+//!   (`NameRequest`, Source's setinfo); the server takes it (made safe),
+//!   renames the character everyone sees and tells everyone
+//!   (`NameChanged`: "* X changed name to Y"). The host's own change too.
 
 use bevy::prelude::*;
 use bevy_replicon::prelude::*;
 
-use super::{ChatMessage, NetCharacter, RadioCall, RadioRequest, SayRequest, server::Player};
+use super::{
+    ChatMessage, NameChanged, NameRequest, NetCharacter, NetSettings, RadioCall, RadioRequest, SayRequest,
+    server::Player,
+};
 use crate::{
     core::{Health, LocalPlayer, NetRole, Radio, Team},
     map::radio::{hears, sees_say},
@@ -28,24 +38,91 @@ pub const MAX_SAY: usize = 127;
 
 pub(super) fn plugin(app: &mut App) {
     app.add_message::<Radio>()
+        .init_resource::<Flood>()
         .add_systems(
             PreUpdate,
-            (receive_says, receive_radio)
+            (receive_says, receive_radio, receive_names)
                 .after(ServerSystems::Receive)
                 .run_if(in_state(ServerState::Running)),
         )
         .add_systems(
             PostUpdate,
-            (forward_radio, forward_hud)
+            (forward_radio, rename_host, forward_hud)
                 .before(ServerSystems::Send)
                 .run_if(resource_equals(NetRole::Server)),
         )
         .add_systems(
             PreUpdate,
-            (receive_calls, receive_hud)
+            (receive_calls, name_characters, receive_hud)
                 .after(ClientSystems::Receive)
                 .run_if(resource_equals(NetRole::Client)),
+        )
+        .add_systems(
+            PostUpdate,
+            send_name
+                .before(ClientSystems::Send)
+                .run_if(resource_equals(NetRole::Client)),
         );
+}
+
+/// A player's allowance of lines (or calls): `tokens` left, refilled up
+/// to the burst at the rate (`Flood`).
+#[derive(Clone, Copy, Debug)]
+struct Allowance {
+    tokens: f64,
+    at: f64,
+}
+
+impl Allowance {
+    /// Spend one if there is one (refilling first at `per_second` up to
+    /// `burst`); false: flooding.
+    fn take(&mut self, now: f64, burst: f64, per_second: f64) -> bool {
+        self.tokens = (self.tokens + (now - self.at).max(0.0) * per_second).min(burst);
+        self.at = now;
+        if self.tokens >= 1.0 {
+            self.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Lines a player may say in a burst, then one a second; radio calls:
+/// three, then one every 1.5 s. (Ours: CS:S drops chat and radio spam
+/// too, its exact limits unmeasured.) Typing never reaches them; a bound
+/// key held down does.
+pub const SAY_BURST: f64 = 4.0;
+pub const SAY_PER_SECOND: f64 = 1.0;
+pub const RADIO_BURST: f64 = 3.0;
+pub const RADIO_PER_SECOND: f64 = 1.0 / 1.5;
+
+/// Each speaking character's chat and radio allowances (a resource: a
+/// component would reorder the characters' archetypes).
+#[derive(Resource, Default)]
+pub struct Flood {
+    chat: std::collections::HashMap<Entity, Allowance>,
+    radio: std::collections::HashMap<Entity, Allowance>,
+    /// Lines and calls dropped so far.
+    pub dropped: u32,
+}
+
+/// Whether `who` may say another line (`radio`: make another call) now;
+/// counts it if so. Real time: a stalled tick doesn't open the gate.
+fn allowed(world: &mut World, who: Entity, radio: bool) -> bool {
+    let now = world.resource::<Time<Real>>().elapsed_secs_f64();
+    let mut flood = world.resource_mut::<Flood>();
+    let (map, burst, rate) = if radio {
+        (&mut flood.radio, RADIO_BURST, RADIO_PER_SECOND)
+    } else {
+        (&mut flood.chat, SAY_BURST, SAY_PER_SECOND)
+    };
+    let a = map.entry(who).or_insert(Allowance { tokens: burst, at: now });
+    let ok = a.take(now, burst, rate);
+    if !ok {
+        flood.dropped += 1;
+    }
+    ok
 }
 
 /// What map logic shows on HUDs (`logic::HudEvent`) to the client of the
@@ -141,6 +218,13 @@ fn receive_says(mut requests: MessageReader<FromClient<SayRequest>>, mut command
         }
         commands.queue(move |w: &mut World| {
             let Some(from) = speaker(w, client) else { return };
+            if !allowed(w, from, false) {
+                debug!("chat flood: dropped a line from {}", sender_of(w, from).name);
+                if let Some(c) = client.entity() {
+                    super::game::notify(w, c, "You are flooding the server: wait a moment.".into());
+                }
+                return;
+            }
             deliver_say(w, from, &text, team_only);
         });
     }
@@ -204,7 +288,7 @@ fn receive_radio(mut requests: MessageReader<FromClient<RadioRequest>>, mut comm
             let known = w
                 .get_resource::<crate::map::radio::RadioCommands>()
                 .is_none_or(|r| r.get(&command).is_some());
-            if !known || !sender_of(w, sender).alive {
+            if !known || !sender_of(w, sender).alive || !allowed(w, sender, true) {
                 return;
             }
             w.write_message(Radio { sender, command });
@@ -238,6 +322,91 @@ fn forward_radio(
                     command: call.command.clone(),
                 },
             });
+        }
+    }
+}
+
+/// A client's new name: taken (made safe) for its character, and told to
+/// everyone.
+fn receive_names(mut requests: MessageReader<FromClient<NameRequest>>, mut commands: Commands) {
+    for r in requests.read() {
+        let (client, name) = (r.client_id, r.message.name.clone());
+        let Some(c) = client.entity() else { continue };
+        commands.queue(move |w: &mut World| {
+            let Some(character) = w.get::<Player>(c).map(|p| p.character) else { return };
+            let id = w
+                .get::<bevy_replicon::shared::backend::connected_client::NetworkId>(c)
+                .map_or(0, |n| n.get());
+            let name = super::server::clean_name(&name, id);
+            if rename(w, character, &name) {
+                w.get_mut::<Player>(c).expect("checked").name = name;
+            }
+        });
+    }
+}
+
+/// Rename `character` (the name everyone sees) and tell everyone. False
+/// when it already had that name.
+pub fn rename(world: &mut World, character: Entity, name: &str) -> bool {
+    let Some(old) = world.get::<NetCharacter>(character).map(|c| c.name.clone()) else {
+        return false;
+    };
+    if old == name {
+        return false;
+    }
+    info!("{old} changed name to {name}");
+    world.get_mut::<NetCharacter>(character).expect("checked").name = name.to_string();
+    world.entity_mut(character).insert(Name::new(name.to_string()));
+    world.write_message(ToClients {
+        targets: SendTargets::All,
+        message: NameChanged {
+            old,
+            new: name.to_string(),
+        },
+    });
+    true
+}
+
+/// A listen server's host changed its `name`: its character too.
+fn rename_host(world: &mut World, mut last: Local<Option<String>>) {
+    let name = world.resource::<NetSettings>().name.clone();
+    if last.as_ref() == Some(&name) {
+        return;
+    }
+    let first = last.is_none();
+    *last = Some(name.clone());
+    if first {
+        return;
+    }
+    let host = world
+        .query_filtered::<Entity, (With<LocalPlayer>, With<NetCharacter>)>()
+        .iter(world)
+        .next();
+    if let Some(host) = host {
+        let name = super::server::clean_name(&name, super::HOST_ID);
+        rename(world, host, &name);
+    }
+}
+
+/// Our `name` changed while connected: ask the server for it.
+fn send_name(settings: Res<NetSettings>, mut last: Local<Option<String>>, mut out: MessageWriter<NameRequest>) {
+    if last.as_ref() == Some(&settings.name) {
+        return;
+    }
+    let first = last.is_none();
+    *last = Some(settings.name.clone());
+    if !first {
+        out.write(NameRequest {
+            name: settings.name.clone(),
+        });
+    }
+}
+
+/// Characters renamed by the server: their `Name` here too.
+fn name_characters(q: Query<(Entity, &NetCharacter, Option<&Name>), Changed<NetCharacter>>, mut commands: Commands) {
+    for (e, c, name) in &q {
+        if name.is_none_or(|n| n.as_str() != c.name) {
+            commands.entity(e).insert(Name::new(c.name.clone()));
         }
     }
 }

@@ -127,6 +127,9 @@ fn say(get: &dyn Fn(&str) -> Option<String>) -> SayFormats {
             .into_iter()
             .filter_map(|(t, side)| Some((t, get(&format!("Cstrike_game_join_{side}"))?.trim_end().to_string())))
             .collect(),
+        name_change: get("Cstrike_Name_Change")
+            .map(|s| s.trim_end().to_string())
+            .unwrap_or(generic.name_change),
     }
 }
 

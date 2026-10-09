@@ -1905,6 +1905,23 @@ pub(super) fn load_greybox(w: &mut World) {
 /// The greybox map's name for `map` and `--map`.
 pub const GREYBOX: &str = "greybox";
 
+/// What `map <name>` and `changelevel <name>` load: None for the greybox
+/// (`greybox`, `mashup:greybox`), else the map's id and whether to check
+/// it against the install's list. A CS:S map by its name (`de_dust2`) or
+/// its id (`cs_source:de_dust2`, as the command line and `--map` take it);
+/// another game's id as given.
+pub fn map_target(name: &str) -> Option<(String, bool)> {
+    if crate::net::normalize_map(name) == crate::net::GREYBOX {
+        return None;
+    }
+    let cs = crate::games::cs_source::GAME;
+    match name.split_once(':') {
+        Some((game, map)) if game.eq_ignore_ascii_case(cs) => Some((format!("{cs}:{map}"), true)),
+        Some(_) => Some((name.to_string(), false)),
+        None => Some((format!("{cs}:{name}"), true)),
+    }
+}
+
 fn local_player(w: &mut World) -> Result<Entity, String> {
     let mut q = w.query_filtered::<Entity, With<LocalPlayer>>();
     q.single(w).map_err(|_| "no local player".to_string())
@@ -2126,17 +2143,17 @@ fn client_commands(app: &mut App) {
             if w.get_resource::<crate::core::NetRole>() == Some(&crate::core::NetRole::Client) {
                 crate::net::disconnect(w, crate::net::client::BY_USER);
             }
-            if name.eq_ignore_ascii_case(GREYBOX) {
+            let Some((id, check)) = map_target(&name) else {
                 w.resource_mut::<Console>().submit("bot_kick");
                 load_greybox(w);
                 super::game_menu::entered_game(w);
                 super::net::listen_if_hosting(w);
                 return Ok(Some("loaded the greybox".into()));
+            };
+            let short = crate::net::maps::map_name(&id).to_string();
+            if check && !map_names().is_empty() && !map_names().iter().any(|m| *m == short) {
+                return Err(format!("no map \"{short}\" in the install"));
             }
-            if !map_names().is_empty() && !map_names().iter().any(|m| *m == name) {
-                return Err(format!("no map \"{name}\" in the install"));
-            }
-            let id = format!("cs_source:{name}");
             start_map_load(w, &id, None);
             Ok(Some(format!("loading {id}...")))
         },
@@ -2151,15 +2168,15 @@ fn client_commands(app: &mut App) {
                 // Source's words.
                 return Err("Can't changelevel, not running server.".into());
             }
-            if name.eq_ignore_ascii_case(GREYBOX) {
+            let Some((id, check)) = map_target(&name) else {
                 load_greybox(w);
                 super::game_menu::entered_game(w);
                 return Ok(Some("changed level to the greybox".into()));
+            };
+            let short = crate::net::maps::map_name(&id).to_string();
+            if check && !map_names().is_empty() && !map_names().iter().any(|m| *m == short) {
+                return Err(format!("no map \"{short}\" in the install"));
             }
-            if !map_names().is_empty() && !map_names().iter().any(|m| *m == name) {
-                return Err(format!("no map \"{name}\" in the install"));
-            }
-            let id = format!("cs_source:{name}");
             start_map_load(w, &id, None);
             Ok(Some(format!("changing level to {id}...")))
         },
@@ -2267,14 +2284,18 @@ pub fn remote_exec(
             data: None,
         })?
         .to_string();
-    let start = world.resource::<Console>().output.len();
+    let start = world.resource::<Console>().printed;
     {
         let mut c = world.resource_mut::<Console>();
         c.print(Level::Input, format!("] {line}"));
         c.submit(line);
     }
     crate::console::run_queue(world);
-    let out: Vec<String> = world.resource::<Console>().output[start + 1..]
+    // The lines printed since (the output keeps only the last ones, and
+    // logs print into it too).
+    let c = world.resource::<Console>();
+    let new = ((c.printed - start).saturating_sub(1) as usize).min(c.output.len());
+    let out: Vec<String> = c.output[c.output.len() - new..]
         .iter()
         .map(|l| l.text.clone())
         .collect();
@@ -2322,6 +2343,18 @@ mod tests {
 
     use super::*;
     use crate::console::ConsolePlugin;
+
+    #[test]
+    fn map_names_with_and_without_their_game() {
+        let cs = |m: &str| Some((format!("cs_source:{m}"), true));
+        assert_eq!(map_target("de_dust2"), cs("de_dust2"));
+        // As `+map` and `--map` give it.
+        assert_eq!(map_target("cs_source:de_dust2"), cs("de_dust2"));
+        assert_eq!(map_target("CS_SOURCE:de_dust2"), cs("de_dust2"));
+        assert_eq!(map_target("greybox"), None);
+        assert_eq!(map_target("mashup:greybox"), None);
+        assert_eq!(map_target("other:arena"), Some(("other:arena".into(), false)));
+    }
 
     #[test]
     fn fuzzy_ranking() {

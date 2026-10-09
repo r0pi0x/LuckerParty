@@ -20,7 +20,7 @@ use crate::{
     map::hud::{ActiveHud, HudCoord},
     objectives::{
         MapKind, MapObjectives, ObjectiveEvent,
-        bomb::{Arming, BombRules, BombState, PlantedBomb, hull},
+        bomb::{Arming, BombRules, BombState, Defusing, PlantedBomb, hull},
         hostages::{Hostage, HostagePenalty, HostageTally},
     },
     weapon::economy::DefuseKit,
@@ -144,6 +144,7 @@ fn messages(
     mut penalties: MessageReader<HostagePenalty>,
     local: Option<Single<(Entity, Option<&Team>), With<LocalPlayer>>>,
     names: Query<(Option<&Name>, Has<LocalPlayer>, Option<&crate::net::NetCharacter>)>,
+    settings: Option<Res<crate::net::NetSettings>>,
     rules: Res<BombRules>,
     mut centre: ResMut<Centre>,
     mut hints: MessageWriter<Hint>,
@@ -153,10 +154,7 @@ fn messages(
     let now = time.elapsed_secs();
     let (me, team) = local.map_or((Entity::PLACEHOLDER, None), |l| (l.0, l.1.copied()));
     let name = |e: Entity| match names.get(e) {
-        // A network game names everyone as the server does.
-        Ok((_, _, Some(c))) => c.name.clone(),
-        Ok((_, true, None)) => "Player".to_string(),
-        Ok((Some(n), _, None)) => n.to_string(),
+        Ok((name, local, net)) => super::shown_name(e, local, net, name, settings.as_deref()),
         _ => format!("{e}"),
     };
     let carriers = team == Some(rules.carrier_team);
@@ -373,10 +371,11 @@ fn status(
 fn progress(
     hud: Option<Res<ActiveHud>>,
     windows: Query<&Window>,
-    local: Option<Single<(Entity, Option<&Arming>), With<LocalPlayer>>>,
+    local: Option<Single<(Entity, Option<&Arming>, Option<&Defusing>), With<LocalPlayer>>>,
     bombs: Query<&PlantedBomb>,
     rules: Res<BombRules>,
     fixed: Res<Time<Fixed>>,
+    clock: Res<crate::core::SimClock>,
     mut frame: Query<(&Part, &mut Node, &mut Visibility)>,
     mut fill: Query<&mut Node, (With<FillMarker>, Without<Part>)>,
 ) {
@@ -384,9 +383,14 @@ fn progress(
     let (w, h) = (window.width(), window.height());
     let now = fixed.elapsed_secs_f64();
     let share = local.as_ref().and_then(|l| {
-        let (me, arming) = **l;
+        let (me, arming, defusing) = **l;
+        // Our own arming and defusing are on the simulation's clock (a
+        // network client predicts them).
         if let Some(a) = arming {
-            return Some(((now - a.since) / rules.plant_time as f64) as f32);
+            return Some(((clock.now - a.since) / rules.plant_time as f64) as f32);
+        }
+        if let Some(d) = defusing {
+            return Some(((clock.now - d.started) / (d.ends - d.started).max(1e-6)) as f32);
         }
         bombs
             .iter()
