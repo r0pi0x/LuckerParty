@@ -5,7 +5,10 @@ Status: slice 0 done but per-tick server hitbox poses (moved to slice 4;
 server, direct-IP connect, characters replicated and drawn where the
 server puts them; slice 2 done (2026-10-08): usercmds bound to server
 ticks, clock sync, the client's own movement predicted and reconciled
-(weapons wait for slice 4). Recommendation:
+(weapons wait for slice 4); slice 3 done (2026-10-08): others and
+physics props drawn 0.1 s in the past from snapshots keyed by server
+tick, movers replicated by motion state and stepped by the client to the
+tick it predicts, so riding one is predicted. Recommendation:
 **bevy_replicon + renet (netcode over UDP)** for transport and
 replication; **our own Source-style prediction, interpolation and lag
 compensation** on top. Slices below; slice 0 is refactoring that pays off
@@ -553,13 +556,91 @@ with tests passing and something to see.
      machinery is there: `Predict::Select`/`Weapons` run in the replay;
      slice 4 registers the weapon components with `predicted_net` and
      sends them); the server's movement cvars aren't sent (slice 5's
-     replicated cvars); movers don't move on a client (slice 3), so
-     riding one mispredicts; `OwnState` is the whole state each tick, no
-     delta.
-3. **[ ] Interpolation of others** (M, medium). Snapshot buffers keyed by
+     replicated cvars); `OwnState` is the whole state each tick, no
+     delta. (Movers: slice 3.)
+3. **[x] Interpolation of others** (M, medium). Snapshot buffers keyed by
    server tick feeding `map::interp`'s `Interpolated`/`RenderedView`,
    `cl_interp`, brush entities, props and loose items replicated and
    eased, other players' bodies animating from replicated state.
+   Progress (2026-10-08):
+   - [x] Snapshots by server tick (`net::interp::Snapshots`): replicon's
+     write functions for `NetBody`, `NetMover` and `NetProp` also keep
+     each value by its message tick, which the server keeps equal to its
+     `SimClock::tick` (`server::lock_replication_tick`). The server sends
+     a mutate message every tick (replicon's `track_mutate_messages`), so
+     a tick heard without a value for an entity is one it held still at
+     (a held copy), and a character that starts walking after standing
+     isn't smeared from where it stood.
+   - [x] The render clock (`InterpClock`). **Changed from §1 and the
+     task's "predicted time less the delay":** others are drawn at the
+     server's clock as the arrivals show it (an average of tick time less
+     arrival time, eased in at most 5 % of real time so it never steps
+     back), less the delay, as Source's client clock does; the predicted
+     tick runs ahead of every snapshot by the round trip. Delay
+     `max(cl_interp, cl_interp_ratio × update interval)` with Source's
+     defaults 0.1 s and 2 (VDC, "Source Multiplayer Networking").
+   - [x] Drawing (`interp::draw_others`): between the two snapshots around
+     the render tick, linear (positions, velocity, eye height; look the
+     short way round; flags at the newer one's tick); a jump faster than
+     `map::interp::SNAP_SPEED` or a death/respawn between them is drawn at
+     once. **Changed from §1:** past the newest snapshot others carry on
+     along their velocity for `cl_extrapolate_amount` (0.25 s, Source's
+     default), then hold, instead of "at most one snapshot": with a 0.1 s
+     delay that only happens after ~6 lost ticks in a row.
+   - [x] Others' bodies animate from the drawn state: `Transform`,
+     `Velocity` (speed), `MovementState` (crouch, ground, ladder, eye),
+     look in `Intent` and `RenderedView`, `Dead`; the tick blend
+     (`map::interp`) skips them (`NetDrawn`).
+   - [x] Moving brushes. **Changed from §1/§3 ("interpolated"):** the
+     server replicates each pusher's motion state (`NetMover`: pose,
+     velocity, local time, move end and goal, flags) and the client steps
+     it, with the logic's own arithmetic (`movers::Stepper`), to the tick
+     it predicts, then pushes its own player with the logic's push code
+     (`logic::push_players`, shared; `logic::carry_player`) before its
+     movement, in live and replayed ticks; `OwnState::ground` (the mover's
+     map index) keeps it riding after a correction. Movers are drawn at
+     the predicted tick (eased between ticks). Interpolating them in the
+     past (Source) would put the client's own player out of step with what
+     it stands on, and every ride would mispredict.
+   - [x] Physics props (`net::props`): `NetProp` (pose, velocity, shown,
+     solid); a client's copies are kinematic and drawn from snapshots at
+     the render tick. Loose items wait for slice 4 (a client has none).
+   - [x] Found on the way: the physics' transform sync turns a -0.0 in a
+     body's position into 0.0, but only when the body moved more than
+     avian's tolerance since the physics last had it, which a replay
+     can't know: a player at exactly 0 on an axis never matched again.
+     A predicted player's position is written with +0.0 at the end of
+     every tick and replay in a network game (`net::canonical_position`).
+   - [x] Readout: `NetGraph`'s `interp:` line (delay, update interval,
+     snapshots ahead, newest ahead, frames extrapolated/held, snaps,
+     movers, ticks carried) in the perf overlay and F2 Perf tab; cvars
+     `cl_interp`, `cl_interp_ratio`, `cl_extrapolate`,
+     `cl_extrapolate_amount`.
+   - [x] Tests (`tests/it/net_interp.rs`, `NetSim` at 240 frames a
+     second): another player walking a curve at 50±10 ms, 100±40 ms 10 %
+     loss and 150±60 ms 20 % loss is drawn exactly on the server's path
+     without loss (0.000 mm off) and within 8 mm with loss (a lost
+     snapshot bridged by a line), moving every frame (0 still frames,
+     mean 26.7 mm, max 28.1 mm a frame), 0 frames extrapolated, 3-7
+     snapshots buffered ahead; its speed, look and crouch are drawn; a
+     3 m teleport is drawn at once; a crate the server lifts falls on the
+     server's path; riding a lift up and back down at 50, 100±20 and
+     150±40 ms mispredicts only when the lift starts (1-2 errors per
+     ride, inside the first round trip; 0.04 m, eased) and ends on the
+     server's state bit for bit (before: an error every tick of the ride).
+   - [x] Two real games on the dev box (host `-port 27031` strafing left
+     and right, the client with `+net_fakelag 100 +net_fakejitter 20
+     +net_fakeloss 5`): ping ~150-175 ms, the host drawn 100 ms behind
+     with 3-4 snapshots ahead (the listen server sends every ~28 ms at
+     its frame rate), 15 of ~1900 frames extrapolated, no prediction
+     errors on the client's own walking.
+   - Not yet: parented brushes and breakables aren't stepped ahead (they
+     hold their last snapshot until the next); a mover starting,
+     reversing after its wait, blocked by someone else or a train at a
+     path corner mispredicts for a round trip; model doors
+     (`prop_door_rotating`), window panes, prop skins/sequences aren't
+     replicated (slice 7's late join needs them as state); others riding
+     a mover are drawn in the past on a mover drawn in the present.
 4. **[ ] Weapons** (L, high). Inventory and weapon state for the owner,
    predicted firing (timing, ammo, spread, punch, effects first time),
    hitboxes posed per tick from simulation values (from slice 0),

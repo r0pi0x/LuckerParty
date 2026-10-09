@@ -113,6 +113,11 @@ impl CommandClock {
         self.samples += 1;
     }
 
+    /// The server's tick length, once its first state has come.
+    pub fn step(&self) -> Option<Duration> {
+        self.base.map(|b| b.2)
+    }
+
     /// The simulation clock the server has (had) at `tick`.
     pub fn clock_for(&self, tick: u64) -> Option<SimClock> {
         let (base_tick, base_time, step) = self.base?;
@@ -223,6 +228,25 @@ pub struct NetGraph {
     recent: VecDeque<(f64, f32)>,
     /// The drawn eye's remaining correction, m.
     pub smoothing: f32,
+    /// Others drawn from snapshots (`interp`): how far in the past (ms),
+    /// the time between server updates (ms), characters drawn, snapshots
+    /// newer than the render time (per character), how far ahead of it
+    /// the newest tick heard is (ms).
+    pub interp_ms: f64,
+    pub update_ms: f64,
+    pub interp_drawn: usize,
+    pub interp_ahead: f64,
+    pub interp_newest_ms: f64,
+    /// Frames drawn, frames with someone past the newest snapshot
+    /// (extrapolated, then held), teleports drawn at once.
+    pub interp_frames: u64,
+    pub interp_extrapolated: u64,
+    pub interp_held: u64,
+    pub interp_snaps: u64,
+    /// Moving brushes the client steps itself (`movers`), and ticks it
+    /// carried its own player on one.
+    pub movers: usize,
+    pub carried: u64,
 }
 
 impl NetGraph {
@@ -262,8 +286,31 @@ impl NetGraph {
         )
     }
 
-    pub fn lines(&self) -> [String; 3] {
-        [self.net_line(), self.clock_line(), self.prediction_line()]
+    pub fn interp_line(&self) -> String {
+        format!(
+            "interp: {:.0} ms behind (updates every {:.1} ms), {} drawn, {:.1} snapshots ahead (newest +{:.0} ms), \
+             extrapolated {} / held {} of {} frames, {} snaps; {} movers, carried {} ticks",
+            self.interp_ms,
+            self.update_ms,
+            self.interp_drawn,
+            self.interp_ahead,
+            self.interp_newest_ms,
+            self.interp_extrapolated,
+            self.interp_held,
+            self.interp_frames,
+            self.interp_snaps,
+            self.movers,
+            self.carried
+        )
+    }
+
+    pub fn lines(&self) -> [String; 4] {
+        [
+            self.net_line(),
+            self.clock_line(),
+            self.prediction_line(),
+            self.interp_line(),
+        ]
     }
 }
 
@@ -538,6 +585,9 @@ fn reconcile(world: &mut World, player: Entity, server: OwnState) {
         warn!("the server's state of our player didn't decode: {e}");
         return;
     }
+    // What it stands on isn't in the blob (an entity): the mover by its
+    // map index, so the replay carries it as the server did.
+    super::movers::restore_ground(world, player, server.ground);
     let server_pos = world
         .get::<Transform>(player)
         .map(|t| t.translation)
@@ -568,7 +618,9 @@ fn reconcile(world: &mut World, player: Entity, server: OwnState) {
             *i = p.intent.clone();
         }
         world.insert_resource(p.clock);
+        super::movers::place(world);
         crate::core::predict(world);
+        super::canonical_position(world, player);
         p.state = world.resource::<PredictedComponents>().encode(world, player);
         p.position = world
             .get::<Transform>(player)
@@ -684,7 +736,7 @@ fn hold_local(held: Res<Held>, mut player: Option<Single<&mut Intent, (With<Loca
 }
 
 /// The command as simulated this tick (held, numbered), into the history.
-fn record_command(
+pub(super) fn record_command(
     clock: Res<CommandClock>,
     sim: Res<SimClock>,
     player: Option<Single<&Intent, (With<LocalPlayer>, With<MovementSlot>)>>,
@@ -716,6 +768,7 @@ fn record_state(world: &mut World) {
     let Some(player) = predicted_player(world) else {
         return;
     };
+    super::canonical_position(world, player);
     let state = world.resource::<PredictedComponents>().encode(world, player);
     let position = world
         .get::<Transform>(player)

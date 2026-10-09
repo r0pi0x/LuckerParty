@@ -21,6 +21,10 @@
 //!   `Transform` written outside the fixed tick (console, captures) is
 //!   taken as the new truth and snaps too.
 //!
+//! - Characters a network client draws from the server's snapshots
+//!   (`NetDrawn`: `net::interp` writes their `Transform` and
+//!   `RenderedView` each frame) are left alone.
+//!
 //! Plugged in by the client (headless runs and tests without it see the
 //! simulation's values only); `Interpolation::enabled` is its cvar
 //! (`cl_interpolate`).
@@ -80,6 +84,12 @@ pub enum InterpSystems {
     /// In `RunFixedMainLoop` after the fixed loop: the drawn values.
     Ease,
 }
+
+/// Drawn by a network client from the server's snapshots at its own
+/// render time (`net::interp`), not between this process's ticks: the
+/// systems here skip it.
+#[derive(Component, Debug, Clone, Copy, Default)]
+pub struct NetDrawn;
 
 /// Draw this entity's `Transform` between its last two ticks.
 #[derive(Component, Debug, Clone, Default)]
@@ -232,7 +242,10 @@ fn track_bodies(
 
 /// Start of a tick: put back the simulation's transform where the ease
 /// drew another, or take a transform someone else wrote as the truth.
-fn restore(mut q: Query<(&mut Transform, &mut Interpolated)>, mut ticks: ResMut<TicksThisFrame>) {
+fn restore(
+    mut q: Query<(&mut Transform, &mut Interpolated), Without<NetDrawn>>,
+    mut ticks: ResMut<TicksThisFrame>,
+) {
     ticks.0 += 1;
     for (mut t, mut i) in &mut q {
         let Some(drawn) = i.drawn.take() else { continue };
@@ -245,7 +258,7 @@ fn restore(mut q: Query<(&mut Transform, &mut Interpolated)>, mut ticks: ResMut<
     }
 }
 
-fn sample_transforms(mut q: Query<(&Transform, &mut Interpolated)>) {
+fn sample_transforms(mut q: Query<(&Transform, &mut Interpolated), Without<NetDrawn>>) {
     for (t, mut i) in &mut q {
         if i.sampled {
             i.prev = i.cur;
@@ -256,7 +269,7 @@ fn sample_transforms(mut q: Query<(&Transform, &mut Interpolated)>) {
     }
 }
 
-fn sample_views(mut q: Query<(&Intent, &MovementState, &mut RenderedView)>) {
+fn sample_views(mut q: Query<(&Intent, &MovementState, &mut RenderedView), Without<NetDrawn>>) {
     for (intent, state, mut v) in &mut q {
         let now = EyeView::of(intent, state);
         if v.sampled {
@@ -273,8 +286,8 @@ fn sample_views(mut q: Query<(&Intent, &MovementState, &mut RenderedView)>) {
 /// Teleports: a jump no body makes in one tick is drawn at once.
 fn snap(
     time: Res<Time<Fixed>>,
-    mut q: Query<(&mut Interpolated, Option<&mut RenderedView>)>,
-    mut views: Query<&mut RenderedView, Without<Interpolated>>,
+    mut q: Query<(&mut Interpolated, Option<&mut RenderedView>), Without<NetDrawn>>,
+    mut views: Query<&mut RenderedView, (Without<Interpolated>, Without<NetDrawn>)>,
     mut stats: ResMut<Interpolation>,
 ) {
     let far = SNAP_SPEED * time.timestep().as_secs_f32();
@@ -313,7 +326,7 @@ fn ease_transforms(
     time: Res<Time<Fixed>>,
     mut settings: ResMut<Interpolation>,
     mut ticks: ResMut<TicksThisFrame>,
-    mut q: Query<(&mut Transform, &mut Interpolated)>,
+    mut q: Query<(&mut Transform, &mut Interpolated), Without<NetDrawn>>,
 ) {
     let f = fraction(&time, &settings);
     settings.fraction = f;
@@ -351,7 +364,7 @@ fn ease_transforms(
 fn ease_views(
     time: Res<Time<Fixed>>,
     settings: Res<Interpolation>,
-    mut q: Query<(&Intent, &MovementState, &mut RenderedView, Has<LocalPlayer>)>,
+    mut q: Query<(&Intent, &MovementState, &mut RenderedView, Has<LocalPlayer>), Without<NetDrawn>>,
 ) {
     let f = fraction(&time, &settings);
     for (intent, state, mut v, local) in &mut q {

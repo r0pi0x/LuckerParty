@@ -7,7 +7,7 @@ use std::{
 };
 
 use bevy::prelude::*;
-use bevy_replicon::{prelude::*, shared::backend::connected_client::NetworkId};
+use bevy_replicon::{prelude::*, server::server_tick::ServerTick, shared::backend::connected_client::NetworkId};
 use bevy_replicon_renet::{
     RenetServer,
     netcode::{NetcodeServerTransport, ServerAuthentication, ServerConfig},
@@ -51,7 +51,17 @@ pub(super) fn plugin(app: &mut App) {
         // server draws eased transforms after the fixed loop).
         .add_systems(
             FixedLast,
-            (write_bodies, capture_own_states).run_if(resource_equals(NetRole::Server)),
+            (canonical_positions, write_bodies, capture_own_states)
+                .chain()
+                .run_if(resource_equals(NetRole::Server)),
+        )
+        // Replicon's tick is the simulation's: a client keys snapshots by
+        // the tick their message is from (`interp`).
+        .add_systems(
+            FixedPostUpdate,
+            lock_replication_tick
+                .after(ServerSystems::IncrementTick)
+                .run_if(resource_equals(NetRole::Server)),
         )
         .add_systems(
             PostUpdate,
@@ -189,7 +199,9 @@ pub(super) fn stop(world: &mut World) {
     // What stays (the host, bots) stops replicating.
     let replicated: Vec<Entity> = world.query_filtered::<Entity, With<Replicated>>().iter(world).collect();
     for e in replicated {
-        world.entity_mut(e).remove::<(Replicated, NetCharacter, NetBody)>();
+        world
+            .entity_mut(e)
+            .remove::<(Replicated, NetCharacter, NetBody, super::NetMover, super::NetProp)>();
     }
 }
 
@@ -411,6 +423,17 @@ fn apply_commands(mut q: Query<(&mut CommandBuffer, &mut Intent)>, clock: Res<Si
     }
 }
 
+/// Remote players' positions with their zeros as +0.0 (`canonical_position`).
+fn canonical_positions(world: &mut World) {
+    let players: Vec<Entity> = world
+        .query_filtered::<Entity, With<OwnStateOut>>()
+        .iter(world)
+        .collect();
+    for e in players {
+        super::canonical_position(world, e);
+    }
+}
+
 /// After each tick: every remote player's predicted state for its client.
 fn capture_own_states(world: &mut World) {
     let clock = *world.resource::<SimClock>();
@@ -427,6 +450,11 @@ fn capture_own_states(world: &mut World) {
             let movement = world.get::<MovementSlot>(e).map_or("", |m| m.0).to_string();
             let seed = world.get::<Seed>(e).map_or(0, |s| s.0);
             let held = frozen || world.get::<Dead>(e).is_some();
+            let ground = world
+                .get::<MovementState>(e)
+                .and_then(|s| s.ground)
+                .and_then(|g| world.get::<crate::map::MapBrushEntity>(g))
+                .map(|m| m.0 as u32);
             let mut out = world.get_mut::<OwnStateOut>(e).expect("queried");
             out.state = Some(OwnState {
                 tick: clock.tick,
@@ -436,6 +464,7 @@ fn capture_own_states(world: &mut World) {
                 movement,
                 seed,
                 held,
+                ground,
                 ..default()
             });
         }
@@ -469,6 +498,18 @@ fn send_own_states(
         });
     }
 }
+/// Replicon's tick (the tick replication messages carry) kept equal to
+/// the simulation's (`SimClock::tick`), so a value a client receives is
+/// keyed by the server tick it is from. Both count once per fixed tick;
+/// this only moves replicon's forward to it once, when serving starts.
+fn lock_replication_tick(clock: Res<SimClock>, mut tick: ResMut<ServerTick>) {
+    let want = clock.tick as u32;
+    let diff = want.wrapping_sub(tick.get());
+    if diff != 0 && (diff as i32) > 0 {
+        tick.increment_by(diff);
+    }
+}
+
 /// Characters this server didn't spawn for a client (the host's, bots)
 /// replicate too.
 #[allow(clippy::type_complexity)]

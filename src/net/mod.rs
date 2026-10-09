@@ -2,23 +2,29 @@
 //! server (a listen server in the game, or the dedicated `mashup_server`)
 //! and clients, over bevy_replicon with renet's netcode UDP transport.
 //!
-//! So far (slices 1 and 2): connect and disconnect (`connect`,
+//! So far (slices 1 to 3): connect and disconnect (`connect`,
 //! `disconnect`, `listen`, `status`; `hostport`, `maxplayers`, `name`),
 //! a join handshake (build version, protocol hash, then the map by name
 //! and file hash), a character spawned on the server per client, and
 //! characters replicated to every client (`NetCharacter`, `NetBody`,
-//! `Team`, `Health`), others drawn where the server last put them (no
-//! interpolation buffer yet: slice 3). A client sends a user command per
-//! server tick (`UserCmds`), runs its clock ahead of the server's so each
-//! arrives in time, predicts its own player and corrects it from the
-//! server's state (`OwnState`): `predict`.
+//! `Team`, `Health`). A client sends a user command per server tick
+//! (`UserCmds`), runs its clock ahead of the server's so each arrives in
+//! time, predicts its own player and corrects it from the server's state
+//! (`OwnState`): `predict`. Others are drawn in the past from a buffer of
+//! snapshots keyed by server tick (`cl_interp`): `interp`. Moving brushes
+//! replicate their motion state (`NetMover`) and a client steps them to
+//! the tick it predicts, carrying its own player as the server does:
+//! `movers`. Physics props are drawn from snapshots like others: `props`.
 //!
 //! `NetRole` (core) says what this process is; `authoritative` systems
 //! (rules, bots, damage, logic) don't run on a client.
 
 pub mod client;
+pub mod interp;
 pub mod memory;
+pub mod movers;
 pub mod predict;
+pub mod props;
 pub mod server;
 pub mod udp;
 
@@ -46,7 +52,7 @@ pub const PROTOCOL_ID: u64 = 0x4C55_434B_4552_5059;
 /// This build's network version. A server refuses clients of another
 /// version. Bump the suffix when the protocol changes in a way the
 /// replicon protocol hash can't see (a field added to a message).
-pub const NET_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/net2");
+pub const NET_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/net3");
 
 /// The owner id of the listen server's own player (`NetCharacter::owner`).
 /// Remote clients' ids are never 0.
@@ -54,6 +60,23 @@ pub const HOST_ID: u64 = 0;
 
 /// The name of the greybox map in the handshake (and `map greybox`).
 pub const GREYBOX: &str = "greybox";
+
+/// A predicted player's position at the end of a tick (server and client)
+/// and of each replayed one, its zeros written as +0.0. The physics'
+/// transform sync after a live tick turns a -0.0 there into 0.0 or not,
+/// depending on where the physics last had the body (avian's tolerance),
+/// which a replay can't know; the two are the same position, but the
+/// state is compared bit for bit and feeds the next tick (the movement's
+/// own state keeps the sign). Network games only: single player keeps
+/// its values as they were.
+pub fn canonical_position(world: &mut World, e: Entity) {
+    if let Some(mut t) = world.get_mut::<Transform>(e) {
+        let canonical = t.translation + Vec3::ZERO;
+        if canonical.to_array().map(f32::to_bits) != t.translation.to_array().map(f32::to_bits) {
+            t.translation = canonical;
+        }
+    }
+}
 
 /// Network settings (console: `hostport`, `maxplayers`, `name`).
 #[derive(Resource, Clone, Debug)]
@@ -274,6 +297,10 @@ pub struct OwnState {
     /// The newest command tick heard (the client counts only the leads of
     /// commands it sent after it last moved its clock).
     pub newest: u64,
+    /// The map entity index (`map::MapBrushEntity`) of the mover the
+    /// player stands on (`MovementState::ground`, an entity, isn't in
+    /// `state`: ids differ), so a correction keeps it riding.
+    pub ground: Option<u32>,
     /// Commands waiting for later ticks.
     pub buffered: u16,
     /// Ticks run without this client's command (its last one repeated),
@@ -295,7 +322,8 @@ pub struct NetCharacter {
 
 /// What clients draw a character from, written by the server every tick
 /// from the simulation (`server::write_bodies`): position, velocity, look,
-/// eye height and movement flags. Slice 3 buffers these by server tick.
+/// eye height and movement flags. A client keeps them by server tick
+/// (`interp::Snapshots`) and draws others between two of them.
 #[derive(Component, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct NetBody {
     pub origin: [f32; 3],
@@ -315,6 +343,72 @@ pub mod body_flags {
     pub const DEAD: u8 = 1 << 3;
 }
 
+/// A moving brush's motion state (doors, platforms, trains, rotating and
+/// parented brushes; `logic::movers::Pusher`), entity space (angles in
+/// degrees), written by the server on the mover's node after each tick
+/// (`movers::write_movers`). A client steps its own copy of the node
+/// (`map::MapBrushEntity` with this `index`) to the tick it predicts the
+/// way the logic does (`movers::place`).
+#[derive(Component, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct NetMover {
+    /// The map entity index (`map::MapBrushEntity`).
+    pub index: u32,
+    pub origin: [f32; 3],
+    pub angles: [f32; 3],
+    pub velocity: [f32; 3],
+    pub avelocity: [f32; 3],
+    /// The pusher's local time, its move's (or wait's) end, and where the
+    /// move ends.
+    pub ltime: f64,
+    pub move_done: Option<f64>,
+    pub goal_origin: Option<[f32; 3]>,
+    pub goal_angles: Option<[f32; 3]>,
+    /// `mover_flags::*` bits.
+    pub flags: u16,
+}
+
+/// `NetMover::flags` bits.
+pub mod mover_flags {
+    pub const VISIBLE: u16 = 1;
+    pub const SOLID: u16 = 1 << 1;
+    /// Steps land on whole ticks (func_rotating's spin).
+    pub const INEXACT: u16 = 1 << 2;
+    /// Angles kept in [0, 360) (func_rotating).
+    pub const SPIN: u16 = 1 << 3;
+    /// Rotations push by the box's leading corner (model doors).
+    pub const PHYSICS_SOLID: u16 = 1 << 4;
+    /// Players are moved through (trains flag 512).
+    pub const UNBLOCKABLE: u16 = 1 << 5;
+    /// Shots hit it (a broken breakable's aren't).
+    pub const SHOOTABLE: u16 = 1 << 6;
+    /// Its logic entity is gone (killed, broken) until a round restart.
+    pub const GONE: u16 = 1 << 7;
+    /// Moves with a parent (parented brushes, breakables): not stepped on
+    /// its own.
+    pub const ATTACHED: u16 = 1 << 8;
+}
+
+/// A physics prop's pose (engine space), velocity and whether it is there,
+/// written by the server on the prop's node after each tick
+/// (`props::write_props`); a client draws its own copy (the node with the
+/// same `map::PropIndex`) from these at the render time (`props`).
+#[derive(Component, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct NetProp {
+    /// `map::PropIndex`.
+    pub index: u32,
+    pub origin: [f32; 3],
+    pub rotation: [f32; 4],
+    pub velocity: [f32; 3],
+    /// `prop_flags::*` bits.
+    pub flags: u16,
+}
+
+/// `NetProp::flags` bits.
+pub mod prop_flags {
+    pub const VISIBLE: u16 = 1;
+    pub const SOLID: u16 = 1 << 1;
+}
+
 /// The network's systems, protocol and console commands. With
 /// `RepliconPlugins` and renet's; nothing runs until `listen` or
 /// `connect` (single player stays `NetRole::Standalone`).
@@ -326,11 +420,19 @@ impl Plugin for NetPlugin {
             app.add_plugins(StatesPlugin);
         }
         app.add_plugins((
-            RepliconPlugins.set(RepliconSharedPlugin {
-                // Our own handshake (`Join`): a version message before the
-                // protocol hash.
-                auth_method: AuthMethod::Custom,
-            }),
+            RepliconPlugins
+                .set(RepliconSharedPlugin {
+                    // Our own handshake (`Join`): a version message before the
+                    // protocol hash.
+                    auth_method: AuthMethod::Custom,
+                })
+                .set(ServerPlugin {
+                    // A mutate message every tick, empty or not: a client
+                    // learns that what didn't change held still at that
+                    // tick (`interp`), and when ticks arrive (its clock).
+                    track_mutate_messages: true,
+                    ..ServerPlugin::new(FixedPostUpdate)
+                }),
             RepliconRenetPlugins,
         ))
         // The protocol, in the same order everywhere. `Join` and
@@ -348,6 +450,13 @@ impl Plugin for NetPlugin {
         .replicate::<NetBody>()
         .replicate::<Team>()
         .replicate::<Health>()
+        .replicate::<NetMover>()
+        // Every value a client receives also goes into its snapshot
+        // buffer, by the server tick it is from.
+        .set_receive_fns::<NetBody>(interp::write_snapshot::<NetBody>, interp::remove_snapshots::<NetBody>)
+        .set_receive_fns::<NetMover>(interp::write_snapshot::<NetMover>, interp::remove_snapshots::<NetMover>)
+        .replicate::<NetProp>()
+        .set_receive_fns::<NetProp>(interp::write_snapshot::<NetProp>, interp::remove_snapshots::<NetProp>)
         .init_resource::<NetSettings>()
         .init_resource::<NetVersion>()
         .add_message::<NetEvent>()
@@ -356,6 +465,9 @@ impl Plugin for NetPlugin {
         server::plugin(app);
         client::plugin(app);
         predict::plugin(app);
+        interp::plugin(app);
+        movers::plugin(app);
+        props::plugin(app);
         udp::plugin(app);
         memory::plugin(app);
         commands(app);
@@ -543,6 +655,7 @@ pub fn status(world: &mut World) -> String {
             }
             if let Some(g) = world.get_resource::<predict::NetGraph>() {
                 out.push(format!("predict : {}", g.prediction_line()));
+                out.push(format!("interp  : {}", g.interp_line()));
             }
         }
         NetRole::Server => {

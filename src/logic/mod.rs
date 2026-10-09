@@ -27,7 +27,8 @@ pub mod world;
 #[cfg(test)]
 mod tests;
 
-pub use bridge::{Logic, LogicPlugin, LogicSet};
+pub(crate) use bridge::set_node_shown;
+pub use bridge::{CarriedMover, Logic, LogicPlugin, LogicSet, brush_to_engine, carry_player, mover_brushes_at};
 pub use hud::{HudMessage, HudMessages};
 pub use value::Value;
 pub use world::{BrushCollision, Collision, Delivery, Effect, EntId, LogicWorld, NoCollision, Player, Who};
