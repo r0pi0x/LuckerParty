@@ -78,6 +78,7 @@ mod heavy {
     mod map_de_nuke;
     mod map_de_nuke_doors;
     mod map_de_port;
+    mod map_net_changelevel;
     mod map_net_weapons;
     mod map_fire;
     mod map_hdr;

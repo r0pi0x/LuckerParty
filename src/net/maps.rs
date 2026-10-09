@@ -192,7 +192,8 @@ pub fn loaded_map(world: &World) -> Option<(String, Option<[u8; 32]>)> {
         return Some((id, None));
     }
     let file = world.get_resource::<crate::map::MapFile>()?;
-    file.name
+    // The file's name with or without its game (`cs_source:de_dust2`).
+    map_name(&file.name)
         .eq_ignore_ascii_case(map_name(&id))
         .then(|| (id.clone(), file.hash))
 }

@@ -1015,7 +1015,9 @@ pub fn map_matches(world: &World, map: &str, hash: Option<[u8; 32]>) -> Option<b
     }
     let file = world.get_resource::<crate::map::MapFile>()?;
     let want_name = map.rsplit(':').next().unwrap_or(map);
-    if !file.name.eq_ignore_ascii_case(want_name) || current_map(world) != map {
+    // The loaded file's name, with or without its game (`cs_source:x`).
+    let have = file.name.rsplit(':').next().unwrap_or(&file.name);
+    if !have.eq_ignore_ascii_case(want_name) || current_map(world) != map {
         return None;
     }
     Some(file.hash == hash)

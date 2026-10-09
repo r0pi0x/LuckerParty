@@ -1004,6 +1004,30 @@ with tests passing and something to see.
      another build "newer server". Unit tests: the HTTP client (chunked,
      404), download checks, refusal kinds, the dialog's lines and the
      failure dialog.
+   - [x] `tests/it/heavy/map_net_changelevel.rs`: the greybox to de_dust2
+     from the install with a client and two bots (the client's copy
+     checked by hash, followed on the same connection, the bots along).
+   - [x] Two real games on the dev box (debug builds, a busy box): host
+     `-port 27031 +maxplayers 4 +hostname "Lucker Party test" +map
+     greybox`, the client with `+net_fakelag 100 +net_fakejitter 20
+     +net_fakeloss 5 +mashup_loading_details 1`, `connect` through its
+     console: the dialog showed "Retrieving server info..." with the
+     detailed view, then the game (ping ~150 ms). `changelevel de_dust2`
+     on the host: the client showed "Server is changing level..." for
+     the host's ~4.5 s load, then its own stages (checking the map 0.09
+     s, "Loading world...", "Initializing world...", "Loading
+     resources..." with the bar), and played on de_dust2 at the
+     terrorists' spawn on the same connection (1 of 4259 states
+     mispredicted). `bot_add 1; bot_add 2; bot_add 2` on the host: the
+     client's scoreboard listed Bot 1-3 with "BOT", its kill feed showed
+     Bot 1 killing Bot 3, its chat the bots' radio ("Enemy spotted",
+     "Enemy down"); its own `bot_add` was refused. `connect` to a port
+     with no server: "Disconnected / Connection to server timed out." in
+     the dialog (the game's string).
+     Found on the way: maps from the install spawn with
+     `cs_source:<name>` as their file's name, so a server never saw its
+     new map in and a joining client couldn't match one: names are
+     compared without the game now.
    - Not yet: the mount doctor check before joining; content besides the
      map file (custom materials, models, sounds); a changelevel to the
      same map file doesn't reload clients; decals for late joiners.

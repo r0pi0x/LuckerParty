@@ -2413,7 +2413,8 @@ pub fn dialog_state(
     map: &str,
 ) -> (String, f32) {
     use crate::net::client::JoinStage as S;
-    if let Some(j) = join.filter(|j| j.showing() && j.failure.is_none()) {
+    // Joined too: the frame before the dialog closes.
+    if let Some(j) = join.filter(|j| j.stage != crate::net::client::JoinStage::Idle && j.failure.is_none()) {
         let (token, ours) = j.stage.token();
         let stage = menu.text(&format!("#{token}"), ours);
         return match j.stage {
@@ -2494,7 +2495,7 @@ fn detail_stage(
             format!("{:.0}%", p.fraction * 100.0),
         )
     };
-    match join.filter(|j| j.showing() && j.failure.is_none()) {
+    match join.filter(|j| j.stage != S::Idle && j.failure.is_none()) {
         Some(j) if j.stage == S::Downloading => {
             let text = j.download.as_ref().map_or(String::new(), |d| {
                 if d.total > 0 {
