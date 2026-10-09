@@ -64,15 +64,6 @@ pub struct Resolved {
     pub selfillum: Option<crate::map::MapSelfIllum>,
 }
 
-/// A packfile's entries by lower-case name (with `/` separators).
-fn pack_names(pack: &vbsp::Packfile) -> HashMap<String, String> {
-    let zip = pack.clone().into_zip();
-    let zip = zip.lock().unwrap_or_else(|e| e.into_inner());
-    zip.file_names()
-        .map(|n| (n.replace('\\', "/").to_lowercase(), n.to_string()))
-        .collect()
-}
-
 pub struct MaterialLoader<'a> {
     bsp: &'a Bsp,
     mount: &'a Mount,
@@ -80,16 +71,21 @@ pub struct MaterialLoader<'a> {
     pub cubemaps: Vec<crate::map::MapCubemap>,
     by_path: HashMap<String, Option<usize>>,
     cube_by_path: HashMap<String, Option<usize>>,
-    /// The map's packed files by lower-case path: maps pack names in any
+    /// The map's packed files, found by any case: maps pack names in any
     /// case (`legomg/Shotgun.vmt`) and the game finds them whatever case
     /// the map's own references use.
-    pack_names: HashMap<String, String>,
+    pak: super::pak::Pak<'a>,
     /// Materials or textures that couldn't be loaded, with the reason.
     pub missing: Vec<String>,
 }
 
 impl<'a> MaterialLoader<'a> {
-    pub fn new(bsp: &'a Bsp, mount: &'a Mount) -> Self {
+    /// `pak`: the BSP's pakfile lump (40) as stored. Its LZMA-compressed
+    /// files (repacked maps) are decoded up front, several at once.
+    pub fn new(bsp: &'a Bsp, mount: &'a Mount, pak: &'a [u8]) -> Self {
+        let pak = super::pak::Pak::new(pak);
+        let names: Vec<String> = pak.names().map(str::to_string).collect();
+        pak.prefetch(names.iter().map(String::as_str));
         Self {
             bsp,
             mount,
@@ -97,75 +93,43 @@ impl<'a> MaterialLoader<'a> {
             cubemaps: Vec::new(),
             by_path: HashMap::new(),
             cube_by_path: HashMap::new(),
-            pack_names: pack_names(&bsp.pack),
+            pak,
             missing: Vec::new(),
         }
     }
 
-    /// A file from the map's pakfile only (any case).
+    /// A file from the map's pakfile only (any case). Entries our reader
+    /// doesn't decode (deflated ones) go through vbsp's zip reader.
     pub fn read_packed(&self, path: &str) -> Option<Vec<u8>> {
         let path = normalize(path);
-        if let Ok(Some(data)) = self.bsp.pack.get(&path) {
-            return Some(data);
+        match self.pak.read(&path)? {
+            Ok(data) => Some(data),
+            Err(()) => self.bsp.pack.get(&path).ok().flatten().or_else(|| {
+                let lower = path.to_lowercase();
+                let zip = self.bsp.pack.clone().into_zip();
+                let zip = zip.lock().unwrap_or_else(|e| e.into_inner());
+                let name = zip
+                    .file_names()
+                    .find(|n| n.replace('\\', "/").to_lowercase() == lower)
+                    .map(str::to_string)?;
+                drop(zip);
+                self.bsp.pack.get(&name).ok().flatten()
+            }),
         }
-        self.pack_names
-            .get(&path.to_lowercase())
-            .and_then(|n| self.bsp.pack.get(n).ok().flatten())
     }
 
+    /// A file from the map's pakfile, else the game's files.
     pub fn read(&self, path: &str) -> Option<Vec<u8>> {
-        let path = normalize(path);
-        if let Ok(Some(data)) = self.bsp.pack.get(&path) {
-            return Some(data);
-        }
-        if let Some(name) = self.pack_names.get(&path.to_lowercase()) {
-            match self.bsp.pack.get(name) {
-                Ok(Some(data)) => return Some(data),
-                Err(_) => return self.packed_lzma(name),
-                Ok(None) => {}
-            }
-        }
-        self.mount.read(&path).ok()
-    }
-
-    /// A packed file the zip reader's LZMA decoder refuses ("stream is
-    /// corrupted": surf_demise's 78 MB HDR sky cubemap, which the game
-    /// and other zip readers decode), decoded from its raw entry with
-    /// lzma-rs. Zip's LZMA entries: a version (2 bytes), the property
-    /// size (2, always 5), the properties (5), then the stream.
-    fn packed_lzma(&self, name: &str) -> Option<Vec<u8>> {
-        use std::io::Read;
-        let zip = self.bsp.pack.clone().into_zip();
-        let mut zip = zip.lock().unwrap_or_else(|e| e.into_inner());
-        let index = (0..zip.len()).find(|&i| zip.by_index_raw(i).is_ok_and(|f| f.name() == name))?;
-        let mut entry = zip.by_index_raw(index).ok()?;
-        let size = entry.size();
-        let mut raw = Vec::new();
-        entry.read_to_end(&mut raw).ok()?;
-        if raw.get(2..4)? != [5, 0] {
-            return None;
-        }
-        let mut out = Vec::with_capacity(size as usize);
-        lzma_rs::lzma_decompress_with_options(
-            &mut std::io::Cursor::new(&raw[4..]),
-            &mut out,
-            &lzma_rs::decompress::Options {
-                unpacked_size: lzma_rs::decompress::UnpackedSize::UseProvided(Some(size)),
-                allow_incomplete: false,
-                memlimit: None,
-            },
-        )
-        .ok()?;
-        (out.len() as u64 == size).then_some(out)
+        self.read_packed(path).or_else(|| self.mount.read(&normalize(path)).ok())
     }
 
     /// A packed file under `materials/maps/<any folder>/` named `file`
     /// (lower case): a renamed map's own files sit under its original
     /// name. The path without `materials/` and the extension.
     pub fn packed_map_file(&self, file: &str) -> Option<String> {
-        let mut found: Vec<&String> = self
-            .pack_names
-            .keys()
+        let mut found: Vec<&str> = self
+            .pak
+            .names()
             .filter(|k| k.starts_with("materials/maps/") && k.rsplit('/').next() == Some(file))
             .collect();
         found.sort();

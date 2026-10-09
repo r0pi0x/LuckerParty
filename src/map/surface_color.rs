@@ -34,6 +34,10 @@ struct Tri {
 pub struct SurfaceColors {
     tris: Vec<Tri>,
     cells: HashMap<IVec3, Vec<u32>>,
+    /// Triangles spanning more than `BIG_CELLS` cells, with their bounds,
+    /// kept out of the grid (a surf map's 100 m ramps filled millions of
+    /// cells).
+    big: Vec<(u32, Vec3, Vec3)>,
     lightmap: Option<Arc<MapLightmap>>,
     light_scale: f32,
     /// Per prop: base colour, light probe, rotation.
@@ -41,6 +45,7 @@ pub struct SurfaceColors {
 }
 
 const CELL: f32 = 1.0;
+const BIG_CELLS: i32 = 64;
 /// Triangles whose plane passes farther than this from the point take no
 /// part (meters).
 const REACH: f32 = 0.05;
@@ -134,10 +139,16 @@ impl SurfaceColors {
                 base,
                 blend,
             });
-            let (lo, hi) = (
-                cell(corners[0].min(corners[1]).min(corners[2])),
-                cell(corners[0].max(corners[1]).max(corners[2])),
+            let (min, max) = (
+                corners[0].min(corners[1]).min(corners[2]),
+                corners[0].max(corners[1]).max(corners[2]),
             );
+            let (lo, hi) = (cell(min), cell(max));
+            let span = hi - lo + IVec3::ONE;
+            if span.x * span.y * span.z > BIG_CELLS {
+                self.big.push((i, min, max));
+                continue;
+            }
             for x in lo.x..=hi.x {
                 for y in lo.y..=hi.y {
                     for z in lo.z..=hi.z {
@@ -151,9 +162,14 @@ impl SurfaceColors {
     /// The world surface at `p` facing `normal`: the nearest triangle
     /// containing the point (within a few centimetres of its plane).
     pub fn world(&self, p: Vec3, normal: Vec3) -> Option<SurfaceLook> {
-        let list = self.cells.get(&cell(p))?;
+        let slack = Vec3::splat(REACH);
+        let big = self
+            .big
+            .iter()
+            .filter(|(_, lo, hi)| p.cmpge(*lo - slack).all() && p.cmple(*hi + slack).all())
+            .map(|(i, ..)| i);
         let mut best: Option<(f32, &Tri, Vec3)> = None;
-        for &i in list {
+        for &i in self.cells.get(&cell(p)).into_iter().flatten().chain(big) {
             let t = &self.tris[i as usize];
             let dist = t.normal.dot(p - t.corners[0]).abs();
             if dist > REACH || t.normal.dot(normal) < 0.5 {

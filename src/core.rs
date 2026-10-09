@@ -1122,6 +1122,76 @@ impl MapBrush {
 }
 
 impl MapBrush {
+    /// A convex solid from its face planes (`n . p <= d`, normals
+    /// normalized), with the bevel planes a box sweep needs to be exact:
+    /// the bounding box's planes and, through each edge, the planes along
+    /// the edge and each axis that touch the solid only there (as vbsp
+    /// adds to brushes). Without them a box swept by pushing the planes
+    /// out stops short of a non-axial edge, in the air beside it: on a
+    /// surf ramp built of pieces, a ghost wall at each seam.
+    pub fn from_planes(mut planes: Vec<(Vec3, f32)>) -> Self {
+        let n = planes.len();
+        // Corners: where three planes meet inside all the others.
+        let mut corners: Vec<Vec3> = Vec::new();
+        for i in 0..n {
+            for j in i + 1..n {
+                for k in j + 1..n {
+                    let ((n1, d1), (n2, d2), (n3, d3)) = (planes[i], planes[j], planes[k]);
+                    let denom = n1.dot(n2.cross(n3));
+                    if denom.abs() < 1e-6 {
+                        continue;
+                    }
+                    let p = (n2.cross(n3) * d1 + n3.cross(n1) * d2 + n1.cross(n2) * d3) / denom;
+                    if planes.iter().all(|(m, d)| m.dot(p) <= d + 1e-3) {
+                        corners.push(p);
+                    }
+                }
+            }
+        }
+        let on = |p: Vec3, (m, d): (Vec3, f32)| (m.dot(p) - d).abs() < 1e-3;
+        let min = corners.iter().fold(Vec3::MAX, |a, c| a.min(*c));
+        let max = corners.iter().fold(Vec3::MIN, |a, c| a.max(*c));
+        let add = |planes: &mut Vec<(Vec3, f32)>, m: Vec3, d: f32| {
+            if !planes.iter().any(|(q, e)| q.dot(m) > 0.9999 && (e - d).abs() < 1e-4) {
+                planes.push((m, d));
+            }
+        };
+        for (m, d) in Self::from_box(min, max).planes {
+            add(&mut planes, m, d);
+        }
+        // Edges: two face planes that share at least two corners.
+        for i in 0..n {
+            for j in i + 1..n {
+                let ends: Vec<Vec3> = corners
+                    .iter()
+                    .copied()
+                    .filter(|p| on(*p, planes[i]) && on(*p, planes[j]))
+                    .collect();
+                let (Some(a), Some(b)) = (ends.first(), ends.iter().find(|p| p.distance(ends[0]) > 1e-4)) else {
+                    continue;
+                };
+                let e = *b - *a;
+                for axis in [Vec3::X, Vec3::Y, Vec3::Z] {
+                    let Some(m) = e.cross(axis).try_normalize() else { continue };
+                    for m in [m, -m] {
+                        let d = m.dot(*a);
+                        // A bevel touches the solid along the edge only.
+                        if corners.iter().all(|c| m.dot(*c) <= d + 1e-3) {
+                            add(&mut planes, m, d);
+                        }
+                    }
+                }
+            }
+        }
+        Self {
+            planes,
+            min,
+            max,
+            ladder: false,
+            surface: None,
+        }
+    }
+
     /// A triangle as a thin solid: the triangle's face (normal `(b - a) x
     /// (c - a)`), a back face `thickness` behind it, its three sides, and
     /// the bevel planes a box sweep needs to be exact (the box's axes and
