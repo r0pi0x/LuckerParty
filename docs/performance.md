@@ -487,7 +487,9 @@ two spawns), plus traces of a `--features profile` build.
   (`main.rs`); systems that iterate many entities still spread over the
   task pool themselves (transform propagation, visibility), and the main
   and render worlds still run side by side. `MASHUP_EXECUTOR=multi`
-  brings back Bevy's default.
+  brings back Bevy's default. On macOS the render schedules keep Bevy's
+  executor: the window surface must be created on the main thread, and
+  only the multi-threaded executor hands such systems to it.
 - **Bodies nobody sees** were posed every frame: the local player's
   hidden body (51 joints written per frame on dust2) and bots out of
   view. `map::pose_bodies` now poses a body every frame only while some
