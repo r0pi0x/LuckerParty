@@ -43,6 +43,8 @@ pub struct GameMenuPlugin;
 impl Plugin for GameMenuPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<GameMenu>()
+            .init_resource::<LoadingDetails>()
+            .init_resource::<LoadTimeline>()
             .init_resource::<AfterLoad>()
             .init_resource::<RegrabCursor>()
             .init_resource::<MenuUi>()
@@ -60,8 +62,16 @@ impl Plugin for GameMenuPlugin {
                     draw,
                     loading_progress,
                 )
-                    .chain(),
+                    .chain()
+                    .in_set(MenuSystems),
             );
+        crate::console::resource_cvar::<LoadingDetails, u8>(
+            app,
+            "mashup_loading_details",
+            "1: the loading dialog adds a detailed view (each stage's time, bytes and percentage; the server's name, \
+             map, players and ping).",
+            |d| &mut d.0,
+        );
         app.console_command(
             "menu",
             "menu [main|newgame|maps|bots|team|options|keyboard|mouse|audio|video|multiplayer]: open the game menu (Esc) on a page (options: on a tab).",
@@ -100,6 +110,10 @@ impl Plugin for GameMenuPlugin {
         });
     }
 }
+
+/// The menu's systems (the server browser runs after them).
+#[derive(SystemSet, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct MenuSystems;
 
 // ---------------------------------------------------------------------------
 // The model.
@@ -167,7 +181,7 @@ pub enum MainItem {
     Resume,
     /// Leave the game for the main menu (`disconnect`).
     Disconnect,
-    /// The server browser: greyed until mashup has networking.
+    /// The server browser (`openserverbrowser`).
     FindServers,
     /// The game's "Create Server": our new game page.
     NewGame,
@@ -245,15 +259,14 @@ impl MainEntry {
             gap: false,
             gap_in_game_only: false,
             in_game_only,
-            // Until mashup has networking.
-            enabled: item != MainItem::FindServers,
+            enabled: true,
         }
     }
 }
 
 /// Every left-hand entry, shown or not: the game's (`GameMenu.res`) that
 /// mashup has, in its order and words (built-in ones in CS:S's order
-/// without the file), Find Servers greyed; then, after a gap, ours (quick
+/// without the file); then, after a gap, ours (quick
 /// start, the greybox, bots, team, console). Entries mashup can't do
 /// (player list, achievements, benchmark ...) are left out.
 /// `GameMenu::entries` picks those shown in or out of a game.
@@ -459,9 +472,13 @@ pub struct GameMenu {
     /// map, after `disconnect`), where the menu stays open over the game's
     /// background and in-game entries are hidden.
     pub in_game: bool,
-    /// A map the main menu started is loading (its name): the menu shows
-    /// that and takes no input until the map is in.
+    /// A map the main menu started is loading (its name), or a server is
+    /// being joined (its address, then its map): the loading dialog
+    /// shows that and the menu takes no input until the map is in.
     pub loading: Option<String>,
+    /// The loading dialog shows why joining (or the game) failed, in the
+    /// game's words (`net_failure_text`), until it's closed.
+    pub failure: Option<String>,
     pub page: Page,
     /// The focused row of the page (of `main` on the main page).
     pub focus: usize,
@@ -707,6 +724,7 @@ impl GameMenu {
     pub fn leave_game(&mut self) {
         self.in_game = false;
         self.loading = None;
+        self.failure = None;
         self.open = true;
         self.page = Page::Main;
         self.capture = None;
@@ -882,6 +900,15 @@ impl GameMenu {
     /// Apply an input; the console lines it produces.
     pub fn handle(&mut self, input: Input) -> Outcome {
         let mut out = Outcome::default();
+        if self.open && self.failure.is_some() {
+            // The failure's dialog: Close (its button, Esc, Enter) leaves
+            // the main menu.
+            if matches!(input, Input::Click(Target::Cancel, _) | Input::Close | Input::Activate) {
+                self.failure = None;
+                self.loading = None;
+            }
+            return out;
+        }
         if self.open && self.loading.is_some() && matches!(input, Input::Click(Target::Cancel, _)) {
             // Stop the load: back at the main menu (`disconnect` drops it).
             self.loading = None;
@@ -1117,7 +1144,8 @@ impl GameMenu {
                 }
             }
             MainItem::Console => out.lines.push("toggleconsole".into()),
-            MainItem::FindServers | MainItem::NewGame | MainItem::Bots | MainItem::Team | MainItem::Options => {}
+            MainItem::FindServers => out.lines.push("openserverbrowser".into()),
+            MainItem::NewGame | MainItem::Bots | MainItem::Team | MainItem::Options => {}
         }
     }
 
@@ -1301,7 +1329,7 @@ impl MenuUi {
 }
 
 /// A decoded picture as a UI image.
-fn ui_image(pic: &crate::map::hud::UiImage, images: &mut Assets<Image>) -> Handle<Image> {
+pub(super) fn ui_image(pic: &crate::map::hud::UiImage, images: &mut Assets<Image>) -> Handle<Image> {
     use bevy::{
         asset::RenderAssetUsages,
         render::render_resource::{Extent3d, TextureDimension, TextureFormat},
@@ -1443,6 +1471,14 @@ fn open_menu(w: &mut World, page: Page) {
     w.resource_mut::<RegrabCursor>().0 = false;
 }
 
+/// The menu open (on its main page unless it is open already): for the
+/// server browser, which shows over it.
+pub(super) fn open_main(w: &mut World) {
+    if !w.resource::<GameMenu>().open {
+        open_menu(w, Page::Main);
+    }
+}
+
 /// A map is in (`map`, `map greybox`): playing it, the menu closed.
 pub(super) fn entered_game(w: &mut World) {
     let Some(mut menu) = w.get_resource_mut::<GameMenu>() else { return };
@@ -1458,7 +1494,76 @@ pub(super) fn left_game(w: &mut World) {
     let Some(mut menu) = w.get_resource_mut::<GameMenu>() else { return };
     menu.in_game = false;
     menu.loading = None;
+    menu.failure = None;
     open_menu(w, Page::Main);
+}
+
+/// Joining a server, or following its map change (`client::net`): the
+/// loading dialog over the main menu's background (`label`: the address,
+/// then the map), as the game shows it, until the map is in
+/// (`entered_game`) or it fails (`show_failure`).
+pub(super) fn joining(w: &mut World, label: &str) {
+    let Some(mut menu) = w.get_resource_mut::<GameMenu>() else { return };
+    if menu.loading.as_deref() == Some(label) && menu.open && menu.failure.is_none() {
+        return;
+    }
+    menu.loading = Some(label.to_string());
+    menu.failure = None;
+    menu.in_game = false;
+    menu.open = true;
+    menu.page = Page::Main;
+    menu.capture = None;
+}
+
+/// Joining (or the game) failed: the loading dialog says why, in the
+/// game's words, until it's closed.
+pub(super) fn show_failure(w: &mut World) {
+    let Some(failure) = w
+        .get_resource::<crate::net::client::JoinProgress>()
+        .and_then(|p| p.failure.clone())
+    else {
+        return;
+    };
+    let Some(mut menu) = w.get_resource_mut::<GameMenu>() else { return };
+    let text = net_failure_text(&menu, &failure.0, &failure.1);
+    menu.failure = Some(text);
+    menu.loading = Some(String::new());
+    menu.open = true;
+    menu.page = Page::Main;
+}
+
+/// Why joining failed, as the game words it (its GameUI strings, `%s1`
+/// filled in), else the server's or our own words.
+pub fn net_failure_text(menu: &GameMenu, kind: &crate::net::client::JoinFailure, reason: &str) -> String {
+    use crate::net::client::JoinFailure as F;
+    let game = |token: &str| menu.game_text(token).map(|t| t.trim_end().to_string());
+    let text = match kind {
+        F::Full => game("#GameUI_ServerRejectServerFull"),
+        F::OldServer => game("#GameUI_ServerRejectOldVersion"),
+        F::NewServer => game("#GameUI_ServerRejectNewVersion"),
+        F::Timeout => game("#GameUI_ServerConnectionTimeout"),
+        F::Download { file, error } => {
+            let token = match error.as_str() {
+                "File does not exist" => "#GameUI_DownloadFailedFileNotFound",
+                "Connection closed by remote host" => "#GameUI_DownloadFailedConClosed",
+                "Invalid URL" => "#GameUI_DownloadFailedBadURL",
+                "Only HTTP is supported" => "#GameUI_DownloadFailedBadProtocol",
+                "Cannot get file info from server" => "#GameUI_DownloadFailedNoHeaders",
+                "File has no data" => "#GameUI_DownloadFailedZeroLen",
+                e if e.starts_with("Cannot connect to server") => "#GameUI_DownloadFailedCantConnect",
+                _ => "",
+            };
+            let generic = game("#GameUI_DownloadFailed").map(|t| format!("{}:\n{error}", t.replace("%s1", file)));
+            if token.is_empty() {
+                generic
+            } else {
+                game(token).map(|t| t.replace("%s1", file)).or(generic)
+            }
+        }
+        F::Dropped => game("#GameUI_DisconnectedFromServerExtended").map(|t| t.replace("%s1", reason)),
+        _ => None,
+    };
+    text.unwrap_or_else(|| reason.to_string())
 }
 
 /// A `map` load failed: the main menu takes input again.
@@ -1551,8 +1656,10 @@ fn keys(
     mut after: ResMut<AfterLoad>,
     mut regrab: ResMut<RegrabCursor>,
     mut commands: Commands,
+    browser: Option<Res<super::server_browser::ServerBrowser>>,
 ) {
-    if ui.open {
+    // The server browser over the menu takes the keys.
+    if ui.open || browser.is_some_and(|b| b.open) {
         return;
     }
     if !menu.open {
@@ -1623,8 +1730,9 @@ fn pointer(
     mut console: ResMut<Console>,
     mut after: ResMut<AfterLoad>,
     mut regrab: ResMut<RegrabCursor>,
+    browser: Option<Res<super::server_browser::ServerBrowser>>,
 ) {
-    if !menu.open || menu.capture.is_some() {
+    if !menu.open || menu.capture.is_some() || browser.is_some_and(|b| b.open) {
         return;
     }
     let mut inputs: Vec<Input> = hits
@@ -1711,11 +1819,20 @@ fn cursor(
 /// started: the `map` line failed).
 fn after_load(w: &mut World) {
     // A load started at the main menu (a menu, the console): its dialog.
+    // A server's own map change too (its players load it as well): the
+    // dialog over the game, as theirs (single player keeps playing the
+    // old map until the new one is in).
+    let serving = w.get_resource::<crate::core::NetRole>() == Some(&crate::core::NetRole::Server);
     if let Some(map) = super::console::loading_map(w)
         && let Some(mut menu) = w.get_resource_mut::<GameMenu>()
-        && !menu.in_game
+        && (!menu.in_game || serving)
         && menu.loading.is_none()
     {
+        if menu.in_game {
+            menu.in_game = false;
+            menu.open = true;
+            menu.page = Page::Main;
+        }
         menu.loading = Some(map);
     }
     let loading = super::console::map_loading(w);
@@ -1746,40 +1863,40 @@ fn after_load(w: &mut World) {
 struct MenuRoot;
 
 /// Colours, sizes and fonts: the GameUI scheme's, else built in.
-struct Look<'a> {
-    ui: Option<&'a GameUi>,
-    fonts: &'a UiFonts,
+pub(super) struct Look<'a> {
+    pub ui: Option<&'a GameUi>,
+    pub fonts: &'a UiFonts,
     /// Pixels per scheme pixel (GameUI is drawn in screen pixels; larger
     /// windows scale it up).
-    s: f32,
-    height: f32,
-    accent: Color,
+    pub s: f32,
+    pub height: f32,
+    pub accent: Color,
 }
 
 impl<'a> Look<'a> {
-    fn color(&self, name: &str, fallback: [u8; 4]) -> Color {
+    pub(super) fn color(&self, name: &str, fallback: [u8; 4]) -> Color {
         let [r, g, b, a] = self.ui.and_then(|u| u.color(name)).unwrap_or(fallback);
         Color::srgba_u8(r, g, b, a)
     }
 
-    fn number(&self, name: &str, fallback: f32) -> f32 {
+    pub(super) fn number(&self, name: &str, fallback: f32) -> f32 {
         self.ui.and_then(|u| u.numbers.get(name).copied()).unwrap_or(fallback)
     }
 
     /// Built in colours stand in for the scheme's: a darker panel, our
     /// accent for selections.
-    fn has_scheme(&self) -> bool {
+    pub(super) fn has_scheme(&self) -> bool {
         self.ui.is_some_and(|u| !u.colors.is_empty())
     }
 
     /// A GameUI scheme font (`Default`, `UiBold`, `MenuLarge`) at this
     /// window's size: `fallback` scheme pixels tall and bold when the
     /// scheme lacks it.
-    fn font(&self, name: &str, fallback: (f32, bool)) -> TextFont {
+    pub(super) fn font(&self, name: &str, fallback: (f32, bool)) -> TextFont {
         self.fonts.source(name, self.height, self.s, fallback)
     }
 
-    fn frame_bg(&self) -> Color {
+    pub(super) fn frame_bg(&self) -> Color {
         if self.has_scheme() {
             self.color("Frame.BgColor", [160, 160, 160, 128])
         } else {
@@ -1787,31 +1904,31 @@ impl<'a> Look<'a> {
         }
     }
 
-    fn bright(&self) -> Color {
+    pub(super) fn bright(&self) -> Color {
         self.color("Border.Bright", [200, 200, 200, 196])
     }
 
-    fn dark(&self) -> Color {
+    pub(super) fn dark(&self) -> Color {
         self.color("Border.Dark", [40, 40, 40, 196])
     }
 
-    fn text(&self) -> Color {
+    pub(super) fn text(&self) -> Color {
         self.color("Label.TextColor", [221, 221, 221, 255])
     }
 
-    fn dull(&self) -> Color {
+    pub(super) fn dull(&self) -> Color {
         self.color("Label.TextDullColor", [190, 190, 190, 255])
     }
 
-    fn disabled(&self) -> Color {
+    pub(super) fn disabled(&self) -> Color {
         self.color("Label.DisabledFgColor1", [117, 117, 117, 255])
     }
 
-    fn white(&self) -> Color {
+    pub(super) fn white(&self) -> Color {
         self.color("Label.TextBrightColor", [255, 255, 255, 255])
     }
 
-    fn selected_bg(&self) -> Color {
+    pub(super) fn selected_bg(&self) -> Color {
         if self.has_scheme() {
             self.color("SectionedListPanel.SelectedBgColor", [255, 155, 0, 255])
         } else {
@@ -1819,21 +1936,21 @@ impl<'a> Look<'a> {
         }
     }
 
-    fn selected_text(&self) -> Color {
+    pub(super) fn selected_text(&self) -> Color {
         self.color("SectionedListPanel.SelectedTextColor", [0, 0, 0, 255])
     }
 
-    fn sunken_bg(&self) -> Color {
+    pub(super) fn sunken_bg(&self) -> Color {
         self.color("TextEntry.BgColor", [0, 0, 0, 128])
     }
 
-    fn px(&self, v: f32) -> Val {
+    pub(super) fn px(&self, v: f32) -> Val {
         px((v * self.s).round())
     }
 }
 
 /// An absolutely placed box, in scheme pixels, inside `parent`.
-fn place(look: &Look, x: f32, y: f32, w: f32, h: f32) -> Node {
+pub(super) fn place(look: &Look, x: f32, y: f32, w: f32, h: f32) -> Node {
     Node {
         position_type: PositionType::Absolute,
         left: look.px(x),
@@ -1845,7 +1962,7 @@ fn place(look: &Look, x: f32, y: f32, w: f32, h: f32) -> Node {
 }
 
 /// Raised (lit top-left) or sunken (lit bottom-right) VGUI borders.
-fn bevel(look: &Look, raised: bool) -> BorderColor {
+pub(super) fn bevel(look: &Look, raised: bool) -> BorderColor {
     let (a, b) = if raised {
         (look.bright(), look.dark())
     } else {
@@ -1862,7 +1979,7 @@ fn bevel(look: &Look, raised: bool) -> BorderColor {
 /// Text in a box: one line, vertically centred, `align` -1 left, 0
 /// centre, 1 right.
 #[allow(clippy::too_many_arguments)]
-fn label(
+pub(super) fn label(
     commands: &mut Commands,
     parent: Entity,
     look: &Look,
@@ -1944,6 +2061,7 @@ fn draw(
     fonts: Res<UiFonts>,
     menu_ui: Option<Res<MenuUi>>,
     hud: Option<Res<crate::map::hud::ActiveHud>>,
+    details: Res<LoadingDetails>,
     shown: Query<Entity, With<MenuRoot>>,
     windows: Query<&Window>,
     mut last_size: Local<Vec2>,
@@ -1954,7 +2072,7 @@ fn draw(
         .next()
         .map_or(Vec2::new(640.0, 480.0), |w| Vec2::new(w.width(), w.height()));
     let resized = (size - *last_size).abs().max_element() > 0.5;
-    if !menu.is_changed() && !resized && !hud.as_ref().is_some_and(|h| h.is_changed()) {
+    if !menu.is_changed() && !resized && !hud.as_ref().is_some_and(|h| h.is_changed()) && !details.is_changed() {
         return;
     }
     *last_size = size;
@@ -2020,8 +2138,15 @@ fn draw(
         ));
     }
     let title_font = menu_ui.as_ref().and_then(|u| u.title_font.clone());
+    if let Some(failure) = &menu.failure {
+        failure_frame(&mut commands, root, &menu, &look, size, failure);
+        return;
+    }
     if let Some(map) = &menu.loading {
         loading_frame(&mut commands, root, &menu, &look, size, map);
+        if details.0 != 0 {
+            details_panel(&mut commands, root, &look, size);
+        }
         return;
     }
     main_list(&mut commands, root, &menu, &look, size, title_font);
@@ -2291,6 +2416,191 @@ fn loading_text(menu: &GameMenu, progress: Option<crate::map::loading::LoadProgr
     }
 }
 
+/// What the loading dialog shows now: its stage line and the bar's
+/// fraction. Joining a server: its stages (connecting, retrieving server
+/// info, downloading the map with its progress, the map's own load), as
+/// the game words them; a map loading: its stages; a server starting:
+/// "Starting local game server..." until the map reports.
+pub fn dialog_state(
+    menu: &GameMenu,
+    join: Option<&crate::net::client::JoinProgress>,
+    progress: Option<crate::map::loading::LoadProgress>,
+    hosting: bool,
+    map: &str,
+) -> (String, f32) {
+    use crate::net::client::JoinStage as S;
+    // Joined too: the frame before the dialog closes.
+    if let Some(j) = join.filter(|j| j.stage != crate::net::client::JoinStage::Idle && j.failure.is_none()) {
+        let (token, ours) = j.stage.token();
+        let stage = menu.text(&format!("#{token}"), ours);
+        return match j.stage {
+            S::LoadingMap => match progress {
+                Some(p) => (menu.text(&format!("#{}", p.stage), p.stage), p.fraction),
+                None => (stage, 0.0),
+            },
+            S::Downloading => {
+                let f = j
+                    .download
+                    .as_ref()
+                    .filter(|d| d.total > 0)
+                    .map_or(0.0, |d| (d.done as f64 / d.total as f64) as f32);
+                (stage, f.clamp(0.0, 1.0))
+            }
+            S::Connecting => (stage, 0.02),
+            S::ServerInfo | S::ChangingLevel => (stage, 0.05),
+            _ => (stage, 0.08),
+        };
+    }
+    if hosting && progress.is_none() {
+        return (
+            menu.text("#LoadingProgress_SpawningServer", "Starting local game server..."),
+            0.0,
+        );
+    }
+    (
+        loading_text(menu, progress, map),
+        progress.map_or(0.0, |p| p.fraction),
+    )
+}
+
+/// `mashup_loading_details`: the loading dialog's detailed view (each
+/// stage's time, bytes and percentage; the server's name, map, players
+/// and ping). Off by default (the game's dialog alone).
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
+pub struct LoadingDetails(pub u8);
+
+/// The stages the loading dialog went through this time, for the
+/// detailed view: each one's name, when it started (real s) and its
+/// latest progress text.
+#[derive(Resource, Clone, Debug, Default)]
+pub struct LoadTimeline {
+    pub stages: Vec<(String, f64, String)>,
+}
+
+impl LoadTimeline {
+    /// The detailed view's lines at `now`: a stage's time runs to the
+    /// next one's start (the last to now).
+    pub fn lines(&self, now: f64) -> Vec<String> {
+        let mut out = Vec::new();
+        for (i, (name, start, progress)) in self.stages.iter().enumerate() {
+            let end = self.stages.get(i + 1).map_or(now, |s| s.1);
+            out.push(format!("{name:<32} {:>7.2} s   {progress}", (end - start).max(0.0)));
+        }
+        out
+    }
+}
+
+/// Bytes as the detailed view shows them.
+fn bytes(n: u64) -> String {
+    if n >= 1024 * 1024 {
+        format!("{:.1} MB", n as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.0} KB", n as f64 / 1024.0)
+    }
+}
+
+/// The detailed view's stage now: its name and progress text.
+fn detail_stage(
+    join: Option<&crate::net::client::JoinProgress>,
+    progress: Option<crate::map::loading::LoadProgress>,
+) -> (String, String) {
+    use crate::net::client::JoinStage as S;
+    let map_stage = |p: crate::map::loading::LoadProgress| {
+        (
+            format!("loading the map: {}", p.stage.trim_start_matches("LoadingProgress_")),
+            format!("{:.0}%", p.fraction * 100.0),
+        )
+    };
+    match join.filter(|j| j.stage != S::Idle && j.failure.is_none()) {
+        Some(j) if j.stage == S::Downloading => {
+            let text = j.download.as_ref().map_or(String::new(), |d| {
+                if d.total > 0 {
+                    format!(
+                        "{} of {} ({:.0}%) of {} from {}",
+                        bytes(d.done),
+                        bytes(d.total),
+                        d.done as f64 * 100.0 / d.total as f64,
+                        d.file,
+                        d.from
+                    )
+                } else {
+                    format!("{} of {} from {}", bytes(d.done), d.file, d.from)
+                }
+            });
+            (j.stage.name().to_string(), text)
+        }
+        Some(j) if j.stage == S::LoadingMap => progress.map_or_else(|| (j.stage.name().into(), String::new()), map_stage),
+        Some(j) => (j.stage.name().to_string(), String::new()),
+        None => progress.map_or_else(|| ("starting".into(), String::new()), map_stage),
+    }
+}
+
+/// The detailed view's text: the server, then the stages.
+#[derive(Component)]
+struct LoadingDetail;
+
+/// The detailed view under the dialog (`mashup_loading_details 1`).
+fn details_panel(commands: &mut Commands, root: Entity, look: &Look, size: Vec2) {
+    let (w, h) = (560.0, 190.0);
+    let x = ((size.x / look.s - w) / 2.0).max(0.0);
+    let y = ((size.y / look.s) / 2.0 + 70.0).max(0.0);
+    let panel = commands
+        .spawn((
+            Node {
+                border: UiRect::all(px(1.0)),
+                padding: UiRect::all(look.px(8.0)),
+                ..place(look, x, y, w, h)
+            },
+            bevel(look, false),
+            BackgroundColor(look.sunken_bg()),
+            ChildOf(root),
+        ))
+        .id();
+    commands.spawn((
+        LoadingDetail,
+        Text::new(""),
+        look.font("DefaultFixed", (13.0, false)),
+        TextColor(look.text()),
+        TextLayout::new(Justify::Left, LineBreak::NoWrap),
+        ChildOf(panel),
+    ));
+}
+
+/// Why joining failed, in the loading dialog: "Disconnected", the reason
+/// (wrapped), Close.
+fn failure_frame(commands: &mut Commands, root: Entity, menu: &GameMenu, look: &Look, size: Vec2, text: &str) {
+    let (w, h) = (380.0, 150.0);
+    let title = menu.text("#GameUI_Disconnected", "Disconnected");
+    let f = frame(commands, root, look, size, (w, h), &title);
+    let body = commands
+        .spawn((
+            Node {
+                overflow: Overflow::clip(),
+                ..place(look, 20.0, 34.0, w - 40.0, h - 34.0 - 40.0)
+            },
+            ChildOf(f),
+        ))
+        .id();
+    commands.spawn((
+        Text::new(text),
+        look.font("Default", (16.0, false)),
+        TextColor(look.text()),
+        TextLayout::new(Justify::Left, LineBreak::WordBoundary),
+        ChildOf(body),
+    ));
+    let close = menu.text("#GameUI_Close", "Close");
+    button(
+        commands,
+        f,
+        look,
+        (w - 20.0 - 72.0, h - 34.0, 72.0, 24.0),
+        &close,
+        Hit(Target::Cancel, 0),
+        true,
+        true,
+    );
+}
+
 /// The loading dialog's stage line (the map's name).
 #[derive(Component)]
 struct LoadingInfo(String);
@@ -2299,31 +2609,83 @@ struct LoadingInfo(String);
 #[derive(Component)]
 struct LoadingBar;
 
-/// The loading dialog follows the load's progress.
+/// The loading dialog follows the load's progress (a map's, joining a
+/// server's), and the detailed view times its stages.
+#[allow(clippy::too_many_arguments)]
 fn loading_progress(
     menu: Res<GameMenu>,
+    join: Option<Res<crate::net::client::JoinProgress>>,
+    settings: Option<Res<crate::net::NetSettings>>,
+    role: Option<Res<crate::core::NetRole>>,
+    client: Option<Res<bevy_replicon_renet::RenetClient>>,
+    time: Res<Time<Real>>,
+    mut timeline: ResMut<LoadTimeline>,
     infos: Query<(&LoadingInfo, &Children)>,
-    mut texts: Query<&mut Text>,
+    mut texts: Query<&mut Text, Without<LoadingDetail>>,
+    mut details: Query<&mut Text, With<LoadingDetail>>,
     mut bars: Query<&mut Node, With<LoadingBar>>,
 ) {
-    if menu.loading.is_none() {
+    let now = time.elapsed_secs_f64();
+    if menu.loading.is_none() || menu.failure.is_some() {
+        timeline.stages.clear();
         return;
     }
     let progress = crate::map::loading::current();
+    let hosting = settings.as_ref().is_some_and(|s| s.maxplayers > 1)
+        && role.as_deref().is_none_or(|r| *r != crate::core::NetRole::Client)
+        && join.as_ref().is_none_or(|j| !j.showing());
+    let label = infos.iter().next().map_or(String::new(), |(i, _)| i.0.clone());
+    let (line, fraction) = dialog_state(&menu, join.as_deref(), progress, hosting, &label);
     for mut node in &mut bars {
-        let w = percent(100.0 * progress.map_or(0.0, |p| p.fraction));
+        let w = percent(100.0 * fraction);
         if node.width != w {
             node.width = w;
         }
     }
-    for (info, children) in &infos {
-        let line = loading_text(&menu, progress, &info.0);
+    for (_, children) in &infos {
         for c in children.iter() {
             if let Ok(mut t) = texts.get_mut(c)
                 && t.0 != line
             {
                 t.0 = line.clone();
             }
+        }
+    }
+    // The timeline, for the detailed view.
+    let (stage, detail) = detail_stage(join.as_deref(), progress);
+    match timeline.stages.last_mut() {
+        Some(last) if last.0 == stage => last.2 = detail,
+        _ => timeline.stages.push((stage, now, detail)),
+    }
+    if details.is_empty() {
+        return;
+    }
+    let mut lines = Vec::new();
+    if let Some(j) = join.as_deref().filter(|j| j.showing()) {
+        let server = j.server.clone().unwrap_or_default();
+        let ping = client.as_ref().map_or(0.0, |c| c.rtt() * 1000.0);
+        lines.push(format!(
+            "server  {}  {}",
+            if server.name.is_empty() { "(asking)" } else { &server.name },
+            j.address.map_or(String::new(), |a| a.to_string())
+        ));
+        lines.push(format!(
+            "map     {}   players {}/{}   ping {ping:.0} ms",
+            j.map.as_deref().unwrap_or("?"),
+            server.players,
+            server.max_players
+        ));
+    } else {
+        lines.push(format!("map     {label}"));
+    }
+    lines.push(String::new());
+    lines.extend(timeline.lines(now));
+    let total = timeline.stages.first().map_or(0.0, |s| now - s.1);
+    lines.push(format!("{:<32} {total:>7.2} s", "total"));
+    let text = lines.join("\n");
+    for mut t in &mut details {
+        if t.0 != text {
+            t.0 = text.clone();
         }
     }
 }
@@ -2381,7 +2743,7 @@ fn menu_sounds(
 /// A GameUI frame centred on the screen: its background, raised borders,
 /// title. Returns the frame (children placed in scheme pixels from its
 /// corner).
-fn frame(commands: &mut Commands, root: Entity, look: &Look, size: Vec2, (w, h): (f32, f32), title: &str) -> Entity {
+pub(super) fn frame(commands: &mut Commands, root: Entity, look: &Look, size: Vec2, (w, h): (f32, f32), title: &str) -> Entity {
     let x = ((size.x / look.s - w) / 2.0).max(0.0);
     let y = ((size.y / look.s - h) / 2.0).max(0.0);
     let e = commands
@@ -2983,6 +3345,66 @@ mod tests {
         assert_eq!(loading_text(&m, Some(p), "de_nuke"), "LoadingProgress_LoadResources");
     }
 
+    #[test]
+    fn joining_shows_its_stages_and_the_download() {
+        use crate::net::client::{DownloadInfo, JoinProgress, JoinStage};
+        let m = main_menu();
+        let mut j = JoinProgress {
+            stage: JoinStage::Connecting,
+            ..default()
+        };
+        assert_eq!(dialog_state(&m, Some(&j), None, false, "x").0, "Connecting to server...");
+        j.stage = JoinStage::ServerInfo;
+        assert_eq!(dialog_state(&m, Some(&j), None, false, "x").0, "Retrieving server info...");
+        j.stage = JoinStage::ChangingLevel;
+        assert_eq!(dialog_state(&m, Some(&j), None, false, "x").0, "Server is changing level...");
+        j.stage = JoinStage::Downloading;
+        j.download = Some(DownloadInfo {
+            file: "maps/a.bsp".into(),
+            from: "server".into(),
+            done: 250,
+            total: 1000,
+        });
+        assert_eq!(
+            dialog_state(&m, Some(&j), None, false, "x"),
+            ("Verifying and downloading resources...".to_string(), 0.25)
+        );
+        // Loading the map: the map's own stages.
+        j.stage = JoinStage::LoadingMap;
+        let p = crate::map::loading::LoadProgress {
+            fraction: 0.5,
+            stage: "LoadingProgress_LoadMap",
+        };
+        assert_eq!(dialog_state(&m, Some(&j), Some(p), false, "x").1, 0.5);
+        // A host starting its server, before the map reports.
+        assert_eq!(
+            dialog_state(&m, None, None, true, "de_dust2").0,
+            "Starting local game server..."
+        );
+        assert_eq!(dialog_state(&m, None, None, false, "de_dust2").0, "Loading de_dust2 ...");
+        let (stage, text) = detail_stage(Some(&JoinProgress {
+            stage: JoinStage::Downloading,
+            download: j.download.clone(),
+            ..default()
+        }), None);
+        assert_eq!(stage, "downloading the map");
+        assert_eq!(text, "0 KB of 1 KB (25%) of maps/a.bsp from server");
+    }
+
+    #[test]
+    fn a_failure_shows_until_closed() {
+        use crate::net::client::JoinFailure;
+        let mut m = main_menu();
+        assert_eq!(net_failure_text(&m, &JoinFailure::Full, "Server is full."), "Server is full.");
+        m.failure = Some("Server is full.".into());
+        m.loading = Some(String::new());
+        assert!(m.handle(Input::Click(Target::Main(0), 0)).lines.is_empty());
+        assert!(m.failure.is_some(), "only Close closes it");
+        let out = m.handle(Input::Click(Target::Cancel, 0));
+        assert!(out.lines.is_empty(), "already disconnected");
+        assert!(m.failure.is_none() && m.loading.is_none() && m.open);
+    }
+
     /// A shown entry's index.
     fn at(m: &GameMenu, item: MainItem) -> usize {
         m.entries().iter().position(|e| e.item == item).unwrap()
@@ -3044,24 +3466,25 @@ mod tests {
             [Resume, Disconnect, FindServers, NewGame, BugReport, Options, Quit, QuickStart, Greybox, Bots, Team, Console]
         );
         let e = m.entries();
-        assert!(e[2].gap && !e[2].enabled, "a gap under Disconnect; Find Servers greyed");
+        assert!(e[2].gap && e[2].enabled, "a gap under Disconnect, then Find Servers");
         assert!(e[7].gap, "ours after a gap");
         let m = main_menu();
         assert_eq!(shown(&m), [FindServers, NewGame, BugReport, Options, Quit, QuickStart, Greybox, Console]);
         let e = m.entries();
         assert!(!e[0].gap, "no gap over the first entry");
-        assert_eq!(m.focus, 1, "the first entry that can be pressed: Create Server");
+        assert_eq!(m.focus, 0, "the first entry: Find Servers");
         assert_eq!(e[1].label, "CREATE SERVER");
     }
 
     #[test]
-    fn greyed_entries_ignore_the_mouse_and_keys() {
+    fn find_servers_opens_the_server_browser() {
         let mut m = main_menu();
         let find = at(&m, MainItem::FindServers);
         let o = press(&mut m, &[Input::Hover(Target::Main(find)), Input::Click(Target::Main(find), 0)]);
-        assert_eq!(o, Outcome::default());
-        assert_ne!(m.focus, find);
-        // Up from Create Server skips it, wrapping to Console.
+        assert_eq!(o.lines, ["openserverbrowser"]);
+        assert_eq!(m.focus, find);
+        assert!(m.open && m.page == Page::Main, "the browser shows over the menu");
+        // Up from it wraps to Console.
         press(&mut m, &[Input::Up]);
         assert_eq!(m.entries()[m.focus].item, MainItem::Console);
     }

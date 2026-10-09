@@ -32,6 +32,7 @@ pub mod radio;
 pub mod game_text;
 pub mod scoreboard;
 pub mod senses;
+pub mod server_browser;
 pub mod spectate;
 pub mod team_menu;
 pub mod vgui;
@@ -285,7 +286,12 @@ impl Plugin for ClientPlugin {
                 window_icon::WindowIconPlugin,
                 hud_text::HudTextPlugin,
             ))
-            .add_plugins((interp::ClientInterpPlugin, net::ClientNetPlugin, map_screen::MapScreenPlugin))
+            .add_plugins((
+                interp::ClientInterpPlugin,
+                net::ClientNetPlugin,
+                server_browser::ServerBrowserPlugin,
+                map_screen::MapScreenPlugin,
+            ))
             .add_systems(PostStartup, spawn_local_player)
             .add_systems(Update, camera_for_local_player)
             .add_systems(Update, (follow_eye, zoom_camera).after(spectate::SpectateSet));

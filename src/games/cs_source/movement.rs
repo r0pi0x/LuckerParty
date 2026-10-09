@@ -606,12 +606,22 @@ impl Tracer<'_, '_, '_> {
         }
     }
 
-    /// Sweep an axis-aligned box (centre `from` to `to`, half size `half`,
-    /// engine meters) through the brushes: each brush's planes pushed out
-    /// by the box's extent along their normals, then the centre's segment
-    /// clipped against them. Hits stop a distance epsilon short.
-    fn sweep_brushes(&self, half: Vec3, from: Vec3, to: Vec3) -> BrushHit {
+    /// Sweep an axis-aligned box (centre `from` moved by `delta`, half size
+    /// `half`, engine meters) through the brushes: each brush's planes
+    /// pushed out by the box's extent along their normals, then the
+    /// centre's segment clipped against them. Hits stop a distance epsilon
+    /// short.
+    ///
+    /// The move is a start and a delta, not two end points: how far the
+    /// move goes into a plane is `n . delta`, which is exact enough to tell
+    /// a move clipped along a plane from one into it. The difference of the
+    /// end points' distances isn't, far from the origin: there, rounding a
+    /// position to f32 moves it ~1e-5 m, as much as the parallel allowance,
+    /// so a velocity just clipped along a surf ramp (surf_sedona's, 200 m
+    /// up) read as entering it again and the player stopped dead.
+    fn sweep_brushes(&self, half: Vec3, from: Vec3, delta: Vec3) -> BrushHit {
         let eps = TRACE_BACKOFF * METERS_PER_UNIT;
+        let to = from + delta;
         let mut out = BrushHit {
             ladder: false,
             surface: None,
@@ -633,10 +643,13 @@ impl Tracer<'_, '_, '_> {
             let (mut enter, mut leave) = (-1.0f32, 1.0f32);
             let (mut starts_out, mut gets_out) = (false, false);
             let mut clip = Vec3::ZERO;
+            // The last plane the box really crosses (no back-off): the
+            // contact's normal.
+            let mut last_crossed = -1.0f32;
             for (n, d) in &b.planes {
                 let dist = d + n.abs().dot(half);
                 let d1 = n.dot(from) - dist;
-                let d2 = n.dot(to) - dist;
+                let d2 = d1 + n.dot(delta);
                 gets_out |= d2 > 0.0;
                 starts_out |= d1 > 0.0;
                 // Entirely in front of this plane: misses the brush. Moving
@@ -651,9 +664,20 @@ impl Tracer<'_, '_, '_> {
                     continue;
                 }
                 if d1 > d2 {
-                    let f = ((d1 - eps) / (d1 - d2)).max(0.0);
-                    if f > enter {
-                        enter = f;
+                    // Where the move stops: the back-off short of the
+                    // plane, along its normal.
+                    enter = enter.max(((d1 - eps) / (d1 - d2)).max(0.0));
+                    // Which plane it stops against: the one it would
+                    // really reach last. Ranking the backed-off fractions
+                    // instead favours planes met head-on (their back-off
+                    // costs less of the move): gliding a back-off above a
+                    // surf ramp, a box nears the edge where the next
+                    // segment's face rises within the back-off well before
+                    // it nears that face, so the edge's bevel (facing back
+                    // along the ramp) came last and stopped it dead.
+                    let crossed = d1 / (d1 - d2);
+                    if crossed > last_crossed {
+                        last_crossed = crossed;
                         clip = *n;
                     }
                 } else {
@@ -736,10 +760,15 @@ impl Tracer<'_, '_, '_> {
     /// Sweep a box (`lo`..`hi` relative to the feet, Source units) from feet
     /// position `from` to `to`.
     fn sweep_box(&self, lo: Vec3, hi: Vec3, from: Vec3, to: Vec3) -> Trace {
+        self.sweep_box_by(lo, hi, from, to - from)
+    }
+
+    /// `sweep_box` by a move `delta` (Source units) from `from`.
+    fn sweep_box_by(&self, lo: Vec3, hi: Vec3, from: Vec3, delta: Vec3) -> Trace {
         let size = hi - lo;
         let centre = |feet: Vec3| to_engine(feet + (lo + hi) / 2.0);
         let start_solid = self.solid_box(lo, hi, from);
-        let delta = to - from;
+        let to = from + delta;
         let len = delta.length();
         let miss = Trace {
             ladder: false,
@@ -755,7 +784,7 @@ impl Tracer<'_, '_, '_> {
         }
         // Box half size in engine axes (x, up, z).
         let half = Vec3::new(size.x, size.z, size.y) * METERS_PER_UNIT / 2.0;
-        let brush = self.sweep_brushes(half, centre(from), centre(to));
+        let brush = self.sweep_brushes(half, centre(from), to_engine(delta));
         let mut best = Trace {
             owner: brush.owner,
             ladder: brush.ladder,
@@ -814,6 +843,13 @@ impl Tracer<'_, '_, '_> {
     fn sweep(&self, ducked: bool, from: Vec3, to: Vec3) -> Trace {
         let (lo, hi) = self.hull(ducked);
         self.sweep_box(lo, hi, from, to)
+    }
+
+    /// `sweep` by a move `delta` from `from` (`sweep_brushes`: exact for
+    /// moves along a plane).
+    fn sweep_by(&self, ducked: bool, from: Vec3, delta: Vec3) -> Trace {
+        let (lo, hi) = self.hull(ducked);
+        self.sweep_box_by(lo, hi, from, delta)
     }
 
     fn solid_box(&self, lo: Vec3, hi: Vec3, feet: Vec3) -> bool {
@@ -997,8 +1033,7 @@ impl Mover<'_, '_, '_, '_> {
                 break;
             }
             let end = self.feet + self.v * time_left;
-            let tr = self.trace.sweep(self.me.ducked, self.feet, end);
-            all_fraction += tr.fraction;
+            let tr = self.trace.sweep_by(self.me.ducked, self.feet, self.v * time_left);            all_fraction += tr.fraction;
             if tr.start_solid && tr.fraction == 0.0 && self.trace.solid(self.me.ducked, end) {
                 self.v = Vec3::ZERO;
                 return;

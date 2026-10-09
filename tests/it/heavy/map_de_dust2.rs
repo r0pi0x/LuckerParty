@@ -279,7 +279,7 @@ fn lightmaps_agree_at_shared_edges() {
     let install = LocalConfig::load().unwrap().game_path(cs_source::GAME).unwrap();
     let mount = cs_source::mount::open(&install).unwrap();
     let bytes = mount.read("maps/de_dust2.bsp").unwrap();
-    let lump = lightmap::lighting_lump(&bytes);
+    let lump = lightmap::lighting_lump(&bytes, false);
     let map = Bsp::read(&bytes).unwrap();
 
     fn bilinear(s: &lightmap::FaceSamples, c: Vec2) -> f32 {

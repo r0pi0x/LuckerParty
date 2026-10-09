@@ -1,5 +1,8 @@
-//! The client's UDP transport: netcode (renet's protocol, the same as
-//! `NetcodeClientTransport`) over a socket, with Source's fake network
+//! The UDP transports. A server's (`UdpServer`): netcode (renet's
+//! protocol, as `NetcodeServerTransport`) on its socket, with server
+//! queries (`query`) answered on the same port: a packet starting with
+//! `FF FF FF FF` is a query, anything else netcode's. A client's
+//! (`UdpClient`): netcode over a socket, with Source's fake network
 //! conditions for testing by hand: `net_fakelag` and `net_fakejitter`
 //! delay what this process receives, `net_fakeloss` drops a share of
 //! what it receives and sends (so lost commands and lost snapshots both
@@ -8,8 +11,14 @@
 use std::{net::UdpSocket, time::Duration};
 
 use bevy::prelude::*;
-use bevy_replicon_renet::{RenetClient, RenetClientPlugin, RenetReceive, RenetSend, netcode::ClientAuthentication};
-use renetcode::{DisconnectReason, NETCODE_MAX_PACKET_BYTES, NetcodeClient, NetcodeError};
+use bevy_replicon_renet::{
+    RenetClient, RenetClientPlugin, RenetReceive, RenetSend, RenetServer, RenetServerPlugin,
+    netcode::ClientAuthentication,
+};
+use renetcode::{
+    DisconnectReason, NETCODE_MAX_PACKET_BYTES, NETCODE_USER_DATA_BYTES, NetcodeClient, NetcodeError, NetcodeServer,
+    ServerConfig, ServerResult,
+};
 
 use crate::console::resource_cvar;
 
@@ -168,7 +177,189 @@ impl UdpClient {
     }
 }
 
+/// A server's netcode over UDP that also answers server queries on its
+/// port (instead of `NetcodeServerTransport`, which hands every packet to
+/// netcode). The netcode half follows renet_netcode's transport.
+#[derive(Resource)]
+pub struct UdpServer {
+    socket: UdpSocket,
+    netcode: NetcodeServer,
+    buffer: Box<[u8; NETCODE_MAX_PACKET_BYTES]>,
+    pub queries: super::query::Responder,
+    clock: Duration,
+}
+
+impl UdpServer {
+    pub fn new(config: ServerConfig, socket: UdpSocket, secret: u64) -> std::io::Result<Self> {
+        socket.set_nonblocking(true)?;
+        Ok(Self {
+            socket,
+            netcode: NetcodeServer::new(config),
+            buffer: Box::new([0; NETCODE_MAX_PACKET_BYTES]),
+            queries: super::query::Responder::new(secret),
+            clock: Duration::ZERO,
+        })
+    }
+
+    pub fn local_addr(&self) -> Option<std::net::SocketAddr> {
+        self.socket.local_addr().ok()
+    }
+
+    /// A connected client's netcode user data (`query::user_data`).
+    pub fn user_data(&self, client_id: u64) -> Option<[u8; NETCODE_USER_DATA_BYTES]> {
+        self.netcode.user_data(client_id)
+    }
+
+    /// Hang up on every client now (their disconnect packets).
+    pub fn disconnect_all(&mut self, server: &mut RenetServer) {
+        for id in self.netcode.clients_id() {
+            let result = self.netcode.disconnect(id);
+            handle_server_result(result, &self.socket, server);
+        }
+    }
+
+    /// Advance by `dt`, read the socket: queries answered, netcode's
+    /// packets to renet.
+    fn update(
+        &mut self,
+        dt: Duration,
+        server: &mut RenetServer,
+        info: &super::query::ServerInfo,
+    ) -> std::io::Result<()> {
+        self.clock += dt;
+        self.netcode.update(dt);
+        loop {
+            match self.socket.recv_from(&mut self.buffer[..]) {
+                Ok((len, addr)) => {
+                    let packet = &mut self.buffer[..len];
+                    if super::query::is_query(packet) {
+                        if let Some(answer) = self.queries.handle(addr, packet, self.clock, info) {
+                            let _ = self.socket.send_to(&answer, addr);
+                        }
+                        continue;
+                    }
+                    let result = self.netcode.process_packet(addr, packet);
+                    handle_server_result(result, &self.socket, server);
+                }
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                    ) =>
+                {
+                    break;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        for id in self.netcode.clients_id() {
+            let result = self.netcode.update_client(id);
+            handle_server_result(result, &self.socket, server);
+        }
+        for id in server.disconnections_id() {
+            let result = self.netcode.disconnect(id);
+            handle_server_result(result, &self.socket, server);
+        }
+        Ok(())
+    }
+
+    fn send_packets(&mut self, server: &mut RenetServer) {
+        'clients: for id in server.clients_id() {
+            let Ok(packets) = server.get_packets_to_send(id) else {
+                continue;
+            };
+            for packet in packets {
+                match self.netcode.generate_payload_packet(id, &packet) {
+                    Ok((addr, payload)) => {
+                        if let Err(e) = self.socket.send_to(payload, addr) {
+                            debug!("UDP send to client {id} ({addr}): {e}");
+                            continue 'clients;
+                        }
+                    }
+                    Err(e) => {
+                        debug!("netcode payload for client {id}: {e}");
+                        continue 'clients;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn handle_server_result(result: ServerResult, socket: &UdpSocket, server: &mut RenetServer) {
+    let send = |packet: &[u8], addr: std::net::SocketAddr| {
+        if let Err(e) = socket.send_to(packet, addr) {
+            debug!("UDP send to {addr}: {e}");
+        }
+    };
+    match result {
+        ServerResult::None => {}
+        ServerResult::PacketToSend { payload, addr } => send(payload, addr),
+        ServerResult::Payload { client_id, payload } => {
+            if let Err(e) = server.process_packet_from(payload, client_id) {
+                debug!("payload from client {client_id}: {e}");
+            }
+        }
+        ServerResult::ClientConnected {
+            client_id,
+            addr,
+            payload,
+            ..
+        } => {
+            server.add_connection(client_id);
+            send(payload, addr);
+        }
+        ServerResult::ClientDisconnected {
+            client_id,
+            addr,
+            payload,
+        } => {
+            server.remove_connection(client_id);
+            if let Some(payload) = payload {
+                send(payload, addr);
+            }
+        }
+    }
+}
+
+fn server_receive(
+    mut transport: ResMut<UdpServer>,
+    mut server: ResMut<RenetServer>,
+    info: Res<super::query::LocalServerInfo>,
+    time: Res<Time<Real>>,
+) {
+    if let Err(e) = transport.update(time.delta(), &mut server, &info.0) {
+        debug!("UDP server transport: {e}");
+    }
+}
+
+fn server_send(mut transport: ResMut<UdpServer>, mut server: ResMut<RenetServer>) {
+    transport.send_packets(&mut server);
+}
+
+fn server_hang_up_on_exit(
+    exit: MessageReader<AppExit>,
+    mut transport: ResMut<UdpServer>,
+    mut server: ResMut<RenetServer>,
+) {
+    if !exit.is_empty() {
+        transport.disconnect_all(&mut server);
+    }
+}
+
 pub(super) fn plugin(app: &mut App) {
+    let serving = || resource_exists::<UdpServer>.and_then(resource_exists::<RenetServer>);
+    app.add_systems(
+        PreUpdate,
+        server_receive
+            .in_set(RenetReceive)
+            .after(RenetServerPlugin::update_system)
+            .before(RenetServerPlugin::emit_server_events_system)
+            .run_if(serving()),
+    )
+    .add_systems(PostUpdate, server_send.in_set(RenetSend).run_if(serving()))
+    .add_systems(Last, server_hang_up_on_exit.run_if(serving()));
     app.init_resource::<FakeLag>()
         .add_systems(
             PreUpdate,

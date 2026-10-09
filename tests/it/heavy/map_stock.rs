@@ -308,7 +308,7 @@ fn switchable_lights_that_start_on_are_baked_in() {
     let mount = cs_source::mount::open(&install).unwrap();
     let bytes = mount.read("maps/cs_office.bsp").unwrap();
     let bsp = vbsp::Bsp::read(&bytes).unwrap();
-    let lump = lightmap::lighting_lump(&bytes);
+    let lump = lightmap::lighting_lump(&bytes, false);
     let (mut faces, mut brighter) = (0, 0);
     for face in bsp.models().next().unwrap().faces() {
         if !face.styles.contains(&32) {

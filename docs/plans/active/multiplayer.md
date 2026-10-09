@@ -15,7 +15,13 @@ compensated against per-tick hitbox poses, others' shots drawn from the
 server's seeds, grenades, drops and pickups the server's; slice 5 done
 (2026-10-09): rounds, money, buying, team changes, the bomb, hostages,
 the scoreboard with ping, chat and radio over the network, replicated
-cvars and `sv_cheats`. Recommendation:
+cvars and `sv_cheats`; slice 6 done (2026-10-09): bots on the server
+with `bot_quota`; slice 7 done (2026-10-09): `changelevel` takes clients
+along, late joiners get the whole state, maps downloaded (connection or
+`sv_downloadurl`) and checked, the loading dialog for joining and map
+changes; slice 8 done (2026-10-09): server queries on the game port
+(A2S_INFO's layout), LAN discovery, the Find Servers dialog with
+favourites, history and passwords. Recommendation:
 **bevy_replicon + renet (netcode over UDP)** for transport and
 replication; **our own Source-style prediction, interpolation and lag
 compensation** on top. Slices below; slice 0 is refactoring that pays off
@@ -881,22 +887,260 @@ with tests passing and something to see.
      "Player" (the HUD's, unchanged); radio requests
      aren't rate-limited; a team change mid-round waits for the next
      round.
-6. **[ ] Bots on the server** (S, low). They already write `Intent` and
+6. **[x] Bots on the server** (S, low). They already write `Intent` and
    use the same movement; make sure their perception never reads client
    state and a new `bot_quota` counts humans.
-7. **[ ] Maps: change, mid-game join, download** (M, medium).
+   Progress (2026-10-09):
+   - [x] Bots are the server's characters like the host's (they were
+     replicated since slice 1): names ("Bot N"), teams, "BOT" in the
+     scoreboard's latency column (`score_flags::BOT`), their shots as
+     `FireBullets`, kills as `Killed`, radio as `RadioCall` to the
+     teammates who hear it. Their perception reads only the server's
+     simulation (positions in the fixed tick, the server's sounds and
+     sight traces): nothing of a client's.
+   - [x] `bot_quota` and `bot_quota_mode` (normal, fill, match; CS:S's
+     names): a network server keeps the quota (`bot::keep_quota`, one bot
+     added or kicked a frame, added to the smaller team, kicked from the
+     bigger); `bot_add` (`bot::add_bot`) raises it, `bot_kick` sets it to
+     0, `bot_kick <name>` kicks one and lowers it; fill counts the host
+     and remote players. Single player never enforces it (bots as
+     before). A server starting with bots already in keeps them
+     (`sync_quota`). A kicked bot drops the bomb it carries; its weapons
+     go with it.
+   - [x] A client can't run server commands (`console::SERVER_COMMANDS`:
+     `bot_add`, `bot_kick`, `bot_give`, `bot_goto`, `changelevel`,
+     `mp_restartgame`) or set `bot_*` cvars (server scope, refused as
+     before).
+   - [x] Deterministic: bot seeds come from their number and team (as
+     before), the same with and without clients connected; two runs of
+     the same network game put the bots in the same places bit for bit.
+   - [x] Tests (`tests/it/net_bots.rs`, `NetSim`, greybox): two clients
+     see both bots with the server's names, teams and positions (within
+     5 cm) and "BOT"; their `bot_add`, `bot_kick` and `bot_quota` are
+     refused; `bot_kick "Bot 1"` kicks one on every side; two bots 12 m
+     apart fight with two clients connected: each client saw the kill,
+     drew the bots' shots (27), heard their radio ("enemyspot",
+     "enemydown") and shows 1-0 / 0-1 on its scoreboard; `bot_quota 3`,
+     `bot_kick`, `bot_add` x2; fill 4: 4, 3, 2 bots as clients join, 3
+     again when one leaves; match 2 with one human: 2. Cost: two clients
+     on the greybox, the server's frame 1.40 ms mean (1.63 p95) without
+     bots, 1.66 ms (1.99 p95) with ten bots fighting; each client receives
+     ~37 KB/s with ten bots (debug build).
+   - Not yet: bot names from CS:S's bot profiles; `bot_join_after_player`;
+     `kick` for players.
+7. **[x] Maps: change, mid-game join, download** (M, medium).
    `changelevel` (new; `map` today) with everyone reloading, late join
    with full state (logic state as components), map download with hash check and bz2
    (custom-maps step 6), the mount doctor check before joining.
-8. **[ ] Find Servers, LAN discovery, direct connect UI** (M, low). LAN
+   Progress (2026-10-09):
+   - [x] The offer (`net::maps`): the server serves the map it has loaded
+     (`ServedMap`: id, SHA-256 of the file, size, the file to send);
+     `Welcome` carries it with `sv_downloadurl`, `sv_allowdownload`, the
+     server's `hostname`, players and `maxplayers`.
+   - [x] Map changes: `changelevel <map>` (and `map <map>` while hosting)
+     in the game, `changelevel`/`map` on the dedicated server (loaded in
+     the background, swapped in with `swap_map`). `watch_map` tells
+     clients when the load starts (`ChangingLevel`) and, once the new map
+     is in, starts a new game there (the rules' `new_game`, scores
+     cleared, players' queued commands and intents dropped, uploads
+     stopped) and sends `ChangeLevel`; a failed load calls the change off
+     (clients go back to the map they're on). A client keeps its
+     connection, its id and its character: prediction and drawing reset,
+     the map fetched as on joining, then in the game again. The server's
+     fixed clock keeps running through a map change
+     (`core::set_tick_length`; single player still starts it over), so
+     its time and tick never go back.
+   - [x] Joining mid-game: everything that lasts is replicated state
+     (the round, scores, a player's own money, characters, movers with
+     opened doors and broken breakables, props, loose items, the bomb),
+     so a late joiner sees it at once. **Changed from §3:** no separate
+     "logic state as components" pass was needed for brush entities;
+     model doors and window panes still aren't replicated (tech debt).
+   - [x] The client's copy (`maps::Fetch`): the loaded map if it is the
+     same file; else the copy the game would load (`MapFiles::read`: the
+     install, its downloads, the content cache) or the cache's own,
+     hashed in the background; else a download: `sv_downloadurl` first
+     (`<url>/maps/<name>.bsp.bz2`, then `.bsp`; `net::http`, plain HTTP
+     as the game's), then over the connection if `sv_allowdownload`
+     (`MapRequest`, 16 KB `MapChunk`s, at most 256 KB beyond the
+     client's `MapAck`, `net_maxfilesize`, refusals as `MapDenied`). What
+     arrives must have the offer's size and hash, is written to the
+     content cache (`maps/<name>.bsp`, noted in `index.toml` with its
+     SHA-256 and source) and loaded from that file
+     (`NetEvent::LoadMap`, `games::load_map_file`). A web copy with the
+     wrong hash falls back to the server's when it sends maps.
+     **Changed from custom-maps.md:** the cache keeps one copy per name
+     (`maps/<name>.bsp`, replaced by a newer download), not one per hash.
+   - [x] Refusals with reasons (`client::JoinProgress::failure`,
+     `JoinFailure`): another map file and none to fetch ("Your map
+     [maps/x.bsp] differs from the server's."), none and no downloads
+     ("Missing map maps/x.bsp, disconnecting"), a download that failed
+     (the HTTP error, the server's refusal) or arrived wrong, a full
+     server, an older or newer server, a timeout (also a server that
+     never welcomes us: 20 s).
+   - [x] The loading dialog (backlog 2c): the main menu's GameUI loading
+     dialog for `connect` (connecting, retrieving server info), a
+     server's map change ("Server is changing level..."), downloads
+     ("Verifying and downloading resources...", the bar following the
+     bytes), the map's own load stages, a host's own map change, and
+     "Starting local game server..." when `maxplayers` > 1, all in the
+     game's words; Cancel disconnects. Failures in it ("Disconnected",
+     the game's strings where it has one: server full, older/newer
+     server, timeout, the download errors; else the server's or our
+     words; Close). `mashup_loading_details 1` (off by default) adds a
+     panel: each stage's time, bytes and percentage, the server's name,
+     address, map, players and ping.
+   - [x] Tests (`tests/it/net_maps.rs`, maps built in code from a folder
+     of files: `harness::TestMaps`): a map change takes two clients
+     along (told while it loads, the same connection and id, both on the
+     new map's file, the round restarted at 0-0 and scores cleared, a
+     client walking 9.3 m there with 2 of 537 states mispredicted); a
+     late joiner sees the round score 3-2, its money, a bot's 4/1, a door
+     opened and a breakable broken; a client with no copy downloads the
+     220 KB map over the connection, caches and loads it, and joins from
+     the cache next time without downloading; another downloads it from
+     a local HTTP server as `.bsp.bz2` (sv_allowdownload 0); a web copy
+     of another version is refused ("differs from the server's ...
+     refused", .bz2 then .bsp asked for, nothing kept), no downloads is
+     "Missing map", a map over `net_maxfilesize` the server's refusal,
+     another build "newer server". Unit tests: the HTTP client (chunked,
+     404), download checks, refusal kinds, the dialog's lines and the
+     failure dialog.
+   - [x] `tests/it/heavy/map_net_changelevel.rs`: the greybox to de_dust2
+     from the install with a client and two bots (the client's copy
+     checked by hash, followed on the same connection, the bots along).
+   - [x] Two real games on the dev box (debug builds, a busy box): host
+     `-port 27031 +maxplayers 4 +hostname "Lucker Party test" +map
+     greybox`, the client with `+net_fakelag 100 +net_fakejitter 20
+     +net_fakeloss 5 +mashup_loading_details 1`, `connect` through its
+     console: the dialog showed "Retrieving server info..." with the
+     detailed view, then the game (ping ~150 ms). `changelevel de_dust2`
+     on the host: the client showed "Server is changing level..." for
+     the host's ~4.5 s load, then its own stages (checking the map 0.09
+     s, "Loading world...", "Initializing world...", "Loading
+     resources..." with the bar), and played on de_dust2 at the
+     terrorists' spawn on the same connection (1 of 4259 states
+     mispredicted). `bot_add 1; bot_add 2; bot_add 2` on the host: the
+     client's scoreboard listed Bot 1-3 with "BOT", its kill feed showed
+     Bot 1 killing Bot 3, its chat the bots' radio ("Enemy spotted",
+     "Enemy down"); its own `bot_add` was refused. `connect` to a port
+     with no server: "Disconnected / Connection to server timed out." in
+     the dialog (the game's string).
+     Found on the way: maps from the install spawn with
+     `cs_source:<name>` as their file's name, so a server never saw its
+     new map in and a joining client couldn't match one: names are
+     compared without the game now.
+   - Not yet: the mount doctor check before joining; content besides the
+     map file (custom materials, models, sounds); a changelevel to the
+     same map file doesn't reload clients; decals for late joiners.
+8. **[x] Find Servers, LAN discovery, direct connect UI** (M, low). LAN
    broadcast query (a small UDP info request on the server port, like
    Source's A2S_INFO in spirit), the Find Servers page in the GameUI
    look (`openserverbrowser`, greyed today), favourites and history,
    password prompt.
-9. **[ ] Lucker Party lobby and party flow** (L, design-dependent). Party
-   host = listen server or a hosted server; lobby, loadout/minigame
-   rotation chosen by the server (README: the server owns the loadout),
-   possibly Steam networking or a relay for NAT, secure connect tokens.
+   Progress (2026-10-09):
+   - [x] **Query protocol** (`net::query`), on the server's game port,
+     beside the game connection: the server's socket is ours now
+     (`net::udp::UdpServer`, renetcode's netcode server plus the query
+     answers): a packet starting `FF FF FF FF` is a query (no netcode
+     packet starts with `FF`), anything else netcode's. The packets are
+     A2S_INFO's as the Valve Developer Wiki's public "Server queries" page
+     documents them, little-endian, strings NUL-terminated:
+     - request `FF FF FF FF 'T' "Source Engine Query\0"`, then the same
+       with the 4-byte challenge appended;
+     - challenge reply `FF FF FF FF 'A' <i32>` (never bigger than the
+       request: a spoofed source address gains nothing); the challenge is
+       a keyed hash of the asker's address and a 30 s window (the current
+       and the previous window are good), so the server keeps nothing per
+       request;
+     - info reply `FF FF FF FF 'I'`, protocol 17, name (`hostname`), map
+       (without the game prefix), folder `mashup`, game `Lucker Party`,
+       app id 0, players (bots included), max players (`maxplayers`),
+       bots, type `d` (dedicated: no player of its own) or `l` (listen),
+       OS `l`/`w`/`m`, visibility 1 with `sv_password`, VAC 0, version
+       (`NET_VERSION`), extra data flag `0x80` port, `0x10` an instance
+       id (random per server process, in Source's SteamID field: one
+       server heard at its LAN address and on loopback is listed once),
+       `0x20` keywords (the map's game, `cs_source`).
+     Rate limits (`query::Responder`): 8 answers a second per address
+     (16 saved up), 200 a second in total (400 saved up); challenges count.
+     The client (`ServerQueries`, one socket) measures the ping as the
+     round trip of the challenged request; it asks twice, 1.2 s apart,
+     then marks the server not responding. Replies whose folder isn't
+     `mashup` (a Source server on a scanned port) are left out. Only
+     A2S_INFO: no player list (`A2S_PLAYER`) or rules (`A2S_RULES`) yet.
+     `serverinfo <ip[:port]>` and `lanscan` print what they hear; the
+     server's `status` counts answers.
+   - [x] **LAN discovery**: the request broadcast to every port of
+     `net_lan_ports` (27015-27020, Source's LAN tab) at each address of
+     `net_lan_broadcast` (255.255.255.255) and sent to 127.0.0.1 on the
+     same ports; servers answer the broadcast with a challenge from their
+     own address, asked from there on as any other; the scan listens
+     1.5 s. Linux and Windows (`SO_BROADCAST` on the client's socket;
+     servers bound to 0.0.0.0 hear broadcasts). Windows: a broadcast
+     leaves by the default route's interface only, so with several
+     adapters add the LAN's directed broadcast to `net_lan_broadcast`;
+     the server's firewall rule for its game port covers queries
+     (docs/OBSERVABILITY.md).
+   - [x] **The Find Servers dialog** (`client::server_browser`), from the
+     install's `servers/DialogServerBrowser.res`, `InternetGamesPage.res`
+     (and `_Filters`), `DialogAddServer.res`, `DialogServerPassword.res`,
+     `serverbrowser_english.txt` and the column icons (read at run time
+     through `GameUi`); built-in sizes and words without the install.
+     Tabs Internet (greyed: there is no master server to list internet
+     servers; a master server of our own would fill it), Favorites, History, Lan. Columns password,
+     bots, "Servers (n)", game, players, map, latency (History: last
+     played); a header click sorts, again reverses (unsorted: by
+     latency). Filters as the original's panel: map, latency, max
+     players, has users playing, not full, no password (game, location
+     and anti-cheat shown greyed). Refresh (Lan: a new scan; Favorites,
+     History: each address asked), Quick refresh (the listed servers
+     again), Add a Server (the address added, or its servers found and
+     the one picked added), Connect, double-click, Enter; a server with a
+     password asks for it first (`password <it>; connect <addr>`). The
+     browser closes as it connects; the connect flow (slices 6-7, the
+     loading dialog) is the console's. Favorites and History in the cfg
+     folder's `serverbrowser.vdf` (KeyValues: name, address, last
+     played); a joined server goes first in History (100 kept). The main
+     menu's Find Servers opens it (`openserverbrowser [tab]`).
+     Ours beyond the original: Delete takes the selected server off
+     Favorites or History (CS:S: its right-click menu); double-clicking
+     the server found in Add a Server joins it (a connect to an address
+     from the browser).
+   - [x] **Passwords**: `sv_password` on the server, `password` on the
+     client sent in netcode's user data (no protocol change); a wrong
+     one is refused with "Bad password.".
+   - [x] Tests: `net::query` unit tests (the documented layout, round
+     trips, challenges per address and window, rate limits, user data);
+     `client::server_browser` unit tests (sorting, filters, connect,
+     double-click, password dialog, Internet greyed, Add a Server,
+     history order, the saved file's round trip);
+     `tests/it/net_query.rs`: a server answers with its name, map,
+     players, bots, max, dedicated or listen, password, version, port and
+     a ping, and its game connection on the same port checks the
+     password; a LAN scan of two ports finds the two servers there once
+     each, and leaves out another game's; favourites and history written
+     and read back.
+   - [x] Live (2026-10-09): two dedicated servers on 27051 ("LAN one",
+     greybox, a bot) and 27052 ("LAN two", de_dust2, `sv_password`), a
+     client with `+net_lan_ports 27051-27052 +openserverbrowser lan`: both
+     listed with players, bots, maps, the lock and bot icons, latency
+     0-21 ms; sorting, the filters panel, History after joining LAN one
+     (double-click), the password dialog, then de_dust2 joined with the
+     password. An independent A2S_INFO client (Python, the wiki's layout)
+     read both servers. On this box a broadcast doesn't come back to the
+     local servers (the host firewall drops it; unicast to the LAN address
+     answers), so the scan found them on 127.0.0.1: broadcast between two
+     machines (Windows) is still to be seen.
+   - Not yet: Internet (a master server), the server's
+     player list and rules (`A2S_PLAYER`, `A2S_RULES`; Source's Game Info
+     dialog and right-click menu), the browser's filters and column
+     widths saved, a LAN scan refreshing on its own, the add server
+     dialog's list for more than one server per address.
+9. **[-] Lucker Party lobby and party flow** (dropped for now, by the
+   user's decision: multiplayer stays standard CS:S — servers, Find
+   Servers, `connect`, map rotation by the server's cvars). Revisit if
+   Lucker Party later needs parties, minigame rotation or NAT relays.
 
 ## 6. Open questions for the user
 

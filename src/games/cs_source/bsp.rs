@@ -52,29 +52,49 @@ pub fn load(mount: &Mount, name: &str) -> Result<MapData, String> {
 /// Load at a Source `mat_hdr_level`: 0 LDR (the default, what refcmp
 /// matches); 1 LDR lighting with bloom; 2 the map's HDR lighting (lumps
 /// 53, 51/55, 54) with auto exposure and bloom. Maps without HDR lighting
-/// load as LDR at any level, as in the game.
+/// load as LDR at any level, as in the game. Maps compiled with HDR
+/// lighting only (no lump 8: surf_sedona) are fullbright below level 2,
+/// as CS:S draws them (`lightmap::select_lighting`).
 pub fn load_level(mount: &Mount, name: &str, hdr_level: u8) -> Result<MapData, String> {
+    crate::map::loading::report(0.02, "LoadingProgress_LoadMap");
+    let path = format!("maps/{name}.bsp");
+    let bytes = mount.read(&path).map_err(|e| format!("{path}: {e}"))?;
+    load_level_bytes(mount, name, bytes, hdr_level)
+}
+
+/// `load_level` from the map file's bytes (a copy downloaded from a
+/// server, in the content cache), its content from `mount`.
+pub fn load_level_bytes(mount: &Mount, name: &str, bytes: Vec<u8>, hdr_level: u8) -> Result<MapData, String> {
     // Stages for a loading screen, worded as the game words them
     // (`map::loading`; the fractions are rough shares of the time).
     use crate::map::loading::report;
+    let mut timer = crate::map::loading::LoadTimer::default();
     report(0.02, "LoadingProgress_LoadMap");
     let path = format!("maps/{name}.bsp");
-    let bytes = mount.read(&path).map_err(|e| format!("{path}: {e}"))?;
+    timer.lap("read");
     // What the network handshake compares (`MapData::file_hash`).
     let file_hash: [u8; 32] = sha2::Digest::finalize(<sha2::Sha256 as sha2::Digest>::new_with_prefix(&bytes)).into();
+    timer.lap("hash");
     // Community maps often ship LZMA-compressed lumps; our own lump
     // readers want them plain.
     let bytes = super::lumps::inflate(bytes);
+    timer.lap("inflate lumps");
     // Latin-1 text in the entity or texture-name lumps (after inflating).
     let bytes = text_lumps_utf8(bytes);
+    // The HDR lighting at mat_hdr_level 2, or on maps that have only
+    // that (lump 7 then holds the HDR faces).
+    let (bytes, hdr_lighting) = lightmap::select_lighting(bytes, hdr_level >= 2);
     let bsp = Bsp::read(&bytes).map_err(|e| format!("{path}: {e}"))?;
-    let hdr_level = if lightmap::hdr_lighting_lump(&bytes).is_some() { hdr_level.min(2) } else { 0 };
-    let (mut data, layout) = convert_level(&bsp, &bytes, name, hdr_level >= 2);
+    timer.lap("parse");
+    let hdr_level = if lightmap::has_hdr_lighting(&bytes) { hdr_level.min(2) } else { 0 };
+    let (mut data, layout) = convert_level(&bsp, &bytes, name, hdr_lighting);
+    timer.lap("geometry, lightmaps, collision");
     data.look = source_look_level(hdr_level, &data.entities);
     data.file_hash = Some(file_hash);
 
     report(0.15, "LoadingProgress_PrecacheWorld");
-    let mut materials = MaterialLoader::new(&bsp, mount);
+    let mut materials = MaterialLoader::new(&bsp, mount, super::ambient::lump(&bytes, 40));
+    timer.lap("packed files");
     for mesh in &mut data.meshes {
         let r = materials.resolve(&mesh.material);
         mesh.texture = r.texture;
@@ -97,6 +117,7 @@ pub fn load_level(mount: &Mount, name: &str, hdr_level: u8) -> Result<MapData, S
         mesh.surface = r.surfaceprop;
         mesh.envmap = r.envmap;
     }
+    timer.lap("world materials");
     // Broken windows' cracked and jagged-edge looks.
     super::breakables::add_window_looks(&mut materials, &data.entities, &mut data.meshes);
     // Water surfaces (specs/cs_source/water.md), with the map's cheap
@@ -132,6 +153,7 @@ pub fn load_level(mount: &Mount, name: &str, hdr_level: u8) -> Result<MapData, S
         }
     }
     data.sky_vis = Some(sky_vis(&bsp, &bytes));
+    timer.lap("water");
     data.visibility = visibility(&bsp, &bytes)
         .map(|mut v| {
             // Glass or grates in a portal's opening keep it open.
@@ -139,12 +161,20 @@ pub fn load_level(mount: &Mount, name: &str, hdr_level: u8) -> Result<MapData, S
             v
         })
         .map(std::sync::Arc::new);
-    let lighting = super::ambient::MapLighting::read_level(&bytes, hdr_level >= 2);
+    timer.lap("visibility");
+    let lighting = if lightmap::fullbright(&bytes, hdr_lighting) {
+        super::ambient::MapLighting::fullbright()
+    } else {
+        super::ambient::MapLighting::read_level(&bytes, hdr_lighting)
+    };
+    timer.lap("ambient lighting");
     let occluders = super::ambient::Occluders::new(
         &shadow_hulls(&bsp, &super::ambient::raw_leaves(&bytes)),
         (&data.collision_positions, &data.collision_indices),
     );
-    super::props::add_static_props(&bsp, &mut materials, &lighting, &occluders, &mut data, hdr_level >= 2);
+    timer.lap("occluders");
+    super::props::add_static_props(&bsp, &mut materials, &lighting, &occluders, &mut data, hdr_lighting);
+    timer.lap("props");
     super::ropes::add_ropes(&bsp, &mut materials, &lighting, &occluders, &mut data);
     // The same query at run time, for view models (spec view_models.md 9).
     if let Some(tree) = data.sky_vis.clone() {
@@ -158,6 +188,7 @@ pub fn load_level(mount: &Mount, name: &str, hdr_level: u8) -> Result<MapData, S
     super::beams::add_beams(&bsp, &mut materials, &mut data);
     let surfaces = super::surfaceprops::SurfaceProps::load(&mut materials);
     brush_bodies(&bytes, &surfaces, &mut data);
+    timer.lap("ropes, sprites, dust, steam");
     report(0.55, "LoadingProgress_LoadResources");
     // Character bodies: a terrorist and a counter-terrorist model (CS:S
     // teams 2 and 3; ours are 1 and 2), the CT one for anyone else.
@@ -188,6 +219,7 @@ pub fn load_level(mount: &Mount, name: &str, hdr_level: u8) -> Result<MapData, S
     data.radio = super::radio::load(&materials);
     data.overview = super::hud::overview(&mut materials, name);
     data.particles = super::impact_effects::load_materials(&mut materials);
+    timer.lap("characters, hud, particles");
     // What characters hold: the weapons' world models.
     if let Some(skeleton) = data.characters.first().map(|c| c.bones.clone()) {
         for (weapon, path) in super::weapons::WORLD_MODELS
@@ -238,10 +270,12 @@ pub fn load_level(mount: &Mount, name: &str, hdr_level: u8) -> Result<MapData, S
         }
     }
     data.gib_physics = Some(super::breakables::gib_physics());
+    timer.lap("held and view models, shells, gibs");
     report(0.8, "LoadingProgress_SignonDataLocal");
     let mut sounds = super::sound::load(&mut materials, name, &surfaces, &data.entities);
     super::soundscape::load(&mut materials, &bsp, name, &mut sounds);
     data.sounds = std::sync::Arc::new(sounds);
+    timer.lap("sounds");
     if let Some(bytes) = materials.read(&format!("maps/{}.nav", name.to_lowercase())) {
         match super::nav::parse(&bytes) {
             Ok((nav, _)) => data.nav = Some(std::sync::Arc::new(nav)),
@@ -249,8 +283,11 @@ pub fn load_level(mount: &Mount, name: &str, hdr_level: u8) -> Result<MapData, S
         }
     }
     super::decals::add_decals(&bsp, &layout, &mut materials, &mut data);
+    timer.lap("nav, decals");
     super::overlays::add_overlays(&bsp, &bytes, &layout, &mut materials, &mut data);
+    timer.lap("overlays");
     super::sky::add_sky(&bsp, &mut materials, &mut data, hdr_level >= 2);
+    timer.lap("sky");
     // Cubemap samples (lump 42: origin as three ints, then a size): the
     // baked cubemap at each, for objects that take the nearest.
     for origin in cubemap_samples(&bytes) {
@@ -285,6 +322,9 @@ pub fn load_level(mount: &Mount, name: &str, hdr_level: u8) -> Result<MapData, S
     data.warnings.extend(materials.missing);
     data.textures = materials.textures;
     data.cubemaps = materials.cubemaps;
+    timer.lap("cubemaps");
+    bevy::log::info!("{name}: loaded in {}", timer.summary());
+    data.load_times = timer.stages;
     // Left: putting it in the world (`map::change_map`).
     report(0.95, "LoadingProgress_SignonLocal");
     Ok(data)
@@ -427,18 +467,11 @@ pub struct LightmapLayout {
 }
 
 /// Geometry, collision, lightmaps and spawns, without materials.
-/// `bytes` is the whole BSP file (for lumps vbsp doesn't keep as stored).
-pub fn convert(bsp: &Bsp, bytes: &[u8], name: &str) -> (MapData, LightmapLayout) {
-    convert_level(bsp, bytes, name, false)
-}
-
-/// `convert`, with the HDR lightmaps (lump 53) when `hdr` and the map has
-/// them.
+/// `bytes` is the whole BSP file (for lumps vbsp doesn't keep as stored),
+/// as `lightmap::select_lighting` left it; `hdr` is what it chose: the
+/// HDR lightmaps (lump 53) or the LDR ones (lump 8).
 pub fn convert_level(bsp: &Bsp, bytes: &[u8], name: &str, hdr: bool) -> (MapData, LightmapLayout) {
-    let lighting = match hdr {
-        true => lightmap::hdr_lighting_lump(bytes).unwrap_or_else(|| lightmap::lighting_lump(bytes)),
-        false => lightmap::lighting_lump(bytes),
-    };
+    let lighting = lightmap::lighting_lump(bytes, hdr);
     let leaves = super::ambient::raw_leaves(bytes);
     // Switchable light styles (32+) whose lights start off (spawnflag 1);
     // the others are lit at map start (cs_office's projector, cs_assault's

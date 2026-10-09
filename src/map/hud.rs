@@ -487,6 +487,14 @@ pub struct GameUi {
     pub loading: Option<UiLayout>,
     /// The interface's sounds by what they are for (`UiSound`).
     pub sounds: HashMap<UiSound, super::sound::MapSoundClip>,
+    /// The server browser's layouts by name (`dialog`: the frame, its
+    /// tabs and status line; `page`, `page_filters`: a tab's list and
+    /// buttons, without and with the filters shown; `add`: the add server
+    /// dialog; `password`: the password dialog).
+    pub servers: HashMap<String, UiLayout>,
+    /// The server browser's icons by name (`password`, `bots`, and their
+    /// `_column` header versions).
+    pub server_icons: HashMap<String, UiImage>,
 }
 
 /// What an interface sound is for.

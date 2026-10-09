@@ -257,9 +257,58 @@ pub fn relay_game_sounds(mut sounds: MessageReader<GameSound>, mut play: Message
 #[derive(Resource, Clone)]
 pub struct SoundBank(pub Arc<MapSounds>);
 
-/// Who's listening (the camera the player sees through).
+/// Who's listening (the camera the player sees through). The entity it
+/// is a child of (the player whose eyes it is) hears its own sounds
+/// centred, not panned (`Ear`).
 #[derive(Component)]
 pub struct SoundListener;
+
+/// The listener as sounds are mixed for it: where it is and whose ears
+/// they are (the `SoundListener`'s parent).
+#[derive(Clone, Copy, Debug)]
+pub struct Ear {
+    pub at: GlobalTransform,
+    pub owner: Option<Entity>,
+}
+
+impl Ear {
+    /// The first `SoundListener` (the client has one).
+    pub fn find<'a>(mut listeners: impl Iterator<Item = (&'a GlobalTransform, Option<&'a ChildOf>)>) -> Option<Self> {
+        listeners.next().map(|(at, parent)| Self {
+            at: *at,
+            owner: parent.map(ChildOf::parent),
+        })
+    }
+
+    /// Per-ear gains (distance and panning) and the room send for a
+    /// sound at `at` (engine space) made by `source`.
+    ///
+    /// The listener's own sounds (its gunfire, reloads, footsteps) play
+    /// centred at full distance gain, as Source plays the local player's
+    /// own sounds: they are emitted from the simulation's latest tick
+    /// while the camera is drawn between the last two ticks
+    /// (`map::interp`), so while strafing a shot sat a few centimetres to
+    /// the side of the ear, and `pan` of that direction is a hard pan.
+    /// Other sounds within `NEAR_PAN_UNITS` of the ear blend toward the
+    /// centre for the same reason (a spectated player's eye).
+    pub fn gains(&self, at: Vec3, source: Option<Entity>, level: SoundLevel) -> (f32, f32, f32) {
+        if source.is_some() && source == self.owner {
+            let g = distance_gain(level, 0.0);
+            return (g, g, distance_send(0.0));
+        }
+        let to = at - self.at.translation();
+        let units = to.length() / METERS_PER_UNIT;
+        let g = distance_gain(level, units);
+        let (pl, pr) = pan(to.normalize_or_zero(), self.at.right().as_vec3());
+        let near = (units / NEAR_PAN_UNITS).clamp(0.0, 1.0);
+        let (pl, pr) = (1.0 + (pl - 1.0) * near, 1.0 + (pr - 1.0) * near);
+        (g * pl, g * pr, distance_send(units))
+    }
+}
+
+/// Sounds this close to the listener (Source units, about a head's
+/// width) pan less, down to centred at the ear.
+pub const NEAR_PAN_UNITS: f32 = 16.0;
 
 /// A playing sound: who made it on which channel.
 #[derive(Component)]
@@ -310,7 +359,7 @@ fn play_sounds(
     mut commands: Commands,
     mut messages: MessageReader<PlaySound>,
     bank: Option<Res<SoundBank>>,
-    listeners: Query<&GlobalTransform, With<SoundListener>>,
+    listeners: Query<(&GlobalTransform, Option<&ChildOf>), With<SoundListener>>,
     playing: Query<(Entity, &Playing, Option<&AudioSink>)>,
     mut sources: ResMut<Assets<LiveClip>>,
     hearing: Res<Hearing>,
@@ -321,7 +370,7 @@ fn play_sounds(
         messages.clear();
         return;
     };
-    let listener = listeners.iter().next().copied();
+    let listener = Ear::find(listeners.iter());
     let mut unit = || {
         *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
         (*seed >> 40) as f32 / (1u64 << 24) as f32
@@ -344,12 +393,9 @@ fn play_sounds(
         };
         // Unspatialized sounds (interface, announcer) stay out of the room.
         let (left, right, send) = match (m.at, listener) {
-            (Some(at), Some(l)) => {
-                let to = at - l.translation();
-                let units = to.length() / METERS_PER_UNIT;
-                let g = distance_gain(level, units) * volume;
-                let (pl, pr) = pan(to.normalize_or_zero(), l.right().as_vec3());
-                (g * pl, g * pr, distance_send(units))
+            (Some(at), Some(ear)) => {
+                let (l, r, send) = ear.gains(at, m.source, level);
+                (l * volume, r * volume, send)
             }
             _ => (volume, volume, 0.0),
         };

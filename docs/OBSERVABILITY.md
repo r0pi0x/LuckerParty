@@ -30,7 +30,8 @@ fails and says how to move it. Test names read `weapons::name` and
 
 - Fast tier, before every commit (`.githooks/pre-commit`): `cargo test
   --features dev -- --skip heavy::` (unit tests and everything outside
-  `heavy`; under a minute when warm).
+  `heavy`; under a minute when warm). Commits that change only Markdown
+  skip it (their links are checked by the full suite before a push).
 - Before every push, `.githooks/pre-push` refuses personal traces in what's
   pushed (commit messages and added lines): machine paths (`/home/<name>/`,
   `/Users/<name>/`, `C:\\Users\\<name>`) always, plus the extended regexes in
@@ -41,7 +42,9 @@ fails and says how to move it. Test names read `weapons::name` and
   builds use that configuration and the tests don't), even with
   `MASHUP_PUSH_TESTS=0`.
 - Full suite, before a push or a merge to main (`.githooks/pre-push`, which
-  `MASHUP_PUSH_TESTS=0` skips): `cargo nextest run --features dev`, or
+  `MASHUP_PUSH_TESTS=0` skips): `cargo nextest run --features dev` (at most
+  6 tests at once and 2 heavy ones, `.config/nextest.toml`: memory, not CPU,
+  is the limit with other builds running), or
   `cargo test --features dev` without nextest (twice as slow: in one
   process the heavy tests contend). nextest runs each test in its own
   process; install it once with `cargo install cargo-nextest --locked` (or
@@ -464,12 +467,48 @@ from the command line), then `mp_restartgame 1` once the client is in;
 `mashup/console`. The client's `differences` shows the server's
 replicated values while connected; setting one says it can't. The dedicated server:
 `cargo run --features dev --bin mashup_server -- -port 27032 +map greybox
-+bot_add` (console on stdin: `status`, `bot_add`, `quit`). Logs show
++bot_add` (console on stdin: `status`, `bot_add`, `bot_quota 6`, `changelevel de_dust2`, `quit`). Logs show
 `listening on UDP ...`, `<name> joined`, `<name> left`, `disconnected:
 <reason>`.
 
+Bots (`tests/it/net_bots.rs`): `bot_add`, `bot_kick [name]`, `bot_quota
+<n>` and `bot_quota_mode normal|fill|match` on the server's console (a
+client is refused: `console::SERVER_COMMANDS`); `bot::BotQuota` has the
+quota, and a server keeps it (fill counts the host and remote players).
+A client sees bots as characters with `NetCharacter::owner` None and
+`score_flags::BOT` in their `NetScore`; their shots come as `FireBullets`
+(a client's `WeaponEvent`s owned by the bot's copy), kills as `Killed`,
+radio as `RadioCall`. `cargo test --features dev --test it net_bots --
+--nocapture` prints what each client saw and the server's frame time
+with ten bots and two clients.
+
+Maps (`tests/it/net_maps.rs`): tests build maps in code from a folder of
+files standing for an install (`harness::TestMaps`, `serve_maps`; a map
+id `test:<name>`, the file any bytes, hashed like a .bsp);
+`harness::begin_level_change` then `harness::load_level` on the server is
+`changelevel`. A client's `net::client::JoinProgress` has where joining
+is (`stage`, each stage's time in `log`, `download` bytes, the server's
+info) and why it ended (`failure`: a `JoinFailure` and the words); the
+server's `net::maps::ServedMap` what it offers (id, SHA-256, size) and a
+client entity's `net::maps::Upload` how far a download over the
+connection has come. Downloads land in the content cache
+(`<data>/mashup/content/cs_source/maps/<name>.bsp`, noted in its
+`index.toml`). On a server, `sv_allowdownload` (1), `sv_downloadurl` (an
+HTTP folder with `maps/<name>.bsp.bz2` or `.bsp`; quote it, `//` starts a
+comment) and `net_maxfilesize` (64 MB) say how clients get the map;
+`hostname` names the server. The log shows `changing level to ...`,
+`now serving <map> (<bytes>, sha256 ...)`, `sending maps/x.bsp`, and on a
+client `saved maps/x.bsp to ...`.
+
+The loading dialog: `connect`, a server's map change and a download show
+in it with the game's words; `mashup_loading_details 1` adds a panel
+with each stage's time, bytes and percentage and the server's name,
+map, players and ping (screenshot it while joining: `+mashup_loading_details
+1` on the client's command line).
+
 In game: `maxplayers 4; map <name>` hosts (Source's way), `listen` hosts
-the loaded map, `connect <ip[:port]>` joins, `disconnect` leaves (or stops
+the loaded map, `changelevel <name>` (or `map <name>`) while hosting
+takes the players along, `connect <ip[:port]>` joins, `disconnect` leaves (or stops
 hosting), `status`, `name <you>`.
 
 **LAN test with Windows.** The host's firewall must let the game take UDP
@@ -482,6 +521,39 @@ with `ipconfig` (IPv4 Address) and join with `connect 192.168.x.y:27015`.
 Over the internet the host forwards that UDP port on its router. Both
 games must be the same build (`status` shows the version); another build
 is refused with a message.
+
+**Finding games** (slice 8; `tests/it/net_query.rs`). Every server
+answers info queries on its own port (`net::query`, A2S_INFO's layout):
+`serverinfo <ip[:port]> ...` prints name, map, players/max (bots), ping,
+dedicated or listen, password; `lanscan` lists servers on the LAN
+(broadcast to `net_lan_ports`, 27015-27020 by default as Source's LAN
+tab, at `net_lan_broadcast`'s addresses, and this machine). On this box
+use other ports: `net_lan_ports 27031-27032`. A server's `status` shows
+`hostname` and `queries : N answered, N challenged, N dropped` (rate
+limited per address and in total). `openserverbrowser [lan|favorites|history]`
+(the main menu's Find Servers) opens the browser; `serverbrowser <input>`
+drives it as a click or key would (`row <n>`, `doubleclick <n>`,
+`connect`, `refresh`, `filters`, `sort <column>`, `tab <name>`, `type
+<text>`, `enter`, `escape`, `addserver`, `find`, `delete`) and prints its
+rows (through `mashup/console` for screenshots); in a test, the model is
+`client::server_browser::ServerBrowser` (`handle` an `Input`, its `rows`,
+`set_results` from `net::query::ServerQueries::results`); favourites and
+history live in the cfg folder's `serverbrowser.vdf`. `sv_password` on a
+server, `password` on a client (the browser asks for it). Two dedicated
+servers and a client on this box:
+
+```
+cargo run --features dev --bin mashup_server -- -port 27031 +hostname "LAN one" +maxplayers 8 +map greybox
+cargo run --features dev --bin mashup_server -- -port 27032 +hostname "LAN two" +sv_password pw +map de_dust2
+cargo run --features dev -- --window 1280x720 +net_lan_ports 27031-27032 +openserverbrowser lan
+```
+
+On this Linux box broadcasts don't come back to local servers (the host
+firewall); the scan finds them on 127.0.0.1. A LAN scan on Windows: broadcasts leave by one interface (the one with
+the default route); with several adapters (VPN, virtual switches) add
+the LAN's own broadcast address, e.g. `net_lan_broadcast "255.255.255.255
+192.168.1.255"`. The server's firewall rule above covers queries too
+(same port).
 
 ## 3c. Performance
 
@@ -496,6 +568,12 @@ Details and baseline numbers: [performance.md](performance.md).
   assets modified). `mashup_perf 3` also logs each second which entities
   (by name) write transforms: anything writing every frame for nothing
   costs transform propagation and GPU re-preparation.
+- Load times: a Source map load logs `<map>: loaded in <total> s
+  (<slowest stages>)` and keeps every stage's seconds in
+  `MapData::load_times` (`map::loading::LoadTimer`; a heavy test can
+  print them). Time spent putting the map into the world (colliders,
+  decal and surface grids) is not in it: time `Sim::new(MapPlugin::new(map))`
+  plus a tick.
 - Load-independent numbers (`metrics`, `client::frame_metrics`;
   performance.md, "Load-independent metrics"): the readout also gives
   distributions over the last 4096 frames and ticks: `frame ms (N): p50

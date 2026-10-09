@@ -139,6 +139,8 @@ pub struct MapLighting {
     leaves: Vec<Vec<Sample>>,
     /// Lights not already folded into the ambient cubes.
     pub lights: Vec<WorldLight>,
+    /// No lighting at all (`fullbright`): full light from every side.
+    fullbright: bool,
 }
 
 /// Set on lights VRAD already added to the leaf ambient cubes.
@@ -189,9 +191,21 @@ impl MapLighting {
                 }]);
             }
         }
+        // Each leaf's first sample is a u16: past 65535 samples it wraps
+        // (surf_sedona: 82293). Leaves list their samples in order, so a
+        // first that goes backwards has wrapped.
+        let mut wrapped = 0;
+        let mut last_first = 0;
         for (i, entry) in index.as_chunks::<4>().0.iter().enumerate() {
             let count = u16::from_le_bytes([entry[0], entry[1]]) as usize;
-            let first = u16::from_le_bytes([entry[2], entry[3]]) as usize;
+            let mut first = u16::from_le_bytes([entry[2], entry[3]]) as usize + wrapped;
+            if count > 0 {
+                if first < last_first {
+                    wrapped += 0x1_0000;
+                    first += 0x1_0000;
+                }
+                last_first = first;
+            }
             let mut list = Vec::new();
             if let Some(leaf) = raw.get(i) {
                 let lo = Vec3::new(leaf.mins[0] as f32, leaf.mins[1] as f32, leaf.mins[2] as f32);
@@ -248,7 +262,22 @@ impl MapLighting {
                 _ => {}
             }
         }
-        Self { leaves, lights }
+        Self {
+            leaves,
+            lights,
+            fullbright: false,
+        }
+    }
+
+    /// A map without lighting (`lightmap::fullbright`), drawn fullbright
+    /// as CS:S draws it: props and models at full light, not black from
+    /// empty (or all-zero) ambient samples.
+    pub fn fullbright() -> Self {
+        Self {
+            leaves: Vec::new(),
+            lights: Vec::new(),
+            fullbright: true,
+        }
     }
 
     /// The ambient cube at `p` (engine space): samples in the containing
@@ -265,6 +294,9 @@ impl MapLighting {
 
     /// The ambient cube at `p` (engine space) in BSP leaf `leaf`.
     pub fn ambient_in(&self, leaf: Option<usize>, p: Vec3) -> AmbientCube {
+        if self.fullbright {
+            return AmbientCube([Vec3::ONE; 6]);
+        }
         let Some(samples) = leaf.and_then(|i| self.leaves.get(i)) else {
             return AmbientCube::default();
         };

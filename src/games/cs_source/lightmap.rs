@@ -17,9 +17,6 @@ const ATLAS_WIDTH: u32 = 1024;
 
 const LUMP_FACES: usize = 7;
 const LUMP_FACES_HDR: usize = 58;
-/// Bytes per face (dface_t) and where its lighting offset sits.
-const FACE_SIZE: usize = 56;
-const FACE_LIGHT_OFS: usize = 20;
 
 fn lump(bsp_bytes: &[u8], i: usize) -> &[u8] {
     let at = 8 + i * 16;
@@ -31,33 +28,50 @@ fn lump(bsp_bytes: &[u8], i: usize) -> &[u8] {
     bsp_bytes.get(ofs..ofs + len).unwrap_or(&[])
 }
 
-/// The raw lighting lump: LDR if present, else HDR.
-pub fn lighting_lump(bsp_bytes: &[u8]) -> &[u8] {
-    let ldr = lump(bsp_bytes, LUMP_LIGHTING);
-    if ldr.is_empty() { lump(bsp_bytes, LUMP_LIGHTING_HDR) } else { ldr }
+/// The lighting lump the faces index: HDR (53) with `hdr`, else LDR (8).
+/// `select_lighting` decides which, and makes lump 7 the matching faces.
+pub fn lighting_lump(bsp_bytes: &[u8], hdr: bool) -> &[u8] {
+    lump(bsp_bytes, if hdr { LUMP_LIGHTING_HDR } else { LUMP_LIGHTING })
 }
 
-/// The HDR lighting lump (53), when the map has one that the faces we
-/// read (lump 7) index: the HDR face lump (58) is absent or gives every
-/// face the same lighting offset (true of every stock CS:S map that has
-/// HDR lighting). Same luxel encoding as the LDR lump (RGB + shared
-/// exponent, linear), per the public BSP v20 description.
-pub fn hdr_lighting_lump(bsp_bytes: &[u8]) -> Option<&[u8]> {
-    let hdr = lump(bsp_bytes, LUMP_LIGHTING_HDR);
-    if hdr.is_empty() {
-        return None;
+/// Which baked lighting the map is read with: the HDR set (lightmaps 53,
+/// faces 58, ambient 51/55, world lights 54) when `want_hdr`
+/// (mat_hdr_level 2) and the map has it, else the LDR set. Returns the
+/// file with the HDR face lump (58) swapped into lump 7's place when HDR
+/// is chosen, and whether it was: the two face lumps differ only in their
+/// lighting offsets and light styles (per the public BSP v20 description,
+/// faces 58 index lump 53), and everything that reads faces (vbsp, our
+/// lump readers) reads lump 7. Same luxel encoding either way (RGB +
+/// shared exponent, linear).
+///
+/// A map compiled with HDR lighting only (surf_sedona) has no LDR lighting
+/// at all: at the LDR levels it is drawn fullbright, as CS:S draws it
+/// (`fullbright`). Its lump 7 is no use for lump 53 either: it gives every
+/// face four styles of 0 and offsets that don't index lump 53 (reading it
+/// that way summed four blocks of the wrong luxels).
+pub fn select_lighting(mut bytes: Vec<u8>, want_hdr: bool) -> (Vec<u8>, bool) {
+    if !want_hdr || lump(&bytes, LUMP_LIGHTING_HDR).is_empty() {
+        return (bytes, false);
     }
-    let faces_hdr = lump(bsp_bytes, LUMP_FACES_HDR);
-    if faces_hdr.is_empty() {
-        return Some(hdr);
+    let faces_hdr = lump(&bytes, LUMP_FACES_HDR);
+    if !faces_hdr.is_empty() && faces_hdr.len() == lump(&bytes, LUMP_FACES).len() {
+        let (a, b) = (8 + LUMP_FACES * 16, 8 + LUMP_FACES_HDR * 16);
+        for k in 0..16 {
+            bytes.swap(a + k, b + k);
+        }
     }
-    let offsets = |faces: &[u8]| -> Vec<[u8; 4]> {
-        faces
-            .chunks_exact(FACE_SIZE)
-            .map(|f| f[FACE_LIGHT_OFS..FACE_LIGHT_OFS + 4].try_into().unwrap())
-            .collect()
-    };
-    (offsets(faces_hdr) == offsets(lump(bsp_bytes, LUMP_FACES))).then_some(hdr)
+    (bytes, true)
+}
+
+/// Whether the map has no lighting at the level `select_lighting` chose
+/// (`hdr`): no lightmaps to read, so the game draws it fullbright.
+pub fn fullbright(bsp_bytes: &[u8], hdr: bool) -> bool {
+    lighting_lump(bsp_bytes, hdr).is_empty()
+}
+
+/// Whether the map has HDR lightmaps (lump 53).
+pub fn has_hdr_lighting(bsp_bytes: &[u8]) -> bool {
+    !lump(bsp_bytes, LUMP_LIGHTING_HDR).is_empty()
 }
 
 /// One face's samples, linear RGB where 1.0 shows the texture unchanged.
@@ -403,6 +417,10 @@ pub fn atlas_uv(atlas: &MapLightmap, p: Placement, luxel: Vec2) -> [f32; 2] {
 mod tests {
     use super::*;
 
+    /// Bytes per face (dface_t) and where its lighting offset sits.
+    const FACE_SIZE: usize = 56;
+    const FACE_LIGHT_OFS: usize = 20;
+
     /// A BSP v20 file holding only the given lumps (index, bytes).
     fn bsp_with(lumps: &[(usize, Vec<u8>)]) -> Vec<u8> {
         let header = 8 + 64 * 16 + 4;
@@ -460,28 +478,39 @@ mod tests {
     }
 
     #[test]
-    fn hdr_lighting_is_the_hdr_lump_when_faces_agree() {
+    fn hdr_lighting_comes_with_the_hdr_faces() {
         let ldr = vec![1u8; 8];
         let hdr = vec![2u8; 8];
-        // No HDR face lump: the faces' offsets index both.
-        let b = bsp_with(&[(LUMP_LIGHTING, ldr.clone()), (LUMP_LIGHTING_HDR, hdr.clone())]);
-        assert_eq!(hdr_lighting_lump(&b), Some(&hdr[..]));
-        assert_eq!(lighting_lump(&b), &ldr[..], "LDR stays the default");
-        // An HDR face lump with the same offsets.
-        let faces = [face_bytes(0), face_bytes(4)].concat();
-        let b = bsp_with(&[
+        let (faces, faces_hdr) = ([face_bytes(0), face_bytes(4)].concat(), [face_bytes(4), face_bytes(0)].concat());
+        let both = bsp_with(&[
             (LUMP_FACES, faces.clone()),
             (LUMP_LIGHTING, ldr.clone()),
             (LUMP_LIGHTING_HDR, hdr.clone()),
-            (LUMP_FACES_HDR, faces.clone()),
+            (LUMP_FACES_HDR, faces_hdr.clone()),
         ]);
-        assert_eq!(hdr_lighting_lump(&b), Some(&hdr[..]));
-        // Different offsets: not usable with lump 7's faces.
-        let other = [face_bytes(4), face_bytes(0)].concat();
-        let b = bsp_with(&[(LUMP_FACES, faces), (LUMP_LIGHTING_HDR, hdr), (LUMP_FACES_HDR, other)]);
-        assert_eq!(hdr_lighting_lump(&b), None);
+        // LDR stays the default, with its own faces.
+        let (b, is_hdr) = select_lighting(both.clone(), false);
+        assert!(!is_hdr);
+        assert_eq!((lighting_lump(&b, false), lump(&b, LUMP_FACES)), (&ldr[..], &faces[..]));
+        // HDR asked for: lump 53 through the HDR faces.
+        let (b, is_hdr) = select_lighting(both, true);
+        assert!(is_hdr);
+        assert_eq!((lighting_lump(&b, true), lump(&b, LUMP_FACES)), (&hdr[..], &faces_hdr[..]));
+        // No HDR face lump: lump 7's faces index both.
+        let (b, is_hdr) = select_lighting(bsp_with(&[(LUMP_FACES, faces.clone()), (LUMP_LIGHTING_HDR, hdr.clone())]), true);
+        assert!(is_hdr);
+        assert_eq!(lump(&b, LUMP_FACES), &faces[..]);
+        // HDR-only (surf_sedona): fullbright at LDR, its own faces for HDR.
+        let only = bsp_with(&[(LUMP_FACES, faces.clone()), (LUMP_LIGHTING_HDR, hdr), (LUMP_FACES_HDR, faces_hdr.clone())]);
+        let (b, is_hdr) = select_lighting(only.clone(), false);
+        assert!(!is_hdr && fullbright(&b, false));
+        assert_eq!(lump(&b, LUMP_FACES), &faces[..]);
+        let (b, is_hdr) = select_lighting(only, true);
+        assert!(is_hdr && !fullbright(&b, true));
+        assert_eq!(lump(&b, LUMP_FACES), &faces_hdr[..]);
         // No HDR lump at all.
-        assert_eq!(hdr_lighting_lump(&bsp_with(&[(LUMP_LIGHTING, ldr)])), None);
+        let (_, is_hdr) = select_lighting(bsp_with(&[(LUMP_LIGHTING, ldr)]), true);
+        assert!(!is_hdr);
     }
 
     #[test]

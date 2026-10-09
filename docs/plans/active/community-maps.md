@@ -139,6 +139,9 @@ headless dev box (one view each, so only a hint).
 | surf_demise's "magenta floor": its ramps are translucent marble over an envmap-only material (no `$basetexture`) drawn grey instead of black (shaders.md 2), and its HDR sky cubemap failed twice (a pak entry the zip crate's LZMA decoder refuses; half-float texels) | 1 | Black albedo for envmap-only generic materials; such pak entries read through lzma-rs; RGBA16161616F decoded |
 | Material effects the shaders lacked: `$detail` on models (surf_surreal, kz_ancient_ruins, surf_boreas: 120+ materials) and blend modes past 0 and 1 (2, 5, 6, 8), `$selfillum` (27 maps; also de_nuke's windows), `$basetexturetransform` (22 maps) and TextureScroll on it (21), sky faces' half-height transform, UnlitGeneric brushes lit by the lightmap, `$selfillum` inside `">=DX90"` blocks ignored | 30+ | `map::material_fx`, world.wgsl and prop.wgsl (specs/cs_source/shaders.md; open questions 16-19 list what the spec leaves out); `$emissiveblend*` (surf_demise) still not drawn (question 17); de_nuke refcmp 0.0248 -> 0.0238 (its self-lit windows), de_dust2 unchanged (0.0308) |
 | Slow first views: mg_swag_multigames_v1 341 ms (every resting placed weapon ran swept CCD each tick, 19 ms a tick), surf_demise 98 ms (37k static parts revisited by transform propagation whenever anything under the map's root moved) | 2 | CCD only above 0.5 m/s; static parts under a root of their own. performance.md, "Community maps' slow first views", has the traces and before/after numbers |
+| Surfing stopped dead on most surf_sedona ramps (high and far from the origin) and at the joints of curved ramps | surf_sedona: 55 of 112 test rides (`heavy::map_surf`) | `movement::Tracer::sweep_brushes`: how far a move goes into a plane is `n . delta` (the end points' f32 rounding made a velocity just clipped along a ramp read as entering it again: the same plane twice zeroed it), and the plane a box stops against is the one it really crosses last (ranking the backed-off fractions picked a curved ramp's seam bevel, facing back along the ramp); prop pieces get edge bevels (`MapBrush::from_planes`). Now no ghost stop on surf_sedona, surf_boreas, surf_apollo, surf_jive |
+| surf_sedona: 100 s to load and two minutes more to spawn (2026-10-09) | 1 (others with big LZMA paks or huge triangles less so) | Packed files read by `pak::Pak` (vbsp's zip decoded LZMA at a few MB/s; now lzma-rs, all at once on several threads), LZMA lumps inflated in parallel, and the decal and surface-colour grids keep triangles spanning over 64 cells in a list of their own (a 100 m ramp filled millions of 1 m cells: 70 s and gigabytes). Dev build: load 102 s -> 9 s, spawn 67-137 s -> 4 s. Stage times: `MapData::load_times` |
+| surf_sedona's lighting "corrupted", props black: it has HDR lighting only (no lump 8), and lump 7's faces were read through lump 53 (four styles of 0, offsets into nothing) with all-zero LDR ambient samples | 1 | Fullbright below mat_hdr_level 2, as CS:S draws it (`lightmap::select_lighting`, `MapLighting::fullbright`); at level 2 its HDR lighting through the HDR face lump (58), with the leaf ambient index's u16 first sample unwrapped (82293 samples) |
 
 ## Map entities (2026-10-09)
 
@@ -203,8 +206,13 @@ prop_ragdoll),
 [game_entities.md](../../../specs/source/game_entities.md)
 (player_speedmod, game_ui, env_fade, game_score, env_hudhint,
 env_explosion, func_wall_toggle, func_conveyor). Each lists the CS:S
-differences to measure under "Open questions". Not yet specced:
-info_particle_system, env_smokestack, phys_constraint/ballsocket.
+differences to measure under "Open questions". Also
+[particles_and_smoke.md](../../../specs/source/particles_and_smoke.md)
+(info_particle_system, env_smokestack, env_particlelight, env_smoketrail)
+and [physics_constraints.md](../../../specs/source/physics_constraints.md)
+(phys_constraint, _ballsocket, _hinge, _slideconstraint,
+_lengthconstraint, _pulleyconstraint, _ragdollconstraint, phys_spring,
+phys_constraintsystem, info_constraint_anchor).
 
 Spawns: every map has spawn points; 14 have only one team's (bhop_, kz_,
 some mg_: the game puts everyone on the team that has spawns).

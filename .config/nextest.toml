@@ -1,0 +1,14 @@
+# nextest settings (cargo nextest run). Memory, not CPU, is the limit on
+# shared dev machines: a heavy test loads a real map (~1 GB), and nextest's
+# default of one test per CPU thread ran 12+ of them at once and pushed the
+# box into swap. Cap the parallelism, and the heavy tests further.
+
+[profile.default]
+test-threads = 6
+
+[test-groups]
+heavy = { max-threads = 2 }
+
+[[profile.default.overrides]]
+filter = 'test(/^heavy::/)'
+test-group = 'heavy'

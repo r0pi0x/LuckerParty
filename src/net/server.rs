@@ -10,12 +10,12 @@ use bevy::prelude::*;
 use bevy_replicon::{prelude::*, server::server_tick::ServerTick, shared::backend::connected_client::NetworkId};
 use bevy_replicon_renet::{
     RenetServer,
-    netcode::{NetcodeServerTransport, ServerAuthentication, ServerConfig},
+    netcode::{ServerAuthentication, ServerConfig},
 };
 
 use super::{
     HOST_ID, Join, NET_VERSION, NetBody, NetCharacter, NetCmd, NetEvent, NetSettings, NetVersion, OwnState,
-    PROTOCOL_ID, Refused, UserCmds, Welcome, body_flags, current_map,
+    PROTOCOL_ID, Refused, UserCmds, body_flags,
 };
 use crate::{
     character::character_bundle,
@@ -157,7 +157,9 @@ pub fn listen(world: &mut World) -> Result<SocketAddr, String> {
         public_addresses: vec![addr],
         authentication: ServerAuthentication::Unsecure,
     };
-    let transport = NetcodeServerTransport::new(config, socket).map_err(|e| e.to_string())?;
+    // Answers server queries on the same port (`query`).
+    let secret = world.resource::<super::query::InstanceId>().0 ^ config.current_time.as_nanos() as u64;
+    let transport = super::udp::UdpServer::new(config, socket, secret).map_err(|e| e.to_string())?;
     start(world)?;
     world.insert_resource(transport);
     world.write_message(NetEvent::Listening(addr));
@@ -173,6 +175,8 @@ pub fn start(world: &mut World) -> Result<(), String> {
     let config = super::connection_config(world);
     world.insert_resource(RenetServer::new(config));
     world.insert_resource(NetRole::Server);
+    // Bots added before serving stay (`bot_quota` counts them).
+    crate::bot::sync_quota(world);
     Ok(())
 }
 
@@ -186,7 +190,7 @@ fn remote_slots(world: &mut World) -> usize {
 
 /// Stop serving: clients are told and dropped, their characters go.
 pub(super) fn stop(world: &mut World) {
-    if let Some(mut transport) = world.remove_resource::<NetcodeServerTransport>() {
+    if let Some(mut transport) = world.remove_resource::<super::udp::UdpServer>() {
         if let Some(mut server) = world.get_resource_mut::<RenetServer>() {
             transport.disconnect_all(&mut server);
         }
@@ -258,6 +262,9 @@ fn admit(world: &mut World, client: Entity, msg: Join) {
         ))
     } else if world.get::<Player>(client).is_some() {
         return;
+    } else if !password_ok(world, client) {
+        // Source's words.
+        Some("Bad password.".to_string())
     } else {
         let taken = world.query_filtered::<(), With<Player>>().iter(world).count();
         (taken >= remote_slots(world)).then(|| "Server is full.".to_string())
@@ -284,25 +291,28 @@ fn admit(world: &mut World, client: Entity, msg: Join) {
             character,
         },
     ));
-    let map = current_map(world);
-    let map_hash = if map == super::GREYBOX {
-        None
-    } else {
-        world.get_resource::<crate::map::MapFile>().and_then(|f| f.hash)
-    };
-    let tick_nanos = world.resource::<Time<Fixed>>().timestep().as_nanos() as u64;
+    // The served map (its offer: name, hash, size, where to download it).
+    let welcome = super::maps::welcome(world, id);
     world.commands().server_trigger(ToClients {
         targets: SendTargets::Single(ClientId::Client(client)),
-        message: Welcome {
-            map,
-            map_hash,
-            tick_nanos,
-            you: id,
-        },
+        message: welcome,
     });
     // The server's replicated cvars (movement, rules), before it plays.
     super::cvars::send_all(world, client);
     info!("{name} joined (client {id})");
+}
+
+/// Whether a client gave the server's password (`sv_password`; any
+/// without one). It rides in netcode's user data (`query::user_data`);
+/// a client without a UDP transport (tests' memory link) gives none.
+fn password_ok(world: &World, client: Entity) -> bool {
+    let want = &world.resource::<super::query::Hosting>().password;
+    if want.is_empty() {
+        return true;
+    }
+    let id = world.get::<NetworkId>(client).map(|n| n.get());
+    let data = id.and_then(|id| world.get_resource::<super::udp::UdpServer>()?.user_data(id));
+    super::query::password_of(data.as_ref()) == *want
 }
 
 /// A printable name of at most 32 characters, or "Player <id>".

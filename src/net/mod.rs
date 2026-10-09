@@ -2,7 +2,7 @@
 //! server (a listen server in the game, or the dedicated `mashup_server`)
 //! and clients, over bevy_replicon with renet's netcode UDP transport.
 //!
-//! So far (slices 1 to 4): connect and disconnect (`connect`,
+//! So far (slices 1 to 7): connect and disconnect (`connect`,
 //! `disconnect`, `listen`, `status`; `hostport`, `maxplayers`, `name`),
 //! a join handshake (build version, protocol hash, then the map by name
 //! and file hash), a character spawned on the server per client, and
@@ -20,6 +20,13 @@
 //! others' shots, items, grenades and deaths come from the server:
 //! `weapons`.
 //!
+//! Rounds, money, chat and cvars: `game`, `chat`, `cvars`. Bots are the
+//! server's like any character (`bot_quota`). Maps (`maps`): the server
+//! offers its map (name, hash, size); a client without that file fetches
+//! it over the connection or from `sv_downloadurl` into the content
+//! cache, and a map change on the server takes every client along.
+//! Joining's stages, for the loading dialog: `client::JoinProgress`.
+//!
 //! `NetRole` (core) says what this process is; `authoritative` systems
 //! (rules, bots, damage, logic) don't run on a client.
 
@@ -28,11 +35,14 @@ pub mod chat;
 pub mod client;
 pub mod cvars;
 pub mod game;
+pub mod http;
 pub mod interp;
+pub mod maps;
 pub mod memory;
 pub mod movers;
 pub mod predict;
 pub mod props;
+pub mod query;
 pub mod server;
 pub mod udp;
 pub mod weapons;
@@ -61,7 +71,7 @@ pub const PROTOCOL_ID: u64 = 0x4C55_434B_4552_5059;
 /// This build's network version. A server refuses clients of another
 /// version. Bump the suffix when the protocol changes in a way the
 /// replicon protocol hash can't see (a field added to a message).
-pub const NET_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/net6");
+pub const NET_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/net8");
 
 /// The owner id of the listen server's own player (`NetCharacter::owner`).
 /// Remote clients' ids are never 0.
@@ -97,6 +107,8 @@ pub struct NetSettings {
     pub maxplayers: u32,
     /// This player's name (Source's `name`).
     pub name: String,
+    /// The server's name, shown to joining players (Source's `hostname`).
+    pub hostname: String,
 }
 
 impl Default for NetSettings {
@@ -105,6 +117,7 @@ impl Default for NetSettings {
             hostport: DEFAULT_PORT,
             maxplayers: 1,
             name: "Player".into(),
+            hostname: "Lucker Party".into(),
         }
     }
 }
@@ -130,8 +143,13 @@ pub enum NetEvent {
     /// Connecting to this server.
     Connecting(SocketAddr),
     /// The server is on this map and this client hasn't loaded it: load it
-    /// (the client layer runs `map`), then the handshake checks its hash.
-    LoadMap(String),
+    /// (the client layer; a test's `harness::serve_maps`), from `file`
+    /// when given (a downloaded copy in the content cache), else by name;
+    /// then the handshake checks its hash.
+    LoadMap { map: String, file: Option<std::path::PathBuf> },
+    /// The server is changing level (to this map): the loading dialog
+    /// shows it; the new map comes as `LoadMap` once the server has it.
+    ChangingLevel(String),
     /// Joined: the map matches, the server spawns our character.
     Joined { map: String },
     /// Left the game (or stopped serving): why.
@@ -159,17 +177,78 @@ pub struct Refused {
 }
 
 /// Server -> client: joined. The map (`map` id: `greybox` or
-/// `cs_source:<name>`) and its file hash, which the client checks before
-/// it plays, and the tick the server runs at.
-#[derive(Event, Serialize, Deserialize, Clone, Debug)]
+/// `cs_source:<name>`), its file's hash and size, which the client
+/// checks (and fetches, `maps`) before it plays, where to download it
+/// from, the tick the server runs at, and what the loading dialog shows
+/// of the server.
+#[derive(Event, Serialize, Deserialize, Clone, Debug, Default)]
 pub struct Welcome {
     pub map: String,
     pub map_hash: Option<[u8; 32]>,
+    /// The map file's size, bytes (0: none, the greybox).
+    pub map_size: u64,
+    /// `sv_downloadurl`: an HTTP folder laid out like the game's
+    /// (`<url>/maps/<name>.bsp.bz2` or `.bsp`); empty: none.
+    pub download_url: String,
+    /// `sv_allowdownload`: the server sends the map over the connection.
+    pub allow_download: bool,
     /// Length of a server tick, ns (exact: the client's fixed tick must
     /// be the same `Duration`).
     pub tick_nanos: u64,
     /// The client's id (`NetCharacter::owner` of its character).
     pub you: u64,
+    /// `hostname`, players in the game (bots included) and `maxplayers`.
+    pub server_name: String,
+    pub players: u32,
+    pub max_players: u32,
+}
+
+/// Server -> clients: a map change started (`changelevel`, `map`); the
+/// new map follows as `ChangeLevel` once the server has loaded it.
+#[derive(Event, Serialize, Deserialize, Clone, Debug, Default)]
+pub struct ChangingLevel {
+    pub map: String,
+}
+
+/// Server -> clients: the server is on another map now: load it (fetch
+/// it first if needed, as on joining) and play on; the connection and
+/// the characters stay.
+#[derive(Event, Serialize, Deserialize, Clone, Debug, Default)]
+pub struct ChangeLevel {
+    pub map: String,
+    pub map_hash: Option<[u8; 32]>,
+    pub map_size: u64,
+    pub download_url: String,
+    pub allow_download: bool,
+    pub tick_nanos: u64,
+}
+
+/// Client -> server: send me your map's file (`sv_allowdownload`).
+#[derive(Message, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct MapRequest {
+    pub map: String,
+}
+
+/// Server -> client: a piece of the map file it asked for, at `offset`
+/// of `total` bytes. Reliable and in order.
+#[derive(Message, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct MapChunk {
+    pub offset: u64,
+    pub total: u64,
+    pub data: Vec<u8>,
+}
+
+/// Client -> server: bytes of the map received so far (the server keeps
+/// a window of `maps::WINDOW` bytes in flight beyond it).
+#[derive(Message, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct MapAck {
+    pub received: u64,
+}
+
+/// Server -> client: it won't send the map, and why.
+#[derive(Message, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct MapDenied {
+    pub reason: String,
 }
 
 /// One user command (Source's usercmd): the intent for one server tick,
@@ -820,6 +899,17 @@ impl Plugin for NetPlugin {
         .make_event_independent::<Refused>()
         .add_server_event::<Welcome>(Channel::Ordered)
         .make_event_independent::<Welcome>()
+        // Maps (slice 7).
+        .add_server_event::<ChangingLevel>(Channel::Ordered)
+        .make_event_independent::<ChangingLevel>()
+        .add_server_event::<ChangeLevel>(Channel::Ordered)
+        .make_event_independent::<ChangeLevel>()
+        .add_client_message::<MapRequest>(Channel::Ordered)
+        .add_client_message::<MapAck>(Channel::Unreliable)
+        .add_server_message::<MapChunk>(Channel::Ordered)
+        .make_message_independent::<MapChunk>()
+        .add_server_message::<MapDenied>(Channel::Ordered)
+        .make_message_independent::<MapDenied>()
         .add_client_message::<UserCmds>(Channel::Unreliable)
         .add_server_message::<OwnState>(Channel::Unreliable)
         // Holds no entities: no need to wait for replication.
@@ -886,7 +976,9 @@ impl Plugin for NetPlugin {
         game::plugin(app);
         chat::plugin(app);
         cvars::plugin(app);
+        maps::plugin(app);
         udp::plugin(app);
+        query::plugin(app);
         memory::plugin(app);
         commands(app);
     }
@@ -898,7 +990,11 @@ fn log_events(mut events: MessageReader<NetEvent>) {
         match e {
             NetEvent::Listening(a) => info!("listening on UDP {a}"),
             NetEvent::Connecting(a) => info!("connecting to {a}..."),
-            NetEvent::LoadMap(m) => info!("the server is on {m}: loading it"),
+            NetEvent::LoadMap { map, file } => match file {
+                Some(f) => info!("the server is on {map}: loading it from {}", f.display()),
+                None => info!("the server is on {map}: loading it"),
+            },
+            NetEvent::ChangingLevel(m) => info!("the server is changing level to {m}"),
             NetEvent::Joined { map } => info!("joined the game on {map}"),
             NetEvent::Disconnected(r) => info!("disconnected: {r}"),
         }
@@ -944,7 +1040,9 @@ pub fn map_matches(world: &World, map: &str, hash: Option<[u8; 32]>) -> Option<b
     }
     let file = world.get_resource::<crate::map::MapFile>()?;
     let want_name = map.rsplit(':').next().unwrap_or(map);
-    if !file.name.eq_ignore_ascii_case(want_name) || current_map(world) != map {
+    // The loaded file's name, with or without its game (`cs_source:x`).
+    let have = file.name.rsplit(':').next().unwrap_or(&file.name);
+    if !have.eq_ignore_ascii_case(want_name) || current_map(world) != map {
         return None;
     }
     Some(file.hash == hash)
@@ -957,8 +1055,14 @@ pub fn disconnect(world: &mut World, reason: &str) {
     let role = world.get_resource::<NetRole>().copied().unwrap_or_default();
     match role {
         NetRole::Standalone => return,
-        NetRole::Server => server::stop(world),
-        NetRole::Client => client::stop(world),
+        NetRole::Server => {
+            server::stop(world);
+            maps::stop_serving(world);
+        }
+        NetRole::Client => {
+            client::stop(world);
+            client::ended(world, reason);
+        }
     }
     world.insert_resource(NetRole::Standalone);
     world.insert_resource(LastDisconnect(reason.into()));
@@ -1015,6 +1119,12 @@ fn commands(app: &mut App) {
         |s| &mut s.maxplayers,
     );
     resource_cvar::<NetSettings, String>(app, "name", "Your player name.", |s| &mut s.name);
+    resource_cvar::<NetSettings, String>(
+        app,
+        "hostname",
+        "The server's name, shown to players joining it.",
+        |s| &mut s.hostname,
+    );
     app.console_command(
         "connect",
         "connect <ip[:port]>: join a server (port 27015 unless given).",
@@ -1078,7 +1188,15 @@ pub fn status(world: &mut World) -> String {
         }
         NetRole::Server => {
             let settings = world.resource::<NetSettings>().clone();
+            out.insert(0, format!("hostname: {}", world.resource::<query::Hosting>().hostname));
             out.push(format!("udp/ip  : 0.0.0.0:{}", settings.hostport));
+            if let Some(t) = world.get_resource::<udp::UdpServer>() {
+                let q = &t.queries;
+                out.push(format!(
+                    "queries : {} answered, {} challenged, {} dropped",
+                    q.answered, q.challenged, q.dropped
+                ));
+            }
             out.push(format!("map     : {map}"));
             let players = server::players(world);
             out.push(format!("players : {} ({} max)", players.len(), settings.maxplayers));

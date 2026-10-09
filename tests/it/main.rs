@@ -28,13 +28,17 @@ mod mount_cs_source;
 mod movement;
 mod nav;
 mod net;
+mod net_bots;
 mod net_interp;
+mod net_maps;
 mod net_prediction;
+mod net_query;
 mod net_rules;
 mod net_weapons;
 mod objectives;
 mod phy_spec;
 mod prediction;
+mod prop_shadows;
 mod radio;
 mod ragdoll;
 mod ragdoll_spec;
@@ -77,6 +81,7 @@ mod heavy {
     mod map_de_nuke;
     mod map_de_nuke_doors;
     mod map_de_port;
+    mod map_net_changelevel;
     mod map_net_weapons;
     mod map_fire;
     mod map_hdr;
@@ -88,6 +93,7 @@ mod heavy {
     mod map_props;
     mod map_sound_stock;
     mod map_stock;
+    mod map_surf;
     mod map_vis;
     mod map_visuals;
 }
