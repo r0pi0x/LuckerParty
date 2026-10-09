@@ -136,6 +136,17 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
 
 ## 2c. Multiplayer
 
+- High priority, with the multiplayer slices: loading UI for joining a
+  server and for every map load, so it's always clear what's happening.
+  CS:S's own loading dialog first (parity: connecting, retrieving server
+  info, loading the map, its stages and progress; `map::loading` and the
+  GameUI LoadingDialog already cover map loads from the main menu), shown
+  for `connect`, map changes in a game and the host starting a server,
+  with failures and refusals shown in it (version, map hash, server full,
+  timeouts). Then, as an option (off by default), a detailed view of our
+  own: each load stage with timings, bytes and percentages, and the
+  server's name, map, players and ping while connecting.
+
 Plan: [plans/active/multiplayer.md](plans/active/multiplayer.md)
 (bevy_replicon + renet; Source-style prediction, interpolation and lag
 compensation of our own; slices 0-9). Slices 0-4 done: a listen
