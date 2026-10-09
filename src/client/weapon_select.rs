@@ -72,7 +72,7 @@ fn rebuild(
     let (me, inv) = *player;
     let deployed = events
         .read()
-        .any(|e| e.owner == me && matches!(e.kind, WeaponEventKind::Deployed));
+        .any(|e| e.shown() && e.owner == me && matches!(e.kind, WeaponEventKind::Deployed));
     if !deployed {
         return;
     }

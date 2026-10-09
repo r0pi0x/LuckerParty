@@ -2,7 +2,7 @@
 //! server (a listen server in the game, or the dedicated `mashup_server`)
 //! and clients, over bevy_replicon with renet's netcode UDP transport.
 //!
-//! So far (slices 1 to 3): connect and disconnect (`connect`,
+//! So far (slices 1 to 4): connect and disconnect (`connect`,
 //! `disconnect`, `listen`, `status`; `hostport`, `maxplayers`, `name`),
 //! a join handshake (build version, protocol hash, then the map by name
 //! and file hash), a character spawned on the server per client, and
@@ -15,6 +15,10 @@
 //! replicate their motion state (`NetMover`) and a client steps them to
 //! the tick it predicts, carrying its own player as the server does:
 //! `movers`. Physics props are drawn from snapshots like others: `props`.
+//! Weapons: the client predicts its own with its movement (what it
+//! carries goes in `OwnState`), the server hits with lag compensation,
+//! others' shots, items, grenades and deaths come from the server:
+//! `weapons`.
 //!
 //! `NetRole` (core) says what this process is; `authoritative` systems
 //! (rules, bots, damage, logic) don't run on a client.
@@ -27,6 +31,7 @@ pub mod predict;
 pub mod props;
 pub mod server;
 pub mod udp;
+pub mod weapons;
 
 use std::net::SocketAddr;
 
@@ -52,7 +57,7 @@ pub const PROTOCOL_ID: u64 = 0x4C55_434B_4552_5059;
 /// This build's network version. A server refuses clients of another
 /// version. Bump the suffix when the protocol changes in a way the
 /// replicon protocol hash can't see (a field added to a message).
-pub const NET_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/net3");
+pub const NET_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/net4");
 
 /// The owner id of the listen server's own player (`NetCharacter::owner`).
 /// Remote clients' ids are never 0.
@@ -177,6 +182,11 @@ pub struct NetCmd {
     /// `buttons::*` bits.
     pub buttons: u16,
     pub select: Option<u8>,
+    /// The server tick (fractional) the client drew others at when it made
+    /// this command (`interp::InterpClock::render_tick`; 0: none, or
+    /// `cl_lagcompensation 0`): the server traces its shots against others
+    /// where they were then (`weapon::lagcomp`).
+    pub view_tick: f64,
 }
 
 /// `NetCmd::buttons` bits.
@@ -218,7 +228,14 @@ impl NetCmd {
             pitch: i.pitch,
             buttons: b,
             select: i.select,
+            view_tick: 0.0,
         }
+    }
+
+    /// The view tick, made safe: finite, not ahead of `tick` (the
+    /// command's own), None when not given.
+    pub fn view(&self, tick: u64) -> Option<f64> {
+        (self.view_tick.is_finite() && self.view_tick > 0.0).then(|| self.view_tick.min(tick as f64))
     }
 
     /// Write into an intent, made safe first (never trust a client): the
@@ -409,6 +426,133 @@ pub mod prop_flags {
     pub const SOLID: u16 = 1 << 1;
 }
 
+/// What a character holds, for others to draw (`weapons`): the active
+/// weapon's registry index (`weapon::WeaponRegistry::index`), its
+/// `AltModes` mode (a silencer on) and whether a grenade's pin is out.
+/// Written by the server after each tick.
+#[derive(Component, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct NetHeld {
+    pub weapon: Option<u16>,
+    pub mode: u8,
+    pub primed: bool,
+}
+
+/// Something small the server simulates and clients draw from snapshots
+/// (`weapons`): a loose weapon or a grenade in flight, by its held-model
+/// key (`map::loose::ShownItem`), pose and velocity.
+#[derive(Component, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct NetItem {
+    pub model: String,
+    pub origin: [f32; 3],
+    pub rotation: [f32; 4],
+    pub velocity: [f32; 3],
+}
+
+/// A smoke cloud (`weapon::grenade::SmokeCloud`): where, and the grenade
+/// whose rule it follows (registry index). A client starts its own copy
+/// when it hears of it.
+#[derive(Component, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct NetSmoke {
+    pub centre: [f32; 3],
+    pub weapon: u16,
+    /// Seconds it had been there when the server last wrote it.
+    pub age: f32,
+}
+
+/// Server -> every client but the shooter's: one round someone fired
+/// (`weapon::WeaponEventKind::Fired`), for the client to trace again and
+/// draw (Source's "fire bullets" message): who, which weapon (registry
+/// index), from where, the angles, the spread seed and the spread.
+/// Unreliable, like Source's temporary entities.
+#[derive(Message, Serialize, Deserialize, Clone, Debug, PartialEq, bevy::ecs::entity::MapEntities)]
+pub struct FireBullets {
+    #[entities]
+    pub shooter: Entity,
+    pub weapon: u16,
+    pub origin: [f32; 3],
+    pub yaw: f32,
+    pub pitch: f32,
+    pub seed: u32,
+    /// `weapon::SpreadShape`: a disc (inaccuracy, spread), else the
+    /// template's scale in `inaccuracy`.
+    pub disc: bool,
+    pub inaccuracy: f32,
+    pub spread: f32,
+    pub mode: u8,
+}
+
+/// Server -> every client but the doer's: something else a weapon did,
+/// for the body's animation (`weapon_fx::*`).
+#[derive(Message, Serialize, Deserialize, Clone, Debug, PartialEq, bevy::ecs::entity::MapEntities)]
+pub struct WeaponFx {
+    #[entities]
+    pub owner: Entity,
+    pub kind: u8,
+}
+
+/// `WeaponFx::kind`.
+pub mod weapon_fx {
+    pub const RELOAD: u8 = 1;
+    pub const SHELL: u8 = 2;
+    pub const RELOADED: u8 = 3;
+    pub const SWING: u8 = 4;
+    pub const SWING2: u8 = 5;
+    pub const PIN: u8 = 6;
+    pub const THROWN: u8 = 7;
+}
+
+/// Server -> clients: a grenade went off (`weapon::grenade::Detonated`):
+/// what kind, which grenade (registry index), where and the ground under
+/// it, for the explosion's look.
+#[derive(Message, Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Detonation {
+    pub kind: u8,
+    pub weapon: u16,
+    pub at: [f32; 3],
+    pub ground: Option<([f32; 3], [f32; 3])>,
+}
+
+/// Server -> the client a character belongs to: its player was blinded
+/// (alpha, seconds held, seconds fading: `core::Blinded` from now on) or
+/// its hearing hit (`core::Deafened`).
+#[derive(Message, Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Senses {
+    pub blind: Option<(f32, f32, f32)>,
+    pub hearing: Option<crate::core::HearingEffect>,
+}
+
+/// Server -> clients: a character died (`core::Died`): who, by whom, and
+/// the killing hit (its weapon's registry index when it isn't what the
+/// killer holds, hitgroup and kind as `net::weapons` numbers them, where
+/// and which way), for the kill feed and the client's ragdoll.
+#[derive(Message, Serialize, Deserialize, Clone, Debug, PartialEq, bevy::ecs::entity::MapEntities)]
+pub struct Killed {
+    #[entities]
+    pub victim: Entity,
+    #[entities]
+    pub attacker: Option<Entity>,
+    pub weapon: Option<u16>,
+    pub hitgroup: u8,
+    pub kind: u8,
+    pub point: [f32; 3],
+    pub dir: [f32; 3],
+    pub force: [f32; 3],
+}
+
+/// Server -> the shooter's client: its shot hit (the server's
+/// confirmation: the hit marker), how hard and where on the body.
+#[derive(Message, Serialize, Deserialize, Clone, Debug, PartialEq, bevy::ecs::entity::MapEntities)]
+pub struct HitConfirm {
+    #[entities]
+    pub target: Entity,
+    pub amount: f32,
+    pub hitgroup: u8,
+}
+
+/// Client -> server: drop the weapon I hold (Source's `drop`).
+#[derive(Message, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct DropRequest;
+
 /// The network's systems, protocol and console commands. With
 /// `RepliconPlugins` and renet's; nothing runs until `listen` or
 /// `connect` (single player stays `NetRole::Standalone`).
@@ -457,6 +601,20 @@ impl Plugin for NetPlugin {
         .set_receive_fns::<NetMover>(interp::write_snapshot::<NetMover>, interp::remove_snapshots::<NetMover>)
         .replicate::<NetProp>()
         .set_receive_fns::<NetProp>(interp::write_snapshot::<NetProp>, interp::remove_snapshots::<NetProp>)
+        // Weapons (slice 4).
+        .replicate::<NetHeld>()
+        .replicate::<NetItem>()
+        .set_receive_fns::<NetItem>(interp::write_snapshot::<NetItem>, interp::remove_snapshots::<NetItem>)
+        .replicate::<NetSmoke>()
+        .add_mapped_server_message::<FireBullets>(Channel::Unreliable)
+        .add_mapped_server_message::<WeaponFx>(Channel::Unreliable)
+        .add_server_message::<Detonation>(Channel::Unreliable)
+        .make_message_independent::<Detonation>()
+        .add_server_message::<Senses>(Channel::Ordered)
+        .make_message_independent::<Senses>()
+        .add_client_message::<DropRequest>(Channel::Ordered)
+        .add_mapped_server_message::<Killed>(Channel::Ordered)
+        .add_mapped_server_message::<HitConfirm>(Channel::Unordered)
         .init_resource::<NetSettings>()
         .init_resource::<NetVersion>()
         .add_message::<NetEvent>()
@@ -468,6 +626,7 @@ impl Plugin for NetPlugin {
         interp::plugin(app);
         movers::plugin(app);
         props::plugin(app);
+        weapons::plugin(app);
         udp::plugin(app);
         memory::plugin(app);
         commands(app);
@@ -676,6 +835,19 @@ pub fn status(world: &mut World) -> String {
                     p.missed
                 ));
             }
+            let step = world.resource::<Time<Fixed>>().timestep().as_secs_f64();
+            let lag = world.resource::<crate::weapon::lagcomp::LagCompStats>();
+            out.push(format!(
+                "lagcomp : {} shots rewound, {} held at sv_maxunlag, {} not across a teleport{}",
+                lag.rewinds,
+                lag.clamped,
+                lag.teleports,
+                lag.last.as_ref().map_or(String::new(), |r| format!(
+                    "; last {:.0} ms back, {} moved",
+                    r.seconds_back(step) * 1000.0,
+                    r.moved
+                ))
+            ));
         }
     }
     out.join("\n")
@@ -707,6 +879,7 @@ mod tests {
             pitch: 7.0,
             buttons: buttons::JUMP | buttons::FIRE,
             select: Some(200),
+            view_tick: f64::NAN,
         }
         .apply(&mut i);
         assert_eq!(i.move_axis, Vec2::new(1.0, 0.0));
@@ -714,6 +887,18 @@ mod tests {
         assert_eq!(i.pitch, std::f32::consts::FRAC_PI_2);
         assert!(i.jump && i.fire && !i.crouch);
         assert_eq!(i.select, None);
+        // A view tick that isn't one, or one ahead of its command: none,
+        // or the command's own.
+        let c = |v: f64| NetCmd {
+            tick: 7,
+            view_tick: v,
+            ..default()
+        };
+        assert_eq!(c(f64::NAN).view(7), None);
+        assert_eq!(c(f64::INFINITY).view(7), None);
+        assert_eq!(c(0.0).view(7), None);
+        assert_eq!(c(5.5).view(7), Some(5.5));
+        assert_eq!(c(90.0).view(7), Some(7.0));
         // A round trip keeps what a real intent says.
         let src = crate::core::Intent {
             move_axis: Vec2::new(0.6, -0.8),

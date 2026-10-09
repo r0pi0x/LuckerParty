@@ -1241,7 +1241,7 @@ fn tracers(
     mut out: MessageWriter<crate::map::tracer::Tracer>,
     mut count: Local<u64>,
 ) {
-    for e in events.read() {
+    for e in events.read().filter(|e| e.shown()) {
         let WeaponEventKind::Shot { from, to, .. } = e.kind else { continue };
         if draws_tracer(*count) {
             out.write(crate::map::tracer::Tracer {
@@ -1363,7 +1363,7 @@ fn impact_effects(
     let mats = materials.map(|m| EffectMaterials::new(&m.0));
     let mats = mats.as_ref();
     let rng = &mut rng.0;
-    for e in events.read() {
+    for e in events.read().filter(|e| e.shown()) {
         let (from, point, normal, hit, bullet) = match &e.kind {
             // Also where a bullet enters the next surface after passing
             // something (penetration).

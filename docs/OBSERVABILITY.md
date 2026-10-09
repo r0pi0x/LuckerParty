@@ -374,6 +374,24 @@ teleports snapped, and `carried` (ticks the client's mover step pushed
 its own player). `cargo test --features dev --test it net_interp --
 --nocapture` prints the off-path, per-frame step and error numbers.
 
+Weapons (`tests/it/net_weapons.rs`, `tests/it/heavy/map_net_weapons.rs`):
+what a client's player carries is part of the predicted state
+(`PredictedComponents::encode` includes `weapon::sync`'s blob), so the
+prediction checks above cover clips, timers, punch and zoom too. On the
+server, `weapon::lagcomp::LagCompStats` counts rewinds (`last`: the view
+tick asked for, the tick traced at, characters moved) and each
+character's `HitHistory` has its hit volume per tick (to aim a test shot
+where a client saw someone: interpolate it at that client's
+`InterpClock::render_tick`). Server `WeaponEvent`s say what was fired
+(`Fired`: origin, angles, seed, spread) and hit (`Hit`); a client's
+`WeaponEvent`s with `replay` set come from re-run commands. Messages last
+two updates: gather them after every `NetSim::step` (the tests' `Log`).
+`sv_showlagcompensation 1` logs each rewind (how far back, how many
+moved); the server's `status` ends with a `lagcomp:` line. `cargo test
+--features dev --test it net_weapons -- --nocapture` prints hits with and
+without compensation, rewind times, prediction errors while firing and
+the pellet comparison.
+
 In a game: the perf overlay (`mashup_perf 1`) and the F2 Perf tab show,
 while connected, `net:` (ping, loss, KB/s), `cmds:` (lead in ticks and
 its target, the clock's speed nudge and jumps, the server's buffer of
@@ -391,7 +409,9 @@ and clock jump. `cl_smoothtime` (0.1 s) eases corrections out of the
 view; 0 snaps. Fake network conditions on a client (Source's names; its
 UDP transport only): `net_fakelag <ms>` delays what it receives (ping
 grows by that), `net_fakejitter <ms>` adds up to that much at random,
-`net_fakeloss <percent>` drops packets both ways.
+`net_fakeloss <percent>` drops packets both ways. `cl_lagcompensation 0`
+asks the server to trace your shots against the present; on the server
+`sv_unlag 0` turns lag compensation off, `sv_maxunlag` bounds it (1 s).
 
 Two real games on this box (`--features dev`; each needs its own remote
 port, `MASHUP_REMOTE_PORT`, so both answer `curl`):

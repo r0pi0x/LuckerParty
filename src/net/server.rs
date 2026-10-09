@@ -201,7 +201,16 @@ pub(super) fn stop(world: &mut World) {
     for e in replicated {
         world
             .entity_mut(e)
-            .remove::<(Replicated, NetCharacter, NetBody, super::NetMover, super::NetProp)>();
+            .remove::<(
+                Replicated,
+                NetCharacter,
+                NetBody,
+                super::NetMover,
+                super::NetProp,
+                super::NetHeld,
+                super::NetItem,
+                super::NetSmoke,
+            )>();
     }
 }
 
@@ -307,6 +316,7 @@ fn spawn_player(world: &mut World, id: u64, name: &str) -> Entity {
             Dead { since: f64::MIN },
             CommandBuffer::default(),
             OwnStateOut::default(),
+            crate::weapon::lagcomp::ViewTick::default(),
             Replicated,
             NetCharacter {
                 owner: Some(id),
@@ -398,9 +408,12 @@ fn receive_commands(
 /// safe (`NetCmd::apply`): exactly one command per tick whatever the
 /// client sends, so no client moves faster than the tick allows. Without
 /// one (lost, late) the last repeats, and the client gets corrected.
-fn apply_commands(mut q: Query<(&mut CommandBuffer, &mut Intent)>, clock: Res<SimClock>) {
+fn apply_commands(
+    mut q: Query<(&mut CommandBuffer, &mut Intent, Option<&mut crate::weapon::lagcomp::ViewTick>)>,
+    clock: Res<SimClock>,
+) {
     let tick = clock.tick;
-    for (mut b, mut intent) in &mut q {
+    for (mut b, mut intent, view) in &mut q {
         // Commands for ticks gone by never run.
         let stale: Vec<u64> = b.queued.range(..tick).map(|(t, _)| *t).collect();
         for t in stale {
@@ -418,6 +431,13 @@ fn apply_commands(mut q: Query<(&mut CommandBuffer, &mut Intent)>, clock: Res<Si
         b.applied = tick;
         if let Some(c) = cmd {
             c.apply(&mut intent);
+            // Where it saw others: its shots are traced there.
+            if let Some(mut view) = view {
+                let v = crate::weapon::lagcomp::ViewTick(c.view(tick));
+                if *view != v {
+                    *view = v;
+                }
+            }
             b.last = Some(c);
         }
     }

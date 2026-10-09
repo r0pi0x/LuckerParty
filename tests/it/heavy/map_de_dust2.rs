@@ -1819,6 +1819,7 @@ fn bodies_animate_with_movement() {
         owner: c,
         weapon: ak,
         kind: mashup::weapon::WeaponEventKind::ReloadStarted,
+        replay: false,
     });
     sim.ticks(2);
     let reload = layer(&sim, 5).map(|(n, _)| n.to_lowercase());

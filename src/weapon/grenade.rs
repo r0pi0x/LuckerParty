@@ -20,12 +20,14 @@ use bevy::prelude::*;
 use super::{Armor, CHAN_WEAPON, Inventory, Weapon, WeaponEvent, WeaponEventKind, WeaponState, armor_split};
 use crate::{
     core::{
-        Blinded, Damage, DamageKind, Damageable, Deafened, Died, Explosion, Health, HearingEffect, Hitgroup, Intent,
-        MapWater, MovementState, Radio, RoundRestarts, SOLID_LAYERS, SightBlocker, Velocity,
+        Blinded, Damage, DamageKind, Damageable, Deafened, Died, Explosion, FirstTimePredicted, Health, HearingEffect,
+        Hitgroup, Intent, MapWater, MovementState, NetRole, Radio, RoundRestarts, SOLID_LAYERS, SightBlocker, SimClock,
+        Velocity,
     },
     map::{
         MapPropCollider, PlaySound,
         decal::{DecalGroup, PlaceDecal},
+        interp::NetDrawn,
         loose::ShownItem,
         particles::ParticleRng,
     },
@@ -40,15 +42,24 @@ const TIME_SLACK: f64 = 1e-5;
 const SKIN: f32 = 1e-3;
 
 pub(super) fn plugin(app: &mut App) {
-    app.add_message::<Detonated>()
+    use super::CarriedAppExt;
+    app.predicted_part::<Throwable>()
+        .add_message::<Detonated>()
         .add_message::<PlaceDecal>()
         .add_message::<Radio>()
         .init_resource::<GrenadeRng>()
         .init_resource::<GrenadeRadio>()
+        // The throw is predicted with the weapon frame (`core::Predict`):
+        // the pin, the release and the redraw; the projectile is the
+        // server's.
+        .add_systems(
+            crate::core::Predict::Weapons,
+            throw_frame.after(super::WeaponFrame),
+        )
         .add_systems(
             FixedUpdate,
             (
-                (throw_frame, fly, explosions, smoke_clouds)
+                (fly, explosions, smoke_clouds)
                     .chain()
                     .after(super::WeaponFrame)
                     .in_set(crate::core::SimSet::Weapons),
@@ -58,7 +69,8 @@ pub(super) fn plugin(app: &mut App) {
                 clear_on_restart
                     .after(crate::core::SimSet::Rules)
                     .before(crate::core::SimSet::Movement),
-            ),
+            )
+                .run_if(crate::core::authoritative),
         );
 }
 
@@ -561,16 +573,20 @@ fn throw_frame(
         &MovementState,
         Option<&Velocity>,
         Option<&Health>,
-    )>,
+    ), Without<NetDrawn>>,
     mut weapons: Query<(Entity, &Weapon, &mut WeaponState, &mut Throwable)>,
     mut events: MessageWriter<WeaponEvent>,
     mut rng: ResMut<GrenadeRng>,
     (mut radio, radio_off): (MessageWriter<Radio>, Res<GrenadeRadio>),
     mut commands: Commands,
-    time: Res<Time>,
+    (clock, first, role): (Res<SimClock>, Res<FirstTimePredicted>, Option<Res<NetRole>>),
 ) {
-    let now = time.elapsed_secs_f64();
+    // The command's time (as the weapon frame); the projectile and the
+    // radio call are the server's (a client predicts only the hand).
+    let now = clock.now;
     let due = now + TIME_SLACK;
+    let replay = !first.0;
+    let server = role.as_deref().is_none_or(|r| *r != NetRole::Client);
     for (entity, weapon, mut st, mut t) in &mut weapons {
         let Some(owner) = weapon.owner else { continue };
         let Ok((_, intent, mut inv, transform, state, vel, health)) = owners.get_mut(owner) else {
@@ -599,9 +615,10 @@ fn throw_frame(
                 owner,
                 weapon: entity,
                 kind: WeaponEventKind::Thrown,
+                replay,
             });
             // The thrower's team hears "Fire in the hole!" (spec 2).
-            if radio_off.0 == 0 {
+            if radio_off.0 == 0 && server {
                 radio.write(Radio {
                     sender: owner,
                     command: "fireinhole".into(),
@@ -616,7 +633,9 @@ fn throw_frame(
             let eye = transform.translation + state.eye_offset;
             let carried = vel.map_or(Vec3::ZERO, |v| v.0);
             let (start, velocity) = t.throw.throw(eye, intent.yaw, intent.pitch, carried);
-            launch(&mut commands, &mut rng.0, weapon, &t, Some(owner), start, velocity);
+            if server {
+                launch(&mut commands, &mut rng.0, weapon, &t, Some(owner), start, velocity);
+            }
         }
         // 4. The throw animation is over: draw the next one, or the weapon
         // goes with its last grenade.
@@ -638,6 +657,7 @@ fn throw_frame(
                     owner,
                     weapon: entity,
                     kind: WeaponEventKind::Deployed,
+                    replay,
                 });
             }
         }
@@ -658,6 +678,7 @@ fn throw_frame(
                 owner,
                 weapon: entity,
                 kind: WeaponEventKind::PinPulled,
+                replay,
             });
         }
     }

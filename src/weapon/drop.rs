@@ -60,6 +60,11 @@ const USE_SLACK: f32 = 12.0 * 0.0254;
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct UsePickup(pub u8);
 
+/// The local player asked to drop what it holds on a network client: the
+/// network layer asks the server (which drops it).
+#[derive(Message, Clone, Copy, Debug, Default)]
+pub struct DropRequested;
+
 /// A character took a loose weapon with +use (so the use key found
 /// something: no deny sound).
 #[derive(Message, Clone, Copy, Debug)]

@@ -619,6 +619,19 @@ pub trait PredictedAppExt {
     fn predicted_net<C: Component<Mutability = bevy::ecs::component::Mutable> + Clone + Serialize + DeserializeOwned>(
         &mut self,
     ) -> &mut Self;
+
+    /// A networked part of the predicted state that isn't one component
+    /// (e.g. what a character carries: its inventory and the weapon
+    /// entities in it), under `name` (a component already registered with
+    /// `predicted` by that name keeps its save and restore): `encode` it
+    /// for an entity (None: absent), `decode` it over the entity (None:
+    /// absent).
+    fn predicted_codec(
+        &mut self,
+        name: &'static str,
+        encode: fn(&World, Entity) -> Option<Vec<u8>>,
+        decode: fn(&mut World, Entity, Option<&[u8]>),
+    ) -> &mut Self;
 }
 
 impl PredictedAppExt for App {
@@ -646,6 +659,27 @@ impl PredictedAppExt for App {
         );
         self
     }
+
+    fn predicted_codec(
+        &mut self,
+        name: &'static str,
+        encode: fn(&World, Entity) -> Option<Vec<u8>>,
+        decode: fn(&mut World, Entity, Option<&[u8]>),
+    ) -> &mut Self {
+        let net = Some(NetCodec { encode, decode });
+        let mut registry = self.world_mut().get_resource_or_init::<PredictedComponents>();
+        if let Some(c) = registry.0.iter_mut().find(|c| c.name == name) {
+            c.net = net;
+        } else {
+            registry.0.push(PredictedComponent {
+                name,
+                net,
+                save: |_, _| None,
+                restore: |_, _, _| {},
+            });
+        }
+        self
+    }
 }
 
 fn register_predicted<C: Component<Mutability = bevy::ecs::component::Mutable> + Clone>(
@@ -654,24 +688,28 @@ fn register_predicted<C: Component<Mutability = bevy::ecs::component::Mutable> +
 ) {
     let name = std::any::type_name::<C>();
     let mut registry = app.world_mut().get_resource_or_init::<PredictedComponents>();
+    let save: fn(&World, Entity) -> SavedComponent = |w, e| {
+        w.get::<C>(e)
+            .map(|c| Box::new(c.clone()) as Box<dyn std::any::Any + Send + Sync>)
+    };
+    let restore: fn(&mut World, Entity, &SavedComponent) = |w, e, v| match v.as_ref().and_then(|v| v.downcast_ref::<C>()) {
+        Some(c) => {
+            w.entity_mut(e).insert(c.clone());
+        }
+        None => {
+            w.entity_mut(e).remove::<C>();
+        }
+    };
     if let Some(c) = registry.0.iter_mut().find(|c| c.name == name) {
         c.net = c.net.or(net);
+        c.save = save;
+        c.restore = restore;
     } else {
         registry.0.push(PredictedComponent {
             name,
             net,
-            save: |w, e| {
-                w.get::<C>(e)
-                    .map(|c| Box::new(c.clone()) as Box<dyn std::any::Any + Send + Sync>)
-            },
-            restore: |w, e, v| match v.as_ref().and_then(|v| v.downcast_ref::<C>()) {
-                Some(c) => {
-                    w.entity_mut(e).insert(c.clone());
-                }
-                None => {
-                    w.entity_mut(e).remove::<C>();
-                }
-            },
+            save,
+            restore,
         });
     }
 }
@@ -696,7 +734,7 @@ pub struct FreezeTime(pub bool);
 /// ringing tone (`ring_hz`, amplitude `ring_gain` times the mix) plays.
 /// Full for `hold` seconds, then fading out over `fade` (linearly, or
 /// exponentially down to 1 % by its end).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct HearingEffect {
     pub hold: f32,
     pub fade: f32,

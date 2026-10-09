@@ -13,13 +13,18 @@ pub mod drop;
 pub mod economy;
 pub mod equip;
 pub mod grenade;
+pub mod lagcomp;
 pub mod random;
+pub mod remote;
+pub mod sync;
 
 use std::sync::Arc;
 
 use bevy::prelude::*;
+use serde::{Deserialize, Serialize};
+pub use sync::{CarriedAppExt, NetPart};
 
-pub use deliver::{armor_split, falloff, hitgroup_at, quantize, spread_dir};
+pub use deliver::{aim_of, armor_split, falloff, hitgroup_at, pellet_dirs, quantize, spread_dir};
 
 use crate::{
     console::{Command, Console, ConsoleAppExt},
@@ -27,7 +32,7 @@ use crate::{
         FirstTimePredicted, Health, Hitgroup, Intent, LocalPlayer, MaxSpeed, MovementState, Predict, PredictedAppExt, SimClock,
         SimSet, Team, run_predicted,
     },
-    map::PlaySound,
+    map::{PlaySound, interp::NetDrawn},
 };
 
 /// Source's weapon sound channel: a new shot cuts off the last one's tail.
@@ -68,16 +73,24 @@ impl Plugin for WeaponPlugin {
                 FixedUpdate,
                 (
                     (
-                        equip::map_equipment,
-                        give_starting_weapons,
-                        equip::apply_equips,
-                        drop::pick_up,
-                        drop::use_pick_up,
+                        // What a character carries is the server's to change
+                        // (a client hears it with its own player's state).
+                        (
+                            equip::map_equipment,
+                            give_starting_weapons,
+                            equip::apply_equips,
+                            drop::pick_up,
+                            drop::use_pick_up,
+                        )
+                            .chain()
+                            .run_if(crate::core::authoritative),
                         run_predicted(Predict::Select).in_set(SelectWeapons),
                     )
                         .chain()
                         .before(SimSet::Movement),
-                    drop::drop_on_death.after(SimSet::Weapons),
+                    drop::drop_on_death
+                        .after(SimSet::Weapons)
+                        .run_if(crate::core::authoritative),
                     (run_predicted(Predict::Weapons).in_set(WeaponFrame), ragdoll_shots)
                         .chain()
                         .in_set(SimSet::Weapons),
@@ -90,19 +103,25 @@ impl Plugin for WeaponPlugin {
                 Predict::Weapons,
                 (weapon_frame.in_set(WeaponFrame), timed_sounds, apply_zoom).chain(),
             )
+            // What a character carries and its weapons' state go to the
+            // client predicting it (`sync`).
             .predicted::<Inventory>()
-            .predicted::<WeaponState>()
-            .predicted::<Magazine>()
-            .predicted::<AltModes>()
+            .predicted_codec(sync::name(), sync::encode, sync::decode)
+            .predicted_part::<WeaponState>()
+            .predicted_part::<Magazine>()
+            .predicted_part::<AltModes>()
             .predicted::<Hitscan>()
-            .predicted::<ViewPunch>()
-            .predicted::<Zoomed>();
+            .predicted_net::<ViewPunch>()
+            .predicted_net::<Zoomed>();
+        lagcomp::plugin(app);
+        remote::plugin(app);
         grenade::plugin(app);
         app.init_resource::<Console>();
         app.world_mut().resource_mut::<Console>().add_command(Command {
             name: "give".into(),
             help: "Give the local player a weapon by ID (e.g. give cs_source:weapon_ak47).".into(),
             run: Arc::new(|w, args| {
+                server_only(w)?;
                 let id = args.first().ok_or("usage: give <weapon id>")?;
                 let player = w
                     .query_filtered::<Entity, With<LocalPlayer>>()
@@ -151,8 +170,14 @@ impl Plugin for WeaponPlugin {
             "1: +use on a dropped weapon you look at takes it, dropping the one in its slot (CS:GO's; CS:S has none).",
             |u| &mut u.0,
         );
+        app.add_message::<drop::DropRequested>();
         app.console_command("drop", "Drop the weapon you hold (G); walk over one to pick it up.", |w, _| {
             let player = local_player(w)?;
+            if client(w) {
+                // The server drops it; what we carry follows.
+                w.write_message(drop::DropRequested);
+                return Ok(None);
+            }
             drop::drop_weapon(w, player, true).ok_or("nothing to drop")?;
             Ok(None)
         });
@@ -166,6 +191,7 @@ impl Plugin for WeaponPlugin {
                 if a.first().map(String::as_str) != Some("101") {
                     return Err("only impulse 101 (all weapons and ammo) exists".into());
                 }
+                server_only(w)?;
                 let player = local_player(w)?;
                 let held: Vec<&'static str> = held_ids(w, player);
                 let all: Vec<&'static str> = w.resource::<WeaponRegistry>().0.iter().map(|d| d.id).collect();
@@ -194,6 +220,7 @@ impl Plugin for WeaponPlugin {
             "buy <weapon>|vest|vesthelm|defuser, e.g. buy ak47 (costs money when you have some).",
             |w, a| {
                 let name = a.first().ok_or("buy <weapon>")?.clone();
+                server_only(w)?;
                 let player = local_player(w)?;
                 economy::buy(w, player, &name).map(Some)
             },
@@ -206,12 +233,27 @@ impl Plugin for WeaponPlugin {
                 name,
                 &format!("Buy a box of ammo for your {gun} weapon (in a buy zone, in the buy time)."),
                 move |w, _| {
+                    server_only(w)?;
                     let player = local_player(w)?;
                     economy::buy(w, player, name).map(Some)
                 },
             );
         }
     }
+}
+
+/// Whether this is a network client (what it carries is the server's).
+fn client(w: &World) -> bool {
+    w.get_resource::<crate::core::NetRole>() == Some(&crate::core::NetRole::Client)
+}
+
+/// Refused on a network client: only the server changes what players
+/// carry.
+fn server_only(w: &World) -> Result<(), String> {
+    if client(w) {
+        return Err("only the server can do that in a network game".into());
+    }
+    Ok(())
 }
 
 fn local_player(w: &mut World) -> Result<Entity, String> {
@@ -268,6 +310,12 @@ pub struct WeaponDef {
 pub struct WeaponRegistry(pub Vec<WeaponDef>);
 
 impl WeaponRegistry {
+    /// The position of the weapon with this exact ID (the same on every
+    /// build with the same games: network messages name weapons by it).
+    pub fn index(&self, id: &str) -> Option<usize> {
+        self.0.iter().position(|d| d.id == id)
+    }
+
     /// By full ID, or by the part after the namespace (`weapon_ak47`).
     pub fn find(&self, id: &str) -> Option<&WeaponDef> {
         let id = id.to_lowercase();
@@ -325,13 +373,8 @@ impl StartingWeapons {
 /// Give `owner` the weapon `id`; draws it if they hold nothing. Returns the
 /// weapon entity.
 pub fn give(world: &mut World, owner: Entity, id: &str) -> Option<Entity> {
-    let build = world.resource::<WeaponRegistry>().find(id)?.build;
-    let mut e = world.spawn((Name::new(id.to_string()), WeaponState::default()));
-    build(&mut e);
-    let weapon = e.id();
-    if let Some(mut w) = world.get_mut::<Weapon>(weapon) {
-        w.owner = Some(owner);
-    }
+    world.get_entity(owner).ok()?;
+    let weapon = spawn_weapon(world, id, owner)?;
     let Ok(mut o) = world.get_entity_mut(owner) else {
         world.despawn(weapon);
         return None;
@@ -342,6 +385,19 @@ pub fn give(world: &mut World, owner: Entity, id: &str) -> Option<Entity> {
     let mut inv = o.get_mut::<Inventory>().unwrap();
     inv.weapons.push(weapon);
     inv.wanted = Some(weapon);
+    Some(weapon)
+}
+
+/// A new weapon entity `id` (built from the registry) belonging to
+/// `owner`, not yet in its inventory.
+pub fn spawn_weapon(world: &mut World, id: &str, owner: Entity) -> Option<Entity> {
+    let build = world.resource::<WeaponRegistry>().find(id)?.build;
+    let mut e = world.spawn((Name::new(id.to_string()), WeaponState::default()));
+    build(&mut e);
+    let weapon = e.id();
+    if let Some(mut w) = world.get_mut::<Weapon>(weapon) {
+        w.owner = Some(owner);
+    }
     Some(weapon)
 }
 
@@ -459,7 +515,7 @@ pub struct ShellReload {
 }
 
 /// Where a one-at-a-time reload is (`ShellReload`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ShellStage {
     #[default]
     Idle,
@@ -569,7 +625,7 @@ pub enum SpreadShape {
 /// Recoil on a character's view (pitch up, yaw left; radians): added to
 /// the camera, and to shots by `Hitscan::punch_scale`. Games that model
 /// recoil add and decay it.
-#[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ViewPunch(pub Vec2);
 
 /// Secondary attack: step through the weapon's modes (0 = normal; scope
@@ -628,7 +684,7 @@ pub struct Burst {
 
 /// On a character looking through a zoomed weapon: its field of view
 /// (horizontal degrees at 4:3) and whether that is a sniper scope.
-#[derive(Component, Clone, Copy, Debug, PartialEq)]
+#[derive(Component, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Zoomed {
     pub fov: f32,
     pub scope: bool,
@@ -775,7 +831,7 @@ pub struct WeaponSounds {
 }
 
 /// Source's per-weapon timers and flags.
-#[derive(Component, Clone, Debug, Default)]
+#[derive(Component, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct WeaponState {
     pub next_primary: f64,
     pub next_secondary: f64,
@@ -814,11 +870,36 @@ pub struct WeaponEvent {
     pub owner: Entity,
     pub weapon: Entity,
     pub kind: WeaponEventKind,
+    /// Written while a network client re-ran a command after a correction
+    /// (`core::FirstTimePredicted` false): what the weapon does again
+    /// (recoil reads it), not something to show again. Effects, sounds,
+    /// HUDs and animation skip these.
+    pub replay: bool,
+}
+
+impl WeaponEvent {
+    /// Something to show (not a replay; `replay`).
+    pub fn shown(&self) -> bool {
+        !self.replay
+    }
 }
 
 #[derive(Clone, Debug)]
 pub enum WeaponEventKind {
     Deployed,
+    /// One round of a hitscan weapon left the barrel (before its traces,
+    /// one `Shot` per pellet): from `origin` along `aim_of(yaw, pitch)`
+    /// with spread seed `seed` and this spread, in `AltModes` mode `mode`.
+    /// Enough to draw the same shot again elsewhere (`pellet_dirs`): a
+    /// network server sends it to the other clients.
+    Fired {
+        origin: Vec3,
+        yaw: f32,
+        pitch: f32,
+        seed: u32,
+        spread: SpreadShape,
+        mode: u8,
+    },
     /// One trace: from the eye to where it stopped.
     Shot {
         from: Vec3,
@@ -877,7 +958,7 @@ pub enum WeaponEventKind {
 // Selection and deploy
 
 fn select_weapons(
-    mut owners: Query<(Entity, &Intent, &mut Inventory, &Transform)>,
+    mut owners: Query<(Entity, &Intent, &mut Inventory, &Transform), Without<NetDrawn>>,
     mut weapons: Query<(
         &Weapon,
         &mut WeaponState,
@@ -970,6 +1051,7 @@ fn select_weapons(
             owner,
             weapon: want,
             kind: WeaponEventKind::Deployed,
+            replay: !first.0,
         });
     }
 }
@@ -1014,17 +1096,13 @@ impl WeaponPartsItem<'_, '_> {
     }
 
     /// Change mode, telling the HUD and view model.
-    fn set_mode(&mut self, mode: u8, owner: Entity, events: &mut MessageWriter<WeaponEvent>) {
+    fn set_mode(&mut self, mode: u8, owner: Entity, w: &mut deliver::World) {
         let Some(m) = self.modes.as_mut() else { return };
         if m.current == mode {
             return;
         }
         m.current = mode;
-        events.write(WeaponEvent {
-            owner,
-            weapon: self.entity,
-            kind: WeaponEventKind::ModeChanged { mode },
-        });
+        w.event(owner, self.entity, WeaponEventKind::ModeChanged { mode });
     }
 
     /// Fire up to `rounds` from the clip: traces, sounds; returns how many.
@@ -1038,6 +1116,15 @@ impl WeaponPartsItem<'_, '_> {
         for i in 0..shots {
             if let (Some(scan), Some(effect)) = (self.hitscan, self.effect) {
                 ctx.seed = ctx.seed.wrapping_add(i);
+                let fired = WeaponEventKind::Fired {
+                    origin: ctx.eye,
+                    yaw: ctx.yaw,
+                    pitch: ctx.pitch,
+                    seed: ctx.seed,
+                    spread: scan.spread,
+                    mode: self.mode(),
+                };
+                ctx.w.event(ctx.owner, self.entity, fired);
                 ctx.fire(scan, effect, self.penetration);
             }
             let sound = self.sounds.and_then(|s| {
@@ -1081,17 +1168,23 @@ fn weapon_frame(
         &MovementState,
         Option<&Health>,
         Option<&ViewPunch>,
-    )>,
+        Option<&lagcomp::ViewTick>,
+    ), Without<NetDrawn>>,
     mut weapons: Query<WeaponParts>,
     mut world: deliver::World,
     clock: Res<SimClock>,
+    (histories, lag, mut lag_stats): (
+        Query<(Entity, &lagcomp::HitHistory, &Health)>,
+        Res<lagcomp::LagCompSettings>,
+        ResMut<lagcomp::LagCompStats>,
+    ),
 ) {
     // The command's time (Source's curtime).
     let now = clock.now;
     // Compare timers against this; record new ones from `now`.
     let due = now + TIME_SLACK;
     let dt = clock.dt();
-    for (owner, intent, mut inv, transform, state, health, punch) in &mut owners {
+    for (owner, intent, mut inv, transform, state, health, punch, view) in &mut owners {
         if health.is_some_and(|h| h.current <= 0.0) {
             continue;
         }
@@ -1110,7 +1203,7 @@ fn weapon_frame(
             && due >= w.state.next_primary
         {
             w.state.rezoom = None;
-            w.set_mode(mode, owner, &mut world.events);
+            w.set_mode(mode, owner, &mut world);
         }
         // Busy (drawing, reloading): only the timers run.
         if due < inv.next_attack {
@@ -1119,15 +1212,40 @@ fn weapon_frame(
         let eye = transform.translation + state.eye_offset;
         // Shots follow the view plus the weapon's share of the recoil.
         let kick = punch.map_or(Vec2::ZERO, |p| p.0) * w.hitscan.map_or(0.0, |h| h.punch_scale);
-        let aim = Quat::from_euler(EulerRot::YXZ, intent.yaw + kick.y, intent.pitch + kick.x, 0.0);
+        let (yaw, pitch) = (intent.yaw + kick.y, intent.pitch + kick.x);
+        // A remote player's shots and swings hit others where it saw them
+        // (lag compensation, server only: `ViewTick` is set per command).
+        let may_trace = (intent.fire && w.state.next_primary <= due)
+            || (intent.secondary && w.melee.is_some() && w.state.next_secondary <= due)
+            || (w.state.burst_left > 0 && due >= w.state.next_burst_round);
+        let rewound = match view.and_then(|v| v.0) {
+            Some(view_tick) if lag.unlag != 0 && may_trace && world.authoritative() => {
+                lagcomp::rewind(
+                    owner,
+                    view_tick,
+                    clock.tick,
+                    clock.delta.as_secs_f64(),
+                    &lag,
+                    histories
+                        .iter()
+                        .filter(|(_, _, h)| h.current > 0.0)
+                        .map(|(e, history, _)| (e, history)),
+                    &mut lag_stats,
+                )
+            }
+            _ => Vec::new(),
+        };
         let mut ctx = deliver::Shot {
             owner,
             weapon: active,
             eye,
-            aim,
+            aim: deliver::aim_of(yaw, pitch),
+            yaw,
+            pitch,
             // Spec 4.2: from the command number.
             seed: random::shot_seed(intent.command),
             now,
+            rewound,
             w: &mut world,
         };
 
@@ -1146,11 +1264,7 @@ fn weapon_frame(
             w.state.reload_end = None;
             w.state.next_primary = now;
             w.state.next_secondary = now;
-            ctx.w.events.write(WeaponEvent {
-                owner,
-                weapon: active,
-                kind: WeaponEventKind::Reloaded,
-            });
+            ctx.w.event(owner, active, WeaponEventKind::Reloaded);
         }
 
         // One-at-a-time reloads step on (spec 3.4; T25): the start, then a
@@ -1165,11 +1279,7 @@ fn weapon_frame(
                     if let Some(s) = w.sounds {
                         w.state.pending = s.reload.iter().map(|(t, e)| (now + *t as f64, e.clone())).collect();
                     }
-                    ctx.w.events.write(WeaponEvent {
-                        owner,
-                        weapon: active,
-                        kind: WeaponEventKind::ShellInserting,
-                    });
+                    ctx.w.event(owner, active, WeaponEventKind::ShellInserting);
                 }
                 ShellStage::Inserting => {
                     if let Some(mag) = w.magazine.as_mut()
@@ -1186,20 +1296,12 @@ fn weapon_frame(
                         if let Some(s) = w.sounds {
                             w.state.pending = s.finish.iter().map(|(t, e)| (now + *t as f64, e.clone())).collect();
                         }
-                        ctx.w.events.write(WeaponEvent {
-                            owner,
-                            weapon: active,
-                            kind: WeaponEventKind::Reloaded,
-                        });
+                        ctx.w.event(owner, active, WeaponEventKind::Reloaded);
                     }
                 }
                 _ => {
                     w.state.shells = ShellStage::Idle;
-                    ctx.w.events.write(WeaponEvent {
-                        owner,
-                        weapon: active,
-                        kind: WeaponEventKind::Reloaded,
-                    });
+                    ctx.w.event(owner, active, WeaponEventKind::Reloaded);
                 }
             }
         }
@@ -1244,7 +1346,7 @@ fn weapon_frame(
                 let timed = s.modes.iter().filter(|(m, ..)| *m == next);
                 w.state.pending = timed.map(|(_, t, e)| (now + *t as f64, e.clone())).collect();
             }
-            w.set_mode(next, owner, &mut ctx.w.events);
+            w.set_mode(next, owner, ctx.w);
             blocked = true;
         }
 
@@ -1259,7 +1361,7 @@ fn weapon_frame(
             } else if w.magazine.as_ref().is_some_and(|m| m.clip == 0) {
                 if w.state.fired_on_empty {
                     if w.magazine.as_ref().is_some_and(|m| m.reload_while_held) {
-                        try_reload(&mut w, &mut inv, now, owner, &mut ctx.w.events);
+                        try_reload(&mut w, &mut inv, now, owner, ctx.w);
                     }
                 } else {
                     // Fire on empty (spec 3.5).
@@ -1271,11 +1373,7 @@ fn weapon_frame(
                         }
                     }
                     w.state.next_primary = now + 0.2;
-                    ctx.w.events.write(WeaponEvent {
-                        owner,
-                        weapon: active,
-                        kind: WeaponEventKind::DryFire,
-                    });
+                    ctx.w.event(owner, active, WeaponEventKind::DryFire);
                 }
             } else {
                 if pressed || released2 {
@@ -1325,7 +1423,7 @@ fn weapon_frame(
                     let mode = w.mode();
                     if fired > 0 && mode > 0 && w.zoom.is_some_and(|z| z.unzoom_after_shot) {
                         w.state.rezoom = Some(mode);
-                        w.set_mode(0, owner, &mut ctx.w.events);
+                        w.set_mode(0, owner, ctx.w);
                     }
                 }
             }
@@ -1333,7 +1431,7 @@ fn weapon_frame(
 
         // 5. Reload key.
         if intent.reload && w.state.next_primary <= due && !w.state.reloading() {
-            try_reload(&mut w, &mut inv, now, owner, &mut ctx.w.events);
+            try_reload(&mut w, &mut inv, now, owner, ctx.w);
             w.state.fire_duration = 0.0;
         }
 
@@ -1345,7 +1443,7 @@ fn weapon_frame(
                 && w.state.next_secondary <= due
                 && !w.state.reloading()
             {
-                try_reload(&mut w, &mut inv, now, owner, &mut ctx.w.events);
+                try_reload(&mut w, &mut inv, now, owner, ctx.w);
             }
         }
     }
@@ -1374,13 +1472,7 @@ fn swing_refire(swing: &Swing, hit: bool, now: f64, last_swing: &mut Option<f64>
 }
 
 /// Start a reload (spec 3.4): refused when nothing would move.
-fn try_reload(
-    w: &mut WeaponPartsItem,
-    inv: &mut Inventory,
-    now: f64,
-    owner: Entity,
-    events: &mut MessageWriter<WeaponEvent>,
-) {
+fn try_reload(w: &mut WeaponPartsItem, inv: &mut Inventory, now: f64, owner: Entity, events: &mut deliver::World) {
     let Some(mag) = w.magazine.as_ref() else { return };
     if (mag.size - mag.clip).min(mag.reserve) == 0 {
         return;
@@ -1400,11 +1492,7 @@ fn try_reload(
         w.state.shell_next = end;
         w.state.next_primary = end;
         w.state.next_secondary = end;
-        events.write(WeaponEvent {
-            owner,
-            weapon: w.entity,
-            kind: WeaponEventKind::ReloadStarted,
-        });
+        events.event(owner, w.entity, WeaponEventKind::ReloadStarted);
         return;
     }
     let end = now + reload_time as f64;
@@ -1415,18 +1503,14 @@ fn try_reload(
     if let Some(s) = w.sounds {
         w.state.pending = s.reload.iter().map(|(t, e)| (now + *t as f64, e.clone())).collect();
     }
-    events.write(WeaponEvent {
-        owner,
-        weapon: w.entity,
-        kind: WeaponEventKind::ReloadStarted,
-    });
+    events.event(owner, w.entity, WeaponEventKind::ReloadStarted);
 }
 
 /// Characters look through their active weapon's zoom (`Zoomed`) and move
 /// at its zoomed speed.
 #[allow(clippy::type_complexity)]
 fn apply_zoom(
-    owners: Query<(Entity, &Inventory, Option<&Zoomed>, Option<&MaxSpeed>)>,
+    owners: Query<(Entity, &Inventory, Option<&Zoomed>, Option<&MaxSpeed>), Without<NetDrawn>>,
     weapons: Query<(&Weapon, Option<&AltModes>, Option<&Zoom>)>,
     mut commands: Commands,
 ) {
@@ -1468,7 +1552,7 @@ fn apply_zoom(
 /// traced against ragdolls, which it passes through but pushes
 /// (specs/cs_source/ragdolls.md 6.2).
 fn ragdoll_shots(mut events: MessageReader<WeaponEvent>, mut shots: MessageWriter<crate::map::RagdollShot>) {
-    for e in events.read() {
+    for e in events.read().filter(|e| e.shown()) {
         if let WeaponEventKind::Shot { from, to, .. } | WeaponEventKind::ShotContinued { from, to, .. } = e.kind {
             shots.write(crate::map::RagdollShot::bullet(from, to));
         }

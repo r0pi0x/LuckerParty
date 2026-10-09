@@ -145,8 +145,16 @@ pub(super) fn stop(world: &mut World) {
     world.remove_resource::<RefusedReason>();
     super::predict::reset(world);
     super::interp::reset(world);
+    super::weapons::reset(world);
     let remote: Vec<Entity> = world.query_filtered::<Entity, With<Remote>>().iter(world).collect();
     for e in remote {
+        // The weapons built here for what it carries go with it.
+        let weapons = world.get::<Inventory>(e).map(|i| i.weapons.clone()).unwrap_or_default();
+        for w in weapons {
+            if let Ok(w) = world.get_entity_mut(w) {
+                w.despawn();
+            }
+        }
         if let Ok(e) = world.get_entity_mut(e) {
             e.despawn();
         }

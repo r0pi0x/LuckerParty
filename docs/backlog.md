@@ -138,13 +138,16 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
 
 Plan: [plans/active/multiplayer.md](plans/active/multiplayer.md)
 (bevy_replicon + renet; Source-style prediction, interpolation and lag
-compensation of our own; slices 0-9). Slices 0-2 done: a listen
+compensation of our own; slices 0-9). Slices 0-4 done: a listen
 server (maxplayers 4; map <name>) and the dedicated mashup_server,
 connect <ip[:port]>, characters replicated, usercmds bound to server
 ticks with clock sync, the client's own movement predicted and
 reconciled (net_graph-style readout, cl_showerror, net_fakelag;
-docs/OBSERVABILITY.md, Network play). Next: slice 3 (interpolation of
-others), then 4 (weapons, predicted). Open questions 1, 3 and 4
+docs/OBSERVABILITY.md, Network play), others interpolated, movers
+and props replicated, weapons predicted with lag-compensated hits
+(per-tick server hitbox poses), others' shots drawn from the server's
+seeds, grenades, drops and pickups. Next: slice 5 (rounds, money,
+buying, objectives, scoreboard, chat, radio). Open questions 1, 3 and 4
 still wait on the user; 2 was taken as both (listen first, dedicated too).
 
 ## 3. Weapons, remaining

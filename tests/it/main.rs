@@ -28,6 +28,7 @@ mod nav;
 mod net;
 mod net_interp;
 mod net_prediction;
+mod net_weapons;
 mod objectives;
 mod phy_spec;
 mod prediction;
@@ -72,6 +73,7 @@ mod heavy {
     mod map_de_nuke;
     mod map_de_nuke_doors;
     mod map_de_port;
+    mod map_net_weapons;
     mod map_fire;
     mod map_hdr;
     mod map_loose;

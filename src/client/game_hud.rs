@@ -268,7 +268,11 @@ fn death_notices(
                 let short = id.rsplit([':', '_']).next().unwrap_or(id);
                 hud.0.icons.get(&format!("d_{short}")).cloned()
             });
-        let headshot = hits.0.get(&d.entity).is_some_and(|(_, g)| *g == Hitgroup::Head);
+        // (A network client has no damage messages: the killing hit's.)
+        let headshot = hits
+            .0
+            .get(&d.entity)
+            .map_or(d.damage.hitgroup == Hitgroup::Head, |(_, g)| *g == Hitgroup::Head);
         notices.0.push(Notice {
             attacker: attacker.map(name),
             victim: name(d.entity),

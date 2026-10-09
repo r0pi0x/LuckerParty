@@ -345,6 +345,7 @@ fn arm(world: &mut World) {
                     owner: e,
                     weapon,
                     kind: WeaponEventKind::ArmingStarted,
+                    replay: false,
                 });
             }
             ArmStep::Continue => {
@@ -380,6 +381,7 @@ fn arm(world: &mut World) {
                         owner: e,
                         weapon: a.weapon,
                         kind: WeaponEventKind::ArmingStopped,
+                        replay: false,
                     });
                 }
             }
@@ -763,6 +765,7 @@ fn on_death(mut died: MessageReader<Died>, mut commands: Commands) {
                     owner: who,
                     weapon: a.weapon,
                     kind: WeaponEventKind::ArmingStopped,
+                    replay: false,
                 });
             }
             if let Some(bomb) = carried_bomb(w, who) {

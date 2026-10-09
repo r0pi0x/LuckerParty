@@ -62,6 +62,9 @@ pub struct PredictSettings {
     /// Seconds the drawn eye takes to ease a correction out (Source's
     /// `cl_smoothtime`); 0 snaps.
     pub smoothtime: f32,
+    /// 1: commands say when we drew others, so the server traces our
+    /// shots against them there (Source's `cl_lagcompensation`).
+    pub lagcompensation: u8,
 }
 
 impl Default for PredictSettings {
@@ -69,6 +72,7 @@ impl Default for PredictSettings {
         Self {
             showerror: 0,
             smoothtime: 0.1,
+            lagcompensation: 1,
         }
     }
 }
@@ -366,6 +370,12 @@ pub(super) fn plugin(app: &mut App) {
         "cl_showerror",
         "1: log each prediction error (the server's state of your player differed from what was predicted) and each clock jump.",
         |s| &mut s.showerror,
+    );
+    resource_cvar::<PredictSettings, u8>(
+        app,
+        "cl_lagcompensation",
+        "1: the server traces your shots against others where you saw them (lag compensation); 0: where they are.",
+        |s| &mut s.lagcompensation,
     );
     resource_cvar::<PredictSettings, f32>(
         app,
@@ -702,11 +712,18 @@ fn capture_command(
     mut player: Option<Single<&mut Intent, (With<LocalPlayer>, With<MovementSlot>)>>,
     mut outgoing: ResMut<Outgoing>,
     mut raw: ResMut<RawIntent>,
+    interp: Res<super::interp::InterpClock>,
+    settings: Res<PredictSettings>,
 ) {
     let (Some(tick), Some(intent)) = (clock.tick, player.as_deref_mut()) else {
         return;
     };
-    let cmd = NetCmd::normalize(tick, intent);
+    let mut cmd = NetCmd::normalize(tick, intent);
+    // Others as drawn when this command was made (the last frame's
+    // render time): our shots are traced against them there.
+    if interp.running && settings.lagcompensation != 0 {
+        cmd.view_tick = interp.render_tick;
+    }
     raw.0 = Some(intent.clone());
     if outgoing.cmds.back().is_some_and(|c| c.tick >= tick) {
         outgoing.cmds.clear();
