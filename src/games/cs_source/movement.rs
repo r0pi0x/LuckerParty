@@ -1917,6 +1917,7 @@ fn step(
         Option<&mut BaseVelocity>,
         Option<&EntityGravity>,
         Option<&mut super::shadow::PhysicsTouch>,
+        Option<&crate::core::MapControls>,
     )>,
     query: SpatialQuery,
     brushes: Option<Res<MapBrushes>>,
@@ -1987,7 +1988,17 @@ fn step(
         .flat_map(|(e, m)| m.brushes.iter().map(move |b| (e, b.clone())))
         .collect();
     let mover_velocity = |e: Entity| movers.get(e).map_or(Vec3::ZERO, |(_, m)| to_source(m.velocity));
-    for (entity, intent, mut me, mut transform, mut vel, mut state, weapon_speed, mut base, gravity, touch) in &mut q {
+    for (entity, intent, mut me, mut transform, mut vel, mut state, weapon_speed, mut base, gravity, touch, controls) in
+        &mut q
+    {
+        // player_speedmod: the movement runs as if this many ticks passed
+        // (specs/source/game_entities.md 1, lagged movement); 0 (or less:
+        // our choice) holds it still, gravity included.
+        let time_scale = controls.map_or(1.0, |c| c.time_scale);
+        if time_scale <= 0.0 {
+            continue;
+        }
+        let dt = dt * time_scale;
         // The mover stood on isn't part of the saved form (an entity): a
         // network client restores it into `MovementState::ground` after a
         // correction (`net::movers::restore_ground`). Otherwise the two

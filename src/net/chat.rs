@@ -36,16 +36,47 @@ pub(super) fn plugin(app: &mut App) {
         )
         .add_systems(
             PostUpdate,
-            forward_radio
+            (forward_radio, forward_hud)
                 .before(ServerSystems::Send)
                 .run_if(resource_equals(NetRole::Server)),
         )
         .add_systems(
             PreUpdate,
-            receive_calls
+            (receive_calls, receive_hud)
                 .after(ClientSystems::Receive)
                 .run_if(resource_equals(NetRole::Client)),
         );
+}
+
+/// What map logic shows on HUDs (`logic::HudEvent`) to the client of the
+/// player it is for, or to every client.
+fn forward_hud(
+    mut events: MessageReader<crate::logic::HudEvent>,
+    players: Query<(Entity, &Player)>,
+    mut out: MessageWriter<ToClients<super::MapHud>>,
+) {
+    for ev in events.read() {
+        let targets = match ev.to {
+            None => SendTargets::CLIENTS_ONLY,
+            Some(c) => match players.iter().find(|(_, p)| p.character == c) {
+                Some((client, _)) => SendTargets::Single(ClientId::Client(client)),
+                None => continue,
+            },
+        };
+        out.write(ToClients {
+            targets,
+            message: super::MapHud(ev.what.clone()),
+        });
+    }
+}
+
+/// The server's HUD messages for this client's player.
+fn receive_hud(mut shows: MessageReader<super::MapHud>, time: Res<Time>, mut commands: Commands) {
+    let now = time.elapsed_secs_f64();
+    for s in shows.read() {
+        let what = s.0.clone();
+        commands.queue(move |w: &mut World| crate::logic::hud::show_on_hud(w, what, now));
+    }
 }
 
 /// A chat line made safe: no control characters, trimmed, at most

@@ -65,6 +65,7 @@ impl Plugin for WeaponPlugin {
             .init_resource::<PassMaterials>()
             .init_resource::<StartingWeapons>()
             .init_resource::<equip::SpawnEquipment>()
+            .init_resource::<crate::map::entities::EntityAnchors>()
             .add_message::<crate::core::Equip>()
             .add_message::<WeaponEvent>()
             .add_message::<crate::map::RagdollShot>()
@@ -93,6 +94,11 @@ impl Plugin for WeaponPlugin {
                         .before(SimSet::Movement),
                     drop::drop_on_death
                         .after(SimSet::Weapons)
+                        .run_if(crate::core::authoritative),
+                    equip::anchor_weapons
+                        .in_set(crate::map::entities::AnchorSet)
+                        .after(SimSet::Movement)
+                        .before(SimSet::Weapons)
                         .run_if(crate::core::authoritative),
                     (run_predicted(Predict::Weapons).in_set(WeaponFrame), ragdoll_shots)
                         .chain()

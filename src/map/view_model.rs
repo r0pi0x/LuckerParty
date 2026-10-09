@@ -444,6 +444,8 @@ pub(super) fn draw_view_models(
         (With<ViewModelAnchor>, Without<ViewModelCamera>),
     >,
     owners: Query<(&ViewAnimator, Option<&ViewModelOffset>)>,
+    // Weapons put away by map entities (`core::MapControls`): no view model.
+    put_away: Query<&crate::core::MapControls>,
     third_person: Option<Res<super::ShowLocalBody>>,
     mut cameras: Query<
         (
@@ -469,7 +471,10 @@ pub(super) fn draw_view_models(
         // In third person the own body holds the weapon; no view model.
         let hidden = third_person.as_ref().is_some_and(|t| t.0)
             || settings.draw == 0
-            || state.is_some_and(|(s, _)| s.hidden);
+            || state.is_some_and(|(s, _)| s.hidden)
+            || put_away
+                .get(anchor_owner(parent, source))
+                .is_ok_and(|c| c.weapon_hidden != 0);
         let shown = state
             .filter(|_| !hidden)
             .and_then(|(s, _)| s.key.as_deref())

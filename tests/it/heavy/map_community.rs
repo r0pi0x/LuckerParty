@@ -421,3 +421,91 @@ fn material_effects() {
         assert!(sky.transforms.iter().any(|t| !t.is_identity()), "sky face transforms");
     }
 }
+
+/// mg_item_battle_v4b's items: placed knives with entities parented to
+/// them (a car, a jetpack...). Walking onto one picks it up, its map
+/// entity fires OnPlayerPickup with the player as activator, and what is
+/// parented to it follows the player: props ride the knife's anchor node
+/// (at the player's feet, turned to its yaw), keeping their placement.
+#[test]
+fn item_children_follow_the_player() {
+    use mashup::map::{
+        PropEntity,
+        entities::{MapAnchor, anchor_entities, parent_name},
+    };
+    let Some(map) = load("mg_item_battle_v4b") else { return };
+    let anchors = anchor_entities(&map.entities);
+    let items: Vec<usize> = (0..map.entities.len()).filter(|i| anchors[*i]).collect();
+    assert!(!items.is_empty(), "placed weapons with entities parented to them");
+    let item = items[0];
+    let name = map.entities[item].get("targetname").unwrap().to_string();
+    let children: Vec<usize> = map
+        .entities
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.get("parentname").is_some_and(|p| parent_name(p).eq_ignore_ascii_case(&name)))
+        .map(|(i, _)| i)
+        .collect();
+    assert!(!children.is_empty());
+    let mut sim = Sim::new((MapPlugin::new(map), SourceMovementPlugin, CsWeaponsPlugin));
+    sim.set_tick_interval(cs_source::TICK_INTERVAL);
+    sim.ticks(2);
+    sim.app.world_mut().resource_mut::<mashup::logic::Logic>().world.record = true;
+    let lying = |sim: &mut Sim| {
+        let world = sim.app.world_mut();
+        world
+            .query::<(&Loose, &MapWeapon, &Transform)>()
+            .iter(world)
+            .find(|(_, m, _)| m.0 == item)
+            .map(|(l, _, t)| (l.weapon, t.translation))
+    };
+    let (weapon, at) = lying(&mut sim).expect("the item lies where the map put it");
+    let node = |sim: &mut Sim, index: usize| {
+        let world = sim.app.world_mut();
+        world
+            .query::<(&PropEntity, &GlobalTransform)>()
+            .iter(world)
+            .find(|(p, _)| p.0 == index)
+            .map(|(_, g)| g.translation())
+    };
+    let anchor = |sim: &mut Sim| {
+        let world = sim.app.world_mut();
+        world
+            .query::<(&MapAnchor, &GlobalTransform)>()
+            .iter(world)
+            .find(|(a, _)| a.0 == item)
+            .map(|(_, g)| g.translation())
+            .expect("the item's anchor node")
+    };
+    let props: Vec<(usize, f32)> = children
+        .iter()
+        .filter_map(|c| Some((*c, node(&mut sim, *c)?.distance(anchor(&mut sim)))))
+        .collect();
+    // Walk onto it: picked up.
+    let p = sim.spawn_character(at + Vec3::Y * 0.1, placeholder::ID);
+    sim.ticks(10);
+    let owner = sim.app.world().get::<Weapon>(weapon).and_then(|w| w.owner);
+    assert_eq!(owner, Some(p), "picked up");
+    {
+        let logic = sim.app.world().resource::<mashup::logic::Logic>();
+        let id = logic.world.by_map_index(item).expect("the item's entity");
+        assert!(
+            logic.world.fired.iter().any(|(_, e, o)| *e == id && o == "OnPlayerPickup"),
+            "OnPlayerPickup"
+        );
+        for line in logic.world.log.iter().filter(|l| l.contains("unhandled")).take(20) {
+            eprintln!("logic: {line}");
+        }
+    }
+    // Carried away: the anchor follows the player, the props keep their
+    // distance from it.
+    let away = at + Vec3::new(8.0, 0.0, 3.0);
+    sim.app.world_mut().get_mut::<Transform>(p).unwrap().translation = away;
+    sim.ticks(3);
+    let a = anchor(&mut sim);
+    assert!(a.xz().distance(sim.position(p).xz()) < 0.05, "anchor {a} at the player {}", sim.position(p));
+    for (c, d) in props {
+        let now = node(&mut sim, c).unwrap();
+        assert!((now.distance(a) - d).abs() < 0.05, "prop {c}: {d} from the anchor, now {}", now.distance(a));
+    }
+}

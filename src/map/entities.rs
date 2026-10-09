@@ -32,6 +32,9 @@ pub struct MapEntity {
     /// Drawn and collided with through its own node (`MapBrushEntity`),
     /// not baked into the world, so it can move or toggle.
     pub mover: bool,
+    /// A rigid body (func_physbox, specs/source/physics_brushes.md 2):
+    /// its node is simulated by the physics instead of moved by the logic.
+    pub physics: Option<super::MapPhysics>,
 }
 
 impl MapEntity {
@@ -157,6 +160,56 @@ pub struct FireEntityOutput {
     pub output: String,
     pub activator: Option<Entity>,
 }
+
+/// The entity named by a `parentname` value (an attachment after a comma
+/// is left out).
+pub fn parent_name(value: &str) -> &str {
+    value.split(',').next().unwrap_or("").trim()
+}
+
+/// Whether map entities of this class move by means outside the logic
+/// layer and carry what is parented to them: placed weapons (`weapon_*`,
+/// which lie loose and are picked up; the weapon layer moves them).
+pub fn anchor_class(classname: &str) -> bool {
+    classname.to_ascii_lowercase().starts_with("weapon_")
+}
+
+/// Which map entities are anchors (`anchor_class`, with a name some other
+/// entity is parented to), by index: each gets a node (`MapAnchor`) that
+/// what is parented to it rides.
+pub fn anchor_entities(entities: &[MapEntity]) -> Vec<bool> {
+    let parents: std::collections::HashSet<String> = entities
+        .iter()
+        .filter_map(|e| e.get("parentname"))
+        .map(|p| parent_name(p).to_ascii_lowercase())
+        .filter(|p| !p.is_empty())
+        .collect();
+    entities
+        .iter()
+        .map(|e| {
+            anchor_class(e.classname())
+                && e.get("targetname")
+                    .is_some_and(|n| !n.trim().is_empty() && parents.contains(&n.trim().to_ascii_lowercase()))
+        })
+        .collect()
+}
+
+/// The node of an anchor entity (`anchor_entities`), by index into
+/// `MapEntities`: props and brushes parented to the entity ride it; the
+/// layer that moves the entity (the weapon layer) places it.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct MapAnchor(pub usize);
+
+/// Where the anchor entities are this tick (engine space), by index into
+/// `MapEntities`, as whatever moves them wrote it: the logic layer moves
+/// the logic entities parented to them along.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct EntityAnchors(pub Vec<(usize, Transform)>);
+
+/// Where `EntityAnchors` is written each tick (after movement, before the
+/// logic's touches and queue).
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AnchorSet;
 
 /// The node of a mover brush entity (`MapEntity::mover`): index into
 /// `MapEntities`. Its transform places the entity (origin and angles in

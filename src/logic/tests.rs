@@ -1555,3 +1555,9 @@ fn equip_and_strip_the_activator() {
         ]
     );
 }
+
+#[path = "game_tests.rs"]
+mod game_cases;
+
+#[path = "template_tests.rs"]
+mod template_cases;

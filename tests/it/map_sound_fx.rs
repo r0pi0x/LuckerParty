@@ -34,6 +34,7 @@ fn entity(pairs: &[(&str, &str)]) -> MapEntity {
         keyvalues: pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
         hulls: Vec::new(),
         mover: false,
+        physics: None,
     }
 }
 

@@ -467,6 +467,18 @@ fn receive_own_states(
         if seed.is_none_or(|x| x.0 != s.seed) {
             commands.entity(e).insert(Seed(s.seed));
         }
+        // A map camera the player views through.
+        match s.view {
+            Some((origin, rotation)) => {
+                commands.entity(e).insert(crate::core::MapView {
+                    origin: Vec3::from_array(origin),
+                    rotation: Quat::from_array(rotation),
+                });
+            }
+            None => {
+                commands.entity(e).remove::<crate::core::MapView>();
+            }
+        }
     }
     pending.state = Some(s);
 }

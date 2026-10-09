@@ -329,10 +329,12 @@ fn sweep_map(name: &str, path: &Path, secs: f32) -> Row {
             row.status = format!("logic panic: {}", panic_text(&p));
         }
     }
-    // Brush classes that load as static world brushes but should do more.
+    // Brush classes that load as static world brushes but should do more
+    // (none left: physics brushes, wall toggles and conveyors have nodes).
+    const PARTIAL: &[&str] = &[];
     for e in &map.entities {
         let c = e.classname().to_lowercase();
-        if matches!(c.as_str(), "func_physbox" | "func_physbox_multiplayer" | "func_wall_toggle" | "func_conveyor") {
+        if PARTIAL.contains(&c.as_str()) {
             *row.partial.entry(c).or_default() += 1;
         }
     }

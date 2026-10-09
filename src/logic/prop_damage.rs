@@ -105,11 +105,23 @@ pub struct Prop {
     pub bounds: Option<(Vec3, Vec3)>,
 }
 
-/// Whether a class is a prop the logic keeps (not a door).
+/// Whether a class is a prop the logic keeps (not a door): model props,
+/// and physics brushes (func_physbox, which take damage, move and break
+/// as physics props do: specs/source/physics_brushes.md 2).
 pub fn is_prop_class(classname: &str) -> bool {
     let c = classname.to_ascii_lowercase();
-    c.starts_with("prop_dynamic") || c.starts_with("prop_physics")
+    c.starts_with("prop_dynamic") || c.starts_with("prop_physics") || is_physbox(&c)
 }
+
+/// func_physbox and func_physbox_multiplayer.
+pub fn is_physbox(classname: &str) -> bool {
+    classname.eq_ignore_ascii_case("func_physbox") || classname.eq_ignore_ascii_case("func_physbox_multiplayer")
+}
+
+/// func_physbox spawnflags (physics_brushes.md 2).
+pub const SF_PHYSBOX_ONLY_BREAK_ON_TRIGGER: u32 = 1;
+pub const SF_PHYSBOX_START_ASLEEP: u32 = 4096;
+pub const SF_PHYSBOX_MOTION_DISABLED: u32 = 32768;
 
 impl Prop {
     pub(super) fn spawn(w: &mut LogicWorld, id: EntId) -> Prop {
@@ -157,7 +169,13 @@ impl Prop {
                     "flammable" | "explosive_resist" | "ignite_halfhealth" | "explode_fire" | "firstimpact_break"
                 )
             });
-        let events_only = if client {
+        let physbox = is_physbox(&class);
+        // A physbox breaks as a func_breakable: by its own health, unless
+        // "Only Break on Trigger" (physics_brushes.md 2.1 step 2).
+        let health = if physbox { map_health } else { health };
+        let events_only = if physbox {
+            health <= 0 || e.has_flag(SF_PHYSBOX_ONLY_BREAK_ON_TRIGGER)
+        } else if client {
             health == 0
         } else {
             health <= 0 || !breaks_into
@@ -170,7 +188,12 @@ impl Prop {
             }
         }
         let scale = e.kv_f("physdamagescale");
-        let physics = class.starts_with("prop_physics");
+        let physics = class.starts_with("prop_physics") || physbox;
+        let (motion_flag, asleep_flag) = if physbox {
+            (SF_PHYSBOX_MOTION_DISABLED, SF_PHYSBOX_START_ASLEEP)
+        } else {
+            (SF_PHYSPROP_MOTION_DISABLED, SF_PHYSPROP_START_ASLEEP)
+        };
         let force_to_enable = e.kv_f("forcetoenablemotion");
         let damage_to_enable = e.kv_f("damagetoenablemotion");
         Prop {
@@ -196,10 +219,10 @@ impl Prop {
             mass: e.kv_f(PROP_MASS_KEY).max(0.0),
             physics,
             frozen: physics
-                && (e.has_flag(SF_PHYSPROP_MOTION_DISABLED) || force_to_enable > 0.0 || damage_to_enable > 0.0),
+                && (e.has_flag(motion_flag) || force_to_enable > 0.0 || damage_to_enable > 0.0),
             force_to_enable,
             damage_to_enable,
-            asleep: physics && e.has_flag(SF_PHYSPROP_START_ASLEEP),
+            asleep: physics && e.has_flag(asleep_flag),
             spawn_tick: tick,
             last_attacker: None,
             pressure_breaker: None,

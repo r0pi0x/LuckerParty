@@ -17,7 +17,10 @@ use super::{Armor, Inventory, Weapon, WeaponRegistry, WeaponState, drop::Loose, 
 use crate::{
     core::{Equip, RoundRestarts},
     map::{
-        entities::{MapEntities, entity_rotation, entity_to_engine, rotation_to_engine},
+        entities::{
+            EntityAnchors, FireEntityOutput, MapAnchor, MapEntities, entity_rotation, entity_to_engine,
+            rotation_to_engine,
+        },
         loose::LooseItem,
     },
 };
@@ -172,6 +175,17 @@ pub fn place_weapons(world: &mut World, entities: &[crate::map::MapEntity], scal
             world.despawn(w);
         }
     }
+    // Placed weapons someone still carries become ordinary weapons: the
+    // map's entity starts again where it was placed.
+    let carried: Vec<Entity> = world
+        .query_filtered::<(Entity, &Weapon), (With<MapWeapon>, Without<Loose>)>()
+        .iter(world)
+        .filter(|(_, w)| w.owner.is_some())
+        .map(|(e, _)| e)
+        .collect();
+    for e in carried {
+        world.entity_mut(e).remove::<MapWeapon>();
+    }
     let since = world.resource::<Time>().elapsed_secs_f64() - super::drop::TOUCH_DELAY;
     for (index, e) in entities.iter().enumerate() {
         let class = e.classname().to_ascii_lowercase();
@@ -180,7 +194,9 @@ pub fn place_weapons(world: &mut World, entities: &[crate::map::MapEntity], scal
         }
         let Some(def) = world.resource::<WeaponRegistry>().find(&class) else { continue };
         let (id, build) = (def.id, def.build);
-        let mut w = world.spawn((Name::new(id.to_string()), WeaponState::default()));
+        // The weapon itself remembers its map entity too (its pickup
+        // outputs; what is parented to it follows it: `anchor_weapons`).
+        let mut w = world.spawn((Name::new(id.to_string()), WeaponState::default(), MapWeapon(index)));
         build(&mut w);
         let weapon = w.id();
         // A little up from the origin (usually on the floor) so the body
@@ -200,5 +216,72 @@ pub fn place_weapons(world: &mut World, entities: &[crate::map::MapEntity], scal
             LinearVelocity(Vec3::ZERO),
             AngularVelocity(Vec3::ZERO),
         ));
+    }
+}
+
+/// A placed weapon was picked up: its map entity fires OnPlayerPickup
+/// with the player as activator (Source's weapon output, from the public
+/// entity documentation; no spec covers it).
+pub(super) fn picked_up(world: &mut World, owner: Entity, weapon: Entity) {
+    let Some(index) = world.get::<MapWeapon>(weapon).map(|m| m.0) else {
+        return;
+    };
+    if world.contains_resource::<Messages<FireEntityOutput>>() {
+        world.write_message(FireEntityOutput {
+            map_index: index,
+            output: "OnPlayerPickup".into(),
+            activator: Some(owner),
+        });
+    }
+}
+
+/// Where each placed weapon with entities parented to it is
+/// (`map::entities::EntityAnchors`, and its anchor node): lying loose, the
+/// loose item's pose; carried, its owner's origin (the feet, Source's
+/// origin) turned to the owner's yaw, as a held weapon follows its owner.
+/// What is parented to it rides the anchor node; the logic moves its own
+/// children there.
+#[allow(clippy::type_complexity)]
+pub(super) fn anchor_weapons(
+    weapons: Query<(Entity, &Weapon, &MapWeapon), Without<Loose>>,
+    loose: Query<(&Loose, &Transform)>,
+    owners: Query<(&Transform, &crate::core::Intent, Option<&crate::core::MovementState>)>,
+    mut nodes: Query<(&MapAnchor, &mut Transform), (Without<Loose>, Without<crate::core::Intent>)>,
+    mut anchors: ResMut<EntityAnchors>,
+) {
+    if nodes.is_empty() {
+        if !anchors.0.is_empty() {
+            anchors.0.clear();
+        }
+        return;
+    }
+    let mut poses: Vec<(usize, Transform)> = Vec::new();
+    for (weapon, w, map) in &weapons {
+        let pose = match w.owner {
+            Some(o) => {
+                let Ok((t, intent, state)) = owners.get(o) else { continue };
+                let feet = t.translation + Vec3::Y * state.map_or(0.0, |s| s.hull_min.y);
+                // Entity yaw 0 is engine +X; the intent's yaw 0 looks down -Z.
+                let yaw = intent.yaw.to_degrees() + 90.0;
+                Transform::from_translation(feet)
+                    .with_rotation(rotation_to_engine(entity_rotation(Vec3::new(0.0, yaw, 0.0))))
+            }
+            None => match loose.iter().find(|(l, _)| l.weapon == weapon) {
+                Some((_, t)) => *t,
+                None => continue,
+            },
+        };
+        poses.push((map.0, pose));
+    }
+    poses.sort_by_key(|(i, _)| *i);
+    for (anchor, mut t) in &mut nodes {
+        if let Some((_, pose)) = poses.iter().find(|(i, _)| *i == anchor.0)
+            && *t != *pose
+        {
+            *t = *pose;
+        }
+    }
+    if anchors.0 != poses {
+        anchors.0 = poses;
     }
 }

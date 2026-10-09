@@ -70,6 +70,30 @@ pub enum Class {
     /// game_player_equip (what it gives, by Use) and player_weaponstrip
     /// (gives nothing, strips).
     Equip(Equip),
+    /// player_speedmod (`game`).
+    SpeedMod,
+    /// game_ui (`game`).
+    GameUi(Box<super::game::GameUi>),
+    /// env_fade.
+    Fade,
+    /// game_score.
+    Score,
+    /// env_hudhint.
+    HudHint,
+    /// env_explosion.
+    Explosion(super::game::Explosion),
+    /// func_conveyor: a still brush that carries players.
+    Conveyor(Box<super::game::Conveyor>),
+    /// point_template (`templates`).
+    Template(Box<super::templates::Template>),
+    /// env_entity_maker.
+    Maker(Box<super::templates::Maker>),
+    /// point_viewcontrol (`camera`).
+    Camera(Box<super::camera::Camera>),
+    /// phys_thruster (`physics`).
+    Thruster(Box<super::physics::Thruster>),
+    /// phys_keepupright.
+    Upright(Box<super::physics::Upright>),
 }
 
 /// game_player_equip: its items (keyvalue name, count) and whether it
@@ -307,7 +331,22 @@ impl Class {
     pub(super) fn spawn(w: &mut LogicWorld, id: EntId) -> Class {
         let e = w.get(id).unwrap();
         let start_disabled = e.kv_i("StartDisabled") != 0;
-        match e.classname.to_ascii_lowercase().as_str() {
+        let lower = e.classname.to_ascii_lowercase();
+        if let Some(class) = super::game::spawn(w, id, &lower) {
+            return class;
+        }
+        let e = w.get(id).unwrap();
+        match lower.as_str() {
+            "func_wall_toggle" => Class::Brush(Box::new(Toggle::spawn_wall_toggle(w, id))),
+            "point_template" => Class::Template(Box::default()),
+            "env_entity_maker" => Class::Maker(Box::default()),
+            "point_viewcontrol" => Class::Camera(Box::new(super::camera::spawn(e))),
+            "point_spotlight" | "env_laser" | "env_beam" => {
+                Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::Beam))
+            }
+            "env_lightglow" => Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::Glow)),
+            "env_spark" => Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::Spark)),
+            "phys_thruster" | "phys_keepupright" => super::physics::spawn(e, &lower).unwrap_or_default(),
             "logic_auto" => Class::Auto,
             "logic_relay" => Class::Relay(Relay {
                 enabled: !start_disabled,
@@ -515,7 +554,9 @@ pub(super) fn class_activate(w: &mut LogicWorld, id: EntId) {
         | Class::MoveLinear(_)
         | Class::Rotating(_)
         | Class::Train(_)
-        | Class::PropDoor(_) => movers::activate(w, id),
+        | Class::PropDoor(_)
+        | Class::Brush(_)
+        | Class::Conveyor(_) => movers::activate(w, id),
         Class::Breakable(_) if e.kv("parentname").is_some_and(|p| !p.is_empty()) => movers::activate_attached(w, id),
         Class::Breakable(_) => movers::activate(w, id),
         Class::PathTrack(_) => movers::activate_path(w, id),
@@ -523,6 +564,9 @@ pub(super) fn class_activate(w: &mut LogicWorld, id: EntId) {
         Class::Ambient(_) => super::ambient::activate(w, id),
         Class::Prop(_) => super::prop_damage::activate(w, id),
         Class::Fire(_) | Class::FireSource(_) | Class::FireSensor(_) => super::fire::activate(w, id),
+        Class::Maker(_) => super::templates::maker_activate(w, id),
+        Class::Thruster(_) | Class::Upright(_) => super::physics::activate(w, id),
+        Class::Part(_) => super::beams::activate(w, id),
         _ => {}
     }
 }
@@ -564,6 +608,11 @@ pub(super) fn class_think(w: &mut LogicWorld, id: EntId) {
         Class::Ambient(_) => super::ambient::think(w, id),
         Class::Prop(_) => super::prop_damage::think(w, id),
         Class::Fire(_) | Class::FireSource(_) | Class::FireSensor(_) | Class::Flame(_) => super::fire::think(w, id),
+        Class::GameUi(_) | Class::Explosion(_) => super::game::think(w, id),
+        Class::Maker(_) => super::templates::maker_think(w, id),
+        Class::Camera(_) => super::camera::think(w, id),
+        Class::Thruster(_) => super::physics::think(w, id),
+        Class::Part(_) => super::beams::think(w, id),
         _ => movers::think(w, id),
     }
 }
@@ -988,6 +1037,16 @@ pub(super) fn class_input(
             "strip" | "stripweaponsandsuit" => equip_player(w, &equip, activator),
             _ => return false,
         },
+        Class::SpeedMod
+        | Class::GameUi(_)
+        | Class::Fade
+        | Class::Score
+        | Class::HudHint
+        | Class::Explosion(_)
+        | Class::Conveyor(_) => return super::game::input(w, id, input, value, activator, caller),
+        Class::Template(_) | Class::Maker(_) => return super::templates::input(w, id, input, value, activator, caller),
+        Class::Camera(_) => return super::camera::input(w, id, input, activator),
+        Class::Thruster(_) | Class::Upright(_) => return super::physics::input(w, id, input, value, activator),
         Class::Flame(_) | Class::None | Class::Auto => return false,
     }
     true
@@ -1035,6 +1094,9 @@ pub(super) fn class_use(w: &mut LogicWorld, id: EntId, activator: Option<Who>, c
         Some(Class::Equip(equip)) => {
             let equip = equip.clone();
             equip_player(w, &equip, activator)
+        }
+        Some(Class::Score | Class::Conveyor(_)) => {
+            super::game::use_entity(w, id, activator);
         }
         Some(_) => movers::use_entity(w, id, activator, caller),
         None => {}

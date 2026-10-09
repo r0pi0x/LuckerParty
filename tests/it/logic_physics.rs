@@ -44,6 +44,7 @@ fn entity(pairs: &[(&str, &str)], hulls: Vec<MapHull>, mover: bool) -> MapEntity
         keyvalues: pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
         hulls,
         mover,
+        physics: None,
     }
 }
 

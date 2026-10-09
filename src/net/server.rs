@@ -507,6 +507,9 @@ fn capture_own_states(world: &mut World) {
             let money = world.get::<Money>(e).map(|m| m.0);
             let armor = world.get::<Armor>(e).map(|a| (a.amount, a.helmet));
             let kit = world.get::<DefuseKit>(e).is_some();
+            let view = world
+                .get::<crate::core::MapView>(e)
+                .map(|v| (v.origin.to_array(), v.rotation.to_array()));
             let arming = world.get::<Arming>(e).map(|a| super::game::tick_of(&clock, a.since));
             let ground = world
                 .get::<MovementState>(e)
@@ -529,6 +532,7 @@ fn capture_own_states(world: &mut World) {
                 armor,
                 kit,
                 arming,
+                view,
                 ..default()
             });
         }

@@ -10,7 +10,7 @@ use avian3d::prelude::{
 use bevy::{ecs::message::MessageCursor, prelude::*};
 
 use super::classes::ServerLine;
-use super::hud::HudMessages;
+use super::hud::{HudEvent, HudMessages, HudShow, ScreenFades};
 use super::prop_damage::{Hit, Motion, PropExplosion};
 use super::world::{Collision, Effect, EntId, LogicWorld, Player, SOLID_SKIN, SWEEP_EPS, Who};
 use crate::console::{Console, ConsoleAppExt, Level};
@@ -63,6 +63,9 @@ pub struct LogicPlugin;
 impl Plugin for LogicPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<HudMessages>()
+            .init_resource::<ScreenFades>()
+            .add_message::<HudEvent>()
+            .add_message::<crate::core::ScoreChange>()
             .add_message::<PlaySound>()
             .add_message::<SoundControl>()
             .add_message::<SpawnGibs>()
@@ -72,8 +75,14 @@ impl Plugin for LogicPlugin {
             .configure_sets(
                 FixedUpdate,
                 (
-                    LogicSet::Pre.after(SimSet::Rules).before(SimSet::Movement),
-                    LogicSet::Post.after(SimSet::Movement).before(SimSet::Weapons),
+                    LogicSet::Pre
+                        .after(SimSet::Rules)
+                        .after(crate::core::apply_map_controls)
+                        .before(SimSet::Movement),
+                    LogicSet::Post
+                        .after(SimSet::Movement)
+                        .after(crate::map::entities::AnchorSet)
+                        .before(SimSet::Weapons),
                     LogicSet::Damage.after(SimSet::Weapons),
                 )
                     // Map logic is the server's.
@@ -176,6 +185,14 @@ fn load(world: &mut World) {
                 logic.restarts = restarts;
                 // The entities' sounds stop; re-created ones start again.
                 world.write_message(SoundControl::StopAll);
+                // Templates' copies go; the map's entities start again.
+                let copies: Vec<Entity> = world
+                    .query_filtered::<Entity, With<crate::map::copies::MapCopy>>()
+                    .iter(world)
+                    .collect();
+                for c in copies {
+                    world.entity_mut(c).despawn();
+                }
                 let source = logic.source.clone();
                 let ids = logic.world.round_restart(&source);
                 logic.nodes = attach_nodes(world, &logic.world, &ids);
@@ -268,6 +285,10 @@ fn attach_props(world: &mut World, logic: &LogicWorld, ids: &[EntId], restart: b
     for (node, index, home) in all {
         let Some(id) = ids.get(index).copied() else { continue };
         let Some(state) = states.iter().find(|s| s.id == id) else {
+            // Taken out of the map (a template's member): never there.
+            if logic.get(id).is_none() {
+                set_prop_shown(world, node, false, false, false);
+            }
             continue;
         };
         let (visible, solid, damageable) = (state.visible, state.solid, state.damageable);
@@ -636,6 +657,7 @@ type CharacterQuery<'a> = (
     Option<&'a EntityGravity>,
     Option<&'a LocalPlayer>,
     Option<&'a ColliderAabb>,
+    Option<&'a crate::core::MapControls>,
 );
 
 /// The characters as logic players: the local player first (`!player`
@@ -662,7 +684,11 @@ fn snapshot(world: &mut World, logic: &Logic) -> Vec<Player> {
 /// A character as a logic player; `ground_of` names the logic entity of
 /// what it stands on.
 fn as_player(
-    (e, t, v, state, intent, health, team, base, gravity, _, aabb): bevy::ecs::query::QueryItem<'_, '_, CharacterQuery<'static>>,
+    (e, t, v, state, intent, health, team, base, gravity, _, aabb, controls): bevy::ecs::query::QueryItem<
+        '_,
+        '_,
+        CharacterQuery<'static>,
+    >,
     scale: f32,
     ground_of: impl Fn(Entity) -> Option<EntId>,
 ) -> Player {
@@ -692,6 +718,7 @@ fn as_player(
     p.team = team.map_or(0, |t| if t.0 == 0 { 0 } else { t.0 + 1 });
     p.gravity = gravity.map_or(1.0, |g| g.0);
     p.use_key = intent.use_key;
+    p.buttons = controls.map_or_else(|| crate::core::buttons::of(intent), |c| c.buttons);
     p
 }
 
@@ -1118,9 +1145,104 @@ fn apply_effects(world: &mut World, effects: Vec<Effect>, scale: f32) {
             Effect::AmbientStop { id } => {
                 world.write_message(SoundControl::Stop(sound_key(id)));
             }
-            Effect::GameText { to, message } => {
-                if to.is_none() || to == local {
-                    world.resource_mut::<HudMessages>().show(message, now);
+            Effect::GameText { to, message } => hud_event(world, to, HudShow::Text(message), local, now),
+            Effect::Hud { to, what } => hud_event(world, to, what, local, now),
+            Effect::SpeedMod {
+                target,
+                key,
+                scale,
+                flags,
+            } => with_controls(world, target, |c| {
+                // specs/source/game_entities.md 1.
+                let take = super::game::speedmod_buttons(flags);
+                if scale != 1.0 {
+                    if flags & 1 != 0 {
+                        c.weapon_hidden |= 1;
+                    }
+                    c.disabled.retain(|(k, _)| *k != key);
+                    if take != 0 {
+                        c.disabled.push((key, take));
+                    }
+                    if flags & 2 != 0 {
+                        c.hud_hidden = true;
+                    }
+                } else {
+                    if flags & 1 != 0 {
+                        c.weapon_hidden &= !1;
+                    }
+                    c.disabled.retain(|(k, _)| *k != key);
+                    if flags & 2 != 0 {
+                        c.hud_hidden = false;
+                    }
+                }
+                c.time_scale = scale;
+            }),
+            Effect::GameUi {
+                target,
+                on,
+                freeze,
+                hide_weapon,
+            } => with_controls(world, target, |c| {
+                if freeze {
+                    c.at_controls = on;
+                }
+                if hide_weapon {
+                    if on {
+                        c.weapon_hidden |= 2;
+                    } else {
+                        c.weapon_hidden &= !2;
+                    }
+                }
+            }),
+            Effect::ViewControl { target, camera, freeze } => {
+                let look = world.get::<Intent>(target).map(|i| (i.yaw, i.pitch));
+                with_controls(world, target, |c| {
+                    match camera {
+                        Some(_) => {
+                            c.invulnerable = true;
+                            c.weapon_hidden |= 4;
+                            if freeze {
+                                c.frozen = look;
+                            }
+                        }
+                        None => {
+                            // Disable always unfreezes (viewcontrol 1.3).
+                            c.invulnerable = false;
+                            c.weapon_hidden &= !4;
+                            c.frozen = None;
+                        }
+                    }
+                });
+                if camera.is_none()
+                    && let Ok(mut e) = world.get_entity_mut(target)
+                {
+                    e.remove::<crate::core::MapView>();
+                }
+            }
+            Effect::Score {
+                target,
+                points,
+                team,
+                allow_negative,
+            } => {
+                world.write_message(crate::core::ScoreChange {
+                    target,
+                    points,
+                    team,
+                    allow_negative,
+                });
+            }
+            Effect::Spawned {
+                id,
+                source,
+                origin,
+                angles,
+            } => spawn_copy(world, id, source, origin, angles, scale),
+            Effect::BodyVelocity { id, velocity } => {
+                if let Some(node) = entity_node(world, id)
+                    && let Some(mut v) = world.get_mut::<LinearVelocity>(node)
+                {
+                    v.0 += entity_to_engine(velocity, scale);
                 }
             }
             Effect::DamageFilter { target, filter } => {
@@ -1156,6 +1278,133 @@ fn apply_effects(world: &mut World, effects: Vec<Effect>, scale: f32) {
     }
 }
 
+/// Thrusters and keep-uprights that are on, for the physics
+/// (`map::controllers::BodyControllers`, engine space, SI units).
+fn sync_controls(world: &mut World, logic: &Logic) {
+    use super::physics::{
+        ControlKind as L, SF_THRUST_FORCE, SF_THRUST_IGNORE_MASS, SF_THRUST_IGNORE_POS, SF_THRUST_LOCAL,
+        SF_THRUST_TORQUE,
+    };
+    use crate::map::controllers::{BodyController, BodyControllers, ControlKind};
+    let s = logic.scale;
+    let list: Vec<BodyController> = logic
+        .world
+        .controls()
+        .into_iter()
+        .filter_map(|c| {
+            let body = logic
+                .props
+                .iter()
+                .chain(&logic.nodes)
+                .find(|(id, _)| *id == c.body)
+                .map(|(_, n)| *n)?;
+            let kind = match c.kind {
+                L::Thrust {
+                    force,
+                    force_local,
+                    offset,
+                    flags,
+                    scale,
+                    serial,
+                } => ControlKind::Thrust {
+                    force: entity_to_engine(force, s),
+                    force_local: entity_to_engine(force_local, s),
+                    offset: entity_to_engine(offset, s),
+                    local: flags & SF_THRUST_LOCAL != 0,
+                    linear: flags & SF_THRUST_FORCE != 0,
+                    angular: flags & SF_THRUST_TORQUE != 0,
+                    ignore_mass: flags & SF_THRUST_IGNORE_MASS != 0,
+                    ignore_pos: flags & SF_THRUST_IGNORE_POS != 0,
+                    scale,
+                    serial,
+                },
+                L::Upright { goal, limit } => ControlKind::Upright {
+                    goal: entity_to_engine(goal, 1.0).normalize_or_zero(),
+                    limit: limit.to_radians(),
+                },
+            };
+            Some(BodyController {
+                key: (c.id.generation as u64) << 32 | c.id.index as u64,
+                body,
+                kind,
+            })
+        })
+        .collect();
+    if world.get_resource::<BodyControllers>().is_some_and(|b| b.0 != list) {
+        world.insert_resource(BodyControllers(list));
+    }
+}
+
+/// Players viewing through a point_viewcontrol see from it
+/// (`core::MapView`: a camera's pose, looking down -Z).
+fn sync_views(world: &mut World, logic: &Logic) {
+    for (p, origin, angles) in logic.world.camera_views() {
+        let view = crate::core::MapView {
+            origin: entity_to_engine(origin, logic.scale),
+            rotation: rotation_to_engine(entity_rotation(angles)) * Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2),
+        };
+        if let Ok(mut e) = world.get_entity_mut(p)
+            && e.get::<crate::core::MapView>() != Some(&view)
+        {
+            e.insert(view);
+        }
+    }
+}
+
+/// A template's copy of a brush entity or prop: the map entity's node
+/// copied to where the copy stands, paired with the new logic entity.
+fn spawn_copy(world: &mut World, id: EntId, source: usize, origin: Vec3, angles: Vec3, scale: f32) {
+    use crate::map::copies::{MapCopy, copy_node};
+    let pose = Transform::from_translation(entity_to_engine(origin, scale))
+        .with_rotation(rotation_to_engine(entity_rotation(angles)));
+    let brush = world
+        .query_filtered::<(Entity, &MapBrushEntity), Without<MapCopy>>()
+        .iter(world)
+        .find(|(_, b)| b.0 == source)
+        .map(|(e, _)| e);
+    if let Some(node) = brush {
+        if let Some(copy) = copy_node(world, node, pose)
+            && let Some(mut logic) = world.get_resource_mut::<Logic>()
+        {
+            logic.nodes.push((id, copy));
+        }
+        return;
+    }
+    let prop = world
+        .query_filtered::<(Entity, &PropEntity), Without<MapCopy>>()
+        .iter(world)
+        .find(|(_, p)| p.0 == source)
+        .map(|(e, _)| e);
+    if let Some(node) = prop
+        && let Some(copy) = copy_node(world, node, pose)
+    {
+        set_prop_shown(world, copy, true, true, true);
+        if let Some(mut logic) = world.get_resource_mut::<Logic>() {
+            logic.props.push((id, copy));
+        }
+    }
+}
+
+/// Something for players' HUDs: shown here when it is for the local
+/// player (or everyone), and handed on as a `HudEvent` (a network server
+/// sends it to the client it is for).
+fn hud_event(world: &mut World, to: Option<Entity>, what: HudShow, local: Option<Entity>, now: f64) {
+    if to.is_none() || to == local {
+        super::hud::show_on_hud(world, what.clone(), now);
+    }
+    world.write_message(HudEvent { to, what });
+}
+
+/// Change a character's `core::MapControls` (added when missing).
+fn with_controls(world: &mut World, target: Entity, f: impl FnOnce(&mut crate::core::MapControls)) {
+    let Ok(mut e) = world.get_entity_mut(target) else { return };
+    let mut c = e.get::<crate::core::MapControls>().cloned().unwrap_or_default();
+    f(&mut c);
+    if e.get::<crate::core::MapControls>() != Some(&c) {
+        e.insert(c);
+    }
+}
+
 /// Our damage kinds as Source damage-type bits (DMG_GENERIC 0, CRUSH 1,
 /// BULLET 2, SLASH 4, BURN 8, FALL 32, BLAST 64; the public SDK's
 /// names). Melee as slash and bullets without their extra flag bits are
@@ -1179,7 +1428,7 @@ fn sound_key(id: EntId) -> SoundKey {
 /// node or a prop the entity placed.
 fn entity_node(world: &mut World, id: EntId) -> Option<Entity> {
     let logic = world.get_resource::<Logic>()?;
-    if let Some((_, node)) = logic.nodes.iter().find(|(m, _)| *m == id) {
+    if let Some((_, node)) = logic.nodes.iter().chain(&logic.props).find(|(m, _)| *m == id) {
         return Some(*node);
     }
     let index = logic.world.get(id)?.map_index?;
@@ -1251,6 +1500,7 @@ fn run_phase(world: &mut World, phase: impl FnOnce(&mut LogicWorld, &dyn Collisi
         logic.world.collision = static_collision(world, logic.scale);
     }
     prop_bounds(world, &mut logic);
+    follow_anchors(world, &mut logic);
     let players = snapshot(world, &logic);
     logic.world.players = players.clone();
     {
@@ -1271,6 +1521,8 @@ fn run_phase(world: &mut World, phase: impl FnOnce(&mut LogicWorld, &dyn Collisi
     sync_props(world, &mut logic);
     sync_visuals(world, &logic);
     sync_soundscapes(world, &logic);
+    sync_views(world, &logic);
+    sync_controls(world, &logic);
     drop(span);
     let effects = std::mem::take(&mut logic.world.effects);
     for line in logic.world.log.drain(..) {
@@ -1290,6 +1542,28 @@ fn run_phase(world: &mut World, phase: impl FnOnce(&mut LogicWorld, &dyn Collisi
     let scale = logic.scale;
     world.insert_resource(logic);
     apply_effects(world, effects, scale);
+}
+
+/// The anchor entities (placed weapons) where the ECS has them
+/// (`map::entities::EntityAnchors`), and their children with them.
+fn follow_anchors(world: &World, logic: &mut Logic) {
+    let Some(anchors) = world.get_resource::<crate::map::entities::EntityAnchors>() else {
+        return;
+    };
+    if anchors.0.is_empty() || logic.world.follows.is_empty() {
+        return;
+    }
+    let scale = logic.scale;
+    for (index, t) in &anchors.0 {
+        let Some(id) = logic.world.by_map_index(*index) else { continue };
+        let rotation = Quat::from_xyzw(t.rotation.x, -t.rotation.z, t.rotation.y, t.rotation.w);
+        logic.world.set_anchor(
+            id,
+            engine_to_entity(t.translation, scale),
+            super::anchors::angles_of(rotation),
+        );
+    }
+    logic.world.follow_anchors();
 }
 
 /// Where each logic prop's body is now (its collider's world box), for
@@ -1395,8 +1669,10 @@ fn apply_record(rec: Res<LogicRecord>, logic: Option<ResMut<Logic>>, mut last: L
 fn pre(world: &mut World) {
     run_phase(world, |w, col| {
         w.run_thinks();
+        w.move_cameras();
         w.step_movers(col);
         w.player_uses(col);
+        w.push_conveyors();
     });
 }
 

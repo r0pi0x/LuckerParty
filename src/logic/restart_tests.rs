@@ -8,6 +8,7 @@ fn map_entity(pairs: &[(&str, &str)], hulls: Vec<MapHull>) -> crate::map::MapEnt
     crate::map::MapEntity {
         keyvalues: kv(pairs),
         mover: !hulls.is_empty(),
+        physics: None,
         hulls,
     }
 }

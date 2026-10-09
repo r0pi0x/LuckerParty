@@ -245,7 +245,7 @@ fn dust2_bot_round_stats() {
         .submit("mp_freezetime 2; mp_roundtime 2; mashup_rounds 1");
     sim.ticks(3);
     let mut stats: Vec<String> = Vec::new();
-    let (mut contact, mut live_at, mut last_kills) = (None::<f64>, None::<f64>, 0u32);
+    let (mut contact, mut live_at, mut last_kills) = (None::<f64>, None::<f64>, 0i32);
     let mut wins = [0u32; 3];
     let mut contacts = Vec::new();
     let mut lengths = Vec::new();
@@ -300,7 +300,7 @@ fn dust2_bot_round_stats() {
                     played += 1;
                     let now = sim.app.world().resource::<Time>().elapsed_secs_f64();
                     let w = sim.app.world_mut();
-                    let kills: u32 = w.query::<&Score>().iter(w).map(|s| s.kills).sum();
+                    let kills: i32 = w.query::<&Score>().iter(w).map(|s| s.kills).sum();
                     let alive: Vec<(u8, bool)> = bots
                         .iter()
                         .map(|b| (w.get::<Team>(*b).unwrap().0, w.get::<Health>(*b).unwrap().current > 0.0))

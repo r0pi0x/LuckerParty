@@ -475,4 +475,5 @@ fn take(world: &mut World, owner: Entity, weapon: Entity) {
     if let Some(mut w) = world.get_mut::<Weapon>(weapon) {
         w.owner = Some(owner);
     }
+    super::equip::picked_up(world, owner, weapon);
 }

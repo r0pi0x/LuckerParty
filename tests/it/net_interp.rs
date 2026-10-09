@@ -269,6 +269,7 @@ fn lift_map() -> MapData {
         .collect(),
         hulls: vec![hull(Vec3::new(-64.0, -64.0, -8.0), Vec3::ZERO)],
         mover: true,
+        physics: None,
     };
     MapData {
         name: "test:lift".into(),
@@ -419,6 +420,7 @@ fn crate_map() -> MapData {
             keyvalues: vec![("classname".into(), "prop_physics".into()), ("origin".into(), "0 0 16".into())],
             hulls: Vec::new(),
             mover: false,
+            physics: None,
         }],
         entity_scale: SCALE,
         spawns: vec![(to_engine(Vec3::new(400.0, 0.0, 0.0)), None)],

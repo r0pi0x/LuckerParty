@@ -20,6 +20,7 @@ mod debug_ui;
 mod impact_effects;
 mod interpolation;
 mod logic_physics;
+mod map_game_entities;
 mod map_logic;
 mod map_sound_fx;
 mod metrics;

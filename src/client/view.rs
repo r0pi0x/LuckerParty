@@ -256,11 +256,15 @@ fn show_local_body(
     mode: Res<CameraMode>,
     free: Res<FreeCam>,
     watch: Res<Watch>,
-    local: Option<Single<Has<Dead>, With<LocalPlayer>>>,
+    local: Option<Single<(Has<Dead>, Has<crate::core::MapView>), With<LocalPlayer>>>,
     mut show: ResMut<ShowLocalBody>,
 ) {
-    let dead = local.is_some_and(|d| *d);
-    show.set_if_neq(ShowLocalBody((mode.third_person || free.mode != 0 || watch.0 != 0) && !dead));
+    let (dead, camera) = local.map_or((false, false), |l| *l);
+    // Viewing through a map camera (point_viewcontrol), the body stands
+    // where it was and no view model is drawn.
+    show.set_if_neq(ShowLocalBody(
+        (mode.third_person || free.mode != 0 || watch.0 != 0 || camera) && !dead,
+    ));
 }
 
 #[derive(Component)]
