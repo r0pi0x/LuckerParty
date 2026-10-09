@@ -405,7 +405,13 @@ pub(super) fn reset(world: &mut World) {
     if let Some((_, _, step)) = world.resource::<CommandClock>().base {
         world.resource_mut::<Time<Fixed>>().set_timestep(step);
     }
-    world.insert_resource(CommandClock::default());
+    // A new epoch (`UserCmds::epoch`): the server never reads leads of
+    // commands from before as ours (it keeps the newest epoch it heard).
+    let jumps = world.resource::<CommandClock>().jumps + 1;
+    world.insert_resource(CommandClock {
+        jumps,
+        ..default()
+    });
     world.insert_resource(PredictionHistory::default());
     world.insert_resource(Outgoing::default());
     world.insert_resource(Pending::default());
@@ -440,6 +446,7 @@ fn receive_own_states(
     for s in states.read() {
         if let Some(lead) = s.lead
             && clock.tick.is_some()
+            && s.epoch == clock.jumps
             && s.newest >= clock.settle_from
         {
             clock.sample(lead as f64);
@@ -848,7 +855,7 @@ fn smooth_view(
 }
 
 /// New commands, with the last few again, to the server.
-fn send_commands(mut outgoing: ResMut<Outgoing>, mut out: MessageWriter<UserCmds>) {
+fn send_commands(mut outgoing: ResMut<Outgoing>, clock: Res<CommandClock>, mut out: MessageWriter<UserCmds>) {
     if outgoing.fresh == 0 {
         return;
     }
@@ -856,7 +863,7 @@ fn send_commands(mut outgoing: ResMut<Outgoing>, mut out: MessageWriter<UserCmds
     let start = outgoing.cmds.len() - n;
     let cmds: Vec<NetCmd> = outgoing.cmds.iter().skip(start).cloned().collect();
     outgoing.fresh = 0;
-    out.write(UserCmds { cmds });
+    out.write(UserCmds { cmds, epoch: clock.jumps });
 }
 
 /// The readout's transport numbers and error rate.

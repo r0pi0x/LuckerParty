@@ -187,6 +187,9 @@ pub struct CommandBuffer {
     /// `OwnState::lead`), and the newest tick heard.
     pub lead: Option<i32>,
     pub newest: u64,
+    /// The newest clock epoch heard (`UserCmds::epoch`): `lead` is that
+    /// epoch's.
+    pub epoch: u32,
     /// Ticks run on a repeated command; commands that came too late (after
     /// their tick) or too early (beyond `MAX_AHEAD`).
     pub missed: u32,
@@ -494,7 +497,15 @@ fn receive_commands(
             continue;
         };
         let lead = (newest as i64 - now as i64).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
-        b.lead = Some(b.lead.map_or(lead, |l| l.min(lead)));
+        // Leads of the client's present clock only: commands sent before
+        // it jumped say nothing of where it is now.
+        if msg.message.epoch > b.epoch {
+            b.epoch = msg.message.epoch;
+            b.lead = None;
+        }
+        if msg.message.epoch == b.epoch {
+            b.lead = Some(b.lead.map_or(lead, |l| l.min(lead)));
+        }
         b.newest = b.newest.max(newest);
         if newest <= b.applied {
             // Even its newest command's tick has run.
@@ -635,6 +646,7 @@ fn send_own_states(
         own.sent = state.tick;
         state.lead = b.lead.take();
         state.newest = b.newest;
+        state.epoch = b.epoch;
         state.buffered = b.queued.len().min(u16::MAX as usize) as u16;
         state.missed = b.missed;
         state.late = b.late;

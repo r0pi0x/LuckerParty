@@ -2279,14 +2279,18 @@ pub fn remote_exec(
             data: None,
         })?
         .to_string();
-    let start = world.resource::<Console>().output.len();
+    let start = world.resource::<Console>().printed;
     {
         let mut c = world.resource_mut::<Console>();
         c.print(Level::Input, format!("] {line}"));
         c.submit(line);
     }
     crate::console::run_queue(world);
-    let out: Vec<String> = world.resource::<Console>().output[start + 1..]
+    // The lines printed since (the output keeps only the last ones, and
+    // logs print into it too).
+    let c = world.resource::<Console>();
+    let new = ((c.printed - start).saturating_sub(1) as usize).min(c.output.len());
+    let out: Vec<String> = c.output[c.output.len() - new..]
         .iter()
         .map(|l| l.text.clone())
         .collect();

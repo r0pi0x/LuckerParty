@@ -1035,9 +1035,11 @@ with tests passing and something to see.
        health; the rules neither spawn it nor count it on its team) until
        it reports the map loaded (`Loaded`, which names the map: a report
        from before a change counts for nothing); then `rules::enter_game`
-       spawns it at once in deathmatch and in the freeze time (with
-       everyone after a map change if its load was quick), else at the
-       next round. Test: `net_maps::a_client_loading_the_map_is_out_of_
+       spawns it at once in deathmatch, in the freeze time (with
+       everyone after a map change if its load was quick) and when nobody
+       of its team is alive (else a slow loader alone on its team handed
+       the first round to the others the moment it came in dead: seen
+       live), else at the next round. Test: `net_maps::a_client_loading_the_map_is_out_of_
        the_game_until_it_has_it` (damage doesn't reach it while it
        loads; a quick and a slow client after a change).
      - [x] Arming and defusing the bomb predicted: `objectives::bomb::arm`
@@ -1095,6 +1097,25 @@ with tests passing and something to see.
        and `kickid <id> [message]` for players and bots ("Kicked by
        Console"). Tests: `net_bots::bot_names_profiles_and_kicks`,
        `net_bots::bots_wait_for_a_player`.
+     - [x] Found live: a client whose clock started far ahead (a
+       second-long hitch while joining) jumped back and forth by ever
+       more (thousands of ticks within a minute): after a backward jump
+       the server's lead still came from commands sent before it. Commands
+       now carry the clock's epoch (`UserCmds::epoch`, its jump count,
+       kept across a reset) and the server reports the newest epoch's lead
+       only (`OwnState::epoch`). Test: `net_prediction::a_clock_thrown_
+       off_settles_in_one_jump` (184 jumps before, 1-2 now). Also the
+       remote console's reply no longer panics when the output buffer is
+       full (`Console::printed`).
+     - [x] Live (de_dust2, host `-port 27041 +map cs_source:de_dust2`,
+       client with `+net_fakelag 100 +net_fakejitter 20`): the client
+       renamed (`name Alice`, "* Client changed name to Alice" in its
+       chat, its line and the scoreboard by the new name), bots named
+       Will, Dan, Derek, Mark; the client's arming on bombsite A drawn at
+       once (bar, keypad typing the code, the C4 animation) and the plant
+       with no prediction error; `changelevel de_dust2` on de_dust2: the
+       client loaded it again on the same connection, money back to $800;
+       the dedicated server took `+map cs_source:de_dust2`.
      - [x] Decals for late joiners (`net::decals`): the server keeps the
        world's impact decals since the map loaded and sends them when a
        client comes into the game. Test: `net_maps::a_late_joiner_gets_

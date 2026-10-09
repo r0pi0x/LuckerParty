@@ -242,7 +242,7 @@ fn changelevel_takes_two_clients_along() {
     sim.ticks(200);
     // Some score to lose at the map change.
     let a = sim.character_of(0).unwrap();
-    sim.server.app.world_mut().entity_mut(a).insert(Score { kills: 2, deaths: 1 });
+    sim.server.app.world_mut().entity_mut(a).insert((Score { kills: 2, deaths: 1 }, Money(4321)));
     sim.ticks(20);
     let me = sim.local_player(0).unwrap();
     assert_eq!(sim.clients[0].app.world().get::<NetScore>(me).unwrap().kills, 2);
@@ -290,6 +290,12 @@ fn changelevel_takes_two_clients_along() {
         assert_eq!(w.get::<NetScore>(me).unwrap().kills, 0, "scores start over");
         assert_eq!(w.resource::<RoundState>().number, round.number, "the client's round is the server's");
         assert_eq!(w.resource::<RoundState>().wins, [0, 0]);
+    }
+    // Money starts over too (CS:S's map change is a new game).
+    for i in 0..2 {
+        let c = sim.character_of(i).unwrap();
+        let start = sim.server.app.world().resource::<mashup::rules::rounds::RoundSettings>().start_money;
+        assert_eq!(sim.server.app.world().get::<Money>(c).map(|m| m.0), Some(start), "client {i}'s money");
     }
     // And it plays there: client 0 walks, the server moves it.
     let c = sim.character_of(0).unwrap();
@@ -648,12 +654,30 @@ fn a_client_loading_the_map_is_out_of_the_game_until_it_has_it() {
     let state = in_game(&mut sim, slow);
     println!("the slow client after the freeze ({phase:?}): {state:?}");
     assert!(!state.0, "in the game");
-    // (Alone on its team and dead, its coming in ends the round.)
     assert!(
-        matches!(phase, mashup::rules::rounds::Phase::Live { .. } | mashup::rules::rounds::Phase::Over { .. }),
-        "the slow client came in after the freeze: {phase:?}"
+        matches!(phase, mashup::rules::rounds::Phase::Live { .. }),
+        "the slow client came in after the freeze, the round goes on: {phase:?}"
     );
-    assert!(state.1, "came in after the freeze: waits for the next round");
+    // Alone on its team: it plays now (coming in dead would hand the round
+    // to the others).
+    assert_eq!(state, (false, false, true, 1.0), "alone on its team: in at once");
+    // A third client on the quick one's team, loading past the freeze of
+    // the next game: its team is alive, so it waits for the next round.
+    let late = add_client(&mut sim, &install, None);
+    sim.clients[late].app.insert_resource(harness::MapLoadDelay(10));
+    let team_of = |sim: &mut NetSim, i: usize| {
+        let c = sim.character_of(i).unwrap();
+        *sim.server.app.world().get::<Team>(c).unwrap()
+    };
+    sim.until_joined(600);
+    sim.ticks(10);
+    let phase = sim.server.app.world().resource::<RoundState>().phase;
+    let mates = (0..3).filter(|i| *i != late).any(|i| team_of(&mut sim, i) == team_of(&mut sim, late));
+    let state = in_game(&mut sim, late);
+    println!("a third client mid-round ({phase:?}, teammates: {mates}): {state:?}");
+    if mates && matches!(phase, mashup::rules::rounds::Phase::Live { .. }) {
+        assert!(!state.0 && state.1, "mid-round with living teammates: out until the next round");
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 

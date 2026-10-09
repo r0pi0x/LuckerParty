@@ -370,6 +370,11 @@ impl NetCmd {
 pub struct UserCmds {
     /// Oldest first.
     pub cmds: Vec<NetCmd>,
+    /// The client's clock epoch: how often its command clock has jumped
+    /// (`predict::CommandClock::jumps`). The server reports the lead of
+    /// the newest epoch only, so commands sent before a jump never steer
+    /// the clock after it.
+    pub epoch: u32,
 }
 
 /// Commands each `UserCmds` repeats besides the new ones.
@@ -401,9 +406,11 @@ pub struct OwnState {
     /// the newest command's tick less the server's last tick when it
     /// arrived (1: just in time). None: none heard.
     pub lead: Option<i32>,
-    /// The newest command tick heard (the client counts only the leads of
-    /// commands it sent after it last moved its clock).
+    /// The newest command tick heard.
     pub newest: u64,
+    /// The clock epoch `lead` is from (`UserCmds::epoch`): the client
+    /// counts only leads of its present epoch.
+    pub epoch: u32,
     /// The map entity index (`map::MapBrushEntity`) of the mover the
     /// player stands on (`MovementState::ground`, an entity, isn't in
     /// `state`: ids differ), so a correction keeps it riding.

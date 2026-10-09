@@ -192,9 +192,11 @@ pub fn hold_out(world: &mut World, e: Entity) {
 
 /// A player's client has the map: it is in the game, and spawns as the
 /// rules allow. Deathmatch: at once. Rounds: at once during the freeze
-/// (or before the first round starts: with everyone), else at the next
-/// round (CS:S lets players who join in the freeze time play the round;
-/// the exact grace is unmeasured).
+/// (or before the first round starts: with everyone) or when nobody of
+/// its team is alive (so its coming in dead doesn't end the round), else
+/// at the next round (CS:S lets players who join in the freeze time play
+/// the round; the exact grace, and CS:S's restart when an empty team
+/// gets a player, aren't reproduced).
 pub fn enter_game(world: &mut World, e: Entity) {
     if world.get::<crate::core::Connecting>(e).is_none() {
         return;
@@ -206,7 +208,15 @@ pub fn enter_game(world: &mut World, e: Entity) {
     let freeze = world
         .get_resource::<rounds::RoundState>()
         .is_some_and(|r| matches!(r.phase, rounds::Phase::Freeze { .. }));
-    if rounds && freeze {
+    // Nobody of its team alive in the round (it was empty: everyone else
+    // still loading, or it is the first on it): it plays now, rather than
+    // its team losing the round the moment it comes in dead.
+    let team = world.get::<Team>(e).copied();
+    let mates_alive = world
+        .query_filtered::<(Entity, &Team, &Health), (With<Intent>, Without<Dead>, Without<crate::core::Connecting>)>()
+        .iter(world)
+        .any(|(o, t, h)| o != e && Some(*t) == team && h.current > 0.0);
+    if rounds && (freeze || !mates_alive) {
         if let Some(start) = world.get_resource::<rounds::RoundSettings>().map(|s| s.start_money)
             && world.get::<crate::weapon::economy::Money>(e).is_none()
         {
