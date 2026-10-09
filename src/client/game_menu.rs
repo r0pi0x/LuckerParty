@@ -60,7 +60,8 @@ impl Plugin for GameMenuPlugin {
                     draw,
                     loading_progress,
                 )
-                    .chain(),
+                    .chain()
+                    .in_set(MenuSystems),
             );
         app.console_command(
             "menu",
@@ -100,6 +101,10 @@ impl Plugin for GameMenuPlugin {
         });
     }
 }
+
+/// The menu's systems (the server browser runs after them).
+#[derive(SystemSet, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct MenuSystems;
 
 // ---------------------------------------------------------------------------
 // The model.
@@ -167,7 +172,7 @@ pub enum MainItem {
     Resume,
     /// Leave the game for the main menu (`disconnect`).
     Disconnect,
-    /// The server browser: greyed until mashup has networking.
+    /// The server browser (`openserverbrowser`).
     FindServers,
     /// The game's "Create Server": our new game page.
     NewGame,
@@ -245,15 +250,14 @@ impl MainEntry {
             gap: false,
             gap_in_game_only: false,
             in_game_only,
-            // Until mashup has networking.
-            enabled: item != MainItem::FindServers,
+            enabled: true,
         }
     }
 }
 
 /// Every left-hand entry, shown or not: the game's (`GameMenu.res`) that
 /// mashup has, in its order and words (built-in ones in CS:S's order
-/// without the file), Find Servers greyed; then, after a gap, ours (quick
+/// without the file); then, after a gap, ours (quick
 /// start, the greybox, bots, team, console). Entries mashup can't do
 /// (player list, achievements, benchmark ...) are left out.
 /// `GameMenu::entries` picks those shown in or out of a game.
@@ -1117,7 +1121,8 @@ impl GameMenu {
                 }
             }
             MainItem::Console => out.lines.push("toggleconsole".into()),
-            MainItem::FindServers | MainItem::NewGame | MainItem::Bots | MainItem::Team | MainItem::Options => {}
+            MainItem::FindServers => out.lines.push("openserverbrowser".into()),
+            MainItem::NewGame | MainItem::Bots | MainItem::Team | MainItem::Options => {}
         }
     }
 
@@ -1301,7 +1306,7 @@ impl MenuUi {
 }
 
 /// A decoded picture as a UI image.
-fn ui_image(pic: &crate::map::hud::UiImage, images: &mut Assets<Image>) -> Handle<Image> {
+pub(super) fn ui_image(pic: &crate::map::hud::UiImage, images: &mut Assets<Image>) -> Handle<Image> {
     use bevy::{
         asset::RenderAssetUsages,
         render::render_resource::{Extent3d, TextureDimension, TextureFormat},
@@ -1443,6 +1448,14 @@ fn open_menu(w: &mut World, page: Page) {
     w.resource_mut::<RegrabCursor>().0 = false;
 }
 
+/// The menu open (on its main page unless it is open already): for the
+/// server browser, which shows over it.
+pub(super) fn open_main(w: &mut World) {
+    if !w.resource::<GameMenu>().open {
+        open_menu(w, Page::Main);
+    }
+}
+
 /// A map is in (`map`, `map greybox`): playing it, the menu closed.
 pub(super) fn entered_game(w: &mut World) {
     let Some(mut menu) = w.get_resource_mut::<GameMenu>() else { return };
@@ -1551,8 +1564,10 @@ fn keys(
     mut after: ResMut<AfterLoad>,
     mut regrab: ResMut<RegrabCursor>,
     mut commands: Commands,
+    browser: Option<Res<super::server_browser::ServerBrowser>>,
 ) {
-    if ui.open {
+    // The server browser over the menu takes the keys.
+    if ui.open || browser.is_some_and(|b| b.open) {
         return;
     }
     if !menu.open {
@@ -1623,8 +1638,9 @@ fn pointer(
     mut console: ResMut<Console>,
     mut after: ResMut<AfterLoad>,
     mut regrab: ResMut<RegrabCursor>,
+    browser: Option<Res<super::server_browser::ServerBrowser>>,
 ) {
-    if !menu.open || menu.capture.is_some() {
+    if !menu.open || menu.capture.is_some() || browser.is_some_and(|b| b.open) {
         return;
     }
     let mut inputs: Vec<Input> = hits
@@ -1746,40 +1762,40 @@ fn after_load(w: &mut World) {
 struct MenuRoot;
 
 /// Colours, sizes and fonts: the GameUI scheme's, else built in.
-struct Look<'a> {
-    ui: Option<&'a GameUi>,
-    fonts: &'a UiFonts,
+pub(super) struct Look<'a> {
+    pub ui: Option<&'a GameUi>,
+    pub fonts: &'a UiFonts,
     /// Pixels per scheme pixel (GameUI is drawn in screen pixels; larger
     /// windows scale it up).
-    s: f32,
-    height: f32,
-    accent: Color,
+    pub s: f32,
+    pub height: f32,
+    pub accent: Color,
 }
 
 impl<'a> Look<'a> {
-    fn color(&self, name: &str, fallback: [u8; 4]) -> Color {
+    pub(super) fn color(&self, name: &str, fallback: [u8; 4]) -> Color {
         let [r, g, b, a] = self.ui.and_then(|u| u.color(name)).unwrap_or(fallback);
         Color::srgba_u8(r, g, b, a)
     }
 
-    fn number(&self, name: &str, fallback: f32) -> f32 {
+    pub(super) fn number(&self, name: &str, fallback: f32) -> f32 {
         self.ui.and_then(|u| u.numbers.get(name).copied()).unwrap_or(fallback)
     }
 
     /// Built in colours stand in for the scheme's: a darker panel, our
     /// accent for selections.
-    fn has_scheme(&self) -> bool {
+    pub(super) fn has_scheme(&self) -> bool {
         self.ui.is_some_and(|u| !u.colors.is_empty())
     }
 
     /// A GameUI scheme font (`Default`, `UiBold`, `MenuLarge`) at this
     /// window's size: `fallback` scheme pixels tall and bold when the
     /// scheme lacks it.
-    fn font(&self, name: &str, fallback: (f32, bool)) -> TextFont {
+    pub(super) fn font(&self, name: &str, fallback: (f32, bool)) -> TextFont {
         self.fonts.source(name, self.height, self.s, fallback)
     }
 
-    fn frame_bg(&self) -> Color {
+    pub(super) fn frame_bg(&self) -> Color {
         if self.has_scheme() {
             self.color("Frame.BgColor", [160, 160, 160, 128])
         } else {
@@ -1787,31 +1803,31 @@ impl<'a> Look<'a> {
         }
     }
 
-    fn bright(&self) -> Color {
+    pub(super) fn bright(&self) -> Color {
         self.color("Border.Bright", [200, 200, 200, 196])
     }
 
-    fn dark(&self) -> Color {
+    pub(super) fn dark(&self) -> Color {
         self.color("Border.Dark", [40, 40, 40, 196])
     }
 
-    fn text(&self) -> Color {
+    pub(super) fn text(&self) -> Color {
         self.color("Label.TextColor", [221, 221, 221, 255])
     }
 
-    fn dull(&self) -> Color {
+    pub(super) fn dull(&self) -> Color {
         self.color("Label.TextDullColor", [190, 190, 190, 255])
     }
 
-    fn disabled(&self) -> Color {
+    pub(super) fn disabled(&self) -> Color {
         self.color("Label.DisabledFgColor1", [117, 117, 117, 255])
     }
 
-    fn white(&self) -> Color {
+    pub(super) fn white(&self) -> Color {
         self.color("Label.TextBrightColor", [255, 255, 255, 255])
     }
 
-    fn selected_bg(&self) -> Color {
+    pub(super) fn selected_bg(&self) -> Color {
         if self.has_scheme() {
             self.color("SectionedListPanel.SelectedBgColor", [255, 155, 0, 255])
         } else {
@@ -1819,21 +1835,21 @@ impl<'a> Look<'a> {
         }
     }
 
-    fn selected_text(&self) -> Color {
+    pub(super) fn selected_text(&self) -> Color {
         self.color("SectionedListPanel.SelectedTextColor", [0, 0, 0, 255])
     }
 
-    fn sunken_bg(&self) -> Color {
+    pub(super) fn sunken_bg(&self) -> Color {
         self.color("TextEntry.BgColor", [0, 0, 0, 128])
     }
 
-    fn px(&self, v: f32) -> Val {
+    pub(super) fn px(&self, v: f32) -> Val {
         px((v * self.s).round())
     }
 }
 
 /// An absolutely placed box, in scheme pixels, inside `parent`.
-fn place(look: &Look, x: f32, y: f32, w: f32, h: f32) -> Node {
+pub(super) fn place(look: &Look, x: f32, y: f32, w: f32, h: f32) -> Node {
     Node {
         position_type: PositionType::Absolute,
         left: look.px(x),
@@ -1845,7 +1861,7 @@ fn place(look: &Look, x: f32, y: f32, w: f32, h: f32) -> Node {
 }
 
 /// Raised (lit top-left) or sunken (lit bottom-right) VGUI borders.
-fn bevel(look: &Look, raised: bool) -> BorderColor {
+pub(super) fn bevel(look: &Look, raised: bool) -> BorderColor {
     let (a, b) = if raised {
         (look.bright(), look.dark())
     } else {
@@ -1862,7 +1878,7 @@ fn bevel(look: &Look, raised: bool) -> BorderColor {
 /// Text in a box: one line, vertically centred, `align` -1 left, 0
 /// centre, 1 right.
 #[allow(clippy::too_many_arguments)]
-fn label(
+pub(super) fn label(
     commands: &mut Commands,
     parent: Entity,
     look: &Look,
@@ -2381,7 +2397,7 @@ fn menu_sounds(
 /// A GameUI frame centred on the screen: its background, raised borders,
 /// title. Returns the frame (children placed in scheme pixels from its
 /// corner).
-fn frame(commands: &mut Commands, root: Entity, look: &Look, size: Vec2, (w, h): (f32, f32), title: &str) -> Entity {
+pub(super) fn frame(commands: &mut Commands, root: Entity, look: &Look, size: Vec2, (w, h): (f32, f32), title: &str) -> Entity {
     let x = ((size.x / look.s - w) / 2.0).max(0.0);
     let y = ((size.y / look.s - h) / 2.0).max(0.0);
     let e = commands
@@ -3044,24 +3060,25 @@ mod tests {
             [Resume, Disconnect, FindServers, NewGame, BugReport, Options, Quit, QuickStart, Greybox, Bots, Team, Console]
         );
         let e = m.entries();
-        assert!(e[2].gap && !e[2].enabled, "a gap under Disconnect; Find Servers greyed");
+        assert!(e[2].gap && e[2].enabled, "a gap under Disconnect, then Find Servers");
         assert!(e[7].gap, "ours after a gap");
         let m = main_menu();
         assert_eq!(shown(&m), [FindServers, NewGame, BugReport, Options, Quit, QuickStart, Greybox, Console]);
         let e = m.entries();
         assert!(!e[0].gap, "no gap over the first entry");
-        assert_eq!(m.focus, 1, "the first entry that can be pressed: Create Server");
+        assert_eq!(m.focus, 0, "the first entry: Find Servers");
         assert_eq!(e[1].label, "CREATE SERVER");
     }
 
     #[test]
-    fn greyed_entries_ignore_the_mouse_and_keys() {
+    fn find_servers_opens_the_server_browser() {
         let mut m = main_menu();
         let find = at(&m, MainItem::FindServers);
         let o = press(&mut m, &[Input::Hover(Target::Main(find)), Input::Click(Target::Main(find), 0)]);
-        assert_eq!(o, Outcome::default());
-        assert_ne!(m.focus, find);
-        // Up from Create Server skips it, wrapping to Console.
+        assert_eq!(o.lines, ["openserverbrowser"]);
+        assert_eq!(m.focus, find);
+        assert!(m.open && m.page == Page::Main, "the browser shows over the menu");
+        // Up from it wraps to Console.
         press(&mut m, &[Input::Up]);
         assert_eq!(m.entries()[m.focus].item, MainItem::Console);
     }

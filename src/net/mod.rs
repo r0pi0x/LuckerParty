@@ -32,6 +32,7 @@ pub mod memory;
 pub mod movers;
 pub mod predict;
 pub mod props;
+pub mod query;
 pub mod server;
 pub mod udp;
 pub mod weapons;
@@ -864,6 +865,7 @@ impl Plugin for NetPlugin {
         chat::plugin(app);
         cvars::plugin(app);
         udp::plugin(app);
+        query::plugin(app);
         memory::plugin(app);
         commands(app);
     }
@@ -1055,7 +1057,15 @@ pub fn status(world: &mut World) -> String {
         }
         NetRole::Server => {
             let settings = world.resource::<NetSettings>().clone();
+            out.insert(0, format!("hostname: {}", world.resource::<query::Hosting>().hostname));
             out.push(format!("udp/ip  : 0.0.0.0:{}", settings.hostport));
+            if let Some(t) = world.get_resource::<udp::UdpServer>() {
+                let q = &t.queries;
+                out.push(format!(
+                    "queries : {} answered, {} challenged, {} dropped",
+                    q.answered, q.challenged, q.dropped
+                ));
+            }
             out.push(format!("map     : {map}"));
             let players = server::players(world);
             out.push(format!("players : {} ({} max)", players.len(), settings.maxplayers));

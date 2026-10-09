@@ -486,6 +486,39 @@ Over the internet the host forwards that UDP port on its router. Both
 games must be the same build (`status` shows the version); another build
 is refused with a message.
 
+**Finding games** (slice 8; `tests/it/net_query.rs`). Every server
+answers info queries on its own port (`net::query`, A2S_INFO's layout):
+`serverinfo <ip[:port]> ...` prints name, map, players/max (bots), ping,
+dedicated or listen, password; `lanscan` lists servers on the LAN
+(broadcast to `net_lan_ports`, 27015-27020 by default as Source's LAN
+tab, at `net_lan_broadcast`'s addresses, and this machine). On this box
+use other ports: `net_lan_ports 27031-27032`. A server's `status` shows
+`hostname` and `queries : N answered, N challenged, N dropped` (rate
+limited per address and in total). `openserverbrowser [lan|favorites|history]`
+(the main menu's Find Servers) opens the browser; `serverbrowser <input>`
+drives it as a click or key would (`row <n>`, `doubleclick <n>`,
+`connect`, `refresh`, `filters`, `sort <column>`, `tab <name>`, `type
+<text>`, `enter`, `escape`, `addserver`, `find`, `delete`) and prints its
+rows (through `mashup/console` for screenshots); in a test, the model is
+`client::server_browser::ServerBrowser` (`handle` an `Input`, its `rows`,
+`set_results` from `net::query::ServerQueries::results`); favourites and
+history live in the cfg folder's `serverbrowser.vdf`. `sv_password` on a
+server, `password` on a client (the browser asks for it). Two dedicated
+servers and a client on this box:
+
+```
+cargo run --features dev --bin mashup_server -- -port 27031 +hostname "LAN one" +maxplayers 8 +map greybox
+cargo run --features dev --bin mashup_server -- -port 27032 +hostname "LAN two" +sv_password pw +map de_dust2
+cargo run --features dev -- --window 1280x720 +net_lan_ports 27031-27032 +openserverbrowser lan
+```
+
+On this Linux box broadcasts don't come back to local servers (the host
+firewall); the scan finds them on 127.0.0.1. A LAN scan on Windows: broadcasts leave by one interface (the one with
+the default route); with several adapters (VPN, virtual switches) add
+the LAN's own broadcast address, e.g. `net_lan_broadcast "255.255.255.255
+192.168.1.255"`. The server's firewall rule above covers queries too
+(same port).
+
 ## 3c. Performance
 
 Details and baseline numbers: [performance.md](performance.md).
