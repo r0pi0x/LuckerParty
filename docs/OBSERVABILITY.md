@@ -42,7 +42,9 @@ fails and says how to move it. Test names read `weapons::name` and
   builds use that configuration and the tests don't), even with
   `MASHUP_PUSH_TESTS=0`.
 - Full suite, before a push or a merge to main (`.githooks/pre-push`, which
-  `MASHUP_PUSH_TESTS=0` skips): `cargo nextest run --features dev`, or
+  `MASHUP_PUSH_TESTS=0` skips): `cargo nextest run --features dev` (at most
+  6 tests at once and 2 heavy ones, `.config/nextest.toml`: memory, not CPU,
+  is the limit with other builds running), or
   `cargo test --features dev` without nextest (twice as slow: in one
   process the heavy tests contend). nextest runs each test in its own
   process; install it once with `cargo install cargo-nextest --locked` (or
