@@ -241,7 +241,9 @@ pub(super) fn plugin(app: &mut App) {
             if secs == 0.0 {
                 return Ok(None);
             }
-            let now = w.resource::<Time>().elapsed_secs_f64();
+            // The rules' clock (fixed ticks), which can run behind the
+            // frame clock when ticks are slow to simulate.
+            let now = w.resource::<Time<Fixed>>().elapsed_secs_f64();
             w.resource_mut::<RoundState>().restart_at = Some(now + secs);
             Ok(Some(format!("Game will restart in {secs} seconds")))
         },
@@ -461,6 +463,7 @@ fn start_round(world: &mut World, s: &RoundSettings, now: f64, fresh: bool) {
             With<Intent>,
             With<Health>,
             Without<crate::core::LocalPlayer>,
+            Without<crate::core::RemotePlayer>,
             Without<Hostage>,
         )>()
         .iter(world)

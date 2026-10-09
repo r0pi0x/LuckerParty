@@ -452,7 +452,8 @@ fn buy_now(commands: &mut Commands, what: String) {
         let Some(player) = w.query_filtered::<Entity, With<LocalPlayer>>().iter(w).next() else {
             return;
         };
-        if let Err(why) = crate::weapon::economy::buy(w, player, &what) {
+        // A network client asks the server, which answers a refusal.
+        if let Err(why) = crate::weapon::economy::buy_or_ask(w, player, &what) {
             w.write_message(super::chat::Hint(why));
         }
     });

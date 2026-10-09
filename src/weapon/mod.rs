@@ -69,6 +69,9 @@ impl Plugin for WeaponPlugin {
             .add_message::<WeaponEvent>()
             .add_message::<crate::map::RagdollShot>()
             .add_message::<PlaySound>()
+            // The rules' sounds (`map::GameSound`), played here.
+            .add_message::<crate::map::GameSound>()
+            .add_systems(FixedLast, crate::map::sound::relay_game_sounds)
             .add_systems(
                 FixedUpdate,
                 (
@@ -170,7 +173,8 @@ impl Plugin for WeaponPlugin {
             "1: +use on a dropped weapon you look at takes it, dropping the one in its slot (CS:GO's; CS:S has none).",
             |u| &mut u.0,
         );
-        app.add_message::<drop::DropRequested>();
+        app.add_message::<drop::DropRequested>()
+            .add_message::<economy::BuyRequested>();
         app.console_command("drop", "Drop the weapon you hold (G); walk over one to pick it up.", |w, _| {
             let player = local_player(w)?;
             if client(w) {
@@ -220,9 +224,8 @@ impl Plugin for WeaponPlugin {
             "buy <weapon>|vest|vesthelm|defuser, e.g. buy ak47 (costs money when you have some).",
             |w, a| {
                 let name = a.first().ok_or("buy <weapon>")?.clone();
-                server_only(w)?;
                 let player = local_player(w)?;
-                economy::buy(w, player, &name).map(Some)
+                economy::buy_or_ask(w, player, &name)
             },
         );
         // CS:S's ammo commands (`,` and `.` run buyammo1/2 by default);
@@ -233,9 +236,8 @@ impl Plugin for WeaponPlugin {
                 name,
                 &format!("Buy a box of ammo for your {gun} weapon (in a buy zone, in the buy time)."),
                 move |w, _| {
-                    server_only(w)?;
                     let player = local_player(w)?;
-                    economy::buy(w, player, name).map(Some)
+                    economy::buy_or_ask(w, player, name)
                 },
             );
         }

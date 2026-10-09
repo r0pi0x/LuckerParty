@@ -396,6 +396,21 @@ moved); the server's `status` ends with a `lagcomp:` line. `cargo test
 without compensation, rewind times, prediction errors while firing and
 the pellet comparison.
 
+Rules (`tests/it/net_rules.rs`): a client's `RoundState`, `BuyWindow`,
+`BombState`, `HostageTally`, `PlantedBomb` and its own `Money` are the
+server's, with times on the client's fixed clock: compare a time left
+(e.g. `RoundState::clock`, `PlantedBomb::explode_at` less
+`Time<Fixed>::elapsed`) with the server's at the same step (the client's
+runs about the one-way latency behind). `net::NetScore` on each
+character has the scoreboard's kills, deaths, ping and flags;
+`net::Notice` (a client's) the server's refusals; `net::ChatMessage`
+and `net::RadioCall` who read and heard what. Give `NetSim` clients names
+with `add_client(|w| w.resource_mut::<NetSettings>().name = ...)`; with
+`mashup_rounds 1` set before they join, they join the running round
+dead: `mp_restartgame 1` puts everyone in play. `cargo test --features
+dev --test it net_rules -- --nocapture` prints the clocks and
+scoreboards.
+
 In a game: the perf overlay (`mashup_perf 1`) and the F2 Perf tab show,
 while connected, `net:` (ping, loss, KB/s), `cmds:` (lead in ticks and
 its target, the clock's speed nudge and jumps, the server's buffer of
@@ -434,7 +449,15 @@ a bad link. To shoot each other: `setang <pitch> <yaw>` and `+attack`/`-attack`
 through each game's `mashup/console` (aim from the other's `Transform` as
 the client draws it, `world.query` on its `Name`), the host's health from
 its `LocalPlayer`'s `Health`, `+sv_showlagcompensation 1` on the host to
-log each rewind. The dedicated server:
+log each rewind. Cheat commands (`setpos`, `setang`, `noclip`, `god`,
+`give`, ...) need `+sv_cheats 1` on the host in a network game. A round
+on de_dust2: host `... -port 27031 +name Host +maxplayers 4 +sv_cheats 1
++mashup_rounds 1 +map de_dust2` (`+map cs_source:de_dust2` doesn't load
+from the command line), then `mp_restartgame 1` once the client is in;
+`buymenu`, `buy <weapon>`, `jointeam 2`, `say`/`say_team`,
+`+showscores`/`-showscores` and `screenshot` through each game's
+`mashup/console`. The client's `differences` shows the server's
+replicated values while connected; setting one says it can't. The dedicated server:
 `cargo run --features dev --bin mashup_server -- -port 27032 +map greybox
 +bot_add` (console on stdin: `status`, `bot_add`, `quit`). Logs show
 `listening on UDP ...`, `<name> joined`, `<name> left`, `disconnected:

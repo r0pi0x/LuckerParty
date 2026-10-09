@@ -23,7 +23,10 @@
 //! `NetRole` (core) says what this process is; `authoritative` systems
 //! (rules, bots, damage, logic) don't run on a client.
 
+pub mod chat;
 pub mod client;
+pub mod cvars;
+pub mod game;
 pub mod interp;
 pub mod memory;
 pub mod movers;
@@ -57,7 +60,7 @@ pub const PROTOCOL_ID: u64 = 0x4C55_434B_4552_5059;
 /// This build's network version. A server refuses clients of another
 /// version. Bump the suffix when the protocol changes in a way the
 /// replicon protocol hash can't see (a field added to a message).
-pub const NET_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/net4");
+pub const NET_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/net5");
 
 /// The owner id of the listen server's own player (`NetCharacter::owner`).
 /// Remote clients' ids are never 0.
@@ -305,7 +308,7 @@ pub struct OwnState {
     pub movement: String,
     /// The character's `Seed` (its command number offset).
     pub seed: u64,
-    /// The rules hold it still (dead, freeze time): its commands do nothing.
+    /// The rules hold it (dead): its commands do nothing but look.
     pub held: bool,
     /// The smallest lead of the commands heard since the last `OwnState`:
     /// the newest command's tick less the server's last tick when it
@@ -320,6 +323,19 @@ pub struct OwnState {
     pub ground: Option<u32>,
     /// Commands waiting for later ticks.
     pub buffered: u16,
+    /// Freeze time holds the player until this tick (it may look and pick
+    /// a weapon); `held` is the dead's hold (only the look).
+    pub frozen_until: Option<u64>,
+    /// Arming or defusing the bomb holds it in place (no moving or
+    /// jumping; `objectives::bomb`).
+    pub still: bool,
+    /// What the HUD shows of the player that isn't predicted: its money
+    /// (`weapon::economy::Money`), armour (amount, helmet), whether it has
+    /// a defusal kit, and since when (server tick) it arms the bomb.
+    pub money: Option<u32>,
+    pub armor: Option<(f32, bool)>,
+    pub kit: bool,
+    pub arming: Option<f64>,
     /// Ticks run without this client's command (its last one repeated),
     /// and commands that came after their tick, since it joined.
     pub missed: u32,
@@ -553,6 +569,205 @@ pub struct HitConfirm {
 #[derive(Message, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct DropRequest;
 
+// --- Game rules (slice 5): `game`, `chat`, `cvars`.
+
+/// The round and the objectives' totals, on one replicated entity the
+/// server keeps (`game::write_round`). Times are server ticks
+/// (fractional), which a client turns into its own clock
+/// (`game::ServerTime`).
+#[derive(Component, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct NetRound {
+    /// `round_phase::*`.
+    pub phase: u8,
+    /// Live: when it went live. Freeze: when it ends. Live: when time is
+    /// up. Over: when the next round starts.
+    pub since: f64,
+    pub until: f64,
+    /// Over: the winner's team number (None: a draw).
+    pub winner: Option<u8>,
+    pub number: u32,
+    /// Rounds won by the attackers and the defenders.
+    pub wins: [u32; 2],
+    /// Why buying is closed now (the rules' words); None: open.
+    pub buy_closed: Option<String>,
+    /// This round's bomb: `bomb_outcome::*`.
+    pub bomb: u8,
+    /// Hostages this round: total, rescued, killed.
+    pub hostages: [u32; 3],
+}
+
+/// `NetRound::phase`.
+pub mod round_phase {
+    pub const OFF: u8 = 0;
+    pub const FREEZE: u8 = 1;
+    pub const LIVE: u8 = 2;
+    pub const OVER: u8 = 3;
+}
+
+/// `NetRound::bomb`.
+pub mod bomb_outcome {
+    pub const NONE: u8 = 0;
+    pub const PLANTED: u8 = 1;
+    pub const EXPLODED: u8 = 2;
+    pub const DEFUSED: u8 = 3;
+}
+
+/// A character's line on the scoreboard (`game::write_scores`): kills,
+/// deaths, ping (ms, from the server's measure of its client's round
+/// trip; 0 for the host and bots) and `score_flags::*`.
+#[derive(Component, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct NetScore {
+    pub kills: u32,
+    pub deaths: u32,
+    pub ping: u16,
+    pub flags: u8,
+}
+
+/// `NetScore::flags`.
+pub mod score_flags {
+    pub const BOT: u8 = 1;
+    /// Carries the bomb (shown to teammates).
+    pub const BOMB: u8 = 1 << 1;
+    /// Has a defusal kit.
+    pub const KIT: u8 = 1 << 2;
+}
+
+/// The planted bomb (`objectives::bomb::PlantedBomb`), on its own
+/// replicated entity: where, its model, and its clock in server ticks.
+#[derive(Component, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct NetBomb {
+    pub origin: [f32; 3],
+    pub rotation: [f32; 4],
+    pub model: Option<String>,
+    pub site: Option<u32>,
+    pub planted: f64,
+    pub explode: f64,
+    pub timer: f32,
+    /// Who defuses it, since and until when (ticks), with a kit.
+    #[entities]
+    pub defuser: Option<Entity>,
+    pub defuse_since: f64,
+    pub defuse_until: f64,
+    pub defuse_kit: bool,
+    pub defused: bool,
+}
+
+/// A hostage (`objectives::hostages::Hostage`): which one, its model and
+/// whom it follows. With `NetCharacter` and `NetBody` like anyone.
+#[derive(Component, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct NetHostage {
+    pub index: u32,
+    pub model: Option<String>,
+    #[entities]
+    pub leader: Option<Entity>,
+}
+
+/// Client -> server: buy this (`buy <what>`, the buy menu, `buyammo1`).
+#[derive(Message, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct BuyRequest {
+    pub what: String,
+}
+
+/// Client -> server: put me on this team (`jointeam`: our team number,
+/// 1 terrorists, 2 counter-terrorists).
+#[derive(Message, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct TeamRequest {
+    pub team: u8,
+}
+
+/// Client -> server: say this to everyone or the team (`say`,
+/// `say_team`).
+#[derive(Message, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct SayRequest {
+    pub text: String,
+    pub team_only: bool,
+}
+
+/// Client -> server: a radio call (`coverme`, ...).
+#[derive(Message, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct RadioRequest {
+    pub command: String,
+}
+
+/// Server -> a client: why its request was refused (a buy, a team), as
+/// the game's hint.
+#[derive(Message, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct Notice {
+    pub text: String,
+}
+
+/// Server -> each player who reads it (`map::radio::sees_say`): a chat
+/// line, for the client to put in the game's format. A listen server's
+/// host gets its copy as this message too.
+#[derive(Message, Serialize, Deserialize, Clone, Debug, Default, PartialEq, bevy::ecs::entity::MapEntities)]
+pub struct ChatMessage {
+    #[entities]
+    pub sender: Option<Entity>,
+    pub name: String,
+    /// The sender's team number, if any; whether alive; where (the nav
+    /// mesh's place name).
+    pub team: Option<u8>,
+    pub alive: bool,
+    pub team_only: bool,
+    pub place: Option<String>,
+    pub text: String,
+}
+
+/// Server -> each player who hears it (`map::radio::hears`): a radio
+/// call, played as `core::Radio` here.
+#[derive(Message, Serialize, Deserialize, Clone, Debug, PartialEq, bevy::ecs::entity::MapEntities)]
+pub struct RadioCall {
+    #[entities]
+    pub sender: Entity,
+    pub command: String,
+}
+
+/// Server -> clients: an objective event (`objectives::ObjectiveEvent`,
+/// `hostages::HostagePenalty`) for the HUD's words and sounds: its kind
+/// (`game` numbers them), who, the other party, where, and the rest.
+#[derive(Message, Serialize, Deserialize, Clone, Debug, Default, PartialEq, bevy::ecs::entity::MapEntities)]
+pub struct ObjectiveNews {
+    pub kind: u8,
+    #[entities]
+    pub who: Option<Entity>,
+    #[entities]
+    pub other: Option<Entity>,
+    pub at: [f32; 3],
+    pub flag: bool,
+    pub site: Option<u32>,
+    pub amount: f32,
+    pub reason: u8,
+}
+
+/// Server -> clients: the round ended (`rules::rounds::RoundEnded`):
+/// the winner's team number and why (`game` numbers the reasons).
+#[derive(Message, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct RoundOver {
+    pub winner: Option<u8>,
+    pub reason: u8,
+}
+
+/// Server -> clients: a sound of the game's rules (`map::GameSound`: the
+/// bomb, hostages), played where the server played it.
+#[derive(Message, Serialize, Deserialize, Clone, Debug, Default, PartialEq, bevy::ecs::entity::MapEntities)]
+pub struct ServerSound {
+    pub entry: String,
+    pub at: Option<[f32; 3]>,
+    pub volume: Option<f32>,
+    pub pitch: Option<f32>,
+    #[entities]
+    pub source: Option<Entity>,
+    pub channel: Option<u8>,
+}
+
+/// Server -> clients: replicated cvars' values (`console::CvarScope::
+/// Replicated`): all of them when a client joins, then those that
+/// changed. A client sets them and refuses local changes while connected.
+#[derive(Message, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct CvarValues {
+    pub values: Vec<(String, String)>,
+}
+
 /// The network's systems, protocol and console commands. With
 /// `RepliconPlugins` and renet's; nothing runs until `listen` or
 /// `connect` (single player stays `NetRole::Standalone`).
@@ -615,6 +830,24 @@ impl Plugin for NetPlugin {
         .add_client_message::<DropRequest>(Channel::Ordered)
         .add_mapped_server_message::<Killed>(Channel::Ordered)
         .add_mapped_server_message::<HitConfirm>(Channel::Unordered)
+        // Game rules (slice 5).
+        .replicate::<NetRound>()
+        .replicate::<NetScore>()
+        .replicate::<NetBomb>()
+        .replicate::<NetHostage>()
+        .add_client_message::<BuyRequest>(Channel::Ordered)
+        .add_client_message::<TeamRequest>(Channel::Ordered)
+        .add_client_message::<SayRequest>(Channel::Ordered)
+        .add_client_message::<RadioRequest>(Channel::Ordered)
+        .add_server_message::<Notice>(Channel::Ordered)
+        .make_message_independent::<Notice>()
+        .add_mapped_server_message::<ChatMessage>(Channel::Ordered)
+        .add_mapped_server_message::<RadioCall>(Channel::Ordered)
+        .add_mapped_server_message::<ObjectiveNews>(Channel::Ordered)
+        .add_server_message::<RoundOver>(Channel::Ordered)
+        .add_mapped_server_message::<ServerSound>(Channel::Unreliable)
+        .add_server_message::<CvarValues>(Channel::Ordered)
+        .make_message_independent::<CvarValues>()
         .init_resource::<NetSettings>()
         .init_resource::<NetVersion>()
         .add_message::<NetEvent>()
@@ -627,6 +860,9 @@ impl Plugin for NetPlugin {
         movers::plugin(app);
         props::plugin(app);
         weapons::plugin(app);
+        game::plugin(app);
+        chat::plugin(app);
+        cvars::plugin(app);
         udp::plugin(app);
         memory::plugin(app);
         commands(app);

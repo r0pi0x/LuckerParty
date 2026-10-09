@@ -15,7 +15,7 @@ use crate::{
     console::resource_cvar,
     core::{Died, Explosion, Health, Intent, MovementState, RoundRestarts, SimSet, Team},
     map::{
-        PlaySound,
+        GameSound, PlaySound,
         entities::FireEntityOutput,
         loose::{LooseItem, ShownItem, SitOnOrigin},
     },
@@ -128,6 +128,18 @@ pub struct Arming {
     pub since: f64,
     pub weapon: Entity,
     clicks: usize,
+}
+
+impl Arming {
+    /// Arming as a network client shows it (the server's, on its own
+    /// clock): since when, no weapon.
+    pub fn shown(since: f64) -> Self {
+        Self {
+            since,
+            weapon: Entity::PLACEHOLDER,
+            clicks: 0,
+        }
+    }
 }
 
 /// On a character defusing the planted bomb (it holds still).
@@ -364,14 +376,14 @@ fn arm(world: &mut World) {
                     && let Some(s) = &rules.sounds.click
                 {
                     let at = world.get::<Transform>(e).map(|t| t.translation);
-                    world.write_message(PlaySound {
+                    world.write_message(GameSound(PlaySound {
                         pitch: None,
                         entry: s.clone(),
                         at,
                         volume: None,
                         source: Some(e),
                         channel: Some(crate::weapon::CHAN_WEAPON),
-                    });
+                    }));
                 }
             }
             ArmStep::Abort { left_zone } => {
@@ -452,10 +464,10 @@ fn plant(world: &mut World, who: Entity, weapon: Entity, site: Option<usize>, no
         state.planter = Some(who);
     }
     if let Some(s) = &rules.sounds.plant {
-        world.write_message(PlaySound::at(s.clone(), feet));
+        world.write_message(GameSound(PlaySound::at(s.clone(), feet)));
     }
     if let Some(s) = &rules.sounds.announce_planted {
-        world.write_message(PlaySound::ui(s.clone()));
+        world.write_message(GameSound(PlaySound::ui(s.clone())));
     }
     world.write_message(ObjectiveEvent::Planted { who, at: feet, site });
     fire_site(world, site, "BombPlanted", Some(who));
@@ -505,7 +517,7 @@ fn defuse(
     spatial: SpatialQuery,
     rules: Res<BombRules>,
     mut events: MessageWriter<ObjectiveEvent>,
-    mut play: MessageWriter<PlaySound>,
+    mut play: MessageWriter<GameSound>,
     mut commands: Commands,
     time: Res<Time>,
 ) {
@@ -579,14 +591,14 @@ fn defuse(
             });
             commands.entity(e).insert(Defusing);
             if let Some(s) = &rules.sounds.defuse_start {
-                play.write(PlaySound {
+                play.write(GameSound(PlaySound {
                     pitch: None,
                     entry: s.clone(),
                     at: Some(bt.translation),
                     volume: None,
                     source: Some(bomb_e),
                     channel: None,
-                });
+                }));
             }
             events.write(ObjectiveEvent::BeginDefuse { who: e, kit });
         }
@@ -602,7 +614,7 @@ fn tick_bomb(
     objectives: Res<MapObjectives>,
     mut state: ResMut<BombState>,
     mut events: MessageWriter<ObjectiveEvent>,
-    mut play: MessageWriter<PlaySound>,
+    mut play: MessageWriter<GameSound>,
     mut explosions: MessageWriter<Explosion>,
     mut outputs: MessageWriter<FireEntityOutput>,
     mut commands: Commands,
@@ -633,10 +645,10 @@ fn tick_bomb(
             commands.entity(d.who).try_remove::<Defusing>();
             state.outcome = Some(BombOutcome::Defused);
             if let Some(s) = &rules.sounds.defuse_finish {
-                play.write(PlaySound::at(s.clone(), at));
+                play.write(GameSound(PlaySound::at(s.clone(), at)));
             }
             if let Some(s) = &rules.sounds.announce_defused {
-                play.write(PlaySound::ui(s.clone()));
+                play.write(GameSound(PlaySound::ui(s.clone())));
             }
             events.write(ObjectiveEvent::Defused { who: d.who });
             outputs.write_batch(out);
@@ -668,14 +680,14 @@ fn tick_bomb(
             let remaining = (bomb.explode_at - now) as f32;
             bomb.next_beep = now + beep_interval(remaining, bomb.timer) as f64;
             if let Some(s) = &rules.sounds.beep {
-                play.write(PlaySound {
+                play.write(GameSound(PlaySound {
                     pitch: None,
                     entry: s.clone(),
                     at: Some(at),
                     volume: None,
                     source: Some(e),
                     channel: None,
-                });
+                }));
             }
             events.write(ObjectiveEvent::Beep { at });
         }
@@ -691,12 +703,12 @@ fn kits(
     takers: Query<(Entity, &Transform, &Health, Option<&Team>), (With<Intent>, Without<DefuseKit>)>,
     rules: Res<BombRules>,
     mut events: MessageWriter<ObjectiveEvent>,
-    mut play: MessageWriter<PlaySound>,
+    mut play: MessageWriter<GameSound>,
     mut commands: Commands,
 ) {
     for (_, t) in &added {
         if let Some(s) = &rules.sounds.kit {
-            play.write(PlaySound::at(s.clone(), t.translation));
+            play.write(GameSound(PlaySound::at(s.clone(), t.translation)));
         }
     }
     let mut taken = Vec::new();
