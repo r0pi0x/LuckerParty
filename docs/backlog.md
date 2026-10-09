@@ -69,6 +69,15 @@ plan when work starts; delete them when done.
 - Options faithful to CS:S: any other option CS:S shows that we lack;
   defaults as CS:S's.
 
+- Pain sounds when losing health: play CS:S's damage sounds for the
+  local player and others (positional), whatever the install's sound
+  scripts give for each case: bullet hits on flesh, kevlar and helmet,
+  headshots, fall damage, burning/drowning if any, and the death sounds;
+  who hears what (the victim, the attacker, everyone nearby) and any
+  per-player cooldown as CS:S does (check against a capture or a spec;
+  CS:S has no voiced pain grunts for bullets, as we believe). Over the
+  network the server sends them like the other damage events.
+
 - Decals persist across rounds (bullet holes, blood), as we believe CS:S
   does (players bind `r_cleardecals`, now there; `mashup_round_cleardecals
   1` clears them each round). Left: confirm the game keeps them.
