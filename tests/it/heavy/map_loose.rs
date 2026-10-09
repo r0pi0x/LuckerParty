@@ -93,7 +93,10 @@ fn crowd_throws(movement: &'static str) {
         let weapon = sim.app.world().get::<Loose>(item).unwrap().weapon;
         loose.push((item, weapon));
     }
-    sim.seconds(1.0);
+    // Landed, and still inside the 1 s touch delay (at 1 s one lying at
+    // its dropper's feet may rightly be taken back: the drop is stamped
+    // on the tick's clock now, not a frame ahead of it).
+    sim.seconds(0.9);
     let mut thrown = 0;
     for (k, &p) in players.iter().enumerate() {
         let moved = sim.position(p) - before[k];
