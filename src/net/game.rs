@@ -11,7 +11,7 @@
 //!   `RoundOver` (the banner and the announcer).
 //! - **Scores** (`NetScore` on every character): kills, deaths, ping, a
 //!   bot, the bomb and a defusal kit, for the scoreboard. A client's own
-//!   money, armour, kit and arming come in its `OwnState`: money is shown
+//!   money, armour and kit come in its `OwnState`: money is shown
 //!   only to its owner, as in CS:S.
 //! - **Requests**: buying (`BuyRequest`) and joining a team
 //!   (`TeamRequest`) are the server's to check (buy zone, buy time, money,

@@ -235,7 +235,8 @@ pub fn connect(world: &mut World, server: SocketAddr) -> Result<(), String> {
         client_id: id,
         protocol_id: PROTOCOL_ID,
         server_addr: server,
-        user_data: None,
+        // The password (`password`) for a server that wants one.
+        user_data: Some(super::query::user_data(&world.resource::<super::query::JoinPassword>().0)),
     };
     let transport = super::udp::UdpClient::new(now, auth, socket).map_err(|e| e.to_string())?;
     start(world, id)?;

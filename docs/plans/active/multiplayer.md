@@ -19,7 +19,9 @@ cvars and `sv_cheats`; slice 6 done (2026-10-09): bots on the server
 with `bot_quota`; slice 7 done (2026-10-09): `changelevel` takes clients
 along, late joiners get the whole state, maps downloaded (connection or
 `sv_downloadurl`) and checked, the loading dialog for joining and map
-changes. Recommendation:
+changes; slice 8 done (2026-10-09): server queries on the game port
+(A2S_INFO's layout), LAN discovery, the Find Servers dialog with
+favourites, history and passwords. Recommendation:
 **bevy_replicon + renet (netcode over UDP)** for transport and
 replication; **our own Source-style prediction, interpolation and lag
 compensation** on top. Slices below; slice 0 is refactoring that pays off
@@ -1120,11 +1122,110 @@ with tests passing and something to see.
        world's impact decals since the map loaded and sends them when a
        client comes into the game. Test: `net_maps::a_late_joiner_gets_
        the_decals`.
-8. **[ ] Find Servers, LAN discovery, direct connect UI** (M, low). LAN
+8. **[x] Find Servers, LAN discovery, direct connect UI** (M, low). LAN
    broadcast query (a small UDP info request on the server port, like
    Source's A2S_INFO in spirit), the Find Servers page in the GameUI
    look (`openserverbrowser`, greyed today), favourites and history,
    password prompt.
+   Progress (2026-10-09):
+   - [x] **Query protocol** (`net::query`), on the server's game port,
+     beside the game connection: the server's socket is ours now
+     (`net::udp::UdpServer`, renetcode's netcode server plus the query
+     answers): a packet starting `FF FF FF FF` is a query (no netcode
+     packet starts with `FF`), anything else netcode's. The packets are
+     A2S_INFO's as the Valve Developer Wiki's public "Server queries" page
+     documents them, little-endian, strings NUL-terminated:
+     - request `FF FF FF FF 'T' "Source Engine Query\0"`, then the same
+       with the 4-byte challenge appended;
+     - challenge reply `FF FF FF FF 'A' <i32>` (never bigger than the
+       request: a spoofed source address gains nothing); the challenge is
+       a keyed hash of the asker's address and a 30 s window (the current
+       and the previous window are good), so the server keeps nothing per
+       request;
+     - info reply `FF FF FF FF 'I'`, protocol 17, name (`hostname`), map
+       (without the game prefix), folder `mashup`, game `Lucker Party`,
+       app id 0, players (bots included), max players (`maxplayers`),
+       bots, type `d` (dedicated: no player of its own) or `l` (listen),
+       OS `l`/`w`/`m`, visibility 1 with `sv_password`, VAC 0, version
+       (`NET_VERSION`), extra data flag `0x80` port, `0x10` an instance
+       id (random per server process, in Source's SteamID field: one
+       server heard at its LAN address and on loopback is listed once),
+       `0x20` keywords (the map's game, `cs_source`).
+     Rate limits (`query::Responder`): 8 answers a second per address
+     (16 saved up), 200 a second in total (400 saved up); challenges count.
+     The client (`ServerQueries`, one socket) measures the ping as the
+     round trip of the challenged request; it asks twice, 1.2 s apart,
+     then marks the server not responding. Replies whose folder isn't
+     `mashup` (a Source server on a scanned port) are left out. Only
+     A2S_INFO: no player list (`A2S_PLAYER`) or rules (`A2S_RULES`) yet.
+     `serverinfo <ip[:port]>` and `lanscan` print what they hear; the
+     server's `status` counts answers.
+   - [x] **LAN discovery**: the request broadcast to every port of
+     `net_lan_ports` (27015-27020, Source's LAN tab) at each address of
+     `net_lan_broadcast` (255.255.255.255) and sent to 127.0.0.1 on the
+     same ports; servers answer the broadcast with a challenge from their
+     own address, asked from there on as any other; the scan listens
+     1.5 s. Linux and Windows (`SO_BROADCAST` on the client's socket;
+     servers bound to 0.0.0.0 hear broadcasts). Windows: a broadcast
+     leaves by the default route's interface only, so with several
+     adapters add the LAN's directed broadcast to `net_lan_broadcast`;
+     the server's firewall rule for its game port covers queries
+     (docs/OBSERVABILITY.md).
+   - [x] **The Find Servers dialog** (`client::server_browser`), from the
+     install's `servers/DialogServerBrowser.res`, `InternetGamesPage.res`
+     (and `_Filters`), `DialogAddServer.res`, `DialogServerPassword.res`,
+     `serverbrowser_english.txt` and the column icons (read at run time
+     through `GameUi`); built-in sizes and words without the install.
+     Tabs Internet (greyed: there is no master server to list internet
+     servers; a master server of our own would fill it), Favorites, History, Lan. Columns password,
+     bots, "Servers (n)", game, players, map, latency (History: last
+     played); a header click sorts, again reverses (unsorted: by
+     latency). Filters as the original's panel: map, latency, max
+     players, has users playing, not full, no password (game, location
+     and anti-cheat shown greyed). Refresh (Lan: a new scan; Favorites,
+     History: each address asked), Quick refresh (the listed servers
+     again), Add a Server (the address added, or its servers found and
+     the one picked added), Connect, double-click, Enter; a server with a
+     password asks for it first (`password <it>; connect <addr>`). The
+     browser closes as it connects; the connect flow (slices 6-7, the
+     loading dialog) is the console's. Favorites and History in the cfg
+     folder's `serverbrowser.vdf` (KeyValues: name, address, last
+     played); a joined server goes first in History (100 kept). The main
+     menu's Find Servers opens it (`openserverbrowser [tab]`).
+     Ours beyond the original: Delete takes the selected server off
+     Favorites or History (CS:S: its right-click menu); double-clicking
+     the server found in Add a Server joins it (a connect to an address
+     from the browser).
+   - [x] **Passwords**: `sv_password` on the server, `password` on the
+     client sent in netcode's user data (no protocol change); a wrong
+     one is refused with "Bad password.".
+   - [x] Tests: `net::query` unit tests (the documented layout, round
+     trips, challenges per address and window, rate limits, user data);
+     `client::server_browser` unit tests (sorting, filters, connect,
+     double-click, password dialog, Internet greyed, Add a Server,
+     history order, the saved file's round trip);
+     `tests/it/net_query.rs`: a server answers with its name, map,
+     players, bots, max, dedicated or listen, password, version, port and
+     a ping, and its game connection on the same port checks the
+     password; a LAN scan of two ports finds the two servers there once
+     each, and leaves out another game's; favourites and history written
+     and read back.
+   - [x] Live (2026-10-09): two dedicated servers on 27051 ("LAN one",
+     greybox, a bot) and 27052 ("LAN two", de_dust2, `sv_password`), a
+     client with `+net_lan_ports 27051-27052 +openserverbrowser lan`: both
+     listed with players, bots, maps, the lock and bot icons, latency
+     0-21 ms; sorting, the filters panel, History after joining LAN one
+     (double-click), the password dialog, then de_dust2 joined with the
+     password. An independent A2S_INFO client (Python, the wiki's layout)
+     read both servers. On this box a broadcast doesn't come back to the
+     local servers (the host firewall drops it; unicast to the LAN address
+     answers), so the scan found them on 127.0.0.1: broadcast between two
+     machines (Windows) is still to be seen.
+   - Not yet: Internet (a master server), the server's
+     player list and rules (`A2S_PLAYER`, `A2S_RULES`; Source's Game Info
+     dialog and right-click menu), the browser's filters and column
+     widths saved, a LAN scan refreshing on its own, the add server
+     dialog's list for more than one server per address.
 9. **[-] Lucker Party lobby and party flow** (dropped for now, by the
    user's decision: multiplayer stays standard CS:S — servers, Find
    Servers, `connect`, map rotation by the server's cvars). Revisit if

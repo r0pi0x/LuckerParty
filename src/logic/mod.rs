@@ -11,14 +11,20 @@
 //! commands). Games feed it through `MapData::entities`.
 
 pub mod ambient;
+pub mod anchors;
+pub mod beams;
 pub mod breakables;
+pub mod camera;
 mod bridge;
 pub mod classes;
 pub mod fire;
+pub mod game;
 pub mod hud;
 pub mod movers;
+pub mod physics;
 pub mod prop_damage;
 pub mod props;
+pub mod templates;
 pub mod triggers;
 pub mod value;
 pub mod visuals;
@@ -29,6 +35,6 @@ mod tests;
 
 pub(crate) use bridge::set_node_shown;
 pub use bridge::{CarriedMover, Logic, LogicPlugin, LogicSet, brush_to_engine, carry_player, mover_brushes_at};
-pub use hud::{HudMessage, HudMessages};
+pub use hud::{HudEvent, HudMessage, HudMessages, HudShow, ScreenFade, ScreenFades};
 pub use value::Value;
 pub use world::{BrushCollision, Collision, Delivery, Effect, EntId, LogicWorld, NoCollision, Player, Who};

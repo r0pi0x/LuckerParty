@@ -63,6 +63,7 @@ fn entity(pairs: &[(&str, &str)], hulls: Vec<MapHull>, mover: bool) -> MapEntity
         keyvalues: pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
         hulls,
         mover,
+        physics: None,
     }
 }
 
@@ -362,7 +363,7 @@ fn a_late_joiner_gets_the_whole_state() {
     let wins = w.resource::<RoundState>().wins;
     let money = w.query_filtered::<&Money, With<mashup::core::LocalPlayer>>().single(w).unwrap().0;
     let movers: Vec<NetMover> = w.query::<&NetMover>().iter(w).cloned().collect();
-    let scores: Vec<(String, u32, u32)> = w
+    let scores: Vec<(String, i32, u32)> = w
         .query::<(&NetCharacter, &NetScore)>()
         .iter(w)
         .map(|(c, s)| (c.name.clone(), s.kills, s.deaths))

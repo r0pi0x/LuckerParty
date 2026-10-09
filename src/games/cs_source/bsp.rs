@@ -185,7 +185,9 @@ pub fn load_level_bytes(mount: &Mount, name: &str, bytes: Vec<u8>, hdr_level: u8
     super::sprites::add_sprites(&bsp, &mut materials, &mut data);
     super::dust::add_dust(&bsp, &mut materials, &mut data);
     super::steam::add_steam(&bsp, &mut materials, &mut data);
+    super::beams::add_beams(&bsp, &mut materials, &mut data);
     let surfaces = super::surfaceprops::SurfaceProps::load(&mut materials);
+    brush_bodies(&bytes, &surfaces, &mut data);
     timer.lap("ropes, sprites, dust, steam");
     report(0.55, "LoadingProgress_LoadResources");
     // Character bodies: a terrorist and a counter-terrorist model (CS:S
@@ -743,6 +745,10 @@ pub const MOVERS: &[&str] = &[
     "func_rotating",
     "func_tracktrain",
     "func_brush",
+    "func_wall_toggle",
+    "func_conveyor",
+    "func_physbox",
+    "func_physbox_multiplayer",
 ];
 
 /// Brush entities that render or collide. Volumes (triggers, buy zones,
@@ -774,7 +780,10 @@ pub fn brush_entities(bsp: &Bsp) -> Vec<BrushEntity> {
         .entities
         .iter()
         .filter(|e| {
-            e.prop("classname").is_some_and(|c| MOVERS.contains(&c))
+            // Placed weapons move too (picked up, dropped: their children
+            // follow, `map::entities::anchor_class`).
+            e.prop("classname")
+                .is_some_and(|c| MOVERS.contains(&c) || crate::map::entities::anchor_class(c))
                 && e.prop("parentname").is_none_or(|p| p.is_empty())
         })
         .filter_map(|e| e.prop("targetname").map(|n| n.to_ascii_lowercase()))
@@ -1589,9 +1598,124 @@ pub fn map_entities(bsp: &Bsp, leaves: &[RawLeaf]) -> Vec<crate::map::MapEntity>
                 keyvalues,
                 hulls,
                 mover,
+                physics: None,
             }
         })
         .collect()
+}
+
+/// The physics collision lump (public BSP v20 description, lump 29): per
+/// brush model, `int model, data size, key data size, solid count`, the
+/// collision data, then a text block of "solid" sections carrying the
+/// compiler's "mass" and "surfaceprop"; a model of -1 ends the list.
+/// Returns each model's total mass (kg) and first surface property.
+pub fn brush_model_physics(bytes: &[u8]) -> std::collections::HashMap<usize, (f32, String)> {
+    let lump = super::ambient::lump(bytes, 29);
+    let mut out = std::collections::HashMap::new();
+    let int = |at: usize| lump.get(at..at + 4).map(|b| i32::from_le_bytes(b.try_into().unwrap()));
+    let mut at = 0;
+    while let (Some(model), Some(data), Some(keys)) = (int(at), int(at + 4), int(at + 8)) {
+        if model < 0 || data < 0 || keys < 0 {
+            break;
+        }
+        let text_at = at + 16 + data as usize;
+        let Some(text) = lump.get(text_at..text_at + keys as usize) else { break };
+        let text = String::from_utf8_lossy(text);
+        let t = super::surfaceprops::tokens(&text);
+        let (mut mass, mut surface) = (0.0f32, None);
+        for w in t.windows(2) {
+            if w[0].eq_ignore_ascii_case("mass") {
+                mass += w[1].parse::<f32>().unwrap_or(0.0);
+            } else if w[0].eq_ignore_ascii_case("surfaceprop") && surface.is_none() {
+                surface = Some(w[1].clone());
+            }
+        }
+        out.insert(model as usize, (mass, surface.unwrap_or_else(|| "default".into())));
+        at = text_at + keys as usize;
+    }
+    out
+}
+
+/// func_physbox(_multiplayer) bodies (specs/source/physics_brushes.md 1-3):
+/// the compiler's mass from the BSP (else the volume of its hulls times
+/// the default surface's density), times "massScale", or an
+/// "overridescript" mass; friction and elasticity from its surface
+/// property; pinned by "Motion Disabled" or the enable thresholds; asleep
+/// with "Start Asleep"; the multiplayer kind walked through and shoved by
+/// players. Its mass goes to the logic too (`PROP_MASS_KEY`).
+fn brush_bodies(bytes: &[u8], surfaces: &super::surfaceprops::SurfaceProps, data: &mut MapData) {
+    const START_ASLEEP: u32 = 4096;
+    const MOTION_DISABLED: u32 = 32768;
+    let stored = brush_model_physics(bytes);
+    for e in data.entities.iter_mut() {
+        let class = e.classname().to_ascii_lowercase();
+        if class != "func_physbox" && class != "func_physbox_multiplayer" {
+            continue;
+        }
+        let num = |k: &str| e.get(k).and_then(|v| v.trim().parse::<f32>().ok()).unwrap_or(0.0);
+        let model = e
+            .get("model")
+            .and_then(|m| m.strip_prefix('*'))
+            .and_then(|m| m.parse::<usize>().ok());
+        let (mut mass, surface) = match model.and_then(|m| stored.get(&m)) {
+            Some((m, s)) => (*m, s.clone()),
+            None => {
+                let density = surfaces
+                    .text("default", "density")
+                    .and_then(|d| d.parse::<f32>().ok())
+                    .unwrap_or(2000.0);
+                let volume: f32 = e
+                    .hulls
+                    .iter()
+                    .map(|h| {
+                        let (lo, hi) = h
+                            .points
+                            .iter()
+                            .fold((Vec3::MAX, Vec3::MIN), |(a, b), p| (a.min(*p), b.max(*p)));
+                        let s = (hi - lo).max(Vec3::ZERO);
+                        s.x * s.y * s.z
+                    })
+                    .sum();
+                ((volume * density * 1.638_706_4e-5).min(50_000.0), "default".to_string())
+            }
+        };
+        let scale = num("massScale");
+        if scale > 0.0 {
+            mass *= scale;
+        }
+        // "overridescript": comma-separated key,value pairs.
+        if let Some(script) = e.get("overridescript") {
+            let parts: Vec<&str> = script.split(',').map(str::trim).collect();
+            for kv in parts.chunks(2) {
+                if let [k, v] = kv
+                    && k.eq_ignore_ascii_case("mass")
+                {
+                    mass = v.parse().unwrap_or(mass);
+                }
+            }
+        }
+        let flags = e.get("spawnflags").and_then(|v| v.trim().parse::<u32>().ok()).unwrap_or(0);
+        let s = surfaces.get(&surface);
+        let mass = mass.clamp(0.1, 50_000.0);
+        e.physics = Some(crate::map::MapPhysics {
+            mass,
+            friction: s.friction,
+            elasticity: s.elasticity,
+            // physics_brushes.md constants: physboxes damp by 0.1 both
+            // ways (the thin-rod rule isn't applied: our bodies are
+            // boxes of hulls).
+            damping: 0.1,
+            rotdamping: 0.1,
+            push: if class == "func_physbox_multiplayer" {
+                crate::map::PushAway::NonSolid
+            } else {
+                crate::map::PushAway::Collide
+            },
+            frozen: flags & MOTION_DISABLED != 0 || num("damagetoenablemotion") > 0.0 || num("forcetoenablemotion") > 0.0,
+            asleep: flags & START_ASLEEP != 0,
+        });
+        e.keyvalues.push((crate::map::entities::PROP_MASS_KEY.into(), mass.to_string()));
+    }
 }
 
 /// `brush_volumes_in` in Source space (units, Z up): corner points and

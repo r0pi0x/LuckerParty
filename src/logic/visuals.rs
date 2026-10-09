@@ -29,6 +29,13 @@ pub enum PartKind {
     Steam,
     /// env_soundscape(_proxy): picked by the listener while on (enabled).
     Soundscape,
+    /// point_spotlight (LightOn/LightOff), env_laser and env_beam
+    /// (TurnOn/TurnOff/Toggle; `beams`).
+    Beam,
+    /// env_lightglow: always drawn.
+    Glow,
+    /// env_spark: sparks while on (`beams`).
+    Spark,
 }
 
 /// A sprite or dust volume: shown (sprites) or spawning (dust) while on.
@@ -36,6 +43,8 @@ pub enum PartKind {
 pub struct Part {
     pub kind: PartKind,
     pub on: bool,
+    /// A laser's or beam's damage and touch state (`beams`).
+    pub zap: Option<Box<super::beams::Zap>>,
 }
 
 /// A light with a switchable style.
@@ -55,8 +64,15 @@ pub(super) fn spawn_part(w: &LogicWorld, id: EntId, kind: PartKind) -> Part {
             !e.kv("StartDisabled").is_some_and(|v| v.trim_start().starts_with('1'))
         }
         PartKind::Steam => e.kv_i("InitialState") == 1,
+        PartKind::Beam => super::beams::starts_on(e),
+        PartKind::Glow => true,
+        PartKind::Spark => e.has_flag(super::beams::SF_SPARK_START_ON),
     };
-    Part { kind, on }
+    Part {
+        kind,
+        on,
+        zap: super::beams::zap(e),
+    }
 }
 
 /// A light's style (32..=63 switchable) and its starting state in the
@@ -78,6 +94,9 @@ pub(super) fn spawn_light(w: &mut LogicWorld, id: EntId) -> Light {
 /// Sprite, dust and light inputs; false when not one of them.
 pub(super) fn input(w: &mut LogicWorld, id: EntId, input: &str, _value: &Value) -> bool {
     match w.get(id).map(|e| e.class.clone()) {
+        Some(Class::Part(p)) if matches!(p.kind, PartKind::Beam | PartKind::Glow | PartKind::Spark) => {
+            super::beams::input(w, id, input)
+        }
         Some(Class::Part(p)) => {
             let on = match (p.kind, input) {
                 (PartKind::Sprite, "showsprite")

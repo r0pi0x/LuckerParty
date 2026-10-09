@@ -482,6 +482,20 @@ impl Toggle {
         t
     }
 
+    /// func_wall_toggle (specs/source/game_entities.md 7): a wall shown
+    /// and solid while on; spawnflag 1 starts it off; Toggle (or Use)
+    /// flips it.
+    pub(super) fn spawn_wall_toggle(w: &mut LogicWorld, id: EntId) -> Toggle {
+        let e = w.get(id).unwrap();
+        let mut t = Toggle {
+            push: Pusher::at(e.origin, e.angles),
+            enabled: !e.has_flag(1),
+            solidity: 0,
+        };
+        t.apply();
+        t
+    }
+
     fn apply(&mut self) {
         self.push.visible = self.enabled;
         self.push.solid = match self.solidity {
@@ -521,7 +535,13 @@ pub(super) fn activate_attached(w: &mut LogicWorld, id: EntId) {
     let name = w.get(id).and_then(|e| e.kv("parentname")).unwrap_or("").to_string();
     let parent = w.find(&name).filter(|p| w.get(*p).and_then(|e| pusher(&e.class)).is_some());
     let Some(p) = parent else {
-        w.log.push(format!("parented brush: no moving parent '{name}'"));
+        // Placed weapons and physics brushes move it (`anchors`).
+        let anchored = w.find(&name).and_then(|p| w.get(p)).is_some_and(|p| {
+            crate::map::entities::anchor_class(&p.classname) || super::prop_damage::is_physbox(&p.classname)
+        });
+        if !anchored {
+            w.log.push(format!("parented brush: no moving parent '{name}'"));
+        }
         w.refresh_solid(id);
         return;
     };
@@ -563,6 +583,7 @@ pub fn pusher(class: &Class) -> Option<&Pusher> {
         Class::Train(t) => Some(&t.push),
         Class::Brush(t) => Some(&t.push),
         Class::PropDoor(d) => Some(&d.push),
+        Class::Conveyor(c) => Some(&c.push),
         _ => None,
     }
 }
@@ -578,6 +599,7 @@ fn pusher_mut(class: &mut Class) -> Option<&mut Pusher> {
         Class::Train(t) => Some(&mut t.push),
         Class::Brush(t) => Some(&mut t.push),
         Class::PropDoor(d) => Some(&mut d.push),
+        Class::Conveyor(c) => Some(&mut c.push),
         _ => None,
     }
 }

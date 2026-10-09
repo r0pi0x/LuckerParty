@@ -13,7 +13,11 @@
 //! font file from `CustomFontFiles`); the loading dialog
 //! (`resource/LoadingDialogNoBanner.res`) and the interface sounds
 //! (`sound/ui/buttonrollover.wav`, `buttonclick.wav`,
-//! `buttonclickrelease.wav`). The install has no menu music: CS:S's
+//! `buttonclickrelease.wav`); the server browser (Find Servers): its
+//! layouts under `servers/` (`DialogServerBrowser.res`,
+//! `InternetGamesPage.res` and its `_Filters` version, `DialogAddServer.res`,
+//! `DialogServerPassword.res`), words (`serverbrowser_english.txt`) and
+//! column icons (`icon_password.tga`, `icon_bots.tga`). The install has no menu music: CS:S's
 //! folders hold no `sound/music/` or startup track of its own (only
 //! Half-Life 2's, under `hl2/`), so the menu is silent but for these.
 //!
@@ -224,6 +228,20 @@ const UI_SOUNDS: [(UiSound, &str); 3] = [
     (UiSound::Release, "sound/ui/buttonclickrelease.wav"),
 ];
 
+/// The server browser's layouts (Find Servers; under `platform/`): name,
+/// file.
+const SERVER_LAYOUTS: [(&str, &str); 5] = [
+    ("dialog", "servers/dialogserverbrowser.res"),
+    ("page", "servers/internetgamespage.res"),
+    ("page_filters", "servers/internetgamespage_filters.res"),
+    ("add", "servers/dialogaddserver.res"),
+    ("password", "servers/dialogserverpassword.res"),
+];
+
+/// The server browser's words and icons.
+const SERVER_STRINGS: &str = "servers/serverbrowser_english.txt";
+const SERVER_ICONS: [&str; 4] = ["password", "bots", "password_column", "bots_column"];
+
 /// The main menu's backgrounds: 4:3, widescreen.
 const BACKGROUNDS: [&str; 2] = [
     "materials/console/background01.vtf",
@@ -271,6 +289,16 @@ fn decode_vtf(bytes: &[u8]) -> Option<UiImage> {
         .ok()
         .and_then(|v| v.highres_image.decode(0).ok())
         .map(|i| i.to_rgba8())?;
+    Some(UiImage {
+        width: image.width(),
+        height: image.height(),
+        rgba8: image.into_raw(),
+    })
+}
+
+/// A Targa picture as RGBA8.
+fn decode_tga(bytes: &[u8]) -> Option<UiImage> {
+    let image = image::load_from_memory_with_format(bytes, image::ImageFormat::Tga).ok()?.to_rgba8();
     Some(UiImage {
         width: image.width(),
         height: image.height(),
@@ -347,6 +375,24 @@ pub fn load(mount: &Mount) -> Option<GameUi> {
         let root = read_res_pc(&mut read, file)?;
         Some(super::vgui::layout(&root, &strings, &ui.colors, &mut |_| None))
     });
+    // The server browser: its own words first, then its layouts.
+    if let Some(text) = read(SERVER_STRINGS) {
+        for (k, v) in super::radio::localization(&text) {
+            strings.entry(k).or_insert(v);
+        }
+    }
+    for (name, file) in SERVER_LAYOUTS {
+        if let Some(root) = read_res_pc(&mut read, file) {
+            let layout = super::vgui::layout(&root, &strings, &ui.colors, &mut |_| None);
+            ui.servers.insert(name.to_string(), layout);
+        }
+    }
+    for name in SERVER_ICONS {
+        let path = format!("servers/icon_{name}.tga");
+        if let Some(pic) = mount.read(&path).ok().and_then(|b| decode_tga(&b)) {
+            ui.server_icons.insert(name.to_string(), pic);
+        }
+    }
     ui.strings = strings;
     for (sound, file) in UI_SOUNDS {
         if let Some(clip) = mount.read(file).ok().and_then(|b| super::wav::decode(&b).ok()) {

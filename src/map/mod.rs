@@ -25,8 +25,11 @@ pub mod entities;
 pub mod fire;
 pub mod fog;
 pub use entities::{MapBrushEntity, MapEntities, MapEntity, MapHull};
+pub mod beams;
 pub mod breakables;
 pub mod contact_filter;
+pub mod controllers;
+pub mod copies;
 pub use breakables::{
     BreakProp, BrushPanes, FallingPane, GlassImpact, GlassShatter, MapBreak, MapBreakPiece, PanePart, SpawnGibs,
 };
@@ -1278,6 +1281,10 @@ pub struct MapData {
     pub dust: Vec<MapDust>,
     /// Steam jets (env_steam).
     pub steam: Vec<steam::MapSteam>,
+    /// Beams (point_spotlight, env_laser, env_beam) and light glows
+    /// (env_lightglow): `beams`.
+    pub beams: Vec<beams::MapBeam>,
+    pub glows: Vec<beams::MapGlow>,
     pub ropes: Vec<MapRope>,
     /// Which sky each part of the map can see (Source: BSP leaf flags). When
     /// set, the camera draws the sky only from places that see it, and
@@ -1898,6 +1905,7 @@ impl Plugin for MapPlugin {
         }
         ragdoll::plugin(app);
         app.add_plugins(light_styles::LightStylesPlugin);
+        app.add_plugins(controllers::ControllersPlugin);
         app.add_plugins(sound::SoundPlugin)
             .init_resource::<ShowLocalBody>()
             .init_resource::<vis::NoVis>()
@@ -1955,6 +1963,7 @@ impl Plugin for MapPlugin {
                     (light_styles::relight, light_styles::animate).chain(),
                     apply_prop_looks,
                     animate_props,
+                    beams::follow_eye.after(switch_parts).before(glow_visibility),
                 ),
             )
             .add_systems(
@@ -2070,6 +2079,7 @@ fn spawn_map(
     mut shadow_materials: Option<ResMut<Assets<shadows::ShadowMaterial>>>,
     mut water_materials: Option<ResMut<Assets<water::WaterMaterial>>>,
     mut bindposes: Option<ResMut<Assets<bevy::mesh::skinning::SkinnedMeshInverseBindposes>>>,
+    mut beam_materials: Option<ResMut<Assets<beams::BeamMaterial>>>,
 ) {
     let data = &pending.0;
     let view = pending.1;
@@ -2159,11 +2169,31 @@ fn spawn_map(
 
     // Mover brush entities: a node each (placed by origin and angles), with
     // a kinematic collider; their meshes are spawned under it below.
+    // Anchors (placed weapons with entities parented to them) get a node
+    // too, which their props ride and the weapon layer moves.
+    let anchors = entities::anchor_entities(&data.entities);
     let entity_nodes: Vec<Option<Entity>> = data
         .entities
         .iter()
         .enumerate()
         .map(|(i, e)| {
+            if anchors[i] && !e.mover {
+                let home = Transform::from_translation(entities::entity_to_engine(e.origin(), data.entity_scale))
+                    .with_rotation(entities::rotation_to_engine(entities::entity_rotation(e.angles())));
+                return Some(
+                    commands
+                        .spawn((
+                            Name::new(format!("Anchor {i} ({})", e.classname())),
+                            MapPart,
+                            entities::MapAnchor(i),
+                            home,
+                            Visibility::default(),
+                            interp::Interpolated::default(),
+                            ChildOf(root),
+                        ))
+                        .id(),
+                );
+            }
             if !e.mover {
                 return None;
             }
@@ -2180,8 +2210,33 @@ fn spawn_map(
                 Visibility::default(),
                 ChildOf(root),
             ));
-            if let Some(collider) = collider {
-                node.insert((MapBrushCollider, RigidBody::Kinematic, collider, contact_filter::hooks()));
+            match (collider, &e.physics) {
+                // A physics brush (func_physbox): a rigid body like a
+                // physics prop, pinned while its motion is disabled.
+                (Some(collider), Some(p)) => {
+                    let points = e.hulls.iter().flat_map(|h| &h.points).map(|q| entities::entity_to_engine(*q, scale));
+                    let bounds = points.fold((Vec3::MAX, Vec3::MIN), |(a, b), q| (a.min(q), b.max(q)));
+                    node.insert((collider, PropEntity(i), PropHome(home)));
+                    if p.frozen {
+                        node.insert((
+                            RigidBody::Static,
+                            MapPropCollider,
+                            prop_physics::FrozenBody {
+                                physics: p.clone(),
+                                bounds,
+                            },
+                        ));
+                    } else {
+                        node.insert(prop_physics::dynamic_body(p, bounds));
+                        if p.asleep {
+                            node.insert((prop_physics::StartAsleep, RigidBody::Static));
+                        }
+                    }
+                }
+                (Some(collider), None) => {
+                    node.insert((MapBrushCollider, RigidBody::Kinematic, collider, contact_filter::hooks()));
+                }
+                _ => {}
             }
             Some(node.id())
         })
@@ -2931,6 +2986,93 @@ fn spawn_map(
                         e.insert((vis::LogicHidden, Visibility::Hidden));
                     }
                 }
+            }
+        }
+        // Beams (point_spotlight, env_laser, env_beam), spotlights' halos
+        // and light glows (`beams`).
+        if let (Some(beam_materials), Some(sprite_materials)) = (beam_materials.as_mut(), sprite_materials.as_mut())
+            && view == MapDebugView::Normal
+        {
+            let part = |e: &mut EntityCommands, entity: Option<usize>, on: bool| {
+                if let Some(entity) = entity {
+                    e.insert(EntityPart { entity, on, exists: true });
+                }
+                if !on {
+                    e.insert((vis::LogicHidden, Visibility::Hidden));
+                }
+            };
+            let beam_mesh = meshes.add(beams::beam_mesh());
+            for (i, b) in data.beams.iter().enumerate() {
+                let mut e = commands.spawn((
+                    Name::new(format!("Beam {i}")),
+                    MapPart,
+                    Mesh3d(beam_mesh.clone()),
+                    MeshMaterial3d(beam_materials.add(beams::BeamMaterial {
+                        params: b.params(),
+                        texture: Some(textures[b.texture].clone()),
+                    })),
+                    bevy::light::NotShadowCaster,
+                    // Placed in the vertex shader.
+                    bevy::camera::visibility::NoFrustumCulling,
+                    Transform::default(),
+                    ChildOf(root),
+                ));
+                part(&mut e, b.entity, b.start_on);
+                if let Some(h) = &b.spot {
+                    let t = &data.textures[h.texture];
+                    let mut e = commands.spawn((
+                        Name::new(format!("Beam {i} halo")),
+                        MapPart,
+                        Mesh3d(meshes.add(sprite_material::sprite_mesh(UVec2::new(t.width, t.height)))),
+                        MeshMaterial3d(sprite_materials.add(SpriteMaterial {
+                            params: SpriteParams {
+                                color: h.color.extend(1.0),
+                                size: Vec2::splat(h.scale * 2.0),
+                            },
+                            texture: Some(textures[h.texture].clone()),
+                            glow: true,
+                        })),
+                        bevy::light::NotShadowCaster,
+                        bevy::camera::visibility::NoFrustumCulling,
+                        Transform::from_translation(b.start),
+                        GlowSprite {
+                            color: h.color.extend(1.0),
+                            proxy: h.proxy,
+                        },
+                        beams::EyeGlow::Halo {
+                            halo: h.clone(),
+                            dir: (b.end - b.start).normalize_or_zero(),
+                        },
+                        ChildOf(root),
+                    ));
+                    part(&mut e, b.entity, b.start_on);
+                }
+            }
+            for (i, g) in data.glows.iter().enumerate() {
+                let t = &data.textures[g.texture];
+                let mut e = commands.spawn((
+                    Name::new(format!("Light glow {i}")),
+                    MapPart,
+                    Mesh3d(meshes.add(sprite_material::sprite_mesh(UVec2::new(t.width, t.height)))),
+                    MeshMaterial3d(sprite_materials.add(SpriteMaterial {
+                        params: SpriteParams {
+                            color: g.color.extend(1.0),
+                            size: g.half * 2.0,
+                        },
+                        texture: Some(textures[g.texture].clone()),
+                        glow: true,
+                    })),
+                    bevy::light::NotShadowCaster,
+                    bevy::camera::visibility::NoFrustumCulling,
+                    Transform::from_translation(g.position),
+                    GlowSprite {
+                        color: g.color.extend(1.0),
+                        proxy: g.proxy,
+                    },
+                    beams::EyeGlow::Light(g.clone()),
+                    ChildOf(root),
+                ));
+                part(&mut e, g.entity, true);
             }
         }
         if let Some(rope_materials) = rope_materials.as_mut()

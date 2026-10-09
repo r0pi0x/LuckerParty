@@ -189,7 +189,7 @@ struct Row {
     /// 1 terrorists, 2 counter-terrorists (and anyone else).
     column: u8,
     name: String,
-    kills: u32,
+    kills: i32,
     deaths: u32,
     dead: bool,
     local: bool,

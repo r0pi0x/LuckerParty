@@ -10,7 +10,7 @@ use bevy::prelude::*;
 use bevy_replicon::{prelude::*, server::server_tick::ServerTick, shared::backend::connected_client::NetworkId};
 use bevy_replicon_renet::{
     RenetServer,
-    netcode::{NetcodeServerTransport, ServerAuthentication, ServerConfig},
+    netcode::{ServerAuthentication, ServerConfig},
 };
 
 use super::{
@@ -228,7 +228,9 @@ pub fn listen(world: &mut World) -> Result<SocketAddr, String> {
         public_addresses: vec![addr],
         authentication: ServerAuthentication::Unsecure,
     };
-    let transport = NetcodeServerTransport::new(config, socket).map_err(|e| e.to_string())?;
+    // Answers server queries on the same port (`query`).
+    let secret = world.resource::<super::query::InstanceId>().0 ^ config.current_time.as_nanos() as u64;
+    let transport = super::udp::UdpServer::new(config, socket, secret).map_err(|e| e.to_string())?;
     start(world)?;
     world.insert_resource(transport);
     world.write_message(NetEvent::Listening(addr));
@@ -259,7 +261,7 @@ fn remote_slots(world: &mut World) -> usize {
 
 /// Stop serving: clients are told and dropped, their characters go.
 pub(super) fn stop(world: &mut World) {
-    if let Some(mut transport) = world.remove_resource::<NetcodeServerTransport>() {
+    if let Some(mut transport) = world.remove_resource::<super::udp::UdpServer>() {
         if let Some(mut server) = world.get_resource_mut::<RenetServer>() {
             transport.disconnect_all(&mut server);
         }
@@ -331,6 +333,9 @@ fn admit(world: &mut World, client: Entity, msg: Join) {
         ))
     } else if world.get::<Player>(client).is_some() {
         return;
+    } else if !password_ok(world, client) {
+        // Source's words.
+        Some("Bad password.".to_string())
     } else {
         let taken = world.query_filtered::<(), With<Player>>().iter(world).count();
         (taken >= remote_slots(world)).then(|| "Server is full.".to_string())
@@ -366,6 +371,19 @@ fn admit(world: &mut World, client: Entity, msg: Join) {
     // The server's replicated cvars (movement, rules), before it plays.
     super::cvars::send_all(world, client);
     info!("{name} joined (client {id})");
+}
+
+/// Whether a client gave the server's password (`sv_password`; any
+/// without one). It rides in netcode's user data (`query::user_data`);
+/// a client without a UDP transport (tests' memory link) gives none.
+fn password_ok(world: &World, client: Entity) -> bool {
+    let want = &world.resource::<super::query::Hosting>().password;
+    if want.is_empty() {
+        return true;
+    }
+    let id = world.get::<NetworkId>(client).map(|n| n.get());
+    let data = id.and_then(|id| world.get_resource::<super::udp::UdpServer>()?.user_data(id));
+    super::query::password_of(data.as_ref()) == *want
 }
 
 /// A printable name of at most 32 characters, or "Player <id>".
@@ -603,6 +621,9 @@ fn capture_own_states(world: &mut World) {
             let money = world.get::<Money>(e).map(|m| m.0);
             let armor = world.get::<Armor>(e).map(|a| (a.amount, a.helmet));
             let kit = world.get::<DefuseKit>(e).is_some();
+            let view = world
+                .get::<crate::core::MapView>(e)
+                .map(|v| (v.origin.to_array(), v.rotation.to_array()));
             let ground = world
                 .get::<MovementState>(e)
                 .and_then(|s| s.ground)
@@ -622,6 +643,7 @@ fn capture_own_states(world: &mut World) {
                 money,
                 armor,
                 kit,
+                view,
                 ..default()
             });
         }

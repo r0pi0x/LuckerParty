@@ -68,8 +68,33 @@ pub fn parse_connection(value: &str) -> Option<(String, String, Option<String>, 
 }
 
 /// Outputs whose names don't start with "On": math_counter's OutValue,
-/// env_global's OutCounter and func_bomb_target's bomb outputs.
-pub const OTHER_OUTPUTS: &[&str] = &["outvalue", "outcounter", "bombexplode", "bombplanted", "bombdefused"];
+/// env_global's OutCounter, func_bomb_target's bomb outputs and game_ui's
+/// (specs/source/game_entities.md 2).
+pub const OTHER_OUTPUTS: &[&str] = &[
+    "outvalue",
+    "outcounter",
+    "bombexplode",
+    "bombplanted",
+    "bombdefused",
+    "playeron",
+    "playeroff",
+    "pressedmoveleft",
+    "pressedmoveright",
+    "pressedforward",
+    "pressedback",
+    "pressedattack",
+    "pressedattack2",
+    "unpressedmoveleft",
+    "unpressedmoveright",
+    "unpressedforward",
+    "unpressedback",
+    "unpressedattack",
+    "unpressedattack2",
+    "xaxis",
+    "yaxis",
+    "attackaxis",
+    "attack2axis",
+];
 
 /// Whether a keyvalue is an output: output names start with "On" (plus
 /// `OTHER_OUTPUTS`) and carry a connection.
@@ -130,6 +155,9 @@ pub struct Player {
     pub teleported: bool,
     /// Moved by the logic (carried, pushed): the host re-places it.
     pub moved: bool,
+    /// The buttons of its command this tick (`core::buttons` bits, after
+    /// what map entities took away).
+    pub buttons: u32,
 }
 
 impl Player {
@@ -153,7 +181,18 @@ impl Player {
             use_key: false,
             teleported: false,
             moved: false,
+            buttons: 0,
         }
+    }
+
+    /// The eye's forward direction (entity space).
+    pub fn forward(&self) -> Vec3 {
+        super::triggers::forward(self.view)
+    }
+
+    /// The centre of its box (entity space).
+    pub fn centre(&self) -> Vec3 {
+        self.origin + (self.mins + self.maxs) / 2.0
     }
 }
 
@@ -280,6 +319,50 @@ pub enum Effect {
     /// burst at the hit point with the trace normal (entity space;
     /// specs/cs_source/impact_effects.md section 9).
     GlassImpact { at: Vec3, normal: Vec3 },
+    /// player_speedmod's ModifySpeed on a player
+    /// (specs/source/game_entities.md 1): its movement clock, and what the
+    /// entity's spawnflags take away (`key` names the entity).
+    SpeedMod { target: Entity, key: u32, scale: f32, flags: u32 },
+    /// A game_ui takes (`on`) or gives back a player's controls, with its
+    /// "Freeze Player" and "Hide Weapon" flags (game_entities.md 2).
+    GameUi {
+        target: Entity,
+        on: bool,
+        freeze: bool,
+        hide_weapon: bool,
+    },
+    /// A point_viewcontrol (viewcontrol_and_templates.md 1): the player
+    /// views from `camera` (frozen with `freeze`, invulnerable), or None:
+    /// from its own eye again, unfrozen.
+    ViewControl {
+        target: Entity,
+        camera: Option<EntId>,
+        freeze: bool,
+    },
+    /// Something on players' HUDs: one player's (`to`) or everyone's.
+    Hud { to: Option<Entity>, what: super::hud::HudShow },
+    /// game_score: a player's kills or (with `team`) its team's score.
+    Score {
+        target: Entity,
+        points: i32,
+        team: bool,
+        allow_negative: bool,
+    },
+    /// A brush or prop copy a template spawned (`templates`): `id` is the
+    /// new entity, `source` the map entity whose node it copies, placed
+    /// at `origin`/`angles` (entity space).
+    Spawned {
+        id: EntId,
+        source: usize,
+        origin: Vec3,
+        angles: Vec3,
+    },
+    /// env_spark's sparks: where (entity space), the direction (zero:
+    /// none) and the magnitude.
+    Spark { at: Vec3, dir: Vec3, magnitude: f32 },
+    /// Push a physics body (env_entity_maker's PostSpawnSpeed): add
+    /// `velocity` (entity space, units/s) to the entity's body.
+    BodyVelocity { id: EntId, velocity: Vec3 },
 }
 
 /// Static collision the logic needs (the world without movers), entity
@@ -487,6 +570,13 @@ pub struct LogicWorld {
     pub collision: Option<Arc<dyn Collision + Send + Sync>>,
     /// Players with a flame on them (fire.rs).
     pub burning_players: Vec<Entity>,
+    /// Entities parented to an anchor entity, parents first (`anchors`).
+    pub follows: Vec<(EntId, super::anchors::Follow)>,
+    /// point_template's instance counter (`templates`): for the whole
+    /// session, round restarts included.
+    pub template_serial: u32,
+    /// Players viewing through a point_viewcontrol, and which (`camera`).
+    pub views: Vec<(Entity, EntId)>,
 }
 
 /// An env_global state.
@@ -548,6 +638,9 @@ impl LogicWorld {
             globals: Vec::new(),
             collision: None,
             burning_players: Vec::new(),
+            follows: Vec::new(),
+            template_serial: 0,
+            views: Vec::new(),
         }
     }
 
@@ -556,11 +649,12 @@ impl LogicWorld {
     pub fn load_map(&mut self, entities: &[crate::map::MapEntity]) -> Vec<EntId> {
         let ids = self.spawn_map(entities);
         self.activate();
+        self.link_anchored();
         ids
     }
 
     fn spawn_map(&mut self, entities: &[crate::map::MapEntity]) -> Vec<EntId> {
-        entities
+        let ids: Vec<EntId> = entities
             .iter()
             .enumerate()
             .map(|(i, e)| {
@@ -570,7 +664,21 @@ impl LogicWorld {
                 }
                 id
             })
-            .collect()
+            .collect();
+        // Templates take their members out before anything activates.
+        self.collect_templates(entities, &ids);
+        ids
+    }
+
+    /// Drop an entity's slot at once (it never existed: no removal
+    /// effects); its id stops resolving.
+    pub(super) fn forget(&mut self, id: EntId) {
+        if let Some((g, slot)) = self.slots.get_mut(id.index as usize)
+            && *g == id.generation
+        {
+            *slot = None;
+            *g += 1;
+        }
     }
 
     /// A round restart (Counter-Strike): every map entity is re-created
@@ -587,6 +695,7 @@ impl LogicWorld {
         fresh.record = self.record;
         fresh.round = self.round + 1;
         fresh.globals = std::mem::take(&mut self.globals);
+        fresh.template_serial = self.template_serial;
         // The camera's tone-map settings stay (the map's own outputs set
         // them again).
         fresh.tonemap = self.tonemap.clone();
@@ -595,6 +704,15 @@ impl LogicWorld {
         fresh.player_names = std::mem::take(&mut self.player_names);
         fresh.use_held = std::mem::take(&mut self.use_held);
         fresh.effects = std::mem::take(&mut self.effects);
+        // Cameras are made again: their viewers see from their eyes
+        // (our choice; viewcontrol spec open question 2).
+        for (p, _) in std::mem::take(&mut self.views) {
+            fresh.effects.push(Effect::ViewControl {
+                target: p,
+                camera: None,
+                freeze: false,
+            });
+        }
         fresh.log = std::mem::take(&mut self.log);
         fresh.deliveries = std::mem::take(&mut self.deliveries);
         fresh.fired = std::mem::take(&mut self.fired);
@@ -629,6 +747,7 @@ impl LogicWorld {
                 super::classes::class_activate(&mut fresh, id);
             }
         }
+        fresh.link_anchored();
         fresh.log.push(format!(
             "round restart {}: {} entities re-created, {} kept",
             fresh.round,
@@ -766,6 +885,22 @@ impl LogicWorld {
                 generation: *g,
             })
             .collect()
+    }
+
+    /// The live entity the map's entity `index` spawned.
+    pub fn by_map_index(&self, index: usize) -> Option<EntId> {
+        // Map entities spawn in order, so slot `index` holds it.
+        if let Some((g, Some(e))) = self.slots.get(index)
+            && e.map_index == Some(index)
+        {
+            return Some(EntId {
+                index: index as u32,
+                generation: *g,
+            });
+        }
+        self.ids()
+            .into_iter()
+            .find(|id| self.get(*id).is_some_and(|e| e.map_index == Some(index)))
     }
 
     /// The first entity with this name.
@@ -1250,8 +1385,10 @@ impl LogicWorld {
     /// use, touches, untouch, the queue, removals.
     pub fn frame(&mut self, collision: &dyn Collision) {
         self.run_thinks();
+        self.move_cameras();
         self.step_movers(collision);
         self.player_uses(collision);
+        self.push_conveyors();
         self.touch_triggers(collision);
         self.touch_breakables();
         self.pressure_props();

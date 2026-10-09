@@ -30,6 +30,7 @@
 //! `NetRole` (core) says what this process is; `authoritative` systems
 //! (rules, bots, damage, logic) don't run on a client.
 
+pub mod anchors;
 pub mod chat;
 pub mod client;
 pub mod cvars;
@@ -42,6 +43,7 @@ pub mod memory;
 pub mod movers;
 pub mod predict;
 pub mod props;
+pub mod query;
 pub mod server;
 pub mod udp;
 pub mod weapons;
@@ -70,7 +72,7 @@ pub const PROTOCOL_ID: u64 = 0x4C55_434B_4552_5059;
 /// This build's network version. A server refuses clients of another
 /// version. Bump the suffix when the protocol changes in a way the
 /// replicon protocol hash can't see (a field added to a message).
-pub const NET_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/net8");
+pub const NET_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/net9");
 
 /// The owner id of the listen server's own player (`NetCharacter::owner`).
 /// Remote clients' ids are never 0.
@@ -431,6 +433,9 @@ pub struct OwnState {
     /// and commands that came after their tick, since it joined.
     pub missed: u32,
     pub late: u32,
+    /// The map camera the player views through (`core::MapView`: origin,
+    /// rotation), if any.
+    pub view: Option<([f32; 3], [f32; 4])>,
 }
 
 /// A character the server replicates: whose it is and its name. On a
@@ -527,6 +532,15 @@ pub struct NetProp {
     pub flags: u16,
 }
 
+/// A placed weapon's anchor (`map::entities::MapAnchor`): its pose, by
+/// the anchor's map entity index (`anchors`).
+#[derive(Component, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct NetAnchor {
+    pub index: u32,
+    pub origin: [f32; 3],
+    pub rotation: [f32; 4],
+}
+
 /// `NetProp::flags` bits.
 pub mod prop_flags {
     pub const VISIBLE: u16 = 1;
@@ -619,6 +633,12 @@ pub struct Detonation {
     pub ground: Option<([f32; 3], [f32; 3])>,
 }
 
+/// Server -> a client: what map logic shows on its player's HUD (a
+/// game_text, an env_fade, an env_hudhint: `logic::HudEvent`), to the
+/// player it is for or to everyone.
+#[derive(Message, Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct MapHud(pub crate::logic::HudShow);
+
 /// Server -> the client a character belongs to: its player was blinded
 /// (alpha, seconds held, seconds fading: `core::Blinded` from now on) or
 /// its hearing hit (`core::Deafened`).
@@ -708,7 +728,7 @@ pub mod bomb_outcome {
 /// trip; 0 for the host and bots) and `score_flags::*`.
 #[derive(Component, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct NetScore {
-    pub kills: u32,
+    pub kills: i32,
     pub deaths: u32,
     pub ping: u16,
     pub flags: u8,
@@ -934,6 +954,8 @@ impl Plugin for NetPlugin {
         .set_receive_fns::<NetMover>(interp::write_snapshot::<NetMover>, interp::remove_snapshots::<NetMover>)
         .replicate::<NetProp>()
         .set_receive_fns::<NetProp>(interp::write_snapshot::<NetProp>, interp::remove_snapshots::<NetProp>)
+        .replicate::<NetAnchor>()
+        .set_receive_fns::<NetAnchor>(interp::write_snapshot::<NetAnchor>, interp::remove_snapshots::<NetAnchor>)
         // Weapons (slice 4).
         .replicate::<NetHeld>()
         .replicate::<NetItem>()
@@ -969,6 +991,7 @@ impl Plugin for NetPlugin {
         .add_client_message::<NameRequest>(Channel::Ordered)
         .add_server_message::<NameChanged>(Channel::Ordered)
         .make_message_independent::<NameChanged>()
+        .add_server_message::<MapHud>(Channel::Ordered)
         .init_resource::<NetSettings>()
         .init_resource::<NetVersion>()
         .add_message::<NetEvent>()
@@ -980,6 +1003,7 @@ impl Plugin for NetPlugin {
         interp::plugin(app);
         movers::plugin(app);
         props::plugin(app);
+        anchors::plugin(app);
         weapons::plugin(app);
         game::plugin(app);
         chat::plugin(app);
@@ -987,6 +1011,7 @@ impl Plugin for NetPlugin {
         maps::plugin(app);
         decals::plugin(app);
         udp::plugin(app);
+        query::plugin(app);
         memory::plugin(app);
         commands(app);
     }
@@ -1196,7 +1221,15 @@ pub fn status(world: &mut World) -> String {
         }
         NetRole::Server => {
             let settings = world.resource::<NetSettings>().clone();
+            out.insert(0, format!("hostname: {}", world.resource::<query::Hosting>().hostname));
             out.push(format!("udp/ip  : 0.0.0.0:{}", settings.hostport));
+            if let Some(t) = world.get_resource::<udp::UdpServer>() {
+                let q = &t.queries;
+                out.push(format!(
+                    "queries : {} answered, {} challenged, {} dropped",
+                    q.answered, q.challenged, q.dropped
+                ));
+            }
             out.push(format!("map     : {map}"));
             let players = server::players(world);
             out.push(format!("players : {} ({} max)", players.len(), settings.maxplayers));

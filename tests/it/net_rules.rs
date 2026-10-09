@@ -229,7 +229,7 @@ fn carried(sim: &mut NetSim, i: usize) -> Vec<&'static str> {
 
 /// Each client's scoreboard values for every character: (name, kills,
 /// deaths, ping) as its world has them.
-fn board(sim: &mut NetSim, i: usize) -> Vec<(String, u32, u32, u16)> {
+fn board(sim: &mut NetSim, i: usize) -> Vec<(String, i32, u32, u16)> {
     let w = sim.clients[i].app.world_mut();
     let mut rows: Vec<_> = w
         .query::<(&mashup::net::NetCharacter, Option<&Score>, Option<&NetScore>)>()
@@ -365,6 +365,7 @@ fn buy_zone(lo: Vec3, hi: Vec3) -> MapEntities {
             keyvalues: vec![("classname".into(), "func_buyzone".into())],
             hulls: vec![hull],
             mover: false,
+            physics: None,
         }]),
         scale,
     }

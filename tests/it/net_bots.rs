@@ -223,14 +223,14 @@ fn bots_fight_and_clients_see_their_shots_kills_and_radio() {
             .filter(|r| bot_copies.contains(&r.sender))
             .map(|r| r.command.clone())
             .collect();
-        let scores: Vec<(String, u32, u32)> = bots_seen(world).into_iter().map(|(n, _, s)| (n, s.kills, s.deaths)).collect();
+        let scores: Vec<(String, i32, u32)> = bots_seen(world).into_iter().map(|(n, _, s)| (n, s.kills, s.deaths)).collect();
         println!(
             "client {i}: bot kills seen {bot_kills}, bot shots drawn {bot_shots}, radio from bots {bot_calls:?}, scoreboard {scores:?}"
         );
         assert!(bot_kills >= 1, "client {i} saw a bot kill a bot");
         assert!(bot_shots > 0, "client {i} drew the bots' shots");
         assert!(
-            scores.iter().map(|s| s.1).sum::<u32>() >= 1 && scores.iter().map(|s| s.2).sum::<u32>() >= 1,
+            scores.iter().map(|s| s.1).sum::<i32>() >= 1 && scores.iter().map(|s| s.2).sum::<u32>() >= 1,
             "client {i}'s scoreboard counts the bots' kills and deaths: {scores:?}"
         );
     }

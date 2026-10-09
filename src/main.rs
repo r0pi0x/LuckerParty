@@ -102,6 +102,9 @@ fn main() {
         mashup::map::water::WaterMaterialPlugin,
         mashup::map::particles::ParticleMaterialPlugin,
     ))
+    .add_plugins((
+        mashup::map::beams::BeamMaterialPlugin,
+    ))
     // A game's maps run at that game's server tick.
     .insert_resource(match args.game_map() {
         Some(id) if id.starts_with("cs_source:") => {

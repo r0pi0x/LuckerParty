@@ -300,6 +300,7 @@ fn round_restart_starts_it_again() {
         keyvalues: kv(&[]),
         hulls: Vec::new(),
         mover: false,
+        physics: None,
     }];
     w.load_map(&entities);
     assert_eq!(sounds(&mut w).len(), 1);

@@ -2,6 +2,7 @@
 
 pub mod ambient;
 pub mod anim;
+pub mod beams;
 pub mod breakables;
 pub mod bsp;
 pub mod decals;

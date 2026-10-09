@@ -25,15 +25,13 @@ plan when work starts; delete them when done.
   what lies behind it the way Source's sky brushes do. Compare with CS:S at
   that position (coordinator: reference capture), then fix generally.
 
-- mg_item_battle_v4b: picking up a map-made "item" (a knife near spawn
-  with map entities parented to it: a car, a jetpack, a cannonball,
-  rockets, speed changes) gives nothing: the parented entities don't come
-  along and no speed change happens. Needs: entities parented to a weapon
-  following it when a player picks it up (and onto the player's hands),
-  the pickup outputs (OnPlayerPickup) and the entities these maps drive
-  from inputs (game_ui, player_speedmod, point_template/env_entity_maker,
-  func_physbox, phys_thruster; specs in specs/source/*.md written
-  2026-10-08, awaiting review).
+- mg_item_battle_v4b's items (done 2026-10-09, to playtest): a picked-up
+  knife's parented entities follow its carrier (`map::entities` anchors),
+  OnPlayerPickup fires, and the entities the items drive work (game_ui,
+  player_speedmod, point_template/env_entity_maker, func_physbox,
+  phys_thruster/keepupright; docs/plans/active/community-maps.md, "Map
+  entities"). Left: how the item sits in CS:S's hands (we put it at the
+  carrier's feet, turned to its yaw), playtest the cars and jetpack.
 - Inside geometry, checked against CS:S (2026-10-09, mg_item_battle_v4b,
   reference captures in the coordinator's target/inside/): inside the stone
   wall ours already matches (world drawn, sky black). Inside the car

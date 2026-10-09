@@ -1187,6 +1187,7 @@ pub fn glass_impact(
 fn glass_effects(
     mut panes: MessageReader<crate::map::GlassShatter>,
     mut hits: MessageReader<crate::map::GlassImpact>,
+    mut sparks: MessageReader<crate::map::beams::SparkBurst>,
     materials: Option<Res<ParticleMaterials>>,
     colors: Option<Res<SurfaceColors>>,
     mut particles: ResMut<Particles>,
@@ -1196,9 +1197,19 @@ fn glass_effects(
     let Some(materials) = materials else {
         panes.clear();
         hits.clear();
+        sparks.clear();
         return;
     };
     let mats = EffectMaterials::new(&materials.0);
+    // env_spark (specs/source/visual_entities.md 8): the electric spark
+    // effect, pointing along the spark's direction (up without one; its
+    // magnitude's scaling isn't drawn).
+    for s in sparks.read() {
+        let n = if s.dir == Vec3::ZERO { Vec3::Y } else { s.dir.normalize() };
+        for g in electric_sparks(&mut rng.0, &mats, s.at, n, &world) {
+            particles.add(g);
+        }
+    }
     for hit in hits.read() {
         let light = colors.as_deref().map_or(Vec3::ONE, |c| light_below(c, &world, hit.at));
         for g in glass_impact(&mut rng.0, &mats, hit.at, hit.normal, light, &world) {
@@ -1267,6 +1278,7 @@ impl Plugin for ImpactEffectsPlugin {
             .add_message::<PlaySound>()
             .add_message::<crate::map::GlassShatter>()
             .add_message::<crate::map::GlassImpact>()
+            .add_message::<crate::map::beams::SparkBurst>()
             .add_message::<crate::map::tracer::Tracer>()
             .add_systems(
                 FixedUpdate,

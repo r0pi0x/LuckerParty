@@ -23,7 +23,7 @@ impl Plugin for DeathmatchPlugin {
                 (rounds::run_rounds, respawn, hold_the_dead, rounds::hold_frozen)
                     .chain()
                     .in_set(SimSet::Rules),
-                (count_deaths, rounds::kill_rewards, rounds::objective_money).after(SimSet::Weapons),
+                (count_deaths, rounds::kill_rewards, rounds::objective_money, apply_score_changes).after(SimSet::Weapons),
             )
                 // The rules are the server's.
                 .run_if(crate::core::authoritative),
@@ -135,7 +135,7 @@ impl Default for Deathmatch {
 #[derive(Component, Default, Clone, Copy, Debug, Reflect)]
 #[reflect(Component)]
 pub struct Score {
-    pub kills: u32,
+    pub kills: i32,
     pub deaths: u32,
 }
 
@@ -238,6 +238,44 @@ pub fn respawn_everyone(world: &mut World) {
         world.entity_mut(e).insert(Dead { since: f64::MIN });
         if authority {
             world.entity_mut(e).insert(ColliderDisabled);
+        }
+    }
+}
+
+/// Score changes from map logic (game_score; specs/source/
+/// game_entities.md 4): a player's kills (a negative change without
+/// "Allow Negative" stops at 0 and does nothing below it), or its team's
+/// rounds won (our reading of "team score", spec open question 8; ours
+/// can't go below 0).
+fn apply_score_changes(
+    mut changes: MessageReader<crate::core::ScoreChange>,
+    mut scores: Query<&mut Score>,
+    teams: Query<&Team>,
+    rounds: Option<ResMut<rounds::RoundState>>,
+    mut commands: Commands,
+) {
+    let mut rounds = rounds;
+    for c in changes.read() {
+        if c.team {
+            let Some(r) = rounds.as_mut() else { continue };
+            let Some(i) = teams.get(c.target).ok().and_then(|t| (t.0 as usize).checked_sub(1)).filter(|i| *i < 2) else {
+                continue;
+            };
+            r.wins[i] = (r.wins[i] as i64 + c.points as i64).max(0) as u32;
+            continue;
+        }
+        let kills = scores.get(c.target).map_or(0, |s| s.kills);
+        let new = if c.points >= 0 || c.allow_negative {
+            kills + c.points
+        } else if kills < 0 {
+            kills
+        } else {
+            (kills + c.points).max(0)
+        };
+        if let Ok(mut s) = scores.get_mut(c.target) {
+            s.kills = new;
+        } else if let Ok(mut e) = commands.get_entity(c.target) {
+            e.insert(Score { kills: new, deaths: 0 });
         }
     }
 }

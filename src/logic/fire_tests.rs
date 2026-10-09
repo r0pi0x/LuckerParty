@@ -527,6 +527,7 @@ fn round_restart_puts_fires_out() {
         ]),
         hulls: Vec::new(),
         mover: false,
+        physics: None,
     }];
     let mut w = world();
     w.load_map(&entities);

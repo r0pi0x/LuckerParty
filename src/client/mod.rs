@@ -21,6 +21,7 @@ pub mod hud_text;
 pub mod hud;
 pub mod input;
 pub mod interp;
+pub mod map_screen;
 pub mod net;
 pub mod objectives_hud;
 pub mod options;
@@ -31,6 +32,7 @@ pub mod radio;
 pub mod game_text;
 pub mod scoreboard;
 pub mod senses;
+pub mod server_browser;
 pub mod spectate;
 pub mod team_menu;
 pub mod vgui;
@@ -303,7 +305,12 @@ impl Plugin for ClientPlugin {
                 window_icon::WindowIconPlugin,
                 hud_text::HudTextPlugin,
             ))
-            .add_plugins((interp::ClientInterpPlugin, net::ClientNetPlugin))
+            .add_plugins((
+                interp::ClientInterpPlugin,
+                net::ClientNetPlugin,
+                server_browser::ServerBrowserPlugin,
+                map_screen::MapScreenPlugin,
+            ))
             .add_systems(PostStartup, spawn_local_player)
             .add_systems(Update, camera_for_local_player)
             .add_systems(Update, (follow_eye, zoom_camera).after(spectate::SpectateSet));
@@ -477,6 +484,7 @@ fn follow_eye(
             &Children,
             Option<&crate::weapon::ViewPunch>,
             Option<&crate::map::interp::RenderedView>,
+            Option<&crate::core::MapView>,
         ),
         (With<LocalPlayer>, Without<FirstPersonCamera>),
     >,
@@ -511,7 +519,7 @@ fn follow_eye(
             let offset = view::camera_offset(&chase, t.translation, eye.eye_offset, look, &spatial, &characters);
             (t.translation + offset, look)
         });
-    for (at, intent, state, children, punch, view) in &players {
+    for (at, intent, state, children, punch, view, map_view) in &players {
         let eye = match view {
             Some(v) => v.now,
             None => crate::map::interp::EyeView {
@@ -533,7 +541,9 @@ fn follow_eye(
         // Detached: starts where the camera is; placed in the world (the
         // camera is the player's child, so undo the player's transform).
         // Spectating while dead comes first; then the debug cameras.
-        let (offset, look) = if let Some((p, q)) = spectating.pose.or(watched) {
+        // A map camera (point_viewcontrol) the player views through.
+        let camera = map_view.map(|v| (v.origin, v.rotation));
+        let (offset, look) = if let Some((p, q)) = spectating.pose.or(watched).or(camera) {
             let inv = at.compute_affine().inverse();
             (inv.transform_point3(p), at.rotation.inverse() * q)
         } else if freecam.mode == 0 {
@@ -550,7 +560,7 @@ fn follow_eye(
         };
         let mut cams = cameras.iter_many_mut(children);
         // Blasts shake the eye's view (not a detached camera's).
-        let (offset, look) = if watched.is_none() && freecam.mode == 0 && spectating.pose.is_none() {
+        let (offset, look) = if watched.is_none() && freecam.mode == 0 && spectating.pose.is_none() && camera.is_none() {
             (offset + shake.offset, look * Quat::from_rotation_z(shake.roll))
         } else {
             (offset, look)
