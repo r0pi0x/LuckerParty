@@ -9,7 +9,10 @@ default-run = "mashup"
 
 [dependencies]
 avian3d = "0.7"
-bevy = { version = "0.19.1", features = ["wav"] }
+# serialize: predicted components (Transform among them) travel as serde
+# (`core::PredictedAppExt::predicted_net`); `dev` got it through
+# bevy_remote, so builds without `dev` (playtest, release) failed.
+bevy = { version = "0.19.1", features = ["wav", "serialize"] }
 bevy-inspector-egui = "0.37"
 # The inspector's egui, with egui drawn over Bevy's UI (the debug UI over the HUD).
 bevy_egui = { version = "0.40", default-features = false, features = ["bevy_ui"] }

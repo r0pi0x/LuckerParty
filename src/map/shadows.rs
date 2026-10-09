@@ -373,10 +373,23 @@ impl Atlas {
     }
 
     pub fn bytes(&self) -> Vec<u8> {
-        self.coverage
-            .iter()
-            .map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8)
-            .collect()
+        self.coverage.iter().map(|c| texel_byte(*c)).collect()
+    }
+
+    /// Copy one cell's coverage into the atlas image's bytes (`bytes`'
+    /// layout), leaving the rest alone: converting the whole atlas after
+    /// each moved prop cost milliseconds a frame on cs_office.
+    pub fn write_bytes(&self, bytes: &mut [u8], at: UVec2, n: u32) {
+        for y in at.y..(at.y + n).min(self.height) {
+            let row = (y * self.width) as usize;
+            let (from, to) = (row + at.x as usize, row + (at.x + n).min(self.width) as usize);
+            if to > bytes.len() {
+                return;
+            }
+            for (b, c) in bytes[from..to].iter_mut().zip(&self.coverage[from..to]) {
+                *b = texel_byte(*c);
+            }
+        }
     }
 
     pub fn image(&self) -> Image {
@@ -390,7 +403,9 @@ impl Atlas {
             TextureDimension::D2,
             data,
             TextureFormat::R8Unorm,
-            RenderAssetUsages::RENDER_WORLD,
+            // Kept in the main world too: moved props redraw their cells
+            // in place (`write_bytes`).
+            RenderAssetUsages::default(),
         );
         image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
             address_mode_u: ImageAddressMode::ClampToEdge,
@@ -401,6 +416,10 @@ impl Atlas {
         });
         image
     }
+}
+
+fn texel_byte(c: f32) -> u8 {
+    (c.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
 /// One caster's place in the atlas.
@@ -477,6 +496,21 @@ pub fn build(data: &MapData, settings: &MapShadows) -> BuiltShadows {
         meshes,
         receivers,
     }
+}
+
+/// Whether a caster with these model bounds (meters) and an `n` x `n`
+/// atlas cell moved far enough from `from` to `to` (translation, rotation)
+/// for its shadow to change: some point of its box by more than a quarter
+/// of one of its shadow's texels (at most its box plus `BLOAT` across `n`;
+/// the receiver blurs over several).
+/// The shadow is cast along the map's fixed direction, so only the
+/// caster's own movement shifts it.
+pub fn moved_visibly(bounds: (Vec3, Vec3), n: u32, from: (Vec3, Quat), to: (Vec3, Quat)) -> bool {
+    let (lo, hi) = bounds;
+    let texel = ((hi - lo).max_element().max(0.0) + BLOAT * METERS_PER_UNIT) / n.max(1) as f32;
+    let radius = lo.length().max(hi.length());
+    let turn = from.1.angle_between(to.1);
+    from.0.distance(to.0) + turn * radius > texel / 4.0
 }
 
 /// A caster's shadow (silhouette into its atlas cell, and its mesh) for
@@ -557,4 +591,36 @@ pub fn shadow_color(color: [u8; 3]) -> Vec4 {
         if x >= 0.95 { 1.0 } else { x.powf(2.2) }
     });
     Vec4::new(c[0], c[1], c[2], 1.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn jitter_keeps_the_shadow() {
+        // A 32-unit crate: a 64-texel cell of about half a unit (1.3 cm)
+        // each.
+        let half = Vec3::splat(16.0 * METERS_PER_UNIT);
+        let bounds = (-half, half);
+        let n = cell_size(bounds);
+        let at = (Vec3::new(1.0, 0.5, 2.0), Quat::from_rotation_y(0.4));
+        let nudged = |dt: Vec3, turn: f32| (at.0 + dt, at.1 * Quat::from_rotation_x(turn));
+        // Settling jitter seen on cs_office: 0.1 mm, 0.01 degrees.
+        assert!(!moved_visibly(bounds, n, at, nudged(Vec3::splat(1e-4), 2e-4)));
+        // A centimetre or a degree is a different shadow.
+        assert!(moved_visibly(bounds, n, at, nudged(Vec3::X * 0.01, 0.0)));
+        assert!(moved_visibly(bounds, n, at, nudged(Vec3::ZERO, 1f32.to_radians())));
+    }
+
+    #[test]
+    fn redrawing_a_cell_matches_the_whole_atlas() {
+        let cells = [(16, vec![0.25; 256]), (32, vec![0.5; 1024]), (16, vec![1.0; 256])];
+        let (mut atlas, placed) = Atlas::pack(&cells);
+        let mut bytes = atlas.bytes();
+        let (at, n) = (placed[2].0, 16);
+        atlas.write(at, n, &[0.75; 256]);
+        atlas.write_bytes(&mut bytes, at, n);
+        assert_eq!(bytes, atlas.bytes());
+    }
 }

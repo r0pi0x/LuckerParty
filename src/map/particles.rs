@@ -15,7 +15,6 @@ use std::collections::HashMap;
 
 use bevy::{
     asset::embedded_asset,
-    mesh::Indices,
     prelude::*,
     reflect::TypePath,
     render::render_resource::AsBindGroup,
@@ -961,21 +960,8 @@ impl QuadBuilder {
             .extend([base, base + 1, base + 2, base, base + 2, base + 3]);
     }
 
-    fn write(mut self, mesh: &mut Mesh, normal: Vec3) {
-        if self.positions.is_empty() {
-            // Bevy's mesh allocator rejects empty meshes: one invisible
-            // triangle.
-            self.positions.extend([[0.0; 3]; 3]);
-            self.uvs.extend([[0.0; 2]; 3]);
-            self.colors.extend([[0.0; 4]; 3]);
-            self.indices.extend([0, 1, 2]);
-        }
-        let n = self.positions.len();
-        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![normal.to_array(); n]);
-        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, self.positions);
-        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, self.uvs);
-        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, self.colors);
-        mesh.insert_indices(Indices::U32(self.indices));
+    fn write(self, mesh: &mut Mesh, normal: Vec3) {
+        super::dust::write_dynamic_mesh(mesh, normal, self.positions, self.uvs, self.colors, self.indices);
     }
 }
 

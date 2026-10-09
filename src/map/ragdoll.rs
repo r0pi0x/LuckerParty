@@ -1091,7 +1091,11 @@ fn pose_ragdolls(
                 Some((pq, pp)) => (pq.inverse() * q, pq.inverse() * (p - pp)),
                 None => (q, p),
             };
-            if let Some(mut t) = drawn.joints.get(bone).and_then(|j| joints.get_mut(*j).ok()) {
+            // Only real changes: a ragdoll at rest leaves its joints (and
+            // transform propagation under them) alone.
+            if let Some(mut t) = drawn.joints.get(bone).and_then(|j| joints.get_mut(*j).ok())
+                && (t.rotation != local.0 || t.translation != local.1)
+            {
                 t.rotation = local.0;
                 t.translation = local.1;
             }

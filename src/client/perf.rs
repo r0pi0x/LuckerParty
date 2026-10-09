@@ -37,6 +37,18 @@ impl Plugin for PerfPlugin {
                 Last,
                 (record_triangles, count_churn, end_frame, perf_report, draw_overlay, hide_overlay).chain(),
             );
+        // The render world's time per frame (its `Render` schedule, run on
+        // the render thread beside the next frame's main world).
+        let render_time = RenderTime::default();
+        app.insert_resource(render_time.clone());
+        if let Some(render) = app.get_sub_app_mut(bevy::render::RenderApp) {
+            use bevy::render::{Render, RenderSystems};
+            render
+                .insert_resource(render_time)
+                .init_resource::<RenderStart>()
+                .add_systems(Render, render_started.in_set(RenderSystems::ExtractCommands))
+                .add_systems(Render, render_ended.in_set(RenderSystems::Cleanup));
+        }
         resource_cvar::<PerfLog, u8>(
             app,
             "mashup_perf_log",
@@ -208,6 +220,31 @@ impl FrameTimes {
         let max = v.last().copied().unwrap_or(0.0);
         let cpu = self.frames.iter().map(|f| f.1).sum::<f32>() / n;
         (avg * 1e3, p95 * 1e3, max * 1e3, cpu * 1e3)
+    }
+}
+
+/// The render world's latest `Render` schedule time, microseconds (written
+/// by the render world, read by the main world).
+#[derive(Resource, Clone, Default)]
+pub struct RenderTime(std::sync::Arc<std::sync::atomic::AtomicU32>);
+
+impl RenderTime {
+    /// Milliseconds.
+    pub fn ms(&self) -> f32 {
+        self.0.load(std::sync::atomic::Ordering::Relaxed) as f32 / 1e3
+    }
+}
+
+#[derive(Resource, Default)]
+struct RenderStart(Option<Instant>);
+
+fn render_started(mut start: ResMut<RenderStart>) {
+    start.0 = Some(Instant::now());
+}
+
+fn render_ended(start: Res<RenderStart>, time: Res<RenderTime>) {
+    if let Some(s) = start.0 {
+        time.0.store(s.elapsed().as_micros() as u32, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -451,6 +488,7 @@ fn perf_report(
     mut report: ResMut<PerfReport>,
     interp: (Option<Res<crate::map::interp::Interpolation>>, Res<Time<Fixed>>),
     net: (Option<Res<crate::net::predict::NetGraph>>, Option<Res<crate::core::NetRole>>),
+    render_time: Option<Res<RenderTime>>,
 ) {
     let now = Instant::now();
     let due = report.at.is_none_or(|t| (now - t).as_secs_f32() >= 1.0);
@@ -459,6 +497,11 @@ fn perf_report(
     }
     report.at = Some(now);
     report.lines = perf_lines(perf.show.max(log.0), &churn, &times, &diagnostics, &vis, parts.iter().count(), &meshes, &assets);
+    if let Some(r) = render_time
+        && let Some(line) = report.lines.get_mut(1)
+    {
+        line.push_str(&format!(", render world {:.2} ms", r.ms()));
+    }
     if let Some(i) = interp.0 {
         report.lines.push(interp_line(&i, &interp.1));
     }
