@@ -893,6 +893,172 @@ fn use_pickup_swaps_the_gun_looked_at_when_enabled() {
     assert_eq!(loose, vec![m4], "the M4 lies loose");
 }
 
+/// A map loaded after the game has run a while (the main menu, the last
+/// map), as the real game always does: `map` used to start the fixed clock
+/// over while the frame's clock ran on, so a gun dropped from the console
+/// (`drop`, G: a frame) was stamped that far in the tick clock's future
+/// and nobody could touch it for as long (half a minute at the menu: "I
+/// can't pick up guns after I drop them").
+fn sim_after_the_menu() -> Sim {
+    let mut sim = sim();
+    sim.seconds(30.0);
+    mashup::swap_map(
+        sim.app.world_mut(),
+        "greybox",
+        None,
+        std::time::Duration::from_secs_f64(TICK_INTERVAL),
+    );
+    sim.ticks(2);
+    sim
+}
+
+/// Walk `p` (placeholder movement) toward `to` until `done`; the ticks it
+/// took, None within `limit`.
+fn walk_to(
+    sim: &mut Sim,
+    p: Entity,
+    to: impl Fn(&Sim) -> Vec3,
+    limit: u32,
+    done: impl Fn(&Sim) -> bool,
+) -> Option<u32> {
+    for t in 0..limit {
+        if done(sim) {
+            sim.intent(p).move_axis = Vec2::ZERO;
+            return Some(t);
+        }
+        let d = to(sim) - sim.position(p);
+        let mut i = sim.intent(p);
+        i.yaw = (-d.x).atan2(-d.z);
+        i.move_axis = if d.xz().length() > 0.05 { Vec2::Y } else { Vec2::ZERO };
+        drop(i);
+        sim.ticks(1);
+    }
+    sim.intent(p).move_axis = Vec2::ZERO;
+    None
+}
+
+fn carries(sim: &Sim, p: Entity, weapon: Entity) -> bool {
+    sim.app.world().get::<Inventory>(p).unwrap().weapons.contains(&weapon)
+}
+
+/// Drop the held gun as G does (the console's `drop`, run in a frame),
+/// back off, then walk back over it: taken once a second has passed since
+/// the drop, not before; a rifle and a pistol; after time spent before
+/// the map loaded.
+#[test]
+fn a_dropped_gun_is_walked_over_and_taken_again() {
+    use mashup::{core::LocalPlayer, games::cs_source::weapons::USP, weapon::drop::Loose};
+    let mut sim = sim_after_the_menu();
+    let p = sim.spawn_character(greybox::SPAWNS[0], placeholder::ID);
+    sim.app.world_mut().entity_mut(p).insert(LocalPlayer);
+    sim.seconds(1.5);
+    for id in [AK47, USP] {
+        let gun = {
+            let inv = sim.app.world().get::<Inventory>(p).unwrap();
+            inv.weapons
+                .iter()
+                .copied()
+                .find(|w| sim.app.world().get::<Weapon>(*w).unwrap().id == id)
+                .unwrap()
+        };
+        sim.app.world_mut().get_mut::<Inventory>(p).unwrap().wanted = Some(gun);
+        sim.seconds(1.5);
+        assert_eq!(active(&sim, p), gun);
+        mashup::console::execute(sim.app.world_mut(), &["drop".into()], 0);
+        let item = {
+            let w = sim.app.world_mut();
+            w.query::<(Entity, &Loose)>()
+                .iter(w)
+                .find(|(_, l)| l.weapon == gun)
+                .map(|(e, _)| e)
+                .expect("lying loose")
+        };
+        assert!(!carries(&sim, p, gun), "{id}: dropped");
+        // Straight back over it at once: not within the second.
+        let at = |s: &Sim| {
+            s.app
+                .world()
+                .get::<Transform>(item)
+                .map_or(Vec3::ZERO, |t| t.translation)
+        };
+        let ticks = |s: f64| (s / TICK_INTERVAL).round() as u32;
+        let early = walk_to(&mut sim, p, at, ticks(0.9), |s| carries(s, p, gun));
+        assert_eq!(early, None, "{id}: taken back within the touch delay");
+        // Off, and back after the delay: taken.
+        sim.intent(p).move_axis = Vec2::new(0.0, -1.0);
+        sim.seconds(0.6);
+        let took = walk_to(&mut sim, p, at, ticks(3.0), |s| carries(s, p, gun));
+        assert!(took.is_some(), "{id}: walked over after the delay and not taken");
+        assert!(sim.app.world().get_entity(item).is_err(), "{id}: the loose one is gone");
+    }
+}
+
+/// CS:S takes a gun touched only into an empty slot: with another
+/// primary carried the dropped one stays (and `mashup_debug_pickup 1`
+/// says why); dropping that one lets it be taken. The readout also says
+/// when it is too soon, and when it is taken.
+#[test]
+fn a_full_slot_refuses_a_gun_and_the_debug_readout_says_why() {
+    use mashup::{
+        core::LocalPlayer,
+        games::cs_source::weapons::M4A1,
+        weapon::drop::{Loose, drop_this, drop_weapon},
+    };
+    let mut sim = sim_after_the_menu();
+    sim.app
+        .world_mut()
+        .resource_mut::<mashup::console::Console>()
+        .submit("mashup_debug_pickup 1");
+    let p = sim.spawn_character(greybox::SPAWNS[0], placeholder::ID);
+    sim.app
+        .world_mut()
+        .entity_mut(p)
+        .insert((LocalPlayer, Name::new("Tester")));
+    sim.seconds(1.5);
+    let ak = active(&sim, p);
+    let item = drop_weapon(sim.app.world_mut(), p, false).expect("dropped");
+    sim.ticks(2);
+    let m4 = mashup::weapon::give(sim.app.world_mut(), p, M4A1).unwrap();
+    // Standing on it well past the delay, the slot full: left lying.
+    let spot = sim.position(p);
+    for _ in 0..(2.0 / TICK_INTERVAL) as u32 {
+        sim.app.world_mut().get_mut::<Transform>(item).unwrap().translation = spot;
+        sim.ticks(1);
+    }
+    assert!(!carries(&sim, p, ak), "taken with the slot full");
+    assert!(sim.app.world().get_entity(item).is_ok());
+    // The M4 thrown away: the AK is taken.
+    let thrown = drop_this(sim.app.world_mut(), p, m4, true).unwrap();
+    for _ in 0..10 {
+        if let Some(mut t) = sim.app.world_mut().get_mut::<Transform>(item) {
+            t.translation = spot;
+        }
+        sim.app.world_mut().get_mut::<Transform>(thrown).unwrap().translation = spot + Vec3::X * 20.0;
+        sim.ticks(1);
+    }
+    assert!(carries(&sim, p, ak), "taken once the slot is empty");
+    let w = sim.app.world_mut();
+    assert_eq!(w.query::<&Loose>().iter(w).count(), 1, "only the M4 lies");
+    let said: Vec<String> = sim
+        .app
+        .world()
+        .resource::<mashup::console::Console>()
+        .output
+        .iter()
+        .map(|l| l.text.clone())
+        .filter(|t| t.starts_with("pickup Tester:"))
+        .collect();
+    let has = |s: &str| said.iter().any(|t| t.contains(s));
+    assert!(has("weapon_ak47: dropped 0.0 s ago, touchable from 1 s"), "{said:#?}");
+    assert!(
+        has("weapon_ak47: slot full (cs_source:weapon_m4a1 carried"),
+        "{said:#?}"
+    );
+    assert!(has("weapon_ak47: taken"), "{said:#?}");
+    // One line per change, not per tick.
+    assert!(said.len() < 8, "{said:#?}");
+}
+
 /// Run a tick; the `PlaySound`s still held (this tick's and the last's).
 fn sounds_this_tick(sim: &mut Sim) -> Vec<mashup::map::PlaySound> {
     use bevy::ecs::message::{MessageCursor, Messages};

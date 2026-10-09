@@ -59,6 +59,8 @@ impl Plugin for WeaponPlugin {
             .init_resource::<economy::BuyWindow>()
             .init_resource::<drop::DeathDrops>()
             .init_resource::<drop::UsePickup>()
+            .init_resource::<drop::DebugPickup>()
+            .init_resource::<drop::DebugPickupSeen>()
             .add_message::<drop::UsedPickup>()
             .register_type::<economy::Money>()
             .register_type::<economy::DefuseKit>()
@@ -86,6 +88,7 @@ impl Plugin for WeaponPlugin {
                             equip::apply_equips,
                             drop::pick_up,
                             drop::use_pick_up,
+                            drop::debug_pickups,
                         )
                             .chain()
                             .run_if(crate::core::authoritative),
@@ -180,6 +183,12 @@ impl Plugin for WeaponPlugin {
             "1: +use on a dropped weapon you look at takes it, dropping the one in its slot (CS:GO's; CS:S has none).",
             |u| &mut u.0,
         );
+        crate::console::resource_cvar::<drop::DebugPickup, u8>(
+            app,
+            "mashup_debug_pickup",
+            "1: print why the loose weapon nearest you is or isn't picked up, each time that changes (2: for every character; pickups are the server's).",
+            |u| &mut u.0,
+        );
         app.add_message::<drop::DropRequested>()
             .add_message::<economy::BuyRequested>();
         app.console_command("drop", "Drop the weapon you hold (G); walk over one to pick it up.", |w, _| {
@@ -195,6 +204,20 @@ impl Plugin for WeaponPlugin {
         app.console_command("lastinv", "Switch to the previously held weapon.", |w, _| {
             select_local(w, |inv, _| inv.last)
         })
+        .console_command(
+            "use",
+            "use <weapon>: draw a weapon you carry by name, e.g. use weapon_smokegrenade (Source's).",
+            |w, a| {
+                let name = a.first().ok_or("use <weapon>")?.to_lowercase();
+                let named: Vec<Entity> = w
+                    .query::<(Entity, &Weapon)>()
+                    .iter(w)
+                    .filter(|(_, x)| x.id == name || x.id.rsplit(':').next() == Some(name.as_str()))
+                    .map(|(e, _)| e)
+                    .collect();
+                select_local(w, |inv, _| inv.weapons.iter().copied().find(|e| named.contains(e)))
+            },
+        )
         .console_command(
             "impulse",
             "impulse 101: every weapon, full clips and reserves, kevlar and helmet.",

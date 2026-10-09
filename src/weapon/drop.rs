@@ -98,9 +98,19 @@ pub fn drop_weapon(world: &mut World, owner: Entity, thrown: bool) -> Option<Ent
     drop_this(world, owner, weapon, thrown)
 }
 
+/// Now on the tick's clock (`Time<Fixed>`, which `pick_up` reads as
+/// `Time`), wherever it's asked from.
+pub(super) fn tick_time(world: &World) -> f64 {
+    world
+        .get_resource::<Time<Fixed>>()
+        .map_or_else(|| world.resource::<Time>().elapsed_secs_f64(), Time::elapsed_secs_f64)
+}
+
 /// Drop one weapon `owner` carries (thrown along the view, or let fall).
 pub fn drop_this(world: &mut World, owner: Entity, weapon: Entity, thrown: bool) -> Option<Entity> {
-    let now = world.resource::<Time>().elapsed_secs_f64();
+    // The tick's clock, which `pick_up` reads: `drop` runs from the
+    // console (a frame, where `Time` is the virtual clock).
+    let now = tick_time(world);
     let at = world.get::<Transform>(owner)?.translation;
     let look = world.get::<Intent>(owner).map_or(Quat::IDENTITY, Intent::look_rotation);
     let carried = world.get::<Velocity>(owner).map_or(Vec3::ZERO, |v| v.0);
@@ -206,12 +216,33 @@ pub fn touch_box(at: &Transform, half: Vec3) -> (Vec3, Vec3) {
 /// What touching a loose weapon does for a character (spec 3.9).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Touch {
-    /// Nothing: that slot holds another weapon.
-    Refused,
+    /// Nothing: that slot holds this other weapon.
+    Refused(Entity),
     /// Take the weapon.
     Equip,
     /// The same weapon type is carried: take only its ammo, into this one.
     Ammo(Entity),
+}
+
+/// Why a character does or doesn't take a loose weapon this tick (the
+/// walk-over rules in order; `mashup_debug_pickup` prints it).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Verdict {
+    /// Taken.
+    Take,
+    /// The same type is carried (this one): only its ammo is taken.
+    Ammo(Entity),
+    /// Dropped this long ago (s), under `TOUCH_DELAY`.
+    TooSoon(f64),
+    /// This far (m) outside the touch box.
+    OutOfReach(f32),
+    /// Only another team takes it (the C4).
+    WrongTeam,
+    /// That slot holds this weapon (CS:S takes a gun only into an empty
+    /// slot: drop that one first).
+    SlotFull(Entity),
+    /// Solid geometry (this entity) lies between the eye and its centre.
+    Blocked(Entity),
 }
 
 type Owners<'w, 's> = Query<
@@ -227,12 +258,97 @@ type Owners<'w, 's> = Query<
     ),
 >;
 
+type LooseItems<'w, 's> =
+    Query<'w, 's, (Entity, &'static Loose, &'static Transform, Option<&'static crate::map::PhysicsProp>)>;
+
+/// A character as the walk-over pickup sees it: its box, eye, team and
+/// what it carries.
+struct Toucher<'a> {
+    lo: Vec3,
+    hi: Vec3,
+    eye: Vec3,
+    team: Option<&'a crate::core::Team>,
+    inv: &'a Inventory,
+}
+
+impl<'a> Toucher<'a> {
+    fn new(
+        at: &Transform,
+        inv: &'a Inventory,
+        team: Option<&'a crate::core::Team>,
+        state: Option<&crate::core::MovementState>,
+    ) -> Self {
+        let (lo, hi) = match state {
+            Some(s) if s.hull_max != s.hull_min => (s.hull_min, s.hull_max),
+            _ => DEFAULT_HULL,
+        };
+        Self {
+            lo: at.translation + lo,
+            hi: at.translation + hi,
+            eye: at.translation + state.map_or(Vec3::ZERO, |s| s.eye_offset),
+            team,
+            inv,
+        }
+    }
+
+    /// How far (m) its box is from a loose weapon's touch box (0: they
+    /// overlap).
+    fn gap(&self, item_at: &Transform, body: Option<&crate::map::PhysicsProp>) -> f32 {
+        let (t_lo, t_hi) = touch_box(item_at, half_of(body));
+        (t_lo - self.hi).max(self.lo - t_hi).max(Vec3::ZERO).length()
+    }
+}
+
+/// A loose weapon's half size (its body's box).
+fn half_of(body: Option<&crate::map::PhysicsProp>) -> Vec3 {
+    body.map_or(DEFAULT_HALF, |b| (b.bounds.1 - b.bounds.0) / 2.0)
+}
+
+/// The walk-over rules for one character and one loose weapon (spec 3.9),
+/// cheapest first: the touch delay, the touch box, the team, the slot,
+/// then line of sight. None: the loose entity's weapon is gone.
+#[allow(clippy::too_many_arguments)]
+fn verdict(
+    me: &Toucher,
+    l: &Loose,
+    item: Entity,
+    item_at: &Transform,
+    body: Option<&crate::map::PhysicsProp>,
+    weapons: &Query<(&Weapon, Option<&PickupTeam>)>,
+    spatial: &avian3d::prelude::SpatialQuery,
+    now: f64,
+    character: impl Fn(Entity) -> bool,
+) -> Option<Verdict> {
+    if now - l.since < TOUCH_DELAY {
+        return Some(Verdict::TooSoon(now - l.since));
+    }
+    let gap = me.gap(item_at, body);
+    if gap > 0.0 {
+        return Some(Verdict::OutOfReach(gap));
+    }
+    let (weapon, only) = weapons.get(l.weapon).ok()?;
+    if only.is_some_and(|t| me.team != Some(&t.0)) {
+        return Some(Verdict::WrongTeam);
+    }
+    let touch = touch_of(weapon, me.inv, weapons);
+    if let Touch::Refused(mine) = touch {
+        return Some(Verdict::SlotFull(mine));
+    }
+    if let Some(by) = blocker(spatial, me.eye, item_at.translation, item, character) {
+        return Some(Verdict::Blocked(by));
+    }
+    Some(match touch {
+        Touch::Ammo(mine) => Verdict::Ammo(mine),
+        _ => Verdict::Take,
+    })
+}
+
 /// Living characters touching a loose weapon (spec 3.9): its box grown
 /// 36 units sideways and 18 up, touchable 1 s after the drop, seen from
 /// the eye (solid geometry and windows block). Taken when nothing is in
 /// its slot; when the same type is carried, only its ammo is taken.
 pub(super) fn pick_up(
-    loose: Query<(Entity, &Loose, &Transform, Option<&crate::map::PhysicsProp>)>,
+    loose: LooseItems,
     owners: Owners,
     weapons: Query<(&Weapon, Option<&PickupTeam>)>,
     spatial: avian3d::prelude::SpatialQuery,
@@ -245,44 +361,127 @@ pub(super) fn pick_up(
         if health.current <= 0.0 {
             continue;
         }
-        let (lo, hi) = match state {
-            Some(s) if s.hull_max != s.hull_min => (s.hull_min, s.hull_max),
-            _ => DEFAULT_HULL,
-        };
-        let (me_lo, me_hi) = (at.translation + lo, at.translation + hi);
-        let eye = at.translation + state.map_or(Vec3::ZERO, |s| s.eye_offset);
+        let me = Toucher::new(at, inv, team, state);
         for (item, l, item_at, body) in &loose {
-            if taken.contains(&item) || now - l.since < TOUCH_DELAY {
+            if taken.contains(&item) {
                 continue;
             }
-            let half = body.map_or(DEFAULT_HALF, |b| (b.bounds.1 - b.bounds.0) / 2.0);
-            let (t_lo, t_hi) = touch_box(item_at, half);
-            if me_lo.cmpgt(t_hi).any() || me_hi.cmplt(t_lo).any() {
-                continue;
-            }
-            let Ok((weapon, only)) = weapons.get(l.weapon) else {
-                continue;
-            };
-            if only.is_some_and(|t| team != Some(&t.0)) {
-                continue;
-            }
-            let touch = touch_of(weapon, inv, &weapons);
-            if touch == Touch::Refused || !in_sight(&spatial, eye, item_at.translation, item, |c| owners.contains(c)) {
-                continue;
-            }
+            let v = verdict(&me, l, item, item_at, body, &weapons, &spatial, now, |c| owners.contains(c));
             let weapon = l.weapon;
-            match touch {
-                Touch::Equip => {
+            match v {
+                Some(Verdict::Take) => {
                     taken.push(item);
                     commands.entity(item).despawn();
                     commands.queue(move |w: &mut World| take(w, owner, weapon));
                     break;
                 }
-                Touch::Ammo(mine) => {
+                Some(Verdict::Ammo(mine)) => {
                     commands.queue(move |w: &mut World| take_ammo(w, item, weapon, mine));
                 }
-                Touch::Refused => {}
+                _ => {}
             }
+        }
+    }
+}
+
+/// `mashup_debug_pickup`: 1 prints, for the local player, why the nearest
+/// loose weapon (within `DEBUG_RANGE` of the touch box) is or isn't
+/// taken, each time that changes; 2 for every character (a server's
+/// remote players and bots too). Pickups are the server's: on a network
+/// client, set it on the server.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DebugPickup(pub u8);
+
+/// How far (m, from a character's box to a touch box) the readout looks
+/// for a loose weapon.
+const DEBUG_RANGE: f32 = 3.0;
+
+/// What `debug_pickups` last said per character: the loose entity it was
+/// about, that weapon, and the reason's kind (a distance changing every
+/// tick doesn't print again).
+#[derive(Resource, Default)]
+pub(super) struct DebugPickupSeen(std::collections::HashMap<Entity, (Option<Entity>, Option<Entity>, &'static str)>);
+
+/// The `mashup_debug_pickup` readout: one line per character each time
+/// its nearest loose weapon or the reason changes, and when it takes one.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn debug_pickups(
+    setting: Res<DebugPickup>,
+    mut seen: ResMut<DebugPickupSeen>,
+    loose: LooseItems,
+    owners: Owners,
+    local: Query<(), With<crate::core::LocalPlayer>>,
+    weapons: Query<(&Weapon, Option<&PickupTeam>)>,
+    names: Query<&Name>,
+    spatial: avian3d::prelude::SpatialQuery,
+    time: Res<Time>,
+    mut console: Option<ResMut<crate::console::Console>>,
+) {
+    if setting.0 == 0 {
+        if !seen.0.is_empty() {
+            seen.0.clear();
+        }
+        return;
+    }
+    let now = time.elapsed_secs_f64();
+    let id_of = |w: Entity| weapons.get(w).map_or("?", |(w, _)| w.id);
+    for (owner, at, inv, health, team, state) in &owners {
+        if setting.0 < 2 && !local.contains(owner) {
+            continue;
+        }
+        let me = Toucher::new(at, inv, team, state);
+        let nearest = loose
+            .iter()
+            .map(|(e, l, t, b)| (me.gap(t, b), e, l, t, b))
+            .filter(|(gap, ..)| *gap <= DEBUG_RANGE)
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        let (item, weapon) = nearest.map_or((None, None), |(_, e, l, ..)| (Some(e), Some(l.weapon)));
+        let before = seen.0.get(&owner).copied();
+        // The weapon it was about is now its own: taken (the loose entity
+        // went with the pickup's commands).
+        let took = before.and_then(|b| b.1).filter(|w| inv.weapons.contains(w) && item != before.and_then(|b| b.0));
+        let (kind, text) = if let Some(w) = took {
+            ("taken", format!("{}: taken", id_of(w)))
+        } else if health.current <= 0.0 {
+            ("dead", "dead, takes nothing".to_string())
+        } else if let Some((_, item, l, t, b)) = nearest {
+            let what = id_of(l.weapon);
+            match verdict(&me, l, item, t, b, &weapons, &spatial, now, |c| owners.contains(c)) {
+                None => ("gone", format!("{what}: its weapon is gone")),
+                Some(Verdict::Take) => ("take", format!("{what}: taking it")),
+                Some(Verdict::Ammo(_)) => ("ammo", format!("{what}: same weapon carried, takes only its ammo")),
+                Some(Verdict::TooSoon(s)) => (
+                    "soon",
+                    format!("{what}: dropped {s:.1} s ago, touchable from {TOUCH_DELAY} s"),
+                ),
+                Some(Verdict::OutOfReach(m)) => ("reach", format!("{what}: out of reach, {m:.2} m from its touch box")),
+                Some(Verdict::WrongTeam) => ("team", format!("{what}: only the other team takes it")),
+                Some(Verdict::SlotFull(mine)) => (
+                    "slot",
+                    format!(
+                        "{what}: slot full ({} carried; a gun is taken only into an empty slot, drop that first)",
+                        id_of(mine)
+                    ),
+                ),
+                Some(Verdict::Blocked(by)) => {
+                    let name = names.get(by).map_or_else(|_| format!("{by}"), |n| n.to_string());
+                    ("sight", format!("{what}: not in sight from the eye, blocked by {name}"))
+                }
+            }
+        } else {
+            ("none", format!("no loose weapon within {DEBUG_RANGE} m"))
+        };
+        let key = (item, weapon, kind);
+        if before == Some(key) || (kind == "none" && before.is_some_and(|b| b.2 == "taken")) {
+            seen.0.insert(owner, key);
+            continue;
+        }
+        seen.0.insert(owner, key);
+        let who = names.get(owner).map_or_else(|_| format!("{owner}"), |n| n.to_string());
+        let line = format!("pickup {who}: {text}");
+        info!("{line}");
+        if let Some(c) = console.as_mut() {
+            c.info(line);
         }
     }
 }
@@ -409,26 +608,40 @@ fn in_sight(
     item: Entity,
     character: impl Fn(Entity) -> bool,
 ) -> bool {
+    blocker(spatial, eye, to, item, character).is_none()
+}
+
+/// What solid geometry hides `to` from `eye`, if anything (characters
+/// and loose items don't block; `item` is the one looked at).
+fn blocker(
+    spatial: &avian3d::prelude::SpatialQuery,
+    eye: Vec3,
+    to: Vec3,
+    item: Entity,
+    character: impl Fn(Entity) -> bool,
+) -> Option<Entity> {
     let filter = avian3d::prelude::SpatialQueryFilter::default()
         .with_mask(crate::core::SOLID_LAYERS.0 & !crate::core::ITEM_LAYER.0);
     let d = to - eye;
-    let Ok(dir) = Dir3::new(d) else { return true };
+    let dir = Dir3::new(d).ok()?;
     spatial
         .cast_ray_predicate(eye, dir, d.length(), true, &filter, &|e| e != item && !character(e))
-        .is_none()
+        .map(|hit| hit.entity)
 }
 
 /// What touching `weapon` does for a character carrying `inv`.
 fn touch_of(weapon: &Weapon, inv: &Inventory, weapons: &Query<(&Weapon, Option<&PickupTeam>)>) -> Touch {
-    let mut slot_taken = false;
+    let mut slot_taken = None;
     for e in &inv.weapons {
         let Ok((mine, _)) = weapons.get(*e) else { continue };
         if mine.id == weapon.id {
             return Touch::Ammo(*e);
         }
-        slot_taken |= mine.slot == weapon.slot;
+        if mine.slot == weapon.slot {
+            slot_taken = slot_taken.or(Some(*e));
+        }
     }
-    if slot_taken { Touch::Refused } else { Touch::Equip }
+    slot_taken.map_or(Touch::Equip, Touch::Refused)
 }
 
 /// The same weapon type touched: its rounds go into `mine`'s reserve, up

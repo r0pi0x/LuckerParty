@@ -620,15 +620,19 @@ pub enum NetRole {
     Client,
 }
 
-/// A new map's tick length. Single player (and a client, which takes the
-/// server's clock anyway) starts the fixed clock over, as a map load
-/// always did; a network server keeps it running, so its time and tick
-/// never go back while clients follow it to the new map.
+/// A new map's tick length. The fixed clock keeps running (single player
+/// and a network server alike), so its time stays with `Time<Virtual>`'s
+/// (the clock frame systems and console commands read) and never goes
+/// back while clients follow a server to the new map. Starting it over
+/// put it behind by however long the game had run (the main menu, the
+/// last map): times stamped in a frame or a command (a drop's touch
+/// delay, a smoke cloud's age as drawn) were that far ahead of the
+/// tick's. A client takes the server's clock anyway.
 pub fn set_tick_length(world: &mut World, tick: std::time::Duration) {
-    if world.get_resource::<NetRole>() == Some(&NetRole::Server) {
-        world.resource_mut::<Time<Fixed>>().set_timestep(tick);
-    } else {
-        world.insert_resource(Time::<Fixed>::from_duration(tick));
+    let client = world.get_resource::<NetRole>() == Some(&NetRole::Client);
+    match world.get_resource_mut::<Time<Fixed>>() {
+        Some(mut fixed) if !client => fixed.set_timestep(tick),
+        _ => world.insert_resource(Time::<Fixed>::from_duration(tick)),
     }
 }
 

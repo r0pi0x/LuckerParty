@@ -430,6 +430,9 @@ pub struct SmokeCloud {
     pub smoke: Smoke,
     /// The spent grenade lying in it (removed with the cloud).
     pub grenade: Option<Entity>,
+    /// The grenade's weapon id (a network client builds its cloud from
+    /// it: the spent grenade is no longer a `Projectile`).
+    pub weapon: Option<&'static str>,
 }
 
 impl SmokeCloud {
@@ -1039,6 +1042,7 @@ fn detonate(
                     started: now,
                     smoke: s.clone(),
                     grenade: Some(entity),
+                    weapon: Some(p.weapon),
                 },
                 SightBlocker {
                     centre: at,
@@ -1530,6 +1534,7 @@ mod tests {
                 sound: None,
             },
             grenade: None,
+            weapon: None,
         };
         let both = [cloud(Vec3::ZERO), cloud(Vec3::X)];
         assert_eq!(smoke_fog_at(Vec3::ZERO, 5.0, both.iter()), 1.0);
