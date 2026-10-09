@@ -426,7 +426,10 @@ fn material_effects() {
 /// them (a car, a jetpack...). Walking onto one picks it up, its map
 /// entity fires OnPlayerPickup with the player as activator, and what is
 /// parented to it follows the player: props ride the knife's anchor node
-/// (at the player's feet, turned to its yaw), keeping their placement.
+/// (at the middle of the player's box, 31 units above the feet standing,
+/// turned to its yaw), keeping their placement. CS:S's captures of the car
+/// knife (first and third person) put the car there: on the floor, roof
+/// at the carrier's shoulders; at the feet it sank to the carrier's knees.
 #[test]
 fn item_children_follow_the_player() {
     use mashup::map::{
@@ -482,7 +485,7 @@ fn item_children_follow_the_player() {
         .filter_map(|c| Some((*c, node(&mut sim, *c)?.distance(anchor(&mut sim)))))
         .collect();
     // Walk onto it: picked up.
-    let p = sim.spawn_character(at + Vec3::Y * 0.1, placeholder::ID);
+    let p = sim.spawn_character(at + Vec3::Y * 0.1, mashup::games::cs_source::movement::ID);
     sim.ticks(10);
     let owner = sim.app.world().get::<Weapon>(weapon).and_then(|w| w.owner);
     assert_eq!(owner, Some(p), "picked up");
@@ -501,9 +504,16 @@ fn item_children_follow_the_player() {
     // distance from it.
     let away = at + Vec3::new(8.0, 0.0, 3.0);
     sim.app.world_mut().get_mut::<Transform>(p).unwrap().translation = away;
-    sim.ticks(3);
+    sim.seconds(1.0);
     let a = anchor(&mut sim);
     assert!(a.xz().distance(sim.position(p).xz()) < 0.05, "anchor {a} at the player {}", sim.position(p));
+    // Standing on the floor (what rides along doesn't lift its carrier),
+    // the anchor 31 units above the feet.
+    let state = sim.state(p);
+    assert!(state.on_ground, "the carrier stands");
+    let feet = sim.position(p).y + state.hull_min.y;
+    let above = (a.y - feet) / cs_source::bsp::METERS_PER_UNIT;
+    assert!((above - 31.0).abs() < 0.1, "anchor {above} units above the feet");
     for (c, d) in props {
         let now = node(&mut sim, c).unwrap();
         assert!((now.distance(a) - d).abs() < 0.05, "prop {c}: {d} from the anchor, now {}", now.distance(a));

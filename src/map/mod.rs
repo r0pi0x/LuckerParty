@@ -2039,7 +2039,14 @@ impl Plugin for MapPlugin {
                 PostUpdate,
                 update_prop_shadows
                     .run_if(resource_exists::<Assets<Mesh>>.and_then(resource_exists::<Assets<Image>>))
-                    .after(bevy::transform::TransformSystems::Propagate),
+                    .after(bevy::transform::TransformSystems::Propagate)
+                    // A rewritten shadow mesh is announced this frame:
+                    // announced a frame late, the render world (which
+                    // takes a RENDER_WORLD-only mesh's data) took the
+                    // rewrite on an earlier announcement and then found the
+                    // late one empty ("cannot be extracted: already
+                    // extracted", logged each time a moving prop stopped).
+                    .before(bevy::asset::AssetEventSystems),
             )
             .add_systems(
                 PostUpdate,

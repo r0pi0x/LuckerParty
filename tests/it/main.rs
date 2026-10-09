@@ -14,6 +14,7 @@
 mod animation;
 mod architecture;
 mod bot_grenades;
+mod console_commands;
 mod cs_grenades;
 mod cs_guns;
 mod debug_ui;

@@ -19,6 +19,13 @@ assert!(sim.velocity(p).xz().length() > 4.9);
 Every spec test case becomes one of these. New behavior gets a scenario test
 before it is called done.
 
+A `Sim` has no render world. Code that rewrites mesh assets can still be
+checked against Bevy's extraction with `harness::emulate_mesh_extraction`
+(each frame it takes a `RENDER_WORLD`-only mesh's data as the render world
+does; `MeshExtraction::failures` lists meshes announced changed after their
+data was gone, which a real run logs as "cannot be extracted: The asset has
+already been extracted"; `tests/it/prop_shadows.rs` uses it).
+
 Integration tests are one test crate, so the game links once for all of
 them (docs/performance.md, "Test cycle"): `tests/it/main.rs` lists each
 file as a module. A new test file goes in `tests/it/` with a `mod name;`
@@ -118,6 +125,12 @@ Only `Reflect`-registered types are visible; register new core components in
   action from the start, e.g. to fire in a `--screenshot` run; held
   console actions work without mouse capture. Automated runs never write
   config.cfg, and only archived cvars are saved there.
+- As CS:S's (checked against reference captures), `getpos` prints the
+  view's origin (the eye: standing on a floor at z it prints z + 64,
+  ducked z + 47; noclip keeps the offset) and `setpos` takes the player's
+  origin, Source's: the feet. So the same `setpos` line puts our camera
+  where CS:S's was (64 above its z standing), and `setpos` with `getpos`'s
+  numbers lands a view offset higher, in both games.
 - `menu [main|newgame|maps|bots|team|options]` opens the game menu (Esc)
   on a page, for screenshots of it: `--window 1280x720 --screenshot
   menu.png +menu options`; `menu keyboard` (or `mouse`, `audio`, `video`,
@@ -909,7 +922,8 @@ cargo run --features dev --bin refcmp -- hudcmp --out <scratch> --hud-ref <dir>
 ## Measuring CS:S behaviour live
 
 The reference CS:S (see refcmp) can also be measured directly over RCON:
-- Client commands run too: `getpos` returns the local player's position,
+- Client commands run too: `getpos` returns the local player's view
+  origin (the eye; in third person the camera; `setpos` takes the feet),
   `+jump`/`+forward`/`setang` move it. A `point_viewcontrol` holds the
   view (and `getpos`) until removed (`ent_remove cam1`; a map reload
   restores it for refcmp).

@@ -1948,7 +1948,21 @@ fn local_player(w: &mut World) -> Result<Entity, String> {
     q.single(w).map_err(|_| "no local player".to_string())
 }
 
-fn client_commands(app: &mut App) {
+/// The eye and the feet relative to a character's origin
+/// (`MovementState::eye_offset`, `hull_min`). As CS:S's, `getpos` prints
+/// the view's origin (the eye; noclip keeps the offset it was entered
+/// with) and `setpos` takes the player's origin, Source's: the feet. So a
+/// pasted `setpos` line puts the camera where CS:S's was (64 units above
+/// the numbers standing), and `setpos` with `getpos`'s numbers lands one
+/// view offset higher, as in CS:S.
+fn eye_and_feet(w: &World, p: Entity) -> (Vec3, Vec3) {
+    w.get::<MovementState>(p)
+        .map_or((Vec3::ZERO, Vec3::ZERO), |s| (s.eye_offset, Vec3::Y * s.hull_min.y))
+}
+
+/// The client's console commands (noclip, getpos/setpos/setang, god, kill,
+/// map, ...), registered by `ConsoleUiPlugin`; public for tests.
+pub fn client_commands(app: &mut App) {
     super::binds::commands(app);
     for a in ACTIONS {
         let a = *a;
@@ -2008,8 +2022,18 @@ fn client_commands(app: &mut App) {
         |w, _| {
             let p = local_player(w)?;
             let t = *w.get::<Transform>(p).ok_or("no transform")?;
+            // The view's origin, as CS:S prints it: in third person the
+            // camera's (a CS:S capture's getpos was its camera).
+            let third = w.get_resource::<super::view::CameraMode>().is_some_and(|m| m.third_person);
+            let camera = third
+                .then(|| {
+                    let mut q = w.query_filtered::<&GlobalTransform, With<FirstPersonCamera>>();
+                    q.iter(w).next().map(|g| g.translation())
+                })
+                .flatten();
+            let eye = camera.unwrap_or(t.translation + eye_and_feet(w, p).0);
             let i = w.get::<crate::core::Intent>(p).ok_or("no intent")?;
-            let s = Vec3::new(t.translation.x, -t.translation.z, t.translation.y) / 0.0254;
+            let s = Vec3::new(eye.x, -eye.z, eye.y) / 0.0254;
             Ok(Some(format!(
                 "setpos {:.2} {:.2} {:.2};setang {:.2} {:.2} 0.00",
                 s.x,
@@ -2022,7 +2046,7 @@ fn client_commands(app: &mut App) {
     )
     .console_command(
         "setpos",
-        "setpos <x> <y> <z>: move there (CS:S units, the view's origin as getpos prints it).",
+        "setpos <x> <y> <z>: put your feet there (CS:S units; Source's origin: getpos prints the eye, 64 higher standing).",
         |w, a| {
             let [x, y, z] = a else {
                 return Err("setpos <x> <y> <z>".into());
@@ -2030,7 +2054,8 @@ fn client_commands(app: &mut App) {
             let n = |s: &String| s.parse::<f32>().map_err(|_| format!("bad number \"{s}\""));
             let v = Vec3::new(n(x)?, n(z)?, -n(y)?) * 0.0254;
             let p = local_player(w)?;
-            w.get_mut::<Transform>(p).ok_or("no transform")?.translation = v;
+            let origin = v - eye_and_feet(w, p).1;
+            w.get_mut::<Transform>(p).ok_or("no transform")?.translation = origin;
             w.get_mut::<Velocity>(p).ok_or("no velocity")?.0 = Vec3::ZERO;
             Ok(None)
         },
