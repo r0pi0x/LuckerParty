@@ -8,6 +8,17 @@ plan when work starts; delete them when done.
 
 ## 0. Playtest feedback (2026-10-07), top priority
 
+- First run on a new PC: find the CS:S install automatically. Today only
+  `mashup.local.toml` names it; without it the game silently falls back to
+  built-in looks. Find Steam (Windows registry `HKCU\Software\Valve\Steam`
+  `SteamPath`; Linux `~/.steam/steam`, `~/.local/share/Steam`, Flatpak;
+  macOS `~/Library/Application Support/Steam`), read
+  `steamapps/libraryfolders.vdf` for the library holding app 240, then its
+  `appmanifest_240.acf` (installdir, build id for the mount doctor). If not
+  found, a first-run dialog to pick the folder, saved in the user's config
+  folder; an explicit `mashup.local.toml` path still wins. Log clearly
+  which install is used, or that none was found.
+
 - Sky: the bottom face (`dn`) of the 2D skybox looks wrongly oriented,
   perhaps needing a 180° turn seen from above. Check against CS:S with a
   reference capture looking straight down at the sky (refcmp `skyconv`
