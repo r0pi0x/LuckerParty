@@ -96,8 +96,13 @@ Where imported data lives:
   needs a full dump.
 - Moving assets between our own machines means copying the install or the
   cache directly (rsync, Syncthing), never through git.
-- Install paths (and Combat Arms keys) live in the gitignored
-  `mashup.local.toml`; see `mashup.local.example.toml`.
+- The game finds the CS:S install itself: Steam's library folders
+  (`libraryfolders.vdf`, the app's manifest, which also gives the build ID
+  for the mount doctor). If it can't, a first-run dialog asks for the
+  folder and remembers it in the user's settings file (outside the
+  repository); `mashup_install` in the console shows or changes it. A path
+  in the gitignored `mashup.local.toml` (see `mashup.local.example.toml`)
+  always wins; that file also holds the Combat Arms keys.
 - Tests that need a real install skip when it isn't present.
 - Our own original assets (greybox textures, our sounds, UI) may be committed,
   with Git LFS if they get large.

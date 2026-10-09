@@ -1363,6 +1363,19 @@ fn start_loading_ui(mut ui: ResMut<MenuUi>) {
     });
 }
 
+/// The install changed (the first-run dialog, `mashup_install`): read
+/// its GameUI look again, and the open page's maps.
+pub(super) fn reload_install(w: &mut World) {
+    if let Err(e) = w.run_system_cached(start_loading_ui) {
+        warn!("game menu: reading the GameUI look again: {e}");
+    }
+    let menu = w.resource::<GameMenu>();
+    if menu.open && menu.loading.is_none() {
+        let page = menu.page;
+        open_menu(w, page);
+    }
+}
+
 /// Take the GameUI look once read.
 fn ui_loaded(
     mut ui: ResMut<MenuUi>,
@@ -1657,9 +1670,10 @@ fn keys(
     mut regrab: ResMut<RegrabCursor>,
     mut commands: Commands,
     browser: Option<Res<super::server_browser::ServerBrowser>>,
+    first_run: Option<Res<super::first_run::FirstRun>>,
 ) {
-    // The server browser over the menu takes the keys.
-    if ui.open || browser.is_some_and(|b| b.open) {
+    // The server browser or first-run dialog over the menu takes the keys.
+    if ui.open || browser.is_some_and(|b| b.open) || first_run.is_some_and(|f| f.open) {
         return;
     }
     if !menu.open {
@@ -1731,8 +1745,9 @@ fn pointer(
     mut after: ResMut<AfterLoad>,
     mut regrab: ResMut<RegrabCursor>,
     browser: Option<Res<super::server_browser::ServerBrowser>>,
+    first_run: Option<Res<super::first_run::FirstRun>>,
 ) {
-    if !menu.open || menu.capture.is_some() || browser.is_some_and(|b| b.open) {
+    if !menu.open || menu.capture.is_some() || browser.is_some_and(|b| b.open) || first_run.is_some_and(|f| f.open) {
         return;
     }
     let mut inputs: Vec<Input> = hits

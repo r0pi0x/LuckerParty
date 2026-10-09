@@ -1003,7 +1003,7 @@ impl ServerBrowser {
     /// Read favourites and history from `saved_text`'s format (what it
     /// can; the rest is left out).
     pub fn load_text(&mut self, text: &str) {
-        let tokens = kv_tokens(text);
+        let tokens = crate::mount::keyvalues::tokens(text);
         let mut i = 0;
         let mut path: Vec<String> = Vec::new();
         let mut current: Vec<(String, String)> = Vec::new();
@@ -1077,53 +1077,6 @@ pub fn saved_path() -> Option<PathBuf> {
 
 fn escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
-/// KeyValues tokens: quoted strings (with `\"` and `\\`), bare words,
-/// braces; `//` comments skipped.
-fn kv_tokens(text: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '{' | '}' => out.push(c.to_string()),
-            '"' => {
-                let mut s = String::new();
-                while let Some(c) = chars.next() {
-                    match c {
-                        '\\' => {
-                            if let Some(n) = chars.next() {
-                                s.push(n);
-                            }
-                        }
-                        '"' => break,
-                        _ => s.push(c),
-                    }
-                }
-                out.push(s);
-            }
-            '/' if chars.peek() == Some(&'/') => {
-                for c in chars.by_ref() {
-                    if c == '\n' {
-                        break;
-                    }
-                }
-            }
-            c if c.is_whitespace() => {}
-            c => {
-                let mut s = c.to_string();
-                while let Some(&n) = chars.peek() {
-                    if n.is_whitespace() || n == '{' || n == '}' || n == '"' {
-                        break;
-                    }
-                    s.push(n);
-                    chars.next();
-                }
-                out.push(s);
-            }
-        }
-    }
-    out
 }
 
 /// Typed text into a box: no control characters, at most 128 bytes.

@@ -1696,6 +1696,11 @@ fn run_binds(
 /// Map names found by `map_names`, until an import changes them.
 static MAP_NAMES: Mutex<Option<Vec<String>>> = Mutex::new(None);
 
+/// The install changed: find its maps again.
+pub(super) fn forget_map_names() {
+    *MAP_NAMES.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
 /// Every map the game can load: the install's, its downloads and
 /// mashup's cache (cached; `import` refreshes it).
 pub(super) fn map_names() -> Vec<String> {

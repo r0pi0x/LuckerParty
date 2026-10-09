@@ -1,8 +1,11 @@
 //! Shared mount plumbing: a read-only virtual filesystem over a game's
-//! archives and loose files, plus local configuration (install paths).
+//! archives and loose files, plus local configuration and finding the
+//! installs (`install`: config, saved settings, Steam libraries).
 //! Game-specific archive formats live in `games/<name>/`.
 
 pub mod config;
+pub mod install;
+pub mod keyvalues;
 
 use std::{
     collections::BTreeMap,

@@ -1,5 +1,6 @@
 //! Machine-local settings from `mashup.local.toml` (gitignored): install
-//! paths, and later Combat Arms keys. See `mashup.local.example.toml`.
+//! paths (optional: `install` finds them otherwise) and Combat Arms keys.
+//! See `mashup.local.example.toml`.
 
 use std::{
     collections::BTreeMap,
@@ -15,6 +16,9 @@ pub const FILE_NAME: &str = "mashup.local.toml";
 pub struct LocalConfig {
     #[serde(default)]
     pub games: BTreeMap<String, GameConfig>,
+    /// The file it was read from.
+    #[serde(skip)]
+    pub file: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -65,16 +69,16 @@ impl LocalConfig {
             return Ok(Self::default());
         };
         let text = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
+        let mut config: Self = toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+        config.file = Some(fs::canonicalize(&path).unwrap_or(path));
+        Ok(config)
     }
 
-    /// Install path for `game` (e.g. `cs_source`), with `~` expanded.
+    /// Install path for `game` (e.g. `cs_source`), with `~` expanded:
+    /// this file's, else the one the user saved, else Steam's
+    /// (`install::resolve`, which also says how it was found).
     pub fn game_path(&self, game: &str) -> Option<PathBuf> {
-        let path = &self.games.get(game)?.path;
-        Some(match path.strip_prefix("~") {
-            Ok(rest) => dirs::home_dir()?.join(rest),
-            Err(_) => path.clone(),
-        })
+        super::install::resolve(self, game).install.map(|i| i.path)
     }
 }
 

@@ -4517,6 +4517,7 @@ dependencies = [
  "vmdl",
  "vmt-parser",
  "vtf",
+ "windows-sys 0.61.2",
  "winit",
 ]
 

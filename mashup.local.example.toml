@@ -1,9 +1,15 @@
-# Copy to mashup.local.toml (gitignored) and edit. Machine-specific settings
-# that must never be committed: install paths, and later Combat Arms keys.
+# Optional. Copy to mashup.local.toml (gitignored) and edit. Machine-specific
+# settings that must never be committed: install paths, Combat Arms keys.
+#
+# The game finds the CS:S install by itself: the path saved by its first-run
+# dialog or `mashup_install <folder>` (in the user's settings.toml, beside
+# the cfg folder), else Steam's library folders. A path here always wins
+# over both. The startup log says which install is used and how it was
+# found.
 
-[games.cs_source]
+# [games.cs_source]
 # Folder containing cstrike/ and hl2/. Steam app 240.
-path = "~/games/counter-strike-source"
+# path = "~/games/counter-strike-source"
 
 # Optional: CS:S dedicated server (Steam app 232330, SteamCMD anonymous)
 # with Metamod:Source, SourceMod and the tools/css_probe plugin, for the

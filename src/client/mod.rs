@@ -12,6 +12,7 @@ pub mod debug;
 pub mod debug_ui;
 pub mod debug_views;
 pub mod effects;
+pub mod first_run;
 pub mod fonts;
 pub mod game_hud;
 pub mod game_menu;
@@ -290,6 +291,7 @@ impl Plugin for ClientPlugin {
                 interp::ClientInterpPlugin,
                 net::ClientNetPlugin,
                 server_browser::ServerBrowserPlugin,
+                first_run::FirstRunPlugin,
                 map_screen::MapScreenPlugin,
             ))
             .add_systems(PostStartup, spawn_local_player)

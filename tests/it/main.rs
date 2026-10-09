@@ -25,6 +25,7 @@ mod map_logic;
 mod map_sound_fx;
 mod metrics;
 mod mount_cs_source;
+mod mount_install;
 mod movement;
 mod nav;
 mod net;

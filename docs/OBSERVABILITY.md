@@ -133,6 +133,20 @@ Only `Reflect`-registered types are visible; register new core components in
   back to the main menu: `+disconnect`; `map greybox` plays the greybox
   from anywhere; `toggleconsole` opens the console as the menu's
   Console entry does.
+- Which CS:S install a run uses: the startup log line
+  `Counter-Strike: Source install: <folder> (from config <file> | saved
+  in <file> | Steam library N (<folder>), build <id>)`, or `... none
+  found (<why>)`; `mashup_install` prints the same, `mashup_install
+  <folder>` sets and saves it, `mashup_install auto` forgets it. The
+  first-run dialog (CS:S not found) without touching real files:
+  `MASHUP_CONFIG` at an empty file, `MASHUP_STEAM_ROOT` at an empty
+  folder (it replaces the usual Steam folders; a fake Steam tree there
+  is searched instead) and `MASHUP_SETTINGS` at a scratch
+  `settings.toml`, then `--window 1280x720 --screenshot fr.png`;
+  `+mashup_firstrun type <folder>` types into it, `+mashup_firstrun
+  retry` presses Retry. Discovery is unit-tested with fake Steam trees
+  (`mount::install`), and `tests/it/mount_install.rs` mounts an install
+  found through one.
 - Fonts: the startup log line `fonts: tahoma -> tahoma.ttf, ...` says
   which file each scheme family resolved to (`(stand-in)` when the
   system lacks the real face, e.g. Liberation Sans for Tahoma on Linux;
@@ -754,7 +768,7 @@ lines its tabs run in a `Sim` (`DebugUiStatePlugin`).
 
 `dump` lists, summarizes and extracts files from a game install, using the
 same readers as the runtime mount. Install paths come from
-`mashup.local.toml`.
+`mashup.local.toml`, else the saved or Steam-found one (`mount::install`).
 
 ```
 cargo run --bin dump -- cs_source                      # counts and sizes by type
