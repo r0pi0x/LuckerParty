@@ -8,7 +8,9 @@
 //! the game's own icons (`hud/scoreboard_dead`, and to teammates
 //! `scoreboard_bomb` by the carrier and `scoreboard_defuser` by a player
 //! with a kit; spec objectives.md: the bomb for Ts only), the latency
-//! column "BOT" for bots and 0 for players (no networking yet), the local
+//! column "BOT" for bots and each player's ping (a network game's
+//! `net::NetScore`, which also brings scores and the bomb and kit
+//! markers; 0 in single player), the local
 //! player's row lit with `scoreboard-select`. Without the layout: two
 //! plain team columns with the status in words.
 
@@ -176,9 +178,9 @@ pub fn status(dead: bool, carrier: bool, kit: bool, teammate: bool) -> Status {
 }
 
 /// The latency column: "BOT" for bots (as CS:S shows them), else the
-/// player's ping (0: everyone is local until networking).
-pub fn latency(bot: bool) -> String {
-    if bot { "BOT".into() } else { "0".into() }
+/// player's ping, ms (0 in single player and for a listen server's host).
+pub fn latency(bot: bool, ping: u16) -> String {
+    if bot { "BOT".into() } else { ping.to_string() }
 }
 
 /// A scoreboard row.
@@ -192,6 +194,7 @@ struct Row {
     dead: bool,
     local: bool,
     bot: bool,
+    ping: u16,
     status: Status,
 }
 
@@ -223,8 +226,10 @@ fn update(
             Has<LocalPlayer>,
             Has<DefuseKit>,
             Has<crate::bot::Bot>,
+            Option<&crate::net::NetScore>,
+            Option<&crate::net::NetCharacter>,
         ),
-        With<Intent>,
+        (With<Intent>, Without<crate::objectives::hostages::Hostage>),
     >,
     bombs: Query<&Weapon, With<C4>>,
     windows: Query<&Window>,
@@ -264,12 +269,18 @@ fn update(
     // Rows by team, most kills first, then fewest deaths.
     let mut rows: Vec<Row> = players
         .iter()
-        .map(|(e, name, team, score, dead, local, kit, bot)| {
+        .map(|(e, name, team, score, dead, local, kit, bot, net, character)| {
             let s = score.copied().unwrap_or_default();
-            let name = if local {
-                "Player".to_string()
-            } else {
-                name.map_or_else(|| format!("{e}"), |n| n.to_string())
+            // A network game: the server's line (bots, the bomb, kits and
+            // ping as it knows them) and names.
+            let flag = |f: u8| net.is_some_and(|n| n.flags & f != 0);
+            let bot = bot || flag(crate::net::score_flags::BOT);
+            let carrier = carriers.contains(&e) || flag(crate::net::score_flags::BOMB);
+            let kit = kit || flag(crate::net::score_flags::KIT);
+            let name = match (local, character) {
+                (_, Some(c)) => c.name.clone(),
+                (true, None) => "Player".to_string(),
+                (false, None) => name.map_or_else(|| format!("{e}"), |n| n.to_string()),
             };
             Row {
                 column: if team.is_some_and(|t| t.0 == 1) { 1 } else { 2 },
@@ -279,9 +290,10 @@ fn update(
                 dead,
                 local,
                 bot,
+                ping: net.map_or(0, |n| n.ping),
                 status: status(
                     dead,
-                    carriers.contains(&e),
+                    carrier,
                     kit,
                     team.is_some() && team.copied() == my_team,
                 ),
@@ -398,7 +410,7 @@ fn draw_game(
                 ("Name", row.name.clone(), JustifyContent::FlexStart),
                 ("Score", row.kills.to_string(), JustifyContent::Center),
                 ("Deaths", row.deaths.to_string(), JustifyContent::Center),
-                ("Latency", latency(row.bot), JustifyContent::Center),
+                ("Latency", latency(row.bot, row.ping), JustifyContent::Center),
             ];
             for (col, text, justify) in text_cells {
                 let Some((_, r)) = cell(&format!("{prefix}Player{col}0")) else {
@@ -476,7 +488,7 @@ fn draw_plain(commands: &mut Commands, columns: &Query<(Entity, &Column)>, fonts
                     r.name.clone(),
                     r.kills.to_string(),
                     r.deaths.to_string(),
-                    latency(r.bot),
+                    latency(r.bot, r.ping),
                     r.status.word().into(),
                 ],
                 if r.dead { color.with_alpha(0.5) } else { color },
@@ -506,7 +518,8 @@ mod tests {
 
     #[test]
     fn bots_show_bot_for_latency() {
-        assert_eq!(latency(true), "BOT");
-        assert_eq!(latency(false), "0");
+        assert_eq!(latency(true, 40), "BOT");
+        assert_eq!(latency(false, 0), "0");
+        assert_eq!(latency(false, 87), "87");
     }
 }

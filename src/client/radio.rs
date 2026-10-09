@@ -109,6 +109,12 @@ fn register_commands(radio: Res<RadioCommands>, mut console: ResMut<Console>) {
             name: name.clone(),
             help: format!("Radio: \"{label}\" to your team."),
             run: std::sync::Arc::new(move |w, _| {
+                // A network client asks the server (who hears it, and we
+                // hear our own call when it comes back).
+                if w.get_resource::<crate::core::NetRole>() == Some(&crate::core::NetRole::Client) {
+                    w.write_message(crate::net::RadioRequest { command: name.clone() });
+                    return Ok(None);
+                }
                 let player = w
                     .query_filtered::<Entity, With<LocalPlayer>>()
                     .iter(w)

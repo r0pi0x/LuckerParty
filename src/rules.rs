@@ -36,7 +36,13 @@ impl Plugin for DeathmatchPlugin {
         resource_cvar::<crate::core::FriendlyFire, u8>(app, "mp_friendlyfire", "1: teammates hurt each other.", |f| {
             &mut f.0
         });
-        app.console_command(
+        resource_cvar::<Deathmatch, u32>(
+            app,
+            "mp_limitteams",
+            "In a network game, most players one team may have over the other (0: no limit).",
+            |d| &mut d.limit_teams,
+        );
+        app.add_message::<TeamRequested>().console_command(
             "jointeam",
             "jointeam <2|3>: join the terrorists (2) or counter-terrorists (3) and respawn at their spawn.",
             |w, a| {
@@ -45,34 +51,71 @@ impl Plugin for DeathmatchPlugin {
                     Some("3") => Team(2),
                     _ => return Err("jointeam <2|3> (2: terrorists, 3: counter-terrorists)".into()),
                 };
+                // A network client asks the server (`net`).
+                if w.get_resource::<crate::core::NetRole>() == Some(&crate::core::NetRole::Client) {
+                    w.write_message(TeamRequested(team));
+                    return Ok(None);
+                }
                 let player = w
                     .query_filtered::<Entity, With<crate::core::LocalPlayer>>()
                     .iter(w)
                     .next()
                     .ok_or("no local player")?;
-                let mut e = w.entity_mut(player);
-                if e.get::<Team>() == Some(&team) {
-                    return Ok(Some("already on that team".into()));
-                }
-                // Switching teams: respawn at the new team's spawn now (no
-                // death counted).
-                e.insert((team, Dead { since: f64::MIN }));
-                Ok(Some(format!(
-                    "joined the {}",
-                    if team.0 == 1 {
-                        "terrorists"
-                    } else {
-                        "counter-terrorists"
-                    }
-                )))
+                join_team(w, player, team).map(Some)
             },
         );
     }
 }
 
+/// A network client's `jointeam`: the team it asks the server for.
+#[derive(Message, Clone, Copy, Debug, PartialEq)]
+pub struct TeamRequested(pub Team);
+
+/// Put `player` on `team`: it respawns at the new team's spawn (with
+/// rounds, at the next round; no death counted). In a network game
+/// (`NetRole::Server`) a team may not get more than `mp_limitteams`
+/// players ahead of the other.
+pub fn join_team(w: &mut World, player: Entity, team: Team) -> Result<String, String> {
+    if w.get::<Team>(player) == Some(&team) {
+        return Ok("already on that team".into());
+    }
+    let limit = w.resource::<Deathmatch>().limit_teams;
+    if limit > 0 && w.get_resource::<crate::core::NetRole>() == Some(&crate::core::NetRole::Server) {
+        let mut counts = [0u32; 3];
+        for (e, t) in w
+            .query_filtered::<(Entity, &Team), (With<Intent>, Without<crate::objectives::hostages::Hostage>)>()
+            .iter(w)
+        {
+            if e != player && (1..=2).contains(&t.0) {
+                counts[t.0 as usize] += 1;
+            }
+        }
+        let other = if team.0 == 1 { 2 } else { 1 };
+        if counts[team.0 as usize] + 1 > counts[other] + limit {
+            return Err(format!(
+                "Too many {} (mp_limitteams {limit}): join the other team.",
+                if team.0 == 1 { "Terrorists" } else { "Counter-Terrorists" }
+            ));
+        }
+    }
+    // Switching teams: respawn at the new team's spawn now (no death
+    // counted).
+    w.entity_mut(player).insert((team, Dead { since: f64::MIN }));
+    Ok(format!(
+        "joined the {}",
+        if team.0 == 1 {
+            "terrorists"
+        } else {
+            "counter-terrorists"
+        }
+    ))
+}
+
 #[derive(Resource, Clone, Debug)]
 pub struct Deathmatch {
     pub respawn_delay: f32,
+    /// `mp_limitteams` (network games only).
+    pub limit_teams: u32,
     /// Spawn points picked so far (round robin, so players spread out).
     next_spawn: usize,
 }
@@ -81,6 +124,8 @@ impl Default for Deathmatch {
     fn default() -> Self {
         Self {
             respawn_delay: 2.0,
+            // CS:S's default.
+            limit_teams: 2,
             next_spawn: 0,
         }
     }

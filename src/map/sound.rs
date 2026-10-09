@@ -240,6 +240,19 @@ impl PlaySound {
     }
 }
 
+/// A sound of the game's rules (the bomb, hostages), not of anyone's
+/// predicted action: played here (`relay_game_sounds` turns it into a
+/// `PlaySound`) and, on a network server, sent to every client (`net`).
+#[derive(Message, Clone, Debug)]
+pub struct GameSound(pub PlaySound);
+
+/// Play the rules' sounds here.
+pub fn relay_game_sounds(mut sounds: MessageReader<GameSound>, mut play: MessageWriter<PlaySound>) {
+    for s in sounds.read() {
+        play.write(s.0.clone());
+    }
+}
+
 /// The loaded map's sounds.
 #[derive(Resource, Clone)]
 pub struct SoundBank(pub Arc<MapSounds>);

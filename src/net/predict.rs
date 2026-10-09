@@ -167,9 +167,16 @@ struct Pending {
     done: u64,
 }
 
-/// The rules hold our player (dead, freeze time), as the server said.
+/// The rules hold our player as the server said: dead (only the look),
+/// frozen until a tick (the look and weapon picks: freeze time ends on
+/// the server's tick, known in advance), still (arming or defusing: no
+/// moving or jumping).
 #[derive(Resource, Default)]
-struct Held(bool);
+struct Held {
+    dead: bool,
+    frozen_until: Option<u64>,
+    still: bool,
+}
 
 /// This tick's intent before the rules held it, put back after the tick
 /// (the input owns `Intent`; a held tick mustn't erase it).
@@ -445,7 +452,11 @@ fn receive_own_states(
     graph.buffered = s.buffered;
     graph.missed = s.missed;
     graph.late = s.late;
-    held.0 = s.held;
+    *held = Held {
+        dead: s.held,
+        frozen_until: s.frozen_until,
+        still: s.still,
+    };
     if let Some(p) = player {
         let (e, slot, seed) = *p;
         if slot.is_none_or(|m| m.0 != s.movement)
@@ -735,20 +746,32 @@ fn capture_command(
     }
 }
 
-/// The rules hold our player as the server's do (`rules::hold_the_dead`,
-/// freeze time): nothing but the look.
-fn hold_local(held: Res<Held>, mut player: Option<Single<&mut Intent, (With<LocalPlayer>, With<MovementSlot>)>>) {
-    if !held.0 {
-        return;
-    }
-    if let Some(intent) = player.as_deref_mut() {
-        let (yaw, pitch, command) = (intent.yaw, intent.pitch, intent.command);
+/// The rules hold our player as the server's do (`rules::hold_the_dead`:
+/// nothing but the look; `rules::rounds::hold_frozen`: the look and weapon
+/// picks; `objectives::bomb`'s hold while arming or defusing: no moving or
+/// jumping).
+fn hold_local(
+    held: Res<Held>,
+    clock: Res<CommandClock>,
+    mut player: Option<Single<&mut Intent, (With<LocalPlayer>, With<MovementSlot>)>>,
+) {
+    let Some(intent) = player.as_deref_mut() else { return };
+    let frozen = held
+        .frozen_until
+        .is_some_and(|until| clock.tick.is_none_or(|t| t < until));
+    if held.dead || frozen {
+        let (yaw, pitch, command, select) = (intent.yaw, intent.pitch, intent.command, intent.select);
         **intent = Intent {
             yaw,
             pitch,
             command,
+            select: if held.dead { None } else { select },
             ..default()
         };
+    }
+    if held.still {
+        intent.move_axis = Vec2::ZERO;
+        intent.jump = false;
     }
 }
 

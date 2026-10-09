@@ -611,7 +611,8 @@ fn command_allowlists() {
     assert_eq!(check_server_command(" SV_MaxVelocity  \"5000\" "), set("sv_maxvelocity", "5000"));
     assert_eq!(check_server_command("sv_maxvelocity 1e9"), set("sv_maxvelocity", "100000"));
     assert_eq!(check_server_command("sv_enablebunnyhopping 1"), set("sv_enablebunnyhopping", "1"));
-    assert_eq!(check_server_command("sv_cheats 1"), set("sv_cheats", "1"));
+    // The cheats gate is the server operator's alone.
+    assert_eq!(check_server_command("sv_cheats 1"), Err("a setting maps may not change"));
     assert_eq!(check_server_command("mp_freezetime 0"), set("mp_freezetime", "0"));
     assert_eq!(check_server_command("phys_pushscale 50"), set("phys_pushscale", "50"));
     assert_eq!(check_server_command("bot_stop 1"), set("bot_stop", "1"));
