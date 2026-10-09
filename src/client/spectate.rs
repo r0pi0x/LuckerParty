@@ -1011,7 +1011,9 @@ fn spectator_panel(
         let bars = m.layouts.get(m.spectator.as_ref()?)?;
         Some((m, bars, m.spectator_menu.as_ref().and_then(|k| m.layouts.get(k))))
     });
-    let active = spec.active();
+    // The freeze cam shows its own panel over its picture: no bars (nor
+    // in the picture it takes).
+    let active = spec.active() && !matches!(spec.phase, SpecPhase::FreezeCam { .. });
     // The plain panel, without the game's layout.
     let line = if layouts.is_some() { String::new() } else { about.plain() };
     vis.set_if_neq(if line.is_empty() {

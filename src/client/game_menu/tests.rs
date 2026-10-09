@@ -2,7 +2,7 @@ use super::*;
 use crate::client::options::setting_index;
 use crate::map::hud::{GameUiItem, ServerSetting};
 
-const CVARS: [(&str, &str); 14] = [
+const CVARS: [(&str, &str); 17] = [
     ("sensitivity", "3"),
     ("m_pitch", "0.022"),
     ("zoom_sensitivity_ratio", "1.2"),
@@ -17,6 +17,9 @@ const CVARS: [(&str, &str); 14] = [
     ("bot_reaction", "0.35"),
     ("hud_fastswitch", "0"),
     ("con_enable", "1"),
+    ("cl_autowepswitch", "1"),
+    ("hud_centerid", "1"),
+    ("cl_disablefreezecam", "0"),
 ];
 
 fn get(n: &str) -> Option<String> {
@@ -1180,6 +1183,37 @@ fn multiplayer_advanced_without_the_install_has_the_weapon_hand() {
     press(&mut m, &[Input::Click(Target::Row(hand), 0), Input::Click(Target::ComboItem(0), 0)]);
     let o = click_on(&mut m, |m| button(m, Action::Ok));
     assert_eq!(o.lines, ["cl_righthand 0"]);
+}
+
+/// The three options this game's code reads (`cl_autowepswitch`,
+/// `hud_centerid`, `cl_disablefreezecam`) are check boxes there, with
+/// `user.scr`'s defaults, and OK sets the cvars.
+#[test]
+fn multiplayer_advanced_has_the_switch_names_and_freeze_cam() {
+    let mut m = menu();
+    click(&mut m, MainItem::Options);
+    press(&mut m, &[Input::Click(Target::Tab(5), 0)]);
+    click_on(&mut m, |m| button(m, Action::MultiplayerAdvanced));
+    let rows: Vec<String> = m.rows().iter().map(crate::client::game_menu::label_of).collect();
+    assert_eq!(
+        rows[1..4],
+        [
+            "Automatically switch to picked up weapons (if more powerful)",
+            "Center player names",
+            "Disable freeze cam"
+        ]
+    );
+    let switch = row_with(&m, Field::UserCvar(1));
+    let names = row_with(&m, Field::UserCvar(2));
+    let freeze = row_with(&m, Field::UserCvar(3));
+    assert_eq!(control(&m, switch), Control::Check(true));
+    assert_eq!(control(&m, names), Control::Check(true));
+    assert_eq!(control(&m, freeze), Control::Check(false));
+    for r in [switch, names, freeze] {
+        press(&mut m, &[Input::Click(Target::Row(r), 0)]);
+    }
+    let o = click_on(&mut m, |m| button(m, Action::Ok));
+    assert_eq!(o.lines, ["cl_autowepswitch 0", "hud_centerid 0", "cl_disablefreezecam 1"]);
 }
 
 #[test]

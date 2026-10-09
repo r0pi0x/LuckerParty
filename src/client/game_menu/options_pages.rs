@@ -30,13 +30,26 @@ pub fn aspect_of(size: &str) -> Option<usize> {
 type Choices = &'static [(&'static str, &'static str, &'static str)];
 
 /// Multiplayer > Advanced without the install's script: ours, in CS:S's
-/// words (cvar, label token, our label, its choices).
-pub(super) const USER_FALLBACK: [(&str, &str, &str, Choices); 1] = [(
-    "cl_righthand",
-    "#Cstrike_Weapon_Alignment",
-    "Weapon alignment",
-    &[("#Cstrike_Left_Handed", "Left handed", "0"), ("#Cstrike_Right_Handed", "Right handed", "1")],
-)];
+/// words and `user.scr`'s order and defaults (cvar, label token, our
+/// label, its choices (none: a check box), default).
+pub(super) const USER_FALLBACK: [(&str, &str, &str, Choices, &str); 4] = [
+    (
+        "cl_righthand",
+        "#Cstrike_Weapon_Alignment",
+        "Weapon alignment",
+        &[("#Cstrike_Left_Handed", "Left handed", "0"), ("#Cstrike_Right_Handed", "Right handed", "1")],
+        "1",
+    ),
+    (
+        "cl_autowepswitch",
+        "#Cstrike_Automatic_Weapon_Switch",
+        "Automatically switch to picked up weapons (if more powerful)",
+        &[],
+        "1",
+    ),
+    ("hud_centerid", "#Valve_Center_Player_Names", "Center player names", &[], "1"),
+    ("cl_disablefreezecam", "#Cstrike_Disable_Freeze_Cam", "Disable freeze cam", &[], "0"),
+];
 
 /// The keyboard list without the game's `kb_act.lst`: what mashup does.
 pub(super) const OUR_ACTIONS: &[(&str, &str)] = &[
@@ -507,11 +520,15 @@ impl GameMenu {
             Some(ui) => ui.user_settings.clone(),
             None => USER_FALLBACK
                 .iter()
-                .map(|(cvar, token, ours, list)| crate::map::hud::ServerSetting {
+                .map(|(cvar, token, ours, list, default)| crate::map::hud::ServerSetting {
                     cvar: cvar.to_string(),
                     label: self.text(token, ours),
-                    kind: ServerSettingKind::List(list.iter().map(|(t, o, v)| (self.text(t, o), v.to_string())).collect()),
-                    default: "1".into(),
+                    kind: if list.is_empty() {
+                        ServerSettingKind::Bool
+                    } else {
+                        ServerSettingKind::List(list.iter().map(|(t, o, v)| (self.text(t, o), v.to_string())).collect())
+                    },
+                    default: default.to_string(),
                 })
                 .collect(),
         };

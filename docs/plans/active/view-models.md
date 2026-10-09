@@ -168,8 +168,14 @@ A loader (new model kind), so the plan comes first (CLAUDE.md).
   to view models (and with which fade time) isn't specced. We use the
   file's fade-in/fade-out values like bodies do.
 - **Idle timing.** Spec weapons.md 3.7: idle after `TimeToIdle` (AK 1.9 s)
-  "probably"; the knife has no listed value, so it idles when its
-  sequence ends.
+  "probably", and again no sooner than `IdleInterval` after the last idle
+  started. The knife has no listed values; CS:S's holds the draw's last
+  frame at least 10 s (captures 2, 6, 10 s), so it idles `KNIFE_IDLE`
+  (20 s, a guess) after its draw or last attack. `dump --sequences`
+  prints each sequence's motion: of the idles only the knife's (still
+  for 3.4 s, then turning the blade over 9 s) and the TMP's (a 5 s sway
+  of up to 9 degrees) move; every other idle is a still pose matching
+  its draw's end.
 - **Not done:** sound events on view-model sequences (5004:
   `Weapon_AK47.BoltPull` etc.), shake at 10 %, brass for other players
   (world models have no ejection attachment), `viewmodel_fov` is archived

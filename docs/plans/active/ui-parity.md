@@ -120,7 +120,7 @@ defaults are CS:S's (`client::options` tests
 | Multiplayer `ImportSprayImage`, `LogoImage` | no sprays |
 | Multiplayer `ResetStats` | no stats |
 | Multiplayer > Advanced `cl_clanid`, `cl_disablehtmlmotd`, `cl_cloud_settings`, `hud_takesshots` | no clans, no MOTD, no Steam Cloud, no end-of-map screenshots |
-| Multiplayer > Advanced `cl_autowepswitch`, `hud_centerid`, `cl_autohelp`, `cl_disablefreezecam` | the features (switching to a better weapon picked up, names of who you aim at, hints, the freeze cam) aren't in mashup yet: backlog |
+| Multiplayer > Advanced `cl_autohelp` | hints aren't in mashup yet: backlog |
 
 #### Deliberate differences (CS:S's own, kept apart)
 
@@ -227,7 +227,9 @@ newgame +menuinput open`: `< Random Map >` first) and `extras`.
 - The console as CS:S's: a sizeable, movable VGUI frame (`CConsoleDialog`,
   no `.res`: its layout is code) instead of our drop-down.
 - The greyed controls whose features mashup may get (gamma, texture
-  filtering, the Multiplayer > Advanced features listed above).
+  filtering, Multiplayer > Advanced's auto-help). Its `cl_autowepswitch`,
+  `hud_centerid` and `cl_disablefreezecam` work (`weapon::drop`,
+  `client::target_id`, `client::freeze_cam`).
 - Reference captures of CS:S's dialogs to compare with (see the report
   of this work: an open combo box's list colours, the slider's tick
   count, a focused control's ring).

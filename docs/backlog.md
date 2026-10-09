@@ -34,12 +34,17 @@ plan when work starts; delete them when done.
   Keyboard > Advanced (fast weapon switch, developer console =
   `con_enable`, ours defaults to 1, CS:S 0): not captured.
 
-- Knife idle: CS:S's knife view model holds still while idle (captures 2,
-  6 and 10 s after drawing it at `setpos -295 1078 120; setang 0 0 0`, CT,
-  identical frames: blade upright, hands unmoved); ours plays a 12.5 s
-  idle that turns the blade sideways. Check which sequence we pick for
-  idle (activity weights, a "look at" sequence vs the plain idle) and
-  whether other view models idle when CS:S's don't.
+- Knife idle (done 2026-10-09, to playtest): the knife holds the draw's
+  last frame and idles only `KNIFE_IDLE` (20 s, a guess) after its draw
+  or last attack (its only idle, 12.5 s, is still for its first 3.4 s,
+  then turns the blade); non-looping idles repeat after the script's
+  `IdleInterval` (the TMP's 5 s sway, the only other idle that moves:
+  `dump --sequences` prints each idle's motion). Capture to confirm: the
+  knife 15, 20, 25 and 30 s after drawing it; the TMP 1-10 s after.
+- cl_autowepswitch, the target ID (`hud_centerid`, `mp_playerid`) and
+  the freeze cam (`cl_disablefreezecam`) (done 2026-10-09, to playtest):
+  Multiplayer > Advanced's three check boxes work. Captures to confirm
+  are listed in docs/tech-debt.md's rows for them.
 
 - mg_item_battle_v4b's items (done 2026-10-09, to playtest): a picked-up
   knife's parented entities follow its carrier (`map::entities` anchors),

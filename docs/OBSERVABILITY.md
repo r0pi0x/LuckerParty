@@ -249,7 +249,14 @@ Only `Reflect`-registered types are visible; register new core components in
   +cam_idealdist 600 +cam_idealyaw 70 ++attack --frames 130` shows the bot
   hearing you behind the long crate and lobbing an HE over it.
 - Spectating: `mashup_hurtme chest 500` (in a rounds game, `+mashup_rounds 1`) starts the
-  death cam; 2 s later the camera watches a living teammate. Drive it
+  death cam; 2 s later the camera watches a living teammate.
+  `mashup_hurtme chest 500 0 <name>` is a hit from that player: its
+  death cam turns to it, then the freeze cam (0.4 s toward it, the
+  picture held 4 s with the freeze sound and panel; `cl_disablefreezecam
+  1` skips it, `spec_freeze_traveltime`/`spec_freeze_time` time it;
+  `tests/it/spectate.rs`). The target ID (the name under the
+  crosshair; `hud_centerid`, `mp_playerid`) is the `TargetId`
+  resource (`tests/it/target_id.rs`). Drive it
   with `spec_mode 4|5|6` (first person, chase, free look), `spec_next`
   and `spec_prev`, `mp_forcecamera 0` to watch enemies too; the state is
   the `Spectator` resource (`tests/it/spectate.rs` drives it headless).
@@ -345,7 +352,10 @@ Only `Reflect`-registered types are visible; register new core components in
   stand at one and fire: `+setpos 470 2330 -78 +setang 0 15 0 ++attack`
   on de_dust2 with a few `--frames` values (a flash lasts 0.05 s, every
   0.1 s), against the same without `++attack`. `dump cs_source
-  --sequences <model>` shows a model's animation events and attachments.
+  --sequences <model>` shows a model's animation events and attachments,
+  and each sequence's motion (its largest bone turn from the first frame
+  and over which cycles; for an idle, how far its first frame is from
+  the draw's end): which idles visibly move (the knife's, the TMP's).
 - Water (CS:S cvars): `r_WaterDrawReflection 0` / `r_WaterDrawRefraction
   0` turn the planar reflection / refraction off (to tell which one an
   artefact comes from), `mat_drawwater 0` hides water surfaces,

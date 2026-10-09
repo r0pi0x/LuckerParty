@@ -223,7 +223,6 @@ fn draw(
             Text::default(),
             TextFont::default(),
             TextColor(Color::WHITE),
-            TextShadow::default(),
             TextLayout::justify(Justify::Center),
             Node {
                 position_type: PositionType::Absolute,

@@ -1071,7 +1071,10 @@ with tests passing and something to see.
        a `NameRequest` (Source's setinfo), the host's own change too; the
        server renames the character and tells everyone (`NameChanged`,
        "* X changed name to Y", the game's `Cstrike_Name_Change`). Test:
-       `net_rules::a_client_changes_its_name`.
+       `net_rules::a_client_changes_its_name`. Userinfo the same way: a
+       client's userinfo cvars (`cl_autowepswitch`) ride `Join` and, when
+       changed, `UserInfoRequest`, kept as its character's
+       `core::UserInfo` (`net_weapons::auto_switch_rides_the_clients_userinfo`).
      - [x] Flood protection (`net::chat::Flood`, ours: CS:S drops spam,
        its limits unmeasured): 4 chat lines in a burst then one a second,
        3 radio calls then one every 1.5 s, more dropped and the sender

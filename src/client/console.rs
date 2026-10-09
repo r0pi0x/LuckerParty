@@ -2097,7 +2097,7 @@ pub fn client_commands(app: &mut App) {
     })
     .console_command(
         "mashup_hurtme",
-        "mashup_hurtme <head|chest|stomach|leftarm|rightarm|leftleg|rightleg|generic> [amount=100] [from yaw, degrees: 0 = shot from the front]: a bullet hit on yourself at that hitbox (e.g. to see your ragdoll in thirdperson).",
+        "mashup_hurtme <head|chest|stomach|leftarm|rightarm|leftleg|rightleg|generic> [amount=100] [from yaw, degrees: 0 = shot from the front] [attacker name]: a bullet hit on yourself at that hitbox (e.g. to see your ragdoll in thirdperson; killed by a named player, its death cam and freeze cam).",
         |w, a| {
             use crate::core::{Damage, DamageKind, Health, Hitboxes, Hitgroup, Intent};
             let group = match a.first().map(|s| s.to_ascii_lowercase()).as_deref() {
@@ -2109,7 +2109,18 @@ pub fn client_commands(app: &mut App) {
                 Some("leftleg") => Hitgroup::LeftLeg,
                 Some("rightleg") => Hitgroup::RightLeg,
                 Some("generic") => Hitgroup::Generic,
-                _ => return Err("mashup_hurtme <hitgroup> [amount] [from yaw]".into()),
+                _ => return Err("mashup_hurtme <hitgroup> [amount] [from yaw] [attacker]".into()),
+            };
+            let attacker = match a.get(3) {
+                Some(name) => {
+                    let mut q = w.query::<(Entity, &Name)>();
+                    let found = q
+                        .iter(w)
+                        .find(|(_, n)| n.as_str().eq_ignore_ascii_case(name))
+                        .map(|(e, _)| e);
+                    Some(found.ok_or_else(|| format!("nobody is called {name}"))?)
+                }
+                None => None,
             };
             let amount = a.get(1).and_then(|v| v.parse::<f32>().ok()).unwrap_or(100.0) / 100.0;
             let from = a.get(2).and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0).to_radians();
@@ -2129,7 +2140,7 @@ pub fn client_commands(app: &mut App) {
             w.write_message(Damage {
                 force: bevy::math::Vec3::ZERO,
                 target: p,
-                attacker: None,
+                attacker,
                 amount,
                 point,
                 dir,
