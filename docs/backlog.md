@@ -48,6 +48,14 @@ plan when work starts; delete them when done.
   weapon switch" = `hud_fastswitch`, default 0, and its other entries) and
   any other option CS:S shows that we lack; defaults as CS:S's.
 
+- Fog in the 3D skybox: apply the sky_camera's own fog (`fogenable`,
+  colour, start/end in skybox units) to what the 3D skybox draws, as CS:S
+  does. Today the skybox camera gets a Bevy `DistanceFog`
+  (`src/map/mod.rs`, skybox camera spawn), but our map/prop shaders take
+  fog from their material uniforms and skybox materials get none
+  (`fog_color(... !skybox)`), so nothing in the skybox is fogged. Check
+  against a CS:S capture on a map with skybox fog (de_dust2, cs_italy).
+
 - Decals persist across rounds (bullet holes, blood), as we believe CS:S
   does (players bind `r_cleardecals`, now there; `mashup_round_cleardecals
   1` clears them each round). Left: confirm the game keeps them.

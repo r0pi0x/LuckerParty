@@ -55,9 +55,10 @@ fn level_two_loads_hdr_lighting_sky_and_tonemap_bounds() {
     assert_eq!(tone.bloom_scale, 1.0);
 
     // The atlas holds lump 53's samples: a face's first luxel matches.
-    let bytes = bsp_bytes();
-    let hdr_lump = lightmap::hdr_lighting_lump(&bytes).expect("dust2 has HDR lighting");
-    assert!(!std::ptr::eq(hdr_lump.as_ptr(), lightmap::lighting_lump(&bytes).as_ptr()));
+    let (bytes, is_hdr) = lightmap::select_lighting(bsp_bytes(), true);
+    assert!(is_hdr, "dust2 has HDR lighting");
+    let hdr_lump = lightmap::lighting_lump(&bytes, true);
+    assert!(!std::ptr::eq(hdr_lump.as_ptr(), lightmap::lighting_lump(&bytes, false).as_ptr()));
     let bsp = vbsp::Bsp::read(&bytes).unwrap();
     let face = bsp
         .models()

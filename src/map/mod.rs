@@ -89,9 +89,35 @@ const NORMAL_X_SIGN: f32 = 1.0;
 const SOURCE_LIGHTMAP_SCALE: f32 = 4.594_793;
 
 pub fn source_ldr_texel(l: f32) -> u8 {
-    let i = (l * 1024.0).round().clamp(0.0, 4095.0);
-    (255.0 * 0.5 * (i / 1024.0).powf(1.0 / 2.2)).round() as u8
+    SOURCE_LDR.texel[source_ldr_level(l)]
 }
+
+/// The 1/1024 step a linear lightmap value is stored at (0-4095).
+fn source_ldr_level(l: f32) -> usize {
+    (l * 1024.0).round().clamp(0.0, 4095.0) as usize
+}
+
+/// Every level's encoding, worked out once: a `powf` per channel was most
+/// of the cost of relighting blocks of animated light styles.
+struct SourceLdrTable {
+    /// The stored 8-bit value of each level.
+    texel: [u8; 4096],
+    /// Each level's 0.5 L^(1/2.2), before the 8-bit rounding.
+    gamma: [f32; 4096],
+}
+
+static SOURCE_LDR: std::sync::LazyLock<SourceLdrTable> = std::sync::LazyLock::new(|| {
+    let mut t = SourceLdrTable {
+        texel: [0; 4096],
+        gamma: [0.0; 4096],
+    };
+    for i in 0..4096 {
+        let l = i as f32 / 1024.0;
+        t.texel[i] = (255.0 * 0.5 * l.powf(1.0 / 2.2)).round() as u8;
+        t.gamma[i] = 0.5 * l.powf(1.0 / 2.2);
+    }
+    t
+});
 
 /// Source LDR bump pages (specs/cs_source/shaders.md, "Bump page encoding
 /// at upload"): the three directional values of a luxel (linear) are
@@ -101,8 +127,7 @@ pub fn source_ldr_texel(l: f32) -> u8 {
 pub fn source_ldr_bump_texels(flat: [f32; 3], pages: [[f32; 3]; 3]) -> [[u8; 3]; 3] {
     let mut q = [[0.0f32; 3]; 3];
     for c in 0..3 {
-        let i = (flat[c] * 1024.0).round().clamp(0.0, 4095.0);
-        let goal = 0.5 * (i / 1024.0).powf(1.0 / 2.2);
+        let goal = SOURCE_LDR.gamma[source_ldr_level(flat[c])];
         let mean = (pages[0][c] + pages[1][c] + pages[2][c]) / 3.0;
         let s = if mean > 0.0 { goal / mean } else { 0.0 };
         for k in 0..3 {
@@ -1309,6 +1334,8 @@ pub struct MapData {
     /// Gib lists for breaking brushes, and how gibs move.
     pub gibs: Vec<breakables::MapGibSet>,
     pub gib_physics: Option<breakables::MapGibPhysics>,
+    /// Seconds each loading stage took (`loading::LoadTimer`), in order.
+    pub load_times: Vec<(&'static str, f32)>,
 }
 
 /// A muzzle flash: view-facing additive sprites strung out along the
@@ -2340,12 +2367,13 @@ fn spawn_map(
         let bumped_lightmaps: Option<[Handle<Image>; 3]> =
             built.and_then(|b| b.bumped).map(|pages| pages.map(|p| images.add(p)));
         // Switchable and animated light styles relight these images
-        // (`light_styles`).
+        // (`light_styles`); the plain one only where surfaces sample it
+        // (standard materials, used when the world material is missing).
         if let Some(l) = data.lightmap.as_ref().filter(|l| !l.styles.is_empty()) {
             commands.insert_resource(light_styles::StyledLightmaps::new(
                 Arc::new(l.clone()),
                 source_ldr,
-                lightmap.clone(),
+                lightmap.clone().filter(|_| world_materials.is_none()),
                 world_lightmap.clone(),
                 bumped_lightmaps.clone(),
             ));
@@ -4469,46 +4497,20 @@ fn convex_planes(model: &MapModel, share: f32) -> Option<Vec<(Vec3, f32)>> {
     (total > 0.0 && on >= share * total).then_some(planes)
 }
 
-/// Model-space planes placed in the world, with the bounding box's planes
-/// added as bevels (so box sweeps stop at corners like Source's brushes).
+/// Model-space planes placed in the world, with bevel planes added (so box
+/// sweeps stop at edges and corners like Source's brushes:
+/// `MapBrush::from_planes`).
 fn place_brush(planes: &[(Vec3, f32)], translation: Vec3, rotation: Quat, surface: Option<String>) -> MapBrush {
-    let mut world: Vec<(Vec3, f32)> = planes
+    let world: Vec<(Vec3, f32)> = planes
         .iter()
         .map(|(n, d)| {
             let n2 = rotation * *n;
             (n2, d + n2.dot(translation))
         })
         .collect();
-    // Corners: intersections of plane triples that lie inside all planes.
-    let mut corners = Vec::new();
-    for i in 0..world.len() {
-        for j in i + 1..world.len() {
-            for k in j + 1..world.len() {
-                let ((n1, d1), (n2, d2), (n3, d3)) = (world[i], world[j], world[k]);
-                let denom = n1.dot(n2.cross(n3));
-                if denom.abs() < 1e-6 {
-                    continue;
-                }
-                let p = (n2.cross(n3) * d1 + n3.cross(n1) * d2 + n1.cross(n2) * d3) / denom;
-                if world.iter().all(|(n, d)| n.dot(p) <= d + 1e-3) {
-                    corners.push(p);
-                }
-            }
-        }
-    }
-    let min = corners.iter().fold(Vec3::splat(f32::MAX), |a, c| a.min(*c));
-    let max = corners.iter().fold(Vec3::splat(f32::MIN), |a, c| a.max(*c));
-    for (n, d) in MapBrush::from_box(min, max).planes {
-        if !world.iter().any(|(m, e)| m.dot(n) > 0.9999 && (e - d).abs() < 1e-4) {
-            world.push((n, d));
-        }
-    }
     MapBrush {
-        planes: world,
-        min,
-        max,
-        ladder: false,
         surface,
+        ..MapBrush::from_planes(world)
     }
 }
 

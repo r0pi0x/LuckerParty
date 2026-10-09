@@ -19,18 +19,29 @@ const DIRECTORY: usize = 8;
 /// reports it if it parses that lump). Files without compressed lumps
 /// come back unchanged.
 pub fn inflate(mut bytes: Vec<u8>) -> Vec<u8> {
-    for i in 0..LUMPS {
+    // The compressed lumps, decompressed side by side (surf_sedona: 80 MB
+    // of lumps, half of it its HDR lighting).
+    let packed: Vec<(usize, &[u8])> = (0..LUMPS)
+        .filter_map(|i| {
+            let at = DIRECTORY + i * ENTRY;
+            let entry = bytes.get(at..at + ENTRY)?;
+            let word = |k: usize| u32::from_le_bytes(entry[k * 4..k * 4 + 4].try_into().unwrap()) as usize;
+            let (ofs, len, four_cc) = (word(0), word(1), word(3));
+            if four_cc == 0 || len < 17 {
+                return None;
+            }
+            Some((i, bytes.get(ofs..ofs + len).filter(|r| r.starts_with(b"LZMA"))?))
+        })
+        .collect();
+    let plain: Vec<(usize, Vec<u8>)> = std::thread::scope(|s| {
+        let jobs: Vec<_> = packed
+            .iter()
+            .map(|&(i, raw)| s.spawn(move || decompress(raw).map(|p| (i, p))))
+            .collect();
+        jobs.into_iter().filter_map(|j| j.join().ok().flatten()).collect()
+    });
+    for (i, plain) in plain {
         let at = DIRECTORY + i * ENTRY;
-        let Some(entry) = bytes.get(at..at + ENTRY) else { break };
-        let word = |k: usize| u32::from_le_bytes(entry[k * 4..k * 4 + 4].try_into().unwrap()) as usize;
-        let (ofs, len, four_cc) = (word(0), word(1), word(3));
-        if four_cc == 0 || len < 17 {
-            continue;
-        }
-        let Some(raw) = bytes.get(ofs..ofs + len).filter(|r| r.starts_with(b"LZMA")) else {
-            continue;
-        };
-        let Some(plain) = decompress(raw) else { continue };
         while bytes.len() % 4 != 0 {
             bytes.push(0);
         }

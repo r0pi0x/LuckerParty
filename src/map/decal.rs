@@ -102,12 +102,18 @@ const LIFT: f32 = 0.35 * 0.0254;
 const DEPTH_DROP: f32 = 0.05 * 0.0254;
 const CELL: f32 = 1.0;
 
-/// Triangles (corners and normal) in a uniform grid.
+/// Triangles (corners and normal) in a uniform grid; those spanning more
+/// than `BIG_CELLS` cells in a list of their own with their bounds (a surf
+/// map's 100 m ramp filled millions of cells: a minute and gigabytes).
 #[derive(Default)]
 pub(super) struct TriSet {
     tris: Vec<[Vec3; 4]>,
     cells: HashMap<IVec3, Vec<u32>>,
+    big: Vec<(u32, Vec3, Vec3)>,
 }
+
+/// Grid cells a triangle may span before it goes in the big list.
+const BIG_CELLS: i32 = 64;
 
 /// What decals can land on: the world's triangles, each prop model's in
 /// its own space, and each brush entity's in its node's space.
@@ -193,6 +199,11 @@ impl TriSet {
                 let i = out.tris.len() as u32;
                 out.tris.push([a, b, c, n]);
                 let (lo, hi) = (cell(a.min(b).min(c)), cell(a.max(b).max(c)));
+                let span = hi - lo + IVec3::ONE;
+                if span.x * span.y * span.z > BIG_CELLS {
+                    out.big.push((i, a.min(b).min(c), a.max(b).max(c)));
+                    continue;
+                }
                 for x in lo.x..=hi.x {
                     for y in lo.y..=hi.y {
                         for z in lo.z..=hi.z {
@@ -218,6 +229,13 @@ impl TriSet {
                 }
             }
         }
+        let (qlo, qhi) = (p - Vec3::splat(r), p + Vec3::splat(r));
+        seen.extend(
+            self.big
+                .iter()
+                .filter(|(_, lo, hi)| lo.cmple(qhi + Vec3::splat(CELL)).all() && hi.cmpge(qlo - Vec3::splat(CELL)).all())
+                .map(|(i, ..)| *i),
+        );
         let mut v: Vec<u32> = seen.into_iter().collect();
         v.sort_unstable();
         v

@@ -1036,10 +1036,10 @@ with tests passing and something to see.
    Source's A2S_INFO in spirit), the Find Servers page in the GameUI
    look (`openserverbrowser`, greyed today), favourites and history,
    password prompt.
-9. **[ ] Lucker Party lobby and party flow** (L, design-dependent). Party
-   host = listen server or a hosted server; lobby, loadout/minigame
-   rotation chosen by the server (README: the server owns the loadout),
-   possibly Steam networking or a relay for NAT, secure connect tokens.
+9. **[-] Lucker Party lobby and party flow** (dropped for now, by the
+   user's decision: multiplayer stays standard CS:S — servers, Find
+   Servers, `connect`, map rotation by the server's cvars). Revisit if
+   Lucker Party later needs parties, minigame rotation or NAT relays.
 
 ## 6. Open questions for the user
 
