@@ -717,36 +717,50 @@ pub(super) fn spawn_surfaces(
                 }
                 h
             };
-            commands.spawn((
-                Name::new(if below {
-                    format!("{} (below)", w.name)
-                } else {
-                    w.name.clone()
-                }),
-                super::MapPart,
-                WaterSurface {
-                    material: index,
-                    min,
-                    max,
-                    below,
-                    skybox: m.skybox,
-                },
-                if m.skybox {
-                    RenderLayers::layer(super::SKYBOX_LAYER)
-                } else {
-                    RenderLayers::layer(WATER_LAYER)
-                },
-                Mesh3d(meshes.add(super::build_mesh(mesh, false))),
-                MeshMaterial3d(materials.add(WaterMaterial {
-                    params: p,
-                    normal,
-                    reflection: reflection.clone().filter(|_| w.reflect),
-                    envmap,
-                })),
-                bevy::light::NotShadowCaster,
-                Transform::default(),
-                ChildOf(root),
-            ));
+            // In chunks, each hidden where the camera can't see it, as the
+            // world's faces are (`vis::split_mesh`): one mesh holds a
+            // material's surfaces in every room, and other rooms' water
+            // showed through the sky.
+            let vis = data.visibility.as_deref().filter(|_| !super::merged_world());
+            for (chunk, clusters) in super::vis::split_mesh(mesh, vis, super::vis::chunk_size()) {
+                let (min, max) = chunk
+                    .positions
+                    .iter()
+                    .fold((Vec3::MAX, Vec3::MIN), |(a, b), p| (a.min(Vec3::from(*p)), b.max(Vec3::from(*p))));
+                let mut e = commands.spawn((
+                    Name::new(if below {
+                        format!("{} (below)", w.name)
+                    } else {
+                        w.name.clone()
+                    }),
+                    super::MapPart,
+                    WaterSurface {
+                        material: index,
+                        min,
+                        max,
+                        below,
+                        skybox: m.skybox,
+                    },
+                    if m.skybox {
+                        RenderLayers::layer(super::SKYBOX_LAYER)
+                    } else {
+                        RenderLayers::layer(WATER_LAYER)
+                    },
+                    Mesh3d(meshes.add(super::build_mesh(&chunk, false))),
+                    MeshMaterial3d(materials.add(WaterMaterial {
+                        params: p,
+                        normal: normal.clone(),
+                        reflection: reflection.clone().filter(|_| w.reflect),
+                        envmap: envmap.clone(),
+                    })),
+                    bevy::light::NotShadowCaster,
+                    Transform::default(),
+                    ChildOf(root),
+                ));
+                if !clusters.is_empty() {
+                    e.insert(super::vis::VisClusters::new(clusters));
+                }
+            }
         }
     }
     let entities = data
@@ -916,7 +930,7 @@ fn reflection_plane(
 #[derive(Component, Clone, PartialEq)]
 pub struct ReflectionClusters(pub Vec<u32>);
 
-type MainCameraFilter = (
+pub(crate) type MainCameraFilter = (
     With<Camera3d>,
     Without<super::SkyboxCamera>,
     Without<super::ViewModelCamera>,
@@ -995,7 +1009,12 @@ pub fn update_water(
         ),
         With<WaterReflectionCamera>,
     >,
-    mut surfaces: Query<(&WaterSurface, &MeshMaterial3d<WaterMaterial>, &mut Visibility)>,
+    mut surfaces: Query<(
+        &WaterSurface,
+        &MeshMaterial3d<WaterMaterial>,
+        &mut Visibility,
+        Option<&super::vis::VisClusters>,
+    )>,
     mut materials: ResMut<Assets<WaterMaterial>>,
     view: Option<ResMut<WaterView>>,
 ) {
@@ -1011,8 +1030,8 @@ pub fn update_water(
     let eye = eye_tf.translation();
     let list: Vec<WaterSurface> = surfaces
         .iter()
-        .filter(|(s, _, _)| !s.skybox)
-        .map(|(s, _, _)| s.clone())
+        .filter(|(s, ..)| !s.skybox)
+        .map(|(s, ..)| s.clone())
         .collect();
     let none: &[crate::core::MapWaterVolume] = &[];
     let volumes = volumes.as_ref().map_or(none, |v| &v.0);
@@ -1032,8 +1051,9 @@ pub fn update_water(
     }
     let flag = |b: bool| if b { 1.0 } else { 0.0 };
     let draw = settings.draw_water != 0;
-    for (s, handle, mut visibility) in &mut surfaces {
-        let shown = if draw {
+    for (s, handle, mut visibility, clusters) in &mut surfaces {
+        // Drawn while `mat_drawwater` and the map's visibility allow.
+        let shown = if draw && clusters.is_none_or(|c| c.potentially_visible) {
             Visibility::Inherited
         } else {
             Visibility::Hidden

@@ -8,22 +8,27 @@ plan when work starts; delete them when done.
 
 ## 0. Playtest feedback (2026-10-07), top priority
 
-- Sky: the bottom face (`dn`) of the 2D skybox looks wrongly oriented,
-  perhaps needing a 180° turn seen from above. Check against CS:S with a
-  reference capture looking straight down at the sky (refcmp `skyconv`
-  already fits each face's orientation; check what it says for `dn`).
-- Knife view model: its faces (the handle at least) look inside out.
-  Earlier fix decided winding per mesh by majority (props.rs); check the
-  view model's meshes, its mirroring at `cl_righthand` (a mirrored model
-  must flip winding), and compare with a CS:S capture.
-
-- Props and other models show through the sky on mg_creative_multigames_v8_ns
-  and many other maps, while the world brushes behind the sky correctly don't
-  (e.g. `setpos -6332.74 -3047.50 -9638.97; setang -38.85 18.60 0`).
-  Likely props aren't culled by PVS/areas the way world parts are (props
-  without clusters, or a prop path that skips vis), or the sky doesn't hide
-  what lies behind it the way Source's sky brushes do. Compare with CS:S at
-  that position (coordinator: reference capture), then fix generally.
+- Done 2026-10-09, to playtest and confirm with CS:S captures
+  (coordinator): (1) other rooms showing through the sky
+  (mg_creative_multigames_v8_ns): placed weapons, water surfaces (one
+  mesh per material across rooms), beams/glows and moving props weren't
+  PVS-culled; now they are (`vis`). Capture: CS:S at `setpos -6332.74
+  -3047.50 -9638.97; setang -38.85 18.60 0` (nothing in the sky). Open:
+  whether CS:S also hides things *in* the PVS behind a sky face; our
+  `mashup_skyocclude 1` does (`map::sky_occluder`), off by default.
+  Capture: a prop in view behind a sky face from a leaf whose PVS holds
+  it. (2) The 2D sky's `dn` face turned half a turn (the seam measure
+  that confirms `up` on every sky; `cs_source::sky::FACES`). Capture:
+  CS:S looking straight down from noclip over a map with a pictured
+  bottom (gg_lego_spacetower2's down-under sky), `refcmp skyconv` view.
+  (3) The knife view model's triangles keep the file's winding (a
+  majority vote over normals turned its mesh inside out). Capture: the
+  knife drawn, right-handed. (4) The 3D skybox takes the sky_camera's fog
+  (start/end divided by its scale, max density); not `fogblend` (only
+  mg_kommando sets it; how the game blends `fogcolor2` by `fogdir` is
+  unspecified). Capture: dust2 from `setpos -295 1078 500; setang 3 0 0`
+  to check the haze and the scale. (5) Keyboard > Advanced (fast weapon
+  switch, developer console = `con_enable`, ours defaults to 1, CS:S 0).
 
 - mg_item_battle_v4b's items (done 2026-10-09, to playtest): a picked-up
   knife's parented entities follow its carrier (`map::entities` anchors),
@@ -42,17 +47,8 @@ plan when work starts; delete them when done.
 - `setpos` puts our eye lower than CS:S's for the same coordinates (both
   captures above): check our setpos/getpos convention (feet vs eye,
   noclip's eye offset) against Source so pasted positions match.
-- Options faithful to CS:S: the Keyboard tab's Advanced dialog ("Fast
-  weapon switch" = `hud_fastswitch`, default 0, and its other entries) and
-  any other option CS:S shows that we lack; defaults as CS:S's.
-
-- Fog in the 3D skybox: apply the sky_camera's own fog (`fogenable`,
-  colour, start/end in skybox units) to what the 3D skybox draws, as CS:S
-  does. Today the skybox camera gets a Bevy `DistanceFog`
-  (`src/map/mod.rs`, skybox camera spawn), but our map/prop shaders take
-  fog from their material uniforms and skybox materials get none
-  (`fog_color(... !skybox)`), so nothing in the skybox is fogged. Check
-  against a CS:S capture on a map with skybox fog (de_dust2, cs_italy).
+- Options faithful to CS:S: any other option CS:S shows that we lack;
+  defaults as CS:S's.
 
 - Decals persist across rounds (bullet holes, blood), as we believe CS:S
   does (players bind `r_cleardecals`, now there; `mashup_round_cleardecals

@@ -509,3 +509,110 @@ fn item_children_follow_the_player() {
         assert!((now.distance(a) - d).abs() < 0.05, "prop {c}: {d} from the anchor, now {}", now.distance(a));
     }
 }
+
+/// mg_creative_multigames_v8_ns's minigame rooms are walled off from each
+/// other by sky faces. From the playtest's spot (`setpos -6332.74 -3047.50
+/// -9638.97`) other rooms' placed weapons and water showed through the
+/// sky: they weren't culled by the map's visibility as the world is (and
+/// as Source culls every entity). Now loose items, moving props and water
+/// surfaces (in chunks) are drawn exactly when one of their clusters is
+/// potentially visible.
+#[test]
+fn other_rooms_items_and_water_are_culled_on_creative_multigames() {
+    let Some(map) = load("mg_creative_multigames_v8_ns") else { return };
+    assert!(!map.sky_surfaces.is_empty() && map.sky_surfaces.len() % 3 == 0, "sky faces kept");
+    let v = map.visibility.clone().expect("visibility");
+    let eye = Vec3::new(-6332.74, -9638.97 + 64.0, 3047.50) * cs_source::bsp::METERS_PER_UNIT;
+    let cluster = v.cluster_at(eye).expect("the spot is in a cluster");
+    let mut sim = Sim::new((
+        |app: &mut App| {
+            app.init_asset::<Image>()
+                .init_asset::<StandardMaterial>()
+                .init_asset::<mashup::map::world_material::WorldMaterial>()
+                .init_asset::<mashup::map::prop_material::PropMaterial>()
+                .init_asset::<mashup::map::sprite_material::SpriteMaterial>()
+                .init_asset::<mashup::map::water::WaterMaterial>()
+                .init_asset::<bevy::mesh::skinning::SkinnedMeshInverseBindposes>();
+        },
+        MapPlugin::new(map),
+        SourceMovementPlugin,
+        CsWeaponsPlugin,
+    ));
+    sim.set_tick_interval(cs_source::TICK_INTERVAL);
+    let view = sim.app.world_mut().spawn((Camera3d::default(), Transform::from_translation(eye))).id();
+    sim.ticks(1);
+    // The map's own cameras (the water's reflection, the sky's) are
+    // switched by systems that need rendering: off here.
+    let world = sim.app.world_mut();
+    let mut cams = world.query::<(Entity, &mut Camera)>();
+    for (e, mut c) in cams.iter_mut(world) {
+        c.is_active = e == view;
+    }
+    // Placed weapons settle (they fall onto what they rest on).
+    sim.seconds(3.0);
+    let world = sim.app.world_mut();
+    assert_eq!(world.resource::<mashup::map::vis::VisStats>().cluster, Some(cluster));
+    let check = |what: &str, parts: Vec<(Box<[u32]>, bool)>| {
+        let hidden = parts.iter().filter(|(_, on)| !on).count();
+        for (clusters, on) in &parts {
+            assert!(!clusters.is_empty(), "{what}: untagged");
+            assert_eq!(*on, v.sees_any(cluster, clusters), "{what}: clusters {clusters:?}");
+        }
+        eprintln!("{what}: {} drawn, {hidden} culled", parts.len() - hidden);
+        assert!(hidden > 0, "{what}: other rooms' culled");
+    };
+    let mut q = world.query_filtered::<&mashup::map::vis::VisClusters, With<mashup::map::loose::LooseItem>>();
+    let items = q.iter(world).map(|c| (c.clusters.clone(), c.potentially_visible)).collect();
+    check("placed weapons", items);
+    let mut q = world.query::<(&mashup::map::water::WaterSurface, Option<&mashup::map::vis::VisClusters>)>();
+    let water = q
+        .iter(world)
+        .filter(|(s, _)| !s.skybox)
+        .map(|(_, c)| c.map_or((Box::default(), true), |c| (c.clusters.clone(), c.potentially_visible)))
+        .collect();
+    check("water surfaces", water);
+}
+
+/// The 2D sky's bottom face (`dn`) joins the side faces: on community
+/// skies whose bottom is a picture (stock CS:S bottoms are one colour),
+/// the orientation `cs_source::sky::FACES` gives it has the smallest seam
+/// of the eight (`map::sky_seam_error`; the top face's fitted one wins
+/// the same way on stock skies: `map_stock::sky_top_and_bottom_join_the_sides`).
+#[test]
+fn sky_bottom_joins_the_sides() {
+    let names = [
+        "gg_lego_spacetower2",
+        "kz_hikari_od_nh_v2",
+        "kz_bhop_izanami",
+        "surf_happyhands",
+        "surf_stickybutt_alpha",
+        "gg_dev_moment_v1",
+        "gg_desert_paintball",
+        "gg_mario_vs_wario",
+        "gg_fusion_trx",
+        "mg_kommando",
+    ];
+    let dn = cs_source::sky::FACES.iter().find(|f| f.0 == "dn").unwrap();
+    let mut decided = 0;
+    for name in names {
+        let Some(map) = load(name) else { continue };
+        let Some(sky) = map.sky.as_ref() else { continue };
+        let errors: Vec<f32> = (0..8u8)
+            .map(|turns| {
+                let mut s = sky.clone();
+                s.faces[dn.1].1 = turns;
+                mashup::map::sky_seam_error(&s, &map.textures, dn.1)
+            })
+            .collect();
+        eprintln!("{name}: {errors:?}");
+        // One-colour bottoms join every way alike.
+        let (lo, hi) = errors.iter().fold((f32::MAX, f32::MIN), |(a, b), e| (a.min(*e), b.max(*e)));
+        if hi - lo < 2.0 {
+            continue;
+        }
+        let best = (0..8).min_by(|a, b| errors[*a].total_cmp(&errors[*b])).unwrap();
+        assert_eq!(best, dn.2 as usize, "{name}: {errors:?}");
+        decided += 1;
+    }
+    eprintln!("{decided} skies decide the bottom face");
+}

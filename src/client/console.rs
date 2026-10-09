@@ -92,6 +92,9 @@ pub struct ConsoleUi {
     scroll: usize,
     pub filter: String,
     pub timestamps: bool,
+    /// `con_enable 0`: the console key doesn't open it (the options'
+    /// "Enable developer console", `game_menu`).
+    pub disabled: bool,
     /// `toggleconsole` asked to open or close it (next frame).
     toggle_request: bool,
     /// The output lines on screen, and a selection of them (first and
@@ -270,7 +273,8 @@ pub(super) fn toggle(
     // Esc hides the suggestions first (`edit`), then closes.
     let close = ui.open && keys.just_pressed(KeyCode::Escape) && ui.search.is_none() && !ui.list_shown;
     let requested = std::mem::take(&mut ui.toggle_request);
-    if keys.just_pressed(KeyCode::Backquote) || close || requested {
+    let key = keys.just_pressed(KeyCode::Backquote) && (ui.open || !ui.disabled);
+    if key || close || requested {
         ui.open = !ui.open;
         **root = if ui.open {
             Visibility::Visible
@@ -1388,8 +1392,25 @@ fn overlay_cvars(app: &mut App) {
             Ok(())
         },
     );
+    // CS:S's default is 0 (the console key does nothing until the
+    // options' Keyboard > Advanced enables it); ours is 1, so the console
+    // stays at hand for playtests.
+    app.console_cvar(
+        "con_enable",
+        "1: the console key opens the console (CS:S's default is 0; ours 1).",
+        "1",
+        |w| {
+            w.get_resource::<ConsoleUi>()
+                .map(|u| if u.disabled { "0" } else { "1" }.to_string())
+        },
+        |w, v| {
+            w.resource_mut::<ConsoleUi>().disabled = v.trim() == "0";
+            Ok(())
+        },
+    );
     let mut console = app.world_mut().resource_mut::<Console>();
     console.archive("con_timestamps");
+    console.archive("con_enable");
     // Set from the game menu's options too.
     console.archive("cl_showfps");
 }

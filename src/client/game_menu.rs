@@ -30,7 +30,7 @@ use bevy::{
 use super::{
     binds,
     fonts::UiFonts,
-    options::{SETTINGS, SettingKind, TABS, Tab},
+    options::{KEYBOARD_ADVANCED, SETTINGS, SettingKind, TABS, Tab, setting_index},
 };
 use crate::{
     console::{Console, ConsoleAppExt},
@@ -129,6 +129,8 @@ pub enum Page {
     Team,
     /// The options dialog (its tab: `GameMenu::tab`).
     Settings,
+    /// The keyboard tab's Advanced dialog (over the options).
+    KeyboardAdvanced,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -362,6 +364,12 @@ pub enum Action {
     ClearKey,
     /// Every bind back to the defaults.
     DefaultBinds,
+    /// The keyboard tab's Advanced dialog.
+    Advanced,
+    /// Its OK: keep its changes.
+    AdvancedOk,
+    /// Its Cancel (and Esc): its settings back as they were.
+    AdvancedCancel,
 }
 
 /// A row of a page.
@@ -511,14 +519,18 @@ pub struct GameMenu {
     pub scroll: usize,
     /// Window sizes the video tab offers.
     pub resolutions: Vec<String>,
+    /// The Advanced dialog's settings as it opened (`SETTINGS` index,
+    /// value), for its Cancel.
+    pub advanced_before: Vec<(usize, Option<String>)>,
 }
 
 /// Map list rows shown at once.
 pub const MAP_ROWS: usize = 16;
 /// Keyboard list rows shown at once.
 pub const KEY_ROWS: usize = 14;
-/// Buttons under the keyboard list (Use defaults, Edit key, Clear key).
-const KEY_BUTTONS: usize = 3;
+/// Buttons under the keyboard list (Use defaults, Edit key, Clear key,
+/// Advanced).
+const KEY_BUTTONS: usize = 4;
 
 /// The keyboard list without the game's `kb_act.lst`: what mashup does.
 const OUR_ACTIONS: &[(&str, &str)] = &[
@@ -874,7 +886,22 @@ impl GameMenu {
                     action: Action::ClearKey,
                     enabled: selected,
                 });
+                rows.push(button(&self.text("#GameUI_AdvancedEllipsis", "Advanced..."), Action::Advanced));
                 rows.push(ok());
+                rows
+            }
+            Page::KeyboardAdvanced => {
+                let text = |t: &str| self.game_text(t);
+                let mut rows: Vec<Row> = self
+                    .advanced_settings()
+                    .into_iter()
+                    .map(|(i, label)| match self.values.get(i).cloned().flatten() {
+                        Some(v) => value(&label, SETTINGS[i].show(&v, &text), Field::Setting(i)),
+                        None => Row::Info(format!("{label}: not available")),
+                    })
+                    .collect();
+                rows.push(button(&self.text("#GameUI_OK", "OK"), Action::AdvancedOk));
+                rows.push(button(&self.text("#GameUI_Cancel", "Cancel"), Action::AdvancedCancel));
                 rows
             }
             Page::Settings => {
@@ -935,6 +962,7 @@ impl GameMenu {
         }
         let rows = self.rows();
         match input {
+            Input::Close | Input::Back if self.page == Page::KeyboardAdvanced => self.cancel_advanced(&mut out),
             // The main menu stays: Esc only closes its dialogs.
             Input::Close if !self.in_game => self.back(),
             Input::Close => self.close(&mut out),
@@ -1084,6 +1112,61 @@ impl GameMenu {
         self.scroll = self.scroll.min(len.saturating_sub(shown));
     }
 
+    /// The Advanced dialog's settings, in the game's order (its layout's
+    /// check boxes, else `options::KEYBOARD_ADVANCED`'s): index in
+    /// `SETTINGS` and label (the layout's text, else the setting's).
+    pub fn advanced_settings(&self) -> Vec<(usize, String)> {
+        let layout = self.ui.0.as_ref().and_then(|u| u.options.get("keyboard_advanced"));
+        let named = |field: &str| {
+            KEYBOARD_ADVANCED
+                .iter()
+                .find(|(f, _)| f.eq_ignore_ascii_case(field))
+                .and_then(|(_, cvar)| setting_index(cvar))
+        };
+        let from_layout: Vec<(usize, String)> = layout
+            .map(|l| {
+                l.controls
+                    .iter()
+                    .filter(|c| matches!(&c.kind, crate::map::hud::UiKind::Other(k) if k.eq_ignore_ascii_case("CheckButton")))
+                    .filter_map(|c| Some((named(&c.name)?, c.text.clone())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !from_layout.is_empty() {
+            return from_layout;
+        }
+        KEYBOARD_ADVANCED
+            .iter()
+            .filter_map(|(field, _)| named(field))
+            .map(|i| {
+                let s = &SETTINGS[i];
+                (i, s.token.and_then(|t| self.game_text(t)).unwrap_or_else(|| s.label.to_string()))
+            })
+            .collect()
+    }
+
+    /// Cancel the Advanced dialog: its settings back as they were.
+    fn cancel_advanced(&mut self, out: &mut Outcome) {
+        for (s, before) in std::mem::take(&mut self.advanced_before) {
+            if let Some(v) = before {
+                self.set_value(s, v, out);
+            }
+        }
+        self.back_to_keyboard();
+    }
+
+    /// From the Advanced dialog back to the keyboard tab, its button
+    /// focused.
+    fn back_to_keyboard(&mut self) {
+        self.page = Page::Settings;
+        self.tab = Tab::Keyboard;
+        self.focus = self
+            .rows()
+            .iter()
+            .position(|r| matches!(r, Row::Button { action: Action::Advanced, .. }))
+            .unwrap_or(0);
+    }
+
     fn close(&mut self, out: &mut Outcome) {
         self.open = false;
         self.capture = None;
@@ -1200,6 +1283,20 @@ impl GameMenu {
                     binds::bind_defaults(&mut self.binds, true);
                     out.lines.push("binddefaults".into());
                 }
+                Action::Advanced => {
+                    self.advanced_before = self
+                        .advanced_settings()
+                        .into_iter()
+                        .map(|(s, _)| (s, self.values.get(s).cloned().flatten()))
+                        .collect();
+                    self.page = Page::KeyboardAdvanced;
+                    self.focus = self.first_focusable_from(0, 1);
+                }
+                Action::AdvancedOk => {
+                    self.advanced_before.clear();
+                    self.back_to_keyboard();
+                }
+                Action::AdvancedCancel => self.cancel_advanced(out),
             },
         }
     }
@@ -2155,6 +2252,8 @@ fn draw(
     }
     let (w, h) = match menu.page {
         Page::Settings | Page::Maps => (532.0, 410.0),
+        // The game's layout reaches to 264 x 124.
+        Page::KeyboardAdvanced => (280.0, 134.0),
         Page::NewGame => (560.0, 280.0),
         _ => (360.0, 230.0),
     };
@@ -2165,6 +2264,7 @@ fn draw(
         Page::Bots => "Bots".into(),
         Page::Team => "Choose a Team".into(),
         Page::Settings => menu.text("#GameUI_Options", "Options"),
+        Page::KeyboardAdvanced => menu.text("#GameUI_KeyboardAdvanced_Title", "Keyboard - Advanced"),
     };
     let frame = frame(&mut commands, root, &look, size, (w, h), &title);
     let rows = menu.rows();
@@ -2216,6 +2316,7 @@ fn draw(
             }
         }
         Page::Maps => map_list(&mut commands, frame, &look, &menu, &rows, thumbs, (w, h)),
+        Page::KeyboardAdvanced => advanced_dialog(&mut commands, frame, &look, &menu, &rows),
         _ => {
             if menu.page == Page::NewGame {
                 setting_rows(&mut commands, frame, &look, &menu, &rows, (16.0, 36.0, w - 32.0 - 152.0));
@@ -2956,12 +3057,68 @@ fn keyboard_tab(commands: &mut Commands, content: Entity, look: &Look, menu: &Ga
     }
     scroll_bar(commands, list, look, (lw - bar_w - 2.0, 0.0, lh - 2.0), (len, shown, menu.scroll));
     // The buttons, where the game's layout has them.
-    let names = ["Defaults", "ChangeKeyButton", "ClearKeyButton"];
-    let fallback = [(8.0, 276.0, 134.0, 24.0), (272.0, 276.0, 106.0, 24.0), (384.0, 276.0, 105.0, 24.0)];
+    let names = ["Defaults", "ChangeKeyButton", "ClearKeyButton", "KeyAdvancedButton"];
+    let fallback = [
+        (8.0, 276.0, 134.0, 24.0),
+        (272.0, 276.0, 106.0, 24.0),
+        (384.0, 276.0, 105.0, 24.0),
+        (148.0, 276.0, 111.0, 24.0),
+    ];
     for (k, name) in names.iter().enumerate() {
         let i = len + k;
         let Row::Button { label: text, enabled, .. } = &rows[i] else { continue };
         button(commands, content, look, rect(name, fallback[k]), text, Hit(Target::Row(i), 0), menu.focus == i, *enabled);
+    }
+}
+
+/// The keyboard tab's Advanced dialog: its check boxes (text to their
+/// right) and OK / Cancel where the game's layout puts them.
+fn advanced_dialog(commands: &mut Commands, frame: Entity, look: &Look, menu: &GameMenu, rows: &[Row]) {
+    let layout = menu.ui.0.as_ref().and_then(|u| u.options.get("keyboard_advanced"));
+    let rect = |name: &str, fallback: (f32, f32, f32, f32)| {
+        layout.and_then(|l| l.get(name)).map_or(fallback, |c| {
+            let num = |h: crate::map::hud::HudCoord| match h {
+                crate::map::hud::HudCoord::Start(v) => v,
+                _ => 0.0,
+            };
+            (num(c.x), num(c.y), c.wide, c.tall)
+        })
+    };
+    let font = look.font("Default", (16.0, false));
+    let mut boxes = 0;
+    for (i, row) in rows.iter().enumerate() {
+        let focused = menu.focus == i;
+        match row {
+            Row::Value {
+                label: text,
+                field: Field::Setting(s),
+                ..
+            } => {
+                let field = KEYBOARD_ADVANCED
+                    .iter()
+                    .find(|(_, cvar)| SETTINGS[*s].cvar == *cvar)
+                    .map_or("", |(f, _)| *f);
+                let (x, y, w, h) = rect(field, (20.0, 38.0 + 28.0 * boxes as f32, 240.0, 24.0));
+                boxes += 1;
+                let on = menu.values[*s].as_deref().is_some_and(|v| SETTINGS[*s].checked(v));
+                check_box(commands, frame, look, (x, y), i, on, focused);
+                let color = if focused { look.white() } else { look.text() };
+                label(commands, frame, look, (x + 22.0, y, w - 22.0, h), text, font.clone(), color, -1);
+            }
+            Row::Info(t) => {
+                let (x, y) = (20.0, 38.0 + 28.0 * boxes as f32);
+                boxes += 1;
+                label(commands, frame, look, (x, y, 240.0, 24.0), t, font.clone(), look.dull(), -1);
+            }
+            Row::Button { label: text, action, .. } => {
+                let (name, fallback) = match action {
+                    Action::AdvancedOk => ("Button1", (95.0, 100.0, 80.0, 24.0)),
+                    _ => ("Button2", (182.0, 100.0, 80.0, 24.0)),
+                };
+                button(commands, frame, look, rect(name, fallback), text, Hit(Target::Row(i), 0), focused, true);
+            }
+            _ => {}
+        }
     }
 }
 
@@ -3304,6 +3461,8 @@ mod tests {
             ("mat_vsync", "1"),
             ("mashup_rounds", "1"),
             ("bot_reaction", "0.35"),
+            ("hud_fastswitch", "0"),
+            ("con_enable", "1"),
         ];
         m.open(
             Page::Main,
@@ -3845,7 +4004,47 @@ mod tests {
         assert!(matches!(&rows[0], Row::Heading(t) if t == "Movement"));
         assert!(matches!(&rows[bind_row(&m, "+jump")], Row::Bind { keys, known: true, .. } if keys == "MWHEELDOWN, MWHEELUP, SPACE"));
         assert_eq!(m.focus, 1, "the first action, past the heading");
-        assert_eq!(m.list(), (rows.len() - 4, KEY_ROWS));
+        assert_eq!(m.list(), (rows.len() - 5, KEY_ROWS));
+    }
+
+    /// Keyboard > Advanced...: CS:S's two check boxes (fast weapon switch,
+    /// developer console) in its order; ticking applies at once, Cancel
+    /// (or Esc) puts them back, OK keeps them.
+    #[test]
+    fn the_keyboard_tabs_advanced_dialog() {
+        let mut m = keyboard();
+        let advanced = |m: &GameMenu| {
+            m.rows()
+                .iter()
+                .position(|r| matches!(r, Row::Button { action: Action::Advanced, .. }))
+                .unwrap()
+        };
+        let at = advanced(&m);
+        press(&mut m, &[Input::Click(Target::Row(at), 0)]);
+        assert_eq!(m.page, Page::KeyboardAdvanced);
+        let rows = m.rows();
+        let labels: Vec<String> = rows.iter().map(label_of).collect();
+        assert_eq!(labels, ["Fast weapon switch", "Enable developer console", "OK", "Cancel"]);
+        assert!(matches!(&rows[0], Row::Value { value, .. } if value == "Off"), "{:?}", rows[0]);
+        assert_eq!(m.focus, 0);
+        let o = press(&mut m, &[Input::Activate]);
+        assert_eq!(o.lines, ["hud_fastswitch 1"]);
+        let o = press(&mut m, &[Input::Click(Target::Row(1), 0)]);
+        assert_eq!(o.lines, ["con_enable 0"]);
+        // Cancel: both back.
+        let o = press(&mut m, &[Input::Click(Target::Row(3), 0)]);
+        assert_eq!(o.lines, ["hud_fastswitch 0", "con_enable 1"]);
+        assert_eq!((m.page, m.tab, m.focus), (Page::Settings, Tab::Keyboard, at));
+        // OK keeps the change; Esc on the dialog cancels it, leaving the
+        // options open.
+        press(&mut m, &[Input::Activate, Input::Activate]);
+        let o = press(&mut m, &[Input::Click(Target::Row(2), 0)]);
+        assert!(o.lines.is_empty());
+        assert_eq!(m.values[setting_index("hud_fastswitch").unwrap()].as_deref(), Some("1"));
+        press(&mut m, &[Input::Activate, Input::Down, Input::Activate]);
+        let o = press(&mut m, &[Input::Close]);
+        assert_eq!(o.lines, ["con_enable 1"]);
+        assert!(m.open && m.page == Page::Settings);
     }
 
     #[test]

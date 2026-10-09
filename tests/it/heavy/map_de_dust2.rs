@@ -2758,3 +2758,34 @@ fn walking_into_a_tunnel_switches_soundscape_and_room() {
     eprintln!("loops: {outdoor_loops} outdoors, {left} indoors");
     assert!(left > 0 && left <= s.soundscapes[indoors].loops.len());
 }
+
+/// View models' meshes are wound with their front faces outward (front:
+/// counter-clockwise), the file's own order: the volume they enclose,
+/// signed by winding around their centre, is positive. The knives' meshes
+/// have normals against the winding on about half their triangles, which
+/// turned them inside out when normals decided (cs_source::props).
+#[test]
+fn view_models_face_outward() {
+    let Some(map) = dust2() else { return };
+    let mut knives = 0;
+    for v in &map.view_models {
+        for m in &v.model.meshes {
+            let p: Vec<Vec3> = m.positions.iter().map(|p| Vec3::from(*p)).collect();
+            let centre = p.iter().copied().sum::<Vec3>() / p.len().max(1) as f32;
+            let volume: f32 = m
+                .indices
+                .chunks_exact(3)
+                .map(|t| {
+                    let [a, b, c] = [t[0], t[1], t[2]].map(|i| p[i as usize] - centre);
+                    a.dot(b.cross(c)) / 6.0
+                })
+                .sum();
+            eprintln!("{} {}: {volume:e}", v.key, m.material);
+            if m.material.starts_with("knife") {
+                knives += 1;
+                assert!(volume > 0.0, "{} {} inside out: {volume}", v.key, m.material);
+            }
+        }
+    }
+    assert!(knives > 0, "the knife's view models load");
+}

@@ -16,12 +16,17 @@ use crate::map::{MapData, MapHdrImage, MapSky};
 /// how Bevy's skybox samples the cube (it flips z: looking toward -Z shows
 /// the +Z layer), then fits each layer's texture to the real game's sky.
 /// Errors per layer: rt 0.006, lf 0.037, up 0.048, bk 0.006, ft 0.030.
+///
+/// "dn" is in none of the fitted views. Its orientation is the one whose
+/// edges join the fitted side faces best (`map::sky_seam_error`): on every
+/// community sky with a pictured bottom, one clockwise turn, half a turn
+/// from "up"'s (which the same measure picks on every sky, as fitted).
+/// The bottoms of the stock skies are one colour, so they don't show it.
 pub const FACES: [(&str, usize, u8); 6] = [
     ("rt", 0, 0),
     ("lf", 1, 0),
     ("up", 2, 3),
-    // Not visible in the fitted views; assumed to match "up".
-    ("dn", 3, 3),
+    ("dn", 3, 1),
     ("bk", 4, 0),
     ("ft", 5, 0),
 ];

@@ -622,7 +622,7 @@ pub fn decompress_row(data: &[u8], cluster_count: usize) -> Vec<u64> {
 /// Clusters a map part touches; it is drawn only while one of them is
 /// potentially visible from the camera's cluster. Entities without it are
 /// always drawn. The culling system owns their `Visibility` (except glow
-/// sprites, which read `potentially_visible`).
+/// sprites and water surfaces, which read `potentially_visible`).
 #[derive(Component, Clone, Debug)]
 pub struct VisClusters {
     pub clusters: Box<[u32]>,
@@ -867,7 +867,7 @@ pub(crate) fn cull(
         Query<(
             &mut VisClusters,
             Option<&mut Visibility>,
-            Has<super::GlowSprite>,
+            (Has<super::GlowSprite>, Has<super::water::WaterSurface>),
             Option<(&FadeDistance, &GlobalTransform)>,
             Has<LogicHidden>,
             Option<&Occludee>,
@@ -979,7 +979,7 @@ pub(crate) fn cull(
     let recheck_occludees = occluding || *was_occluding;
     *was_occluding = occluding;
     let (mut total, mut shown, mut hidden_by_occluders) = (0, 0, 0);
-    for (mut part, visibility, glow, fade, removed, occludee) in &mut queries.p1() {
+    for (mut part, visibility, (glow, water), fade, removed, occludee) in &mut queries.p1() {
         if !changed && fade.is_none() && !(recheck_occludees && occludee.is_some()) {
             total += 1;
             shown += part.potentially_visible as usize;
@@ -1002,7 +1002,7 @@ pub(crate) fn cull(
         if part.potentially_visible != on {
             part.potentially_visible = on;
         }
-        if !glow && let Some(mut v) = visibility {
+        if !glow && !water && let Some(mut v) = visibility {
             v.set_if_neq(if on && !removed { Visibility::Inherited } else { Visibility::Hidden });
         }
     }

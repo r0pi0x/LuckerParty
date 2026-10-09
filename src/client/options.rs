@@ -256,7 +256,32 @@ pub const SETTINGS: &[Setting] = &[
             decimals: 0,
         },
     },
+    // The keyboard tab's Advanced dialog (`KEYBOARD_ADVANCED`).
+    Setting {
+        tab: Tab::Keyboard,
+        cvar: "hud_fastswitch",
+        token: Some("#GameUI_FastSwitchCheck"),
+        label: "Fast weapon switch",
+        kind: SettingKind::Toggle,
+    },
+    Setting {
+        tab: Tab::Keyboard,
+        cvar: "con_enable",
+        token: Some("#GameUI_DeveloperConsoleCheck"),
+        label: "Enable developer console",
+        kind: SettingKind::Toggle,
+    },
 ];
+
+/// The keyboard tab's Advanced dialog: each check box of the game's
+/// layout (`resource/OptionsSubKeyboardAdvancedDlg.res`, by `fieldName`)
+/// and the cvar it sets, in CS:S's order.
+pub const KEYBOARD_ADVANCED: [(&str, &str); 2] = [("FastSwitchCheck", "hud_fastswitch"), ("ConsoleCheck", "con_enable")];
+
+/// A setting's index in `SETTINGS` by its cvar.
+pub fn setting_index(cvar: &str) -> Option<usize> {
+    SETTINGS.iter().position(|s| s.cvar == cvar)
+}
 
 /// A choice label (`#Token|ours`): the game's text when it has the token,
 /// else ours.
@@ -631,7 +656,9 @@ mod tests {
 
     #[test]
     fn every_setting_is_on_a_tab_other_than_the_keyboards() {
-        assert!(SETTINGS.iter().all(|s| s.tab != Tab::Keyboard));
+        // The keyboard tab's own are its Advanced dialog's.
+        let keyboard: Vec<&str> = SETTINGS.iter().filter(|s| s.tab == Tab::Keyboard).map(|s| s.cvar).collect();
+        assert_eq!(keyboard, KEYBOARD_ADVANCED.map(|(_, cvar)| cvar));
         for (tab, ..) in TABS.iter().skip(1) {
             assert!(SETTINGS.iter().any(|s| s.tab == *tab), "{tab:?} has settings");
         }
