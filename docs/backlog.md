@@ -8,6 +8,15 @@ plan when work starts; delete them when done.
 
 ## 0. Playtest feedback (2026-10-07), top priority
 
+- Sky: the bottom face (`dn`) of the 2D skybox looks wrongly oriented,
+  perhaps needing a 180° turn seen from above. Check against CS:S with a
+  reference capture looking straight down at the sky (refcmp `skyconv`
+  already fits each face's orientation; check what it says for `dn`).
+- Knife view model: its faces (the handle at least) look inside out.
+  Earlier fix decided winding per mesh by majority (props.rs); check the
+  view model's meshes, its mirroring at `cl_righthand` (a mirrored model
+  must flip winding), and compare with a CS:S capture.
+
 - Props and other models show through the sky on mg_creative_multigames_v8_ns
   and many other maps, while the world brushes behind the sky correctly don't
   (e.g. `setpos -6332.74 -3047.50 -9638.97; setang -38.85 18.60 0`).
