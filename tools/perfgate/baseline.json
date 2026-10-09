@@ -1,0 +1,56 @@
+{
+  "tolerance_pct": 3.0,
+  "scenario_tolerance_pct": {
+    "greybox": 8.0
+  },
+  "profiles": {
+    "playtest": {
+      "build": "6b95f1c-dirty",
+      "cpu": "AMD Ryzen 5 5600X 6-Core Processor",
+      "scenarios": {
+        "de_dust2": {
+          "ticks": 2000,
+          "instructions_total": 35759918827,
+          "instructions_p50": 17909410.0,
+          "instructions_p99": 27432632.0,
+          "main_instructions_p50": 6195625.0,
+          "main_instructions_total": 13267284644,
+          "cpu_ms_p50": 4.180033,
+          "cpu_ms_p99": 7.052315,
+          "wall_ms_p50": 6.353904,
+          "wall_ms_p99": 14.620241,
+          "cycles_total": 30129055183,
+          "cache_misses_total": 345213227
+        },
+        "greybox": {
+          "ticks": 2000,
+          "instructions_total": 1840890203,
+          "instructions_p50": 841323.0,
+          "instructions_p99": 1901333.0,
+          "main_instructions_p50": 738595.0,
+          "main_instructions_total": 1625624775,
+          "cpu_ms_p50": 0.809051,
+          "cpu_ms_p99": 1.487321,
+          "wall_ms_p50": 0.84063,
+          "wall_ms_p99": 4.295213,
+          "cycles_total": 3165628815,
+          "cache_misses_total": 101544226
+        },
+        "mg_lego_multigames_v2": {
+          "ticks": 2000,
+          "instructions_total": 14102766691,
+          "instructions_p50": 6706595.0,
+          "instructions_p99": 12712720.0,
+          "main_instructions_p50": 6070823.0,
+          "main_instructions_total": 12735230147,
+          "cpu_ms_p50": 2.180641,
+          "cpu_ms_p99": 3.504093,
+          "wall_ms_p50": 3.517802,
+          "wall_ms_p99": 8.487466000000001,
+          "cycles_total": 14131246104,
+          "cache_misses_total": 356179322
+        }
+      }
+    }
+  }
+}

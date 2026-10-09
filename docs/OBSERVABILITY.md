@@ -440,6 +440,35 @@ Details and baseline numbers: [performance.md](performance.md).
   assets modified). `mashup_perf 3` also logs each second which entities
   (by name) write transforms: anything writing every frame for nothing
   costs transform propagation and GPU re-preparation.
+- Load-independent numbers (`metrics`, `client::frame_metrics`;
+  performance.md, "Load-independent metrics"): the readout also gives
+  distributions over the last 4096 frames and ticks: `frame ms (N): p50
+  .. p90 .. p99 .. p99.9 .. max ..; 1% low N fps` (1% low = 1000 / the
+  mean of the slowest 1% of frames), then for the main world and the
+  render world (each on its own thread) wall and thread-CPU ms
+  percentiles and, on Linux, `instr` (user-space instructions retired by
+  that thread per frame), IPC and cache misses; `gpu ms` (latest
+  timestamps); `tick (N)`: each simulation tick's main-thread CPU ms and
+  instructions. How to read them: wall ms move with the machine's load
+  (2-10x on the dev box); CPU ms move less (not with waiting or being
+  descheduled, but with caches and clock speed); instructions hardly at
+  all, so compare instructions between runs and builds, and wall times
+  only within one run. CPU far below wall for a world means its thread
+  waited or wasn't scheduled. `hardware counters: unavailable (...)`:
+  the kernel refused them (`/proc/sys/kernel/perf_event_paranoid` above
+  2, a VM without a PMU) or not Linux (Windows has CPU time only, in
+  15.6 ms scheduler steps: read it over many frames).
+- Hitch log: `mashup_hitch_ratio 2` (default; 0 off) logs any frame
+  slower than that many times the median frame (`hitch: frame 41.20 ms =
+  5.1x median 8.07; main world ... (cpu ..., N instr, ... ticks):
+  RunFixedMainLoop 30.10 (cpu 3.00), ...; between frames ...; render
+  world ...: queue ...`): the main world's slowest schedules and the
+  render world's time and, with `MASHUP_RENDER_PHASES=1`, its slowest
+  `Render` sets (opt-in: performance.md, "Baseline"), each with wall
+  and thread CPU ms, at most two lines a second (`(N more since the last)`). A profile
+  build adds the frame's spans with the most self time (`spans by self
+  ms: <system> 12.3 x2, ...`). The F2 Perf tab has the same percentiles as
+  a table, with a frame-time histogram.
 - `mashup_perf_log 1` logs the same readout as one text line a second
   (`mashup_perf: 60 fps  frame 16.67 ms ... | vis: cluster ...`), so runs
   can be compared without reading screenshots (`--frames N ... 2>&1 |
@@ -461,7 +490,24 @@ Details and baseline numbers: [performance.md](performance.md).
   1`, `-- --view-size 3840x2160` to time 4K, `-- +mat_antialias 0`).
   Build first; it runs the mashup next to it (`--profile playtest` for
   optimized numbers). `MASHUP_EXECUTOR=multi` runs Bevy's multi-threaded
-  executor instead of ours (performance.md, "Frame time pass").
+  executor instead of ours (performance.md, "Frame time pass"). A second
+  table gives per view and over all views (`ALL`) frame ms p50/p99/p99.9/max,
+  1% low fps, each world's CPU ms and instructions per frame (p50, p99)
+  and the ticks' mean instructions; `bench.json` and `bench.csv` in the
+  output folder (`<out>/<map>/bench/`) have every metric's n, mean, p50,
+  p90, p99, p99.9, max per view and overall, for scripts
+  (`jq '.overall.metrics.main_instructions.p50' bench.json`).
+- `perfgate` (`src/bin/perfgate.rs`): the instructions-per-tick
+  regression gate: `cargo build --profile playtest --bin perfgate &&
+  target/playtest/perfgate` runs greybox, de_dust2 (rounds, 10 bots) and
+  mg_lego_multigames_v2 headless for 2000 ticks each, prints instructions
+  per tick (all threads: p50, p99, total; main thread) and CPU and wall
+  ms per tick, and exits 1 when a scenario's total rose more than the
+  tolerance above `tools/perfgate/baseline.json` for that build
+  profile. A wanted rise: `perfgate --update` and commit the file, saying
+  why. Skips where counters are unavailable (Windows); `--scenario`,
+  `--ticks`, `--json <file>`. performance.md, "Regression gate", has the
+  spread it was measured with.
 - `r_portalsopenall 1` ignores areaportals (closed doors no longer hide
   what's behind them, no clipping through openings): PVS culling only.
   `mashup_perf 1` shows the camera's area, the areas it reaches and how

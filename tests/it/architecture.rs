@@ -13,6 +13,8 @@ use std::{
 /// Keep in sync with the layer diagram in docs/ARCHITECTURE.md.
 const ALLOWED: &[(&str, &[&str])] = &[
     ("core", &[]),
+    // Performance counters and distributions: Bevy only.
+    ("metrics", &[]),
     ("console", &["core"]),
     ("mount", &[]),
     ("slots", &["core"]),
@@ -66,6 +68,7 @@ const ALLOWED: &[(&str, &[&str])] = &[
             "bot",
             "logic",
             "net",
+            "metrics",
         ],
     ),
     (
@@ -87,6 +90,7 @@ const ALLOWED: &[(&str, &[&str])] = &[
             "games",
             "logic",
             "net",
+            "metrics",
         ],
     ),
     // Game plugins: may use the shared layers, never another game.

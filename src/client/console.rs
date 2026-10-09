@@ -1571,6 +1571,13 @@ pub fn log_layer(_: &mut App) -> Option<BoxedLayer> {
         }
     }
     let queue = LOG.get_or_init(Default::default).clone();
+    // A profile build also times every span for the hitch log
+    // (`frame_metrics::span_times`).
+    #[cfg(feature = "profile")]
+    return Some(Box::new(
+        ToConsole(queue).and_then(super::frame_metrics::span_times::SpanTimes),
+    ));
+    #[cfg(not(feature = "profile"))]
     Some(Box::new(ToConsole(queue)))
 }
 

@@ -22,6 +22,7 @@ mod interpolation;
 mod logic_physics;
 mod map_logic;
 mod map_sound_fx;
+mod metrics;
 mod mount_cs_source;
 mod movement;
 mod nav;

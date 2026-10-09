@@ -11,6 +11,7 @@ pub mod greybox;
 pub mod harness;
 pub mod logic;
 pub mod map;
+pub mod metrics;
 pub mod mount;
 pub mod movement;
 pub mod net;
@@ -38,6 +39,6 @@ impl Plugin for SimPlugins {
                 rules::DeathmatchPlugin,
                 bot::BotPlugin,
             ))
-            .add_plugins(logic::LogicPlugin);
+            .add_plugins((logic::LogicPlugin, metrics::TickMetricsPlugin));
     }
 }

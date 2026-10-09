@@ -42,13 +42,9 @@ impl Plugin for PerfPlugin {
         let render_time = RenderTime::default();
         app.insert_resource(render_time.clone());
         if let Some(render) = app.get_sub_app_mut(bevy::render::RenderApp) {
-            use bevy::render::{Render, RenderSystems};
-            render
-                .insert_resource(render_time)
-                .init_resource::<RenderStart>()
-                .add_systems(Render, render_started.in_set(RenderSystems::ExtractCommands))
-                .add_systems(Render, render_ended.in_set(RenderSystems::Cleanup));
+            render.insert_resource(render_time);
         }
+        app.add_plugins(super::frame_metrics::FrameMetricsPlugin);
         resource_cvar::<PerfLog, u8>(
             app,
             "mashup_perf_log",
@@ -233,18 +229,9 @@ impl RenderTime {
     pub fn ms(&self) -> f32 {
         self.0.load(std::sync::atomic::Ordering::Relaxed) as f32 / 1e3
     }
-}
 
-#[derive(Resource, Default)]
-struct RenderStart(Option<Instant>);
-
-fn render_started(mut start: ResMut<RenderStart>) {
-    start.0 = Some(Instant::now());
-}
-
-fn render_ended(start: Res<RenderStart>, time: Res<RenderTime>) {
-    if let Some(s) = start.0 {
-        time.0.store(s.elapsed().as_micros() as u32, std::sync::atomic::Ordering::Relaxed);
+    pub fn set_ms(&self, ms: f64) {
+        self.0.store((ms * 1e3) as u32, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -489,6 +476,10 @@ fn perf_report(
     interp: (Option<Res<crate::map::interp::Interpolation>>, Res<Time<Fixed>>),
     net: (Option<Res<crate::net::predict::NetGraph>>, Option<Res<crate::core::NetRole>>),
     render_time: Option<Res<RenderTime>>,
+    metrics: (
+        Option<ResMut<super::frame_metrics::FrameMetrics>>,
+        Option<Res<crate::metrics::TickMetrics>>,
+    ),
 ) {
     let now = Instant::now();
     let due = report.at.is_none_or(|t| (now - t).as_secs_f32() >= 1.0);
@@ -501,6 +492,12 @@ fn perf_report(
         && let Some(line) = report.lines.get_mut(1)
     {
         line.push_str(&format!(", render world {:.2} ms", r.ms()));
+    }
+    // Distributions over the last frames and ticks.
+    if let Some(mut m) = metrics.0 {
+        let lines = m.lines(metrics.1.as_deref());
+        let at = 2.min(report.lines.len());
+        report.lines.splice(at..at, lines);
     }
     if let Some(i) = interp.0 {
         report.lines.push(interp_line(&i, &interp.1));

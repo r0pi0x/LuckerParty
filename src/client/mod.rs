@@ -23,6 +23,7 @@ pub mod interp;
 pub mod net;
 pub mod objectives_hud;
 pub mod options;
+pub mod frame_metrics;
 pub mod perf;
 pub mod radar;
 pub mod radio;
