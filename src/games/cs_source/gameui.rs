@@ -235,10 +235,12 @@ const LOADING_DIALOGS: [&str; 2] = ["resource/loadingdialognobanner.res", "resou
 /// The interface sounds: the waves VGUI buttons name in the install's
 /// layouts (`sound_armed`, `sound_depressed`, `sound_released`; e.g.
 /// `resource/ui/econ/messageboxdialog.res`).
-const UI_SOUNDS: [(UiSound, &str); 3] = [
+/// And the freeze cam's (its picture taken).
+const UI_SOUNDS: [(UiSound, &str); 4] = [
     (UiSound::Rollover, "sound/ui/buttonrollover.wav"),
     (UiSound::Click, "sound/ui/buttonclick.wav"),
     (UiSound::Release, "sound/ui/buttonclickrelease.wav"),
+    (UiSound::FreezeCam, "sound/ui/freeze_cam.wav"),
 ];
 
 /// The server browser's layouts (Find Servers; under `platform/`): name,

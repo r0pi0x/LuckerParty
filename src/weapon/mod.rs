@@ -183,6 +183,18 @@ impl Plugin for WeaponPlugin {
             "1: +use on a dropped weapon you look at takes it, dropping the one in its slot (CS:GO's; CS:S has none).",
             |u| &mut u.0,
         );
+        app.init_resource::<drop::AutoWeaponSwitch>();
+        crate::console::resource_cvar::<drop::AutoWeaponSwitch, u8>(
+            app,
+            drop::AUTO_SWITCH_KEY,
+            "1: walking over a weapon that weighs more (its script's weight) than the one in hand draws it (sent to the server as userinfo).",
+            |u| &mut u.0,
+        );
+        {
+            let mut console = app.world_mut().resource_mut::<Console>();
+            console.archive(drop::AUTO_SWITCH_KEY);
+            console.userinfo(drop::AUTO_SWITCH_KEY);
+        }
         crate::console::resource_cvar::<drop::DebugPickup, u8>(
             app,
             "mashup_debug_pickup",
@@ -494,6 +506,13 @@ pub struct Weapon {
     /// Max movement speed while held, m/s (None: the movement's own).
     pub max_speed: Option<f32>,
 }
+
+/// A weapon's auto-switch priority (Source weapon scripts' `weight`): a
+/// player with `cl_autowepswitch` on draws a weapon it walks over when it
+/// weighs more than the one in hand (`drop::auto_switch`). None counts
+/// as 0.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SwitchWeight(pub i32);
 
 /// Trigger: how the primary attack is activated.
 #[derive(Component, Clone, Debug)]

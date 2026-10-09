@@ -27,6 +27,7 @@ pub mod net;
 pub mod objectives_hud;
 pub mod options;
 pub mod frame_metrics;
+pub mod freeze_cam;
 pub mod perf;
 pub mod radar;
 pub mod radio;
@@ -35,6 +36,7 @@ pub mod scoreboard;
 pub mod senses;
 pub mod server_browser;
 pub mod spectate;
+pub mod target_id;
 pub mod team_menu;
 pub mod vgui;
 pub mod view;
@@ -314,6 +316,8 @@ impl Plugin for ClientPlugin {
                 first_run::FirstRunPlugin,
                 map_screen::MapScreenPlugin,
                 widgets::WidgetsPlugin,
+                target_id::TargetIdPlugin,
+                freeze_cam::FreezeCamPlugin,
             ))
             .add_systems(PostStartup, spawn_local_player)
             .add_systems(Update, camera_for_local_player)

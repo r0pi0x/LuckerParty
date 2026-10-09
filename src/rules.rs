@@ -36,6 +36,13 @@ impl Plugin for DeathmatchPlugin {
         resource_cvar::<crate::core::FriendlyFire, u8>(app, "mp_friendlyfire", "1: teammates hurt each other.", |f| {
             &mut f.0
         });
+        app.init_resource::<crate::core::PlayerIdMode>();
+        resource_cvar::<crate::core::PlayerIdMode, u8>(
+            app,
+            "mp_playerid",
+            "Whose names show under the crosshair: 0 everyone's, 1 teammates' only, 2 nobody's.",
+            |m| &mut m.0,
+        );
         resource_cvar::<Deathmatch, u32>(
             app,
             "mp_limitteams",

@@ -29,6 +29,10 @@ pub struct Cvar {
     /// Saved to config.cfg (Source's FCVAR_ARCHIVE): player preferences,
     /// not test or server settings.
     pub archive: bool,
+    /// Sent to the server as the player's own setting (Source's
+    /// FCVAR_USERINFO): the local player's `core::UserInfo`, and a network
+    /// client's on joining and on change (`net`).
+    pub userinfo: bool,
     /// Sensible bounds (Source's FCVAR min/max, here only a hint): the
     /// console's argument help shows them, the debug UI's sliders use them.
     pub range: Option<(f32, f32)>,
@@ -140,6 +144,14 @@ impl Console {
     pub fn archive(&mut self, name: &str) {
         if let Some(c) = self.cvars.get_mut(&name.to_lowercase()) {
             c.archive = true;
+        }
+    }
+
+    /// Mark a cvar as the player's own setting the simulation reads
+    /// (`core::UserInfo`).
+    pub fn userinfo(&mut self, name: &str) {
+        if let Some(c) = self.cvars.get_mut(&name.to_lowercase()) {
+            c.userinfo = true;
         }
     }
 
@@ -483,6 +495,7 @@ impl ConsoleAppExt for App {
                 Vec::new()
             },
             archive: false,
+            userinfo: false,
             range: None,
             integer: false,
             scope: CvarScope::of(name),
@@ -601,7 +614,7 @@ impl Plugin for ConsolePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Console>()
             .init_resource::<Cheats>()
-            .add_systems(PreUpdate, run_queue);
+            .add_systems(PreUpdate, (run_queue, local_userinfo).chain());
         builtins(app);
         resource_cvar::<Cheats, u8>(
             app,
@@ -609,6 +622,34 @@ impl Plugin for ConsolePlugin {
             "1: cheat commands (noclip, god, setpos, give, ...) work in a network game (single player always has them).",
             |c| &mut c.0,
         );
+    }
+}
+
+/// The userinfo cvars' values (`Cvar::userinfo`), by name.
+pub fn userinfo(world: &mut World) -> std::collections::BTreeMap<String, String> {
+    let Some(console) = world.get_resource::<Console>() else {
+        return Default::default();
+    };
+    let getters: Vec<(String, GetFn)> = console
+        .cvars
+        .values()
+        .filter(|c| c.userinfo)
+        .map(|c| (c.name.clone(), c.get.clone()))
+        .collect();
+    getters
+        .into_iter()
+        .filter_map(|(name, get)| Some((name, get(world)?)))
+        .collect()
+}
+
+/// The local player's `core::UserInfo`: its userinfo cvars' values.
+fn local_userinfo(world: &mut World) {
+    let mut local = world.query_filtered::<(Entity, Option<&crate::core::UserInfo>), With<crate::core::LocalPlayer>>();
+    let Some((me, have)) = local.iter(world).next() else { return };
+    let have = have.cloned();
+    let info = crate::core::UserInfo(userinfo(world));
+    if have.as_ref() != Some(&info) {
+        world.entity_mut(me).insert(info);
     }
 }
 

@@ -278,7 +278,8 @@ impl Plugin for CsWeaponsPlugin {
                 // A network server's per-tick body animation, for hitboxes.
                 super::player_anim::SimAnimPlugin,
             ))
-            .insert_resource(pass_materials());
+            .insert_resource(pass_materials())
+            .add_observer(weigh);
         if !app.is_plugin_added::<super::pain::PainSoundsPlugin>() {
             app.add_plugins(super::pain::PainSoundsPlugin);
         }
@@ -292,6 +293,49 @@ impl Plugin for CsWeaponsPlugin {
                 all: vec![AK47],
             };
         }
+    }
+}
+
+/// The weapon scripts' `weight` (auto-switch priority; spec weapons.md 1
+/// and its script table). The scripts are encrypted in the install
+/// (`.ctx`), so the values are the spec's, like the other script keys.
+pub const WEIGHTS: &[(&str, i32)] = &[
+    (AK47, 25),
+    (AUG, 25),
+    (AWP, 30),
+    (super::objectives::C4, 0),
+    (DEAGLE, 7),
+    (ELITE, 5),
+    (FAMAS, 75),
+    (FIVESEVEN, 5),
+    (super::grenades::FLASHBANG, 1),
+    (G3SG1, 20),
+    (GALIL, 25),
+    (GLOCK, 5),
+    (super::grenades::HEGRENADE, 2),
+    (KNIFE, 0),
+    (M249, 25),
+    (M3, 20),
+    (M4A1, 25),
+    (MAC10, 25),
+    (MP5NAVY, 25),
+    (P228, 5),
+    (P90, 26),
+    (SCOUT, 30),
+    (SG550, 20),
+    (SG552, 25),
+    (super::grenades::SMOKEGRENADE, 2),
+    (TMP, 25),
+    (UMP45, 25),
+    (USP, 5),
+    (XM1014, 20),
+];
+
+/// A CS:S weapon's script weight, on it as `SwitchWeight`.
+fn weigh(add: On<Add, Weapon>, weapons: Query<&Weapon>, mut commands: Commands) {
+    let Ok(w) = weapons.get(add.entity) else { return };
+    if let Some((_, weight)) = WEIGHTS.iter().find(|(id, _)| *id == w.id) {
+        commands.entity(add.entity).insert(crate::weapon::SwitchWeight(*weight));
     }
 }
 

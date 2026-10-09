@@ -323,21 +323,18 @@ pub(super) fn stop(world: &mut World) {
 }
 
 /// Connected: say who we are.
-fn send_join(
-    mut commands: Commands,
-    version: Res<NetVersion>,
-    protocol: Res<ProtocolHash>,
-    settings: Res<NetSettings>,
-    role: Res<NetRole>,
-) {
-    if *role != NetRole::Client {
+fn send_join(world: &mut World) {
+    if *world.resource::<NetRole>() != NetRole::Client {
         return;
     }
-    commands.client_trigger(Join {
-        version: version.0.clone(),
-        protocol: *protocol,
-        name: settings.name.clone(),
-    });
+    let join = Join {
+        version: world.resource::<NetVersion>().0.clone(),
+        protocol: *world.resource::<ProtocolHash>(),
+        name: world.resource::<NetSettings>().name.clone(),
+        userinfo: crate::console::userinfo(world).into_iter().collect(),
+    };
+    world.commands().client_trigger(join);
+    world.flush();
 }
 
 fn refused(r: On<Refused>, mut commands: Commands) {

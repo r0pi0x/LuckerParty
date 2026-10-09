@@ -72,7 +72,7 @@ pub const PROTOCOL_ID: u64 = 0x4C55_434B_4552_5059;
 /// This build's network version. A server refuses clients of another
 /// version. Bump the suffix when the protocol changes in a way the
 /// replicon protocol hash can't see (a field added to a message).
-pub const NET_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/net9");
+pub const NET_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/net10");
 
 /// The owner id of the listen server's own player (`NetCharacter::owner`).
 /// Remote clients' ids are never 0.
@@ -168,6 +168,8 @@ pub struct Join {
     /// Replicon's hash of everything registered (types and order).
     pub protocol: ProtocolHash,
     pub name: String,
+    /// The player's userinfo cvars (`core::UserInfo`), by name.
+    pub userinfo: Vec<(String, String)>,
 }
 
 /// Server -> client: refused to join (version, full); the server
@@ -886,6 +888,14 @@ pub struct NameRequest {
     pub name: String,
 }
 
+/// Client -> server: my userinfo cvars are now these (one changed while
+/// connected; Source's setinfo). The server keeps them as the player's
+/// `core::UserInfo`.
+#[derive(Message, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct UserInfoRequest {
+    pub values: Vec<(String, String)>,
+}
+
 /// Server -> every player: someone changed their name (the game's
 /// "* %s1 changed name to %s2").
 #[derive(Message, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -989,6 +999,7 @@ impl Plugin for NetPlugin {
         .add_server_message::<CvarValues>(Channel::Ordered)
         .make_message_independent::<CvarValues>()
         .add_client_message::<NameRequest>(Channel::Ordered)
+        .add_client_message::<UserInfoRequest>(Channel::Ordered)
         .add_server_message::<NameChanged>(Channel::Ordered)
         .make_message_independent::<NameChanged>()
         .add_server_message::<MapHud>(Channel::Ordered)

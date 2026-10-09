@@ -680,13 +680,50 @@ fn take(world: &mut World, owner: Entity, weapon: Entity) {
     if world.get::<Weapon>(weapon).is_none() {
         return;
     }
+    let switch = auto_switch(world, owner, weapon);
     let Some(mut inv) = world.get_mut::<Inventory>(owner) else { return };
     inv.weapons.push(weapon);
-    if inv.active.is_none() && inv.wanted.is_none() {
+    if (inv.active.is_none() && inv.wanted.is_none()) || switch {
         inv.wanted = Some(weapon);
     }
     if let Some(mut w) = world.get_mut::<Weapon>(weapon) {
         w.owner = Some(owner);
     }
     super::equip::picked_up(world, owner, weapon);
+}
+
+/// `cl_autowepswitch` (CS:S's Multiplayer > Advanced "Automatically switch
+/// to picked up weapons (if more powerful)", default 1): the local
+/// player's setting, sent as its userinfo (`core::UserInfo`).
+#[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AutoWeaponSwitch(pub u8);
+
+impl Default for AutoWeaponSwitch {
+    fn default() -> Self {
+        Self(1)
+    }
+}
+
+/// The userinfo key of `AutoWeaponSwitch`.
+pub const AUTO_SWITCH_KEY: &str = "cl_autowepswitch";
+
+/// Whether a weapon walked over into an empty slot is drawn at once: the
+/// player has `cl_autowepswitch` on (characters without userinfo, bots,
+/// don't), the new weapon's script `weight` is above the one in hand's,
+/// and attack isn't held (firing, planting, a grenade's pin out: our
+/// choice, CS:S's unmeasured; docs/tech-debt.md). A reload in progress is
+/// cancelled by the switch, as any switch does.
+fn auto_switch(world: &World, owner: Entity, weapon: Entity) -> bool {
+    let on = world
+        .get::<crate::core::UserInfo>(owner)
+        .and_then(|u| u.flag(AUTO_SWITCH_KEY))
+        .unwrap_or(false);
+    if !on || world.get::<Intent>(owner).is_some_and(|i| i.fire) {
+        return false;
+    }
+    let Some(active) = world.get::<Inventory>(owner).and_then(|i| i.wanted.or(i.active)) else {
+        return false;
+    };
+    let weight = |e: Entity| world.get::<super::SwitchWeight>(e).map_or(0, |w| w.0);
+    weight(weapon) > weight(active)
 }

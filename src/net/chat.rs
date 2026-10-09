@@ -25,7 +25,7 @@ use bevy_replicon::prelude::*;
 
 use super::{
     ChatMessage, NameChanged, NameRequest, NetCharacter, NetSettings, RadioCall, RadioRequest, SayRequest,
-    server::Player,
+    UserInfoRequest, server::Player,
 };
 use crate::{
     core::{Health, LocalPlayer, NetRole, Radio, Team},
@@ -41,7 +41,7 @@ pub(super) fn plugin(app: &mut App) {
         .init_resource::<Flood>()
         .add_systems(
             PreUpdate,
-            (receive_says, receive_radio, receive_names)
+            (receive_says, receive_radio, receive_names, receive_userinfo)
                 .after(ServerSystems::Receive)
                 .run_if(in_state(ServerState::Running)),
         )
@@ -59,7 +59,7 @@ pub(super) fn plugin(app: &mut App) {
         )
         .add_systems(
             PostUpdate,
-            send_name
+            (send_name, send_userinfo)
                 .before(ClientSystems::Send)
                 .run_if(resource_equals(NetRole::Client)),
         );
@@ -398,6 +398,33 @@ fn send_name(settings: Res<NetSettings>, mut last: Local<Option<String>>, mut ou
     if !first {
         out.write(NameRequest {
             name: settings.name.clone(),
+        });
+    }
+}
+
+/// Our userinfo cvars changed while connected: tell the server (the
+/// first values went with `Join`).
+fn send_userinfo(world: &mut World, mut last: Local<Option<Vec<(String, String)>>>) {
+    let values: Vec<(String, String)> = crate::console::userinfo(world).into_iter().collect();
+    if last.as_ref() == Some(&values) {
+        return;
+    }
+    let first = last.is_none();
+    *last = Some(values.clone());
+    if !first {
+        world.write_message(UserInfoRequest { values });
+    }
+}
+
+/// A client's userinfo: its character's `core::UserInfo` (at most 64
+/// keys of 64 bytes, values of 256).
+fn receive_userinfo(mut requests: MessageReader<FromClient<UserInfoRequest>>, mut commands: Commands) {
+    for r in requests.read() {
+        let Some(c) = r.client_id.entity() else { continue };
+        let values = r.message.values.clone();
+        commands.queue(move |w: &mut World| {
+            let Some(character) = w.get::<Player>(c).map(|p| p.character) else { return };
+            super::server::set_userinfo(w, character, &values);
         });
     }
 }

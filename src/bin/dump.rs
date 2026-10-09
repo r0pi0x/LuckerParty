@@ -8,7 +8,7 @@ use std::{
     process::ExitCode,
 };
 
-use bevy::math::Vec3;
+use bevy::math::{Quat, Vec3};
 use mashup::{
     games::cs_source,
     mount::{
@@ -200,6 +200,9 @@ fn sequences(mount: &Mount, path: &str) -> Result<(), String> {
         for e in &s.events {
             println!("        event {:.4} {} {:?} {:?}", e.cycle, e.event, e.name, e.options);
         }
+        if let Some(m) = motion(&set, i, &bones) {
+            println!("        {m}");
+        }
     }
     let (attachments, illum) = cs_source::anim::attachments(&read, path)?;
     for (name, bone, t) in attachments {
@@ -211,6 +214,54 @@ fn sequences(mount: &Mount, path: &str) -> Result<(), String> {
     }
     println!("  illumination position {illum}");
     Ok(())
+}
+
+/// How much a sequence moves: the largest turn of any bone (degrees,
+/// its local rotation against the first frame's) and the cycles over which
+/// some bone is turned more than 2 degrees; and for an idle, how far its
+/// first frame is from the end of the draw sequence (a still idle that
+/// starts where the draw ends looks like no idle at all).
+fn motion(set: &mashup::map::anim::AnimSet, s: usize, bones: &[(String, Option<usize>, Quat, Vec3)]) -> Option<String> {
+    let params = set.default_params();
+    let frames = set.animations[set.sequences[s].anims[0]].frames.max(2);
+    let n = set.defaults.len();
+    let pose = |s: usize, cycle: f32| {
+        let mut out = set.defaults.clone();
+        set.sequence_pose(s, cycle, &params, &mut out[..n]);
+        out
+    };
+    let differ = |a: &[(Quat, Vec3)], b: &[(Quat, Vec3)]| {
+        a.iter()
+            .zip(b)
+            .enumerate()
+            .map(|(i, (p, q))| (p.0.angle_between(q.0).to_degrees(), i))
+            .fold((0.0f32, 0usize), |m, x| if x.0 > m.0 { x } else { m })
+    };
+    let first = pose(s, 0.0);
+    let (mut max, mut bone, mut span) = (0.0f32, 0usize, None::<(f32, f32)>);
+    for f in 0..frames {
+        let c = f as f32 / (frames - 1) as f32;
+        let (d, b) = differ(&pose(s, c), &first);
+        if d > max {
+            (max, bone) = (d, b);
+        }
+        if d > 2.0 {
+            span = Some(span.map_or((c, c), |(a, _)| (a, c)));
+        }
+    }
+    let name = |b: usize| bones.get(b).map_or("?", |x| x.0.as_str()).to_string();
+    let mut line = format!("motion: up to {max:.1} deg ({})", name(bone));
+    if let Some((a, b)) = span {
+        line += &format!(", over 2 deg in cycles {a:.2}..{b:.2}");
+    }
+    let seq = &set.sequences[s];
+    if seq.activity.eq_ignore_ascii_case("ACT_VM_IDLE")
+        && let Some(draw) = set.activity("ACT_VM_DRAW")
+    {
+        let (d, b) = differ(&first, &pose(draw, 1.0));
+        line += &format!("; first frame vs the draw's end: {d:.1} deg ({})", name(b));
+    }
+    Some(line)
 }
 
 fn report(args: &Args, mount: &Mount, locked: &[String]) -> Result<(), String> {
