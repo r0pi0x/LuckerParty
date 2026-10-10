@@ -326,29 +326,108 @@ What still blocks, by maps affected:
    8) touches the glass brush's arena-wide box (fire.md 2.3 step 7), so
    the walls are gone before "Fight!"; a fire spec question (line of
    sight or bounds for brush entities).
-5. Round 2's (noted, not done here): crazykart's karts (players
-   parented), boatrace's and creative's boats (buoyancy), item powers'
-   visuals (spritetrails, particles), `mp_flashlight`/`sv_alltalk`
-   unknown settings (logged).
+5. Done in round 2 (below): crazykart's karts (players parented),
+   boatrace's and creative's boats (buoyancy), item powers' visuals
+   (spritetrails, particles). `mp_flashlight`/`sv_alltalk` unknown
+   settings (logged) remain.
+
+## Map logic audit, round 2 (2026-10-10)
+
+Working down round 1's ranked list ("What still fails", above): visual
+entities, render looks, physics in water and between bodies, players
+parented to things, the remaining classes, and the scripted runs' noise.
+`mapsweep --audit` again over the 89 maps (raw output in this session's
+`target/mapsweep/round2/`; round 1's "after" is the "before" here):
+
+| | Before (round 1 after) | After |
+|---|---|---|
+| Connections to inputs the target's class doesn't handle | 1578 (58 kinds) | 31 (9 kinds: map mistakes and HL2/later-engine inputs, below) |
+| Connections to targets that match nothing | 46 | 46 (the map's own) |
+| Entity classes nothing handles | 30 classes / 592 entities | 13 classes / 43 entities |
+| Complaints the scripted runs logged | 2096 | 103 (10 kinds) |
+| Notes (known, intended gaps, once per map: `LogicWorld::note`) | (counted as complaints) | 115 (7 kinds) |
+| Usable brushes +use didn't find | (every mover tried) | 7 (only solid ones tried now) |
+| Movers that didn't move / jumped / children left behind / panics | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 |
+
+Fixed, by maps affected (tests in `src/logic/community_tests.rs`,
+`map::emitters`, `map::psys`, `games::cs_source::pcf`, `map::tint`,
+`map::buoyancy`, `map::controllers`, `tests/it/logic_physics.rs`,
+`tests/it/heavy/map_community.rs::visual_entities_load`):
+
+| Problem | Maps | Fix |
+|---|---|---|
+| env_spritetrail not drawn | 8 (59 trails) | `map::emitters::TrailEmitter` (visual_entities.md 5) through the particle pool; drawn parts follow their entity when it follows a parent (`FollowsEntity`, sprites too) |
+| info_particle_system not drawn | 7 (307 systems) | `.pcf` (binary DMX 2) from the install's manifest and the map's pak (`games::cs_source::pcf`), run by `map::psys` (29 operator kinds, children, Start/Stop instances); surf_hellenic's 160 fires, crazykart's kart effects, surreal's, boreas', threnody's (surf_halloween_tf2's TF2 systems aren't in CS:S's files: not found, logged) |
+| prop_ragdoll not placed | 6 (10) | Drawn in Hammer's pose ("angleOverride"), else lying on the floor below it; not simulated |
+| env_smokestack not drawn | 3 (20) | `map::emitters::SmokeStackEmitter` (particles_and_smoke.md 3) |
+| Players' render looks (invisibility, colours: AddOutput rendermode/renderamt/rendercolor, Alpha, Color on `!activator`) | 4 (23+26+23 connections, 362+321 run-time lines) | `LogicWorld::player_looks` -> `map::tint::RenderLook` on the character: body and held model fade, add or tint |
+| Brush alpha and render modes | 7 brush entities' maps (surf_demise's 51 faint panels, kz_bhop_sakura, mg_creative) and Alpha/AddOutput renderamt at run time | Baked brush entities blended from load (`MapMesh::render`); nodes by `BrushTint` (look and texture frame) |
+| Boats sank (no buoyancy); thrust couldn't move them | 2 (mg_boatrace_scramble, mg_creative's boats) + every physics prop in water | `map::buoyancy`: lift by the colliders' volume and wet fraction, water drag; boatrace's catamaran does ~270 units/s on its thruster |
+| phys_motor, constraints (ballsocket, constraint; hinge, slide, length too) | 4 (wipeout2, surreal, bk_warehouse, churches) | `logic::physics` motors and joints -> `map::controllers` (motor spin, avian joints, Break/TurnOff) |
+| point_push | 1 (28) | Physics bodies and players pushed while enabled |
+| Players parented to things (SetParent/SetParentAttachment/ClearParent on players and entities at run time) | 3 (crazykart's 64+64 connections, creative's trails and spinners, crazykart's particles) | `anchors`: run-time parents, players ride their parent (`MapControls::parented`: no own movement, no physics shadow or push-away, so the kart isn't broken by its rider), model attachments from the loader (`$attachment` keys); moving physics props move their children whatever their classname |
+| func_monitor/point_camera | 2 (lt_galaxy's 24 screens, kommando) | `map::monitor`: a render target of the active camera's view |
+| point_tesla | 2 | Arcs to surfaces (or into the air) through the particle pool |
+| env_shooter | 2 | Its model as gibs |
+| func_tanktrain | 2 | A func_tracktrain |
+| env_texturetoggle | 1 (1056 connections) | Movers' texture frames |
+| env_screenoverlay | 1 | A picture over every screen (`HudShow::Overlay`; network clients get it with the other HUD events) |
+| func_water_analog | 5 | Its water is swimmable where it spawns; its inputs accepted (it doesn't move) |
+| Noise: VScript and later-engine inputs, server plugin commands, missing filters, names nothing has, round restarts, client commands off the allowlist | most maps | Noted once per map (`LogicWorld::note`), apart from complaints; real ones fixed: a damage filter naming nothing clears it, env_entity_maker's AddOutput EntityTemplate, env_soundscape_triggerable, func_reflective_glass, props' damage-force inputs |
+
+Play-check (live, windowed; console over the remote port; screenshots in
+this session's `target/scratch/shots/`):
+
+| Map | Mechanism | Result |
+|---|---|---|
+| mg_boatrace_scramble | Boats in the boathouse; a catamaran's accelerate thruster | Boats float at the waterline; the catamaran leaves its berth at ~270 units/s and runs down the channel (`boat_before.png`, `boat_after.png`) |
+| mg_crazykart_v1_1 | Step onto a kart (its starter trigger): SetParent to the seat, game_ui, then drive | The player is snapped to the kart's seat and rides it as it drives and turns; the kart no longer breaks under its rider (`kart_garage.png`) |
+| gg_future | Lasers on a func_rotating with env_spritetrails | Four coloured trail rings (`gg_future_trails.png`) |
+| surf_hellenic | env_fire_large info_particle_systems (fire_01.pcf from the install) | Flames, smoke and embers on the braziers (`hellenic_fire3.png`, `hellenic_fire4.png`) |
+| gg_nukkon_hdr | env_smokestack | Cooling towers smoke, drifting with the wind (`nukkon_smokestack.png`) |
+| mg_lt_galaxy_v5 | func_monitors and point_camera | The 24 sphere screens show the camera's view (`galaxy_monitors.png`) |
+| surf_halloween_tf2 | point_tesla | Purple arcs (`halloween_tesla.png`) |
+| gg_deagle7k | prop_ragdoll without a pose | Lies on the floor (`deagle_ragdoll2.png`) |
+
+What still fails, ranked by maps affected (after; `target/mapsweep/round2/audit.md`):
+
+1. **Map ragdolls aren't simulated** (6 maps, 10): drawn posed or lying,
+   not falling, not solid; the character ragdoll code (`map::ragdoll`)
+   is tied to characters.
+2. **Classes nothing handles** (13 classes, 43 entities): env_detail_controller
+   (3 maps), env_embers (2), color_correction (2), env_wind (2),
+   propper_model (1, 14: a compile-time tool entity), info_ladder_dismount,
+   env_muzzleflash, env_viewpunch, func_fish_pool, info_constraint_anchor,
+   ai_changetarget and logic_script (HL2/CS:GO, absent in CS:S too),
+   surf_happyhands' odd ambient_generic.
+3. **Particle effects are interpretations** of the `.pcf` operators
+   (tech-debt row): their look isn't compared with CS:S; surf_halloween_tf2's
+   37 systems are TF2's (not in CS:S's files: not drawn there either).
+4. **Moving water** (func_water_analog motion: mg_jacks_multigames_v1's
+   rising flood; water parented to movers on 2 maps) stays where it spawns.
+5. **Run-time complaints left** (10 kinds, 103 lines): player
+   SetFogController (surf_halloween_tf2, 79), ambient_generic presets
+   (2 maps), sv_cheats/rcon refused (3, on purpose), and map mistakes
+   (inputs CS:S entities don't have: trigger_once PlaySound,
+   env_soundscape PlaySound, func_breakable Open; AddOutput without a
+   value; a track train without a path; a template without members).
+6. **Monitors**: one camera at a time, no 3D skybox or fog in it, culled
+   for the player's view; teslas and other effects inside a 3D skybox
+   draw at their skybox place.
 
 ## Left, ranked by maps affected
 
 Generic, by maps affected (counts from the sweep after the fixes):
 
-1. **Visual entities not drawn**: env_spritetrail (8 maps),
-   info_particle_system (7), env_smokestack (3), strike env_beams;
-   prop_ragdoll (6) isn't placed (physics_brushes.md 6).
-2. **Unspecced classes** (logic_measure_movement, func_rot_button,
-   momentary_rot_button, point_teleport, logic_multicompare and env_shake
-   are in since the map logic audit, above): phys_motor,
-   phys_constraint/ballsocket, point_push, env_texturetoggle,
-   env_screenoverlay, func_water_analog, func_monitor/point_camera,
-   point_tesla, env_shooter.
-3. **env_tonemap_controller inputs** (15 maps: SetBloomScale,
-   SetAutoExposureMin/Max): HDR look, logic logs them unhandled.
-4. **Triggers whose filtername names a missing filter** (5 maps, 341
-   triggers: filter_blue/filter_red on surf_ maps): the game then lets
-   every activator through, as we do; only the log line is noise.
+1. **Map ragdolls simulated** (6 maps; drawn posed or lying since
+   round 2) and strike-generator env_beams (visual_entities.md 4.2).
+2. **Classes still unhandled** (round 2's list, above): env_detail_controller,
+   env_embers, color_correction, env_wind, moving func_water_analog,
+   env_viewpunch, env_muzzleflash, func_fish_pool, info_constraint_anchor.
+3. **Particle operators checked against CS:S** (round 2 draws `.pcf`
+   effects by interpretation; tech-debt) and the
+   physics numbers (buoyancy, motors, constraint breaking) measured.
+4. **Players stuck after a shared teleport** (minigame flows, above).
 5. **Materials and textures** (sweep of the evening of 2026-10-08): 19
    textures missing over 10 maps (mostly `_rt_camera`, custom cubemaps,
    files the map's author didn't pack), 11 materials missing over 8 maps,
@@ -358,7 +437,8 @@ Generic, by maps affected (counts from the sweep after the fixes):
 6. **Decals/overlays without a surface** (11 / 5 maps, one each mostly),
    as on the stock maps (other-maps.md #11).
 7. **Server commands** maps send that we refuse: SourceMod/Mani admin
-   commands (ma_say, sm_say: chat text) on 4 maps.
+   commands (ma_say, sm_say: chat text) on 5 maps, noted once per map
+   since round 2 (a server without the plugin ignores them too).
 
 Specs for the map entities (written 2026-10-08 from the public Source SDK 2013,
 implemented 2026-10-09, above):

@@ -141,11 +141,14 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
 - The user's ~89 community maps (surf_, bhop_, kz_, gg_, mg_): swept with
   `mapsweep` and their map logic audited with `mapsweep --audit`
   ([plans/active/community-maps.md](plans/active/community-maps.md),
-  results and what's left, ranked). Top of what's left: boats don't
-  float (no water buoyancy: mg_boatrace_scramble, mg_creative's boats),
-  players parented to karts (SetParent on players: mg_crazykart_v1_1),
-  players' render inputs (alpha/colour: invisibility power-ups), particle
-  systems and sprite trails.
+  results and what's left, ranked). Round 2 (done 2026-10-10, to
+  playtest): sprite trails, `.pcf` particle systems, smoke stacks, map
+  ragdolls (drawn, not simulated), players' and brushes' render looks,
+  water buoyancy (boats), motors and constraints, players riding karts,
+  monitors, teslas, shooters, point_push, texture toggles, screen
+  overlays; the audit's noise noted once per map. Top of what's left:
+  map ragdolls simulated, the remaining classes (env_embers, env_wind,
+  color_correction...), particle looks checked against CS:S.
 
 ## 2b. HUD and debug views
 
