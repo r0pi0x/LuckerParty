@@ -2083,7 +2083,13 @@ impl LogicWorld {
                 }
                 let grow = Vec3::splat(1.0 + SWEEP_EPS);
                 let (half, centre) = ((pl.maxs - pl.mins) / 2.0 + grow, pl.origin + (pl.mins + pl.maxs) / 2.0);
-                if brushes.iter().any(|b| b.overlaps_box(centre, half, 0.0)) {
+                // Standing on it touches it too: a landing can rest up to
+                // 2 units above what it stands on (movement.md, ground
+                // detection), past the 1-unit reach (bhop blocks: classic
+                // touch-open doors under the player). Our reading;
+                // doors_buttons.md open question 9.
+                let stands_on = pl.on_ground && pl.ground == Some(id);
+                if stands_on || brushes.iter().any(|b| b.overlaps_box(centre, half, 0.0)) {
                     let who = Some(Who::Player(pl.entity));
                     if door {
                         door_use_or_touch(self, id, who, true);

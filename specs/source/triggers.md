@@ -464,3 +464,13 @@ dt = 0.015, sv_gravity 800 unless noted. Player box 32×32×62 standing.
    exit) with the movement probe.
 8. **First hurt pass timing**: same tick as the first touch or next tick?
    Read health per tick with the probe.
+9. **AddOutput basevelocity on a player.** (Added by an implementation
+   session, not from the source.) Bhop, kz and surf boosters send
+   `!activator AddOutput basevelocity x y z` (most on OnEndTouch of a pad,
+   some on OnStartTouch). We read it as setting the base velocity field
+   itself (replacing it, no push mark), so the player's next command turns
+   it into velocity × (1 + dt/2) by step 1 of trigger_push above, and it
+   ungrounds nobody by itself (a resulting vz over 250 does: movement.md,
+   per-tick order 7). Our reading; before, we added it to the velocity
+   at once. Test: probe server, a trigger_multiple with that output,
+   `cl_showpos` speed on the ticks after it fires, standing and airborne.

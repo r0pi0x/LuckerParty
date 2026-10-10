@@ -27,7 +27,7 @@ use bevy::{
 use super::{FirstPersonCamera, fonts::UiFonts};
 use crate::{
     console::{Console, ConsoleAppExt, Level, cfg_dir, parse, resource_cvar},
-    core::{LocalPlayer, MovementState, SpawnPoint, Velocity},
+    core::{LocalPlayer, MovementState, Velocity},
     map::PlaySound,
     slots::{MovementSlot, set_movement},
 };
@@ -2086,13 +2086,28 @@ pub fn client_commands(app: &mut App) {
         }
         Ok(Some(format!("godmode {}", if on { "ON" } else { "OFF" })))
     })
-    .console_command("kill", "Respawn at a spawn point.", |w, _| {
+    .console_command("kill", "Kill yourself (CS:S's suicide: you die where you stand, which can end the round).", |w, _| {
+        use crate::core::{Damage, DamageKind, Health, Hitgroup};
+        use crate::rules::Dead;
         let p = local_player(w)?;
-        let mut q = w.query_filtered::<&Transform, With<SpawnPoint>>();
-        let spawn = q.iter(w).next().copied().ok_or("no spawn points")?;
-        w.get_mut::<Transform>(p).ok_or("no transform")?.translation = spawn.translation + Vec3::Y * 1.0;
-        w.get_mut::<Velocity>(p).ok_or("no velocity")?.0 = Vec3::ZERO;
-        let _ = w.get::<MovementState>(p);
+        if w.get::<Dead>(p).is_some() {
+            return Ok(None);
+        }
+        let t = *w.get::<Transform>(p).ok_or("no transform")?;
+        let _ = w.get::<Health>(p).ok_or("no health")?;
+        // God mode would refuse the damage; a suicide goes through it.
+        w.entity_mut(p).remove::<crate::core::God>();
+        w.write_message(Damage {
+            force: Vec3::ZERO,
+            target: p,
+            attacker: Some(p),
+            amount: 1000.0,
+            point: t.translation,
+            dir: Vec3::NEG_Y,
+            hitgroup: Hitgroup::Generic,
+            kind: DamageKind::Generic,
+            weapon: None,
+        });
         Ok(None)
     })
     .console_command(

@@ -31,7 +31,7 @@ use mashup::{
 const UNIT: f32 = cs_source::bsp::METERS_PER_UNIT;
 
 /// The map, when the install and the cached map are there.
-fn load(name: &str) -> Option<MapData> {
+pub(super) fn load(name: &str) -> Option<MapData> {
     let installed = LocalConfig::load()
         .ok()
         .and_then(|c| c.game_path(cs_source::GAME))
@@ -45,26 +45,26 @@ fn load(name: &str) -> Option<MapData> {
 }
 
 /// A map played by scripted characters, and the steps checked so far.
-struct Flow {
-    sim: Sim,
-    map: &'static str,
+pub(super) struct Flow {
+    pub(super) sim: Sim,
+    pub(super) map: &'static str,
     /// Terrorists, then counter-terrorists.
-    t: Vec<Entity>,
-    ct: Vec<Entity>,
+    pub(super) t: Vec<Entity>,
+    pub(super) ct: Vec<Entity>,
     /// (step, passed, detail).
-    rows: Vec<(String, bool, String)>,
+    pub(super) rows: Vec<(String, bool, String)>,
     /// Console lines printed since the last `said` check started.
     printed: usize,
     /// Outputs fired since the map loaded: (class, name, output).
-    fired: Vec<(String, String, String)>,
+    pub(super) fired: Vec<(String, String, String)>,
     /// Inputs delivered: (class, name, input, value).
-    delivered: Vec<(String, String, String, String)>,
+    pub(super) delivered: Vec<(String, String, String, String)>,
 }
 
 impl Flow {
     /// `map` with `t` terrorists and `ct` counter-terrorists, rounds on,
     /// no freeze time; a second into the first round.
-    fn new(map: &'static str, t: usize, ct: usize) -> Option<Self> {
+    pub(super) fn new(map: &'static str, t: usize, ct: usize) -> Option<Self> {
         let data = load(map)?;
         let mut sim = Sim::new((MapPlugin::new(data), SourceMovementPlugin, CsWeaponsPlugin));
         sim.set_tick_interval(cs_source::TICK_INTERVAL);
@@ -99,12 +99,12 @@ impl Flow {
         Some(f)
     }
 
-    fn all(&self) -> Vec<Entity> {
+    pub(super) fn all(&self) -> Vec<Entity> {
         self.t.iter().chain(&self.ct).copied().collect()
     }
 
     /// Run `s` seconds, keeping what the logic fired and delivered.
-    fn secs(&mut self, s: f64) {
+    pub(super) fn secs(&mut self, s: f64) {
         let ticks = (s * self.sim.tick_hz()).round() as u64;
         for _ in 0..ticks {
             self.sim.ticks(1);
@@ -112,7 +112,7 @@ impl Flow {
         }
     }
 
-    fn drain(&mut self) {
+    pub(super) fn drain(&mut self) {
         let map = self.sim.app.world().resource::<mashup::map::entities::MapEntities>().entities.clone();
         let mut logic = self.sim.app.world_mut().resource_mut::<Logic>();
         let w = &mut logic.world;
@@ -136,12 +136,12 @@ impl Flow {
     }
 
     /// The live entity named `name` (the first), its id.
-    fn ent(&self, name: &str) -> Option<EntId> {
+    pub(super) fn ent(&self, name: &str) -> Option<EntId> {
         self.sim.app.world().resource::<Logic>().world.find(name)
     }
 
     /// The live entity of `class` nearest `origin` (entity space).
-    fn ent_near(&self, class: &str, origin: Vec3) -> Option<EntId> {
+    pub(super) fn ent_near(&self, class: &str, origin: Vec3) -> Option<EntId> {
         let w = &self.sim.app.world().resource::<Logic>().world;
         w.ids()
             .into_iter()
@@ -153,17 +153,17 @@ impl Flow {
             })
     }
 
-    fn centre(&self, id: EntId) -> Vec3 {
+    pub(super) fn centre(&self, id: EntId) -> Vec3 {
         centre(&self.sim.app.world().resource::<Logic>().world, id)
     }
 
-    fn origin_of(&self, name: &str) -> Option<Vec3> {
+    pub(super) fn origin_of(&self, name: &str) -> Option<Vec3> {
         let id = self.ent(name)?;
         self.sim.app.world().resource::<Logic>().world.get(id).map(|e| e.origin)
     }
 
     /// Where `p`'s feet are (entity space).
-    fn feet(&self, p: Entity) -> Vec3 {
+    pub(super) fn feet(&self, p: Entity) -> Vec3 {
         let w = self.sim.app.world();
         let t = w.get::<Transform>(p).unwrap().translation;
         let low = w.get::<MovementState>(p).map_or(0.0, |s| s.hull_min.y);
@@ -171,7 +171,7 @@ impl Flow {
     }
 
     /// Put `p`'s feet at `at` (entity space), standing still.
-    fn put(&mut self, p: Entity, at: Vec3) {
+    pub(super) fn put(&mut self, p: Entity, at: Vec3) {
         let w = self.sim.app.world_mut();
         let low = w.get::<MovementState>(p).map_or(0.0, |s| s.hull_min.y);
         w.get_mut::<Transform>(p).unwrap().translation = entity_to_engine(at, UNIT) - Vec3::Y * low;
@@ -179,7 +179,7 @@ impl Flow {
     }
 
     /// Look from `p`'s eye toward `at` (entity space).
-    fn look_at(&mut self, p: Entity, eye: Vec3, at: Vec3) {
+    pub(super) fn look_at(&mut self, p: Entity, eye: Vec3, at: Vec3) {
         let d = at - eye;
         let yaw = d.y.atan2(d.x).to_degrees();
         let pitch = -(d.z / d.length().max(1e-3)).asin().to_degrees();
@@ -190,7 +190,7 @@ impl Flow {
 
     /// `p` presses +use on `id` (a button, door) from in front of it: from
     /// each side until something fires from it. Whether it fired.
-    fn press(&mut self, p: Entity, id: EntId) -> bool {
+    pub(super) fn press(&mut self, p: Entity, id: EntId) -> bool {
         let c = self.centre(id);
         let before = self.fired.len();
         let name_of = |f: &Flow| {
@@ -215,7 +215,7 @@ impl Flow {
 
     /// Put every one of `who` inside trigger `id` (its centre, feet a
     /// little below), then run a few ticks.
-    fn touch(&mut self, who: &[Entity], id: EntId) {
+    pub(super) fn touch(&mut self, who: &[Entity], id: EntId) {
         let c = self.centre(id);
         for (i, p) in who.iter().enumerate() {
             let off = Vec3::new((i % 3) as f32 * 2.0, (i / 3) as f32 * 2.0, -16.0);
@@ -224,7 +224,7 @@ impl Flow {
         self.secs(0.1);
     }
 
-    fn weapons(&self, p: Entity) -> Vec<String> {
+    pub(super) fn weapons(&self, p: Entity) -> Vec<String> {
         let w = self.sim.app.world();
         w.get::<Inventory>(p)
             .map(|i| {
@@ -237,12 +237,12 @@ impl Flow {
             .unwrap_or_default()
     }
 
-    fn alive(&self, p: Entity) -> bool {
+    pub(super) fn alive(&self, p: Entity) -> bool {
         let w = self.sim.app.world();
         w.get::<mashup::core::Health>(p).is_some_and(|h| h.current > 0.0) && w.get::<mashup::rules::Dead>(p).is_none()
     }
 
-    fn kill(&mut self, p: Entity) {
+    pub(super) fn kill(&mut self, p: Entity) {
         self.sim.app.world_mut().write_message(Damage {
             force: Vec3::ZERO,
             target: p,
@@ -257,53 +257,53 @@ impl Flow {
         self.secs(0.05);
     }
 
-    fn phase(&self) -> Phase {
+    pub(super) fn phase(&self) -> Phase {
         self.sim.app.world().resource::<RoundState>().phase
     }
 
-    fn round(&self) -> u32 {
+    pub(super) fn round(&self) -> u32 {
         self.sim.app.world().resource::<RoundState>().number
     }
 
     /// Console lines since the last call that contain `text`.
-    fn said(&mut self, text: &str) -> bool {
+    pub(super) fn said(&mut self, text: &str) -> bool {
         let c = self.sim.app.world().resource::<Console>();
         let new = (c.printed as usize).saturating_sub(self.printed).min(c.output.len());
         c.output[c.output.len() - new..].iter().any(|l| l.text.contains(text))
     }
 
     /// Whether any console line since the map loaded contains `text`.
-    fn said_ever(&self, text: &str) -> bool {
+    pub(super) fn said_ever(&self, text: &str) -> bool {
         let c = self.sim.app.world().resource::<Console>();
         c.output.iter().any(|l| l.text.contains(text))
     }
 
     /// Mark the console read so far.
-    fn mark_console(&mut self) {
+    pub(super) fn mark_console(&mut self) {
         self.printed = self.sim.app.world().resource::<Console>().printed as usize;
     }
 
     /// Whether `class`/`name` got `input` since the map loaded.
-    fn got(&self, name: &str, input: &str) -> bool {
+    pub(super) fn got(&self, name: &str, input: &str) -> bool {
         self.delivered
             .iter()
             .any(|(_, n, i, _)| n.eq_ignore_ascii_case(name) && i.eq_ignore_ascii_case(input))
     }
 
     /// A step's result.
-    fn check(&mut self, step: &str, ok: bool, detail: impl Into<String>) {
+    pub(super) fn check(&mut self, step: &str, ok: bool, detail: impl Into<String>) {
         self.rows.push((step.to_string(), ok, detail.into()));
     }
 
     /// A step's result that doesn't fail the test: a known difference
     /// (open question, or another session's work), shown as "known".
-    fn note(&mut self, step: &str, ok: bool, detail: impl Into<String>) {
+    pub(super) fn note(&mut self, step: &str, ok: bool, detail: impl Into<String>) {
         let detail = detail.into();
         self.rows.push((step.to_string(), true, if ok { detail } else { format!("KNOWN: {detail}") }));
     }
 
     /// The table (with `MASHUP_FLOW_TABLE`), and the failed steps.
-    fn finish(self) -> Vec<String> {
+    pub(super) fn finish(self) -> Vec<String> {
         if std::env::var("MASHUP_FLOW_TABLE").is_ok() {
             for (step, ok, detail) in &self.rows {
                 let result = match (ok, detail.starts_with("KNOWN")) {
@@ -344,7 +344,7 @@ impl Flow {
     }
 }
 
-fn near(a: Vec3, b: Vec3, r: f32) -> bool {
+pub(super) fn near(a: Vec3, b: Vec3, r: f32) -> bool {
     a.xy().distance(b.xy()) < r && (a.z - b.z).abs() < r.max(96.0)
 }
 
@@ -575,7 +575,7 @@ fn all_hold(f: &Flow, who: &[Entity], weapon: &str) -> (bool, String) {
 
 /// The round's end and the next one: `losers` die, the round is over,
 /// and 6 s later a new round brings everyone back alive.
-fn next_round(f: &mut Flow, losers: &[Entity]) {
+pub(super) fn next_round(f: &mut Flow, losers: &[Entity]) {
     let round = f.round();
     let all = f.all();
     for p in losers {
