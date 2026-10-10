@@ -797,6 +797,7 @@ struct GrenadeWorld<'w, 's> {
     decals: MessageWriter<'w, PlaceDecal>,
     detonated: MessageWriter<'w, Detonated>,
     deafened: MessageWriter<'w, Deafened>,
+    push_scale: Option<Res<'w, super::PushScale>>,
 }
 
 impl GrenadeWorld<'_, '_> {
@@ -1265,8 +1266,9 @@ fn blast(
         }
         let j = (b.force * rng.float(b.force_jitter.0, b.force_jitter.1)).min(mass * b.max_push_speed);
         let dir = (centre - src).normalize_or(Vec3::Y);
+        let scale = world.push_scale.as_ref().map_or(1.0, |s| s.0);
         if let Ok((.., mut forces)) = world.dynamic.get_mut(e) {
-            forces.apply_linear_impulse(dir * j);
+            forces.apply_linear_impulse(dir * j * scale);
         }
     }
     // Ragdolls in the radius: a blast line each, walls or not (the

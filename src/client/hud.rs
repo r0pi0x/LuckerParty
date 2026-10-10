@@ -706,32 +706,50 @@ fn killfeed(
     text.0 = feed.0.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>().join("\n");
 }
 
-/// A capsule for every character that isn't the local player.
+/// A character drawn as a capsule (`character_bodies`).
+#[derive(Component)]
+pub struct CapsuleBody;
+
+/// A capsule for every character that isn't the local player, on maps
+/// without character models; on maps with them (map::attach_bodies) the
+/// capsules go. Characters outlive map changes (a network game's above
+/// all: a client gets them before the server's map is in), so this
+/// follows the map, not the character's arrival: a client that joined
+/// de_dust2 from the greybox kept a capsule through every model (seen
+/// in the network soak's screenshots).
+#[allow(clippy::type_complexity)]
 fn character_bodies(
-    new: Query<(Entity, &Team), (Added<Intent>, Without<LocalPlayer>)>,
+    characters: Query<(Entity, &Team, Has<CapsuleBody>), (With<Intent>, Without<LocalPlayer>)>,
     models: Option<Res<crate::map::CharacterModels>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut commands: Commands,
 ) {
-    // Maps with character models draw those instead (map::attach_bodies).
-    if models.is_some() {
-        return;
-    }
-    for (e, team) in &new {
-        let color = match team.0 {
-            0 => Color::srgb(0.35, 0.5, 0.9),
-            _ => Color::srgb(0.85, 0.4, 0.3),
-        };
-        let r = crate::character::CAPSULE_RADIUS;
-        commands.entity(e).insert((
-            Mesh3d(meshes.add(Capsule3d::new(r, crate::character::CAPSULE_HEIGHT - 2.0 * r))),
-            MeshMaterial3d(materials.add(StandardMaterial {
-                base_color: color,
-                perceptual_roughness: 0.8,
-                ..default()
-            })),
-        ));
+    for (e, team, capsule) in &characters {
+        match (models.is_some(), capsule) {
+            (true, true) => {
+                commands
+                    .entity(e)
+                    .remove::<(CapsuleBody, Mesh3d, MeshMaterial3d<StandardMaterial>)>();
+            }
+            (false, false) => {
+                let color = match team.0 {
+                    0 => Color::srgb(0.35, 0.5, 0.9),
+                    _ => Color::srgb(0.85, 0.4, 0.3),
+                };
+                let r = crate::character::CAPSULE_RADIUS;
+                commands.entity(e).insert((
+                    CapsuleBody,
+                    Mesh3d(meshes.add(Capsule3d::new(r, crate::character::CAPSULE_HEIGHT - 2.0 * r))),
+                    MeshMaterial3d(materials.add(StandardMaterial {
+                        base_color: color,
+                        perceptual_roughness: 0.8,
+                        ..default()
+                    })),
+                ));
+            }
+            _ => {}
+        }
     }
 }
 
@@ -765,6 +783,29 @@ mod tests {
         app.world_mut().resource_mut::<Console>().submit(line);
         app.update();
         *app.world().resource::<CrosshairColor>()
+    }
+
+    /// Capsules follow the map, not the characters' arrival: a character
+    /// that came in on the greybox (no models) loses its capsule on a
+    /// map with models, and gets one again back on the greybox.
+    #[test]
+    fn capsule_bodies_follow_the_map() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut world = World::new();
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<StandardMaterial>>();
+        let other = world.spawn((Intent::default(), Team(1))).id();
+        let me = world.spawn((Intent::default(), Team(2), LocalPlayer)).id();
+        let run = |world: &mut World| world.run_system_once(character_bodies).unwrap();
+        run(&mut world);
+        assert!(world.get::<CapsuleBody>(other).is_some() && world.get::<Mesh3d>(other).is_some());
+        assert!(world.get::<CapsuleBody>(me).is_none(), "not the local player");
+        world.insert_resource(crate::map::CharacterModels(Default::default()));
+        run(&mut world);
+        assert!(world.get::<CapsuleBody>(other).is_none() && world.get::<Mesh3d>(other).is_none());
+        world.remove_resource::<crate::map::CharacterModels>();
+        run(&mut world);
+        assert!(world.get::<CapsuleBody>(other).is_some());
     }
 
     #[test]

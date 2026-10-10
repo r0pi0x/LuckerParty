@@ -105,6 +105,44 @@ pub fn parse_vector(s: &str) -> Vec3 {
     Vec3::from(v)
 }
 
+/// Outputs whose names don't start with "On": math_counter's OutValue,
+/// env_global's OutCounter, func_bomb_target's bomb outputs and game_ui's
+/// (specs/source/game_entities.md 2).
+pub const OTHER_OUTPUTS: &[&str] = &[
+    "outvalue",
+    // momentary_rot_button's position.
+    "position",
+    "outcounter",
+    "bombexplode",
+    "bombplanted",
+    "bombdefused",
+    "playeron",
+    "playeroff",
+    "pressedmoveleft",
+    "pressedmoveright",
+    "pressedforward",
+    "pressedback",
+    "pressedattack",
+    "pressedattack2",
+    "unpressedmoveleft",
+    "unpressedmoveright",
+    "unpressedforward",
+    "unpressedback",
+    "unpressedattack",
+    "unpressedattack2",
+    "xaxis",
+    "yaxis",
+    "attackaxis",
+    "attack2axis",
+];
+
+/// Whether a keyvalue is an output: output names start with "On" (plus
+/// `OTHER_OUTPUTS`) and carry a connection.
+pub fn is_output_key(key: &str) -> bool {
+    let k = key.to_ascii_lowercase();
+    (k.starts_with("on") && k.len() > 2) || OTHER_OUTPUTS.contains(&k.as_str())
+}
+
 /// Entity-space position to engine space.
 pub fn entity_to_engine(v: Vec3, scale: f32) -> Vec3 {
     Vec3::new(v.x, v.z, -v.y) * scale
@@ -205,6 +243,14 @@ pub struct MapAnchor(pub usize);
 /// the logic entities parented to them along.
 #[derive(Resource, Clone, Debug, Default, PartialEq)]
 pub struct EntityAnchors(pub Vec<(usize, Transform)>);
+
+/// Placed weapons (`weapon_*` map entities, by index into `MapEntities`)
+/// the map logic removed (a `Kill`: minigame maps clear an arena's
+/// weapons when another game is picked) and not re-created yet (a round
+/// restart brings them back). The weapon layer takes them out of the
+/// world, loose or carried.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct RemovedWeapons(pub Vec<usize>);
 
 /// Where `EntityAnchors` is written each tick (after movement, before the
 /// logic's touches and queue).

@@ -2047,11 +2047,15 @@ impl LogicWorld {
         best.map(|(id, _)| id)
     }
 
-    /// Doors that open on touch (flag 1024): a player against them.
+    /// Doors that open on touch (flag 1024) and buttons pressed by touch
+    /// (flag 256, "Touch Activates"; a locked one does nothing): a player
+    /// against them.
     pub(super) fn touch_movers(&mut self) {
         for id in self.ids() {
             let Some(e) = self.get(id) else { continue };
-            if !matches!(e.class, Class::Door(_)) || !e.has_flag(1024) {
+            let door = matches!(e.class, Class::Door(_)) && e.has_flag(1024);
+            let button = matches!(&e.class, Class::Button(b) if !b.locked) && e.has_flag(256);
+            if !door && !button {
                 continue;
             }
             let Some(brushes) = self.solids.get(id.index as usize).cloned().flatten() else {
@@ -2066,7 +2070,11 @@ impl LogicWorld {
                 let (half, centre) = ((pl.maxs - pl.mins) / 2.0 + grow, pl.origin + (pl.mins + pl.maxs) / 2.0);
                 if brushes.iter().any(|b| b.overlaps_box(centre, half, 0.0)) {
                     let who = Some(Who::Player(pl.entity));
-                    door_use_or_touch(self, id, who, true);
+                    if door {
+                        door_use_or_touch(self, id, who, true);
+                    } else {
+                        button_press(self, id, who, false);
+                    }
                 }
             }
         }

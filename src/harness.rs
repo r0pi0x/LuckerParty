@@ -75,6 +75,8 @@ impl Sim {
     }
 
     fn start(mut app: App) -> Self {
+        // Map logic's random picks repeat run to run.
+        app.insert_resource(crate::logic::LogicSeed(Some(0x9e37_79b9_7f4a_7c15)));
         app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
             1.0 / DEFAULT_TICK_HZ,
         )));
@@ -186,6 +188,9 @@ pub struct NetSim {
     pub server: Sim,
     pub clients: Vec<Sim>,
     pub link: Arc<Mutex<Link>>,
+    /// Each client's id, by index in `clients`, and the next one to give.
+    ids: Vec<u64>,
+    next_id: u64,
     setup: Setup,
     /// Real time per `step` (a frame everywhere): a tick unless
     /// `set_frame` says otherwise.
@@ -215,6 +220,8 @@ impl NetSim {
             server,
             clients: Vec::new(),
             link,
+            ids: Vec::new(),
+            next_id: 1,
             setup,
             frame: Duration::from_secs_f64(1.0 / DEFAULT_TICK_HZ),
         };
@@ -234,15 +241,37 @@ impl NetSim {
         });
         client.app.insert_resource(TimeUpdateStrategy::ManualDuration(self.frame));
         before(client.app.world_mut());
-        let id = self.clients.len() as u64 + 1;
+        // Ids never come back (a client removed keeps its id taken), as
+        // real clients' random ones don't.
+        let id = self.next_id;
+        self.next_id += 1;
         crate::net::memory::join(client.app.world_mut(), self.link.clone(), id).expect("join");
         self.clients.push(client);
+        self.ids.push(id);
         self.clients.len() - 1
     }
 
-    /// Client `i`'s id (`NetCharacter::owner` of its character).
+    /// Client `i` leaves (`net::disconnect`, the server hears it) and is
+    /// taken out of `clients`: later clients' indices move down by one,
+    /// their ids stay.
+    pub fn remove_client(&mut self, i: usize) {
+        crate::net::disconnect(self.clients[i].app.world_mut(), "Disconnect by user.");
+        self.clients[i].app.update();
+        self.clients.remove(i);
+        self.ids.remove(i);
+    }
+
+    /// Client `i`'s link (both ways) from now on, in place of the
+    /// conditions the sim was made with.
+    pub fn set_conditions(&mut self, i: usize, conditions: LinkConditions) {
+        let id = self.client_id(i);
+        self.link.lock().unwrap().per_client.insert(id, conditions);
+    }
+
+    /// Client `i`'s id (`NetCharacter::owner` of its character): 1, 2, ...
+    /// in the order they were added.
     pub fn client_id(&self, i: usize) -> u64 {
-        i as u64 + 1
+        self.ids[i]
     }
 
     /// Every app's frame from now on (s): e.g. 1/240 for frames between

@@ -84,6 +84,7 @@ impl Plugin for WeaponPlugin {
                         // (a client hears it with its own player's state).
                         (
                             equip::map_equipment,
+                            equip::remove_killed_weapons,
                             give_starting_weapons,
                             equip::apply_equips,
                             drop::pick_up,
@@ -177,6 +178,14 @@ impl Plugin for WeaponPlugin {
                 },
             );
         }
+        app.init_resource::<PushScale>();
+        crate::console::resource_cvar::<PushScale, f32>(
+            app,
+            "phys_pushscale",
+            "Multiplies the push of every hit and blast on physics objects (specs/cs_source/physics_props.md; \
+             minigame maps raise it for football).",
+            |s| &mut s.0,
+        );
         crate::console::resource_cvar::<drop::UsePickup, u8>(
             app,
             "mashup_usepickup",
@@ -473,6 +482,17 @@ fn give_starting_weapons(world: &mut World) {
 
 // ---------------------------------------------------------------------------
 // Components
+
+/// `phys_pushscale`: what every damage push on a physics object is
+/// multiplied by (specs/cs_source/physics_props.md 5; default 1).
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct PushScale(pub f32);
+
+impl Default for PushScale {
+    fn default() -> Self {
+        Self(1.0)
+    }
+}
 
 /// What a character carries, and the player-level weapon timers.
 #[derive(Component, Default, Clone, Debug)]

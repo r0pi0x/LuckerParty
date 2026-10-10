@@ -67,43 +67,7 @@ pub fn parse_connection(value: &str) -> Option<(String, String, Option<String>, 
     Some((field(0).to_string(), input.to_string(), param, atof(field(3)), times))
 }
 
-/// Outputs whose names don't start with "On": math_counter's OutValue,
-/// env_global's OutCounter, func_bomb_target's bomb outputs and game_ui's
-/// (specs/source/game_entities.md 2).
-pub const OTHER_OUTPUTS: &[&str] = &[
-    "outvalue",
-    // momentary_rot_button's position.
-    "position",
-    "outcounter",
-    "bombexplode",
-    "bombplanted",
-    "bombdefused",
-    "playeron",
-    "playeroff",
-    "pressedmoveleft",
-    "pressedmoveright",
-    "pressedforward",
-    "pressedback",
-    "pressedattack",
-    "pressedattack2",
-    "unpressedmoveleft",
-    "unpressedmoveright",
-    "unpressedforward",
-    "unpressedback",
-    "unpressedattack",
-    "unpressedattack2",
-    "xaxis",
-    "yaxis",
-    "attackaxis",
-    "attack2axis",
-];
-
-/// Whether a keyvalue is an output: output names start with "On" (plus
-/// `OTHER_OUTPUTS`) and carry a connection.
-pub fn is_output_key(key: &str) -> bool {
-    let k = key.to_ascii_lowercase();
-    (k.starts_with("on") && k.len() > 2) || OTHER_OUTPUTS.contains(&k.as_str())
-}
+pub use crate::map::entities::{OTHER_OUTPUTS, is_output_key};
 
 /// Name match (entity_io.md "Match rule"): case-insensitive from the
 /// start; a `*` in the query matches the rest.
@@ -966,6 +930,14 @@ impl LogicWorld {
                 generation: *g,
             })
             .collect()
+    }
+
+    /// Whether the map's entity `index` is still there (not killed or
+    /// broken since the map loaded or the round restarted).
+    pub fn map_entity_alive(&self, index: usize) -> bool {
+        // Map entities spawn first and in order, and slots are never
+        // reused: slot `index` is the map's entity `index`.
+        matches!(self.slots.get(index), Some((_, Some(e))) if e.map_index == Some(index))
     }
 
     /// The live entity the map's entity `index` spawned.

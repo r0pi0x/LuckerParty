@@ -45,6 +45,8 @@ pub struct Logic {
     source: std::sync::Arc<Vec<crate::map::MapEntity>>,
     /// `core::RoundRestarts` this world has seen.
     restarts: u32,
+    /// The map's placed weapons (`weapon_*` entities), by index.
+    weapons: Vec<usize>,
 }
 
 /// Where the logic runs in the fixed tick.
@@ -164,6 +166,20 @@ impl Plugin for LogicPlugin {
     }
 }
 
+/// A fixed seed for the map logic's random choices (`LogicWorld::seed`);
+/// None (the game): a new one at every map load. The headless harness
+/// fixes it so tests repeat.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LogicSeed(pub Option<u64>);
+
+/// A seed from the clock.
+fn time_seed() -> u64 {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    (now.as_nanos() as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
+}
+
 /// Build (or drop) the logic world when the map's entities change, and
 /// re-create it at a round restart (`core::RoundRestarts`).
 fn load(world: &mut World) {
@@ -188,6 +204,10 @@ fn load(world: &mut World) {
             world.write_message(SoundControl::StopAll);
             let dt = world.resource::<Time<Fixed>>().timestep().as_secs_f32();
             let mut logic = LogicWorld::new(dt);
+            // The map's dice (logic_case PickRandom, logic_timer random
+            // times): new at every map load, as the game's are, unless
+            // fixed (tests).
+            logic.seed(world.get_resource::<LogicSeed>().and_then(|s| s.0).unwrap_or_else(time_seed));
             logic.collision = static_collision(world, m.scale);
             let ids = logic.load_map(&m.entities);
             let nodes = attach_nodes(world, &logic, &ids);
@@ -198,6 +218,13 @@ fn load(world: &mut World) {
                 nodes,
                 props,
                 restore: Vec::new(),
+                weapons: m
+                    .entities
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| crate::map::entities::anchor_class(e.classname()))
+                    .map(|(i, _)| i)
+                    .collect(),
                 source: m.entities.clone(),
                 restarts,
             });
@@ -420,6 +447,21 @@ fn set_prop_shown(world: &mut World, node: Entity, visible: bool, solid: bool, e
     }
     if !exists {
         e.remove::<Damageable>();
+    }
+}
+
+/// Placed weapons the logic removed (`map::entities::RemovedWeapons`;
+/// written only when it changes).
+fn sync_removed_weapons(world: &mut World, logic: &Logic) {
+    let gone: Vec<usize> = logic
+        .weapons
+        .iter()
+        .copied()
+        .filter(|i| !logic.world.map_entity_alive(*i))
+        .collect();
+    let now = world.get_resource::<crate::map::entities::RemovedWeapons>();
+    if now.is_none_or(|n| n.0 != gone) {
+        world.insert_resource(crate::map::entities::RemovedWeapons(gone));
     }
 }
 
@@ -1728,6 +1770,7 @@ fn run_phase(world: &mut World, phase: impl FnOnce(&mut LogicWorld, &dyn Collisi
     sync_soundscapes(world, &logic);
     sync_views(world, &logic);
     sync_controls(world, &logic);
+    sync_removed_weapons(world, &logic);
     drop(span);
     let effects = std::mem::take(&mut logic.world.effects);
     for line in logic.world.log.drain(..) {
