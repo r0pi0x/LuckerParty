@@ -796,7 +796,7 @@ mod tests {
         world.init_resource::<Assets<StandardMaterial>>();
         let other = world.spawn((Intent::default(), Team(1))).id();
         let me = world.spawn((Intent::default(), Team(2), LocalPlayer)).id();
-        let mut run = |world: &mut World| world.run_system_once(character_bodies).unwrap();
+        let run = |world: &mut World| world.run_system_once(character_bodies).unwrap();
         run(&mut world);
         assert!(world.get::<CapsuleBody>(other).is_some() && world.get::<Mesh3d>(other).is_some());
         assert!(world.get::<CapsuleBody>(me).is_none(), "not the local player");

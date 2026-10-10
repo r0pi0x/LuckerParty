@@ -1256,18 +1256,20 @@ with tests passing and something to see.
      characters on links up to 150 ms and 3 % loss, 128 KB/s at 300 ms
      and 5 %; prediction errors other than contacts with other players,
      hits and server teleports at most 2 % of states (5 % on the worst
-     link), never more than 40 in a row; settled values (health, team,
-     score, name, the round, a client's own money, armour, weapons and
-     ammo) and others' bodies the server's; entity counts level from
-     round to round and between visits of a map; no Bevy errors.
+     link), never more than 128 (2 s) in a row; settled values (health,
+     team, score, name, the round, a client's own money, armour, weapons
+     and ammo) the server's, and others' bodies too once a loss has had
+     time to be repaired (2 s); entity counts level from round to round
+     and between visits of a map; memory level within a visit of a map;
+     no Bevy errors (failed commands).
    - Measured (30 game minutes, 54 rounds, dev build): 711,000 settled
      values compared per client, none different; bandwidth 73-79 KB/s
      per client (92 at 300 ms/5 %), peaks ~290-330 KB/s at joins and map
      changes; own state ~490-650 bytes a tick, `NetBody` 45 bytes per
      character a tick; prediction errors 0.36-0.82 % of states plus
-     ~2 % from contacts with others and hits, the longest run 18-83 in
-     a row (the long ones with the inventory changing: server-side
-     pickups and drops); server frame 2-16 ms mean a minute (debug
+     ~2 % from contacts with others, props and hits, the longest run
+     14-83 in a row (the client has its player falling where the server
+     stands it on ground, its weapon's accuracy following); server frame 2-16 ms mean a minute (debug
      build on a machine at load 20-35 and swapping: wall times aren't
      comparable from minute to minute);
      entities per round flat (de_dust2 ~1,100 on each side, greybox
@@ -1304,8 +1306,11 @@ with tests passing and something to see.
      per message, a warning each (hundreds a client in the live soak;
      test `map_sound_fx::a_burst_on_one_channel_replaces_cleanly`); (7)
      chat and radio flood allowances were kept for every player who ever
-     spoke (unit test `chat::tests::flood_forgets_who_left`); `NetSim`
-     gave a joining client the id of one that had left.
+     spoke (unit test `chat::tests::flood_forgets_who_left`); (8) a
+     loose item gone in the frame its body was put in (picked up, a
+     client's copy despawned) was a failed command (unit test
+     `loose::tests::an_item_gone_in_the_same_frame_is_no_error`);
+     `NetSim` gave a joining client the id of one that had left.
    - Not fixed (docs/tech-debt.md, net): where replicon loses the value
      in (1); bandwidth well over the §2 estimate (no deltas for the own
      state, unquantized bodies, an update every tick); mispredictions

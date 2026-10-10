@@ -78,7 +78,10 @@ pub(super) fn attach_loose(
     for (e, item) in &items {
         let half = assets.0.get(&item.0).map_or(Vec3::splat(0.1), |a| a.half);
         let mut ent = commands.entity(e);
-        ent.insert((
+        // `try_`: an item can be gone by the time this applies (picked up,
+        // or a network client's copy despawned, in the same frame; the
+        // network soak saw it: a failed command each time).
+        ent.try_insert((
             RigidBody::Dynamic,
             Collider::cuboid(half.x * 2.0, half.y * 2.0, half.z * 2.0),
             CollisionLayers::new(crate::core::ITEM_LAYER, LayerMask::ALL),
@@ -119,10 +122,15 @@ pub(super) fn attach_loose(
                     None => m.clone(),
                 })
                 .collect();
-            ent.insert(super::probe_lit::ProbeLit::new(own.clone(), Vec3::ZERO));
-            ent.with_children(|c| {
-                for ((mesh, _), material) in a.parts.iter().zip(own) {
-                    c.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material), a.frame));
+            ent.try_insert(super::probe_lit::ProbeLit::new(own.clone(), Vec3::ZERO));
+            let parts: Vec<_> = a.parts.iter().map(|(mesh, _)| mesh.clone()).zip(own).collect();
+            let frame = a.frame;
+            commands.queue(move |w: &mut World| {
+                if w.get_entity(e).is_err() {
+                    return;
+                }
+                for (mesh, material) in parts {
+                    w.spawn((Mesh3d(mesh), MeshMaterial3d(material), frame, ChildOf(e)));
                 }
             });
         }
@@ -189,6 +197,36 @@ pub(super) fn attach_shown(
 mod tests {
     use super::*;
     use crate::map::{MapMesh, MapModel};
+
+    /// An item despawned before its body is put in place (picked up, a
+    /// network client's copy gone, the same frame) is no error.
+    #[test]
+    fn an_item_gone_in_the_same_frame_is_no_error() {
+        let mut app = App::new();
+        app.set_error_handler(bevy::ecs::error::panic);
+        let mut assets = HashMap::new();
+        assets.insert(
+            "gun".to_string(),
+            LooseAsset {
+                parts: vec![(Handle::default(), Handle::default())],
+                frame: Transform::IDENTITY,
+                half: Vec3::splat(0.1),
+            },
+        );
+        app.insert_resource(LooseAssets(assets));
+        fn take(items: Query<Entity, With<LooseItem>>, mut commands: Commands) {
+            for e in &items {
+                commands.entity(e).despawn();
+            }
+        }
+        // Both queue their commands; the despawn applies first.
+        app.add_systems(Update, (take, attach_loose).chain_ignore_deferred());
+        app.world_mut().spawn(LooseItem("gun".into()));
+        app.update();
+        let w = app.world_mut();
+        assert_eq!(w.query::<&LooseItem>().iter(w).count(), 0);
+        assert_eq!(w.query::<&Mesh3d>().iter(w).count(), 0, "no orphan parts");
+    }
 
     #[test]
     fn loose_items_are_centred_and_scaled() {
