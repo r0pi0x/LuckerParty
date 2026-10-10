@@ -395,6 +395,12 @@ pub struct GameMenus {
     /// clock, team scores) and the spectator menu's bottom bar (the mode).
     pub spectator: Option<String>,
     pub spectator_menu: Option<String>,
+    /// The spectator menu's drop-downs' entries (Source command menus):
+    /// its options list (`resource/spectatormenu.res`: close, settings,
+    /// overview, auto director, scores) and its camera list
+    /// (`resource/spectatormodes.res`).
+    pub spectator_options: Vec<CommandMenuItem>,
+    pub spectator_modes: Vec<CommandMenuItem>,
     /// The freeze cam's panel: its frame's layout and what is inside the
     /// frame (`FreezePanelBG`'s controls, placed in it).
     pub freeze_panel: Option<(String, String)>,
@@ -403,6 +409,21 @@ pub struct GameMenus {
     /// The game's localised strings by lower-case token (no `#`), for
     /// text the client fills in (`Cstrike_ScoreBoard_CT`).
     pub strings: HashMap<String, String>,
+}
+
+/// One entry of a game's command menu (Source's command menu definition
+/// files: `menuitem` blocks with a label and a command, a 0/1 cvar it
+/// toggles, or entries of their own: a submenu).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CommandMenuItem {
+    /// Its text (a `#token` resolved).
+    pub label: String,
+    /// The console line it runs.
+    pub command: Option<String>,
+    /// A cvar it switches between 0 and 1 (shown ticked when on).
+    pub toggle: Option<String>,
+    /// A submenu's entries.
+    pub items: Vec<CommandMenuItem>,
 }
 
 impl GameMenus {

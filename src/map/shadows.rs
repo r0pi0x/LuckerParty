@@ -442,38 +442,51 @@ pub struct BuiltShadows {
 }
 
 /// Build every caster's shadow (props marked `casts_shadow`, outside the
-/// 3D skybox).
+/// 3D skybox) where the map placed it.
 pub fn build(data: &MapData, settings: &MapShadows) -> BuiltShadows {
-    let casters: Vec<(usize, &MapProp, ShadowFrame)> = data
-        .props
-        .iter()
-        .enumerate()
-        .filter(|(_, p)| p.casts_shadow && !p.skybox)
+    let receivers = Receivers::new(data);
+    let (atlas, cells, meshes) = build_posed(data, settings, &receivers, &|i| {
+        (data.props[i].translation, data.props[i].rotation)
+    });
+    BuiltShadows {
+        atlas,
+        cells,
+        meshes,
+        receivers,
+    }
+}
+
+/// The map's casters (props marked `casts_shadow`, outside the 3D skybox).
+pub fn casters(data: &MapData) -> impl Iterator<Item = (usize, &MapProp)> {
+    data.props.iter().enumerate().filter(|(_, p)| p.casts_shadow && !p.skybox)
+}
+
+/// `build` with each caster where `pose` says it is now (translation,
+/// rotation; physics props move) onto `receivers`.
+#[allow(clippy::type_complexity)]
+pub fn build_posed(
+    data: &MapData,
+    settings: &MapShadows,
+    receivers: &Receivers,
+    pose: &dyn Fn(usize) -> (Vec3, Quat),
+) -> (Atlas, Vec<Cell>, Vec<(usize, Mesh)>) {
+    let casters: Vec<(usize, &MapProp, ShadowFrame, (Vec3, Quat))> = casters(data)
         .map(|(i, p)| {
             let model = &data.models[p.model];
-            let frame = ShadowFrame::new(
-                model.bounds,
-                p.translation,
-                p.rotation,
-                settings.direction,
-                settings.distance,
-            );
-            (i, p, frame)
+            let at = pose(i);
+            let frame = ShadowFrame::new(model.bounds, at.0, at.1, settings.direction, settings.distance);
+            (i, p, frame, at)
         })
         .collect();
     let cells: Vec<(u32, Vec<f32>)> = casters
         .iter()
-        .map(|(_, p, frame)| {
+        .map(|(_, p, frame, at)| {
             let model = &data.models[p.model];
             let n = cell_size(model.bounds);
-            (
-                n,
-                silhouette(model, &data.textures, frame, p.translation, p.rotation, n),
-            )
+            (n, silhouette(model, &data.textures, frame, at.0, at.1, n))
         })
         .collect();
     let (atlas, placed) = Atlas::pack(&cells);
-    let receivers = Receivers::new(data);
     let cells: Vec<Cell> = casters
         .iter()
         .zip(&placed)
@@ -488,14 +501,136 @@ pub fn build(data: &MapData, settings: &MapShadows) -> BuiltShadows {
     let meshes = casters
         .iter()
         .zip(&cells)
-        .filter_map(|((i, _, frame), cell)| shadow_mesh(frame, &receivers, cell.rect).map(|m| (*i, m)))
+        .filter_map(|((i, _, frame, _), cell)| shadow_mesh(frame, receivers, cell.rect).map(|m| (*i, m)))
         .collect();
-    BuiltShadows {
-        atlas,
-        cells,
-        meshes,
-        receivers,
+    (atlas, cells, meshes)
+}
+
+// ---------------------------------------------------------------------------
+// Shadow detail and blob shadows.
+
+/// Video > Advanced's shadow detail, CS:S's cvars: `r_shadows` (0: no
+/// dynamic shadows), `r_shadowrendertotexture` (0: every shadow a blob,
+/// Low; 1: render-to-texture, Medium and High) and
+/// `r_flashlightdepthtexture` (High; CS:S has no flashlights, so as
+/// Medium here). Defaults: shadows on, render-to-texture, no flashlight
+/// depth (the dialog's Medium; CS:S's own pick for the machine is to
+/// confirm).
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct ShadowSettings {
+    pub shadows: u8,
+    pub render_to_texture: u8,
+    pub flashlight_depth: u8,
+}
+
+impl Default for ShadowSettings {
+    fn default() -> Self {
+        Self {
+            shadows: 1,
+            render_to_texture: 1,
+            flashlight_depth: 0,
+        }
     }
+}
+
+/// How dynamic shadows are drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShadowMode {
+    Off,
+    /// Source's blob shadows: a round dark patch under each caster,
+    /// straight down.
+    Blob,
+    /// Render-to-texture: each caster's silhouette along the map's
+    /// direction (characters: blobs along it, `character_frame`).
+    Texture,
+}
+
+impl ShadowSettings {
+    pub fn mode(&self) -> ShadowMode {
+        if self.shadows == 0 {
+            ShadowMode::Off
+        } else if self.render_to_texture == 0 {
+            ShadowMode::Blob
+        } else {
+            ShadowMode::Texture
+        }
+    }
+}
+
+/// Blob shadows' padding, and their least size, units (spec D:
+/// blob_bloat).
+const BLOB_BLOAT: f32 = 10.0;
+/// A blob's origin is truncated to this grid, units (spec D).
+const BLOB_SNAP: f32 = 0.5;
+/// The blob picture's size, texels.
+pub const BLOB_TEX: u32 = 32;
+/// Straight down, engine space.
+pub const DOWN: Vec3 = Vec3::NEG_Y;
+
+impl ShadowFrame {
+    /// A blob shadow's frame (spec D, "Blob shadows"): the box's widths
+    /// across `d` plus `BLOB_BLOAT` (at least that), its origin backed up
+    /// twice as far as a render-to-texture shadow's and snapped to
+    /// `BLOB_SNAP`.
+    pub fn blob(bounds: (Vec3, Vec3), translation: Vec3, rotation: Quat, d: Vec3, distance: f32) -> Self {
+        let mut f = Self::new(bounds, translation, rotation, d, distance);
+        let blob = BLOB_BLOAT * METERS_PER_UNIT;
+        f.size = (f.size - Vec2::splat(BLOAT * METERS_PER_UNIT) + Vec2::splat(blob)).max(Vec2::splat(blob));
+        let centre = translation + rotation * ((bounds.0 + bounds.1) / 2.0);
+        // `new` backed up by m (negative along d): once more.
+        let m = (f.origin - centre).dot(d);
+        f.origin += d * m;
+        f.falloff_start -= m;
+        f.max_dist = distance + f.falloff_start;
+        let snap = BLOB_SNAP * METERS_PER_UNIT;
+        f.origin = (f.origin / snap).trunc() * snap;
+        f
+    }
+}
+
+/// The blob picture's coverage, `n` x `n`: full in the middle, fading to
+/// nothing at the circle's edge (Source's is a fixed round texture; this
+/// falloff is ours).
+pub fn blob_coverage(n: u32) -> Vec<f32> {
+    let n = n.max(2);
+    (0..n * n)
+        .map(|i| {
+            let (x, y) = ((i % n) as f32 + 0.5, (i / n) as f32 + 0.5);
+            let r = Vec2::new(x / n as f32 * 2.0 - 1.0, y / n as f32 * 2.0 - 1.0).length();
+            let t = ((1.0 - r) / 0.6).clamp(0.0, 1.0);
+            t * t * (3.0 - 2.0 * t)
+        })
+        .collect()
+}
+
+/// The blob picture as an atlas of one cell (its rect: the whole).
+pub fn blob_atlas() -> Atlas {
+    Atlas {
+        width: BLOB_TEX,
+        height: BLOB_TEX,
+        coverage: blob_coverage(BLOB_TEX),
+    }
+}
+
+/// The whole of the blob picture, as a cell's rect.
+pub const BLOB_RECT: (Vec2, Vec2) = (Vec2::ZERO, Vec2::ONE);
+
+/// A character's blob shadow frame: its collision box (`hull`, relative to
+/// its origin; Source's player box when it has none) turned to its yaw,
+/// cast straight down (Low) or along the map's direction (Medium, High:
+/// our characters have no render-to-texture shadow; Source falls back to
+/// blobs that way past its 32 a frame).
+pub fn character_frame(hull: (Vec3, Vec3), at: Vec3, yaw: Quat, mode: ShadowMode, settings: &MapShadows) -> ShadowFrame {
+    let hull = if (hull.1 - hull.0).length_squared() > 0.0 {
+        hull
+    } else {
+        (
+            Vec3::new(-16.0, 0.0, -16.0) * METERS_PER_UNIT,
+            Vec3::new(16.0, 72.0, 16.0) * METERS_PER_UNIT,
+        )
+    };
+    let d = if mode == ShadowMode::Blob { DOWN } else { settings.direction };
+    ShadowFrame::blob(hull, at, yaw, d, settings.distance)
 }
 
 /// Whether a caster with these model bounds (meters) and an `n` x `n`
@@ -593,6 +728,243 @@ pub fn shadow_color(color: [u8; 3]) -> Vec4 {
     Vec4::new(c[0], c[1], c[2], 1.0)
 }
 
+/// What the map's dynamic shadows are made from (its props and
+/// `shadow_control`, the world surfaces they fall on, the static parts'
+/// root): kept so shadow detail can rebuild them at once
+/// (`apply_shadow_detail`).
+#[derive(Resource)]
+pub(crate) struct ShadowSource {
+    pub(super) data: std::sync::Arc<MapData>,
+    pub(super) settings: MapShadows,
+    pub(super) receivers: std::sync::Arc<Receivers>,
+    pub(super) root: Entity,
+    pub(super) fog_color: Vec4,
+    pub(super) fog_range: Vec4,
+    /// Tag shadows with the PVS clusters they touch (`vis`).
+    pub(super) tag: bool,
+    /// The mode built; None: not yet.
+    pub(super) built: Option<ShadowMode>,
+    /// The blob picture's material (characters' blobs; props' at Low).
+    pub(super) blob_material: Option<Handle<ShadowMaterial>>,
+}
+
+/// Build the map's prop shadows as shadow detail asks: render-to-texture
+/// (Medium, High), blobs straight down (Low) or none (`r_shadows 0`);
+/// again, at once, when it changes (physics props where they are now,
+/// those the logic hid hidden).
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub(super) fn apply_shadow_detail(
+    mut commands: Commands,
+    source: Option<ResMut<ShadowSource>>,
+    detail: Option<Res<ShadowSettings>>,
+    old: Query<Entity, Or<(With<super::PropShadow>, With<CharacterBlob>)>>,
+    moved: Query<(&super::PropIndex, &Transform), With<super::PhysicsProp>>,
+    hidden: Query<&super::PropIndex, With<super::vis::LogicHidden>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut images: ResMut<Assets<Image>>,
+    mut materials: Option<ResMut<Assets<ShadowMaterial>>>,
+) {
+    let (Some(mut source), Some(materials)) = (source, materials.as_mut()) else {
+        return;
+    };
+    let mode = detail.map_or(ShadowMode::Texture, |d| d.mode());
+    if source.built == Some(mode) {
+        return;
+    }
+    for e in &old {
+        commands.entity(e).despawn();
+    }
+    commands.remove_resource::<super::ShadowState>();
+    source.built = Some(mode);
+    source.blob_material = None;
+    if mode == ShadowMode::Off {
+        info!("prop shadows: off (r_shadows 0)");
+        return;
+    }
+    let poses: std::collections::HashMap<usize, (Vec3, Quat)> =
+        moved.iter().map(|(i, t)| (i.0, (t.translation, t.rotation))).collect();
+    let hidden: std::collections::HashSet<usize> = hidden.iter().map(|i| i.0).collect();
+    let data = source.data.clone();
+    let pose = |i: usize| poses.get(&i).copied().unwrap_or((data.props[i].translation, data.props[i].rotation));
+    let (color, fog_color, fog_range) = (shadow_color(source.settings.color), source.fog_color, source.fog_range);
+    let params = move |texel: Vec2| ShadowParams {
+        color,
+        texel,
+        fog_color,
+        fog_range,
+    };
+    // The blob picture (characters' blobs in every mode).
+    let blob = blob_atlas();
+    let blob_image = images.add(blob.image());
+    let blob_material = materials.add(ShadowMaterial {
+        params: params(Vec2::splat(1.0 / BLOB_TEX as f32)),
+        atlas: blob_image.clone(),
+    });
+    source.blob_material = Some(blob_material.clone());
+    let (atlas, cells, built, material, image) = if mode == ShadowMode::Texture {
+        let (atlas, cells, built) = build_posed(&data, &source.settings, &source.receivers, &pose);
+        let image = images.add(atlas.image());
+        let material = materials.add(ShadowMaterial {
+            params: params(Vec2::new(1.0 / atlas.width as f32, 1.0 / atlas.height as f32)),
+            atlas: image.clone(),
+        });
+        (atlas, cells, built, material, image)
+    } else {
+        let mut cells = Vec::new();
+        let mut built = Vec::new();
+        for (i, p) in casters(&data) {
+            let at = pose(i);
+            cells.push(Cell {
+                prop: i,
+                size: BLOB_TEX,
+                at: UVec2::ZERO,
+                rect: BLOB_RECT,
+            });
+            let frame = ShadowFrame::blob(data.models[p.model].bounds, at.0, at.1, DOWN, source.settings.distance);
+            if let Some(mesh) = shadow_mesh(&frame, &source.receivers, BLOB_RECT) {
+                built.push((i, mesh));
+            }
+        }
+        (blob, cells, built, blob_material, blob_image)
+    };
+    info!("prop shadows ({mode:?}): {} casters reach the world", built.len());
+    let visibility = data.visibility.as_deref().filter(|_| source.tag);
+    let mut entities = std::collections::HashMap::new();
+    for (prop, mesh) in built {
+        // Physics props' shadows move with them: their clusters follow
+        // the rebuilt mesh (`update_prop_shadows`).
+        let clusters = match (visibility, bevy::camera::primitives::MeshAabb::compute_aabb(&mesh)) {
+            (Some(v), Some(aabb)) => super::vis::box_clusters(v, Vec3::from(aabb.min()), Vec3::from(aabb.max())),
+            _ => Vec::new(),
+        };
+        let mut e = commands.spawn((
+            Name::new(format!("Shadow of prop {prop}")),
+            super::MapPart,
+            super::PropShadow { prop },
+            Mesh3d(meshes.add(mesh)),
+            MeshMaterial3d(material.clone()),
+            bevy::light::NotShadowCaster,
+            Transform::default(),
+            ChildOf(source.root),
+        ));
+        if !clusters.is_empty() {
+            e.insert(super::vis::VisClusters::new(clusters));
+        }
+        if hidden.contains(&prop) {
+            e.insert((super::vis::LogicHidden, Visibility::Hidden));
+        }
+        entities.insert(prop, e.id());
+    }
+    commands.insert_resource(super::ShadowState {
+        data: data.clone(),
+        settings: source.settings.clone(),
+        receivers: source.receivers.clone(),
+        blob: mode == ShadowMode::Blob,
+        atlas,
+        atlas_image: image,
+        material,
+        built: cells.iter().map(|c| (c.prop, pose(c.prop))).collect(),
+        cells: cells.into_iter().map(|c| (c.prop, c)).collect(),
+        entities,
+        root: source.root,
+    });
+}
+
+/// A character's blob shadow: whose, and where it was drawn for
+/// (position, yaw).
+#[derive(Component, Debug)]
+pub struct CharacterBlob {
+    pub owner: Entity,
+    drawn: (Vec3, f32),
+}
+
+/// Characters' blob shadows (Source's blob for players: our characters
+/// have no render-to-texture shadow; straight down at Low, along the
+/// map's direction at Medium and High): one per living character whose
+/// body is drawn (not your own in first person, not one watched through
+/// its eyes), its mesh rewritten in place when it moves.
+#[allow(clippy::type_complexity)]
+pub(super) fn update_character_blobs(
+    mut commands: Commands,
+    source: Option<Res<ShadowSource>>,
+    detail: Option<Res<ShadowSettings>>,
+    characters: Query<
+        (
+            Entity,
+            &GlobalTransform,
+            &crate::core::Intent,
+            Option<&crate::core::MovementState>,
+            Option<&crate::core::Health>,
+            Option<&Children>,
+        ),
+        (Without<crate::core::Spectating>, Without<super::ragdoll::Ragdolled>),
+    >,
+    bodies: Query<&Visibility, (With<super::CharacterBody>, Without<CharacterBlob>)>,
+    mut blobs: Query<(Entity, &mut CharacterBlob, &Mesh3d, &mut Visibility), Without<super::CharacterBody>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+) {
+    let mode = detail.map_or(ShadowMode::Texture, |d| d.mode());
+    let material = source.as_ref().and_then(|s| s.blob_material.clone());
+    let (Some(source), Some(material), false) = (source, material, mode == ShadowMode::Off) else {
+        for (e, ..) in &blobs {
+            commands.entity(e).despawn();
+        }
+        return;
+    };
+    let mut have: std::collections::HashMap<Entity, Entity> = blobs.iter().map(|(e, b, ..)| (b.owner, e)).collect();
+    for (owner, at, intent, movement, health, children) in &characters {
+        let alive = health.is_none_or(|h| h.current > 0.0);
+        let drawn = children
+            .into_iter()
+            .flatten()
+            .any(|c| bodies.get(*c).is_ok_and(|v| *v != Visibility::Hidden));
+        if !alive || !drawn {
+            continue;
+        }
+        let pose = (at.translation(), intent.yaw);
+        let blob = have.remove(&owner);
+        if let Some(Ok((_, b, ..))) = blob.map(|b| blobs.get(b))
+            && b.drawn.0.distance(pose.0) < 0.005
+            && (b.drawn.1 - pose.1).abs() < 0.03
+        {
+            continue;
+        }
+        let hull = movement.map_or((Vec3::ZERO, Vec3::ZERO), |m| (m.hull_min, m.hull_max));
+        let frame = character_frame(hull, pose.0, Quat::from_rotation_y(pose.1), mode, &source.settings);
+        let mesh = shadow_mesh(&frame, &source.receivers, BLOB_RECT);
+        match (blob.and_then(|b| blobs.get_mut(b).ok()), mesh) {
+            (Some((_, mut b, handle, mut vis)), Some(mesh)) => {
+                b.drawn = pose;
+                vis.set_if_neq(Visibility::Inherited);
+                let _ = meshes.insert(handle.id(), mesh);
+            }
+            (Some((_, mut b, _, mut vis)), None) => {
+                // Nothing under it within reach (jumping, falling).
+                b.drawn = pose;
+                vis.set_if_neq(Visibility::Hidden);
+            }
+            (None, Some(mesh)) => {
+                commands.spawn((
+                    Name::new("Character blob shadow"),
+                    super::MapPart,
+                    CharacterBlob { owner, drawn: pose },
+                    Mesh3d(meshes.add(mesh)),
+                    MeshMaterial3d(material.clone()),
+                    bevy::light::NotShadowCaster,
+                    Transform::default(),
+                    Visibility::Inherited,
+                    ChildOf(source.root),
+                ));
+            }
+            (None, None) => {}
+        }
+    }
+    // Characters gone, dead or not drawn.
+    for (_, blob) in have {
+        commands.entity(blob).despawn();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -622,5 +994,146 @@ mod tests {
         atlas.write(at, n, &[0.75; 256]);
         atlas.write_bytes(&mut bytes, at, n);
         assert_eq!(bytes, atlas.bytes());
+    }
+
+    /// Blob shadows (spec D): round, at least 10 units across, under the
+    /// caster straight down, reaching past it twice as far back.
+    #[test]
+    fn blobs_are_round_and_sized_as_source_s() {
+        let c = blob_coverage(BLOB_TEX);
+        let at = |x: u32, y: u32| c[(y * BLOB_TEX + x) as usize];
+        assert!(at(16, 16) > 0.99 && at(0, 0) == 0.0 && at(0, 16) < 0.05, "full in the middle, none at the edge");
+        assert!((at(8, 16) - at(16, 8)).abs() < 1e-6, "round");
+        // A 2-unit pebble: the least size; a player box: its width plus 10.
+        let u = METERS_PER_UNIT;
+        let pebble = ShadowFrame::blob((Vec3::splat(-u), Vec3::splat(u)), Vec3::ZERO, Quat::IDENTITY, DOWN, 1.0);
+        assert!((pebble.size - Vec2::splat(12.0 * u)).abs().max_element() < 1e-4, "{}", pebble.size / u);
+        let hull = (Vec3::new(-16.0, 0.0, -16.0) * u, Vec3::new(16.0, 72.0, 16.0) * u);
+        let player = ShadowFrame::blob(hull, Vec3::ZERO, Quat::IDENTITY, DOWN, 1.0);
+        assert!((player.size - Vec2::splat(42.0 * u)).abs().max_element() < 1e-4, "{}", player.size / u);
+        let rtt = ShadowFrame::new(hull, Vec3::ZERO, Quat::IDENTITY, DOWN, 1.0);
+        let centre = Vec3::new(0.0, 36.0 * u, 0.0);
+        assert!(((player.origin - centre).dot(DOWN) - 2.0 * (rtt.origin - centre).dot(DOWN)).abs() < BLOB_SNAP * u);
+    }
+
+    /// A tiny map: a floor and the shadow settings.
+    fn floor_map() -> MapData {
+        MapData {
+            name: "test:blobs".into(),
+            shadows: Some(MapShadows {
+                direction: Vec3::new(0.3, -1.0, 0.0).normalize(),
+                color: [100, 100, 100],
+                distance: 2.0,
+            }),
+            meshes: vec![super::super::MapMesh {
+                material: "test/floor".into(),
+                positions: vec![[-10.0, 0.0, -10.0], [-10.0, 0.0, 10.0], [10.0, 0.0, 10.0], [10.0, 0.0, -10.0]],
+                normals: vec![[0.0, 1.0, 0.0]; 4],
+                uvs: vec![[0.0, 0.0]; 4],
+                lightmap_uvs: vec![[0.0, 0.0]; 4],
+                indices: vec![0, 1, 2, 0, 2, 3],
+                color: [200, 180, 150],
+                ..default()
+            }],
+            ..default()
+        }
+    }
+
+    /// Characters whose body is drawn get a blob under them (straight down
+    /// at Low, along the map's direction at Medium); none once the body is
+    /// hidden (your own in first person) or `r_shadows 0`.
+    #[test]
+    fn drawn_characters_get_blob_shadows() {
+        // Just the shadow systems over the map's floor (no simulation).
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            TransformPlugin,
+            AssetPlugin::default(),
+            bevy::mesh::MeshPlugin,
+        ))
+        .init_asset::<Image>()
+        .init_asset::<ShadowMaterial>()
+        .add_systems(Update, (apply_shadow_detail, update_character_blobs).chain());
+        let data = std::sync::Arc::new(floor_map());
+        let root = app.world_mut().spawn((Transform::default(), Visibility::default())).id();
+        app.insert_resource(ShadowSource {
+            receivers: std::sync::Arc::new(Receivers::new(&data)),
+            settings: data.shadows.clone().unwrap(),
+            data,
+            root,
+            fog_color: Vec4::ZERO,
+            fog_range: Vec4::ZERO,
+            tag: false,
+            built: None,
+            blob_material: None,
+        });
+        struct Sim {
+            app: App,
+        }
+        impl Sim {
+            fn ticks(&mut self, n: usize) {
+                for _ in 0..n {
+                    self.app.update();
+                }
+            }
+        }
+        let mut sim = Sim { app };
+        let at = Vec3::new(2.0, 0.05, 1.0);
+        let character = sim
+            .app
+            .world_mut()
+            .spawn((
+                crate::core::Intent::default(),
+                crate::core::Health::default(),
+                Transform::from_translation(at),
+            ))
+            .id();
+        let body = sim
+            .app
+            .world_mut()
+            .spawn((
+                super::super::CharacterBody {
+                    model: 0,
+                    joints: Vec::new(),
+                    held: None,
+                },
+                Visibility::Inherited,
+                ChildOf(character),
+            ))
+            .id();
+        let blob_centre = |sim: &mut Sim| {
+            let world = sim.app.world_mut();
+            let found: Vec<Handle<Mesh>> = world
+                .query::<(&CharacterBlob, &Mesh3d, &Visibility)>()
+                .iter(world)
+                .filter(|(_, _, v)| **v != Visibility::Hidden)
+                .map(|(_, m, _)| m.0.clone())
+                .collect();
+            found.first().map(|m| {
+                let mesh = world.resource::<Assets<Mesh>>().get(m).unwrap();
+                Vec3::from(bevy::camera::primitives::MeshAabb::compute_aabb(mesh).unwrap().center)
+            })
+        };
+        let set = |sim: &mut Sim, shadows: u8, rtt: u8| {
+            sim.app.insert_resource(ShadowSettings {
+                shadows,
+                render_to_texture: rtt,
+                flashlight_depth: 0,
+            });
+            sim.ticks(3);
+        };
+        set(&mut sim, 1, 0);
+        let low = blob_centre(&mut sim).expect("a blob at Low");
+        assert!(low.xz().distance(at.xz()) < 0.05, "straight down: {low}");
+        set(&mut sim, 1, 1);
+        let medium = blob_centre(&mut sim).expect("a blob at Medium");
+        assert!(medium.x > at.x + 0.05, "along the map's direction: {medium}");
+        sim.app.world_mut().entity_mut(body).insert(Visibility::Hidden);
+        sim.ticks(2);
+        assert!(blob_centre(&mut sim).is_none(), "no body drawn, no blob");
+        sim.app.world_mut().entity_mut(body).insert(Visibility::Inherited);
+        set(&mut sim, 0, 1);
+        assert!(blob_centre(&mut sim).is_none(), "r_shadows 0");
     }
 }

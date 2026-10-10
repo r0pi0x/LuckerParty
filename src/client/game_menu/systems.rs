@@ -205,8 +205,10 @@ pub(super) fn open_menu(w: &mut World, page: Page) {
         .collect();
     let mut windows = w.query_filtered::<&Window, With<bevy::window::PrimaryWindow>>();
     let window = windows.iter(w).next().map(|w| w.resolution.physical_size());
+    let no_spectators = !crate::client::team_menu::spectators_allowed(w.get_resource::<crate::rules::Deathmatch>());
     let mut menu = w.resource_mut::<GameMenu>();
     menu.set_counts(bots, players);
+    menu.no_spectators = no_spectators;
     menu.set_binds(binds, known);
     menu.resolutions = crate::client::options::resolutions(&modes);
     menu.open(page, maps, current.as_deref(), |n| get.get(n).cloned());
@@ -599,9 +601,14 @@ pub(super) fn sync(
     mut menu: ResMut<GameMenu>,
     console: Res<Console>,
     characters: Query<(&Team, Has<crate::bot::Bot>), With<Intent>>,
+    rules: Option<Res<crate::rules::Deathmatch>>,
 ) {
     if !menu.open {
         return;
+    }
+    let no_spectators = !crate::client::team_menu::spectators_allowed(rules.as_deref());
+    if menu.no_spectators != no_spectators {
+        menu.no_spectators = no_spectators;
     }
     let (mut bots, mut players) = ([0; 2], [0; 2]);
     for (team, bot) in &characters {
@@ -736,4 +743,103 @@ pub(super) fn menu_sounds(
             Interaction::None => {}
         }
     }
+}
+
+/// The world drawn under the window's UI (while `world_behind_dialogs`
+/// draws it into a picture).
+#[derive(Component)]
+pub(super) struct WorldUnderUi;
+
+/// While a dialog is open over the in-game menu, the 3D view is drawn
+/// into a picture the window's size (`widgets::WorldPicture`) instead of
+/// the window: shown whole under all the UI (the game looks as before)
+/// and again, dimmed, under each frame (`widgets::Backing::World`), so a
+/// dialog hides the menu's entries under it and still shows the world.
+/// Back to the window when no dialog is open. A camera drawing into a
+/// picture of its own (`--views` captures) is left alone.
+#[allow(clippy::type_complexity)]
+pub(super) fn world_behind_dialogs(
+    backing: Res<widgets::FrameBacking>,
+    frames: Query<(), With<widgets::VguiFrame>>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    cameras: Query<(Entity, &bevy::camera::RenderTarget), With<crate::client::FirstPersonCamera>>,
+    mut picture: ResMut<widgets::WorldPicture>,
+    mut images: ResMut<Assets<Image>>,
+    mut shown: Query<(Entity, &mut ImageNode), With<WorldUnderUi>>,
+    mut commands: Commands,
+) {
+    use bevy::camera::RenderTarget;
+    let ours = |t: &RenderTarget| match (t, &picture.0) {
+        (RenderTarget::Image(i), Some((h, _))) => i.handle == *h,
+        _ => false,
+    };
+    let camera = cameras
+        .iter()
+        .find(|(_, t)| matches!(t, RenderTarget::Window(_)) || ours(t))
+        .map(|(e, t)| (e, matches!(t, RenderTarget::Image(i) if picture.0.as_ref().is_some_and(|(h, s)| i.handle == *h && size_now(&windows) == Some(*s)))));
+    let size = windows.iter().next().map(|w| w.resolution.physical_size());
+    let wanted = matches!(backing.0, Some(widgets::Backing::World(_))) && !frames.is_empty();
+    let (Some((camera, drawing)), Some(size), true) = (camera, size.filter(|s| s.x > 0 && s.y > 0), wanted) else {
+        if picture.0.is_some() {
+            for (e, t) in &cameras {
+                if ours(t) {
+                    commands
+                        .entity(e)
+                        .insert(RenderTarget::Window(bevy::window::WindowRef::Primary));
+                }
+            }
+            for (e, _) in &shown {
+                commands.entity(e).despawn();
+            }
+            picture.0 = None;
+        }
+        return;
+    };
+    let handle = match &picture.0 {
+        Some((h, s)) if *s == size.as_vec2() => h.clone(),
+        _ => {
+            if let Some((old, _)) = picture.0.take() {
+                images.remove(&old);
+            }
+            let h = images.add(Image::new_target_texture(
+                size.x,
+                size.y,
+                bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+                None,
+            ));
+            picture.0 = Some((h.clone(), size.as_vec2()));
+            h
+        }
+    };
+    if !drawing {
+        commands.entity(camera).insert(RenderTarget::Image(handle.clone().into()));
+    }
+    match shown.single_mut() {
+        Ok((_, mut node)) => {
+            if node.image != handle {
+                node.image = handle;
+            }
+        }
+        Err(_) => {
+            commands.spawn((
+                WorldUnderUi,
+                Name::new("World under the UI"),
+                ImageNode::new(handle),
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: percent(100.0),
+                    height: percent(100.0),
+                    ..default()
+                },
+                // Under everything the UI draws.
+                GlobalZIndex(i32::MIN / 2),
+                bevy::ui::FocusPolicy::Pass,
+            ));
+        }
+    }
+}
+
+/// The primary window's size in physical pixels.
+fn size_now(windows: &Query<&Window, With<bevy::window::PrimaryWindow>>) -> Option<Vec2> {
+    windows.iter().next().map(|w| w.resolution.physical_size().as_vec2())
 }

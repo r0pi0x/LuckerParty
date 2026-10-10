@@ -77,23 +77,25 @@ const DOT: f32 = 4.0;
 
 /// The overview drawn around the player, turned and clipped in the shader
 /// (UI clipping doesn't apply to rotated nodes).
+/// Also the spectators' overview's (`client::overview`).
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
-struct RadarMaterial {
-    /// Centre uv, span, angle, alpha (see radar.wgsl).
+pub(super) struct RadarMaterial {
+    /// Centre uv, span, angle, alpha, box size (see radar.wgsl).
     #[uniform(0)]
-    params: RadarParams,
+    pub params: RadarParams,
     #[texture(1)]
     #[sampler(2)]
-    overview: Handle<Image>,
+    pub overview: Handle<Image>,
 }
 
-#[derive(Clone, Copy, Debug, Default, bevy::render::render_resource::ShaderType)]
-struct RadarParams {
-    centre: Vec2,
-    span: Vec2,
-    angle: f32,
-    alpha: f32,
-    pad: Vec2,
+#[derive(Clone, Copy, Debug, Default, PartialEq, bevy::render::render_resource::ShaderType)]
+pub(super) struct RadarParams {
+    pub centre: Vec2,
+    pub span: Vec2,
+    pub angle: f32,
+    pub alpha: f32,
+    /// The box in pixels (0 0: square).
+    pub size: Vec2,
 }
 
 impl UiMaterial for RadarMaterial {
@@ -243,6 +245,7 @@ fn update(
     spectating: (
         Option<Res<super::spectate::Spectator>>,
         Query<(&GlobalTransform, &Intent, Option<&Team>, Option<&Dead>)>,
+        Option<Res<super::overview::OverviewSettings>>,
     ),
     mut commands: Commands,
 ) {
@@ -268,7 +271,15 @@ fn update(
         return;
     };
     let (me_entity, at, intent, team, dead) = *me;
-    let (spectator, watched) = spectating;
+    let (spectator, watched, overview_shown) = spectating;
+    // The spectators' overview replaces it.
+    let watching = spectator
+        .as_ref()
+        .is_some_and(|s| s.phase == super::spectate::SpecPhase::Watching);
+    if watching && overview_shown.is_some_and(|o| o.mode > 0) {
+        *frame_vis = Visibility::Hidden;
+        return;
+    }
     let target = spectator
         .filter(|s| s.phase == super::spectate::SpecPhase::Watching)
         .and_then(|s| s.target)

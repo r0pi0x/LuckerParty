@@ -46,6 +46,13 @@ impl GameMenu {
                     true,
                 ),
             ),
+            // CS:S's team menu offers it too (`jointeam 1`); greyed when
+            // the server's `mp_allowspectators` is 0.
+            Row::Button {
+                label: "Spectate".into(),
+                action: Action::Run("jointeam 1".into(), true),
+                enabled: !self.no_spectators,
+            },
             Self::button_row(&self.text("#GameUI_Cancel", "Cancel"), Action::Back),
         ]
     }

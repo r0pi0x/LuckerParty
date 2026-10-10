@@ -25,6 +25,8 @@ usage: dump <game> [options]
   --archives           combat_arms: per-archive title, entropy and file count
   --sequences <model>  cs_source: a model's bones, sequences (activity, frames, fps,
                        duration, looping, ground speed) and pose parameters, includes merged
+  --lods <model|text>  cs_source: each model's LODs (switch point, triangles) from its .dx90.vtx;
+                       with text, every .mdl whose path contains it
   --filter <text>      only paths containing <text> (case-insensitive)
   --extract            write the (filtered) files to --out
   --out <dir>          extraction folder (default: per-user data dir; never inside the repo)
@@ -37,6 +39,7 @@ struct Args {
     extract: bool,
     filter: Option<String>,
     sequences: Option<String>,
+    lods: Option<String>,
     out: Option<PathBuf>,
     install: Option<PathBuf>,
 }
@@ -54,6 +57,7 @@ fn parse() -> Result<Args, String> {
         extract: false,
         filter: None,
         sequences: None,
+        lods: None,
         out: None,
         install: None,
     };
@@ -65,6 +69,7 @@ fn parse() -> Result<Args, String> {
             "--extract" => a.extract = true,
             "--filter" => a.filter = Some(value()?.to_lowercase()),
             "--sequences" => a.sequences = Some(value()?.to_lowercase().replace('\\', "/")),
+            "--lods" => a.lods = Some(value()?.to_lowercase().replace('\\', "/")),
             "--out" => a.out = Some(value()?.into()),
             "--install" => a.install = Some(value()?.into()),
             _ => return Err(format!("unknown option {flag}")),
@@ -130,6 +135,9 @@ fn dump_cs_source(args: &Args, install: &Path) -> Result<(), String> {
     if let Some(path) = &args.sequences {
         return sequences(&mount, path);
     }
+    if let Some(filter) = &args.lods {
+        return lods(&mount, filter);
+    }
     report(args, &mount, &[])
 }
 
@@ -160,6 +168,50 @@ fn dump_combat_arms(args: &Args, install: &Path) -> Result<(), String> {
 }
 
 /// A model's skeleton and what it can play (our own `.mdl` decoder).
+/// Each model's LODs: per body part model, each LOD's switch point and
+/// triangle count (`r_rootlod`, distance LOD switching).
+fn lods(mount: &Mount, filter: &str) -> Result<(), String> {
+    let paths: Vec<String> = if filter.ends_with(".mdl") {
+        vec![filter.to_string()]
+    } else {
+        mount
+            .entries()
+            .into_iter()
+            .map(|(e, _)| e.path)
+            .filter(|p| p.ends_with(".mdl") && p.contains(filter))
+            .collect()
+    };
+    for path in paths {
+        let stem = path.trim_end_matches(".mdl");
+        let Some(bytes) = mount.read(&format!("{stem}.dx90.vtx")).ok() else {
+            println!("{path}: no .dx90.vtx");
+            continue;
+        };
+        let vtx = vmdl::vtx::Vtx::read(&bytes).map_err(|e| format!("{path}: {e}"))?;
+        let mut line = format!("{path}:");
+        for (p, part) in vtx.body_parts.iter().enumerate() {
+            for (m, model) in part.models.iter().enumerate() {
+                let lods: Vec<String> = model
+                    .lods
+                    .iter()
+                    .map(|lod| {
+                        let tris: usize = lod
+                            .meshes
+                            .iter()
+                            .flat_map(|mesh| &mesh.strip_groups)
+                            .map(|g| g.indices.len() / 3)
+                            .sum();
+                        format!("{:.1}:{tris}", lod.switch_point)
+                    })
+                    .collect();
+                line += &format!(" [{p}.{m}] {}", lods.join(" "));
+            }
+        }
+        println!("{line}");
+    }
+    Ok(())
+}
+
 fn sequences(mount: &Mount, path: &str) -> Result<(), String> {
     let read = |p: &str| mount.read(&p.to_lowercase().replace('\\', "/")).ok();
     let bones = cs_source::anim::bones(&read, path)?;

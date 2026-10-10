@@ -33,7 +33,17 @@ fn the_scoreboard_spectator_bars_and_bomb_look_load() {
     let bars = &menus.layouts[menus.spectator.as_ref().expect("spectator.res")];
     assert!(bars.get("topbar").is_some() && bars.get("playerlabel").is_some());
     let spec_menu = &menus.layouts[menus.spectator_menu.as_ref().expect("bottomspectator.res")];
-    assert!(spec_menu.get("viewcombo").is_some());
+    assert!(spec_menu.get("viewcombo").is_some() && spec_menu.get("settingscombo").is_some());
+    // Its drop-downs' entries: spectatormenu.res (submenus, toggles) and
+    // spectatormodes.res.
+    let labels: Vec<&str> = menus.spectator_options.iter().map(|i| i.label.as_str()).collect();
+    assert_eq!(labels.first(), Some(&"Close"), "{labels:?}");
+    let overview = menus.spectator_options.iter().find(|i| i.label == "Overview").expect("{labels:?}");
+    assert_eq!(overview.items[2].command.as_deref(), Some("overview_mode 2"));
+    let settings = menus.spectator_options.iter().find(|i| i.label == "Settings").unwrap();
+    assert!(settings.items.iter().any(|i| i.toggle.as_deref() == Some("overview_names")));
+    let modes: Vec<_> = menus.spectator_modes.iter().map(|m| m.command.as_deref().unwrap_or("")).collect();
+    assert_eq!(modes, ["spec_mode 4", "spec_mode 5", "spec_mode 6"]);
     // valve_english's strings under the game's.
     assert_eq!(menus.string("Spec_Map", ""), "Map: %s1");
     let screen = &hud.screens["c4_view_panel"];
@@ -2788,4 +2798,30 @@ fn view_models_face_outward() {
         }
     }
     assert!(knives > 0, "the knife's view models load");
+}
+
+/// Model detail (`map::lod`): models keep their `.vtx` levels of detail,
+/// each coarser than the one before, aligned to LOD 0's meshes, with
+/// rising switch points.
+#[test]
+fn models_keep_their_levels_of_detail() {
+    let Some(map) = dust2() else { return };
+    let tris = |meshes: &mut dyn Iterator<Item = &mashup::map::MapMesh>| meshes.map(|m| m.indices.len() / 3).sum::<usize>();
+    let leveled: Vec<_> = map.models.iter().enumerate().filter(|(_, m)| !m.lods.is_empty()).collect();
+    assert!(leveled.len() >= 10, "{} models with levels", leveled.len());
+    for (i, m) in &leveled {
+        let mut last = (tris(&mut m.meshes.iter()), 0.0);
+        for l in &m.lods {
+            assert_eq!(l.meshes.len(), m.meshes.len(), "model {i}: one slot per LOD 0 mesh");
+            let n = tris(&mut l.meshes.iter().flatten());
+            assert!(n <= last.0, "model {i}: {n} triangles after {}", last.0);
+            assert!(l.switch > last.1, "model {i}: switch points rise");
+            last = (n, l.switch);
+        }
+    }
+    // Where one stands (for screenshots of the switch).
+    if let Some(p) = map.props.iter().find(|p| !map.models[p.model].lods.is_empty() && !p.skybox) {
+        let s = mashup::games::cs_source::movement::to_source(p.translation);
+        eprintln!("a prop with levels at setpos {:.0} {:.0} {:.0}", s.x, s.y, s.z);
+    }
 }

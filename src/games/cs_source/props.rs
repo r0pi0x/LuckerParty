@@ -62,15 +62,64 @@ pub fn read_mdl(bytes: &[u8]) -> Result<vmdl::mdl::Mdl, String> {
 /// A model and its key values text (`$keyvalues`: `prop_data`,
 /// `door_options`...; None: the model has none).
 fn load_model(materials: &mut MaterialLoader, path: &str) -> Result<(vmdl::Model, Option<String>), String> {
-    load_model_with_layout(materials, path).map(|(m, kv, _)| (m, kv))
+    load_model_with_layout(materials, path, false).map(|(m, kv, _, _)| (m, kv))
 }
 
-/// `load_model`, with the model's body layout (`body_layout`).
+/// Whether vmdl can turn the model into meshes: a `.vtx` whose strip
+/// indices run past its `.vvd`'s vertices would panic.
+fn meshes_readable(model: &vmdl::Model) -> bool {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        model.meshes().map(|m| m.vertices().count() + m.tangents().count()).sum::<usize>()
+    }))
+    .is_ok()
+}
+
+/// The model's lower levels of detail (`.vtx` LODs 1, 2, ...) as models
+/// of their own, each with its switch point: each body part model's level
+/// `k` (its coarsest when it has fewer), the switch point the first one
+/// with that level gives. Levels vmdl can't read are left out.
+fn lod_models(mdl: &vmdl::mdl::Mdl, vtx: &vmdl::vtx::Vtx, vvd: &vmdl::vvd::Vvd) -> Vec<(f32, vmdl::Model)> {
+    let models = || vtx.body_parts.iter().flat_map(|p| p.models.iter());
+    let levels = models().map(|m| m.lods.len()).max().unwrap_or(0);
+    (1..levels)
+        .map_while(|k| {
+            let switch = models().find_map(|m| m.lods.get(k)).map(|l| l.switch_point)?;
+            let mut lower = vtx.clone();
+            for part in &mut lower.body_parts {
+                for m in &mut part.models {
+                    let drop = k.min(m.lods.len().saturating_sub(1));
+                    m.lods.drain(..drop);
+                }
+            }
+            let model = vmdl::Model::from_parts(mdl.clone(), lower, vvd.clone());
+            meshes_readable(&model).then_some((switch, model))
+        })
+        .collect()
+}
+
+/// A level's meshes by the slot of the LOD 0 mesh each stands in for (the
+/// same material and body choice); a level's meshes no LOD 0 mesh shares
+/// a material with are dropped.
+fn align_lod(root: &[MapMesh], level: Vec<MapMesh>) -> Vec<Option<MapMesh>> {
+    let mut level: Vec<Option<MapMesh>> = level.into_iter().map(Some).collect();
+    root.iter()
+        .map(|r| {
+            level
+                .iter_mut()
+                .find(|m| m.as_ref().is_some_and(|m| m.material == r.material && m.body == r.body))
+                .and_then(Option::take)
+        })
+        .collect()
+}
+
+/// `load_model`, with the model's body layout (`body_layout`) and, with
+/// `lods`, its lower levels of detail (`lod_models`).
 #[allow(clippy::type_complexity)]
 fn load_model_with_layout(
     materials: &mut MaterialLoader,
     path: &str,
-) -> Result<(vmdl::Model, Option<String>, Vec<Vec<usize>>), String> {
+    lods: bool,
+) -> Result<(vmdl::Model, Option<String>, Vec<Vec<usize>>, Vec<(f32, vmdl::Model)>), String> {
     let read = |p: String| materials.read(&p).ok_or_else(|| format!("{p}: not found"));
     let mdl = read_mdl(&read(path.to_string())?).map_err(|e| format!("{path}: {e}"))?;
     let key_values = mdl.key_values.clone();
@@ -78,16 +127,14 @@ fn load_model_with_layout(
     let stem = path.trim_end_matches(".mdl");
     let vtx = vmdl::vtx::Vtx::read(&read(format!("{stem}.dx90.vtx"))?).map_err(|e| format!("{stem}.dx90.vtx: {e}"))?;
     let vvd = vmdl::vvd::Vvd::read(&read(format!("{stem}.vvd"))?).map_err(|e| format!("{stem}.vvd: {e}"))?;
+    let lods = if lods { lod_models(&mdl, &vtx, &vvd) } else { Vec::new() };
     let model = vmdl::Model::from_parts(mdl, vtx, vvd);
     // Meshes whose strip indices run past their vertices (a `.vtx` that
     // doesn't match its `.vvd`): vmdl would panic converting them.
-    let whole = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        model.meshes().map(|m| m.vertices().count() + m.tangents().count()).sum::<usize>()
-    }));
-    if whole.is_err() {
+    if !meshes_readable(&model) {
         return Err(format!("{path}: mesh indices outside its vertices (.vtx and .vvd disagree)"));
     }
-    Ok((model, key_values, layout))
+    Ok((model, key_values, layout, lods))
 }
 
 /// A player model as a character body (specs/cs_source/weapons.md 5): its
@@ -642,6 +689,7 @@ fn convert_model_in(
         body_parts,
         rig: None,
         breaks: None,
+        lods: Vec::new(),
     }
 }
 
@@ -1220,8 +1268,8 @@ fn place_props(
         let key = (prop.model.clone(), prop.skin, prop.animated);
         let model = *loaded
             .entry(key)
-            .or_insert_with(|| match load_model_with_layout(materials, &prop.model) {
-                Ok((m, kv, layout)) => {
+            .or_insert_with(|| match load_model_with_layout(materials, &prop.model, !prop.animated) {
+                Ok((m, kv, layout, lods)) => {
                     let rig = if prop.animated {
                         load_rig(materials, &prop.model)
                     } else {
@@ -1233,6 +1281,17 @@ fn place_props(
                     } else {
                         convert_model(&m, prop.skin, materials, &layout)
                     };
+                    // Its lower levels of detail (`map::lod`); skinned
+                    // models keep LOD 0.
+                    if rig.is_none() {
+                        model.lods = lods
+                            .iter()
+                            .map(|(switch, lower)| crate::map::lod::MapLod {
+                                switch: *switch,
+                                meshes: align_lod(&model.meshes, convert_model(lower, prop.skin, materials, &layout).meshes),
+                            })
+                            .collect();
+                    }
                     model.rig = rig;
                     model.collision = load_collision(materials, &prop.model);
                     // What traces against the prop report: its collision
@@ -1482,6 +1541,38 @@ fn place_props(
 struct VertexKey {
     checksum: u32,
     order: Vec<u32>,
+    /// For each model vertex (`.vvd` index), the LOD 0 vertex whose light
+    /// it takes: itself when LOD 0 draws it, else the nearest one (lower
+    /// levels of detail draw vertices LOD 0 doesn't; the file has light
+    /// for LOD 0's only).
+    fill: Vec<u32>,
+}
+
+/// `VertexKey::fill`: each of `positions` lit by itself when in `order`,
+/// else by the nearest one in `order`.
+fn nearest_lit(positions: &[Vec3], order: &[u32]) -> Vec<u32> {
+    let mut lit = vec![false; positions.len()];
+    for &i in order {
+        if let Some(l) = lit.get_mut(i as usize) {
+            *l = true;
+        }
+    }
+    let sources: Vec<u32> = (0..positions.len() as u32).filter(|&i| lit[i as usize]).collect();
+    (0..positions.len())
+        .map(|i| {
+            if lit[i] || sources.is_empty() {
+                return i as u32;
+            }
+            *sources
+                .iter()
+                .min_by(|a, b| {
+                    positions[**a as usize]
+                        .distance_squared(positions[i])
+                        .total_cmp(&positions[**b as usize].distance_squared(positions[i]))
+                })
+                .unwrap()
+        })
+        .collect()
 }
 
 /// The `.vvd` index of each vertex the model's LOD 0 meshes draw, in the
@@ -1510,11 +1601,17 @@ fn vertex_key(materials: &MaterialLoader, path: &str) -> Option<VertexKey> {
     let mdl_bytes = materials.read(path)?;
     let checksum = u32::from_le_bytes(mdl_bytes.get(8..12)?.try_into().ok()?);
     let mdl = read_mdl(&mdl_bytes).ok()?;
-    let vtx = vmdl::vtx::Vtx::read(&materials.read(&format!("{}.dx90.vtx", path.trim_end_matches(".mdl")))?).ok()?;
-    Some(VertexKey {
-        checksum,
-        order: lod0_vertex_order(&mdl, &vtx),
-    })
+    let stem = path.trim_end_matches(".mdl");
+    let vtx = vmdl::vtx::Vtx::read(&materials.read(&format!("{stem}.dx90.vtx"))?).ok()?;
+    let order = lod0_vertex_order(&mdl, &vtx);
+    // Lower levels' vertices take their nearest LOD 0 vertex's light.
+    let positions: Vec<Vec3> = materials
+        .read(&format!("{stem}.vvd"))
+        .and_then(|b| vmdl::vvd::Vvd::read(&b).ok())
+        .map(|v| v.vertices.iter().map(|v| Vec3::new(v.position.x, v.position.y, v.position.z)).collect())
+        .unwrap_or_default();
+    let fill = nearest_lit(&positions, &order);
+    Some(VertexKey { checksum, order, fill })
 }
 
 /// Static prop `index`'s baked per-vertex light (`vhv`), decoded, by the
@@ -1551,9 +1648,17 @@ fn baked_vertex_light(
         ));
     }
     let size = key.order.iter().max().map_or(0, |m| *m as usize + 1);
-    let mut light = vec![[0.0f32; 3]; size];
+    let mut light = vec![[0.0f32; 3]; size.max(key.fill.len())];
     for (&at, c) in key.order.iter().zip(v.colors) {
         light[at as usize] = super::vhv::decode(c);
+    }
+    // Vertices only lower levels of detail draw.
+    for (i, &from) in key.fill.iter().enumerate() {
+        if from as usize != i
+            && let Some(&l) = light.get(from as usize)
+        {
+            light[i] = l;
+        }
     }
     Ok(Some(std::sync::Arc::new(light)))
 }

@@ -41,15 +41,26 @@ pub(super) fn auto_team(t: usize, ct: usize) -> u8 {
     if ct < t { 3 } else { 2 }
 }
 
+/// Whether the server lets players join the spectators
+/// (`mp_allowspectators`; a network client has the server's value, a
+/// replicated cvar: `net::cvars`).
+pub(super) fn spectators_allowed(rules: Option<&crate::rules::Deathmatch>) -> bool {
+    rules.is_none_or(|d| d.allow_spectators != 0)
+}
+
 /// The game's team menu layout, when it has one.
 fn layout(menus: &GameMenus) -> Option<&UiLayout> {
     menus.layouts.get(menus.team.as_ref()?)
 }
 
 /// What we make of the game's controls: the map's description in its
-/// `MapInfo`; no VIP button (VIP maps only).
-fn shown(c: &UiControl, map_info: Option<&str>) -> Shown {
+/// `MapInfo`; no VIP button (VIP maps only); Spectate greyed when the
+/// server's `mp_allowspectators` is 0 (`spectators` false).
+fn shown(c: &UiControl, map_info: Option<&str>, spectators: bool) -> Shown {
     let mut s = Shown::of(c);
+    if !spectators && c.command.as_deref().is_some_and(|k| k.trim() == "jointeam 1") {
+        s.enabled = false;
+    }
     if c.kind == UiKind::RichText && c.name.eq_ignore_ascii_case("MapInfo") {
         s.text = map_info.map(str::to_string);
     }
@@ -87,7 +98,9 @@ fn keys(
     teams: Query<&Team, With<Intent>>,
     hud: Option<Res<ActiveHud>>,
     mut others: (ResMut<super::buy_menu::BuyMenu>, ResMut<super::radio::RadioMenu>),
+    rules: Option<Res<crate::rules::Deathmatch>>,
 ) {
+    let spectators = spectators_allowed(rules.as_deref());
     if !super::vgui::keys_live(&cursor, &open, ui.as_deref(), chat.as_deref(), game_menu.as_deref()) {
         return;
     }
@@ -112,7 +125,7 @@ fn keys(
             return;
         };
         let info = menus.map_info.as_deref();
-        if let Some(command) = super::vgui::hotkey_button(page, key, &mut |c| shown(c, info)).and_then(|c| c.command.clone()) {
+        if let Some(command) = super::vgui::hotkey_button(page, key, &mut |c| shown(c, info, spectators)).and_then(|c| c.command.clone()) {
             if let Some(l) = line(&command, count) {
                 console.submit(l);
             }
@@ -126,7 +139,7 @@ fn keys(
         Some(3)
     } else if keys.just_pressed(KeyCode::Digit5) {
         Some(auto_team(count(1), count(2)))
-    } else if keys.just_pressed(KeyCode::Digit6) {
+    } else if keys.just_pressed(KeyCode::Digit6) && spectators {
         Some(1)
     } else {
         None
@@ -170,11 +183,15 @@ fn draw(
     windows: Query<&Window>,
     hud: Option<Res<ActiveHud>>,
     fonts: Res<UiFonts>,
+    rules: Option<Res<crate::rules::Deathmatch>>,
+    mut last_allowed: Local<Option<bool>>,
     mut commands: Commands,
 ) {
-    if !menu.is_changed() {
+    let spectators = spectators_allowed(rules.as_deref());
+    if !menu.is_changed() && *last_allowed == Some(spectators) {
         return;
     }
+    *last_allowed = Some(spectators);
     for e in &shown {
         commands.entity(e).despawn();
     }
@@ -187,7 +204,10 @@ fn draw(
     let scale = h / 480.0;
     commands.spawn((
         MenuText,
-        Text::new("SELECT A TEAM\n\n1  Terrorists\n2  Counter-Terrorists\n\n5  Auto-assign\n6  Spectate\n\n0  Close"),
+        Text::new(format!(
+            "SELECT A TEAM\n\n1  Terrorists\n2  Counter-Terrorists\n\n5  Auto-assign\n{}\n\n0  Close",
+            if spectators { "6  Spectate" } else { "-  (no spectators)" }
+        )),
         // As a HudMenu: the client scheme's Default.
         fonts.client("Default", h, 12.0),
         TextColor(Color::srgb_u8(255, 176, 0)),
@@ -215,9 +235,11 @@ fn draw_vgui(
     windows: Query<&Window>,
     roots: Query<Entity, With<VguiRoot>>,
     mut open: ResMut<VguiOpen>,
-    mut drawn: Local<Option<Vec2>>,
+    mut drawn: Local<Option<(Vec2, bool)>>,
+    rules: Option<Res<crate::rules::Deathmatch>>,
     mut commands: Commands,
 ) {
+    let spectators = spectators_allowed(rules.as_deref());
     let menus = hud.as_ref().and_then(|h| h.0.menus.as_ref()).filter(|_| menu.0);
     let page = menus.and_then(layout);
     let (Some(hud), Some(menus), Some(page), Some(window)) = (hud.as_ref(), menus, page, windows.iter().next()) else {
@@ -232,10 +254,10 @@ fn draw_vgui(
     let shown_now = VguiOpen { team: true, ..*open };
     open.set_if_neq(shown_now);
     let size = Vec2::new(window.width(), window.height());
-    if *drawn == Some(size) && !roots.is_empty() && !hud.is_changed() {
+    if *drawn == Some((size, spectators)) && !roots.is_empty() && !hud.is_changed() {
         return;
     }
-    *drawn = Some(size);
+    *drawn = Some((size, spectators));
     for e in &roots {
         commands.entity(e).despawn();
     }
@@ -268,7 +290,7 @@ fn draw_vgui(
         ))
         .id();
     let info = menus.map_info.as_deref();
-    painter.spawn(&mut commands, area, a.size(), page, VguiMenu::Team, &mut |c| shown(c, info));
+    painter.spawn(&mut commands, area, a.size(), page, VguiMenu::Team, &mut |c| shown(c, info, spectators));
 }
 
 #[cfg(test)]
@@ -385,9 +407,10 @@ mod tests {
         assert_eq!(line("vguicancel", count), None);
         let mut spec = UiControl::new("specbutton", UiKind::Button, 0.0, 0.0, 1.0, 1.0);
         spec.command = Some("jointeam 1".into());
-        assert!(shown(&spec, None).enabled, "spectating works");
-        assert!(!shown(&UiControl::new("vipbutton", UiKind::Button, 0.0, 0.0, 1.0, 1.0), None).visible);
+        assert!(shown(&spec, None, true).enabled, "spectating works");
+        assert!(!shown(&spec, None, false).enabled, "greyed with mp_allowspectators 0");
+        assert!(!shown(&UiControl::new("vipbutton", UiKind::Button, 0.0, 0.0, 1.0, 1.0), None, true).visible);
         let info = UiControl::new("MapInfo", UiKind::RichText, 0.0, 0.0, 1.0, 1.0);
-        assert_eq!(shown(&info, Some("Dust II")).text.as_deref(), Some("Dust II"));
+        assert_eq!(shown(&info, Some("Dust II"), true).text.as_deref(), Some("Dust II"));
     }
 }

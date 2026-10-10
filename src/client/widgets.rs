@@ -41,6 +41,7 @@ impl Plugin for WidgetsPlugin {
         app.init_resource::<Windows>()
             .init_resource::<SliderDrag>()
             .init_resource::<FrameBacking>()
+            .init_resource::<WorldPicture>()
             .add_systems(
                 PreUpdate,
                 (frames_pointer, slider_pointer).after(bevy::input::InputSystems),
@@ -315,8 +316,8 @@ pub struct VguiFrame {
 /// What a frame hides of what's under it: the game menu's entries and
 /// title never show through a dialog's see-through colour. The frame is
 /// drawn over the picture behind them (the main menu's background, the
-/// part under the frame) or a solid colour (in a game, where the world
-/// behind can't be drawn again); None (no menu open): see-through.
+/// part under the frame), in a game over the world drawn again, dimmed
+/// (`WorldPicture`), or a solid colour; None (no menu open): see-through.
 #[derive(Resource, Clone, Debug, Default, PartialEq)]
 pub struct FrameBacking(pub Option<Backing>);
 
@@ -325,7 +326,21 @@ pub enum Backing {
     /// A picture stretched over the window, and its size in pixels.
     Picture(Handle<Image>, Vec2),
     Color(Color),
+    /// In a game: the world (`WorldPicture`, when it is being drawn)
+    /// under the frame at `WORLD_UNDER_DIALOGS` of its brightness, else
+    /// this colour.
+    World(Color),
 }
+
+/// The world's 3D view drawn into a picture the window's size, while a
+/// dialog is open in a game (`game_menu::world_behind_dialogs`), and the
+/// picture's size in pixels: frames there are drawn over it.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct WorldPicture(pub Option<(Handle<Image>, Vec2)>);
+
+/// How bright the world shows under an in-game dialog (the menu's
+/// entries under the frame hidden): a darkened, see-through look.
+pub const WORLD_UNDER_DIALOGS: f32 = 0.4;
 
 impl Backing {
     /// The part of the picture under a frame at `pos`, `size` (window
@@ -342,6 +357,7 @@ impl Backing {
 fn place_frames(
     mut windows: ResMut<Windows>,
     backing: Res<FrameBacking>,
+    world: Option<Res<WorldPicture>>,
     screen: Query<&Window, With<PrimaryWindow>>,
     mut frames: Query<(Entity, &VguiFrame, &mut Node, &mut GlobalZIndex, &mut BackgroundColor, Option<&mut ImageNode>)>,
     mut commands: Commands,
@@ -355,27 +371,34 @@ fn place_frames(
             _ => windows.bypass_change_detection().place(f.id, size, screen),
         };
         // Under it: the backing (1 px in, the border's width).
+        let drawn = windows.placed(f.id).map_or(size, |p| p.size);
+        let crop = |handle: &Handle<Image>, image_size: Vec2, tint: f32| {
+            let rect = Backing::crop(image_size, screen, pos + 1.0, drawn - 2.0);
+            (handle.clone(), rect, Color::srgb(tint, tint, tint))
+        };
         let (base, picture) = match &backing.0 {
-            Some(Backing::Picture(handle, image_size)) => {
-                let drawn = windows.placed(f.id).map_or(size, |p| p.size);
-                let rect = Backing::crop(*image_size, screen, pos + 1.0, drawn - 2.0);
-                (Color::BLACK, Some((handle.clone(), rect)))
-            }
+            Some(Backing::Picture(handle, image_size)) => (Color::BLACK, Some(crop(handle, *image_size, 1.0))),
+            Some(Backing::World(c)) => match world.as_ref().and_then(|w| w.0.as_ref()) {
+                Some((handle, image_size)) => (Color::BLACK, Some(crop(handle, *image_size, WORLD_UNDER_DIALOGS))),
+                None => (*c, None),
+            },
             Some(Backing::Color(c)) => (*c, None),
             None => (Color::NONE, None),
         };
         bg.set_if_neq(BackgroundColor(base));
         match (picture, image) {
-            (Some((handle, rect)), Some(mut img)) => {
-                if img.image != handle || img.rect != Some(rect) {
+            (Some((handle, rect, tint)), Some(mut img)) => {
+                if img.image != handle || img.rect != Some(rect) || img.color != tint {
                     img.image = handle;
                     img.rect = Some(rect);
+                    img.color = tint;
                 }
             }
-            (Some((handle, rect)), None) => {
+            (Some((handle, rect, tint)), None) => {
                 commands.entity(e).insert(ImageNode {
                     image: handle,
                     rect: Some(rect),
+                    color: tint,
                     image_mode: NodeImageMode::Stretch,
                     ..default()
                 });
@@ -1945,8 +1968,19 @@ mod tests {
         // Centred: (384, 157) to (896, 563), 1 px in, at twice the size.
         let rect = image.rect.unwrap();
         assert_eq!((rect.min, rect.max), (Vec2::new(770.0, 316.0), Vec2::new(1790.0, 1124.0)));
-        // In a game: over black.
-        app.world_mut().resource_mut::<FrameBacking>().0 = Some(Backing::Color(Color::BLACK));
+        // In a game: over the world drawn again, dimmed.
+        let world = Handle::<Image>::default();
+        app.insert_resource(WorldPicture(Some((world.clone(), Vec2::new(1280.0, 720.0)))));
+        app.world_mut().resource_mut::<FrameBacking>().0 = Some(Backing::World(Color::BLACK));
+        app.update();
+        app.update();
+        let e = app.world().entity(frame);
+        let image = e.get::<ImageNode>().expect("the world under it");
+        let tint = image.color.to_srgba();
+        assert_eq!((tint.red, tint.alpha), (WORLD_UNDER_DIALOGS, 1.0), "dimmed, opaque: the menu under it hidden");
+        assert_eq!(image.rect.unwrap().min, Vec2::new(385.0, 158.0));
+        // Before the world's picture exists: over black.
+        app.insert_resource(WorldPicture(None));
         app.update();
         app.update();
         let e = app.world().entity(frame);

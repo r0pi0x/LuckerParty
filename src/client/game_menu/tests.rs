@@ -415,6 +415,16 @@ fn bots_and_team_pages_run_their_commands() {
     m.set_counts([0, 0], [3, 1]);
     click(&mut m, MainItem::Team);
     assert_eq!(press(&mut m, &[Input::Click(Target::Row(2), 0)]).lines, ["jointeam 3"]);
+
+    // Spectate, as CS:S's team menu; greyed when the server refuses
+    // spectators (`mp_allowspectators 0`).
+    let mut m = menu();
+    click(&mut m, MainItem::Team);
+    assert_eq!(press(&mut m, &[Input::Click(Target::Row(3), 0)]).lines, ["jointeam 1"]);
+    let mut m = menu();
+    m.no_spectators = true;
+    click(&mut m, MainItem::Team);
+    assert!(press(&mut m, &[Input::Click(Target::Row(3), 0)]).lines.is_empty(), "greyed");
 }
 
 /// Create Server driven as CS:S's: the map from its drop-down, bots
@@ -1054,6 +1064,35 @@ fn water_detail_sets_both_water_cvars() {
     // Cancel puts both back.
     let o = click_on(&mut m, |m| button(m, Action::Cancel));
     assert_eq!(o.lines, ["r_waterforceexpensive 1", "r_waterforcereflectentities 0"]);
+}
+
+#[test]
+fn shadow_detail_sets_cs_s_shadow_cvars() {
+    let mut m = GameMenu {
+        in_game: true,
+        ..default()
+    };
+    let shadows = |n: &str| match n {
+        "r_shadowrendertotexture" => Some("1".to_string()),
+        "r_flashlightdepthtexture" => Some("0".to_string()),
+        "r_rootlod" => Some("0".to_string()),
+        n => get(n),
+    };
+    m.open(Page::Main, vec!["de_dust2".into()], None, shadows);
+    click(&mut m, MainItem::Options);
+    press(&mut m, &[Input::Click(Target::Tab(3), 0)]);
+    let adv = button(&m, Action::VideoAdvanced);
+    press(&mut m, &[Input::Click(Target::Row(adv), 0)]);
+    let s = row_of(&m, "r_shadowrendertotexture r_flashlightdepthtexture");
+    assert!(matches!(control(&m, s), Control::Combo { selected: Some(1), text, .. } if text == "Medium"));
+    let o = press(&mut m, &[Input::Click(Target::Row(s), 0), Input::Click(Target::ComboItem(0), 0)]);
+    assert_eq!(o.lines, ["r_shadowrendertotexture 0", "r_flashlightdepthtexture 0"], "Low: blobs");
+    let o = press(&mut m, &[Input::Click(Target::Row(s), 0), Input::Click(Target::ComboItem(2), 0)]);
+    assert_eq!(o.lines, ["r_shadowrendertotexture 1", "r_flashlightdepthtexture 1"], "High");
+    // Model detail: r_rootlod 2 / 1 / 0.
+    let d = row_of(&m, "r_rootlod");
+    let o = press(&mut m, &[Input::Click(Target::Row(d), 0), Input::Click(Target::ComboItem(0), 0)]);
+    assert_eq!(o.lines, ["r_rootlod 2"], "Low");
 }
 
 #[test]
