@@ -582,7 +582,7 @@ fn player_tab(ui: &mut egui::Ui, world: &mut World, state: &mut DebugUi) {
         if ui.checkbox(&mut n, "noclip").on_hover_text("noclip").changed() {
             run(world, "noclip");
         }
-        command_button(ui, world, "Respawn", "kill");
+        command_button(ui, world, "Kill (suicide)", "kill");
         command_button(ui, world, "All weapons", "impulse 101");
         command_button(ui, world, "Hurt (chest)", "mashup_hurtme chest 25");
     });

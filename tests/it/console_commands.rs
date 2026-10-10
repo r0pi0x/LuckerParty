@@ -100,3 +100,21 @@ fn third_person_camera_sits_as_css_does() {
     let back = (o.z - eye.z) / U;
     assert!((back - 150.0 * 15.4f32.to_radians().cos()).abs() < 0.1, "{back} back");
 }
+
+/// `kill` is CS:S's suicide: the player dies where it stands (god mode or
+/// not), so a lone player can end the round, rather than being moved to
+/// a spawn point alive.
+#[test]
+fn kill_is_a_suicide() {
+    let mut sim = Sim::new((GreyboxMapPlugin, SourceMovementPlugin));
+    sim.app.init_resource::<HeldActions>();
+    client_commands(&mut sim.app);
+    let p = sim.spawn_character(Vec3::new(3.0, 1.0, 2.0), movement::ID);
+    sim.app.world_mut().entity_mut(p).insert((LocalPlayer, mashup::core::God));
+    sim.seconds(0.5);
+    let before = sim.position(p);
+    sim.app.world_mut().resource_mut::<Console>().submit("kill");
+    sim.ticks(3);
+    assert!(sim.app.world().get::<mashup::rules::Dead>(p).is_some(), "kill left the player alive");
+    assert!(sim.position(p).distance(before) < 0.1, "kill moved the player");
+}

@@ -84,6 +84,31 @@ plan when work starts; delete them when done.
   the colour list, `cl_crosshairusealpha`'s and `mp_decals`' defaults):
   docs/plans/active/ui-parity.md.
 
+- Menu layering and Options (user, 2026-10-10): the main menu's logo
+  and entries draw over the Options window (and other dialogs): dialogs
+  must draw above the menu. The Options tabs overflow: "Multiplayer"
+  sticks out past the window's edge. Greyed or empty controls: Audio's
+  speaker configuration, sound quality, captioning and spoken language
+  have no drop-down items; Video's "Adjust brightness levels" does
+  nothing; remove "Virtual reality mode" (not a CS:S option we will
+  support; check whether the CS:S build we target shows it at all).
+  Write a plan (docs/plans/active/) to implement Video > Advanced's
+  settings (model/texture/shader detail, shadow detail, colour
+  correction, antialiasing, filtering, wait for vsync, motion blur,
+  multicore, HDR) and the audio settings, or decide per control.
+- Ladders (user, 2026-10-10): some ladders make no climbing sound (all
+  should, by the surface/ladder sound rules: check which ladders are
+  silent and why). At the top of a ladder, jumping up off it lands you
+  on the ladder brush's top, where you can't walk forward (only
+  sideways) and a jump launches you far into the air: not CS:S's
+  behaviour. Audit standing on top of ladder brushes (func_ladder /
+  ladder-textured brushes: are they solid at the top, does our ladder
+  code still think we're on it, the jump's ladder push-off) against the
+  movement spec and a CS:S capture.
+- `kill` (fixed 2026-10-10): it moved you to a spawn alive; it is now
+  CS:S's suicide, so a lone player can end a round. Left: a network
+  client's `kill` should be a request to the server.
+
 - Spectator mode (user request 2026-10-10): the team menu's Spectate
   button is greyed (no spectator team). Add CS:S's spectator team:
   joining it from the team menu and `spectate`/`jointeam 1`, a
