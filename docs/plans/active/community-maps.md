@@ -682,6 +682,11 @@ Probes wanted (the reference server; not run here):
   with a 1-unit trigger_multiple slab on the floor (OnStartTouch ->
   point_servercommand `say`): does a player resting 1.6 above the floor
   set it off? Compare with mashup's movecmp run of the same.
+  Done 2026-10-10 in the CS:S client on de_train's floor at z -216
+  (setpos feet, getpos after 0.6 s): 1.0, 1.5 and 1.9 stayed put; 2.5
+  came to rest at 1.69; a drop from 40 rested 0.31 above (the eye 64
+  over the feet). CS:S hovers as the spec says, so we match; the slab
+  trigger part is still open.
 - B, touch order: two trigger_teleports filling one volume, A (lower
   entity index) to `dest_a`, B to `dest_b`; `setpos` into the volume,
   read `getpos` (which destination). Again with the entity order swapped
