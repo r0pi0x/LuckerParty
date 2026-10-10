@@ -1012,3 +1012,59 @@ fn intended_gaps_are_noted_once_per_map() {
     assert!(crate::logic::classes::is_plugin_command("ma_csay hi"));
     assert!(!crate::logic::classes::is_plugin_command("sv_gravity 800"));
 }
+
+/// Round 3's classes: env_viewpunch kicks players within its radius on
+/// the ground (surf_surreal's crash), env_muzzleflash's Fire flashes
+/// (mg_kommando's gun), color_correction and env_embers switch, and
+/// classes CS:S doesn't have are noted once and do nothing.
+#[test]
+fn view_punch_muzzle_flash_color_correction_and_noted_classes() {
+    let mut w = world();
+    spawn(
+        &mut w,
+        &[
+            ("classname", "env_viewpunch"),
+            ("targetname", "vp"),
+            ("origin", "0 0 0"),
+            ("radius", "100"),
+            ("punchangle", "10 5 90"),
+        ],
+    );
+    let mf = spawn(&mut w, &[("classname", "env_muzzleflash"), ("targetname", "mf")]);
+    w.get_mut(mf).unwrap().map_index = Some(3);
+    let cc = spawn(
+        &mut w,
+        &[("classname", "color_correction"), ("targetname", "cc"), ("StartDisabled", "1")],
+    );
+    let embers = spawn(&mut w, &[("classname", "env_embers"), ("targetname", "em"), ("spawnflags", "1")]);
+    spawn(&mut w, &[("classname", "logic_script"), ("vscripts", "x.nut")]);
+    spawn(&mut w, &[("classname", "ai_changetarget"), ("targetname", "c1")]);
+    let near = player_at(&mut w, 0, Vec3::new(50.0, 0.0, 0.0));
+    player_at(&mut w, 1, Vec3::new(500.0, 0.0, 0.0));
+    for p in &mut w.players {
+        p.on_ground = true;
+    }
+    w.activate();
+    let on = |w: &LogicWorld, id: EntId| matches!(&w.get(id).unwrap().class, Class::Part(p) if p.on);
+    assert!(!on(&w, cc), "StartDisabled");
+    assert!(on(&w, embers), "Start On");
+    w.queue_input("vp", "ViewPunch", Value::Void, 0.0, None);
+    w.queue_input("mf", "Fire", Value::Void, 0.0, None);
+    w.queue_input("cc", "Enable", Value::Void, 0.0, None);
+    w.queue_input("em", "TurnOff", Value::Void, 0.0, None);
+    run_to(&mut w, 2);
+    let punches: Vec<(Entity, Vec3)> = w
+        .effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::ViewPunch { player, angles } => Some((*player, *angles)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(punches, vec![(near, Vec3::new(10.0, 5.0, 90.0))], "only the player within the radius");
+    assert!(w.effects.iter().any(|e| matches!(e, Effect::MuzzleFlash { entity: 3 })));
+    assert!(on(&w, cc) && !on(&w, embers));
+    let notes = w.log.iter().filter(|l| l.starts_with("note: entity classes CS:S doesn't have")).count();
+    assert_eq!(notes, 1, "noted once: {:?}", w.log);
+    assert!(!w.log.iter().any(|l| l.contains("unhandled")), "{:?}", w.log);
+}

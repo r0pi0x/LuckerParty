@@ -339,7 +339,11 @@ fn sweep_map(name: &str, path: &Path, secs: f32, audit: bool) -> Row {
         Ok((none, log)) => {
             for class in none {
                 // Placed weapons: the weapon layer (`weapon::equip`).
-                if HANDLED_ELSEWHERE.contains(&class.as_str()) || class.starts_with("weapon_") {
+                // Known gaps the logic notes (`classes::noted_class`).
+                if HANDLED_ELSEWHERE.contains(&class.as_str())
+                    || class.starts_with("weapon_")
+                    || mashup::logic::classes::noted_class(&class).is_some()
+                {
                     continue;
                 }
                 *row.unsupported.entry(class).or_default() += 1;

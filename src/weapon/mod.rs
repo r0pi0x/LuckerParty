@@ -76,6 +76,8 @@ impl Plugin for WeaponPlugin {
             .add_message::<crate::map::GameSound>()
             .add_message::<crate::map::PredictedSound>()
             .add_systems(FixedLast, crate::map::sound::relay_game_sounds)
+            .add_message::<crate::map::ViewKick>()
+            .add_systems(FixedUpdate, view_kicks.before(SimSet::Weapons))
             .add_systems(
                 FixedUpdate,
                 (
@@ -1619,6 +1621,21 @@ fn apply_zoom(
 }
 
 /// Play sounds whose time has come (reload parts), from the owner.
+/// Kicks to players' views from the map (env_viewpunch) add to their view
+/// punch, which the game's recoil decays.
+fn view_kicks(mut kicks: MessageReader<crate::map::ViewKick>, mut punches: Query<&mut ViewPunch>, mut commands: Commands) {
+    for k in kicks.read() {
+        match punches.get_mut(k.player) {
+            Ok(mut p) => p.0 += k.angles,
+            Err(_) => {
+                if let Ok(mut e) = commands.get_entity(k.player) {
+                    e.insert(ViewPunch(k.angles));
+                }
+            }
+        }
+    }
+}
+
 /// Each bullet path (a shot and its continuations through walls) is also
 /// traced against ragdolls, which it passes through but pushes
 /// (specs/cs_source/ragdolls.md 6.2).

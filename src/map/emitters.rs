@@ -445,7 +445,9 @@ impl SmokeStackEmitter {
     }
 }
 
-type EyeQuery<'w, 's> = Query<
+/// The main view's camera (not monitors', the sky's, the view model's or
+/// the water reflection's).
+pub(super) type EyeQuery<'w, 's> = Query<
     'w,
     's,
     &'static GlobalTransform,
@@ -561,6 +563,204 @@ pub(super) fn update_smokestacks(
                 pool.add(frame_group(sprites));
             }
         }
+    }
+}
+
+/// env_embers (no spec; public entity docs): embers born at random in its
+/// volume, `density` a second, each living `lifetime` seconds and drifting
+/// at `speed` along the entity's facing.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MapEmbers {
+    pub entity: Option<usize>,
+    /// The entity's origin, engine space: where its node is placed.
+    pub origin: Vec3,
+    /// The volume's bounds, engine space (meters).
+    pub min: Vec3,
+    pub max: Vec3,
+    pub material: usize,
+    /// Per second.
+    pub density: f32,
+    pub life: f32,
+    /// Engine space, meters per second.
+    pub velocity: Vec3,
+    pub color: Vec3,
+    /// 0 normal, 1 smooth fade, 2 pulled (speeding up as it goes).
+    pub kind: i32,
+    pub start_on: bool,
+}
+
+/// An ember's half-width, meters (ours: about 2 units).
+pub const EMBER_SIZE: f32 = 2.0 * 0.0254;
+
+struct Ember {
+    position: Vec3,
+    velocity: Vec3,
+    age: f32,
+}
+
+/// An env_embers' embers.
+#[derive(Component)]
+pub struct EmbersEmitter {
+    pub embers: MapEmbers,
+    live: Vec<Ember>,
+    next: f32,
+    rng: ParticleRng,
+}
+
+impl EmbersEmitter {
+    pub fn new(embers: MapEmbers, seed: u64) -> Self {
+        Self {
+            embers,
+            live: Vec::new(),
+            next: 0.0,
+            rng: ParticleRng::new(seed),
+        }
+    }
+
+    pub fn count(&self) -> usize {
+        self.live.len()
+    }
+
+    /// One frame: new embers while on, then each ages and drifts; `offset`
+    /// moves the volume with its entity.
+    pub fn step(&mut self, dt: f32, on: bool, offset: Vec3) {
+        let e = &self.embers;
+        if on && e.density > 0.0 && e.life > 0.0 {
+            self.next -= dt;
+            while self.next <= 0.0 {
+                let p = Vec3::new(
+                    self.rng.float(e.min.x, e.max.x),
+                    self.rng.float(e.min.y, e.max.y),
+                    self.rng.float(e.min.z, e.max.z),
+                ) + offset;
+                self.live.push(Ember {
+                    position: p,
+                    velocity: e.velocity * self.rng.float(0.5, 1.0),
+                    age: 0.0,
+                });
+                self.next += 1.0 / e.density;
+            }
+        }
+        let (life, pulled) = (self.embers.life, self.embers.kind == 2);
+        let pull = self.embers.velocity;
+        self.live.retain_mut(|m| {
+            m.age += dt;
+            if pulled {
+                m.velocity += pull * dt;
+            }
+            m.position += m.velocity * dt;
+            m.age < life
+        });
+    }
+
+    /// The embers as sprites: fading in and out (smooth fade: a sine over
+    /// its life).
+    pub fn sprites(&self) -> Vec<Particle> {
+        let e = &self.embers;
+        self.live
+            .iter()
+            .map(|m| {
+                let t = (m.age / e.life.max(1e-6)).clamp(0.0, 1.0);
+                let alpha = if e.kind == 1 {
+                    (t * std::f32::consts::PI).sin()
+                } else {
+                    (t / 0.1).min(1.0).min((1.0 - t) / 0.3).clamp(0.0, 1.0)
+                };
+                let mut s = Particle::new(m.position, 1.0, e.material, EMBER_SIZE);
+                s.size = Ramp::constant(EMBER_SIZE);
+                s.color = e.color;
+                s.alpha = alpha;
+                s
+            })
+            .collect()
+    }
+}
+
+/// Embers emit and show while on.
+pub(super) fn update_embers(
+    time: Res<Time>,
+    mut embers: Query<(
+        &mut EmbersEmitter,
+        &GlobalTransform,
+        Option<&EntityPart>,
+        Option<&Visibility>,
+    )>,
+    mut pool: ResMut<Particles>,
+) {
+    let dt = time.delta_secs().min(0.1);
+    for (mut e, at, part, visibility) in &mut embers {
+        if part.is_some_and(|p| !p.exists) {
+            e.live.clear();
+            continue;
+        }
+        let on = part.map_or(e.embers.start_on, |p| p.on);
+        // A node that follows a parent carries the volume along.
+        let offset = at.translation() - e.embers.origin;
+        e.step(dt, on, offset);
+        if visibility != Some(&Visibility::Hidden) && e.count() > 0 {
+            pool.add(frame_group(e.sprites()));
+        }
+    }
+}
+
+/// env_muzzleflash (no spec; public entity docs): Fire flashes a few
+/// view-facing sprites along its facing, "scale" times the size.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MapMuzzleFlash {
+    pub entity: Option<usize>,
+    pub position: Vec3,
+    pub rotation: Quat,
+    pub material: usize,
+    pub scale: f32,
+}
+
+/// An env_muzzleflash fired (by map index).
+#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MuzzleFlashFire {
+    pub entity: usize,
+}
+
+/// How long a map muzzle flash shows, s (ours: about three frames).
+pub const MUZZLE_FLASH_LIFE: f32 = 0.05;
+
+/// The sprites of one flash at `origin` facing `forward`: three along it,
+/// shrinking (ours: CS:S's world muzzle flashes, as `client::effects`).
+pub fn muzzle_flash_sprites(m: &MapMuzzleFlash, origin: Vec3, forward: Vec3) -> Vec<Particle> {
+    (0..3)
+        .map(|i| {
+            let along = (i as f32 * 4.0) * m.scale * 0.0254;
+            let size = (6.0 - i as f32 * 1.5) * m.scale * 0.0254;
+            let mut p = Particle::new(origin + forward * along, MUZZLE_FLASH_LIFE, m.material, size);
+            p.size = Ramp::constant(size);
+            p.roll = i as f32 * 1.1;
+            p
+        })
+        .collect()
+}
+
+/// An env_muzzleflash in the world.
+#[derive(Component, Clone, Debug)]
+pub struct MuzzleFlashEmitter(pub MapMuzzleFlash);
+
+/// Fired muzzle flashes show their sprites.
+pub(super) fn update_muzzle_flashes(
+    mut fired: MessageReader<MuzzleFlashFire>,
+    flashes: Query<(&MuzzleFlashEmitter, &GlobalTransform, Option<&Visibility>)>,
+    mut pool: ResMut<Particles>,
+) {
+    let fired: Vec<usize> = fired.read().map(|f| f.entity).collect();
+    if fired.is_empty() {
+        return;
+    }
+    for (m, at, visibility) in &flashes {
+        if visibility == Some(&Visibility::Hidden) || !m.0.entity.is_some_and(|e| fired.contains(&e)) {
+            continue;
+        }
+        let (_, rotation, origin) = at.to_scale_rotation_translation();
+        let mut g = ParticleGroup::new(default());
+        g.particles = muzzle_flash_sprites(&m.0, origin, rotation * Vec3::X);
+        g.capped = false;
+        pool.add(g);
     }
 }
 

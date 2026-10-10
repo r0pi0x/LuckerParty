@@ -343,6 +343,31 @@ fn game_text(e: &super::world::LogicEntity) -> HudMessage {
     }
 }
 
+/// Why a class that has no logic does nothing (`Class::spawn` notes it),
+/// or None. `mapsweep` counts these classes as known.
+pub fn noted_class(class: &str) -> Option<&'static str> {
+    Some(match class {
+        // Not in CS:S: VScript (CS:GO on), HL2's NPC helpers; the game
+        // drops them at load.
+        "logic_script" | "ai_changetarget" => "entity classes CS:S doesn't have (dropped at load, as the game does)",
+        // A compile tool's entity (Propper builds models from brushes).
+        "propper_model" => "compile-time tool entities (nothing at run time)",
+        // HL2's usable ladders' dismount points: CS:S ladders are brush
+        // contents (movement.md), climbed without them.
+        "info_ladder_dismount" => "HL2 ladder dismount points (CS:S ladders are brush contents)",
+        // Detail props (grass sprites) aren't drawn (tech-debt): their
+        // fade distances have nothing to fade. Two of the three maps
+        // with one have no detail props at all.
+        "env_detail_controller" => "detail prop fade distances (detail props aren't drawn)",
+        // Wind sways detail props and trees, which we don't draw.
+        "env_wind" => "env_wind (nothing drawn sways: detail props and trees aren't drawn)",
+        // Without a parent it is inert (physics_constraints.md 10); with
+        // one, constraints resolve its name (`physics::body_by_key`).
+        "info_constraint_anchor" => "info_constraint_anchor (constraints resolve its name to its parent)",
+        _ => return None,
+    })
+}
+
 impl Class {
     /// The class state for a freshly spawned entity.
     pub(super) fn spawn(w: &mut LogicWorld, id: EntId) -> Class {
@@ -354,6 +379,13 @@ impl Class {
         }
         if let Some(class) = super::community::spawn(w, id, &lower) {
             return class;
+        }
+        // Classes that do nothing in CS:S, or nothing we draw: noted once
+        // per map (the audit counts them apart from unhandled ones).
+        if let Some(why) = noted_class(&lower) {
+            let detail = w.get(id).map(|e| e.classname.clone()).unwrap_or_default();
+            w.note(why, detail);
+            return Class::None;
         }
         let e = w.get(id).unwrap();
         match lower.as_str() {
@@ -490,6 +522,10 @@ impl Class {
             }
             "env_spritetrail" => Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::Trail)),
             "env_smokestack" => Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::SmokeStack)),
+            "color_correction" => {
+                Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::ColorCorrection))
+            }
+            "env_embers" => Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::Embers)),
             "info_particle_system" => {
                 Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::Particles))
             }

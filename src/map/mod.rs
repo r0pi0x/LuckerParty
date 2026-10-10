@@ -29,6 +29,7 @@ pub use entities::{MapBrushEntity, MapEntities, MapEntity, MapHull};
 pub mod beams;
 pub mod breakables;
 pub mod buoyancy;
+pub mod color_correction;
 pub mod contact_filter;
 pub mod controllers;
 pub mod copies;
@@ -1320,6 +1321,12 @@ pub struct MapData {
     pub smokestacks: Vec<emitters::MapSmokeStack>,
     /// point_tesla arcs (`emitters`).
     pub teslas: Vec<emitters::MapTesla>,
+    /// env_muzzleflash entities (`emitters::MuzzleFlashEmitter`).
+    pub muzzle_flashes: Vec<emitters::MapMuzzleFlash>,
+    /// env_embers volumes (`emitters::EmbersEmitter`).
+    pub embers: Vec<emitters::MapEmbers>,
+    /// color_correction entities (`color_correction`).
+    pub color_corrections: Vec<color_correction::MapColorCorrection>,
     /// Screen overlay materials maps name (env_screenoverlay): lower-case
     /// name and index into `textures`.
     pub screen_overlays: Vec<(String, usize)>,
@@ -1549,6 +1556,15 @@ pub struct MapSprite {
 /// (`logic::ScreenFades::overlay`).
 #[derive(Resource, Clone, Debug, Default)]
 pub struct ScreenOverlayImages(pub HashMap<String, Handle<Image>>);
+
+/// A kick to a player's view from the map (env_viewpunch): pitch up and
+/// yaw left, radians, added to its view punch (the weapon layer's
+/// `ViewPunch`, which decays it as recoil).
+#[derive(Message, Clone, Copy, Debug, PartialEq)]
+pub struct ViewKick {
+    pub player: Entity,
+    pub angles: Vec2,
+}
 
 /// A drawn part of a map entity the logic switches (sprites, dust
 /// volumes): `on` shows a sprite or lets dust spawn motes; `exists` false
@@ -1820,7 +1836,7 @@ pub const SKYBOX_LAYER: usize = 1;
 pub struct SkyboxCamera;
 
 #[derive(Resource, Clone)]
-struct SkyCameraInfo(MapSkyCamera);
+pub(crate) struct SkyCameraInfo(pub(crate) MapSkyCamera);
 
 /// The map's sky visibility, when it has one (see `MapSkyVis`).
 #[derive(Resource)]
@@ -1894,7 +1910,7 @@ fn fall_out_of_map(
 
 /// The map's playable area (see `MapData::playable`).
 #[derive(Resource)]
-struct PlayableArea((Vec3, Vec3));
+pub(crate) struct PlayableArea(pub(crate) (Vec3, Vec3));
 
 /// The 3D skybox also exists where it was built, outside the playable area
 /// (as in Source, where you can noclip to it). Drawn there only while the
@@ -1932,7 +1948,7 @@ fn show_skybox_in_place(
 struct ActiveMapHas3dSky;
 
 /// Holds nothing: the sky camera's layer when only the 2D sky shows.
-const EMPTY_LAYER: usize = 31;
+pub(crate) const EMPTY_LAYER: usize = 31;
 
 /// The map's sky cubemap, for cameras to show.
 #[derive(Resource, Clone)]
@@ -1987,6 +2003,8 @@ impl Plugin for MapPlugin {
             .add_message::<prop_physics::PropAwakened>()
             .add_message::<GlassShatter>()
             .add_message::<emitters::TeslaSpark>()
+            .add_message::<emitters::MuzzleFlashFire>()
+            .add_message::<ViewKick>()
             .add_message::<GlassImpact>()
             .add_message::<breakables::FallingPane>()
             .add_message::<CollisionStart>()
@@ -2066,6 +2084,9 @@ impl Plugin for MapPlugin {
                             emitters::update_trails,
                             emitters::update_smokestacks,
                             emitters::update_teslas,
+                            color_correction::update,
+                            emitters::update_embers,
+                            emitters::update_muzzle_flashes,
                             psys::update_systems,
                         )
                             .after(particles::ParticleSet::Step)
@@ -2148,7 +2169,7 @@ impl Plugin for MapPlugin {
 /// Bevy adds `lightmap * lightmap_exposure` as light, then applies the
 /// camera's exposure. This cancels the default camera exposure (EV100 9.7)
 /// so a lightmap value of 1.0 shows a texture at its own brightness.
-const LIGHTMAP_EXPOSURE: f32 = 1.2 * 831.746_4; // 1.2 * 2^9.7
+pub(crate) const LIGHTMAP_EXPOSURE: f32 = 1.2 * 831.746_4; // 1.2 * 2^9.7
 
 /// Height of the capsule center above the feet, so spawns start standing.
 pub const SPAWN_LIFT: f32 = 1.0;
@@ -3098,6 +3119,41 @@ fn spawn_map(
             }
             if !data.particle_systems.defs.is_empty() {
                 commands.insert_resource(psys::ParticleSystemDefs(data.particle_systems.clone()));
+            }
+            color_correction::spawn(&mut commands, data, root);
+            for (i, m) in data.muzzle_flashes.iter().enumerate() {
+                let mut e = commands.spawn((
+                    Name::new(format!("Muzzle flash {i}")),
+                    MapPart,
+                    emitters::MuzzleFlashEmitter(m.clone()),
+                    emitters::FollowsEntity,
+                    Transform::from_translation(m.position).with_rotation(m.rotation),
+                    Visibility::default(),
+                    ChildOf(root),
+                ));
+                if let Some(entity) = m.entity {
+                    e.insert(EntityPart { entity, on: true, exists: true });
+                }
+            }
+            for (i, m) in data.embers.iter().enumerate() {
+                let clusters = visibility.map(|v| vis::box_clusters(v, m.min, m.max)).unwrap_or_default();
+                let mut e = commands.spawn((
+                    Name::new(format!("Embers {i}")),
+                    MapPart,
+                    emitters::EmbersEmitter::new(m.clone(), i as u64 + 1),
+                    emitters::FollowsEntity,
+                    Transform::from_translation(m.origin),
+                    Visibility::default(),
+                    ChildOf(root),
+                ));
+                tag(&mut e, clusters);
+                if let Some(entity) = m.entity {
+                    e.insert(EntityPart {
+                        entity,
+                        on: m.start_on,
+                        exists: true,
+                    });
+                }
             }
             for (i, t) in data.teslas.iter().enumerate() {
                 let mut e = commands.spawn((

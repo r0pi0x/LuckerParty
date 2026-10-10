@@ -335,6 +335,16 @@ pub enum Effect {
     Tesla {
         entity: usize,
     },
+    /// env_viewpunch: add to a player's view punch (pitch, yaw, roll
+    /// degrees, Source's: pitch down positive).
+    ViewPunch {
+        player: Entity,
+        angles: Vec3,
+    },
+    /// env_muzzleflash fired: the map draws a flash at it (by map index).
+    MuzzleFlash {
+        entity: usize,
+    },
     /// Push a physics body (env_entity_maker's PostSpawnSpeed): add
     /// `velocity` (entity space, units/s) to the entity's body.
     BodyVelocity {
@@ -1360,6 +1370,22 @@ impl LogicWorld {
             }
             // A player has no outputs of its own to fire, and can't break.
             "fireuser1" | "fireuser2" | "fireuser3" | "fireuser4" | "break" => {}
+            // The player's fog from an env_fog_controller (public entity
+            // docs). One naming nothing changes nothing; a real one isn't
+            // switched per player (tech-debt: the map's first controller
+            // is everyone's fog).
+            "setfogcontroller" => {
+                let name = self.need_str(&value, input).unwrap_or_default();
+                let found = self
+                    .find(name.trim())
+                    .and_then(|f| self.get(f))
+                    .is_some_and(|e| e.classname.eq_ignore_ascii_case("env_fog_controller"));
+                if found {
+                    self.note("per-player fog controllers not switched (the map's first is everyone's)", name);
+                } else {
+                    self.note("SetFogController naming no fog controller (nothing changes, as in the game)", name);
+                }
+            }
             _ => self.log.push(format!("player: unhandled input {input}")),
         }
     }

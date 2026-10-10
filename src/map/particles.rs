@@ -736,11 +736,11 @@ impl Plugin for ParticleMaterialPlugin {
 pub(super) struct ParticleAssets {
     data: MapParticles,
     textures: Vec<Handle<Image>>,
-    /// Material index -> (mesh entity, mesh, whether it was last written
-    /// empty). An empty mesh isn't written again until particles come
-    /// back: a modified mesh is uploaded again, and makes every mesh entity
-    /// re-check its pipeline that frame.
-    meshes: HashMap<usize, (Entity, Handle<Mesh>, bool)>,
+    /// (Material index, in the 3D skybox) -> (mesh entity, mesh, whether
+    /// it was last written empty). An empty mesh isn't written again until
+    /// particles come back: a modified mesh is uploaded again, and makes
+    /// every mesh entity re-check its pipeline that frame.
+    meshes: HashMap<(usize, bool), (Entity, Handle<Mesh>, bool)>,
 }
 
 impl ParticleAssets {
@@ -802,6 +802,8 @@ pub(super) fn draw_particles(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ParticleDrawMaterial>>,
     fog: Option<Res<super::fog::SceneFog>>,
+    area: Option<Res<super::PlayableArea>>,
+    sky: Option<Res<super::SkyCameraInfo>>,
     mut transforms: Query<&mut Transform>,
     mut commands: Commands,
 ) {
@@ -813,27 +815,36 @@ pub(super) fn draw_particles(
         eye.right().as_vec3(),
         eye.up().as_vec3(),
     );
-    // Per material: (depth, particle, near fade).
-    let mut buckets: HashMap<usize, Vec<(f32, &Particle, f32)>> = HashMap::new();
+    // Particles outside the playable area are in the 3D skybox (a tesla,
+    // a fire out there): the sky camera draws them where they are, from
+    // its own eye (the player's scaled into the skybox).
+    let in_sky = |p: Vec3| area.as_ref().is_some_and(|a| p.cmplt(a.0.0).any() || p.cmpgt(a.0.1).any());
+    let sky_eye = sky.as_ref().map(|s| s.0.origin + from / s.0.scale);
+    // Per material and layer: (depth, particle, near fade).
+    let mut buckets: HashMap<(usize, bool), Vec<(f32, &Particle, f32)>> = HashMap::new();
     for g in &particles.groups {
         for p in &g.particles {
-            let depth = (p.position - from).dot(forward);
+            let skybox = sky_eye.is_some() && in_sky(p.position);
+            let eye = if skybox { sky_eye.unwrap_or(from) } else { from };
+            let depth = (p.position - eye).dot(forward);
             let near = g.motion.draw_factor(depth, p);
-            buckets.entry(p.material).or_default().push((depth, p, near));
+            buckets.entry((p.material, skybox)).or_default().push((depth, p, near));
         }
     }
-    let mut used: Vec<usize> = assets.meshes.keys().chain(buckets.keys()).copied().collect();
+    let mut used: Vec<(usize, bool)> = assets.meshes.keys().chain(buckets.keys()).copied().collect();
     used.sort_unstable();
     used.dedup();
-    for material in used {
+    for key in used {
+        let (material, skybox) = key;
+        let from = if skybox { sky_eye.unwrap_or(from) } else { from };
         let Some(def) = assets.data.materials.get(material).cloned() else {
             continue;
         };
-        let list = buckets.remove(&material).unwrap_or_default();
-        if list.is_empty() && !assets.meshes.contains_key(&material) {
+        let list = buckets.remove(&key).unwrap_or_default();
+        if list.is_empty() && !assets.meshes.contains_key(&key) {
             continue;
         }
-        let (entity, handle, was_empty) = match assets.meshes.get(&material) {
+        let (entity, handle, was_empty) = match assets.meshes.get(&key) {
             Some(m) => m.clone(),
             None => {
                 let handle = meshes.add(super::dust::empty_mesh());
@@ -854,7 +865,12 @@ pub(super) fn draw_particles(
                         Transform::default(),
                     ))
                     .id();
-                assets.meshes.insert(material, (entity, handle.clone(), false));
+                if skybox {
+                    commands
+                        .entity(entity)
+                        .insert(bevy::camera::visibility::RenderLayers::layer(super::SKYBOX_LAYER));
+                }
+                assets.meshes.insert(key, (entity, handle.clone(), false));
                 (entity, handle, false)
             }
         };
@@ -941,7 +957,7 @@ pub(super) fn draw_particles(
         if empty && was_empty {
             continue;
         }
-        if let Some(m) = assets.meshes.get_mut(&material) {
+        if let Some(m) = assets.meshes.get_mut(&key) {
             m.2 = empty;
         }
         if let Ok(mut t) = transforms.get_mut(entity) {

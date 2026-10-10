@@ -650,6 +650,29 @@ fn sky_bottom_joins_the_sides() {
 #[test]
 fn visual_entities_load() {
     use mashup::map::MapAlpha;
+    // Round 3: color correction tables, embers, a muzzle flash.
+    for name in ["mg_lt_galaxy_v5", "surf_demise"] {
+        if let Some(map) = load(name) {
+            assert_eq!(map.color_corrections.len(), 1, "{name}: its .raw table from the pak");
+            let cc = &map.color_corrections[0];
+            assert!(cc.start_on && cc.max_falloff < 0.0 && cc.max_weight == 1.0, "{name}: everywhere");
+            assert_eq!(cc.lut.len(), 32 * 32 * 32 * 3);
+        }
+    }
+    if let Some(map) = load("mg_jacks_multigames_v1") {
+        assert_eq!(map.embers.len(), 6);
+        assert_eq!(map.embers.iter().filter(|e| e.start_on).count(), 3, "flag 1 starts on");
+    }
+    if let Some(map) = load("surf_stickybutt_alpha") {
+        assert_eq!(map.embers.len(), 1);
+        let e = &map.embers[0];
+        eprintln!("stickybutt embers {:?}..{:?}", e.min, e.max);
+        // Pitch 90: down.
+        assert!(e.velocity.y < 0.0 && e.velocity.x.abs() < 1e-4, "{}", e.velocity);
+    }
+    if let Some(map) = load("mg_kommando") {
+        assert_eq!(map.muzzle_flashes.len(), 1);
+    }
     if let Some(map) = load("gg_future") {
         assert_eq!(map.trails.len(), 4);
         assert!(map.trails.iter().all(|t| t.life == 10.0 && t.entity.is_some()));

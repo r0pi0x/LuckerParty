@@ -17,6 +17,10 @@ use crate::map::{
 
 /// env_smokestack's material when "SmokeMaterial" is absent.
 pub const SMOKESTACK_MATERIAL: &str = "particle/SmokeStack";
+/// env_muzzleflash's sprite (ours: CS:S's world muzzle flash).
+pub const MUZZLE_FLASH_MATERIAL: &str = "effects/muzzleflash1";
+/// env_embers' sprite (ours: the material isn't in the entity's keys).
+pub const EMBERS_MATERIAL: &str = "particle/fire";
 
 /// Entity keys, ignoring case.
 fn key<'a>(e: &vbsp::RawEntity<'a>, name: &str) -> Option<&'a str> {
@@ -148,6 +152,74 @@ pub fn add_trails_and_stacks(bsp: &Bsp, materials: &mut MaterialLoader, data: &m
                 width: (w0 * METERS_PER_UNIT, w1 * METERS_PER_UNIT),
                 life: range("lifetime_min", "lifetime_max"),
                 beams: (b0.max(0.0) as u32, b1.max(0.0) as u32),
+            });
+        } else if class.eq_ignore_ascii_case("env_muzzleflash") {
+            let Some(material) = particle_material(materials, data, MUZZLE_FLASH_MATERIAL, Some(ParticleBlend::Additive))
+            else {
+                continue;
+            };
+            let angles = vec3(key(&e, "angles")).unwrap_or(Vec3::ZERO);
+            data.muzzle_flashes.push(crate::map::emitters::MapMuzzleFlash {
+                entity: Some(index),
+                position: engine(origin),
+                rotation: crate::map::entities::rotation_to_engine(crate::map::entities::entity_rotation(angles)),
+                material,
+                scale: num("scale").unwrap_or(1.0).max(0.0),
+            });
+        } else if class.eq_ignore_ascii_case("env_embers") {
+            // Its brush's bounds, around its origin (the model is stored
+            // relative to it).
+            let Some(model) = key(&e, "model")
+                .and_then(|m| m.strip_prefix('*'))
+                .and_then(|m| m.parse::<usize>().ok())
+                .and_then(|m| bsp.models.get(m))
+            else {
+                continue;
+            };
+            let (a, b) = (
+                engine(origin + Vec3::new(model.mins.x, model.mins.y, model.mins.z)),
+                engine(origin + Vec3::new(model.maxs.x, model.maxs.y, model.maxs.z)),
+            );
+            let Some(material) = particle_material(materials, data, EMBERS_MATERIAL, Some(ParticleBlend::Additive))
+            else {
+                continue;
+            };
+            let angles = vec3(key(&e, "angles")).unwrap_or(Vec3::ZERO);
+            let facing = crate::map::entities::rotation_to_engine(crate::map::entities::entity_rotation(angles));
+            data.embers.push(crate::map::emitters::MapEmbers {
+                entity: Some(index),
+                origin: engine(origin),
+                min: a.min(b),
+                max: a.max(b),
+                material,
+                density: num("density").unwrap_or(50.0).max(0.0),
+                life: num("lifetime").unwrap_or(4.0).max(0.0),
+                // Source's forward (+X) is the engine's +X turned.
+                velocity: facing * Vec3::X * num("speed").unwrap_or(32.0) * METERS_PER_UNIT,
+                color,
+                kind: num("particletype").unwrap_or(0.0) as i32,
+                start_on: num("spawnflags").unwrap_or(0.0) as i32 & 1 != 0,
+            });
+        } else if class.eq_ignore_ascii_case("color_correction") {
+            let Some(file) = key(&e, "filename").map(|f| f.trim().replace('\\', "/").to_ascii_lowercase()) else {
+                continue;
+            };
+            let Some(lut) = materials.read(&file).filter(|b| b.len() == crate::map::color_correction::LUT_BYTES) else {
+                data.warnings.push(format!("color correction table {file} missing or not 32x32x32 RGB"));
+                continue;
+            };
+            let start_disabled = key(&e, "StartDisabled").is_some_and(|v| v.trim_start().starts_with('1'));
+            data.color_corrections.push(crate::map::color_correction::MapColorCorrection {
+                entity: Some(index),
+                position: engine(origin),
+                min_falloff: num("minfalloff").unwrap_or(-1.0) * METERS_PER_UNIT,
+                max_falloff: num("maxfalloff").unwrap_or(-1.0) * METERS_PER_UNIT,
+                max_weight: num("maxweight").unwrap_or(1.0).clamp(0.0, 1.0),
+                fade_in: num("fadeInDuration").unwrap_or(0.0).max(0.0),
+                fade_out: num("fadeOutDuration").unwrap_or(0.0).max(0.0),
+                exclusive: num("exclusive").unwrap_or(0.0) != 0.0,
+                start_on: !start_disabled,
+                lut: std::sync::Arc::new(lut),
             });
         } else if class.eq_ignore_ascii_case("env_smokestack") {
             let name = key(&e, "SmokeMaterial").unwrap_or(SMOKESTACK_MATERIAL);
