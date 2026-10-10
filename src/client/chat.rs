@@ -124,7 +124,14 @@ fn notices(mut notices: MessageReader<crate::net::Notice>, mut hints: MessageWri
 fn team_joins(
     radio: Option<Res<crate::map::radio::RadioCommands>>,
     who: Query<
-        (Entity, &Team, Option<&Name>, Has<LocalPlayer>, Option<&crate::net::NetCharacter>),
+        (
+            Entity,
+            &Team,
+            Option<&Name>,
+            Has<LocalPlayer>,
+            Option<&crate::net::NetCharacter>,
+            Has<crate::core::Spectating>,
+        ),
         With<crate::core::Intent>,
     >,
     mut known: Local<std::collections::HashMap<Entity, u8>>,
@@ -133,14 +140,16 @@ fn team_joins(
 ) {
     let Some(radio) = radio else { return };
     let mut now = std::collections::HashMap::with_capacity(known.len());
-    for (e, team, name, local, net) in &who {
-        now.insert(e, team.0);
-        if known.get(&e) == Some(&team.0) {
+    for (e, team, name, local, net, spectating) in &who {
+        // The spectators by their own number (`SayFormats::joins`).
+        let key = if spectating { crate::map::radio::SPECTATORS } else { team.0 };
+        now.insert(e, key);
+        if known.get(&e) == Some(&key) {
             continue;
         }
         // A network game names everyone (us too) as the server does.
         let name = super::shown_name(e, local, net, name, settings.as_deref());
-        if let Some(runs) = radio.say.join(&name, team.0) {
+        if let Some(runs) = radio.say.join(&name, key) {
             chat.write(ChatLine(runs, Some(*team)));
         }
     }
@@ -181,12 +190,20 @@ pub fn say(w: &mut World, text: &str, team_only: bool) {
         Option<&'a Health>,
         Has<crate::rules::Dead>,
         Option<&'a GlobalTransform>,
+        Has<crate::core::Spectating>,
     );
+    // A spectator speaks with no team ("*SPEC*", "(Spectator)").
     let Some((team, alive, at)) = w
         .query_filtered::<Me, With<LocalPlayer>>()
         .iter(w)
         .next()
-        .map(|(t, h, dead, at)| (t.copied(), !dead && h.is_none_or(|h| h.current > 0.0), at.map(|g| g.translation())))
+        .map(|(t, h, dead, at, spec)| {
+            (
+                t.copied().filter(|_| !spec),
+                !dead && h.is_none_or(|h| h.current > 0.0),
+                at.map(|g| g.translation()),
+            )
+        })
     else {
         return;
     };

@@ -381,6 +381,7 @@ fn candidates(world: &mut World, input: &str) -> (String, Vec<(String, String)>)
             }
             "map" | "maps" if arg == 0 => out.extend(map_names().iter().map(|m| (m.clone(), String::new()))),
             "jointeam" if arg == 0 => {
+                out.push(("1".into(), "spectators".into()));
                 out.push(("2".into(), "terrorists".into()));
                 out.push(("3".into(), "counter-terrorists".into()));
             }
@@ -2605,7 +2606,7 @@ mod tests {
         let mut app = typing_app();
         let w = app.world_mut();
         let (_, teams) = candidates(w, "jointeam ");
-        assert_eq!(teams.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), ["2", "3"]);
+        assert_eq!(teams.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), ["1", "2", "3"]);
         let (_, hits) = candidates(w, "mashup_hurtme he");
         assert_eq!(hits[0].0, "head");
         // After the hitgroup, no more hitgroups.

@@ -52,6 +52,10 @@ pub struct RadioCommands {
     pub say: SayFormats,
 }
 
+/// The join line key (`SayFormats::joins`) of the spectators, who have no
+/// team of their own (`core::Spectating`).
+pub const SPECTATORS: u8 = 3;
+
 /// Player text chat lines (`say`, `say_team`): `%s1` the sender, `%s2` the
 /// text, `%s3` the sender's place, with Source's colour control characters
 /// (as `RadioCommands::format`).
@@ -68,7 +72,7 @@ pub struct SayFormats {
     /// The sound entry a chat line plays.
     pub sound: Option<String>,
     /// "%s1 is joining the Terrorist force" by team number (`%s1` the
-    /// player).
+    /// player), the spectators under `SPECTATORS`.
     pub joins: Vec<(u8, String)>,
     /// "* %s1 changed name to %s2".
     pub name_change: String,

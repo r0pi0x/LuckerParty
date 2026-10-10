@@ -269,7 +269,11 @@ Only `Reflect`-registered types are visible; register new core components in
   1280x720 --screenshot spec.png --frames 400 +mashup_rounds 1
   +mp_freezetime 0 +bot_add 2 +bot_add 2 +wait 60 +mashup_hurtme chest
   500` (the death cam ends 2 s after the death, then a teammate is
-  watched in first person, with their crosshair).
+  watched in first person, with their crosshair). The spectator team:
+  `+spectate` (or `+jointeam 1`) flies free at once; `spec_player <name>`
+  watches one; pressing duck opens the spectator menu; the scoreboard lists
+  spectators (`tests/it/spectate.rs::the_spectator_team`, over the
+  network `tests/it/net_rules.rs::a_client_spectates_then_joins_a_team`).
 - Scoreboard: `++showscores` holds it from the start (`--map
   cs_source:de_dust2 --window 1280x720 --screenshot sb.png +bot_add 1
   +bot_add 2 ++showscores`); a dead player shows the skull icon,

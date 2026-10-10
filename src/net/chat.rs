@@ -220,7 +220,12 @@ fn sender_of(world: &World, e: Entity) -> Sender {
             .map(|c| c.name.clone())
             .or_else(|| world.get::<Name>(e).map(|n| n.to_string()))
             .unwrap_or_else(|| "Player".into()),
-        team: world.get::<Team>(e).map(|t| t.0),
+        // Spectators have no team: their lines read "*SPEC*" or
+        // "(Spectator)", and only the dead and spectators read them.
+        team: world
+            .get::<Team>(e)
+            .filter(|_| world.get::<crate::core::Spectating>(e).is_none())
+            .map(|t| t.0),
         alive,
         place,
     }

@@ -49,32 +49,51 @@ impl Plugin for DeathmatchPlugin {
             "In a network game, most players one team may have over the other (0: no limit).",
             |d| &mut d.limit_teams,
         );
-        app.add_message::<TeamRequested>().console_command(
-            "jointeam",
-            "jointeam <2|3>: join the terrorists (2) or counter-terrorists (3) and respawn at their spawn.",
-            |w, a| {
-                let team = match a.first().map(String::as_str) {
-                    Some("2") => Team(1),
-                    Some("3") => Team(2),
-                    _ => return Err("jointeam <2|3> (2: terrorists, 3: counter-terrorists)".into()),
-                };
-                // A network client asks the server (`net`).
-                if w.get_resource::<crate::core::NetRole>() == Some(&crate::core::NetRole::Client) {
-                    w.write_message(TeamRequested(team));
-                    return Ok(None);
-                }
-                let player = w
-                    .query_filtered::<Entity, With<crate::core::LocalPlayer>>()
-                    .iter(w)
-                    .next()
-                    .ok_or("no local player")?;
-                join_team(w, player, team).map(Some)
-            },
+        resource_cvar::<Deathmatch, u8>(
+            app,
+            "mp_allowspectators",
+            "1: players may join the spectators (jointeam 1, spectate).",
+            |d| &mut d.allow_spectators,
         );
+        app.add_message::<TeamRequested>()
+            .console_command(
+                "jointeam",
+                "jointeam <1|2|3>: join the spectators (1), the terrorists (2) or counter-terrorists (3); a new team respawns at its spawn.",
+                |w, a| {
+                    let team = match a.first().map(String::as_str) {
+                        Some("1") => Team(0),
+                        Some("2") => Team(1),
+                        Some("3") => Team(2),
+                        _ => return Err("jointeam <1|2|3> (1: spectators, 2: terrorists, 3: counter-terrorists)".into()),
+                    };
+                    request_team(w, team)
+                },
+            )
+            .console_command("spectate", "Join the spectators (jointeam 1).", |w, _| request_team(w, Team(0)));
     }
 }
 
-/// A network client's `jointeam`: the team it asks the server for.
+/// `jointeam` and `spectate`: `Team(0)` is the spectators. A network
+/// client asks the server (`net`); otherwise the local player joins.
+fn request_team(w: &mut World, team: Team) -> Result<Option<String>, String> {
+    if w.get_resource::<crate::core::NetRole>() == Some(&crate::core::NetRole::Client) {
+        w.write_message(TeamRequested(team));
+        return Ok(None);
+    }
+    let player = w
+        .query_filtered::<Entity, With<crate::core::LocalPlayer>>()
+        .iter(w)
+        .next()
+        .ok_or("no local player")?;
+    if team.0 == 0 {
+        join_spectators(w, player).map(Some)
+    } else {
+        join_team(w, player, team).map(Some)
+    }
+}
+
+/// A network client's `jointeam`: the team it asks the server for
+/// (`Team(0)`: the spectators).
 #[derive(Message, Clone, Copy, Debug, PartialEq)]
 pub struct TeamRequested(pub Team);
 
@@ -107,7 +126,13 @@ pub fn join_team(w: &mut World, player: Entity, team: Team) -> Result<String, St
     }
     // Switching teams: respawn at the new team's spawn now (no death
     // counted).
+    let was_spectating = w.entity_mut(player).take::<crate::core::Spectating>().is_some();
     w.entity_mut(player).insert((team, Dead { since: f64::MIN }, ColliderDisabled));
+    // Off the spectators, with rounds: into this round when a player
+    // coming into the game would be (`enter_game`), else the next.
+    if was_spectating {
+        spawn_if_room(w, player);
+    }
     Ok(format!(
         "joined the {}",
         if team.0 == 1 {
@@ -118,11 +143,52 @@ pub fn join_team(w: &mut World, player: Entity, team: Team) -> Result<String, St
     ))
 }
 
+/// Put `player` on the spectators (CS:S's team 1; `mp_allowspectators`):
+/// out of play with no body (`core::Spectating`). A living player leaves
+/// the round as the dead do: the bomb and a kit drop where it stood, its
+/// other weapons go; no death is counted (as with `join_team`). It
+/// stays a spectator over rounds and map changes until it joins a team.
+pub fn join_spectators(w: &mut World, player: Entity) -> Result<String, String> {
+    if w.get::<crate::core::Spectating>(player).is_some() {
+        return Ok("already spectating".into());
+    }
+    if w.resource::<Deathmatch>().allow_spectators == 0 {
+        return Err("You cannot become a spectator.".into());
+    }
+    let alive = w.get::<Dead>(player).is_none() && w.get::<Health>(player).is_some_and(|h| h.current > 0.0);
+    if alive {
+        crate::objectives::bomb::drop_objective_items(w, player);
+    }
+    let weapons = w.get::<Inventory>(player).map(|i| i.weapons.clone()).unwrap_or_default();
+    for weapon in weapons {
+        if w.get_entity(weapon).is_ok() {
+            w.despawn(weapon);
+        }
+    }
+    let mut e = w.entity_mut(player);
+    e.insert((
+        crate::core::Spectating,
+        Team(0),
+        Dead { since: f64::MIN },
+        ColliderDisabled,
+        Inventory::default(),
+    ));
+    if let Some(mut h) = e.get_mut::<Health>() {
+        h.current = 0.0;
+    }
+    if let Some(mut v) = e.get_mut::<Velocity>() {
+        v.0 = Vec3::ZERO;
+    }
+    Ok("joined the spectators".into())
+}
+
 #[derive(Resource, Clone, Debug)]
 pub struct Deathmatch {
     pub respawn_delay: f32,
     /// `mp_limitteams` (network games only).
     pub limit_teams: u32,
+    /// `mp_allowspectators`: 0 refuses `jointeam 1` and `spectate`.
+    pub allow_spectators: u8,
     /// Spawn points picked so far (round robin, so players spread out).
     next_spawn: usize,
 }
@@ -133,6 +199,7 @@ impl Default for Deathmatch {
             respawn_delay: 2.0,
             // CS:S's default.
             limit_teams: 2,
+            allow_spectators: 1,
             next_spawn: 0,
         }
     }
@@ -209,6 +276,16 @@ pub fn enter_game(world: &mut World, e: Entity) {
         return;
     }
     world.entity_mut(e).remove::<crate::core::Connecting>();
+    // A spectator stays one (a map change).
+    if world.get::<crate::core::Spectating>(e).is_none() {
+        spawn_if_room(world, e);
+    }
+}
+
+/// With rounds, a player coming into the game (`enter_game`, or off the
+/// spectators) plays now as described there, else at the next round.
+/// Deathmatch respawns it as the dead.
+fn spawn_if_room(world: &mut World, e: Entity) {
     let rounds = world
         .get_resource::<rounds::RoundSettings>()
         .is_some_and(|r| r.enabled != 0);
@@ -336,6 +413,7 @@ fn respawn(world: &mut World) {
         .query_filtered::<(Entity, &Dead), (
             Without<crate::objectives::hostages::Hostage>,
             Without<crate::core::Connecting>,
+            Without<crate::core::Spectating>,
         )>()
         .iter(world)
         .filter(|(_, d)| now - d.since >= delay)

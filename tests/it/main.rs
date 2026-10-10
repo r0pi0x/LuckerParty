@@ -94,6 +94,7 @@ mod heavy {
     mod map_courses;
     mod map_flows;
     mod map_hdr;
+    mod map_ladders;
     mod map_loose;
     mod map_objectives;
     mod map_occluders;

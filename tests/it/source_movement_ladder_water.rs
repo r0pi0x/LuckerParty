@@ -432,3 +432,33 @@ fn standing_on_a_prop_uses_its_surface() {
     assert!(on_floor.state().on_ground);
     assert_eq!(on_floor.state().surface, None);
 }
+
+/// Standing on a ladder brush's top (all its faces carry the ladder flag)
+/// is standing on a floor: holding forward while looking down walks (the
+/// probe hits the top face, which is no ladder: its normal is a floor's),
+/// and a jump is a plain jump, not the jump-off push plus a jump
+/// (movement spec, "Ladders"; the spec is silent on a ladder brush's top,
+/// see docs/tech-debt.md).
+#[test]
+fn a_ladder_top_is_a_floor() {
+    for pitch in [-20.0, 0.0, 20.0, 60.0] {
+        // On the slab's top (x 100..108, z 400), facing +y along it.
+        let mut pl = Player::at(Vec3::new(LADDER_X + 4.0, -40.0, 400.0), SourceMovementConfig::default());
+        pl.look(90.0, pitch);
+        pl.sim.ticks(4);
+        assert!(pl.state().on_ground, "pitch {pitch}: stands on the top");
+        pl.keys(1.0, 0.0);
+        for _ in 0..10 {
+            pl.tick();
+            assert!(pl.state().ladder.is_none(), "pitch {pitch}: the top is no ladder");
+        }
+        assert!(pl.feet().y > -40.0 + 8.0, "pitch {pitch}: walked forward to {}", pl.feet());
+        close(pl.feet().z, 400.0, 0.1, "still on the top");
+
+        pl.keys(0.0, 0.0);
+        pl.sim.intent(pl.p).jump = true;
+        pl.tick();
+        let vz = pl.vel().z;
+        assert!(vz > 250.0 && vz < 310.0, "pitch {pitch}: a plain jump, vz {vz}");
+    }
+}

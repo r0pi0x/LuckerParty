@@ -723,6 +723,87 @@ fn a_late_joiner_spectates_until_the_next_round() {
     let _ = C4;
 }
 
+/// A client joins the spectators (`spectate`): the server takes it out of
+/// play on no team, every client sees it as a spectator, it watches the
+/// others (cycling targets and modes on its own), its chat reaches only
+/// the dead and spectators, the next round leaves it out, and `jointeam`
+/// in the freeze time brings it back into that round.
+#[test]
+fn a_client_spectates_then_joins_a_team() {
+    use mashup::core::Spectating;
+    let mut sim = rounds(link(40, 0, 0.0), 58, 3, "mp_freezetime 1; mp_roundtime 0.5");
+    restart(&mut sim);
+    until_phase(&mut sim, 400, |p| matches!(p, Phase::Live { .. }));
+    // Counter-terrorists 0 and 2, terrorist 1.
+    assert_eq!(team_of(&mut sim, 2), 2);
+    client_console(&mut sim, 2, "spectate");
+    sim.ticks(30);
+    let theirs = sim.character_of(2).unwrap();
+    let w = sim.server.app.world();
+    assert!(w.get::<Spectating>(theirs).is_some() && w.get::<Dead>(theirs).is_some());
+    assert_eq!(team_of(&mut sim, 2), 0, "no team");
+    assert!(matches!(server_phase(&sim), Phase::Live { .. }), "the round goes on");
+    // Everyone sees a spectator.
+    let id = sim.client_id(2);
+    let on_0 = NetSim::owned_by(&mut sim.clients[0], Some(id)).unwrap();
+    assert!(sim.clients[0].app.world().get::<Spectating>(on_0).is_some());
+    let me = sim.local_player(2).unwrap();
+    let w = sim.clients[2].app.world();
+    assert!(w.get::<Spectating>(me).is_some());
+    assert_eq!(w.resource::<Spectator>().phase, SpecPhase::Watching);
+    assert_eq!(w.resource::<Spectator>().effective_mode(), mashup::client::spectate::SpecMode::Roaming);
+    // Cycling: both players, then a mode.
+    client_console(&mut sim, 2, "spec_next");
+    sim.ticks(2);
+    let first = sim.clients[2].app.world().resource::<Spectator>().target.unwrap();
+    client_console(&mut sim, 2, "spec_next");
+    sim.ticks(2);
+    let second = sim.clients[2].app.world().resource::<Spectator>().target.unwrap();
+    assert_ne!(first, second);
+    assert!(first != me && second != me);
+    client_console(&mut sim, 2, "spec_mode 5");
+    sim.ticks(2);
+    assert_eq!(
+        sim.clients[2].app.world().resource::<Spectator>().effective_mode(),
+        mashup::client::spectate::SpecMode::Chase
+    );
+
+    // Chat: the living don't read a spectator; spectators read the living.
+    let mut logs: Vec<Log<ChatMessage>> = (1..=3).map(|a| Log::new(&sim, a)).collect();
+    let run = |sim: &mut NetSim, logs: &mut Vec<Log<ChatMessage>>| {
+        for _ in 0..20 {
+            sim.step();
+            for l in logs.iter_mut() {
+                l.poll(sim);
+            }
+        }
+    };
+    client_console(&mut sim, 2, "say from the stands");
+    run(&mut sim, &mut logs);
+    client_console(&mut sim, 0, "say on the field");
+    run(&mut sim, &mut logs);
+    let line = |n: &str, t: &str| (n.to_string(), t.to_string());
+    assert_eq!(heard(&logs[0]), vec![line("Player 1", "on the field")]);
+    assert_eq!(heard(&logs[2]), vec![line("Player 3", "from the stands"), line("Player 1", "on the field")]);
+    assert_eq!(logs[2].all[0].team, None, "a spectator's line has no team");
+
+    // The next round leaves it out.
+    until_phase(&mut sim, 3000, |p| matches!(p, Phase::Over { .. }));
+    until_phase(&mut sim, 1000, |p| matches!(p, Phase::Freeze { .. }));
+    sim.ticks(5);
+    let theirs = sim.character_of(2).unwrap();
+    assert!(sim.server.app.world().get::<Dead>(theirs).is_some(), "not spawned");
+    // Joining the terrorists in the freeze: in this round.
+    client_console(&mut sim, 2, "jointeam 2");
+    sim.ticks(30);
+    assert_eq!(team_of(&mut sim, 2), 1);
+    let w = sim.server.app.world();
+    assert!(w.get::<Spectating>(theirs).is_none() && w.get::<Dead>(theirs).is_none());
+    let w = sim.clients[2].app.world();
+    assert!(w.get::<Spectating>(me).is_none() && w.get::<Dead>(me).is_none());
+    assert_eq!(w.resource::<Spectator>().phase, SpecPhase::Alive);
+}
+
 /// How many sounds by this entry an app played (`PlaySound`).
 fn played(l: &Log<mashup::map::PlaySound>, entry: &str) -> usize {
     l.all.iter().filter(|s| s.entry == entry).count()

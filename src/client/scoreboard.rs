@@ -202,6 +202,8 @@ struct Row {
 #[derive(Clone, Debug, PartialEq)]
 struct Shot {
     rows: Vec<Row>,
+    /// The spectators' names.
+    spectators: Vec<String>,
     wins: Option<[u32; 2]>,
     map: String,
     size: Vec2,
@@ -228,6 +230,7 @@ fn update(
             Has<crate::bot::Bot>,
             Option<&crate::net::NetScore>,
             Option<&crate::net::NetCharacter>,
+            Has<crate::core::Spectating>,
         ),
         (With<Intent>, Without<crate::objectives::hostages::Hostage>),
     >,
@@ -268,9 +271,16 @@ fn update(
     let my_team = players.iter().find(|p| p.5).and_then(|p| p.2.copied());
     let carriers: Vec<Entity> = bombs.iter().filter_map(|w| w.owner).collect();
     // Rows by team, most kills first, then fewest deaths.
+    let mut spectators: Vec<String> = players
+        .iter()
+        .filter(|p| p.10)
+        .map(|(e, name, _, _, _, local, _, _, _, character, _)| super::shown_name(e, local, character, name, settings.as_deref()))
+        .collect();
+    spectators.sort();
     let mut rows: Vec<Row> = players
         .iter()
-        .map(|(e, name, team, score, dead, local, kit, bot, net, character)| {
+        .filter(|p| !p.10)
+        .map(|(e, name, team, score, dead, local, kit, bot, net, character, _)| {
             let s = score.copied().unwrap_or_default();
             // A network game: the server's line (bots, the bomb, kits and
             // ping as it knows them) and names.
@@ -315,6 +325,7 @@ fn update(
     let map = map.map_or_else(String::new, |m| m.0.rsplit(':').next().unwrap_or(&m.0).to_string());
     let shot = Shot {
         rows,
+        spectators,
         wins,
         map,
         size,
@@ -356,7 +367,7 @@ fn draw_game(
             "%t_alivecount%" => Some(alive(1).to_string()),
             "%ct_totalteamscore%" => Some(wins(2).to_string()),
             "%t_totalteamscore%" => Some(wins(1).to_string()),
-            "%spectators%" => Some(menus.string("Cstrike_Scoreboard_NoSpectators", "No Spectators").to_string()),
+            "%spectators%" => Some(spectators_line(menus, &shot.spectators)),
             t if t.starts_with('%') => Some(String::new()),
             _ => None,
         };
@@ -433,6 +444,17 @@ fn draw_game(
     }
 }
 
+/// The scoreboard's spectator line: "No Spectators", or "2 Spectators:
+/// a, b" (CS:S's strings).
+fn spectators_line(menus: &GameMenus, names: &[String]) -> String {
+    let format = match names.len() {
+        0 => return menus.string("Cstrike_Scoreboard_NoSpectators", "No Spectators").to_string(),
+        1 => menus.string("Cstrike_Scoreboard_Spectator", "%s1 Spectator: %s2"),
+        _ => menus.string("Cstrike_Scoreboard_Spectators", "%s1 Spectators: %s2"),
+    };
+    format.replace("%s1", &names.len().to_string()).replace("%s2", &names.join(", "))
+}
+
 /// A HUD sprite as an image node.
 fn sprite(painter: &Painter, name: &str) -> Option<ImageNode> {
     let s = painter.hud.sprites.get(name)?;
@@ -490,6 +512,19 @@ fn draw_plain(commands: &mut Commands, columns: &Query<(Entity, &Column)>, fonts
                 ],
                 if r.dead { color.with_alpha(0.5) } else { color },
                 r.local,
+                (&body_font, &body_font),
+            );
+        }
+        // The spectators under the counter-terrorists.
+        if *team == 2 && !shot.spectators.is_empty() {
+            let n = shot.spectators.len();
+            let line = format!("{n} Spectator{}: {}", if n == 1 { "" } else { "s" }, shot.spectators.join(", "));
+            row(
+                commands,
+                column,
+                [line, String::new(), String::new(), String::new(), String::new()],
+                Color::srgb(0.8, 0.8, 0.8),
+                false,
                 (&body_font, &body_font),
             );
         }

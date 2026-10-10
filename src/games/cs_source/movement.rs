@@ -337,6 +337,10 @@ const LADDER_REACH: f32 = 2.0;
 const LADDER_SPEED: f32 = 200.0;
 const LADDER_JUMP_OFF: f32 = 270.0;
 const LADDER_BACK_OFF: f32 = 200.0;
+/// A ladder face whose normal is this steep or steeper (|z|) is a ladder
+/// brush's top or bottom, not something to climb: ours, the spec is
+/// silent (docs/tech-debt.md). The walkable-floor limit.
+const LADDER_MAX_NORMAL_Z: f32 = 0.7;
 const WATER_FEET_PROBE: f32 = 1.0;
 const SWIM_SINK: f32 = 60.0;
 const SWIM_WISH_SCALE: f32 = 0.8;
@@ -1451,7 +1455,11 @@ impl Mover<'_, '_, '_, '_> {
         let tr = self
             .trace
             .sweep(self.me.ducked, self.feet, self.feet + dir * LADDER_REACH);
-        if !tr.hit() || !tr.ladder {
+        // A ladder brush's top is a floor (standing on it, looking down
+        // while walking must not grab it: the ladder velocity along a
+        // vertical normal leaves only sideways movement, and the jump-off
+        // push would add to a jump).
+        if !tr.hit() || !tr.ladder || tr.normal.z.abs() >= LADDER_MAX_NORMAL_Z {
             self.me.ladder = None;
             return;
         }

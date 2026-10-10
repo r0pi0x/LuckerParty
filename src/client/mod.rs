@@ -37,6 +37,7 @@ pub mod scoreboard;
 pub mod senses;
 pub mod server_browser;
 pub mod spectate;
+pub mod spectator_menu;
 pub mod target_id;
 pub mod team_menu;
 pub mod vgui;
