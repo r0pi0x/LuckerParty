@@ -766,6 +766,9 @@ pub(super) fn prop_input(w: &mut LogicWorld, id: EntId, input: &str, value: &Val
         // simulated, so motion inputs do nothing; FadeAndRemove removes it
         // (at once: its fade isn't drawn).
         "enablemotion" | "disablemotion" | "startragdollboogie" => {}
+        // Whether damage pushes the body: our pushes don't read it
+        // (tech-debt).
+        "enabledamageforces" | "disabledamageforces" => {}
         "fadeandremove" => w.kill(id),
         "enable" | "turnon" => prop(w, id).unwrap().visible = true,
         "disable" | "turnoff" => prop(w, id).unwrap().visible = false,

@@ -972,3 +972,43 @@ fn point_push_and_tesla_think_while_on() {
     assert!((8..=12).contains(&sparks), "{sparks}");
     assert!((crate::logic::community::push_strength(200.0, 512.0, 256.0, true) - 100.0).abs() < 1e-3);
 }
+
+#[test]
+fn intended_gaps_are_noted_once_per_map() {
+    // VScript inputs (CS:GO), server plugin commands, triggers naming a
+    // missing filter, inputs to names nothing has: noted once each (not
+    // complaints), across round restarts too.
+    let mut w = world();
+    let p = player_at(&mut w, 1, Vec3::ZERO);
+    spawn(
+        &mut w,
+        &[("classname", "point_servercommand"), ("targetname", "server")],
+    );
+    spawn_brush(
+        &mut w,
+        &[
+            ("classname", "trigger_multiple"),
+            ("filtername", "filter_red"),
+            ("spawnflags", "1"),
+        ],
+        Vec3::splat(-8.0),
+        Vec3::splat(8.0),
+    );
+    w.activate();
+    let me = Some(Who::Player(p));
+    for _ in 0..3 {
+        w.queue_input("!activator", "RunScriptCode", Value::Str("x = 1".into()), 0.0, me);
+        w.queue_input("server", "Command", Value::Str("sm_say hello".into()), 0.0, None);
+        w.queue_input("nobody", "Trigger", Value::Void, 0.0, None);
+    }
+    run_to(&mut w, 3);
+    let notes: Vec<&String> = w.log.iter().filter(|l| l.starts_with("note: ")).collect();
+    assert_eq!(notes.len(), 4, "{notes:?}");
+    assert!(notes.iter().any(|l| l.contains("player.runscriptcode")));
+    assert!(notes.iter().any(|l| l.contains("sm_say hello")));
+    assert!(notes.iter().any(|l| l.contains("filter_red")));
+    assert!(notes.iter().any(|l| l.contains("'nobody'")));
+    assert!(w.log.iter().all(|l| l.starts_with("note: ")), "{:?}", w.log);
+    assert!(crate::logic::classes::is_plugin_command("ma_csay hi"));
+    assert!(!crate::logic::classes::is_plugin_command("sv_gravity 800"));
+}

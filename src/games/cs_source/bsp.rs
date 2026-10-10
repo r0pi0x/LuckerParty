@@ -840,6 +840,7 @@ pub const MOVERS: &[&str] = &[
     "func_tracktrain",
     "func_tanktrain",
     "func_monitor",
+    "func_reflective_glass",
     "func_brush",
     "func_wall_toggle",
     "func_conveyor",

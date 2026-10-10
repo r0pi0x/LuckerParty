@@ -351,7 +351,13 @@ fn run(entities: &[MapEntity], secs: f32, a: &mut MapAudit) {
         let e = w.get(id).unwrap();
         match &e.class {
             Class::Trigger(_) => visits.push(Visit::Trigger(centre(&w, id) - Vec3::new(0.0, 0.0, 36.0))),
-            Class::Button(_) | Class::Door(_) | Class::Rotating(_) | Class::PropDoor(_) => visits.push(Visit::Use(id)),
+            // +use finds only what has a solid (a non-solid spinner can't
+            // be used; nor in the game).
+            Class::Button(_) | Class::Door(_) | Class::Rotating(_) | Class::PropDoor(_)
+                if w.mover_solid(id).is_some_and(|b| !b.is_empty()) =>
+            {
+                visits.push(Visit::Use(id))
+            }
             _ => {}
         }
     }

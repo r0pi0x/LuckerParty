@@ -635,6 +635,9 @@ pub struct LogicWorld {
     pub template_serial: u32,
     /// Players viewing through a point_viewcontrol, and which (`camera`).
     pub views: Vec<(Entity, EntId)>,
+    /// Kinds of known, intended gaps already noted (`note`): each is
+    /// logged once per map.
+    pub notes: std::collections::BTreeSet<String>,
     /// How players are drawn, for those a map changed (Alpha and Color
     /// inputs, AddOutput rendermode/renderamt/rendercolor): invisibility
     /// power-ups, team colours. They keep it across rounds, as the game's
@@ -704,6 +707,7 @@ impl LogicWorld {
             burning_players: Vec::new(),
             follows: Vec::new(),
             player_follows: Vec::new(),
+            notes: Default::default(),
             player_looks: Vec::new(),
             template_serial: 0,
             views: Vec::new(),
@@ -770,6 +774,7 @@ impl LogicWorld {
         fresh.player_names = std::mem::take(&mut self.player_names);
         fresh.player_classes = std::mem::take(&mut self.player_classes);
         fresh.player_looks = std::mem::take(&mut self.player_looks);
+        fresh.notes = std::mem::take(&mut self.notes);
         fresh.use_held = std::mem::take(&mut self.use_held);
         fresh.effects = std::mem::take(&mut self.effects);
         // Cameras are made again: their viewers see from their eyes
@@ -816,12 +821,13 @@ impl LogicWorld {
             }
         }
         fresh.link_anchored();
-        fresh.log.push(format!(
-            "round restart {}: {} entities re-created, {} kept",
+        let detail = format!(
+            "round {}: {} entities re-created, {} kept",
             fresh.round,
             entities.len() - kept.len(),
             kept.len()
-        ));
+        );
+        fresh.note("round restarts re-create the map's entities", detail);
         *self = fresh;
         ids
     }
@@ -1173,7 +1179,10 @@ impl LogicWorld {
             };
             if targets.is_empty() {
                 if let Target::Name(n) = &ev.target {
-                    self.log.push(format!("unhandled input: no entity '{n}' for {}", ev.input));
+                    // The map names something it doesn't have (or has
+                    // removed): the game drops the input too.
+                    let detail = format!("'{n}' for {}", ev.input);
+                    self.note("inputs to names nothing has (dropped, as the game does)", detail);
                 }
                 continue;
             }
@@ -1227,6 +1236,16 @@ impl LogicWorld {
 
     // -------------------------------------------------------- inputs
 
+    /// A known, intended gap (a map's own missing names, inputs CS:S
+    /// doesn't have, commands for server plugins): logged once per map
+    /// and kind, as `note: <kind>: <first case>`. `mapsweep --audit`
+    /// counts these apart from complaints.
+    pub fn note(&mut self, kind: &str, detail: impl Into<String>) {
+        if self.notes.insert(kind.to_string()) {
+            self.log.push(format!("note: {kind}: {}", detail.into()));
+        }
+    }
+
     /// Deliver an input now.
     pub fn deliver(&mut self, target: Who, input: &str, value: Value, activator: Option<Who>, caller: Option<Who>) {
         if self.record {
@@ -1240,6 +1259,16 @@ impl LogicWorld {
             });
         }
         let input = input.to_ascii_lowercase();
+        // Inputs of later engines (CS:GO's VScript and collectibles, model
+        // scale): CS:S has none of them, so they do nothing there either.
+        if NOT_IN_CSS_INPUTS.contains(&input.as_str()) {
+            let class = self.class_of(target);
+            self.note(
+                "inputs CS:S doesn't have (VScript, later engines)",
+                format!("{class}.{input}"),
+            );
+            return;
+        }
         match target {
             Who::Player(p) => self.player_input(p, &input, value, activator, caller),
             Who::Ent(id) => {
@@ -1308,7 +1337,16 @@ impl LogicWorld {
                     Value::Void => String::new(),
                     v => self.need_str(v, input).unwrap_or_default(),
                 };
-                let filter = if name.is_empty() {
+                // A name nothing has: no filter at all (the game finds no
+                // entity and keeps none).
+                let missing = !name.is_empty() && self.find(&name).is_none();
+                if missing {
+                    self.note(
+                        "damage filters naming nothing (none kept, as in the game)",
+                        name.clone(),
+                    );
+                }
+                let filter = if name.is_empty() || missing {
                     None
                 } else {
                     let found = self.find(&name).and_then(|f| match self.get(f).map(|e| (&e.class, e)) {
@@ -1595,6 +1633,18 @@ impl LogicWorld {
         }
     }
 }
+
+/// Inputs maps send that CS:S's entities don't have (VScript and
+/// collectibles from CS:GO, model scale from later engines): noted once,
+/// ignored.
+pub const NOT_IN_CSS_INPUTS: &[&str] = &[
+    "runscriptcode",
+    "runscriptfile",
+    "callscriptfunction",
+    "addcollectible",
+    "clearcollectibles",
+    "setmodelscale",
+];
 
 /// "r g b" (0-255 each; missing parts 255, as the game's colour keys).
 pub fn parse_color(s: &str) -> [u8; 3] {

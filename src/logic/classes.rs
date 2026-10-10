@@ -264,6 +264,12 @@ impl ServerLine {
 /// Commands point_clientcommand may send to a player's client.
 pub const CLIENT_COMMANDS: &[&str] = &["play", "playgamesound", "r_screenoverlay", "echo"];
 
+/// A command for a server plugin (SourceMod's `sm_`, Mani's `ma_`).
+pub fn is_plugin_command(line: &str) -> bool {
+    let cmd = line.trim().to_ascii_lowercase();
+    cmd.starts_with("sm_") || cmd.starts_with("ma_")
+}
+
 /// Check a server command line against the rule (`SETTING_PREFIXES`):
 /// what it may do, or why it is refused.
 pub fn check_server_command(line: &str) -> Result<ServerLine, &'static str> {
@@ -460,7 +466,11 @@ impl Class {
             "path_track" => Class::PathTrack(PathTrack::spawn(w, id)),
             // func_monitor is a func_brush showing a point_camera's view
             // (`community::monitor_camera`).
-            "func_brush" | "func_monitor" => Class::Brush(Box::new(Toggle::spawn_brush(w, id))),
+            // func_reflective_glass: a func_brush (its reflection isn't
+            // drawn: tech-debt).
+            "func_brush" | "func_monitor" | "func_reflective_glass" => {
+                Class::Brush(Box::new(Toggle::spawn_brush(w, id)))
+            }
             "ambient_generic" => super::ambient::spawn(w, id).map_or(Class::None, |a| Class::Ambient(Box::new(a))),
             "func_breakable" | "func_breakable_surf" => {
                 Class::Breakable(Box::new(super::breakables::Breakable::spawn(w, id)))
@@ -479,7 +489,7 @@ impl Class {
             "info_particle_system" => {
                 Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::Particles))
             }
-            "env_soundscape" | "env_soundscape_proxy" => {
+            "env_soundscape" | "env_soundscape_proxy" | "env_soundscape_triggerable" => {
                 Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::Soundscape))
             }
             "func_areaportal" | "func_areaportalwindow" => {
@@ -1029,6 +1039,11 @@ pub(super) fn class_input(
                 }
                 match check_server_command(&line) {
                     Ok(ok) => w.effects.push(Effect::ServerCommand(ok)),
+                    // Server plugins' commands (SourceMod, Mani): a server
+                    // without the plugin ignores them.
+                    Err(_) if is_plugin_command(&line) => {
+                        w.note("server plugin commands not run (SourceMod, Mani)", line.clone())
+                    }
                     Err(why) => w.log.push(format!("point_servercommand: refused '{line}' ({why})")),
                 }
             }
@@ -1154,6 +1169,8 @@ pub(super) fn class_keyvalue(w: &mut LogicWorld, id: EntId, key: &str, _value: &
             true
         }
         Class::Trigger(_) => triggers::keyvalue(w, id, key),
+        // env_entity_maker reads its template when it makes one.
+        Class::Maker(_) if key == "entitytemplate" => true,
         // game_player_equip: its items are its keyvalues.
         Class::Equip(_) if e.classname.eq_ignore_ascii_case("game_player_equip") => {
             let items = equip_items(&e.keyvalues);

@@ -884,8 +884,12 @@ keyvalues no literal names and the spawnflags set, per handled class (to
 check against the code by hand); inputs aimed at brushes the loader baked
 into the world. Then a scripted run: one player stands in every trigger
 and presses +use at every door and button from four sides, then a round
-restart; it lists what the logic logged, movers told to move that never
-did, movers that jumped (moved much further in a tick than their speed),
+restart (doors and buttons only where +use can find them: a solid one);
+it lists what the logic logged (complaints, and apart from them the
+notes: known, intended gaps the logic logs once per map,
+`LogicWorld::note`, such as VScript inputs, server plugin commands,
+triggers naming a missing filter, inputs to names nothing has), movers
+told to move that never did, movers that jumped (moved much further in a tick than their speed),
 children of movers that stay where they spawned, usable brushes +use
 didn't find, and panics. Physics props aren't simulated there (no
 bounds), so bodies never touch triggers in it. A unit test for it is in
