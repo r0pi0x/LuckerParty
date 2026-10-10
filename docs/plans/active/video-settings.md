@@ -1,8 +1,8 @@
 # Plan: Video > Advanced and the Audio tab's settings, one by one
 
 Status: started 2026-10-10. Done: antialiasing, filtering, texture
-detail, wait for vsync, water detail, HDR, field of view (Video >
-Advanced); brightness (`mat_monitorgamma`, the video tab's gamma
+detail, wait for vsync, water detail, HDR, field of view, shadow detail
+(Video > Advanced); brightness (`mat_monitorgamma`, the video tab's gamma
 dialog); the Audio tab's drop-downs filled and saved. The rest stay
 greyed in the dialog until their row below is done (the greyed list:
 docs/plans/active/ui-parity.md).
@@ -22,7 +22,7 @@ were taken from the options' behaviour and want a reference capture
 | Texture detail (`TextureDetail`: Low, Medium, High, Very High) | `mat_picmip` 2 / 1 / 0 / -1 (0) | Each map texture's sampler starts `mat_picmip` levels down its mip chain (`lod_min_clamp`): Low and Medium look as CS:S's smaller textures. -1 is as 0 (no larger textures). The full texture still loads (no memory saved). | Done (cheap). Applies from the next map load (`client::options::TextureSettings`). | `client::options` unit test (sampler clamp), menu test (the drop-down writes the cvar) | Done 2026-10-10 |
 | Shader detail (`ShaderDetail`: Low, High) | `mat_reducefillrate` 1 / 0 (0) | One shader path. Low in Source drops some per-pixel work (detail textures, some env maps, phong on low-end paths: to spec). | Medium: spec first (which features `mat_reducefillrate` drops), then a material key. | Shader spec test per feature | Greyed; needs a spec |
 | Water detail (`WaterDetail`) | `r_waterforceexpensive`, `r_waterforcereflectentities` (1 0) | Simple reflections, reflect world, reflect all (`map::water`). | Done | menu test `water_detail_sets_both_water_cvars` | Done |
-| Shadow detail (`ShadowDetail`: Low, Medium, High) | `r_shadowrendertotexture` 0 / 1 / 1, `r_flashlightdepthtexture` 0 / 0 / 1 (to confirm) | We draw render-to-texture prop shadows (`map::shadows`, spec shadows_sky.md) = Medium. Low would draw Source's blob shadows (a round dark decal under each prop); High adds flashlight depth shadows, which CS:S has no flashlights for. | Low: a blob shadow material and a switch in `map::shadows`. High = Medium for CS:S. | Shadow spec tests for the blob path | Greyed |
+| Shadow detail (`ShadowDetail`: Low, Medium, High) | `r_shadowrendertotexture` 0 / 1 / 1, `r_flashlightdepthtexture` 0 / 0 / 1 (to confirm); `r_shadows` (1) off altogether | `map::shadows::ShadowSettings`, rebuilt at once (`apply_shadow_detail`): Low = Source's blob shadows (spec D: the blob's size, origin and snap; a round picture of ours) straight down under each prop; Medium = render-to-texture prop shadows (spec shadows_sky.md); High = Medium (CS:S has no flashlights). Characters get blob shadows at every level (`update_character_blobs`: straight down at Low, along the map's direction at Medium/High; ours have no render-to-texture shadow yet). Defaults 1 1 0 (Medium; CS:S's pick for the machine to confirm). | Done | `map::shadows` unit tests (blob size, characters), `prop_shadows::shadow_detail_switches_between_silhouettes_and_blobs_at_once`, menu test | Done 2026-10-10 |
 | Colour correction (`ColorCorrection`: Disabled, Enabled) | `mat_colorcorrection` 0 / 1 (1, to confirm) | No colour correction: maps' `color_correction` entities and their `.raw` lookup files are ignored. Implementing means a 32x32x32 LUT post-process (Bevy has no 3D-LUT grading; a fullscreen pass like `client::gamma`) blended by the entities' weights and fade distances. | Medium to large: entity logic (map area), a `.raw` reader, the pass. Stock CS:S maps don't use it; some community maps do. | Spec for the entity's blending; a LUT unit test; a refcmp of a map with one | Greyed; needs a spec |
 | Antialiasing (`AntialiasingMode`) | `mat_antialias` (0, 2, 4, 6, 8 ...), `mat_aaquality` (0; CSAA modes) | Bevy's MSAA on every camera (`client::options::apply_msaa`): None, 2x, 4x. 8x isn't supported on every GPU; CSAA modes are NVIDIA-only D3D9 and have no wgpu equivalent. FXAA/SMAA (Bevy has both) aren't CS:S choices: Lucker Party Options later if wanted. | Done | `antialias_levels` | Done |
 | Filtering (`FilteringMode`: Bilinear, Trilinear, Anisotropic 2X-16X) | `mat_trilinear`, `mat_forceaniso` (0 1: bilinear, CS:S's own, read over RCON); anisotropic as `0 N` (to confirm) | Each map texture's sampler: mip filter nearest (bilinear) or linear (trilinear), anisotropy clamp N (the GPU needs every filter linear for it, so anisotropic is also trilinear). | Done (cheap). Applies from the next map load. | `client::options` unit test | Done 2026-10-10 |
@@ -44,7 +44,8 @@ were taken from the options' behaviour and want a reference capture
 
 ## Order
 
-1. Shadow detail Low (blob shadows): small, visible on every map.
+1. Shadow detail Low (blob shadows): done 2026-10-10. Next there:
+   characters' render-to-texture shadows (their silhouette each frame).
 2. Model detail: the MDL reader's LODs (helps low-end playtesters).
 3. Colour correction: with a spec, for the community maps that use it.
 4. Shader detail and motion blur: with specs.

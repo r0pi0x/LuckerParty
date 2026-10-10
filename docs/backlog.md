@@ -84,8 +84,9 @@ plan when work starts; delete them when done.
   the colour list, `cl_crosshairusealpha`'s and `mp_decals`' defaults):
   docs/plans/active/ui-parity.md.
 
-- Video > Advanced's and the Audio tab's remaining settings (model,
-  shader and shadow detail, colour correction, motion blur; speakers,
+- Video > Advanced's and the Audio tab's remaining settings (model
+  and shader detail, colour correction, motion blur; shadow detail done
+  2026-10-10, characters' render-to-texture shadows left; speakers,
   sound quality and captions beyond being saved): one by one, per
   docs/plans/active/video-settings.md.
 - Ladders (fixed 2026-10-10): standing on a ladder brush's top grabbed

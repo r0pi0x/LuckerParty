@@ -202,3 +202,57 @@ fn a_moving_prop_keeps_its_shadow_mesh_and_moves_it() {
     let failures = &sim.app.world().resource::<MeshExtraction>().failures;
     assert!(failures.is_empty(), "meshes announced changed after extraction: {failures:?}");
 }
+
+/// The prop shadows there are now, and their materials' atlas sizes
+/// (render-to-texture: the packed atlas; blobs: the 32-texel picture).
+fn shadows_now(sim: &mut Sim) -> Vec<(Entity, u32)> {
+    let world = sim.app.world_mut();
+    let found: Vec<(Entity, Handle<ShadowMaterial>)> = world
+        .query::<(Entity, &PropShadow, &MeshMaterial3d<ShadowMaterial>)>()
+        .iter(world)
+        .map(|(e, _, m)| (e, m.0.clone()))
+        .collect();
+    found
+        .into_iter()
+        .map(|(e, m)| {
+            let atlas = world.resource::<Assets<ShadowMaterial>>().get(&m).unwrap().atlas.clone();
+            (e, world.resource::<Assets<Image>>().get(&atlas).unwrap().width())
+        })
+        .collect()
+}
+
+/// Video > Advanced's shadow detail, live (CS:S's cvars): Low
+/// (`r_shadowrendertotexture 0`) swaps the crate's silhouette for a blob
+/// straight under it, `r_shadows 0` removes it, Medium brings the
+/// silhouette back.
+#[test]
+fn shadow_detail_switches_between_silhouettes_and_blobs_at_once() {
+    use mashup::map::shadows::{BLOB_TEX, ShadowSettings};
+    let mut sim = sim();
+    sim.ticks(5);
+    let rtt = shadows_now(&mut sim);
+    assert_eq!(rtt.len(), 1);
+    assert_ne!(rtt[0].1, BLOB_TEX, "render-to-texture by default");
+    let set = |sim: &mut Sim, shadows: u8, rtt: u8| {
+        sim.app.insert_resource(ShadowSettings {
+            shadows,
+            render_to_texture: rtt,
+            flashlight_depth: 0,
+        });
+        sim.ticks(2);
+    };
+    set(&mut sim, 1, 0);
+    let blob = shadows_now(&mut sim);
+    assert_eq!(blob.len(), 1, "one shadow, rebuilt");
+    assert_eq!(blob[0].1, BLOB_TEX, "the blob picture");
+    let (_, _, centre) = shadow(&mut sim);
+    let (_, at) = crate_at(&mut sim);
+    // Straight down (the map's direction leans 0.2 sideways).
+    assert!(centre.xz().distance(at.xz()) < 0.05, "under the crate: {centre} {at}");
+    set(&mut sim, 0, 0);
+    assert!(shadows_now(&mut sim).is_empty(), "r_shadows 0");
+    set(&mut sim, 1, 1);
+    let back = shadows_now(&mut sim);
+    assert_eq!(back.len(), 1);
+    assert_ne!(back[0].1, BLOB_TEX);
+}

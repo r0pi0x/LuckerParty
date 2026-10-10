@@ -271,6 +271,21 @@ pub const SETTINGS: &[Setting] = &[
             ("1 1", "#gameui_reflectall|Reflect all"),
         ]),
     ),
+    // Shadow detail: Low blob shadows, Medium render-to-texture, High as
+    // Medium (no flashlights in CS:S); rebuilt at once
+    // (`map::shadows::apply_shadow_detail`).
+    setting(
+        VideoAdvanced,
+        "r_shadowrendertotexture r_flashlightdepthtexture",
+        Some("ShadowDetail"),
+        Some("#GameUI_Shadow_Detail"),
+        "Shadow detail",
+        SettingKind::Choice(&[
+            ("0 0", "#GameUI_Low|Low"),
+            ("1 0", "#GameUI_Medium|Medium"),
+            ("1 1", "#GameUI_High|High"),
+        ]),
+    ),
     // Texture detail and filtering: each map texture takes them as it
     // loads (`TextureSettings`; from the next map on).
     setting(
@@ -638,6 +653,26 @@ impl Plugin for VideoPlugin {
                 Ok(())
             },
         );
+        app.init_resource::<crate::map::shadows::ShadowSettings>();
+        resource_cvar::<crate::map::shadows::ShadowSettings, u8>(
+            app,
+            "r_shadows",
+            "0: no dynamic shadows (props' and characters').",
+            |s| &mut s.shadows,
+        );
+        resource_cvar::<crate::map::shadows::ShadowSettings, u8>(
+            app,
+            "r_shadowrendertotexture",
+            "1: props cast their silhouette (render-to-texture shadows); 0: blob shadows, a round patch straight \
+             down (shadow detail Low). Applies at once.",
+            |s| &mut s.render_to_texture,
+        );
+        resource_cvar::<crate::map::shadows::ShadowSettings, u8>(
+            app,
+            "r_flashlightdepthtexture",
+            "1: flashlights cast depth shadows (shadow detail High; CS:S has no flashlights: as Medium).",
+            |s| &mut s.flashlight_depth,
+        );
         app.init_resource::<TextureSettings>()
             .add_systems(
                 PostUpdate,
@@ -674,6 +709,9 @@ impl Plugin for VideoPlugin {
             "mat_picmip",
             "mat_trilinear",
             "mat_forceaniso",
+            "r_shadows",
+            "r_shadowrendertotexture",
+            "r_flashlightdepthtexture",
         ] {
             console.archive(name);
         }

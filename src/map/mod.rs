@@ -2179,7 +2179,12 @@ impl Plugin for MapPlugin {
             )
             .add_systems(
                 PostUpdate,
-                update_prop_shadows
+                (
+                    shadows::apply_shadow_detail,
+                    update_prop_shadows,
+                    shadows::update_character_blobs,
+                )
+                    .chain()
                     .run_if(resource_exists::<Assets<Mesh>>.and_then(resource_exists::<Assets<Image>>))
                     .after(bevy::transform::TransformSystems::Propagate)
                     // A rewritten shadow mesh is announced this frame:
@@ -2234,7 +2239,7 @@ fn spawn_map(
     mut rope_materials: Option<ResMut<Assets<RopeMaterial>>>,
     mut sprite_materials: Option<ResMut<Assets<SpriteMaterial>>>,
     mut prop_materials: Option<ResMut<Assets<PropMaterial>>>,
-    mut shadow_materials: Option<ResMut<Assets<shadows::ShadowMaterial>>>,
+    shadow_materials: Option<Res<Assets<shadows::ShadowMaterial>>>,
     mut water_materials: Option<ResMut<Assets<water::WaterMaterial>>>,
     mut bindposes: Option<ResMut<Assets<bevy::mesh::skinning::SkinnedMeshInverseBindposes>>>,
     mut beam_materials: Option<ResMut<Assets<beams::BeamMaterial>>>,
@@ -3455,61 +3460,21 @@ fn spawn_map(
                 }
             }
         }
-        if let (Some(settings), Some(shadow_materials)) = (&data.shadows, shadow_materials.as_mut())
+        // Dynamic shadows: built by `shadows::apply_shadow_detail` as
+        // Video > Advanced's shadow detail asks (and again when it changes).
+        if let (Some(settings), true) = (&data.shadows, shadow_materials.is_some())
             && view == MapDebugView::Normal
         {
-            let built = shadows::build(&data, settings);
-            info!("prop shadows: {} casters reach the world", built.meshes.len());
-            let atlas = images.add(built.atlas.image());
-            let atlas_handle = atlas.clone();
-            let material = shadow_materials.add(shadows::ShadowMaterial {
-                params: shadows::ShadowParams {
-                    color: shadows::shadow_color(settings.color),
-                    texel: Vec2::new(1.0 / built.atlas.width as f32, 1.0 / built.atlas.height as f32),
-                    fog_color: fog_color(data.fog.as_ref()),
-                    fog_range: fog_range(data.fog.as_ref()),
-                },
-                atlas,
-            });
-            let mut entities = std::collections::HashMap::new();
-            for (prop, mesh) in built.meshes {
-                let clusters = match (visibility, bevy::camera::primitives::MeshAabb::compute_aabb(&mesh)) {
-                    // Physics props' shadows move with them: their
-                    // clusters follow the rebuilt mesh (`update_prop_shadows`).
-                    (Some(v), Some(aabb)) => {
-                        vis::box_clusters(v, Vec3::from(aabb.min()), Vec3::from(aabb.max()))
-                    }
-                    _ => Vec::new(),
-                };
-                let mut e = commands
-                    .spawn((
-                        Name::new(format!("Shadow of prop {prop}")),
-                        MapPart,
-                        PropShadow { prop },
-                        Mesh3d(meshes.add(mesh)),
-                        MeshMaterial3d(material.clone()),
-                        bevy::light::NotShadowCaster,
-                        Transform::default(),
-                        ChildOf(statics),
-                    ));
-                tag(&mut e, clusters);
-                entities.insert(prop, e.id());
-            }
-            commands.insert_resource(ShadowState {
+            commands.insert_resource(shadows::ShadowSource {
                 data: data.clone(),
                 settings: settings.clone(),
-                receivers: built.receivers,
-                atlas: built.atlas,
-                atlas_image: atlas_handle,
-                material,
-                built: built
-                    .cells
-                    .iter()
-                    .map(|c| (c.prop, (data.props[c.prop].translation, data.props[c.prop].rotation)))
-                    .collect(),
-                cells: built.cells.into_iter().map(|c| (c.prop, c)).collect(),
-                entities,
+                receivers: Arc::new(shadows::Receivers::new(data)),
                 root: statics,
+                fog_color: fog_color(data.fog.as_ref()),
+                fog_range: fog_range(data.fog.as_ref()),
+                tag: visibility.is_some(),
+                built: None,
+                blob_material: None,
             });
         }
     }
@@ -4052,6 +4017,7 @@ pub fn unload_map(world: &mut World) {
     world.remove_resource::<SkyVis>();
     world.remove_resource::<vis::ActiveVisibility>();
     world.remove_resource::<ShadowState>();
+    world.remove_resource::<shadows::ShadowSource>();
     world.remove_resource::<sound::SoundBank>();
     world.remove_resource::<CharacterModels>();
     world.remove_resource::<CharacterBodies>();
@@ -4514,12 +4480,15 @@ pub struct PropEntity(pub usize);
 #[derive(Component, Debug, Clone, Copy)]
 pub struct PropHome(pub Transform);
 
-/// What it takes to redraw prop shadows when props move.
+/// What it takes to redraw prop shadows when props move (built by
+/// `shadows::apply_shadow_detail`): render-to-texture, or blobs (`blob`:
+/// one picture, only the meshes move).
 #[derive(Resource)]
 struct ShadowState {
     data: Arc<MapData>,
     settings: MapShadows,
-    receivers: shadows::Receivers,
+    receivers: Arc<shadows::Receivers>,
+    blob: bool,
     atlas: shadows::Atlas,
     atlas_image: Handle<Image>,
     material: Handle<shadows::ShadowMaterial>,
@@ -4584,16 +4553,21 @@ fn update_prop_shadows(
             continue;
         }
         state.built.insert(index.0, (t.translation, t.rotation));
-        let mesh = shadows::rebuild(
-            &state.data,
-            &state.settings,
-            &state.receivers,
-            &mut state.atlas,
-            &cell,
-            t.translation,
-            t.rotation,
-        );
-        redrawn.push(cell);
+        let mesh = if state.blob {
+            let frame = shadows::ShadowFrame::blob(model.bounds, t.translation, t.rotation, shadows::DOWN, state.settings.distance);
+            shadows::shadow_mesh(&frame, &state.receivers, shadows::BLOB_RECT)
+        } else {
+            redrawn.push(cell);
+            shadows::rebuild(
+                &state.data,
+                &state.settings,
+                &state.receivers,
+                &mut state.atlas,
+                &cell,
+                t.translation,
+                t.rotation,
+            )
+        };
         match (mesh, state.entities.get(&index.0).copied()) {
             (Some(mesh), Some(e)) => match shadow_meshes.get(e) {
                 // The same mesh asset, rewritten: a new handle every

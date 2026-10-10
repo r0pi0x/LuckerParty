@@ -1067,6 +1067,30 @@ fn water_detail_sets_both_water_cvars() {
 }
 
 #[test]
+fn shadow_detail_sets_cs_s_shadow_cvars() {
+    let mut m = GameMenu {
+        in_game: true,
+        ..default()
+    };
+    let shadows = |n: &str| match n {
+        "r_shadowrendertotexture" => Some("1".to_string()),
+        "r_flashlightdepthtexture" => Some("0".to_string()),
+        n => get(n),
+    };
+    m.open(Page::Main, vec!["de_dust2".into()], None, shadows);
+    click(&mut m, MainItem::Options);
+    press(&mut m, &[Input::Click(Target::Tab(3), 0)]);
+    let adv = button(&m, Action::VideoAdvanced);
+    press(&mut m, &[Input::Click(Target::Row(adv), 0)]);
+    let s = row_of(&m, "r_shadowrendertotexture r_flashlightdepthtexture");
+    assert!(matches!(control(&m, s), Control::Combo { selected: Some(1), text, .. } if text == "Medium"));
+    let o = press(&mut m, &[Input::Click(Target::Row(s), 0), Input::Click(Target::ComboItem(0), 0)]);
+    assert_eq!(o.lines, ["r_shadowrendertotexture 0", "r_flashlightdepthtexture 0"], "Low: blobs");
+    let o = press(&mut m, &[Input::Click(Target::Row(s), 0), Input::Click(Target::ComboItem(2), 0)]);
+    assert_eq!(o.lines, ["r_shadowrendertotexture 1", "r_flashlightdepthtexture 1"], "High");
+}
+
+#[test]
 fn the_aspect_ratio_filters_the_resolutions() {
     let mut m = GameMenu {
         in_game: true,
