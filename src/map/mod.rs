@@ -21,11 +21,13 @@ pub use crate::core::{
 
 pub mod anim;
 pub mod decal;
+pub mod emitters;
 pub mod entities;
 pub mod fire;
 pub mod fog;
 pub use entities::{MapBrushEntity, MapEntities, MapEntity, MapHull};
 pub mod beams;
+pub mod buoyancy;
 pub mod breakables;
 pub mod contact_filter;
 pub mod controllers;
@@ -44,12 +46,14 @@ pub mod loading;
 pub mod material_fx;
 pub use material_fx::{DetailMode, MapSelfIllum, MapUvTransform};
 pub mod merge;
+pub mod monitor;
 pub mod tint;
 pub mod probe_lit;
 pub mod radio;
 pub mod bot_profiles;
 pub mod nav;
 pub mod particles;
+pub mod psys;
 pub mod tracer;
 pub mod prop_material;
 pub mod prop_physics;
@@ -287,6 +291,24 @@ pub struct MapMesh {
     pub source_vertices: Vec<u32>,
     /// What part of a breakable window's look it is (`PaneLook`).
     pub pane_look: PaneLook,
+    /// A brush entity's translucent render mode (Source rendermode and
+    /// renderamt): blended or added, and its opacity (`tint::RenderLook`).
+    pub render: Option<(MapAlpha, f32)>,
+    /// Its base texture's frames (indices into `MapData::textures`), when a
+    /// map entity can pick one (env_texturetoggle; `tint::TextureFrames`).
+    pub frames: Vec<usize>,
+}
+
+impl MapMesh {
+    /// The colour multiplier of its entity's render mode (an added look
+    /// scales the colour, a blended one the alpha).
+    pub fn render_factor(&self) -> Vec4 {
+        match self.render {
+            Some((MapAlpha::Add, a)) => Vec4::new(a, a, a, 1.0),
+            Some((_, a)) => Vec4::new(1.0, 1.0, 1.0, a),
+            None => Vec4::ONE,
+        }
+    }
 }
 
 /// A window's looks (meshes of a brush entity drawn as panes,
@@ -1138,6 +1160,11 @@ impl LightProbe {
 pub struct MapProp {
     /// Index into `MapData::models`.
     pub model: usize,
+    /// A fixed pose of its skeleton (each bone's local rotation and
+    /// position, the model's frames and units): a map-placed ragdoll
+    /// (prop_ragdoll) drawn as it lies. None: the reference pose, or its
+    /// animations.
+    pub pose: Option<Arc<Vec<(Quat, Vec3)>>>,
     pub translation: Vec3,
     pub rotation: Quat,
     pub solid: PropSolid,
@@ -1283,6 +1310,19 @@ pub struct MapData {
     pub dust: Vec<MapDust>,
     /// Steam jets (env_steam).
     pub steam: Vec<steam::MapSteam>,
+    /// Sprite trails (env_spritetrail) and smoke stacks (env_smokestack):
+    /// `emitters`.
+    pub trails: Vec<emitters::MapTrail>,
+    pub smokestacks: Vec<emitters::MapSmokeStack>,
+    /// point_tesla arcs (`emitters`).
+    pub teslas: Vec<emitters::MapTesla>,
+    /// Screen overlay materials maps name (env_screenoverlay): lower-case
+    /// name and index into `textures`.
+    pub screen_overlays: Vec<(String, usize)>,
+    /// The monitor screen texture (Source `_rt_camera`, index into
+    /// `textures`): drawn with what the active point_camera sees
+    /// (`monitor`).
+    pub camera_texture: Option<usize>,
     /// Beams (point_spotlight, env_laser, env_beam) and light glows
     /// (env_lightglow): `beams`.
     pub beams: Vec<beams::MapBeam>,
@@ -1339,6 +1379,9 @@ pub struct MapData {
     pub overview: Option<hud::MapOverview>,
     /// Materials for particle effects (impacts).
     pub particles: particles::MapParticles,
+    /// Data-driven particle systems and where the map runs them
+    /// (info_particle_system): `psys`.
+    pub particle_systems: Arc<psys::MapParticleSystems>,
     /// What characters see of what they hold (weapons' view models).
     pub view_models: Vec<MapViewModel>,
     /// The light at any point, for moving models.
@@ -1492,6 +1535,12 @@ pub struct MapSprite {
     /// Shown at map start.
     pub start_on: bool,
 }
+
+/// The loaded map's screen overlay pictures (env_screenoverlay), by
+/// lower-case material name; the client draws the one the logic shows
+/// (`logic::ScreenFades::overlay`).
+#[derive(Resource, Clone, Debug, Default)]
+pub struct ScreenOverlayImages(pub HashMap<String, Handle<Image>>);
 
 /// A drawn part of a map entity the logic switches (sprites, dust
 /// volumes): `on` shows a sprite or lets dust spawn motes; `exists` false
@@ -1846,7 +1895,7 @@ struct PlayableArea((Vec3, Vec3));
 #[allow(clippy::type_complexity)]
 fn show_skybox_in_place(
     area: Option<Res<PlayableArea>>,
-    cameras: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<SkyboxCamera>, Without<ViewModelCamera>, Without<water::WaterReflectionCamera>)>,
+    cameras: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<monitor::ScreenCamera>, Without<SkyboxCamera>, Without<ViewModelCamera>, Without<water::WaterReflectionCamera>)>,
     mut parts: Query<&mut bevy::camera::visibility::RenderLayers, Without<Camera>>,
     mut outside_before: Local<Option<bool>>,
 ) {
@@ -1912,7 +1961,7 @@ impl Plugin for MapPlugin {
         }
         ragdoll::plugin(app);
         app.add_plugins(light_styles::LightStylesPlugin);
-        app.add_plugins(controllers::ControllersPlugin);
+        app.add_plugins((controllers::ControllersPlugin, buoyancy::BuoyancyPlugin, monitor::MonitorPlugin));
         app.add_plugins(sound::SoundPlugin)
             .init_resource::<ShowLocalBody>()
             .init_resource::<vis::NoVis>()
@@ -1928,6 +1977,7 @@ impl Plugin for MapPlugin {
             .add_message::<breakables::BreakProp>()
             .add_message::<prop_physics::PropAwakened>()
             .add_message::<GlassShatter>()
+            .add_message::<emitters::TeslaSpark>()
             .add_message::<GlassImpact>()
             .add_message::<breakables::FallingPane>()
             .add_message::<CollisionStart>()
@@ -2000,6 +2050,14 @@ impl Plugin for MapPlugin {
                     (
                         tracer::draw_tracers,
                         particles::step_particles.in_set(particles::ParticleSet::Step),
+                        (
+                            emitters::update_trails,
+                            emitters::update_smokestacks,
+                            emitters::update_teslas,
+                            psys::update_systems,
+                        )
+                            .after(particles::ParticleSet::Step)
+                            .before(particles::ParticleSet::Draw),
                         particles::draw_particles
                             .run_if(
                                 resource_exists::<Assets<Mesh>>
@@ -2062,6 +2120,7 @@ impl Plugin for MapPlugin {
                 // From this frame's camera, before visibility propagates.
                 (
                     tint::apply_brush_tints,
+                    tint::apply_character_looks,
                     merge::sync_merged_brushes,
                     tag_moved_brush_entities,
                     vis::cull,
@@ -2345,6 +2404,9 @@ fn spawn_map(
             .iter()
             .enumerate()
             .map(|(i, t)| {
+                if Some(i) == data.camera_texture {
+                    return monitor::screen_image(images);
+                }
                 let mut image = to_image(t, &data.look);
                 if hud.contains(&i) {
                     clamp_edges(&mut image);
@@ -2352,6 +2414,17 @@ fn spawn_map(
                 images.add(image)
             })
             .collect();
+        if let Some(i) = data.camera_texture {
+            commands.insert_resource(monitor::MonitorScreen(textures[i].clone()));
+        }
+        if !data.screen_overlays.is_empty() {
+            commands.insert_resource(ScreenOverlayImages(
+                data.screen_overlays
+                    .iter()
+                    .map(|(name, t)| (name.clone(), textures[*t].clone()))
+                    .collect(),
+            ));
+        }
         let cubemaps: Vec<Handle<Image>> = data.cubemaps.iter().map(|c| images.add(cube_image(c))).collect();
         cubemap_handles = cubemaps.clone();
         texture_handles = textures.clone();
@@ -2614,7 +2687,7 @@ fn spawn_map(
                             Vec4::ONE
                         } else {
                             Vec4::new(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0)
-                        },
+                        } * m.render_factor(),
                         light_scale: data.look.light_scale,
                         lightmap_scale: if source_ldr { SOURCE_LIGHTMAP_SCALE } else { 1.0 },
                         bicubic: if data.look.bicubic_lightmaps { 1.0 } else { 0.0 },
@@ -2764,6 +2837,9 @@ fn spawn_map(
                 }
                 if merged.is_some() {
                     part.insert((merge::MergedPiece, Visibility::Hidden));
+                }
+                if !m.frames.is_empty() {
+                    part.insert(tint::TextureFrames(m.frames.iter().map(|f| textures[*f].clone()).collect()));
                 }
                 if m.pane_look != PaneLook::Whole {
                     part.insert((PanePart(m.pane_look), Visibility::Hidden));
@@ -2968,6 +3044,85 @@ fn spawn_map(
                     });
                 }
             }
+            // Sprite trails and smoke stacks: an entity each where its map
+            // entity is (moved with it), drawn through the particle pool.
+            for (i, t) in data.trails.iter().enumerate() {
+                let mut e = commands.spawn((
+                    Name::new(format!("Trail {i}")),
+                    MapPart,
+                    emitters::TrailEmitter::new(t.clone()),
+                    emitters::FollowsEntity,
+                    Transform::from_translation(t.position),
+                    Visibility::default(),
+                    ChildOf(root),
+                ));
+                if let Some(entity) = t.entity {
+                    e.insert(EntityPart { entity, on: true, exists: true });
+                }
+            }
+            for (i, p) in data.particle_systems.placed.iter().enumerate() {
+                let reach = Vec3::splat(256.0 * data.particle_systems.scale);
+                let clusters = visibility
+                    .map(|v| vis::box_clusters(v, p.position - reach, p.position + reach))
+                    .unwrap_or_default();
+                let mut e = commands.spawn((
+                    Name::new(format!("Particle system {i}")),
+                    MapPart,
+                    psys::SystemEmitter::new(p.clone(), i as u64 + 1),
+                    emitters::FollowsEntity,
+                    Transform::from_translation(p.position).with_rotation(p.rotation),
+                    Visibility::default(),
+                    ChildOf(root),
+                ));
+                tag(&mut e, clusters);
+                if let Some(entity) = p.entity {
+                    e.insert(EntityPart {
+                        entity,
+                        on: p.start_on,
+                        exists: true,
+                    });
+                }
+            }
+            if !data.particle_systems.defs.is_empty() {
+                commands.insert_resource(psys::ParticleSystemDefs(data.particle_systems.clone()));
+            }
+            for (i, t) in data.teslas.iter().enumerate() {
+                let mut e = commands.spawn((
+                    Name::new(format!("Tesla {i}")),
+                    MapPart,
+                    emitters::TeslaEmitter::new(t.clone(), i as u64 + 1),
+                    emitters::FollowsEntity,
+                    Transform::from_translation(t.position),
+                    Visibility::default(),
+                    ChildOf(root),
+                ));
+                if let Some(entity) = t.entity {
+                    e.insert(EntityPart { entity, on: true, exists: true });
+                }
+            }
+            for (i, s) in data.smokestacks.iter().enumerate() {
+                let reach = s.length + s.base_spread + s.end_size * 2.0;
+                let clusters = visibility
+                    .map(|v| vis::box_clusters(v, s.position - Vec3::splat(reach), s.position + Vec3::splat(reach)))
+                    .unwrap_or_default();
+                let mut e = commands.spawn((
+                    Name::new(format!("Smoke stack {i}")),
+                    MapPart,
+                    emitters::SmokeStackEmitter::new(s.clone(), i as u64 + 1),
+                    emitters::FollowsEntity,
+                    Transform::from_translation(s.position).with_rotation(s.rotation),
+                    Visibility::default(),
+                    ChildOf(root),
+                ));
+                tag(&mut e, clusters);
+                if let Some(entity) = s.entity {
+                    e.insert(EntityPart {
+                        entity,
+                        on: s.start_on,
+                        exists: true,
+                    });
+                }
+            }
         }
         if let Some(sprite_materials) = sprite_materials.as_mut()
             && view == MapDebugView::Normal
@@ -2991,6 +3146,7 @@ fn spawn_map(
                     // own bounds are a point: culling would drop the sprite
                     // as soon as its centre left the view.
                     bevy::camera::visibility::NoFrustumCulling,
+                    emitters::FollowsEntity,
                     Transform::from_translation(sprite.position),
                     ChildOf(root),
                 ));
@@ -3430,12 +3586,17 @@ fn spawn_map(
         let mut inverse_bindposes = None;
         if let (Some(rig), Some(bindposes)) = (rig, bindposes.as_mut()) {
             let root = commands.spawn((rig.root, Visibility::Inherited, ChildOf(id))).id();
-            for b in &rig.bones {
+            for (i, b) in rig.bones.iter().enumerate() {
                 let parent = b.parent.and_then(|p| joints.get(p).copied()).unwrap_or(root);
+                let (rotation, position) = prop
+                    .pose
+                    .as_ref()
+                    .and_then(|pose| pose.get(i).copied())
+                    .unwrap_or((b.rotation, b.position));
                 joints.push(
                     commands
                         .spawn((
-                            Transform::from_translation(b.position).with_rotation(b.rotation),
+                            Transform::from_translation(position).with_rotation(rotation),
                             Visibility::Inherited,
                             ChildOf(parent),
                         ))
@@ -3586,7 +3747,8 @@ fn spawn_map(
                 mesh_bodies: model.meshes.iter().map(|m| m.body).collect(),
                 shown: (prop.skin, prop.body),
             });
-            if let Some(rig) = rig.filter(|_| !joints.is_empty()) {
+            // A posed ragdoll keeps its pose (no animation).
+            if let Some(rig) = rig.filter(|_| !joints.is_empty() && prop.pose.is_none()) {
                 commands.entity(id).insert(PropRig {
                     animator: anim::Animator::new(rig.animations.clone()),
                     joints,
@@ -3734,6 +3896,10 @@ pub fn unload_map(world: &mut World) {
     world.remove_resource::<surface_color::SurfaceColors>();
     world.remove_resource::<particles::ParticleAssets>();
     world.remove_resource::<particles::ParticleMaterials>();
+    world.remove_resource::<psys::ParticleSystemDefs>();
+    world.remove_resource::<ScreenOverlayImages>();
+    world.remove_resource::<monitor::MonitorScreen>();
+    world.insert_resource(monitor::MonitorCamera::default());
     if let Some(mut p) = world.get_resource_mut::<particles::Particles>() {
         p.groups.clear();
     }
@@ -4576,7 +4742,7 @@ pub(crate) struct GlowSprite {
 #[allow(clippy::type_complexity)]
 fn glow_visibility(
     query: SpatialQuery,
-    cameras: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<SkyboxCamera>, Without<ViewModelCamera>, Without<water::WaterReflectionCamera>)>,
+    cameras: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<monitor::ScreenCamera>, Without<SkyboxCamera>, Without<ViewModelCamera>, Without<water::WaterReflectionCamera>)>,
     ignored: Query<Entity, With<crate::core::Intent>>,
     mut glows: Query<
         (
@@ -4819,7 +4985,7 @@ fn attach_sky(
     sky_camera: Option<Res<SkyCameraInfo>>,
     cameras: Query<
         (Entity, Has<SkyboxCamera>),
-        (With<Camera3d>, Without<bevy::light::Skybox>, Without<ViewModelCamera>),
+        (With<Camera3d>, Without<monitor::ScreenCamera>, Without<bevy::light::Skybox>, Without<ViewModelCamera>),
     >,
 ) {
     let Some(sky) = sky else { return };
@@ -5032,7 +5198,7 @@ fn follow_sky_camera(
             Entity,
             &Camera,
         ),
-        (With<Camera3d>, Without<SkyboxCamera>, Without<ViewModelCamera>, Without<water::WaterReflectionCamera>),
+        (With<Camera3d>, Without<monitor::ScreenCamera>, Without<SkyboxCamera>, Without<ViewModelCamera>, Without<water::WaterReflectionCamera>),
     >,
     mut sky: Query<
         (

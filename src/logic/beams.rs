@@ -95,7 +95,7 @@ fn set_on(w: &mut LogicWorld, id: EntId, on: bool) {
     }
     match (kind, on) {
         (PartKind::Beam, true) if thinks => w.think_in(id, w.dt),
-        (PartKind::Spark, true) => w.think_in(id, w.dt),
+        (PartKind::Spark | PartKind::Tesla, true) => w.think_in(id, w.dt),
         (_, false) => {
             if let Some(e) = w.get_mut(id) {
                 e.next_think = None;
@@ -132,6 +132,9 @@ pub(super) fn input(w: &mut LogicWorld, id: EntId, input: &str) -> bool {
             spark(w, id);
             set_on(w, id, false);
         }
+        (PartKind::Tesla, "turnon") => set_on(w, id, true),
+        (PartKind::Tesla, "turnoff") => set_on(w, id, false),
+        (PartKind::Tesla, "dospark") => tesla(w, id),
         _ => return false,
     }
     true
@@ -203,6 +206,14 @@ pub(super) fn think(w: &mut LogicWorld, id: EntId) {
             let delay = 0.1 + w.random() * max;
             w.think_in(id, delay);
         }
+        PartKind::Tesla => {
+            tesla(w, id);
+            let (a, b) = w.get(id).map_or((0.5, 2.0), |e| {
+                (e.kv_f("interval_min").max(0.0), e.kv_f("interval_max").max(0.0))
+            });
+            let delay = (a + (b.max(a) - a) * w.random()).max(w.dt);
+            w.think_in(id, delay);
+        }
         PartKind::Beam => {
             zap_tick(w, id);
             if part(w, id).and_then(|p| p.zap.as_ref()).is_some_and(|z| !z.stopped) {
@@ -210,6 +221,29 @@ pub(super) fn think(w: &mut LogicWorld, id: EntId) {
             }
         }
         _ => {}
+    }
+}
+
+/// A point_tesla's spark (public entity docs): its arcs (the map draws
+/// them, `Effect::Tesla`) and its sound ("m_SoundName", none for "none").
+fn tesla(w: &mut LogicWorld, id: EntId) {
+    let Some(e) = w.get(id) else { return };
+    let (at, index) = (e.origin, e.map_index);
+    let sound = e
+        .kv("m_SoundName")
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("none"));
+    let sound = sound.map(str::to_string);
+    if let Some(entity) = index {
+        w.effects.push(Effect::Tesla { entity });
+    }
+    if let Some(entry) = sound {
+        w.effects.push(Effect::Sound {
+            entry,
+            at,
+            volume: None,
+            pitch: None,
+        });
     }
 }
 

@@ -241,7 +241,14 @@ fn attach(
 /// box changes with ducking). A dead player's shadow touches nothing.
 #[allow(clippy::type_complexity)]
 fn drive(
-    owners: Query<(&Transform, &SourceMovement, &PhysicsTouch, &Shadowed, Option<&Health>)>,
+    owners: Query<(
+        &Transform,
+        &SourceMovement,
+        &PhysicsTouch,
+        &Shadowed,
+        Option<&Health>,
+        Option<&crate::core::MapControls>,
+    )>,
     mut shadows: Query<
         (
             &mut PhysicsShadow,
@@ -257,11 +264,12 @@ fn drive(
     time: Res<Time>,
 ) {
     let dt = time.delta_secs();
-    for (t, me, touch, shadowed, health) in &owners {
+    for (t, me, touch, shadowed, health, controls) in &owners {
         let Ok((mut s, mut size, mut pos, mut st, mut v)) = shadows.get_mut(shadowed.0) else {
             continue;
         };
-        let alive = health.is_none_or(|h| h.current > 0.0);
+        // A parented player (riding a kart) touches nothing either.
+        let alive = health.is_none_or(|h| h.current > 0.0) && !controls.is_some_and(|c| c.parented);
         if s.active != alive {
             s.active = alive;
         }

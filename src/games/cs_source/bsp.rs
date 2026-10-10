@@ -14,7 +14,7 @@ use super::{
 };
 use crate::{
     core::Team,
-    map::{MapData, MapMesh},
+    map::{MapAlpha, MapData, MapMesh},
     mount::Mount,
 };
 
@@ -113,9 +113,45 @@ pub fn load_level_bytes(mount: &Mount, name: &str, bytes: Vec<u8>, hdr_level: u8
             mesh.blend_weights.clear();
         }
         mesh.alpha = r.alpha;
+        // An entity's translucent render mode replaces the material's.
+        if let Some((blend, _)) = mesh.render {
+            mesh.alpha = blend;
+        }
         mesh.double_sided = r.double_sided;
         mesh.surface = r.surfaceprop;
         mesh.envmap = r.envmap;
+    }
+    // Brush entities an env_texturetoggle targets: their textures' frames.
+    let toggled: std::collections::HashSet<usize> = {
+        let targets: std::collections::HashSet<String> = bsp
+            .entities
+            .iter()
+            .filter(|e| {
+                e.prop("classname")
+                    .is_some_and(|c| c.eq_ignore_ascii_case("env_texturetoggle"))
+            })
+            .filter_map(|e| e.prop("target").map(|t| t.trim().to_ascii_lowercase()))
+            .collect();
+        bsp.entities
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| {
+                e.prop("targetname")
+                    .is_some_and(|n| targets.contains(&n.trim().to_ascii_lowercase()))
+            })
+            .map(|(i, _)| i)
+            .collect()
+    };
+    for mesh in &mut data.meshes {
+        if mesh.entity.is_none_or(|e| !toggled.contains(&e)) {
+            continue;
+        }
+        if let Some(base) = materials.material_value(&mesh.material, "$basetexture") {
+            let frames = materials.texture_frames(&base, true);
+            if frames.len() > 1 {
+                mesh.frames = frames;
+            }
+        }
     }
     timer.lap("world materials");
     // Broken windows' cracked and jagged-edge looks.
@@ -224,6 +260,10 @@ pub fn load_level_bytes(mount: &Mount, name: &str, bytes: Vec<u8>, hdr_level: u8
         .filter(|p| !p.0.is_empty());
     data.overview = super::hud::overview(&mut materials, name);
     data.particles = super::impact_effects::load_materials(&mut materials);
+    super::trails::add_trails_and_stacks(&bsp, &mut materials, &mut data);
+    super::pcf::add_particle_systems(&bsp, &mut materials, &mut data, name);
+    super::props::add_attachment_keys(&materials, &mut data);
+    data.camera_texture = materials.camera_texture;
     timer.lap("characters, hud, particles");
     // What characters hold: the weapons' world models.
     if let Some(skeleton) = data.characters.first().map(|c| c.bones.clone()) {
@@ -272,6 +312,28 @@ pub fn load_level_bytes(mount: &Mount, name: &str, bytes: Vec<u8>, hdr_level: u8
     for set in super::breakables::load_gibs(&mut materials, &data.entities, &mut data.warnings) {
         if !data.gibs.iter().any(|g| g.name.eq_ignore_ascii_case(&set.name)) {
             data.gibs.push(set);
+        }
+    }
+    // env_shooter's models, each a gib list of its own (named by path).
+    for e in &data.entities {
+        if !e.classname().eq_ignore_ascii_case("env_shooter") {
+            continue;
+        }
+        let Some(path) = e
+            .get("shootmodel")
+            .map(|p| p.trim().to_ascii_lowercase().replace('\\', "/"))
+        else {
+            continue;
+        };
+        if path.is_empty() || data.gibs.iter().any(|g| g.name.eq_ignore_ascii_case(&path)) {
+            continue;
+        }
+        match super::props::load_shell(&mut materials, &path) {
+            Ok(m) => data.gibs.push(crate::map::breakables::MapGibSet {
+                name: path,
+                models: vec![m],
+            }),
+            Err(e) => data.warnings.push(e),
         }
     }
     data.gib_physics = Some(super::breakables::gib_physics());
@@ -522,7 +584,7 @@ pub fn convert_level(bsp: &Bsp, bytes: &[u8], name: &str, hdr: bool) -> (MapData
     let mut entity_face_slots: HashMap<usize, usize> = HashMap::new();
     let faces = world
         .faces()
-        .map(|f| (f, None, None, None))
+        .map(|f| (f, None, None, None, None))
         .chain(entities.iter().filter(|e| e.drawn).flat_map(|e| {
             bsp.models()
                 .nth(e.model)
@@ -533,13 +595,13 @@ pub fn convert_level(bsp: &Bsp, bytes: &[u8], name: &str, hdr: bool) -> (MapData
                 })
                 .map(|(f, index)| {
                     if e.mover {
-                        (f, Some((Quat::IDENTITY, Vec3::ZERO)), Some(e.entity), Some(index))
+                        (f, Some((Quat::IDENTITY, Vec3::ZERO)), Some(e.entity), Some(index), None)
                     } else {
-                        (f, Some(e.transform), None, Some(index))
+                        (f, Some(e.transform), None, Some(index), e.render)
                     }
                 })
         }));
-    for (face, transform, mover, face_index) in faces {
+    for (face, transform, mover, face_index, render) in faces {
         let in_world = transform.is_none();
         // Source-space position of a face vertex (brush entity models are
         // stored around their origin).
@@ -639,16 +701,21 @@ pub fn convert_level(bsp: &Bsp, bytes: &[u8], name: &str, hdr: bool) -> (MapData
         let material = tex.name().to_lowercase();
         // Meshes are per material and per part (world, 3D skybox, or a
         // mover entity).
-        let key = match mover {
+        let mut key = match mover {
             Some(i) => format!("{material}\u{2}{i:06}"),
             None if skybox => format!("{material}\u{1}skybox"),
             None => material.clone(),
         };
+        // Brush entities in a translucent render mode: meshes of their own.
+        if let Some((blend, a)) = render {
+            key = format!("{key}\u{3}{blend:?}{a}");
+        }
         let mesh = by_material.entry(key.clone()).or_insert_with(|| MapMesh {
             material: material.clone(),
             skybox,
             color: tex.debug_color(),
             entity: mover,
+            render,
             ..default()
         });
         let lm = pending_lm.entry(key).or_default();
@@ -678,6 +745,7 @@ pub fn convert_level(bsp: &Bsp, bytes: &[u8], name: &str, hdr: bool) -> (MapData
     data.brush_tree = Some(tree);
     data.trace_skip = trace_skip(bsp, &leaves);
     data.water = water_volumes(bsp, &leaves);
+    data.water.extend(analog_water_volumes(bsp, &leaves));
     data.entities = map_entities(bsp, &leaves);
     restore_text_case(&mut data.entities, bytes);
     data.entity_scale = METERS_PER_UNIT;
@@ -755,6 +823,10 @@ pub struct BrushEntity {
     /// Moves or toggles (`MOVERS`): drawn and solid through its own node,
     /// not baked into the world.
     pub mover: bool,
+    /// Baked into the world in a translucent render mode (rendermode,
+    /// renderamt): its faces blend or add by this opacity. Movers get
+    /// theirs from the logic (`map::tint`).
+    pub render: Option<(MapAlpha, f32)>,
 }
 
 /// Brush entity classes the logic layer moves or toggles.
@@ -767,6 +839,9 @@ pub const MOVERS: &[&str] = &[
     "func_movelinear",
     "func_rotating",
     "func_tracktrain",
+    "func_tanktrain",
+    "func_monitor",
+    "func_reflective_glass",
     "func_brush",
     "func_wall_toggle",
     "func_conveyor",
@@ -854,13 +929,19 @@ pub fn brush_entities(bsp: &Bsp) -> Vec<BrushEntity> {
             && !(class == "func_brush" && (num("Solidity") == Some(1.0) || (start_disabled && num("Solidity") != Some(2.0))))
             // func_rotating spawnflag 64: not solid.
             && !(class == "func_rotating" && (num("spawnflags").unwrap_or(0.0) as i32) & 64 != 0);
+        let look = crate::map::tint::RenderLook {
+            color: [255; 3],
+            alpha: num("renderamt").unwrap_or(255.0).clamp(0.0, 255.0) as u8,
+            mode: render_mode.clamp(0, 255) as u8,
+        };
         out.push(BrushEntity {
             model,
             transform: (rotation, origin),
-            drawn,
+            drawn: drawn && !look.invisible(),
             solid,
             entity: index,
             mover,
+            render: look.blend().filter(|_| !mover),
         });
     }
     out
@@ -1512,6 +1593,50 @@ pub fn brush_hulls_indexed(bsp: &Bsp, leaves: &[RawLeaf]) -> Vec<(usize, Vec<[f3
 pub fn water_volumes(bsp: &Bsp, leaves: &[RawLeaf]) -> Vec<crate::map::MapWaterVolume> {
     brush_volumes(bsp, leaves, BrushFlags::WATER.union(BrushFlags::SLIME))
         .into_iter()
+        .map(|(i, points, planes)| crate::map::MapWaterVolume {
+            brush: map_brush(points, planes, false),
+            slime: !bsp.brushes[i].flags.contains(BrushFlags::WATER),
+        })
+        .collect()
+}
+
+/// func_water_analog's water (public entity docs: a brush of water that
+/// can move like func_movelinear), where it spawns: a swimmable volume
+/// like the world's water. Its motion isn't followed (tech-debt).
+pub fn analog_water_volumes(bsp: &Bsp, leaves: &[RawLeaf]) -> Vec<crate::map::MapWaterVolume> {
+    let parse = |v: Option<&str>| {
+        let n: Vec<f32> = v
+            .unwrap_or("")
+            .split_whitespace()
+            .filter_map(|x| x.parse().ok())
+            .collect();
+        if n.len() >= 3 {
+            Vec3::new(n[0], n[1], n[2])
+        } else {
+            Vec3::ZERO
+        }
+    };
+    bsp.entities
+        .iter()
+        .filter(|e| {
+            e.prop("classname")
+                .is_some_and(|c| c.eq_ignore_ascii_case("func_water_analog"))
+        })
+        .filter_map(|e| {
+            let model: usize = e.prop("model")?.strip_prefix('*')?.parse().ok()?;
+            let (origin, angles) = (parse(e.prop("origin")), parse(e.prop("angles")));
+            let rotation = Quat::from_rotation_z(angles.y.to_radians())
+                * Quat::from_rotation_y(angles.x.to_radians())
+                * Quat::from_rotation_x(angles.z.to_radians());
+            Some(brush_volumes_in(
+                bsp,
+                BrushFlags::WATER.union(BrushFlags::SLIME),
+                model_brushes(bsp, leaves, model),
+                Some((rotation, origin)),
+                false,
+            ))
+        })
+        .flatten()
         .map(|(i, points, planes)| crate::map::MapWaterVolume {
             brush: map_brush(points, planes, false),
             slime: !bsp.brushes[i].flags.contains(BrushFlags::WATER),

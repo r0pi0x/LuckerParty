@@ -322,6 +322,10 @@ pub struct MapControls {
     pub buttons: u32,
     /// Alive last tick (a respawn resets the movement clock).
     pub alive: bool,
+    /// Parented to a map entity (SetParent: a kart's seat): the map logic
+    /// carries it, its own movement doesn't run, and it neither pushes
+    /// nor collides with physics bodies (its physics shadow is off).
+    pub parented: bool,
 }
 
 impl Default for MapControls {
@@ -336,6 +340,7 @@ impl Default for MapControls {
             invulnerable: false,
             buttons: 0,
             alive: true,
+            parented: false,
         }
     }
 }

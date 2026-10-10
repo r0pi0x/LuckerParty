@@ -94,6 +94,11 @@ pub enum Class {
     Thruster(Box<super::physics::Thruster>),
     /// phys_keepupright.
     Upright(Box<super::physics::Upright>),
+    /// phys_motor (`physics`).
+    Motor(Box<super::physics::Motor>),
+    /// phys_constraint, phys_ballsocket, phys_hinge, phys_slideconstraint,
+    /// phys_lengthconstraint, phys_ragdollconstraint (`physics`).
+    Joint(Box<super::physics::Joint>),
     /// momentary_rot_button (`movers`).
     Momentary(Box<movers::Momentary>),
     /// logic_measure_movement, point_teleport, logic_multicompare,
@@ -260,6 +265,12 @@ impl ServerLine {
 /// Commands point_clientcommand may send to a player's client.
 pub const CLIENT_COMMANDS: &[&str] = &["play", "playgamesound", "r_screenoverlay", "echo"];
 
+/// A command for a server plugin (SourceMod's `sm_`, Mani's `ma_`).
+pub fn is_plugin_command(line: &str) -> bool {
+    let cmd = line.trim().to_ascii_lowercase();
+    cmd.starts_with("sm_") || cmd.starts_with("ma_")
+}
+
 /// Check a server command line against the rule (`SETTING_PREFIXES`):
 /// what it may do, or why it is refused.
 pub fn check_server_command(line: &str) -> Result<ServerLine, &'static str> {
@@ -355,7 +366,16 @@ impl Class {
             }
             "env_lightglow" => Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::Glow)),
             "env_spark" => Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::Spark)),
-            "phys_thruster" | "phys_keepupright" => super::physics::spawn(e, &lower).unwrap_or_default(),
+            "point_tesla" => Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::Tesla)),
+            "phys_thruster"
+            | "phys_keepupright"
+            | "phys_motor"
+            | "phys_constraint"
+            | "phys_ballsocket"
+            | "phys_hinge"
+            | "phys_slideconstraint"
+            | "phys_lengthconstraint"
+            | "phys_ragdollconstraint" => super::physics::spawn(e, &lower).unwrap_or_default(),
             "logic_auto" => Class::Auto,
             "logic_relay" => Class::Relay(Relay {
                 enabled: !start_disabled,
@@ -441,9 +461,17 @@ impl Class {
             "momentary_rot_button" => Class::Momentary(Box::new(movers::Momentary::spawn(w, id))),
             "func_movelinear" => Class::MoveLinear(Box::new(MoveLinear::spawn(w, id))),
             "func_rotating" => Class::Rotating(Box::new(Rotating::spawn(w, id))),
-            "func_tracktrain" => Class::Train(Box::new(Train::spawn(w, id))),
+            // func_tanktrain: a track train that can be shot (public entity
+            // docs); its health isn't kept.
+            "func_tracktrain" | "func_tanktrain" => Class::Train(Box::new(Train::spawn(w, id))),
             "path_track" => Class::PathTrack(PathTrack::spawn(w, id)),
-            "func_brush" => Class::Brush(Box::new(Toggle::spawn_brush(w, id))),
+            // func_monitor is a func_brush showing a point_camera's view
+            // (`community::monitor_camera`).
+            // func_reflective_glass: a func_brush (its reflection isn't
+            // drawn: tech-debt).
+            "func_brush" | "func_monitor" | "func_reflective_glass" => {
+                Class::Brush(Box::new(Toggle::spawn_brush(w, id)))
+            }
             "ambient_generic" => super::ambient::spawn(w, id).map_or(Class::None, |a| Class::Ambient(Box::new(a))),
             "func_breakable" | "func_breakable_surf" => {
                 Class::Breakable(Box::new(super::breakables::Breakable::spawn(w, id)))
@@ -457,7 +485,12 @@ impl Class {
             "env_steam" | "env_steamjet" => {
                 Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::Steam))
             }
-            "env_soundscape" | "env_soundscape_proxy" => {
+            "env_spritetrail" => Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::Trail)),
+            "env_smokestack" => Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::SmokeStack)),
+            "info_particle_system" => {
+                Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::Particles))
+            }
+            "env_soundscape" | "env_soundscape_proxy" | "env_soundscape_triggerable" => {
                 Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::Soundscape))
             }
             "func_areaportal" | "func_areaportalwindow" => {
@@ -576,7 +609,7 @@ pub(super) fn class_activate(w: &mut LogicWorld, id: EntId) {
         Class::Prop(_) => super::prop_damage::activate(w, id),
         Class::Fire(_) | Class::FireSource(_) | Class::FireSensor(_) => super::fire::activate(w, id),
         Class::Maker(_) => super::templates::maker_activate(w, id),
-        Class::Thruster(_) | Class::Upright(_) => super::physics::activate(w, id),
+        Class::Thruster(_) | Class::Upright(_) | Class::Motor(_) | Class::Joint(_) => super::physics::activate(w, id),
         Class::Part(_) => super::beams::activate(w, id),
         Class::Extra(_) => super::community::activate(w, id),
         _ => {}
@@ -1007,6 +1040,11 @@ pub(super) fn class_input(
                 }
                 match check_server_command(&line) {
                     Ok(ok) => w.effects.push(Effect::ServerCommand(ok)),
+                    // Server plugins' commands (SourceMod, Mani): a server
+                    // without the plugin ignores them.
+                    Err(_) if is_plugin_command(&line) => {
+                        w.note("server plugin commands not run (SourceMod, Mani)", line.clone())
+                    }
                     Err(why) => w.log.push(format!("point_servercommand: refused '{line}' ({why})")),
                 }
             }
@@ -1021,7 +1059,9 @@ pub(super) fn class_input(
                         player: p,
                         command: ok,
                     }),
-                    None => w.log.push(format!("point_clientcommand: refused '{line}' (not allowed)")),
+                    // Outside the allowlist (client settings such as
+                    // cl_detaildist): refused on purpose, noted once.
+                    None => w.note("client commands not on the allowlist (refused)", line.clone()),
                 }
             }
             _ => return false,
@@ -1060,7 +1100,9 @@ pub(super) fn class_input(
         | Class::Conveyor(_) => return super::game::input(w, id, input, value, activator, caller),
         Class::Template(_) | Class::Maker(_) => return super::templates::input(w, id, input, value, activator, caller),
         Class::Camera(_) => return super::camera::input(w, id, input, activator),
-        Class::Thruster(_) | Class::Upright(_) => return super::physics::input(w, id, input, value, activator),
+        Class::Thruster(_) | Class::Upright(_) | Class::Motor(_) | Class::Joint(_) => {
+            return super::physics::input(w, id, input, value, activator);
+        }
         Class::Extra(_) => return super::community::input(w, id, input, value, activator),
         Class::Flame(_) | Class::None | Class::Auto => return false,
     }
@@ -1130,6 +1172,8 @@ pub(super) fn class_keyvalue(w: &mut LogicWorld, id: EntId, key: &str, _value: &
             true
         }
         Class::Trigger(_) => triggers::keyvalue(w, id, key),
+        // env_entity_maker reads its template when it makes one.
+        Class::Maker(_) if key == "entitytemplate" => true,
         // game_player_equip: its items are its keyvalues.
         Class::Equip(_) if e.classname.eq_ignore_ascii_case("game_player_equip") => {
             let items = equip_items(&e.keyvalues);

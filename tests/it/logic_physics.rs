@@ -90,6 +90,7 @@ fn add_crate(data: &mut MapData, index: usize, at: Vec3) {
         ..default()
     });
     data.props.push(MapProp {
+        pose: None,
         model: data.models.len() - 1,
         translation: to_engine(at),
         rotation: Quat::IDENTITY,
@@ -298,4 +299,125 @@ fn a_pinned_crate_blocks_a_closing_model_door_unless_forceclosed() {
             assert!(d.push.angles.y > 10.0, "stopped at the crate: {}", d.push.angles.y);
         }
     }
+}
+
+/// Water (a 128-unit-deep pool): a light crate dropped in it comes up and
+/// floats at the surface (map::buoyancy); out of the water the same crate
+/// rests on the floor.
+#[test]
+fn a_crate_floats_in_water() {
+    for (water, floats) in [(true, true), (false, false)] {
+        let box_ = entity(
+            &[("classname", "prop_physics"), ("origin", "0 0 40")],
+            Vec::new(),
+            false,
+        );
+        let mut data = map(vec![box_]);
+        add_crate(&mut data, 0, Vec3::new(0.0, 0.0, 40.0));
+        if water {
+            let (a, b) = (
+                to_engine(Vec3::new(-512.0, -512.0, 0.0)),
+                to_engine(Vec3::new(512.0, 512.0, 128.0)),
+            );
+            data.water.push(mashup::core::MapWaterVolume {
+                brush: MapBrush::from_box(a.min(b), a.max(b)),
+                slime: false,
+            });
+        }
+        let mut sim = sim(data);
+        sim.seconds(5.0);
+        let z = crate_at(&mut sim).z;
+        if floats {
+            // 20 kg in 32768 cubic inches: mostly above the surface.
+            assert!(z > 110.0 && z < 150.0, "floats at the surface: {z}");
+        } else {
+            assert!(z < 20.0, "rests on the floor: {z}");
+        }
+    }
+}
+
+/// phys_ballsocket holding a crate to the world 32 units above it: it
+/// hangs there instead of falling (physics_constraints.md); Break lets go.
+#[test]
+fn a_ball_socket_holds_a_crate_until_it_breaks() {
+    let box_ = entity(
+        &[
+            ("classname", "prop_physics"),
+            ("targetname", "lamp"),
+            ("origin", "0 0 200"),
+        ],
+        Vec::new(),
+        false,
+    );
+    let socket = entity(
+        &[
+            ("classname", "phys_ballsocket"),
+            ("targetname", "socket"),
+            ("origin", "0 0 232"),
+            ("attach1", "lamp"),
+        ],
+        Vec::new(),
+        false,
+    );
+    let mut data = map(vec![box_, socket]);
+    add_crate(&mut data, 0, Vec3::new(0.0, 0.0, 200.0));
+    let mut sim = sim(data);
+    sim.seconds(2.0);
+    let z = crate_at(&mut sim).z;
+    assert!((z - 200.0).abs() < 8.0, "hangs from the socket: {z}");
+    sim.app
+        .world_mut()
+        .resource_mut::<Logic>()
+        .world
+        .queue_input("socket", "Break", Value::Void, 0.0, None);
+    sim.seconds(2.0);
+    let z = crate_at(&mut sim).z;
+    assert!(z < 20.0, "fell once broken: {z}");
+}
+
+/// phys_motor with "Hinge Object" (spawnflags 7, as surf_surreal's
+/// flowers): the crate turns about the motor's vertical axis at its speed
+/// and stays where it is.
+#[test]
+fn a_motor_spins_its_body_on_a_hinge() {
+    use avian3d::prelude::AngularVelocity;
+    let box_ = entity(
+        &[
+            ("classname", "prop_physics"),
+            ("targetname", "flower"),
+            ("origin", "0 0 100"),
+        ],
+        Vec::new(),
+        false,
+    );
+    let motor = entity(
+        &[
+            ("classname", "phys_motor"),
+            ("origin", "0 0 100"),
+            ("axis", "0 0 140"),
+            ("speed", "90"),
+            ("spinup", "1"),
+            ("spawnflags", "7"),
+            ("attach1", "flower"),
+        ],
+        Vec::new(),
+        false,
+    );
+    let mut data = map(vec![box_, motor]);
+    add_crate(&mut data, 0, Vec3::new(0.0, 0.0, 100.0));
+    let mut sim = sim(data);
+    sim.seconds(3.0);
+    let at = crate_at(&mut sim);
+    assert!(
+        (at.z - 100.0).abs() < 4.0 && at.x.abs() < 4.0,
+        "held on its hinge: {at}"
+    );
+    let world = sim.app.world_mut();
+    let node = world.query::<(Entity, &PropEntity)>().iter(world).next().unwrap().0;
+    let w = world.get::<AngularVelocity>(node).unwrap().0;
+    // 90 deg/s about Source +Z, engine +Y.
+    assert!(
+        (w.y.abs() - 90f32.to_radians()).abs() < 0.2,
+        "spins at the motor's speed: {w}"
+    );
 }

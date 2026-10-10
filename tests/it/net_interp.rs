@@ -441,6 +441,7 @@ fn crate_map() -> MapData {
         ..default()
     });
     data.props.push(MapProp {
+        pose: None,
         model: 0,
         translation: to_engine(Vec3::new(0.0, 0.0, 16.0)),
         rotation: Quat::IDENTITY,

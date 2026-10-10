@@ -77,6 +77,8 @@ pub struct MaterialLoader<'a> {
     pak: super::pak::Pak<'a>,
     /// Materials or textures that couldn't be loaded, with the reason.
     pub missing: Vec<String>,
+    /// The monitor screen texture (`_rt_camera`), once a material uses it.
+    pub camera_texture: Option<usize>,
 }
 
 impl<'a> MaterialLoader<'a> {
@@ -95,6 +97,7 @@ impl<'a> MaterialLoader<'a> {
             cube_by_path: HashMap::new(),
             pak,
             missing: Vec::new(),
+            camera_texture: None,
         }
     }
 
@@ -569,6 +572,10 @@ impl<'a> MaterialLoader<'a> {
             vertex_alpha: sprite_card || flag("$vertexalpha"),
             no_depth: flag("$ignorez"),
             sequences,
+            overbright: keys
+                .get("$overbrightfactor")
+                .and_then(|v| v.trim().parse::<f32>().ok())
+                .unwrap_or(0.0),
         })
     }
 
@@ -838,6 +845,24 @@ impl<'a> MaterialLoader<'a> {
     }
 
     fn texture(&mut self, name: &str, srgb: bool) -> Option<usize> {
+        // The monitor screen (func_monitor's point_camera view: `_rt_Camera`,
+        // or `engine/camerarendertarget` as dev/dev_monitor names it): a
+        // placeholder the map replaces with a render target.
+        let plain = normalize(name).trim_end_matches(".vtf").to_ascii_lowercase();
+        if plain == "_rt_camera" || plain == "engine/camerarendertarget" {
+            if self.camera_texture.is_none() {
+                self.textures.push(MapTexture {
+                    name: "_rt_camera".into(),
+                    srgb: true,
+                    mips: Vec::new(),
+                    width: 4,
+                    height: 4,
+                    rgba8: [16, 16, 16, 255].repeat(16),
+                });
+                self.camera_texture = Some(self.textures.len() - 1);
+            }
+            return self.camera_texture;
+        }
         let path = format!("materials/{}.vtf", normalize(name).trim_end_matches(".vtf"));
         let key = if srgb { path.clone() } else { format!("{path}#linear") };
         if let Some(cached) = self.by_path.get(&key) {

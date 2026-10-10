@@ -351,7 +351,13 @@ fn run(entities: &[MapEntity], secs: f32, a: &mut MapAudit) {
         let e = w.get(id).unwrap();
         match &e.class {
             Class::Trigger(_) => visits.push(Visit::Trigger(centre(&w, id) - Vec3::new(0.0, 0.0, 36.0))),
-            Class::Button(_) | Class::Door(_) | Class::Rotating(_) | Class::PropDoor(_) => visits.push(Visit::Use(id)),
+            // +use finds only what has a solid (a non-solid spinner can't
+            // be used; nor in the game).
+            Class::Button(_) | Class::Door(_) | Class::Rotating(_) | Class::PropDoor(_)
+                if w.mover_solid(id).is_some_and(|b| !b.is_empty()) =>
+            {
+                visits.push(Visit::Use(id))
+            }
             _ => {}
         }
     }
@@ -644,7 +650,7 @@ impl LogicWorld {
                     );
                 }
                 if let Some((_, f)) = self.follows.iter().find(|(c, _)| *c == id) {
-                    s += &format!("; follows '{}'", self.get(f.parent).map_or("", |p| p.targetname.as_str()));
+                    s += &format!("; follows '{}'", self.name_of(f.parent));
                 }
                 if let Class::Trigger(t) = &e.class
                     && let Some(lo) = t.brushes.iter().map(|b| b.min).reduce(Vec3::min)

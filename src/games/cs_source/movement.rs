@@ -2046,7 +2046,8 @@ fn step(
         // (specs/source/game_entities.md 1, lagged movement); 0 (or less:
         // our choice) holds it still, gravity included.
         let time_scale = controls.map_or(1.0, |c| c.time_scale);
-        if time_scale <= 0.0 {
+        // A player parented to a map entity is carried by the logic.
+        if time_scale <= 0.0 || controls.is_some_and(|c| c.parented) {
             continue;
         }
         let dt = dt * time_scale;

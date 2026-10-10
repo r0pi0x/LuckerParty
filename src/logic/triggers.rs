@@ -135,7 +135,11 @@ pub(super) fn activate(w: &mut LogicWorld, id: EntId) {
             })
         });
     if filter.is_none() {
-        w.log.push(format!("trigger: filter '{name}' not found"));
+        // The game lets every activator through, as we do.
+        w.note(
+            "triggers naming a filter that doesn't exist (all pass, as in the game)",
+            name.clone(),
+        );
     }
     if let Some(t) = trig_mut(w, id) {
         t.filter = filter;

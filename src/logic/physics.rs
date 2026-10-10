@@ -1,5 +1,8 @@
 //! Physics helpers map logic switches (specs/source/physics_brushes.md
-//! 4-5): phys_thruster and phys_keepupright. The logic keeps whether
+//! 4-5): phys_thruster and phys_keepupright; phys_motor (public entity
+//! docs) and the two-object constraints (specs/source/
+//! physics_constraints.md: bodies, world, on/off, Break; the joints are
+//! the physics engine's, `map::controllers::BodyJoints`). The logic keeps whether
 //! each is on and its numbers; the bridge hands them to the physics as
 //! `map::controllers::BodyControllers` (the body's own motion is the
 //! physics engine's). func_physbox is a prop here (`prop_damage`).
@@ -46,6 +49,59 @@ pub struct Upright {
     pub goal: Vec3,
 }
 
+/// phys_motor spawnflags (public entity docs).
+pub const SF_MOTOR_START_ON: u32 = 1;
+pub const SF_MOTOR_NO_COLLIDE: u32 = 2;
+pub const SF_MOTOR_HINGE: u32 = 4;
+
+/// A phys_motor: spins its body about an axis at a speed, reached over
+/// the spin-up time; with "Hinge Object" the body is also hinged to the
+/// world on that axis.
+#[derive(Clone, Debug, Default)]
+pub struct Motor {
+    pub on: bool,
+    pub body: Option<EntId>,
+    /// Degrees per second.
+    pub speed: f32,
+    /// Unit axis, entity space (from the origin toward the "axis" point).
+    pub axis: Vec3,
+}
+
+/// Constraint spawnflags (physics_constraints.md 1).
+pub const SF_JOINT_NO_COLLIDE: u32 = 1;
+pub const SF_JOINT_START_INACTIVE: u32 = 4;
+pub const SF_JOINT_CONNECT_ON_TURN_ON: u32 = 16;
+
+/// What a constraint holds.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum JointKind {
+    /// phys_constraint: welded.
+    Fixed,
+    /// phys_ballsocket, phys_ragdollconstraint (its angle limits aren't
+    /// kept): a point both turn about.
+    Ball,
+    /// phys_hinge (and a motor's "Hinge Object"): turns about an axis.
+    Hinge { axis: Vec3 },
+    /// phys_slideconstraint: slides along an axis.
+    Slide { axis: Vec3 },
+    /// phys_lengthconstraint: at most `max` (at least `min`) apart.
+    Length { min: f32, max: f32, other: Vec3 },
+}
+
+/// A two-object constraint (physics_constraints.md): its bodies (None:
+/// the world), resolved at activation; on or off; gone once broken.
+#[derive(Clone, Debug)]
+pub struct Joint {
+    pub kind: JointKind,
+    pub on: bool,
+    pub connected: bool,
+    pub body1: Option<EntId>,
+    pub body2: Option<EntId>,
+    /// Where the bodies are held together (entity space).
+    pub anchor: Vec3,
+    pub no_collide: bool,
+}
+
 /// A controller as the logic exports it (entity space): what pushes which
 /// body.
 #[derive(Clone, Debug, PartialEq)]
@@ -69,6 +125,30 @@ pub enum ControlKind {
     },
     /// Goal up axis (entity space) and limit (deg/s).
     Upright { goal: Vec3, limit: f32 },
+    /// phys_motor: spin about `axis` (entity space) at `speed` deg/s,
+    /// reached over `spinup` s.
+    Motor { axis: Vec3, speed: f32, spinup: f32 },
+}
+
+/// A constraint as the logic exports it: bodies (body1 None: the world).
+#[derive(Clone, Debug, PartialEq)]
+pub struct JointExport {
+    pub id: EntId,
+    pub kind: JointKind,
+    pub body1: Option<EntId>,
+    pub body2: EntId,
+    pub anchor: Vec3,
+    pub on: bool,
+    pub no_collide: bool,
+}
+
+/// A point keyvalue's direction from the entity's origin (unit; zero
+/// when it is missing or at the origin).
+fn axis_from(e: &super::world::LogicEntity, key: &str) -> Vec3 {
+    match e.kv(key) {
+        Some(v) => (crate::map::entities::parse_vector(v) - e.origin).normalize_or_zero(),
+        None => Vec3::ZERO,
+    }
 }
 
 pub(super) fn spawn(e: &super::world::LogicEntity, class: &str) -> Option<Class> {
@@ -79,18 +159,96 @@ pub(super) fn spawn(e: &super::world::LogicEntity, class: &str) -> Option<Class>
             goal: entity_rotation(e.angles) * Vec3::Z,
             ..default()
         })),
+        "phys_motor" => Class::Motor(Box::new(Motor {
+            on: false,
+            body: None,
+            speed: e.kv_f("speed"),
+            axis: axis_from(e, "axis"),
+        })),
+        "phys_constraint"
+        | "phys_ballsocket"
+        | "phys_hinge"
+        | "phys_slideconstraint"
+        | "phys_lengthconstraint"
+        | "phys_ragdollconstraint" => {
+            let kind = match class {
+                "phys_constraint" => JointKind::Fixed,
+                "phys_hinge" => JointKind::Hinge {
+                    axis: axis_from(e, "hingeaxis"),
+                },
+                "phys_slideconstraint" => JointKind::Slide {
+                    axis: axis_from(e, "slideaxis"),
+                },
+                "phys_lengthconstraint" => JointKind::Length {
+                    min: e.kv_f("minlength"),
+                    max: e.kv_f("addlength")
+                        + e.kv("attachpoint")
+                            .map_or(0.0, |p| crate::map::entities::parse_vector(p).distance(e.origin)),
+                    other: e.kv("attachpoint").map_or(e.origin, crate::map::entities::parse_vector),
+                },
+                _ => JointKind::Ball,
+            };
+            Class::Joint(Box::new(Joint {
+                kind,
+                on: false,
+                connected: false,
+                body1: None,
+                body2: None,
+                anchor: e.origin,
+                no_collide: e.has_flag(SF_JOINT_NO_COLLIDE),
+            }))
+        }
         _ => return None,
     })
 }
 
 /// The body named `attach1`: a prop or physics brush.
 fn body_named(w: &LogicWorld, id: EntId) -> Option<EntId> {
-    let name = w.get(id)?.kv("attach1")?.trim().to_string();
+    body_by_key(w, id, "attach1")
+}
+
+/// The first entity named by `key` that has a physics body: a prop,
+/// physics brush or mover (physics_constraints.md 1.2).
+fn body_by_key(w: &LogicWorld, id: EntId, key: &str) -> Option<EntId> {
+    let name = w.get(id)?.kv(key)?.trim().to_string();
     if name.is_empty() {
         return None;
     }
-    w.find(&name)
-        .filter(|b| matches!(w.get(*b).map(|e| &e.class), Some(Class::Prop(_))))
+    w.ids().into_iter().find(|b| {
+        w.get(*b).is_some_and(|e| {
+            !e.targetname.is_empty()
+                && super::world::name_matches(&name, &e.targetname)
+                && (matches!(e.class, Class::Prop(_)) || super::movers::pusher(&e.class).is_some())
+        })
+    })
+}
+
+/// Connect a constraint to its bodies (at activation, or its first
+/// TurnOn with "Do not connect until turned on").
+fn connect(w: &mut LogicWorld, id: EntId) {
+    let (b1, b2) = (body_by_key(w, id, "attach1"), body_by_key(w, id, "attach2"));
+    // One body: held to the world (1.3); none: nothing to hold.
+    let (b1, b2) = match (b1, b2) {
+        (Some(a), Some(b)) => (Some(a), Some(b)),
+        (Some(a), None) | (None, Some(a)) => (None, Some(a)),
+        (None, None) => (None, None),
+    };
+    if b2.is_none() {
+        w.log.push("phys constraint: no body to hold (removed)".into());
+        w.kill(id);
+        return;
+    }
+    if let Some(Class::Joint(j)) = w.get_mut(id).map(|e| &mut e.class) {
+        j.body1 = b1;
+        j.body2 = b2;
+        j.connected = true;
+    }
+}
+
+/// A constraint breaks: OnBreak, and it is gone.
+fn break_joint(w: &mut LogicWorld, id: EntId) {
+    w.fire_output(id, "OnBreak", Some(Who::Ent(id)), Value::Void);
+    w.kill(id);
 }
 
 pub(super) fn activate(w: &mut LogicWorld, id: EntId) {
@@ -122,6 +280,21 @@ pub(super) fn activate(w: &mut LogicWorld, id: EntId) {
             if let Some(Class::Upright(u)) = w.get_mut(id).map(|e| &mut e.class) {
                 u.body = Some(b);
                 u.on = flags & SF_UPRIGHT_START_INACTIVE == 0;
+            }
+        }
+        Class::Motor(_) => {
+            if let Some(Class::Motor(m)) = w.get_mut(id).map(|e| &mut e.class) {
+                m.body = body;
+                m.on = flags & SF_MOTOR_START_ON != 0;
+            }
+        }
+        Class::Joint(_) => {
+            let on = flags & SF_JOINT_START_INACTIVE == 0;
+            if let Some(Class::Joint(j)) = w.get_mut(id).map(|e| &mut e.class) {
+                j.on = on;
+            }
+            if flags & SF_JOINT_CONNECT_ON_TURN_ON == 0 {
+                connect(w, id);
             }
         }
         _ => {}
@@ -176,6 +349,36 @@ pub(super) fn input(w: &mut LogicWorld, id: EntId, input: &str, value: &Value, _
                 u.on = input == "turnon";
             }
         }
+        (Class::Motor(_), "turnon" | "turnoff") => {
+            if let Some(Class::Motor(m)) = w.get_mut(id).map(|e| &mut e.class) {
+                m.on = input == "turnon";
+            }
+        }
+        (Class::Motor(_), "setspeed") => {
+            let Some(v) = w.need_float(value, input) else {
+                return true;
+            };
+            if let Some(Class::Motor(m)) = w.get_mut(id).map(|e| &mut e.class) {
+                m.speed = v;
+            }
+        }
+        (Class::Joint(j), "turnon") => {
+            if !j.connected {
+                connect(w, id);
+            }
+            if let Some(Class::Joint(j)) = w.get_mut(id).map(|e| &mut e.class) {
+                j.on = true;
+            }
+        }
+        (Class::Joint(_), "turnoff") => {
+            if let Some(Class::Joint(j)) = w.get_mut(id).map(|e| &mut e.class) {
+                j.on = false;
+            }
+        }
+        (Class::Joint(_), "break" | "constraintbroken") => break_joint(w, id),
+        // Motors and friction of hinges and sliders: kept as placed
+        // (tech-debt).
+        (Class::Joint(_), "setangularvelocity" | "sethingefriction" | "setvelocity") => {}
         (Class::Upright(_), "setangularlimit") => {
             let Some(l) = w.need_float(value, input) else { return true };
             if let Some(Class::Upright(u)) = w.get_mut(id).map(|e| &mut e.class) {
@@ -188,6 +391,38 @@ pub(super) fn input(w: &mut LogicWorld, id: EntId, input: &str, value: &Value, _
 }
 
 impl LogicWorld {
+    /// The constraints holding bodies (connected, not broken), with
+    /// phys_motors' "Hinge Object" hinges.
+    pub fn joints(&self) -> Vec<JointExport> {
+        self.ids()
+            .into_iter()
+            .filter_map(|id| {
+                let e = self.get(id)?;
+                match &e.class {
+                    Class::Joint(j) if j.connected => Some(JointExport {
+                        id,
+                        kind: j.kind,
+                        body1: j.body1.filter(|b| self.get(*b).is_some()),
+                        body2: j.body2.filter(|b| self.get(*b).is_some())?,
+                        anchor: j.anchor,
+                        on: j.on,
+                        no_collide: j.no_collide,
+                    }),
+                    Class::Motor(m) if e.has_flag(SF_MOTOR_HINGE) => Some(JointExport {
+                        id,
+                        kind: JointKind::Hinge { axis: m.axis },
+                        body1: None,
+                        body2: m.body.filter(|b| self.get(*b).is_some())?,
+                        anchor: e.origin,
+                        on: true,
+                        no_collide: e.has_flag(SF_MOTOR_NO_COLLIDE),
+                    }),
+                    _ => None,
+                }
+            })
+            .collect()
+    }
+
     /// The thrusters and keep-uprights that are on, on bodies that are
     /// there.
     pub fn controls(&self) -> Vec<Control> {
@@ -218,6 +453,15 @@ impl LogicWorld {
                         kind: ControlKind::Upright {
                             goal: u.goal,
                             limit: u.limit,
+                        },
+                    }),
+                    Class::Motor(m) if m.on => Some(Control {
+                        id,
+                        body: m.body.filter(|b| self.get(*b).is_some())?,
+                        kind: ControlKind::Motor {
+                            axis: m.axis,
+                            speed: m.speed,
+                            spinup: e.kv_f("spinup"),
                         },
                     }),
                     _ => None,

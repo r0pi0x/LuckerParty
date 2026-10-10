@@ -7,6 +7,8 @@
 //! them; the logic keeps whether each is on (`LogicWorld::part_states`,
 //! `LogicWorld::light_styles`).
 
+use bevy::math::Vec3;
+
 use super::classes::Class;
 use super::movers::DoorState;
 use super::value::Value;
@@ -36,6 +38,15 @@ pub enum PartKind {
     Glow,
     /// env_spark: sparks while on (`beams`).
     Spark,
+    /// env_spritetrail: always drawn (a ribbon behind its moving entity).
+    Trail,
+    /// env_smokestack: emitting while on (TurnOn/TurnOff/Toggle).
+    SmokeStack,
+    /// info_particle_system: its effect runs while on (Start/Stop).
+    Particles,
+    /// point_tesla: sparks at random intervals while on (TurnOn/TurnOff),
+    /// DoSpark once (`beams`).
+    Tesla,
 }
 
 /// A sprite or dust volume: shown (sprites) or spawning (dust) while on.
@@ -67,6 +78,10 @@ pub(super) fn spawn_part(w: &LogicWorld, id: EntId, kind: PartKind) -> Part {
         PartKind::Beam => super::beams::starts_on(e),
         PartKind::Glow => true,
         PartKind::Spark => e.has_flag(super::beams::SF_SPARK_START_ON),
+        PartKind::Trail => true,
+        PartKind::SmokeStack => e.kv_i("InitialState") != 0,
+        PartKind::Particles => e.kv_i("start_active") != 0,
+        PartKind::Tesla => false,
     };
     Part {
         kind,
@@ -94,20 +109,33 @@ pub(super) fn spawn_light(w: &mut LogicWorld, id: EntId) -> Light {
 /// Sprite, dust and light inputs; false when not one of them.
 pub(super) fn input(w: &mut LogicWorld, id: EntId, input: &str, _value: &Value) -> bool {
     match w.get(id).map(|e| e.class.clone()) {
-        Some(Class::Part(p)) if matches!(p.kind, PartKind::Beam | PartKind::Glow | PartKind::Spark) => {
+        Some(Class::Part(p))
+            if matches!(
+                p.kind,
+                PartKind::Beam | PartKind::Glow | PartKind::Spark | PartKind::Tesla
+            ) =>
+        {
             super::beams::input(w, id, input)
         }
         Some(Class::Part(p)) => {
             let on = match (p.kind, input) {
                 (PartKind::Sprite, "showsprite")
-                | (PartKind::Dust | PartKind::Steam, "turnon")
+                | (PartKind::Dust | PartKind::Steam | PartKind::SmokeStack, "turnon")
+                | (PartKind::Particles, "start")
                 | (PartKind::Soundscape, "enable") => true,
                 (PartKind::Sprite, "hidesprite")
-                | (PartKind::Dust | PartKind::Steam, "turnoff")
+                | (PartKind::Dust | PartKind::Steam | PartKind::SmokeStack, "turnoff")
+                | (PartKind::Particles, "stop")
                 | (PartKind::Soundscape, "disable") => false,
                 (PartKind::Sprite, "togglesprite")
-                | (PartKind::Steam, "toggle")
+                | (PartKind::Steam | PartKind::SmokeStack, "toggle")
                 | (PartKind::Soundscape, "toggleenabled") => !p.on,
+                // A smoke stack's shape (particles_and_smoke.md 3.6): kept
+                // as placed (tech-debt).
+                (PartKind::SmokeStack, "jetlength" | "spreadspeed" | "speed" | "rate") => p.on,
+                // A particle system's later-engine inputs (2): nothing in
+                // CS:S.
+                (PartKind::Particles, "destroyimmediately" | "stopplayendcap") => p.on,
                 _ => return false,
             };
             if let Some(Class::Part(p)) = w.get_mut(id).map(|e| &mut e.class) {
@@ -178,6 +206,19 @@ impl LogicWorld {
                 let e = self.get(id)?;
                 let Class::Part(p) = &e.class else { return None };
                 Some((e.map_index?, p.kind, p.on))
+            })
+            .collect()
+    }
+
+    /// Drawn parts that follow a parent (`anchors`), where they are now:
+    /// (map index, origin, angles), entity space.
+    pub fn part_poses(&self) -> Vec<(usize, Vec3, Vec3)> {
+        self.follows
+            .iter()
+            .filter_map(|(id, _)| {
+                let e = self.get(*id)?;
+                matches!(e.class, Class::Part(_)).then_some(())?;
+                Some((e.map_index?, e.origin, e.angles))
             })
             .collect()
     }

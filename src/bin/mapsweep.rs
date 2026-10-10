@@ -690,6 +690,8 @@ fn write_audit(out: &Path, rows: &[Row]) -> std::io::Result<()> {
     let mut keys = Rank::new();
     let mut flags = Rank::new();
     let mut runtime = Rank::new();
+    let mut notes = Rank::new();
+    let mut note_lines = 0usize;
     let mut stuck = Rank::new();
     let mut classes = Rank::new();
     let mut special = Rank::new();
@@ -737,6 +739,13 @@ fn write_audit(out: &Path, rows: &[Row]) -> std::io::Result<()> {
             }
         }
         for line in &a.log {
+            // Known, intended gaps (`LogicWorld::note`): listed apart.
+            if let Some(rest) = line.strip_prefix("note: ") {
+                let kind = rest.split(": ").next().unwrap_or(rest).to_string();
+                add(&mut notes, kind, &r.name, 1);
+                note_lines += 1;
+                continue;
+            }
             add(&mut runtime, logic_kind(line), &r.name, 1);
             log_lines += 1;
         }
@@ -809,6 +818,8 @@ fn write_audit(out: &Path, rows: &[Row]) -> std::io::Result<()> {
     section(&mut md, "Entity classes nothing handles", classes, 60);
     section(&mut md, "Outputs maps connect that nothing fires", unfired, 60);
     section(&mut md, "Run-time complaints (scripted player)", runtime, 60);
+    md += &format!("Known, intended gaps the logic notes once per map (`LogicWorld::note`): {note_lines} notes.\n\n");
+    section(&mut md, "Notes (intended; once per map)", notes, 30);
     section(&mut md, "Movers told to move that didn't", stuck, 30);
     section(&mut md, "Movers that jumped (snapped far in one tick)", jumps, 30);
     section(&mut md, "Children of movers that stay behind", behind, 30);

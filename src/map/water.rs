@@ -977,6 +977,7 @@ pub struct ReflectionClusters(pub Vec<u32>);
 
 pub(crate) type MainCameraFilter = (
     With<Camera3d>,
+    Without<super::monitor::ScreenCamera>,
     Without<super::SkyboxCamera>,
     Without<super::ViewModelCamera>,
     Without<WaterReflectionCamera>,

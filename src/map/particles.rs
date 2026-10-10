@@ -51,6 +51,10 @@ pub struct ParticleMaterial {
     /// Sprite sheet: sequences of frames, each frame a texture rectangle
     /// (min u, min v, max u, max v). Empty: the whole texture.
     pub sequences: Vec<Vec<[f32; 4]>>,
+    /// Colour multiplier (sprite cards' `$overbrightfactor`; 0: none
+    /// given, 1). Particle systems apply it (`psys`); hand-built effects
+    /// use their own.
+    pub overbright: f32,
 }
 
 /// The particle materials a map's game uses, found by name.
@@ -202,6 +206,10 @@ pub enum Shape {
     /// A square in the plane with `normal`, turned `yaw` degrees about it;
     /// `size` is its full side.
     Flat { normal: Vec3, yaw: f32, yaw_speed: f32 },
+    /// A quad with these corners (bottom-left, top-left, top-right,
+    /// bottom-right; engine space) showing this texture rectangle (min u,
+    /// min v, max u, max v): a segment of a trail.
+    Quad { corners: [Vec3; 4], rect: [f32; 4] },
     /// A bullet tracer (specs/cs_source/tracers.md 3.1): a streak `length`
     /// long whose head leaves `start` along `dir` at `speed` (m/s), both
     /// ends kept between `start` and `distance` along; a camera-facing core
@@ -227,6 +235,8 @@ pub struct Particle {
     /// Sprite-sheet sequence, and its frame rate (0: first frame only).
     pub sequence: u16,
     pub fps: f32,
+    /// The sequence starts over after its last frame (else holds it).
+    pub frame_loop: bool,
     /// sRGB, 0-1 (above 1: overbright, for additive materials).
     pub color: Vec3,
     /// Blend toward this colour between these life fractions
@@ -254,6 +264,7 @@ impl Particle {
             material,
             sequence: 0,
             fps: 0.0,
+            frame_loop: false,
             color: Vec3::ONE,
             color_fade: None,
             alpha: 1.0,
@@ -778,7 +789,16 @@ pub(super) fn step_particles(time: Res<Time>, mut particles: ResMut<Particles>, 
 pub(super) fn draw_particles(
     particles: Res<Particles>,
     assets: Option<ResMut<ParticleAssets>>,
-    cameras: Query<&GlobalTransform, (With<Camera3d>, Without<SkyboxCamera>, Without<ViewModelCamera>, Without<super::water::WaterReflectionCamera>)>,
+    cameras: Query<
+        &GlobalTransform,
+        (
+            With<Camera3d>,
+            Without<super::monitor::ScreenCamera>,
+            Without<SkyboxCamera>,
+            Without<ViewModelCamera>,
+            Without<super::water::WaterReflectionCamera>,
+        ),
+    >,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ParticleDrawMaterial>>,
     fog: Option<Res<super::fog::SceneFog>>,
@@ -905,6 +925,9 @@ pub(super) fn draw_particles(
                     let w = side * width;
                     b.quad([t - w, h - w, h + w, t + w], rect, rgba);
                 }
+                Shape::Quad { corners, rect } => {
+                    b.quad(corners.map(|c| c - centre), rect, rgba);
+                }
                 Shape::Flat { normal, yaw, .. } => {
                     let n = normal.normalize_or_zero();
                     let t = n.any_orthonormal_vector();
@@ -935,7 +958,12 @@ fn frame_rect(def: &ParticleMaterial, p: &Particle) -> [f32; 4] {
     let Some(seq) = def.sequences.get(p.sequence as usize).filter(|s| !s.is_empty()) else {
         return [0.0, 0.0, 1.0, 1.0];
     };
-    let frame = ((p.age * p.fps) as usize).min(seq.len() - 1);
+    let frame = (p.age * p.fps).max(0.0) as usize;
+    let frame = if p.frame_loop {
+        frame % seq.len()
+    } else {
+        frame.min(seq.len() - 1)
+    };
     seq[frame]
 }
 

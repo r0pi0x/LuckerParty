@@ -836,6 +836,68 @@ pub fn add_static_props(
     place_props(bsp, materials, lighting, occluders, data, placements, hdr);
 }
 
+/// The keyvalue a model attachment of a prop entity is given under
+/// (`ATTACHMENT_KEY` + its lower-case name): "x y z", model space, units.
+pub const ATTACHMENT_KEY: &str = "$attachment ";
+
+/// Model attachments of the prop entities something may be parented to
+/// (named by a parentname or a SetParent output), as keyvalues
+/// (`ATTACHMENT_KEY`) for the logic's SetParentAttachment: each
+/// attachment's place in the model's reference pose.
+pub fn add_attachment_keys(materials: &MaterialLoader, data: &mut MapData) {
+    let mut parents: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for e in &data.entities {
+        for (k, v) in &e.keyvalues {
+            if k.eq_ignore_ascii_case("parentname") {
+                parents.insert(crate::map::entities::parent_name(v).to_ascii_lowercase());
+            } else if k.starts_with("On") || k.starts_with("on") {
+                let parts: Vec<&str> = v.split([',', '\u{1b}']).collect();
+                if parts.len() >= 3 && parts[1].eq_ignore_ascii_case("SetParent") {
+                    parents.insert(parts[2].trim().to_ascii_lowercase());
+                }
+            }
+        }
+    }
+    let read = |p: &str| materials.read(p);
+    let mut cache: std::collections::HashMap<String, Vec<(String, Vec3)>> = std::collections::HashMap::new();
+    for e in &mut data.entities {
+        let named = e.get("targetname").is_some_and(|n| parents.contains(&n.to_ascii_lowercase()));
+        let Some(model) = e.get("model").filter(|m| named && m.to_ascii_lowercase().ends_with(".mdl")) else {
+            continue;
+        };
+        let model = model.to_ascii_lowercase().replace('\\', "/");
+        let list = cache
+            .entry(model.clone())
+            .or_insert_with(|| model_attachments(&read, &model).unwrap_or_default())
+            .clone();
+        for (name, at) in list {
+            e.keyvalues
+                .push((format!("{ATTACHMENT_KEY}{name}"), format!("{} {} {}", at.x, at.y, at.z)));
+        }
+    }
+}
+
+/// A model's attachments in its reference pose (Source axes, units).
+fn model_attachments(read: super::anim::Read, path: &str) -> Result<Vec<(String, Vec3)>, String> {
+    let bones = super::anim::bones(read, path)?;
+    let mut global: Vec<(Quat, Vec3)> = Vec::with_capacity(bones.len());
+    for (_, parent, rotation, position) in &bones {
+        let g = match parent.and_then(|p| global.get(p).copied()) {
+            Some((pr, pp)) => (pr * *rotation, pp + pr * *position),
+            None => (*rotation, *position),
+        };
+        global.push(g);
+    }
+    let (attachments, _) = super::anim::attachments(read, path)?;
+    Ok(attachments
+        .into_iter()
+        .map(|(name, bone, local)| {
+            let (r, p) = global.get(bone).copied().unwrap_or((Quat::IDENTITY, Vec3::ZERO));
+            (name.to_ascii_lowercase(), p + r * local.translation)
+        })
+        .collect())
+}
+
 /// Props placed as entities: physics props (barrels, baskets; static here
 /// until there's physics) and dynamic props. Both collide by their physics
 /// model (the visible mesh until `.phy` is parsed).
@@ -853,22 +915,27 @@ fn entity_props(bsp: &Bsp) -> Vec<PropPlacement> {
             let class = e.prop("classname")?;
             let physics = class.starts_with("prop_physics");
             let door = class == DOOR_CLASS;
-            if !physics && !door && !class.starts_with("prop_dynamic") {
+            let ragdoll = class == "prop_ragdoll";
+            if !physics && !door && !ragdoll && !class.starts_with("prop_dynamic") {
                 return None;
             }
             let [x, y, z] = parse(e.prop("origin")?)?;
             let [pitch, yaw, roll] = e.prop("angles").and_then(parse).unwrap_or([0.0; 3]);
             // prop_dynamic: solid 0 = not solid, otherwise the physics model.
-            let solid = if physics || door || e.prop("solid").is_none_or(|s| s.trim() != "0") {
+            let solid = if ragdoll {
+                // Drawn as it lies; its bodies aren't simulated (tech-debt).
+                PropSolid::None
+            } else if physics || door || e.prop("solid").is_none_or(|s| s.trim() != "0") {
                 PropSolid::Mesh
             } else {
                 PropSolid::None
             };
             let dynamic = class.starts_with("prop_dynamic");
-            let animated = dynamic
-                && (e.prop("DefaultAnim").is_some_and(|a| !a.trim().is_empty())
-                    || e.prop("targetname")
-                        .is_some_and(|n| animated_names.contains(&n.to_ascii_lowercase())));
+            let animated = ragdoll
+                || dynamic
+                    && (e.prop("DefaultAnim").is_some_and(|a| !a.trim().is_empty())
+                        || e.prop("targetname")
+                            .is_some_and(|n| animated_names.contains(&n.to_ascii_lowercase())));
             Some(PropPlacement {
                 model: e.prop("model")?.to_lowercase(),
                 skin: e.prop("skin").and_then(|s| s.trim().parse().ok()).unwrap_or(0),
@@ -909,6 +976,92 @@ fn entity_props(bsp: &Bsp) -> Vec<PropPlacement> {
             })
         })
         .collect()
+}
+
+/// A ragdoll model's pose from Hammer's "angleOverride" (pairs of a
+/// ragdoll part index, the model's `.phy` solid order, and its world
+/// "pitch yaw roll"): each part bone turned to its angles, placed by its
+/// nearest posed ancestor's frame and its reference offset from it (the
+/// root part at the origin), the other bones following their parents in
+/// the reference pose. Bone-local (rotation, position) in the skeleton's
+/// frame and units; None without a ragdoll or an override.
+pub fn ragdoll_pose(
+    materials: &MaterialLoader,
+    model: &str,
+    bones: &[crate::map::MapBone],
+    over: &str,
+) -> Option<Vec<(Quat, Vec3)>> {
+    let phy = materials.read(&format!("{}.phy", model.trim_end_matches(".mdl")))?;
+    let phy = super::phy::parse_ragdoll(&phy).ok()?;
+    let parts: Vec<&str> = over.split(',').map(str::trim).collect();
+    let mut angles: HashMap<usize, Quat> = HashMap::new();
+    for pair in parts.chunks(2) {
+        let [index, a] = pair else { continue };
+        let Ok(index) = index.parse::<usize>() else { continue };
+        let a: Vec<f32> = a.split_whitespace().filter_map(|v| v.parse().ok()).collect();
+        let Some(solid) = phy.solids.iter().find(|s| s.index == index) else {
+            continue;
+        };
+        let Some(bone) = bones.iter().position(|b| b.name.eq_ignore_ascii_case(&solid.name)) else {
+            continue;
+        };
+        if a.len() == 3 {
+            angles.insert(bone, crate::map::entities::entity_rotation(Vec3::new(a[0], a[1], a[2])));
+        }
+    }
+    if angles.is_empty() {
+        return None;
+    }
+    // Reference pose in the skeleton's space.
+    let mut reference: Vec<(Quat, Vec3)> = Vec::with_capacity(bones.len());
+    for b in bones {
+        let g = match b.parent.and_then(|p| reference.get(p).copied()) {
+            Some((r, p)) => (r * b.rotation, p + r * b.position),
+            None => (b.rotation, b.position),
+        };
+        reference.push(g);
+    }
+    // The posed ancestor of each bone (itself when posed).
+    let posed_ancestor = |mut b: usize| -> Option<usize> {
+        for _ in 0..bones.len() {
+            b = bones[b].parent?;
+            if angles.contains_key(&b) {
+                return Some(b);
+            }
+        }
+        None
+    };
+    let mut world: Vec<(Quat, Vec3)> = Vec::with_capacity(bones.len());
+    for (i, b) in bones.iter().enumerate() {
+        let w = match angles.get(&i) {
+            Some(r) => {
+                let at = match posed_ancestor(i) {
+                    Some(a) => {
+                        let (ar, ap) = world[a];
+                        let (rr, rp) = reference[a];
+                        ap + ar * (rr.inverse() * (reference[i].1 - rp))
+                    }
+                    None => Vec3::ZERO,
+                };
+                (*r, at)
+            }
+            None => match b.parent.and_then(|p| world.get(p).copied()) {
+                Some((r, p)) => (r * b.rotation, p + r * b.position),
+                None => (b.rotation, b.position),
+            },
+        };
+        world.push(w);
+    }
+    Some(
+        bones
+            .iter()
+            .enumerate()
+            .map(|(i, b)| match b.parent.and_then(|p| world.get(p).copied()) {
+                Some((pr, pp)) => (pr.inverse() * world[i].0, pr.inverse() * (world[i].1 - pp)),
+                None => world[i],
+            })
+            .collect(),
+    )
 }
 
 /// Names (lower case) that outputs send SetAnimation or
@@ -1118,7 +1271,40 @@ fn place_props(
             }
             data.entities[index].keyvalues.extend(extra);
         }
+        // A map-placed ragdoll lies as Hammer posed it ("angleOverride";
+        // physics_brushes.md 6.3), the entity's own angles then reset.
+        let pose = (prop.class.as_deref() == Some("prop_ragdoll"))
+            .then(|| {
+                let rig = data.models[model].rig.clone()?;
+                let over = data.entities.get(prop.entity?)?.get("angleOverride")?.to_string();
+                ragdoll_pose(materials, &prop.model, &rig.bones, &over)
+            })
+            .flatten();
+        let ragdoll = prop.class.as_deref() == Some("prop_ragdoll");
+        let (translation, rotation) = match (&pose, ragdoll) {
+            (Some(_), _) => (translation, Quat::IDENTITY),
+            // No pose from Hammer: the game drops it from its first
+            // sequence's pose and it falls in a heap. Not simulated here,
+            // it lies on its back on the floor below (tech-debt).
+            (None, true) => {
+                let down = translation - Vec3::Y * 1024.0 * METERS_PER_UNIT;
+                let f = data
+                    .collision_brushes
+                    .iter()
+                    .filter_map(|b| b.sweep_box(Vec3::ZERO, translation, down, 0.0).map(|(f, _)| f))
+                    .fold(1.0, f32::min);
+                let floor = translation.lerp(down, f);
+                let lying = vbsp::Angles {
+                    pitch: -90.0,
+                    yaw: prop.angles.yaw,
+                    roll: 0.0,
+                };
+                (floor + Vec3::Y * 6.0 * METERS_PER_UNIT, super::props::rotation(lying))
+            }
+            (None, false) => (translation, rotation),
+        };
         data.props.push(MapProp {
+            pose: pose.map(std::sync::Arc::new),
             model,
             translation,
             rotation,
