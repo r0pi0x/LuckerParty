@@ -378,4 +378,152 @@ fn addoutput_keyvalues_that_change_behaviour() {
     assert!(!w.log.iter().any(|l| l.contains("has no effect")), "{:?}", w.log);
 }
 
+fn angles_now(w: &LogicWorld, id: EntId) -> Vec3 {
+    pusher(&w.get(id).unwrap().class).unwrap().angles
+}
+
+#[test]
+fn rotating_buttons_turn() {
+    // func_rot_button (mg_swag_multigames_v1's walls): Press turns it
+    // "distance" degrees (yaw), it comes back after "wait".
+    let mut w = world();
+    let b = spawn_brush(
+        &mut w,
+        &[
+            ("classname", "func_rot_button"),
+            ("targetname", "wall"),
+            ("distance", "90"),
+            ("speed", "90"),
+            ("wait", "1"),
+            ("OnPressed", "!self,FireUser1,,0,-1"),
+        ],
+        Vec3::splat(-8.0),
+        Vec3::splat(8.0),
+    );
+    // momentary_rot_button (surf_boreas, mg_boatrace_scramble):
+    // SetPosition turns it at its speed; arriving at 1 fires OnFullyOpen
+    // and Position; SetPositionImmediately jumps without outputs.
+    let m = spawn_brush(
+        &mut w,
+        &[
+            ("classname", "momentary_rot_button"),
+            ("targetname", "wheel"),
+            ("distance", "-360"),
+            ("speed", "180"),
+            ("spawnflags", "33"),
+            ("OnFullyOpen", "!self,FireUser2,,0,-1"),
+            ("OnFullyClosed", "!self,FireUser3,,0,-1"),
+        ],
+        Vec3::splat(-8.0),
+        Vec3::splat(8.0),
+    );
+    w.activate();
+    w.queue_input("wall", "Press", Value::Void, 0.0, None);
+    w.queue_input("wheel", "SetPosition", Value::Str("1".into()), 0.0, None);
+    run_to(&mut w, 40);
+    assert!((angles_now(&w, b).y - 54.0).abs() < 2.0, "turning: {}", angles_now(&w, b));
+    assert_eq!(got(&w, b, "FireUser1").len(), 1);
+    run_to(&mut w, 100);
+    assert_eq!(angles_now(&w, b).y, 90.0, "pressed in");
+    run_to(&mut w, 300);
+    assert_eq!(angles_now(&w, b).y, 0.0, "back out after its wait");
+    assert_eq!(angles_now(&w, m).y, -360.0, "a full turn backwards in 2 s");
+    assert_eq!(got(&w, m, "FireUser2").len(), 1);
+    assert!(w.fired.iter().any(|(_, e, o)| *e == m && o == "Position"));
+    w.queue_input("wheel", "SetPositionImmediately", Value::Str("0".into()), 0.0, None);
+    run_to(&mut w, 305);
+    assert_eq!(angles_now(&w, m).y, 0.0);
+    assert!(got(&w, m, "FireUser3").is_empty(), "no outputs when set at once");
+}
+
+#[test]
+fn measure_movement_mirrors_the_player() {
+    // A turret moved by the player's eye relative to a zone, scaled
+    // (mg_creative_multigames_v8_ns's paint turret).
+    let mut w = world();
+    spawn(&mut w, &[("classname", "info_target"), ("targetname", "zone"), ("origin", "100 0 0")]);
+    spawn(&mut w, &[("classname", "info_target"), ("targetname", "base"), ("origin", "1000 0 0")]);
+    let t = spawn_brush(
+        &mut w,
+        &[("classname", "func_movelinear"), ("targetname", "turret"), ("origin", "1000 0 0")],
+        Vec3::splat(-4.0),
+        Vec3::splat(4.0),
+    );
+    spawn(
+        &mut w,
+        &[
+            ("classname", "logic_measure_movement"),
+            ("targetname", "mm"),
+            ("MeasureTarget", "pilot"),
+            ("MeasureReference", "zone"),
+            ("Target", "turret"),
+            ("TargetReference", "base"),
+            ("TargetScale", "2"),
+            ("MeasureType", "0"),
+        ],
+    );
+    w.activate();
+    let p = player_at(&mut w, 0, Vec3::new(110.0, 5.0, 0.0));
+    w.player_mut(p).unwrap().view = Vec3::new(0.0, 90.0, 0.0);
+    w.player_names.push((p, "pilot".into()));
+    run_to(&mut w, 5);
+    let o = origin_of(&w, t);
+    assert!((o - Vec3::new(1020.0, 10.0, 0.0)).length() < 1e-3, "{o}");
+    assert!((angles_now(&w, t).y - 90.0).abs() < 1e-3);
+    w.queue_input("mm", "Disable", Value::Void, 0.0, None);
+    run_to(&mut w, 7);
+    w.player_mut(p).unwrap().origin = Vec3::new(150.0, 0.0, 0.0);
+    run_to(&mut w, 12);
+    assert!((origin_of(&w, t) - Vec3::new(1020.0, 10.0, 0.0)).length() < 1e-3, "disabled: stays");
+}
+
+#[test]
+fn point_teleport_multicompare_and_shake() {
+    let mut w = world();
+    // point_teleport moves its target (mg_lt_galaxy_v5 moves a spinning
+    // brush) and the activator by name.
+    let r = spawn_brush(
+        &mut w,
+        &[("classname", "func_rotating"), ("targetname", "sky"), ("origin", "0 0 0")],
+        Vec3::splat(-8.0),
+        Vec3::splat(8.0),
+    );
+    spawn(
+        &mut w,
+        &[("classname", "point_teleport"), ("targetname", "tp"), ("target", "sky"), ("origin", "500 0 64")],
+    );
+    spawn(
+        &mut w,
+        &[("classname", "point_teleport"), ("targetname", "tp2"), ("target", "!activator"), ("origin", "0 900 0"), ("angles", "0 180 0")],
+    );
+    // logic_multicompare with no values compares equal (mg_starwars_v1
+    // fires its lasers that way).
+    spawn(
+        &mut w,
+        &[("classname", "logic_multicompare"), ("targetname", "mc"), ("OnEqual", "!self,FireUser1,,0,-1"), ("OnNotEqual", "!self,FireUser2,,0,-1")],
+    );
+    spawn(
+        &mut w,
+        &[("classname", "env_shake"), ("targetname", "quake"), ("amplitude", "4"), ("radius", "500"), ("duration", "2"), ("frequency", "20")],
+    );
+    w.activate();
+    let p = player_at(&mut w, 0, Vec3::ZERO);
+    w.queue_input("tp", "Teleport", Value::Void, 0.0, None);
+    w.queue_input("tp2", "Teleport", Value::Void, 0.0, Some(Who::Player(p)));
+    w.queue_input("mc", "CompareValues", Value::Void, 0.0, None);
+    w.queue_input("mc", "UpdateValue", Value::Str("1".into()), 0.01, None);
+    w.queue_input("mc", "UpdateValue", Value::Str("2".into()), 0.01, None);
+    w.queue_input("mc", "CompareValues", Value::Void, 0.02, None);
+    w.queue_input("quake", "StartShake", Value::Void, 0.0, None);
+    run_to(&mut w, 1);
+    assert_eq!(origin_of(&w, r), Vec3::new(500.0, 0.0, 64.0));
+    let pl = w.player(p).unwrap();
+    assert!(pl.teleported && pl.origin == Vec3::new(0.0, 900.0, 0.0) && pl.view.y == 180.0);
+    assert!(w.effects.iter().any(|e| matches!(e, Effect::Shake { amplitude, radius, .. } if *amplitude == 4.0 && *radius == 500.0)));
+    run_to(&mut w, 5);
+    let mc = w.find("mc").unwrap();
+    assert_eq!(got(&w, mc, "FireUser1").len(), 1);
+    assert_eq!(got(&w, mc, "FireUser2").len(), 1);
+}
+
 const DT: f32 = 0.015;

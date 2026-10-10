@@ -4,6 +4,18 @@
 
 use bevy::prelude::*;
 
+/// A map's screen shake (env_shake), engine space: the client shakes
+/// the local view with it (`client::senses`). Amplitude and radius in
+/// metres; amplitude 0 stops the map's shakes.
+#[derive(Message, Clone, Copy, Debug, PartialEq)]
+pub struct MapShake {
+    pub at: Vec3,
+    pub amplitude: f32,
+    pub frequency: f32,
+    pub duration: f32,
+    pub radius: f32,
+}
+
 /// Channels a client keeps (a message's channel is taken mod this).
 pub const HUD_CHANNELS: usize = 6;
 /// Longest message a client keeps, characters.

@@ -18,6 +18,7 @@ pub mod breakables;
 pub mod camera;
 mod bridge;
 pub mod classes;
+pub mod community;
 pub mod fire;
 pub mod game;
 pub mod hud;
@@ -38,6 +39,6 @@ mod community_tests;
 
 pub(crate) use bridge::set_node_shown;
 pub use bridge::{CarriedMover, Logic, LogicPlugin, LogicSet, brush_to_engine, carry_player, mover_brushes_at};
-pub use hud::{HudEvent, HudMessage, HudMessages, HudShow, ScreenFade, ScreenFades};
+pub use hud::{HudEvent, HudMessage, HudMessages, HudShow, MapShake, ScreenFade, ScreenFades};
 pub use value::Value;
 pub use world::{BrushCollision, Collision, Delivery, Effect, EntId, LogicWorld, NoCollision, Player, Who};

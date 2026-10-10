@@ -32,6 +32,7 @@ pub enum Done {
     ButtonIn,
     ButtonOut,
     LinearArrived,
+    MomentaryArrived,
     RotStep,
     TrainArrived,
     PropDoorOpened,
@@ -285,8 +286,11 @@ pub enum ButtonState {
 pub struct Button {
     pub push: Pusher,
     pub state: ButtonState,
+    /// Out and in positions, or angles for func_rot_button.
     pub p1: Vec3,
     pub p2: Vec3,
+    /// func_rot_button: turns between angles instead of moving.
+    pub rotating: bool,
     pub speed: f32,
     pub wait: f32,
     pub locked: bool,
@@ -310,17 +314,28 @@ impl Button {
             x if x == 0.0 => 1.0,
             x => x,
         };
+        let rotating = e.classname.eq_ignore_ascii_case("func_rot_button");
         let dir = forward(e.kv("movedir").map_or(Vec3::ZERO, crate::map::entities::parse_vector));
         let mut p2 = e.origin + dir * travel(&e.hulls, dir, lip);
         if (p2 - e.origin).length() < 1.0 || e.has_flag(1) {
             p2 = e.origin;
         }
+        let mut push = Pusher::at(e.origin, e.angles);
+        let (p1, p2) = if rotating {
+            // A rotating button turns "distance" degrees about its axis
+            // (the rotating door's flags); its flag 1 is "Not solid".
+            push.solid = !e.has_flag(1);
+            (e.angles, e.angles + rot_axis(e.spawnflags) * e.kv_f("distance"))
+        } else {
+            (e.origin, p2)
+        };
         let sounds = e.kv_i("sounds");
         Button {
-            push: Pusher::at(e.origin, e.angles),
+            push,
             state: ButtonState::Out,
-            p1: e.origin,
+            p1,
             p2,
+            rotating,
             speed,
             wait,
             locked: e.has_flag(2048),
@@ -596,10 +611,13 @@ pub(super) fn shift(class: &mut Class, delta: Vec3, carry: Vec3) -> bool {
             &mut d.push
         }
         Class::Button(b) => {
-            b.p1 += delta;
-            b.p2 += delta;
+            if !b.rotating {
+                b.p1 += delta;
+                b.p2 += delta;
+            }
             &mut b.push
         }
+        Class::Momentary(m) => &mut m.push,
         Class::MoveLinear(m) => {
             m.p1 += delta;
             m.p2 += delta;
@@ -619,6 +637,69 @@ pub(super) fn shift(class: &mut Class, delta: Vec3, carry: Vec3) -> bool {
     true
 }
 
+/// The angle-space axis of a rotating door or button: roll with flag 64,
+/// pitch with 128, else yaw; flag 2 reverses it.
+fn rot_axis(flags: u32) -> Vec3 {
+    let axis = if flags & 64 != 0 {
+        Vec3::Z
+    } else if flags & 128 != 0 {
+        Vec3::X
+    } else {
+        Vec3::Y
+    };
+    if flags & 2 != 0 { -axis } else { axis }
+}
+
+/// momentary_rot_button (public entity docs; no spec): turned between
+/// its start angles (position 0) and "distance" degrees about its axis
+/// (position 1) by SetPosition at "speed" deg/s, or at once by
+/// SetPositionImmediately; arriving fires Position (the position),
+/// OnReachedPosition and OnFullyOpen/OnFullyClosed at 1/0. Players can't
+/// turn it (+use) here.
+#[derive(Clone, Debug)]
+pub struct Momentary {
+    pub push: Pusher,
+    pub start: Vec3,
+    pub axis: Vec3,
+    pub distance: f32,
+    pub speed: f32,
+    pub locked: bool,
+}
+
+impl Momentary {
+    pub(super) fn spawn(w: &mut LogicWorld, id: EntId) -> Momentary {
+        let e = w.get(id).unwrap();
+        let axis = rot_axis(e.spawnflags);
+        let distance = e.kv_f("distance");
+        let mut push = Pusher::at(e.origin, e.angles);
+        push.solid = !e.has_flag(1);
+        push.angles = e.angles + axis * distance * e.kv_f("startposition").clamp(0.0, 1.0);
+        Momentary {
+            push,
+            start: e.angles,
+            axis,
+            distance,
+            speed: match e.kv_f("speed") {
+                s if s <= 0.0 => 100.0,
+                s => s,
+            },
+            locked: e.has_flag(2048),
+        }
+    }
+
+    /// Where it is between its ends (0..1).
+    pub fn position(&self) -> f32 {
+        if self.distance == 0.0 {
+            return 0.0;
+        }
+        ((self.push.angles - self.start).dot(self.axis) / self.distance).clamp(0.0, 1.0)
+    }
+
+    fn angles_at(&self, f: f32) -> Vec3 {
+        self.start + self.axis * self.distance * f.clamp(0.0, 1.0)
+    }
+}
+
 /// The pusher of a mover entity.
 pub fn pusher(class: &Class) -> Option<&Pusher> {
     match class {
@@ -632,11 +713,12 @@ pub fn pusher(class: &Class) -> Option<&Pusher> {
         Class::Brush(t) => Some(&t.push),
         Class::PropDoor(d) => Some(&d.push),
         Class::Conveyor(c) => Some(&c.push),
+        Class::Momentary(m) => Some(&m.push),
         _ => None,
     }
 }
 
-fn pusher_mut(class: &mut Class) -> Option<&mut Pusher> {
+pub(super) fn pusher_mut(class: &mut Class) -> Option<&mut Pusher> {
     match class {
         Class::Attached(a) => Some(&mut a.push),
         Class::Breakable(b) => Some(&mut b.attach.push),
@@ -648,6 +730,7 @@ fn pusher_mut(class: &mut Class) -> Option<&mut Pusher> {
         Class::Brush(t) => Some(&mut t.push),
         Class::PropDoor(d) => Some(&mut d.push),
         Class::Conveyor(c) => Some(&mut c.push),
+        Class::Momentary(m) => Some(&mut m.push),
         _ => None,
     }
 }
@@ -842,7 +925,11 @@ fn button_press(w: &mut LogicWorld, id: EntId, presser: Option<Who>, by_use: boo
             let bb = button(w, id).unwrap();
             bb.state = ButtonState::GoingIn;
             let (p2, speed) = (bb.p2, bb.speed);
-            bb.push.move_to(p2, speed, Done::ButtonIn);
+            if bb.rotating {
+                bb.push.rotate_to(p2, speed, Done::ButtonIn);
+            } else {
+                bb.push.move_to(p2, speed, Done::ButtonIn);
+            }
         }
         ButtonState::In if toggle => {
             button(w, id).unwrap().presser = presser;
@@ -858,7 +945,11 @@ fn button_out(w: &mut LogicWorld, id: EntId) {
     let Some(b) = button(w, id) else { return };
     b.state = ButtonState::GoingOut;
     let (p1, speed) = (b.p1, b.speed);
-    b.push.move_to(p1, speed, Done::ButtonOut);
+    if b.rotating {
+        b.push.rotate_to(p1, speed, Done::ButtonOut);
+    } else {
+        b.push.move_to(p1, speed, Done::ButtonOut);
+    }
 }
 
 // --------------------------------------------------------- rotating
@@ -1192,6 +1283,36 @@ fn input_inner(
             }
             _ => return false,
         },
+        Class::Momentary(m) => match input {
+            "setposition" | "setpositionimmediately" => {
+                let Some(f) = w.need_float(value, input) else { return true };
+                if m.locked {
+                    return true;
+                }
+                let goal = m.angles_at(f);
+                let Some(Class::Momentary(mm)) = w.get_mut(id).map(|e| &mut e.class) else { return true };
+                if input == "setposition" {
+                    let speed = mm.speed;
+                    mm.push.rotate_to(goal, speed, Done::MomentaryArrived);
+                } else {
+                    // At once, no outputs (a map's OnFullyClosed
+                    // -> SetPositionImmediately 0 would loop).
+                    mm.push.angles = goal;
+                    mm.push.avelocity = Vec3::ZERO;
+                    mm.push.goal_angles = None;
+                    mm.push.move_done = None;
+                    w.refresh_solid(id);
+                }
+            }
+            "lock" | "unlock" => {
+                if let Some(Class::Momentary(mm)) = w.get_mut(id).map(|e| &mut e.class) {
+                    mm.locked = input == "lock";
+                }
+            }
+            // Its "update target" switches: nothing to switch here.
+            "enable" | "disable" | "_disableupdatetarget" | "_enableupdatetarget" => {}
+            _ => return false,
+        },
         Class::Button(b) => match input {
             "press" => button_press(w, id, activator, false),
             "pressin" => {
@@ -1358,6 +1479,17 @@ fn move_done(w: &mut LogicWorld, id: EntId, done: Done) {
             }
         }
         Done::RotStep => rot_step(w, id),
+        Done::MomentaryArrived => {
+            let Some(Class::Momentary(m)) = w.get(id).map(|e| e.class.clone()) else { return };
+            let f = m.position();
+            w.fire_output(id, "Position", None, Value::Float(f));
+            w.fire_output(id, "OnReachedPosition", None, Value::Void);
+            if f >= 1.0 - 1e-4 {
+                w.fire_output(id, "OnFullyOpen", None, Value::Void);
+            } else if f <= 1e-4 {
+                w.fire_output(id, "OnFullyClosed", None, Value::Void);
+            }
+        }
         Done::PropDoorOpened => super::props::door_arrived(w, id, true),
         Done::PropDoorClosed => super::props::door_arrived(w, id, false),
         Done::TrainArrived => {

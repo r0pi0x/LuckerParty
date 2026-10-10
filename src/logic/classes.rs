@@ -94,6 +94,11 @@ pub enum Class {
     Thruster(Box<super::physics::Thruster>),
     /// phys_keepupright.
     Upright(Box<super::physics::Upright>),
+    /// momentary_rot_button (`movers`).
+    Momentary(Box<movers::Momentary>),
+    /// logic_measure_movement, point_teleport, logic_multicompare,
+    /// env_shake (`community`).
+    Extra(Box<super::community::Extra>),
 }
 
 /// game_player_equip: its items (keyvalue name, count) and whether it
@@ -335,6 +340,9 @@ impl Class {
         if let Some(class) = super::game::spawn(w, id, &lower) {
             return class;
         }
+        if let Some(class) = super::community::spawn(w, id, &lower) {
+            return class;
+        }
         let e = w.get(id).unwrap();
         match lower.as_str() {
             "func_wall_toggle" => Class::Brush(Box::new(Toggle::spawn_wall_toggle(w, id))),
@@ -428,7 +436,8 @@ impl Class {
             "point_clientcommand" => Class::ClientCommand,
             c if c.starts_with("trigger_") => triggers::spawn(w, id).map_or(Class::None, |t| Class::Trigger(Box::new(t))),
             "func_door" | "func_door_rotating" => Class::Door(Box::new(Door::spawn(w, id))),
-            "func_button" => Class::Button(Box::new(Button::spawn(w, id))),
+            "func_button" | "func_rot_button" => Class::Button(Box::new(Button::spawn(w, id))),
+            "momentary_rot_button" => Class::Momentary(Box::new(movers::Momentary::spawn(w, id))),
             "func_movelinear" => Class::MoveLinear(Box::new(MoveLinear::spawn(w, id))),
             "func_rotating" => Class::Rotating(Box::new(Rotating::spawn(w, id))),
             "func_tracktrain" => Class::Train(Box::new(Train::spawn(w, id))),
@@ -556,6 +565,7 @@ pub(super) fn class_activate(w: &mut LogicWorld, id: EntId) {
         | Class::Train(_)
         | Class::PropDoor(_)
         | Class::Brush(_)
+        | Class::Momentary(_)
         | Class::Conveyor(_) => movers::activate(w, id),
         Class::Breakable(_) if e.kv("parentname").is_some_and(|p| !p.is_empty()) => movers::activate_attached(w, id),
         Class::Breakable(_) => movers::activate(w, id),
@@ -567,6 +577,7 @@ pub(super) fn class_activate(w: &mut LogicWorld, id: EntId) {
         Class::Maker(_) => super::templates::maker_activate(w, id),
         Class::Thruster(_) | Class::Upright(_) => super::physics::activate(w, id),
         Class::Part(_) => super::beams::activate(w, id),
+        Class::Extra(_) => super::community::activate(w, id),
         _ => {}
     }
 }
@@ -613,6 +624,7 @@ pub(super) fn class_think(w: &mut LogicWorld, id: EntId) {
         Class::Camera(_) => super::camera::think(w, id),
         Class::Thruster(_) => super::physics::think(w, id),
         Class::Part(_) => super::beams::think(w, id),
+        Class::Extra(_) => super::community::think(w, id),
         _ => movers::think(w, id),
     }
 }
@@ -1021,6 +1033,7 @@ pub(super) fn class_input(
         | Class::Train(_)
         | Class::PathTrack(_)
         | Class::Brush(_)
+        | Class::Momentary(_)
         | Class::PropDoor(_) => return movers::input(w, id, input, value, activator, caller),
         Class::Prop(_) => return super::props::prop_input(w, id, input, value, activator),
         Class::Attached(_) => return false,
@@ -1047,6 +1060,7 @@ pub(super) fn class_input(
         Class::Template(_) | Class::Maker(_) => return super::templates::input(w, id, input, value, activator, caller),
         Class::Camera(_) => return super::camera::input(w, id, input, activator),
         Class::Thruster(_) | Class::Upright(_) => return super::physics::input(w, id, input, value, activator),
+        Class::Extra(_) => return super::community::input(w, id, input, value, activator),
         Class::Flame(_) | Class::None | Class::Auto => return false,
     }
     true

@@ -65,6 +65,7 @@ impl Plugin for LogicPlugin {
         app.init_resource::<HudMessages>()
             .init_resource::<ScreenFades>()
             .add_message::<HudEvent>()
+            .add_message::<super::MapShake>()
             .add_message::<crate::map::beams::SparkBurst>()
             .add_message::<crate::core::ScoreChange>()
             .add_message::<PlaySound>()
@@ -1242,6 +1243,21 @@ fn apply_effects(world: &mut World, effects: Vec<Effect>, scale: f32) {
                 origin,
                 angles,
             } => spawn_copy(world, id, source, origin, angles, scale),
+            Effect::Shake {
+                at,
+                amplitude,
+                frequency,
+                duration,
+                radius,
+            } => {
+                world.write_message(super::MapShake {
+                    at: entity_to_engine(at, scale),
+                    amplitude: amplitude * scale,
+                    frequency,
+                    duration,
+                    radius: radius * scale,
+                });
+            }
             Effect::Spark { at, dir, magnitude } => {
                 world.write_message(crate::map::beams::SparkBurst {
                     at: entity_to_engine(at, scale),

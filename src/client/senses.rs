@@ -213,7 +213,8 @@ fn local_hearing(
 /// offset (m) and roll (radians).
 #[derive(Resource, Default)]
 pub struct ViewShake {
-    shakes: Vec<(Vec3, Shake, f64)>,
+    /// Centre, shake, start, from the map (env_shake).
+    shakes: Vec<(Vec3, Shake, f64, bool)>,
     pub offset: Vec3,
     pub roll: f32,
 }
@@ -235,6 +236,7 @@ pub fn shake_offset(a: f32, frequency: f32, t: f32) -> (Vec3, f32) {
 
 fn shake(
     mut detonated: MessageReader<Detonated>,
+    mut map_shakes: MessageReader<crate::logic::MapShake>,
     camera: Query<&GlobalTransform, With<FirstPersonCamera>>,
     mut view: ResMut<ViewShake>,
     time: Res<Time>,
@@ -242,14 +244,32 @@ fn shake(
     let now = time.elapsed_secs_f64();
     for d in detonated.read() {
         if let Some(s) = d.shake {
-            view.shakes.push((d.at, s, now));
+            view.shakes.push((d.at, s, now, false));
         }
     }
-    view.shakes.retain(|(_, s, start)| now - start < s.duration as f64);
+    // env_shake (amplitude 0: StopShake ends the map's shakes).
+    for m in map_shakes.read() {
+        if m.amplitude <= 0.0 {
+            view.shakes.retain(|(.., from_map)| !from_map);
+            continue;
+        }
+        view.shakes.push((
+            m.at,
+            Shake {
+                amplitude: m.amplitude,
+                frequency: m.frequency,
+                duration: m.duration,
+                radius: m.radius,
+            },
+            now,
+            true,
+        ));
+    }
+    view.shakes.retain(|(_, s, start, _)| now - start < s.duration as f64);
     let eye = camera.iter().next().map(|c| c.translation());
     let (mut offset, mut roll) = (Vec3::ZERO, 0.0);
     if let Some(eye) = eye {
-        for (at, s, start) in &view.shakes {
+        for (at, s, start, _) in &view.shakes {
             let t = (now - start) as f32;
             let (o, r) = shake_offset(s.amplitude_at(at.distance(eye), t), s.frequency, t);
             offset += o;

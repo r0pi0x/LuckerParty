@@ -72,6 +72,8 @@ pub fn parse_connection(value: &str) -> Option<(String, String, Option<String>, 
 /// (specs/source/game_entities.md 2).
 pub const OTHER_OUTPUTS: &[&str] = &[
     "outvalue",
+    // momentary_rot_button's position.
+    "position",
     "outcounter",
     "bombexplode",
     "bombplanted",
@@ -373,6 +375,16 @@ pub enum Effect {
         id: EntId,
         origin: Vec3,
         angles: Option<Vec3>,
+    },
+    /// A screen shake (env_shake) around `at` (entity space): amplitude
+    /// (units; 0 stops the map's shakes), frequency (Hz), duration (s),
+    /// radius (units; infinite: everyone).
+    Shake {
+        at: Vec3,
+        amplitude: f32,
+        frequency: f32,
+        duration: f32,
+        radius: f32,
     },
 }
 
