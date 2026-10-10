@@ -18,8 +18,10 @@ use crate::core::MapWater;
 
 /// Water's density, kg/m³.
 pub const WATER_DENSITY: f32 = 1000.0;
-/// Speed lost in water per second at full depth (linear, angular).
+/// Speed lost in water per second at full depth: vertical (bobbing
+/// settles), horizontal (boats glide), angular.
 pub const WATER_DRAG: f32 = 3.0;
+pub const WATER_SIDE_DRAG: f32 = 0.5;
 pub const WATER_ANGULAR_DRAG: f32 = 2.0;
 /// Most lift, in g.
 pub const MAX_LIFT_G: f32 = 2.0;
@@ -114,7 +116,10 @@ fn float_bodies(
         if let Some(i) = inertia {
             w.0 += rot.0 * (i.inverse() * (rot.0.inverse() * torque)) * h;
         }
-        v.0 *= 1.0 / (1.0 + WATER_DRAG * wet * h);
+        v.0.y *= 1.0 / (1.0 + WATER_DRAG * wet * h);
+        let side = 1.0 / (1.0 + WATER_SIDE_DRAG * wet * h);
+        v.0.x *= side;
+        v.0.z *= side;
         w.0 *= 1.0 / (1.0 + WATER_ANGULAR_DRAG * wet * h);
         if sleeping {
             commands.entity(body).remove::<Sleeping>();

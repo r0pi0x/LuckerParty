@@ -230,6 +230,7 @@ pub fn load_level_bytes(mount: &Mount, name: &str, bytes: Vec<u8>, hdr_level: u8
     data.particles = super::impact_effects::load_materials(&mut materials);
     super::trails::add_trails_and_stacks(&bsp, &mut materials, &mut data);
     super::pcf::add_particle_systems(&bsp, &mut materials, &mut data, name);
+    super::props::add_attachment_keys(&materials, &mut data);
     timer.lap("characters, hud, particles");
     // What characters hold: the weapons' world models.
     if let Some(skeleton) = data.characters.first().map(|c| c.bones.clone()) {

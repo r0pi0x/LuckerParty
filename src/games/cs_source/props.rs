@@ -836,6 +836,68 @@ pub fn add_static_props(
     place_props(bsp, materials, lighting, occluders, data, placements, hdr);
 }
 
+/// The keyvalue a model attachment of a prop entity is given under
+/// (`ATTACHMENT_KEY` + its lower-case name): "x y z", model space, units.
+pub const ATTACHMENT_KEY: &str = "$attachment ";
+
+/// Model attachments of the prop entities something may be parented to
+/// (named by a parentname or a SetParent output), as keyvalues
+/// (`ATTACHMENT_KEY`) for the logic's SetParentAttachment: each
+/// attachment's place in the model's reference pose.
+pub fn add_attachment_keys(materials: &MaterialLoader, data: &mut MapData) {
+    let mut parents: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for e in &data.entities {
+        for (k, v) in &e.keyvalues {
+            if k.eq_ignore_ascii_case("parentname") {
+                parents.insert(crate::map::entities::parent_name(v).to_ascii_lowercase());
+            } else if k.starts_with("On") || k.starts_with("on") {
+                let parts: Vec<&str> = v.split([',', '\u{1b}']).collect();
+                if parts.len() >= 3 && parts[1].eq_ignore_ascii_case("SetParent") {
+                    parents.insert(parts[2].trim().to_ascii_lowercase());
+                }
+            }
+        }
+    }
+    let read = |p: &str| materials.read(p);
+    let mut cache: std::collections::HashMap<String, Vec<(String, Vec3)>> = std::collections::HashMap::new();
+    for e in &mut data.entities {
+        let named = e.get("targetname").is_some_and(|n| parents.contains(&n.to_ascii_lowercase()));
+        let Some(model) = e.get("model").filter(|m| named && m.to_ascii_lowercase().ends_with(".mdl")) else {
+            continue;
+        };
+        let model = model.to_ascii_lowercase().replace('\\', "/");
+        let list = cache
+            .entry(model.clone())
+            .or_insert_with(|| model_attachments(&read, &model).unwrap_or_default())
+            .clone();
+        for (name, at) in list {
+            e.keyvalues
+                .push((format!("{ATTACHMENT_KEY}{name}"), format!("{} {} {}", at.x, at.y, at.z)));
+        }
+    }
+}
+
+/// A model's attachments in its reference pose (Source axes, units).
+fn model_attachments(read: super::anim::Read, path: &str) -> Result<Vec<(String, Vec3)>, String> {
+    let bones = super::anim::bones(read, path)?;
+    let mut global: Vec<(Quat, Vec3)> = Vec::with_capacity(bones.len());
+    for (_, parent, rotation, position) in &bones {
+        let g = match parent.and_then(|p| global.get(p).copied()) {
+            Some((pr, pp)) => (pr * *rotation, pp + pr * *position),
+            None => (*rotation, *position),
+        };
+        global.push(g);
+    }
+    let (attachments, _) = super::anim::attachments(read, path)?;
+    Ok(attachments
+        .into_iter()
+        .map(|(name, bone, local)| {
+            let (r, p) = global.get(bone).copied().unwrap_or((Quat::IDENTITY, Vec3::ZERO));
+            (name.to_ascii_lowercase(), p + r * local.translation)
+        })
+        .collect())
+}
+
 /// Props placed as entities: physics props (barrels, baskets; static here
 /// until there's physics) and dynamic props. Both collide by their physics
 /// model (the visible mesh until `.phy` is parsed).

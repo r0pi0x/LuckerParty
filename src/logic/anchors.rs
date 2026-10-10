@@ -164,10 +164,13 @@ impl LogicWorld {
                 self.detach(id);
                 true
             }
-            // Snaps to the attachment: here the parent's origin.
+            // Snaps to the attachment (the parent's origin when its model's
+            // attachments aren't known).
             "setparentattachment" => {
                 if let Some(i) = self.follows.iter().position(|(c, _)| *c == id) {
-                    self.follows[i].1.offset = Vec3::ZERO;
+                    let name = value.to_str(|w| self.name_of(w)).unwrap_or_default();
+                    self.follows[i].1.offset = self.attachment(self.follows[i].1.parent, &name);
+                    self.follows[i].1.rotation = Quat::IDENTITY;
                 }
                 true
             }
@@ -334,7 +337,8 @@ impl LogicWorld {
             }
             "setparentattachment" => {
                 if let Some(i) = self.player_follows.iter().position(|(q, _)| *q == p) {
-                    self.player_follows[i].1.offset = Vec3::ZERO;
+                    let name = value.to_str(|w| self.name_of(w)).unwrap_or_default();
+                    self.player_follows[i].1.offset = self.attachment(self.player_follows[i].1.parent, &name);
                 }
                 true
             }
@@ -345,6 +349,15 @@ impl LogicWorld {
             }
             _ => false,
         }
+    }
+
+    /// Where a parent's model attachment is in its frame (the loader's
+    /// `$attachment <name>` keys; none known: its origin).
+    pub fn attachment(&self, parent: Who, name: &str) -> Vec3 {
+        let Who::Ent(id) = parent else { return Vec3::ZERO };
+        self.get(id)
+            .and_then(|e| e.kv(&format!("$attachment {}", name.trim().to_ascii_lowercase())))
+            .map_or(Vec3::ZERO, crate::map::entities::parse_vector)
     }
 
     /// The entity a player is parented to.

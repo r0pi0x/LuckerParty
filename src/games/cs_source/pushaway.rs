@@ -65,14 +65,17 @@ fn overlap(a: (Vec3, Vec3), b: (Vec3, Vec3)) -> bool {
 
 /// Shove props away from players (spec 4.2.2).
 fn push_props(
-    players: Query<(&Transform, &Velocity, &SourceMovement)>,
+    players: Query<(&Transform, &Velocity, &SourceMovement, Option<&crate::core::MapControls>)>,
     mut props: Query<
         (&Transform, &PhysicsProp, Forces),
         (Without<SourceMovement>, Without<RigidBodyDisabled>, Without<ColliderDisabled>),
     >,
     cfg: Res<SourceMovementConfig>,
 ) {
-    for (pt, pv, me) in &players {
+    for (pt, pv, me, controls) in &players {
+        if controls.is_some_and(|c| c.parented) {
+            continue;
+        }
         let mut player = player_box(pt, me, &cfg);
         let centre = (player.0 + player.1) / 2.0;
         player.0 -= Vec3::splat(QUERY_EXPAND);

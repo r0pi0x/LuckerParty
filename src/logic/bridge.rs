@@ -1464,6 +1464,18 @@ fn sync_controls(world: &mut World, logic: &Logic) {
     if world.get_resource::<BodyControllers>().is_some_and(|b| b.0 != list) {
         world.insert_resource(BodyControllers(list));
     }
+    // Players parented to an entity ride it (`core::MapControls::parented`).
+    let players: Vec<(Entity, bool)> = world
+        .query_filtered::<(Entity, Option<&crate::core::MapControls>), With<crate::core::Intent>>()
+        .iter(world)
+        .filter_map(|(e, c)| {
+            let want = logic.world.player_parent(e).is_some();
+            (c.map_or(false, |c| c.parented) != want).then_some((e, want))
+        })
+        .collect();
+    for (e, want) in players {
+        with_controls(world, e, |c| c.parented = want);
+    }
     // Constraints and motors' hinges.
     use super::physics::JointKind as J;
     use crate::map::controllers::{BodyJoint, BodyJoints, JointKind};
@@ -1725,7 +1737,7 @@ fn run_phase(world: &mut World, phase: impl FnOnce(&mut LogicWorld, &dyn Collisi
 /// The anchor entities (placed weapons) where the ECS has them
 /// (`map::entities::EntityAnchors`), and their children with them.
 fn follow_anchors(world: &World, logic: &mut Logic) {
-    if logic.world.follows.is_empty() {
+    if logic.world.follows.is_empty() && logic.world.player_follows.is_empty() {
         return;
     }
     let scale = logic.scale;
@@ -1742,12 +1754,15 @@ fn follow_anchors(world: &World, logic: &mut Logic) {
             }
         }
     }
-    // Physics brushes and props: where their bodies are.
+    // Physics brushes and props: where their bodies are (a moving body:
+    // maps rename them, AddOutput classname, so the class can't tell).
     for (id, node) in &logic.props {
-        if logic
-            .world
-            .get(*id)
-            .is_some_and(|e| super::anchors::is_physics_body(&e.classname))
+        let body = world.get::<RigidBody>(*node).is_some_and(|b| !b.is_static());
+        if (body
+            || logic
+                .world
+                .get(*id)
+                .is_some_and(|e| super::anchors::is_physics_body(&e.classname)))
             && let Some(t) = world.get::<Transform>(*node)
         {
             let (o, a) = entity_pose(t);

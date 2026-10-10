@@ -799,3 +799,31 @@ fn constraints_and_motors_find_their_bodies() {
     run_to(&mut w, 4);
     assert_eq!(w.joints().len(), 1, "broken: gone");
 }
+
+#[test]
+fn set_parent_attachment_snaps_to_the_models_attachment() {
+    // The loader gives a parent prop its model's attachments
+    // (`$attachment <name>` keys, model space): SetParentAttachment puts
+    // the child (a player on a kart seat) there, turned with the parent.
+    let mut w = world();
+    spawn(
+        &mut w,
+        &[
+            ("classname", "info_target"),
+            ("targetname", "seat"),
+            ("origin", "100 0 0"),
+            ("angles", "0 90 0"),
+            ("$attachment primary", "10 0 30"),
+        ],
+    );
+    let p = player_at(&mut w, 1, Vec3::ZERO);
+    w.activate();
+    let me = Some(Who::Player(p));
+    w.queue_input("!activator", "SetParent", Value::Str("seat".into()), 0.0, me);
+    w.queue_input("!activator", "SetParentAttachment", Value::Str("primary".into()), 0.0, me);
+    w.frame(&NoCollision);
+    w.follow_anchors();
+    let at = w.player(p).unwrap().origin;
+    // (10, 0, 30) turned 90 degrees: (0, 10, 30) from (100, 0, 0).
+    assert!((at - Vec3::new(100.0, 10.0, 30.0)).length() < 1e-3, "{at}");
+}
