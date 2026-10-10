@@ -864,9 +864,28 @@ last `mashup_perf_log` line (needs a display).
 
 ```
 cargo run --features dev --bin mapsweep                      # every cached map
-cargo run --features dev --bin mapsweep -- --filter surf_     # some of them
+cargo run --features dev --bin mapsweep -- --filter surf_,kz_ # some of them
 cargo run --features dev --bin mapsweep -- --shots target/playtest/mashup --filter mg_
+cargo run --features dev --bin mapsweep -- --audit           # plus the map logic audit
 ```
+
+`--audit` adds `audit.md` (ranked by maps affected) and `audit.txt` (per
+map) from `logic::audit::audit_map`: every output connection resolved
+(targets that match nothing; `!activator` taken as a player) and its
+input delivered once per target class to a probe world, which says
+whether that class handles it (AddOutput by the key it sets); outputs
+maps connect that no literal in `src/` names (so nothing fires them);
+keyvalues no literal names and the spawnflags set, per handled class (to
+check against the code by hand); inputs aimed at brushes the loader baked
+into the world. Then a scripted run: one player stands in every trigger
+and presses +use at every door and button from four sides, then a round
+restart; it lists what the logic logged, movers told to move that never
+did, movers that jumped (moved much further in a tick than their speed),
+children of movers that stay where they spawned, usable brushes +use
+didn't find, and panics. Physics props aren't simulated there (no
+bounds), so bodies never touch triggers in it. A unit test for it is in
+`logic::audit::tests`; small entity lists for the fixes it led to are in
+`src/logic/community_tests.rs`.
 
 The committed summary is in docs/plans/active/community-maps.md.
 

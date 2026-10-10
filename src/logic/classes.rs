@@ -1104,15 +1104,34 @@ pub(super) fn class_use(w: &mut LogicWorld, id: EntId, activator: Option<Who>, c
 }
 
 /// A keyvalue changed at run time (AddOutput).
-pub(super) fn class_keyvalue(w: &mut LogicWorld, id: EntId, key: &str, _value: &str) {
-    let Some(e) = w.get(id) else { return };
+/// Returns whether the key changes what the entity does.
+pub(super) fn class_keyvalue(w: &mut LogicWorld, id: EntId, key: &str, _value: &str) -> bool {
+    let Some(e) = w.get(id) else { return false };
     match &e.class {
         Class::GameText(_, all) => {
             let all = *all;
             let m = game_text(e);
             w.get_mut(id).unwrap().class = Class::GameText(m, all);
+            true
         }
         Class::Trigger(_) => triggers::keyvalue(w, id, key),
+        // game_player_equip: its items are its keyvalues.
+        Class::Equip(_) if e.classname.eq_ignore_ascii_case("game_player_equip") => {
+            let items = equip_items(&e.keyvalues);
+            if let Some(Class::Equip(q)) = w.get_mut(id).map(|e| &mut e.class) {
+                q.items = items;
+            }
+            true
+        }
+        // phys_thruster's force: read when exported; a new turn-on
+        // number makes the physics work the push out again.
+        Class::Thruster(_) if key == "force" => {
+            if let Some(Class::Thruster(t)) = w.get_mut(id).map(|e| &mut e.class) {
+                t.serial += 1;
+            }
+            true
+        }
+        Class::Ambient(_) if key == "message" => super::ambient::set_message(w, id),
         _ => movers::keyvalue(w, id, key),
     }
 }

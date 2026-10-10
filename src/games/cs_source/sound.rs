@@ -225,10 +225,27 @@ pub fn round_sounds() -> crate::map::RoundSounds {
 /// are left out.
 pub fn ambient_messages(entities: &[MapEntity]) -> (Vec<String>, Vec<String>) {
     let (mut entries, mut raw) = (Vec::new(), Vec::new());
-    for e in entities.iter().filter(|e| e.classname().eq_ignore_ascii_case("ambient_generic")) {
-        let Some(m) = e.get("message").map(str::trim).filter(|m| !m.is_empty() && !m.starts_with('!')) else {
+    // Their own messages, and ones outputs set at run time (an
+    // `AddOutput message <sound>` connection: mg_crazykart_v1_1).
+    let own = entities
+        .iter()
+        .filter(|e| e.classname().eq_ignore_ascii_case("ambient_generic"))
+        .filter_map(|e| e.get("message"));
+    let added = entities.iter().flat_map(|e| e.keyvalues.iter()).filter_map(|(_, v)| {
+        let mut f = v.split(['\u{1b}', ',']);
+        let _target = f.next()?;
+        f.next()?.trim().eq_ignore_ascii_case("addoutput").then_some(())?;
+        let param = f.next()?.trim();
+        param
+            .get(..8)
+            .is_some_and(|k| k.eq_ignore_ascii_case("message "))
+            .then(|| &param[8..])
+    });
+    for m in own.chain(added) {
+        let m = m.trim();
+        if m.is_empty() || m.starts_with('!') {
             continue;
-        };
+        }
         let lower = m.to_lowercase();
         let list = if lower.contains(".wav") || lower.contains(".mp3") {
             &mut raw
@@ -402,6 +419,25 @@ pub fn load(materials: &mut MaterialLoader, map: &str, surfaces: &SurfaceProps, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sounds_outputs_set_on_ambients_are_loaded() {
+        let kv = |pairs: &[(&str, &str)]| MapEntity {
+            keyvalues: pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            ..Default::default()
+        };
+        let ents = [
+            kv(&[("classname", "ambient_generic"), ("message", "Ambient.Wind")]),
+            kv(&[
+                ("classname", "logic_relay"),
+                ("OnTrigger", "snd,AddOutput,message kart/boost.mp3,0,-1"),
+                ("OnUser1", "snd\u{1b}AddOutput\u{1b}message Kart.Hit\u{1b}0\u{1b}-1"),
+            ]),
+        ];
+        let (entries, raw) = ambient_messages(&ents);
+        assert_eq!(entries, ["ambient.wind", "kart.hit"]);
+        assert_eq!(raw, ["kart/boost.mp3"]);
+    }
 
     #[test]
     fn hash_prefix_marks_dry_waves() {

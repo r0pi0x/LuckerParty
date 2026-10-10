@@ -142,15 +142,19 @@ pub(super) fn activate(w: &mut LogicWorld, id: EntId) {
     }
 }
 
-pub(super) fn keyvalue(w: &mut LogicWorld, id: EntId, key: &str) {
+pub(super) fn keyvalue(w: &mut LogicWorld, id: EntId, key: &str) -> bool {
     if let Some(new) = spawn(w, id)
         && let Some(t) = trig_mut(w, id)
     {
         match key {
-            "wait" | "damage" | "speed" | "pushdir" | "target" | "landmark" | "gravity" => t.kind = new.kind,
+            "wait" | "damage" | "speed" | "pushdir" | "target" | "landmark" | "gravity" => {
+                t.kind = new.kind;
+                return true;
+            }
             _ => {}
         }
     }
+    false
 }
 
 fn trig(w: &LogicWorld, id: EntId) -> Option<&Trigger> {
@@ -163,6 +167,15 @@ fn trig(w: &LogicWorld, id: EntId) -> Option<&Trigger> {
 fn trig_mut(w: &mut LogicWorld, id: EntId) -> Option<&mut Trigger> {
     match w.get_mut(id).map(|e| &mut e.class) {
         Some(Class::Trigger(t)) => Some(t),
+        _ => None,
+    }
+}
+
+/// A physics body's world box (entity space) when the host has placed
+/// it: a physics prop or physics brush.
+pub fn physics_body(w: &LogicWorld, id: EntId) -> Option<(Vec3, Vec3)> {
+    match w.get(id).map(|e| &e.class) {
+        Some(Class::Prop(p)) if p.physics => p.bounds,
         _ => None,
     }
 }
@@ -180,7 +193,8 @@ pub fn passes(w: &LogicWorld, id: EntId, who: Who) -> bool {
             let alive = w.player(p).is_some_and(|p| p.alive);
             alive && flags & (1 | 64) != 0 && flags & 32 == 0
         }
-        Who::Ent(_) => flags & 64 != 0,
+        // "Physics Objects" (8): physics props and physics brushes.
+        Who::Ent(e) => flags & 64 != 0 || (flags & 8 != 0 && physics_body(w, e).is_some()),
     };
     class_ok && t.filter.is_none_or(|f| filter_passes(w, f, Some(who)))
 }
@@ -220,7 +234,56 @@ impl LogicWorld {
                 touch(self, t, who);
             }
         }
+        self.touch_bodies();
         self.touch_movers();
+    }
+
+    /// Physics bodies (props, physics brushes; where the host says they
+    /// are) against the triggers that let physics objects or everything
+    /// touch (spawnflags 8, 64): the same start touch and touch as for
+    /// players (triggers.md: the boats of mg_boatrace_scramble cross its
+    /// boost and finish triggers).
+    fn touch_bodies(&mut self) {
+        let bodies: Vec<(EntId, Vec3, Vec3)> = self
+            .ids()
+            .into_iter()
+            .filter_map(|id| {
+                let (lo, hi) = physics_body(self, id)?;
+                Some((id, lo, hi))
+            })
+            .collect();
+        if bodies.is_empty() {
+            return;
+        }
+        let triggers: Vec<EntId> = self
+            .ids()
+            .into_iter()
+            .filter(|id| {
+                self.get(*id)
+                    .is_some_and(|e| matches!(e.class, Class::Trigger(_)) && e.spawnflags & (8 | 64) != 0 && !e.killed)
+            })
+            .collect();
+        for t in triggers {
+            for &(b, lo, hi) in &bodies {
+                let Some(trigger) = trig(self, t) else { break };
+                if !trigger.enabled || self.get(b).is_none_or(|e| e.killed) {
+                    continue;
+                }
+                if !trigger.brushes.iter().any(|br| box_touches(br, lo, hi)) {
+                    continue;
+                }
+                let who = Who::Ent(b);
+                let trigger = trig_mut(self, t).unwrap();
+                match trigger.links.iter_mut().find(|(w, _)| *w == who) {
+                    Some(link) => link.1 = true,
+                    None => {
+                        trigger.links.push((who, true));
+                        start_touch(self, t, who);
+                    }
+                }
+                touch(self, t, who);
+            }
+        }
     }
 
     /// End touch for links not refreshed this frame.
@@ -343,7 +406,26 @@ fn touch(w: &mut LogicWorld, id: EntId, who: Who) {
             }
         }
         Kind::Push { dir, speed } => {
-            let Who::Player(p) = who else { return };
+            let Who::Player(p) = who else {
+                // Physics objects: a force of speed x direction x 100 x dt
+                // on the centre each tick (an impulse, kg units/s); once
+                // only: added to the velocity, and the trigger goes.
+                if let Who::Ent(b) = who
+                    && let Some(Class::Prop(prop)) = w.get(b).map(|e| &e.class)
+                {
+                    let once = w.get(id).is_some_and(|e| e.has_flag(128));
+                    let velocity = if once {
+                        dir * speed
+                    } else {
+                        dir * speed * 100.0 * w.dt / prop.mass.max(1.0)
+                    };
+                    w.effects.push(Effect::BodyVelocity { id: b, velocity });
+                    if once {
+                        w.kill(id);
+                    }
+                }
+                return;
+            };
             let once = w.get(id).is_some_and(|e| e.has_flag(128));
             let push = dir * speed;
             let Some(pl) = w.player_mut(p) else { return };
@@ -370,6 +452,10 @@ fn touch(w: &mut LogicWorld, id: EntId, who: Who) {
             pl.base_touched = true;
         }
         Kind::Teleport { target, landmark } => {
+            if let Who::Ent(b) = who {
+                teleport_body(w, id, b, &target, &landmark);
+                return;
+            }
             let Who::Player(p) = who else { return };
             let Some(dest) = w.resolve(&target, Some(who), Some(Who::Ent(id))).into_iter().next() else {
                 return;
@@ -416,6 +502,39 @@ fn touch(w: &mut LogicWorld, id: EntId, who: Who) {
         }
         Kind::Other => {}
     }
+}
+
+/// trigger_teleport on a physics body: to the destination (plus its
+/// offset from the landmark), taking the destination's angles without a
+/// landmark; velocity kept (triggers.md).
+fn teleport_body(w: &mut LogicWorld, trigger: EntId, body: EntId, target: &str, landmark: &str) {
+    let who = Who::Ent(body);
+    let Some(Who::Ent(dest)) = w.resolve(target, Some(who), Some(Who::Ent(trigger))).into_iter().next() else {
+        return;
+    };
+    let Some((point, angles)) = w.get(dest).map(|e| (e.origin, e.angles)) else {
+        return;
+    };
+    let Some((lo, hi)) = physics_body(w, body) else { return };
+    let centre = (lo + hi) / 2.0;
+    let mark = (!landmark.is_empty())
+        .then(|| w.find(landmark))
+        .flatten()
+        .and_then(|l| w.get(l).map(|e| e.origin));
+    let (origin, angles) = match mark {
+        // The body's centre keeps its place relative to the landmark.
+        Some(l) => (point + (centre - l), None),
+        None => (point, Some(angles)),
+    };
+    w.effects.push(Effect::BodyTeleport {
+        id: body,
+        origin,
+        angles,
+    });
+    // Where it is now, until the host says (no second teleport from a
+    // stale box this tick).
+    let half = (hi - lo) / 2.0;
+    w.set_prop_bounds(body, (origin - half, origin + half));
 }
 
 /// trigger_hurt pass, trigger_once removal.

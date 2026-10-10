@@ -19,20 +19,28 @@ use std::{
 
 use mashup::{
     games::{self, cs_source},
-    logic::{LogicWorld, NoCollision, classes::Class},
+    logic::{
+        LogicWorld, NoCollision,
+        audit::{MapAudit, audit_map},
+        classes::Class,
+    },
     map::MapData,
     mount::config::content_dir,
 };
 
 const USAGE: &str = "\
 usage: mapsweep [options]
-  --filter <text>    only maps whose name contains <text>
+  --filter <text>    only maps whose name contains <text> (several: comma-separated)
   --out <dir>        report folder (default: target/mapsweep)
   --secs <n>         seconds of map logic to run per map (default 10)
   --shots <exe>      also run <exe> (a mashup build, e.g. target/playtest/mashup) per map:
                      a 1280x720 screenshot from the first spawn and mashup_perf_log's
                      frame times there (needs a display)
-  --frames <n>       frames per --shots run (default 600)";
+  --frames <n>       frames per --shots run (default 600)
+  --audit            also audit the map logic (mashup::logic::audit): connections whose
+                     target or input is missing, outputs and keyvalues nothing reads, and a
+                     scripted player's run through every trigger and button; writes
+                     audit.md, audit.txt";
 
 /// Entity classes the game or the map loader handles outside the logic
 /// layer (drawn, volumes, objectives, lighting and look, sound), or that
@@ -97,6 +105,7 @@ struct Args {
     secs: f32,
     shots: Option<PathBuf>,
     frames: u32,
+    audit: bool,
 }
 
 fn parse() -> Result<Args, String> {
@@ -106,6 +115,7 @@ fn parse() -> Result<Args, String> {
         secs: 10.0,
         shots: None,
         frames: 600,
+        audit: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -116,6 +126,7 @@ fn parse() -> Result<Args, String> {
             "--secs" => a.secs = value()?.parse().map_err(|_| "--secs: not a number")?,
             "--shots" => a.shots = Some(PathBuf::from(value()?)),
             "--frames" => a.frames = value()?.parse().map_err(|_| "--frames: not a number")?,
+            "--audit" => a.audit = true,
             "--help" | "-h" => return Err(String::new()),
             other => return Err(format!("unknown option {other}")),
         }
@@ -149,6 +160,7 @@ struct Row {
     spawns_other: usize,
     shot: Option<PathBuf>,
     frame_ms: Option<String>,
+    audit: Option<MapAudit>,
 }
 
 /// A warning's kind, for counting across maps.
@@ -243,7 +255,7 @@ fn missing_sounds(map: &MapData) -> Vec<String> {
         .collect()
 }
 
-fn sweep_map(name: &str, path: &Path, secs: f32) -> Row {
+fn sweep_map(name: &str, path: &Path, secs: f32, audit: bool) -> Row {
     let mut row = Row {
         name: name.to_string(),
         bsp_version: bsp_version(path),
@@ -329,6 +341,9 @@ fn sweep_map(name: &str, path: &Path, secs: f32) -> Row {
             row.status = format!("logic panic: {}", panic_text(&p));
         }
     }
+    if audit {
+        row.audit = Some(audit_map(&map.entities, secs));
+    }
     // Brush classes that load as static world brushes but should do more
     // (none left: physics brushes, wall toggles and conveyors have nodes).
     const PARTIAL: &[&str] = &[];
@@ -408,7 +423,11 @@ fn main() -> ExitCode {
                 .collect()
         })
         .unwrap_or_default();
-    maps.retain(|(n, _)| args.filter.as_ref().is_none_or(|f| n.to_lowercase().contains(f)));
+    maps.retain(|(n, _)| {
+        args.filter
+            .as_ref()
+            .is_none_or(|f| f.split(',').any(|f| n.to_lowercase().contains(f)))
+    });
     maps.sort();
     // Panics are caught per map; keep their messages short.
     std::panic::set_hook(Box::new(|info| {
@@ -418,7 +437,7 @@ fn main() -> ExitCode {
     let mut rows = Vec::new();
     for (i, (name, path)) in maps.iter().enumerate() {
         eprintln!("[{}/{}] {name}", i + 1, maps.len());
-        let mut row = sweep_map(name, path, args.secs);
+        let mut row = sweep_map(name, path, args.secs, args.audit);
         if let Some(exe) = &args.shots
             && row.status == "ok"
         {
@@ -432,6 +451,12 @@ fn main() -> ExitCode {
             row.unsupported.len()
         );
         rows.push(row);
+    }
+    if args.audit
+        && let Err(e) = write_audit(&args.out, &rows)
+    {
+        eprintln!("writing the audit: {e}");
+        return ExitCode::FAILURE;
     }
     if let Err(e) = write_reports(&args.out, &rows) {
         eprintln!("writing the report: {e}");
@@ -567,4 +592,266 @@ fn write_reports(out: &Path, rows: &[Row]) -> std::io::Result<()> {
         );
     }
     fs::write(out.join("report.md"), md)
+}
+
+/// Every string literal in mashup's own source (lower case): an output
+/// or keyvalue name no literal spells is one nothing fires or reads.
+fn source_literals() -> BTreeSet<String> {
+    fn walk(dir: &Path, out: &mut BTreeSet<String>) {
+        let Ok(rd) = fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs")
+                && let Ok(text) = fs::read_to_string(&p)
+            {
+                let mut parts = text.split('"');
+                parts.next();
+                // Every other piece is inside quotes (close enough for
+                // names: escapes and char literals only add noise).
+                while let Some(inside) = parts.next() {
+                    if inside.len() < 64 {
+                        out.insert(inside.to_ascii_lowercase());
+                    }
+                    parts.next();
+                }
+            }
+        }
+    }
+    let mut out = BTreeSet::new();
+    walk(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut out);
+    out
+}
+
+/// Whether some class may fire this output (a literal names it, or a
+/// numbered family built at run time).
+fn output_known(output: &str, literals: &BTreeSet<String>) -> bool {
+    let o = output.to_ascii_lowercase();
+    literals.contains(&o)
+        || ["oncase", "onuser"]
+            .iter()
+            .any(|p| o.starts_with(p) && o[p.len()..].chars().all(|c| c.is_ascii_digit()))
+}
+
+/// Keys every entity may carry that need no reader (editor data, the
+/// compiler's).
+const EDITOR_KEYS: &[&str] = &[
+    "hammerid",
+    "classname",
+    "_minlight",
+    "_light",
+    "_lightHDR",
+    "_lightscaleHDR",
+    "vrad_brush_cast_shadows",
+];
+
+fn write_audit(out: &Path, rows: &[Row]) -> std::io::Result<()> {
+    let literals = source_literals();
+    let audited: Vec<(&Row, &MapAudit)> = rows.iter().filter_map(|r| r.audit.as_ref().map(|a| (r, a))).collect();
+    // Key -> (maps, count).
+    type Rank = BTreeMap<String, (BTreeSet<String>, usize)>;
+    let add = |rank: &mut Rank, key: String, map: &str, n: usize| {
+        let e = rank.entry(key).or_default();
+        e.0.insert(map.to_string());
+        e.1 += n;
+    };
+    let mut unsupported = Rank::new();
+    let mut missing = Rank::new();
+    let mut unfired = Rank::new();
+    let mut keys = Rank::new();
+    let mut flags = Rank::new();
+    let mut runtime = Rank::new();
+    let mut stuck = Rank::new();
+    let mut classes = Rank::new();
+    let mut special = Rank::new();
+    let mut panics = Rank::new();
+    let mut baked = Rank::new();
+    let mut jumps = Rank::new();
+    let mut missed = Rank::new();
+    let mut behind = Rank::new();
+    let (mut conns, mut bad_conns, mut missing_conns, mut log_lines, mut stuck_n) = (0, 0, 0, 0, 0);
+    for (r, a) in &audited {
+        conns += a.connections;
+        for ((class, input), n) in &a.unsupported {
+            add(&mut unsupported, format!("{class}.{input}"), &r.name, *n);
+            bad_conns += n;
+        }
+        for (t, n) in &a.missing_targets {
+            add(&mut missing, t.clone(), &r.name, *n);
+            missing_conns += n;
+        }
+        for ((class, output), n) in &a.outputs {
+            if !output_known(output, &literals) {
+                add(&mut unfired, format!("{class}.{output}"), &r.name, *n);
+            }
+        }
+        for ((class, key), n) in &a.keys {
+            // Numbered families (Case01, Template16) by their stem.
+            let stem = key.trim_end_matches(|c: char| c.is_ascii_digit());
+            if r.unsupported.contains_key(class)
+                || key.starts_with('_')
+                || literals.contains(key)
+                || (stem.len() < key.len()
+                    && literals
+                        .range(stem.to_string()..)
+                        .take_while(|l| l.starts_with(stem))
+                        .any(|l| l == stem || l[stem.len()..].starts_with('{')))
+                || EDITOR_KEYS.iter().any(|k| k.eq_ignore_ascii_case(key))
+            {
+                continue;
+            }
+            add(&mut keys, format!("{class}.{key}"), &r.name, *n);
+        }
+        for ((class, bit), n) in &a.flags {
+            if !r.unsupported.contains_key(class) {
+                add(&mut flags, format!("{class} & {bit}"), &r.name, *n);
+            }
+        }
+        for line in &a.log {
+            add(&mut runtime, logic_kind(line), &r.name, 1);
+            log_lines += 1;
+        }
+        for s in &a.stuck {
+            let class = s.split(' ').next().unwrap_or("").to_string();
+            add(&mut stuck, class, &r.name, 1);
+            stuck_n += 1;
+        }
+        for (c, n) in &r.unsupported {
+            add(&mut classes, c.clone(), &r.name, *n);
+        }
+        for (s, n) in &a.special {
+            add(&mut special, s.clone(), &r.name, *n);
+        }
+        for j in &a.jumps {
+            add(&mut jumps, j.split(' ').next().unwrap_or("").to_string(), &r.name, 1);
+        }
+        for m in &a.missed {
+            add(&mut missed, m.split(' ').next().unwrap_or("").to_string(), &r.name, 1);
+        }
+        for (c, n) in &a.left_behind {
+            add(&mut behind, c.clone(), &r.name, *n);
+        }
+        for ((class, input), n) in &a.static_brushes {
+            add(&mut baked, format!("{class}.{input}"), &r.name, *n);
+        }
+        for p in &a.panics {
+            add(&mut panics, p.chars().take(100).collect(), &r.name, 1);
+        }
+    }
+    let ranked = |rank: Rank| {
+        let mut v: Vec<_> = rank.into_iter().collect();
+        v.sort_by(|a, b| {
+            b.1.0
+                .len()
+                .cmp(&a.1.0.len())
+                .then(b.1.1.cmp(&a.1.1))
+                .then(a.0.cmp(&b.0))
+        });
+        v
+    };
+    let section = |md: &mut String, title: &str, rank: Rank, limit: usize| {
+        let v = ranked(rank);
+        *md += &format!(
+            "## {title} ({} kinds)\n\n| What | Maps | Count | Examples |\n|---|---|---|---|\n",
+            v.len()
+        );
+        for (k, (maps, n)) in v.iter().take(limit) {
+            let ex: Vec<_> = maps.iter().take(3).cloned().collect();
+            *md += &format!("| {k} | {} | {n} | {} |\n", maps.len(), ex.join(", "));
+        }
+        *md += "\n";
+    };
+    let total_classes: usize = audited.iter().map(|(r, _)| r.unsupported.values().sum::<usize>()).sum();
+    let mut md = String::from("# Map logic audit\n\n");
+    md += &format!(
+        "{} maps; {conns} output connections: {missing_conns} to missing targets, {bad_conns} to inputs their target \
+         doesn't handle; {} unhandled classes ({total_classes} entities); scripted runs logged {log_lines} complaints, \
+         {stuck_n} movers told to move that didn't, {} that jumped, {} children of movers left behind, {} panics.\n\n",
+        audited.len(),
+        classes.len(),
+        audited.iter().map(|(_, a)| a.jumps.len()).sum::<usize>(),
+        audited
+            .iter()
+            .map(|(_, a)| a.left_behind.values().sum::<usize>())
+            .sum::<usize>(),
+        audited.iter().map(|(_, a)| a.panics.len()).sum::<usize>(),
+    );
+    section(&mut md, "Inputs the target's class doesn't handle", unsupported, 80);
+    section(&mut md, "Entity classes nothing handles", classes, 60);
+    section(&mut md, "Outputs maps connect that nothing fires", unfired, 60);
+    section(&mut md, "Run-time complaints (scripted player)", runtime, 60);
+    section(&mut md, "Movers told to move that didn't", stuck, 30);
+    section(&mut md, "Movers that jumped (snapped far in one tick)", jumps, 30);
+    section(&mut md, "Children of movers that stay behind", behind, 30);
+    section(&mut md, "Usable brushes +use didn't find", missed, 30);
+    section(
+        &mut md,
+        "Inputs to brushes baked into the world (no node: the input can't show)",
+        baked,
+        40,
+    );
+    section(&mut md, "Panics", panics, 30);
+    section(&mut md, "Special targets used", special, 20);
+    section(&mut md, "Targets that match nothing", missing, 40);
+    section(&mut md, "Keyvalues no code names (handled classes)", keys, 60);
+    section(
+        &mut md,
+        "Spawnflags set (handled classes; check against the code)",
+        flags,
+        80,
+    );
+    md += "## Maps\n\n| Map | Connections | Missing target | Unhandled input | Unhandled classes | Complaints | Stuck | Panics | Triggers | Buttons pressed/missed | Ticks |\n|---|---|---|---|---|---|---|---|---|---|---|\n";
+    for (r, a) in &audited {
+        md += &format!(
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {}/{} | {} |\n",
+            r.name,
+            a.connections,
+            a.missing_targets.values().sum::<usize>(),
+            a.unsupported.values().sum::<usize>(),
+            r.unsupported.values().sum::<usize>(),
+            a.log.len(),
+            a.stuck.len(),
+            a.panics.len(),
+            a.triggers_visited,
+            a.buttons_pressed,
+            a.buttons_missed,
+            a.ticks,
+        );
+    }
+    fs::write(out.join("audit.md"), md)?;
+
+    let mut raw = String::new();
+    for (r, a) in &audited {
+        raw += &format!("== {}\n", r.name);
+        for ((c, i), n) in &a.unsupported {
+            raw += &format!("  unhandled input {c}.{i} x{n}\n");
+        }
+        for (t, n) in &a.missing_targets {
+            raw += &format!("  missing target '{t}' x{n}\n");
+        }
+        for s in &a.stuck {
+            raw += &format!("  stuck {s}\n");
+        }
+        for s in &a.jumps {
+            raw += &format!("  jump {s}\n");
+        }
+        for s in &a.missed {
+            raw += &format!("  +use missed {s}\n");
+        }
+        for (c, n) in &a.left_behind {
+            raw += &format!("  left behind by its moving parent: {c} x{n}\n");
+        }
+        for p in &a.panics {
+            raw += &format!("  panic {p}\n");
+        }
+        let mut kinds: BTreeMap<String, usize> = BTreeMap::new();
+        for l in &a.log {
+            *kinds.entry(l.clone()).or_default() += 1;
+        }
+        for (l, n) in kinds {
+            raw += &format!("  log x{n}: {l}\n");
+        }
+    }
+    fs::write(out.join("audit.txt"), raw)
 }

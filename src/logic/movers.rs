@@ -62,6 +62,9 @@ pub struct Pusher {
     /// When the last move or wait was due (local time).
     pub last_done: f64,
     pub blocker: Option<Who>,
+    /// The velocity of the mover carrying it (a parent that moves it
+    /// along, `anchors::follow_anchors`), added to its own for riders.
+    pub carry: Vec3,
 }
 
 impl Pusher {
@@ -82,10 +85,19 @@ impl Pusher {
         self.avelocity = Vec3::ZERO;
         let d = goal - self.origin;
         let len = d.length();
-        if len < 1e-4 || speed <= 0.0 {
+        if len < 1e-4 {
             self.velocity = Vec3::ZERO;
             self.goal_origin = Some(goal);
             self.move_done = Some(self.ltime);
+            return;
+        }
+        if speed <= 0.0 {
+            // T = distance / 0 never ends: it holds still with its goal
+            // kept (func_movelinear's SetSpeed 0 pauses a lift; a later
+            // SetSpeed restarts the move).
+            self.velocity = Vec3::ZERO;
+            self.goal_origin = Some(goal);
+            self.move_done = None;
             return;
         }
         let t = len / speed;
@@ -571,6 +583,42 @@ fn attached_mut(class: &mut Class) -> Option<&mut Attached> {
     }
 }
 
+/// Carry a mover by `delta` (its parent moved, `anchors::
+/// follow_anchors`): its place, goal and track move along; `carry` is
+/// the parent's velocity. False for entities that aren't movers.
+pub(super) fn shift(class: &mut Class, delta: Vec3, carry: Vec3) -> bool {
+    let push = match class {
+        Class::Door(d) => {
+            if !d.rotating {
+                d.p1 += delta;
+                d.p2 += delta;
+            }
+            &mut d.push
+        }
+        Class::Button(b) => {
+            b.p1 += delta;
+            b.p2 += delta;
+            &mut b.push
+        }
+        Class::MoveLinear(m) => {
+            m.p1 += delta;
+            m.p2 += delta;
+            m.goal += delta;
+            &mut m.push
+        }
+        Class::Rotating(r) => &mut r.push,
+        Class::Train(t) => &mut t.push,
+        Class::Brush(t) => &mut t.push,
+        Class::Conveyor(c) => &mut c.push,
+        Class::PropDoor(d) => &mut d.push,
+        _ => return false,
+    };
+    push.origin += delta;
+    push.goal_origin = push.goal_origin.map(|g| g + delta);
+    push.carry = carry;
+    true
+}
+
 /// The pusher of a mover entity.
 pub fn pusher(class: &Class) -> Option<&Pusher> {
     match class {
@@ -1018,14 +1066,19 @@ pub(super) fn think(w: &mut LogicWorld, id: EntId) {
     }
 }
 
-pub(super) fn keyvalue(w: &mut LogicWorld, id: EntId, key: &str) {
+pub(super) fn keyvalue(w: &mut LogicWorld, id: EntId, key: &str) -> bool {
     let v = w.get(id).map(|e| e.kv_f(key)).unwrap_or(0.0);
     match (w.get_mut(id).map(|e| &mut e.class), key) {
         (Some(Class::Door(d)), "speed") => d.speed = v,
         (Some(Class::Door(d)), "wait") => d.wait = v,
         (Some(Class::Button(b)), "wait") => b.wait = v,
-        _ => {}
+        // func_rotating: the speed its next Start (or SetSpeed) spins up
+        // to (0 -> 100, as at spawn).
+        (Some(Class::Rotating(r)), "maxspeed") => r.maxspeed = if v == 0.0 { 100.0 } else { v.abs() },
+        (Some(Class::MoveLinear(m)), "speed") => m.speed = v,
+        _ => return false,
     }
+    true
 }
 
 /// Use (a player's +use or the Use input).
@@ -1514,7 +1567,7 @@ impl LogicWorld {
             .filter_map(|id| {
                 let e = self.get(id)?;
                 let p = pusher(&e.class)?;
-                Some((id, p.origin, p.angles, p.velocity, p.visible, p.solid))
+                Some((id, p.origin, p.angles, p.velocity + p.carry, p.visible, p.solid))
             })
             .collect()
     }
@@ -1592,6 +1645,8 @@ impl LogicWorld {
             self.mover_think(id);
             self.settle(id);
         }
+        // Children of movers: carried along, then parented brushes.
+        self.follow_anchors();
         self.follow_parents();
     }
 

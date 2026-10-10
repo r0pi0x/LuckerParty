@@ -282,6 +282,23 @@ pub(super) fn spawn(w: &mut LogicWorld, id: EntId) -> Option<Ambient> {
     Some(ambient)
 }
 
+/// AddOutput message: the sound it plays from now on (the next
+/// PlaySound; a looping one already playing keeps its sound until then).
+pub(super) fn set_message(w: &mut LogicWorld, id: EntId) -> bool {
+    let Some(message) = w.get(id).and_then(|e| e.kv("message")).map(|m| m.trim().to_string()) else {
+        return false;
+    };
+    let raw = {
+        let lower = message.to_ascii_lowercase();
+        lower.contains(".wav") || lower.contains(".mp3")
+    };
+    if let Some(Class::Ambient(a)) = w.get_mut(id).map(|e| &mut e.class) {
+        a.message = message;
+        a.raw = raw;
+    }
+    true
+}
+
 fn get(w: &LogicWorld, id: EntId) -> Option<Ambient> {
     match w.get(id).map(|e| &e.class) {
         Some(Class::Ambient(a)) => Some((**a).clone()),

@@ -1254,6 +1254,36 @@ fn apply_effects(world: &mut World, effects: Vec<Effect>, scale: f32) {
                     && let Some(mut v) = world.get_mut::<LinearVelocity>(node)
                 {
                     v.0 += entity_to_engine(velocity, scale);
+                    crate::map::prop_physics::wake(world, node);
+                }
+            }
+            Effect::BodyTeleport { id, origin, angles } => {
+                let Some(node) = entity_node(world, id) else { continue };
+                let Ok(mut e) = world.get_entity_mut(node) else {
+                    continue;
+                };
+                // The body's centre goes to `origin`: its origin moves by
+                // the same amount.
+                let centre = e
+                    .get::<ColliderAabb>()
+                    .map(|a| (a.min + a.max) / 2.0)
+                    .or_else(|| e.get::<Transform>().map(|t| t.translation))
+                    .unwrap_or_default();
+                let delta = entity_to_engine(origin, scale) - centre;
+                let rotation = angles.map(|a| rotation_to_engine(entity_rotation(a)));
+                if let Some(mut t) = e.get_mut::<Transform>() {
+                    t.translation += delta;
+                    if let Some(r) = rotation {
+                        t.rotation = r;
+                    }
+                }
+                if let Some(mut p) = e.get_mut::<Position>() {
+                    p.0 += delta;
+                }
+                if let Some(r) = rotation
+                    && let Some(mut rot) = e.get_mut::<Rotation>()
+                {
+                    *rot = Rotation::from(r);
                 }
             }
             Effect::DamageFilter { target, filter } => {

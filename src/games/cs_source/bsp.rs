@@ -804,7 +804,6 @@ pub fn brush_entities(bsp: &Bsp) -> Vec<BrushEntity> {
             // follow, `map::entities::anchor_class`).
             e.prop("classname")
                 .is_some_and(|c| MOVERS.contains(&c) || crate::map::entities::anchor_class(c))
-                && e.prop("parentname").is_none_or(|p| p.is_empty())
         })
         .filter_map(|e| e.prop("targetname").map(|n| n.to_ascii_lowercase()))
         .collect();
@@ -836,14 +835,14 @@ pub fn brush_entities(bsp: &Bsp) -> Vec<BrushEntity> {
             * Quat::from_rotation_x(angles.z.to_radians());
         let render_mode = num("rendermode").unwrap_or(0.0) as i32;
         let start_disabled = num("StartDisabled").unwrap_or(0.0) != 0.0;
-        // Movers, and brushes parented to one (they follow it: de_nuke's
-        // door windows). Movers parented to anything else stay put for now.
+        // Movers (parented or not: a mover child rides its parent,
+        // `logic::anchors`), and brushes parented to one (they follow it:
+        // de_nuke's door windows). Breakables get a node too, so they can
+        // disappear.
         let parent = ent.prop("parentname").filter(|p| !p.is_empty());
-        // Breakables get a node too, so they can disappear.
-        let mover = match parent {
-            None => MOVERS.contains(&class),
-            Some(p) => moving_names.contains(&p.to_ascii_lowercase()),
-        } || super::breakables::CLASSES.contains(&class);
+        let mover = MOVERS.contains(&class)
+            || parent.is_some_and(|p| moving_names.contains(&p.to_ascii_lowercase()))
+            || super::breakables::CLASSES.contains(&class);
         // A disabled func_brush that can toggle is drawn through its node
         // (the logic layer hides it).
         let drawn = render_mode != 10 && !(class == "func_brush" && start_disabled && !mover);

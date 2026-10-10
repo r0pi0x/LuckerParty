@@ -14,7 +14,7 @@ const DT: f32 = 0.015;
 
 /// Keyvalues; for plain keys a later pair replaces an earlier one (so
 /// helpers can take overrides), outputs ("On...") are all kept.
-fn kv(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+pub(super) fn kv(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
     for (k, v) in pairs {
         if !is_output_key(k)
@@ -28,14 +28,14 @@ fn kv(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
     out
 }
 
-fn world() -> LogicWorld {
+pub(super) fn world() -> LogicWorld {
     let mut w = LogicWorld::new(DT);
     w.record = true;
     w
 }
 
 /// An axis-aligned box hull (entity space).
-fn hull(lo: Vec3, hi: Vec3) -> MapHull {
+pub(super) fn hull(lo: Vec3, hi: Vec3) -> MapHull {
     let b = MapBrush::from_box(lo, hi);
     let points = (0..8)
         .map(|i| {
@@ -49,16 +49,16 @@ fn hull(lo: Vec3, hi: Vec3) -> MapHull {
     MapHull { planes: b.planes, points }
 }
 
-fn spawn(w: &mut LogicWorld, pairs: &[(&str, &str)]) -> EntId {
+pub(super) fn spawn(w: &mut LogicWorld, pairs: &[(&str, &str)]) -> EntId {
     w.spawn(&kv(pairs), Vec::new())
 }
 
-fn spawn_brush(w: &mut LogicWorld, pairs: &[(&str, &str)], lo: Vec3, hi: Vec3) -> EntId {
+pub(super) fn spawn_brush(w: &mut LogicWorld, pairs: &[(&str, &str)], lo: Vec3, hi: Vec3) -> EntId {
     w.spawn(&kv(pairs), vec![hull(lo, hi)])
 }
 
 /// Run frames up to and including tick `last`.
-fn run_to(w: &mut LogicWorld, last: i64) {
+pub(super) fn run_to(w: &mut LogicWorld, last: i64) {
     while w.tick <= last {
         w.frame(&NoCollision);
     }
@@ -71,7 +71,7 @@ fn run_to_with(w: &mut LogicWorld, last: i64, col: &dyn Collision) {
 }
 
 /// Ticks at which `id` received `input`.
-fn got(w: &LogicWorld, id: EntId, input: &str) -> Vec<i64> {
+pub(super) fn got(w: &LogicWorld, id: EntId, input: &str) -> Vec<i64> {
     w.deliveries
         .iter()
         .filter(|d| d.target == Who::Ent(id) && d.input.eq_ignore_ascii_case(input))
@@ -80,7 +80,7 @@ fn got(w: &LogicWorld, id: EntId, input: &str) -> Vec<i64> {
 }
 
 /// Ticks at which `id` fired `output`.
-fn fired(w: &LogicWorld, id: EntId, output: &str) -> Vec<i64> {
+pub(super) fn fired(w: &LogicWorld, id: EntId, output: &str) -> Vec<i64> {
     w.fired
         .iter()
         .filter(|(_, e, o)| *e == id && o.eq_ignore_ascii_case(output))
@@ -88,7 +88,7 @@ fn fired(w: &LogicWorld, id: EntId, output: &str) -> Vec<i64> {
         .collect()
 }
 
-fn relay(w: &mut LogicWorld, name: &str, outputs: &[&str]) -> EntId {
+pub(super) fn relay(w: &mut LogicWorld, name: &str, outputs: &[&str]) -> EntId {
     let mut pairs = vec![("classname", "logic_relay"), ("targetname", name)];
     for o in outputs {
         pairs.push(("OnTrigger", o));
@@ -96,7 +96,7 @@ fn relay(w: &mut LogicWorld, name: &str, outputs: &[&str]) -> EntId {
     spawn(w, &pairs)
 }
 
-fn player_at(w: &mut LogicWorld, n: u32, origin: Vec3) -> Entity {
+pub(super) fn player_at(w: &mut LogicWorld, n: u32, origin: Vec3) -> Entity {
     let e = Entity::from_raw_u32(100 + n).unwrap();
     let mut p = Player::new(e, origin);
     p.maxs = Vec3::new(16.0, 16.0, 62.0);
@@ -937,7 +937,7 @@ fn trigger_gravity_and_filtered_trigger() {
 
 // ------------------------------------------------------------- movers
 
-fn origin_of(w: &LogicWorld, id: EntId) -> Vec3 {
+pub(super) fn origin_of(w: &LogicWorld, id: EntId) -> Vec3 {
     pusher(&w.get(id).unwrap().class).unwrap().origin
 }
 

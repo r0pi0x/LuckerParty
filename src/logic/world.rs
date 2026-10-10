@@ -362,7 +362,18 @@ pub enum Effect {
     Spark { at: Vec3, dir: Vec3, magnitude: f32 },
     /// Push a physics body (env_entity_maker's PostSpawnSpeed): add
     /// `velocity` (entity space, units/s) to the entity's body.
-    BodyVelocity { id: EntId, velocity: Vec3 },
+    BodyVelocity {
+        id: EntId,
+        velocity: Vec3,
+    },
+    /// Move a physics body's centre to `origin` (entity space), turned to
+    /// `angles` when given, its velocity kept (trigger_teleport,
+    /// point_teleport).
+    BodyTeleport {
+        id: EntId,
+        origin: Vec3,
+        angles: Option<Vec3>,
+    },
 }
 
 /// Static collision the logic needs (the world without movers), entity
@@ -540,6 +551,10 @@ pub struct LogicWorld {
     pub players: Vec<Player>,
     /// Names given to players (AddOutput targetname).
     pub player_names: Vec<(Entity, String)>,
+    /// Classnames given to players (AddOutput classname: kz_ and bhop_
+    /// maps mark a player's stage this way for filter_activator_class);
+    /// others are "player".
+    pub player_classes: Vec<(Entity, String)>,
     pub effects: Vec<Effect>,
     rng: u64,
     /// Developer messages (bad links, unknown inputs, refused commands).
@@ -623,6 +638,7 @@ impl LogicWorld {
             next_connection: 1,
             players: Vec::new(),
             player_names: Vec::new(),
+            player_classes: Vec::new(),
             effects: Vec::new(),
             rng: 0x9e37_79b9_7f4a_7c15,
             log: Vec::new(),
@@ -702,6 +718,7 @@ impl LogicWorld {
         fresh.collision = self.collision.clone();
         fresh.players = std::mem::take(&mut self.players);
         fresh.player_names = std::mem::take(&mut self.player_names);
+        fresh.player_classes = std::mem::take(&mut self.player_classes);
         fresh.use_held = std::mem::take(&mut self.use_held);
         fresh.effects = std::mem::take(&mut self.effects);
         // Cameras are made again: their viewers see from their eyes
@@ -934,7 +951,11 @@ impl LogicWorld {
     pub fn class_of(&self, who: Who) -> String {
         match who {
             Who::Ent(id) => self.get(id).map(|e| e.classname.clone()).unwrap_or_default(),
-            Who::Player(_) => "player".into(),
+            Who::Player(p) => self
+                .player_classes
+                .iter()
+                .find(|(e, _)| *e == p)
+                .map_or_else(|| "player".into(), |(_, c)| c.clone()),
         }
     }
 
@@ -1132,8 +1153,10 @@ impl LogicWorld {
                     out.push(Who::Ent(id));
                 }
             }
-            if name_matches(target, "player") {
-                out.extend(self.players.iter().map(|p| Who::Player(p.entity)));
+            for p in &self.players {
+                if name_matches(target, &self.class_of(Who::Player(p.entity))) {
+                    out.push(Who::Player(p.entity));
+                }
             }
         }
         out
@@ -1265,6 +1288,12 @@ impl LogicWorld {
                 self.player_names.retain(|(e, _)| *e != p);
                 self.player_names.push((p, v.to_string()));
             }
+            "classname" => {
+                self.player_classes.retain(|(e, _)| *e != p);
+                if !v.eq_ignore_ascii_case("player") {
+                    self.player_classes.push((p, v.to_string()));
+                }
+            }
             "gravity" => {
                 if let Some(pl) = self.player_mut(p) {
                     pl.gravity = num(v);
@@ -1343,18 +1372,40 @@ impl LogicWorld {
         }
         let key_lower = key.to_ascii_lowercase();
         let Some(e) = self.get_mut(id) else { return };
-        match key_lower.as_str() {
-            "targetname" => e.targetname = value.trim().to_string(),
-            "origin" => e.origin = crate::map::entities::parse_vector(&value),
-            "angles" => e.angles = crate::map::entities::parse_vector(&value),
-            _ => {}
-        }
+        let base = match key_lower.as_str() {
+            "targetname" => {
+                e.targetname = value.trim().to_string();
+                true
+            }
+            "origin" => {
+                e.origin = crate::map::entities::parse_vector(&value);
+                true
+            }
+            "angles" => {
+                e.angles = crate::map::entities::parse_vector(&value);
+                true
+            }
+            "spawnflags" => {
+                e.spawnflags = atoi(&value) as u32;
+                true
+            }
+            // Filters and classname targets see the new name; the entity
+            // keeps behaving as its spawned class.
+            "classname" => {
+                e.classname = value.trim().to_string();
+                true
+            }
+            _ => false,
+        };
         if let Some(kv) = e.keyvalues.iter_mut().find(|(k, _)| k.eq_ignore_ascii_case(key)) {
             kv.1 = value.clone();
         } else {
             e.keyvalues.push((key.to_string(), value.clone()));
         }
-        super::classes::class_keyvalue(self, id, &key_lower, &value);
+        let class = e.classname.clone();
+        if !super::classes::class_keyvalue(self, id, &key_lower, &value) && !base {
+            self.log.push(format!("{class}: AddOutput {key_lower} has no effect"));
+        }
     }
 
     // --------------------------------------------------------- thinks
