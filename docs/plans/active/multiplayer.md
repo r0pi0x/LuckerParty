@@ -249,7 +249,11 @@ avian3d 0.7).
   ~40 bytes quantized) × 66 Hz ≈ 26 KB/s per client before compression;
   replicon sends only changed components. Quantize positions (1/32 unit)
   and angles (16 bits) in custom serializers. Fine for LAN and broadband;
-  `rate`-style caps via replicon priorities later.
+  `rate`-style caps via replicon priorities later. Done in item 10's
+  "Bandwidth": quantized bodies, own-state deltas, per-client
+  `cl_updaterate`/`rate` (dropping a client's mutations on ticks it isn't
+  due one; replicon's priorities don't pace), ~10-13 KB/s per client
+  with twelve characters at CS:S's default 20 updates a second.
 
 ## 3. Architecture in this codebase
 
@@ -1254,7 +1258,9 @@ with tests passing and something to see.
    - **Budget** (set here; the 26 KB/s of §2 was an estimate before
      compression): at most 112 KB/s received per client with twelve
      characters on links up to 150 ms and 3 % loss, 128 KB/s at 300 ms
-     and 5 %; prediction errors other than contacts with other players,
+     and 5 % (lowered to 18 and 27 at 20 updates a second in
+     "Bandwidth" below, where the error rates below became per tick
+     played); prediction errors other than contacts with other players,
      hits and server teleports at most 2 % of states (5 % on the worst
      link), never more than 128 (2 s) in a row; settled values (health,
      team, score, name, the round, a client's own money, armour, weapons
@@ -1321,11 +1327,92 @@ with tests passing and something to see.
      `loose::tests::an_item_gone_in_the_same_frame_is_no_error`);
      `NetSim` gave a joining client the id of one that had left.
    - Not fixed (docs/tech-debt.md, net): replicon's dropping of held-back
-     mutations itself (worked around in (1), ~12 KB/s); bandwidth well over the §2 estimate (no deltas for the own
-     state, unquantized bodies, an update every tick); mispredictions
+     mutations itself (worked around in (1), ~12 KB/s; since replaced, see
+     "Bandwidth"); bandwidth well over the §2 estimate (no deltas for the own
+     state, unquantized bodies, an update every tick: done, "Bandwidth"); mispredictions
      when walking into other players and when hit; a dedicated server
      making ragdolls and silent looping sounds; 3-4 s client stalls
      putting a map in.
+   - **Bandwidth** (2026-10-10; goal: comfortable hosting over home
+     internet, ≤ 35 KB/s a client with twelve characters on de_dust2,
+     mispredictions and settled mismatches not rising). Each step
+     measured with the 3-minute soak (KB/s mean per link: 0 ms, 50 ms,
+     150 ms/2 %, 300 ms/5 % (in for its first ~17 s), 150 ms/3 %; dev
+     build on a loaded machine):
+
+     | step | KB/s mean | peak | errors % (worst link) | settled mismatches |
+     |---|---|---|---|---|
+     | before | 88.6, 89.3, 91.0, 105.9, 87.0 | 320-337 | 0.28-0.86 (1.70) | 0 |
+     | 1. quantized bodies | 75.5, 73.7, 77.9, 85.4, 80.5 | 306-316 | 0.16-1.20 (4.04) | 0 |
+     | 4. values in tick order, no resends | 53.3, 58.3, 59.3, 70.2, 59.3 | 191-244 | 0.29-1.15 (5.25) | 0 |
+     | 2. own-state deltas (every tick) | 27.5, 29.7, 33.5, 49.2, 32.9 | 156-231 | 0.06-0.74 (2.15) | 0 |
+     | 3. `cl_updaterate` 33 | 14.5, 15.3, 17.1, 19.2, 16.9 | 31-36 | 0.16-0.74 (2.62) | 0 |
+     | 3. `cl_updaterate` 20 (default) | 9.5, 10.0, 10.9, 13.1, 10.7 | 31-33 | 0.25-0.43 (3.11) | 0 |
+
+     Three more runs at the default: 9.2-11.6 KB/s (worst link
+     12.7-13.1), peaks 30-39 at joins and map changes; at 66 a second
+     with the default `rate` 30000: 25.4-27.8 (31.0), the rate choking
+     4-7 % of updates. Errors are per state compared, and a client compares one per
+     update: at 20 a second a third as many as before, while the
+     mispredictions themselves (a bump, a landing) are events seen once
+     whatever the rate, about as many a minute as before or fewer (the
+     worst link's 15-28 in its 17 s, 19-45 before); so the soak's budget
+     (2 %, 5 % on the worst link) is now per tick played (errors ×
+     updates a second / 64): four runs at 20 a second 0.06-0.55 % (worst
+     link 1.0-1.8 %), the worst link's per-state rate moving 3.1-5.9 %
+     on its ~480 states. Runs of errors in a row: up to ~25 (were up to
+     ~80). Settled values: none different in any run. (1) `NetBody` on the wire (`net::quant`): positions to
+     1/32 unit, velocities to 1/8 unit/s, yaw and pitch in 16 bits, as
+     varints: 45 → ~20 bytes; the server keeps the quantized values, so
+     the soak's bodies-heard check stays exact. The own state is not
+     quantized: the client compares it bit for bit and replays from it,
+     and the server simulates on from its exact values, so quantizing it
+     would need either tolerances in the comparison (and a replay from
+     values the server doesn't have) or the server snapping its
+     simulation to the grid each tick (a movement change); deltas make
+     it small anyway. (4) The replicon race (item 10's fix (1)) closed on
+     the client: a receive marker on every replicated entity (replicon's
+     `ConfirmHistory`, `need_history`) has replicon pass held-back older
+     mutations too, and each component's write takes a value only if it
+     is no older than the one it holds (`net::ordered`), so nothing is
+     resent (`resend_settled` and `SETTLE_TICKS` are gone; it cost
+     ~20 KB/s here, not 12). Limit: replicon passes older mutations within
+     64 ticks of the entity's newest. (2) `OwnStateDelta`: the own state
+     as a byte delta (`net::delta`: runs of bytes equal to the base's
+     skipped) against the newest one the client says it holds
+     (`UserCmds::ack`), whole when the server no longer has that one
+     (joining, after a map change): ~400-650 → 25-90 bytes. A client
+     without commands to send (not predicting yet: after a map change)
+     sends its acknowledgement alone, else the server kept sending
+     deltas against a state it had dropped (found by the soak: own
+     money and weapons stale for seconds after each map change, missed
+     commands ×30; test in `net_maps::changelevel_takes_two_clients_along`).
+     (3) `net::server::UpdatePacing`: each client is sent a tick's
+     mutations and its own state only on the ticks its `cl_updaterate`
+     falls on (userinfo; within `sv_minupdaterate`..`sv_maxupdaterate`)
+     and while it has used no more than its `rate` (bytes a second,
+     within `sv_minrate`..`sv_maxrate`; a quarter second's burst either
+     way): the others are dropped before the transport sees them, which
+     replicon treats as lost (it sends what changed since the client's
+     last acknowledgement with the next one); reliable updates and
+     messages always go. Defaults are the community's documented CS:S
+     values (20, 30000; 10/66, 5000/no limit), unmeasured. Interpolation
+     already spans the gaps (`cl_interp` 0.1 = 2 × 50 ms); a teleport
+     between two snapshots further apart than a tick is now marked by the
+     server (`body_flags::TELEPORTS`, a two-bit count, as Source marks
+     them), so it is drawn at once rather than smeared (test
+     `net_interp::a_teleport_is_drawn_at_once`, at 20 a second with 5 %
+     loss). Lag compensation is unchanged (it rewinds to the render tick
+     each command carries; `net_weapons` passes at the default 20).
+     Tests: `net::updates_follow_each_clients_rate` (20, 66 and a
+     choked client), `net_prediction::without_loss_the_prediction_is_
+     never_wrong` at 20, 33 and 66, `net_interp::others_are_drawn_
+     smoothly_on_the_servers_path` at 20, 33 and 66. (5) renet doesn't
+     compress; deflate on each client's frame of messages saves ~9 % at
+     20 updates a second (`MASHUP_SOAK_DUMP`): not worth a dependency on
+     both transports. Budget now (the soak's): 10 KB/s plus 0.4 per
+     update a second (18 at 20, 36 at an update every tick), half again
+     on the worst link.
 
 ## 6. Open questions for the user
 

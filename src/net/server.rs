@@ -15,7 +15,7 @@ use bevy_replicon_renet::{
 
 use super::{
     HOST_ID, Join, NET_VERSION, NetBody, NetCharacter, NetCmd, NetEvent, NetSettings, NetVersion, OwnState,
-    PROTOCOL_ID, Refused, UserCmds, body_flags,
+    OwnStateDelta, PROTOCOL_ID, Refused, UserCmds, body_flags,
 };
 use crate::{
     character::character_bundle,
@@ -69,29 +69,6 @@ pub(super) fn plugin(app: &mut App) {
                 .map(Some)
         },
     );
-    // Each replicated value goes out once more after it settles
-    // (`resend_settled`).
-    app.add_systems(
-        FixedLast,
-        (
-            resend_settled::<NetCharacter>,
-            resend_settled::<NetBody>,
-            resend_settled::<Team>,
-            resend_settled::<Health>,
-            resend_settled::<super::NetMover>,
-            resend_settled::<super::NetProp>,
-            resend_settled::<super::NetAnchor>,
-            resend_settled::<super::NetRagdoll>,
-            resend_settled::<super::NetHeld>,
-            resend_settled::<super::NetItem>,
-            resend_settled::<super::NetSmoke>,
-            resend_settled::<super::NetRound>,
-            resend_settled::<super::NetScore>,
-            resend_settled::<super::NetBomb>,
-            resend_settled::<super::NetHostage>,
-        )
-            .run_if(in_state(ServerState::Running)),
-    );
     app.add_observer(join)
         .add_observer(left)
         .add_systems(Update, drop_refused.run_if(in_state(ServerState::Running)))
@@ -127,10 +104,179 @@ pub(super) fn plugin(app: &mut App) {
         )
         .add_systems(
             PostUpdate,
-            (replicate_characters, send_own_states)
+            (replicate_characters, pace_updates, send_own_states)
+                .chain()
                 .before(ServerSystems::Send)
                 .run_if(resource_equals(NetRole::Server)),
-        );
+        )
+        // Clients not due an update this frame don't get its mutations.
+        .add_systems(
+            PostUpdate,
+            pace_messages
+                .after(ServerSystems::Send)
+                .before(ServerSystems::SendPackets)
+                .run_if(resource_equals(NetRole::Server)),
+        )
+        .init_resource::<RateLimits>();
+    crate::console::resource_cvar::<RateLimits, f32>(
+        app,
+        "sv_minupdaterate",
+        "Fewest updates a second the server sends a client, whatever its cl_updaterate.",
+        |r| &mut r.min_updaterate,
+    );
+    crate::console::resource_cvar::<RateLimits, f32>(
+        app,
+        "sv_maxupdaterate",
+        "Most updates a second the server sends a client (never more than its tick rate).",
+        |r| &mut r.max_updaterate,
+    );
+    crate::console::resource_cvar::<RateLimits, f32>(
+        app,
+        "sv_minrate",
+        "Least bandwidth (bytes a second) the server allows a client, whatever its rate.",
+        |r| &mut r.min_rate,
+    );
+    crate::console::resource_cvar::<RateLimits, f32>(
+        app,
+        "sv_maxrate",
+        "Most bandwidth (bytes a second) the server allows a client (0: no limit).",
+        |r| &mut r.max_rate,
+    );
+}
+
+/// The server's bounds on what clients ask for (Source's
+/// `sv_minupdaterate`, `sv_maxupdaterate`, `sv_minrate`, `sv_maxrate`;
+/// community-documented defaults, unmeasured: docs/tech-debt.md).
+#[derive(Resource, Clone, Debug)]
+pub struct RateLimits {
+    pub min_updaterate: f32,
+    pub max_updaterate: f32,
+    pub min_rate: f32,
+    /// 0: no limit.
+    pub max_rate: f32,
+}
+
+impl Default for RateLimits {
+    fn default() -> Self {
+        Self {
+            min_updaterate: 10.0,
+            max_updaterate: 66.0,
+            min_rate: 5000.0,
+            max_rate: 0.0,
+        }
+    }
+}
+
+/// The userinfo keys of a client's update rate and bandwidth
+/// (`predict::RateSettings`), and what a client that sent none gets.
+pub const UPDATERATE_KEY: &str = "cl_updaterate";
+pub const RATE_KEY: &str = "rate";
+pub const DEFAULT_UPDATERATE: f32 = 20.0;
+pub const DEFAULT_RATE: f32 = 30000.0;
+
+/// On a client's server-side entity: when its next update is due and its
+/// bandwidth left (Source's `cl_updaterate` and `rate`). A client is sent
+/// the mutations of a tick (others' bodies, props, ...) and its own state
+/// only on the ticks its update rate falls on, and none while it has
+/// used more than its `rate` (a choke); reliable updates (spawns,
+/// insertions, removals) and messages always go. What it misses is sent
+/// with the next update (replicon sends what changed since the client's
+/// last acknowledgement), and its interpolation draws across the gaps
+/// (`cl_interp_ratio` update intervals).
+#[derive(Component, Debug, Default, Clone)]
+pub struct UpdatePacing {
+    /// The tick (fractional) the next update is due at.
+    next: f64,
+    /// Bytes it may still be sent (negative: choked until refilled).
+    budget: f64,
+    /// The last tick paced, and the rate then (bytes a second).
+    last_tick: u64,
+    rate: f64,
+    /// This frame's update goes to it.
+    pub due: bool,
+    /// Updates sent, and those a full budget held back.
+    pub sent: u64,
+    pub choked: u64,
+}
+
+/// How much bandwidth a client may save up, s of its rate; and owe after
+/// a burst (a join's spawns, a map's download), s.
+const RATE_BURST: f64 = 0.25;
+
+/// Each client's update this frame: due when its update rate's interval
+/// has passed since the last and its bandwidth allows.
+fn pace_updates(
+    clock: Res<SimClock>,
+    limits: Res<RateLimits>,
+    players: Query<&Player>,
+    mut pacing: Query<(Entity, &mut UpdatePacing)>,
+    info: Query<&crate::core::UserInfo>,
+) {
+    let tick = clock.tick;
+    let dt = clock.delta.as_secs_f64().max(1e-4);
+    for (client, mut pace) in &mut pacing {
+        let ticks = tick.saturating_sub(pace.last_tick);
+        if pace.last_tick == 0 {
+            pace.next = tick as f64;
+        }
+        pace.last_tick = tick;
+        // Replicon sends nothing in a frame without a tick.
+        pace.due = false;
+        if ticks == 0 {
+            continue;
+        }
+        let user = players.get(client).ok().and_then(|p| info.get(p.character).ok());
+        let get = |key: &str, default: f32| {
+            user.and_then(|u| u.0.get(key))
+                .and_then(|v| v.trim().parse::<f32>().ok())
+                .filter(|v| v.is_finite())
+                .unwrap_or(default)
+        };
+        let max_hz = limits.max_updaterate.max(1.0) as f64;
+        let hz = (get(UPDATERATE_KEY, DEFAULT_UPDATERATE) as f64)
+            .clamp(limits.min_updaterate.max(1.0) as f64, max_hz.max(limits.min_updaterate as f64));
+        let interval = (1.0 / (hz * dt)).max(1.0);
+        let mut rate = (get(RATE_KEY, DEFAULT_RATE) as f64).max(limits.min_rate as f64);
+        if limits.max_rate > 0.0 {
+            rate = rate.min(limits.max_rate as f64);
+        }
+        pace.rate = rate;
+        pace.budget = (pace.budget + rate * dt * ticks as f64).min(rate * RATE_BURST);
+        if (tick as f64) + 1e-6 < pace.next {
+            continue;
+        }
+        if pace.budget < 0.0 {
+            pace.choked += 1;
+            continue;
+        }
+        pace.due = true;
+        pace.sent += 1;
+        pace.next += interval;
+        if pace.next <= tick as f64 {
+            pace.next = tick as f64 + interval;
+        }
+    }
+}
+
+/// After replicon has built this frame's messages: mutations only to the
+/// clients due an update; what each is sent counts against its rate.
+pub fn pace_messages(
+    mut messages: ResMut<bevy_replicon::shared::backend::server_messages::ServerMessages>,
+    mut pacing: Query<&mut UpdatePacing>,
+) {
+    let mutations: usize = bevy_replicon::shared::backend::channels::ServerChannel::Mutations.into();
+    messages.retain_sent(|(client, channel, _)| *channel != mutations || pacing.get(*client).is_ok_and(|p| p.due));
+    for (client, _, bytes) in messages.iter_sent() {
+        if let Ok(mut p) = pacing.get_mut(client) {
+            p.budget -= bytes.len() as f64;
+        }
+    }
+    for mut p in &mut pacing {
+        let floor = -p.rate * RATE_BURST;
+        if p.budget < floor {
+            p.budget = floor;
+        }
+    }
 }
 
 /// On a client's server-side entity (replicon's `ConnectedClient`): its
@@ -218,6 +364,9 @@ pub struct CommandBuffer {
     pub missed: u32,
     pub late: u32,
     pub early: u32,
+    /// The newest own state its client holds (`UserCmds::ack`, from the
+    /// last message heard).
+    pub ack: u64,
 }
 
 /// Commands further ahead of the server than this (ticks) are dropped: a
@@ -230,69 +379,20 @@ pub const MAX_AHEAD: u64 = 64;
 pub struct OwnStateOut {
     state: Option<OwnState>,
     sent: u64,
+    /// The states sent lately (tick, encoded), oldest first: the bases
+    /// of the deltas (`OwnStateDelta`).
+    history: std::collections::VecDeque<(u64, Vec<u8>)>,
+    /// The last one's size on the wire and whole, bytes.
+    pub last_sizes: (usize, usize),
 }
+
+/// Own states kept as delta bases (2 s at 64 Hz: more than a round trip).
+const OWN_HISTORY: usize = 128;
 
 impl OwnStateOut {
     /// The newest state captured (sent or to be sent).
     pub fn state(&self) -> Option<&OwnState> {
         self.state.as_ref()
-    }
-}
-
-/// Ticks a replicated value keeps going out with every update after its
-/// last change (`resend_settled`): about a second.
-pub const SETTLE_TICKS: u64 = 64;
-
-/// A replicated value's last change, and the change tick our own resends
-/// leave (not changes of the value).
-#[derive(Default)]
-pub struct Settling {
-    changed_at: u64,
-    ours: Option<bevy::ecs::change_detection::Tick>,
-}
-
-/// Each replicated value that changed goes out with every update until it
-/// has held still for `SETTLE_TICKS`, so its last change reaches a client
-/// even through a lost packet.
-///
-/// Why: replicon (0.44.3) holds a client's mutations back until the
-/// update (reliable) they follow has arrived, acknowledging them on
-/// arrival; when a lost update is resent and comes in, it applies each
-/// entity's newest held-back mutation and drops the older ones as
-/// outdated. Mutations built after the server had the acknowledgement
-/// left out the values it acknowledged, so a value changed once on an
-/// entity whose body changes every tick was dropped for good: the soak
-/// (tests/it/heavy/net_soak.rs) saw clients with 2-3 % loss keep a score
-/// one kill short, a dead player's last health, every player's old score
-/// after a map change, until the value changed again (test
-/// `net::a_value_survives_held_back_mutations`). Sent with every update
-/// for a while, it is in the newest held-back mutation too. A value that
-/// keeps changing (a moving body) costs nothing more; one that changes
-/// once (a score) goes out ~64 times; values as spawned arrive reliably.
-pub fn resend_settled<C: Component<Mutability = bevy::ecs::component::Mutable>>(
-    clock: Res<SimClock>,
-    mut q: Query<(Entity, &mut C), With<Replicated>>,
-    mut state: Local<bevy::ecs::entity::EntityHashMap<Settling>>,
-) {
-    let now = clock.tick;
-    state.retain(|e, _| q.contains(*e));
-    for (e, mut c) in &mut q {
-        let s = state.entry(e).or_default();
-        if c.is_added() {
-            // Spawned (or inserted) values ride the reliable update.
-            *s = Settling {
-                changed_at: now.saturating_sub(SETTLE_TICKS + 1),
-                ours: None,
-            };
-            continue;
-        }
-        if c.is_changed() && Some(c.last_changed()) != s.ours {
-            s.changed_at = now;
-        }
-        if now <= s.changed_at + SETTLE_TICKS {
-            c.set_changed();
-            s.ours = Some(c.last_changed());
-        }
     }
 }
 
@@ -450,6 +550,7 @@ fn admit(world: &mut World, client: Entity, msg: Join) {
             name: name.clone(),
             character,
         },
+        UpdatePacing::default(),
     ));
     // The served map (its offer: name, hash, size, where to download it).
     let welcome = super::maps::welcome(world, id);
@@ -616,6 +717,9 @@ fn receive_commands(
         let Ok(mut b) = buffers.get_mut(p.character) else {
             continue;
         };
+        // The state to send deltas against, also from a message without
+        // commands (a client not predicting yet, or missing a base).
+        b.ack = msg.message.ack;
         let Some(newest) = msg.message.cmds.iter().map(|c| c.tick).max() else {
             continue;
         };
@@ -756,16 +860,22 @@ fn capture_own_states(world: &mut World) {
 }
 
 /// The newest state of each remote player to its client, with how its
-/// commands are arriving.
+/// commands are arriving: with its updates only (`UpdatePacing`), as a
+/// delta against the newest state it holds (`OwnStateDelta`).
 fn send_own_states(
     players: Query<(Entity, &Player)>,
     mut characters: Query<(&mut OwnStateOut, &mut CommandBuffer)>,
-    mut out: MessageWriter<ToClients<OwnState>>,
+    pacing: Query<&UpdatePacing>,
+    mut out: MessageWriter<ToClients<OwnStateDelta>>,
 ) {
     for (client, p) in &players {
         let Ok((mut own, mut b)) = characters.get_mut(p.character) else {
             continue;
         };
+        // Only with its updates (`UpdatePacing`).
+        if pacing.get(client).is_ok_and(|p| !p.due) {
+            continue;
+        }
         let Some(mut state) = own.state.clone() else { continue };
         if state.tick <= own.sent {
             continue;
@@ -777,9 +887,27 @@ fn send_own_states(
         state.buffered = b.queued.len().min(u16::MAX as usize) as u16;
         state.missed = b.missed;
         state.late = b.late;
+        // A delta against the newest state the client holds, if we still
+        // have it; else against nothing (joining, a loss of every state
+        // in our history, a client that started over).
+        let Ok(bytes) = postcard::to_allocvec(&state) else { continue };
+        let base = own.history.iter().rev().find(|(t, _)| *t == b.ack && b.ack != 0);
+        let (base_tick, delta) = match base {
+            Some((t, base)) => (*t, super::delta::encode(base, &bytes)),
+            None => (0, super::delta::encode(&[], &bytes)),
+        };
+        own.last_sizes = (delta.len(), bytes.len());
+        own.history.push_back((state.tick, bytes));
+        while own.history.len() > OWN_HISTORY {
+            own.history.pop_front();
+        }
         out.write(ToClients {
             targets: SendTargets::Single(ClientId::Client(client)),
-            message: state,
+            message: OwnStateDelta {
+                tick: state.tick,
+                base: base_tick,
+                delta,
+            },
         });
     }
 }
@@ -824,9 +952,17 @@ fn replicate_characters(
 }
 
 /// The simulation's state of each character into what replicates.
-fn write_bodies(mut q: Query<(&Transform, &Velocity, &MovementState, &Intent, Has<Dead>, &mut NetBody)>) {
+fn write_bodies(
+    clock: Res<SimClock>,
+    mut q: Query<(&Transform, &Velocity, &MovementState, &Intent, Has<Dead>, &mut NetBody)>,
+) {
+    let far = crate::map::interp::SNAP_SPEED * clock.delta.as_secs_f32();
     for (t, v, s, i, dead, mut body) in &mut q {
-        let mut flags = 0;
+        // A teleport counts one up (`body_flags::TELEPORTS`).
+        let mut flags = body.flags & body_flags::TELEPORTS;
+        if Vec3::from_array(body.origin).distance(t.translation) > far {
+            flags = (flags + body_flags::TELEPORT_ONE) & body_flags::TELEPORTS;
+        }
         for (on, bit) in [
             (s.on_ground, body_flags::ON_GROUND),
             (s.crouching, body_flags::CROUCHING),
@@ -844,7 +980,8 @@ fn write_bodies(mut q: Query<(&Transform, &Velocity, &MovementState, &Intent, Ha
             pitch: i.pitch,
             eye: s.eye_offset.to_array(),
             flags,
-        };
+        }
+        .quantized();
         body.set_if_neq(now);
     }
 }

@@ -32,7 +32,7 @@ use bevy::{app::RunFixedMainLoopSystems, prelude::*};
 use bevy_replicon::prelude::*;
 use bevy_replicon_renet::RenetClient;
 
-use super::{CMD_BACKUP, NetCmd, OwnState, UserCmds};
+use super::{CMD_BACKUP, NetCmd, OwnState, OwnStateDelta, UserCmds};
 use crate::{
     console::resource_cvar,
     core::{FirstTimePredicted, Intent, LocalPlayer, NetRole, PredictedComponents, Seed, SimClock, SimSet},
@@ -73,6 +73,25 @@ impl Default for PredictSettings {
             showerror: 0,
             smoothtime: 0.1,
             lagcompensation: 1,
+        }
+    }
+}
+
+/// What this client asks the server for (Source's `cl_updaterate` and
+/// `rate`, sent as userinfo: `server::UpdatePacing`): updates a second
+/// and bytes a second. Source's defaults as the community documents
+/// them (20, 30000), unmeasured (docs/tech-debt.md, net).
+#[derive(Resource, Clone, Debug)]
+pub struct RateSettings {
+    pub updaterate: f32,
+    pub rate: f32,
+}
+
+impl Default for RateSettings {
+    fn default() -> Self {
+        Self {
+            updaterate: super::server::DEFAULT_UPDATERATE,
+            rate: super::server::DEFAULT_RATE,
         }
     }
 }
@@ -165,6 +184,30 @@ struct Outgoing {
 struct Pending {
     state: Option<OwnState>,
     done: u64,
+}
+
+/// The server's own states this client holds (tick, encoded), oldest
+/// first: the bases its deltas are against (`OwnStateDelta`). The newest
+/// is acknowledged with every `UserCmds`.
+#[derive(Resource, Default)]
+pub struct OwnStateBases {
+    states: VecDeque<(u64, Vec<u8>)>,
+    /// A delta came against a state we don't hold (we started over: a
+    /// map change; or an acknowledgement from before it arrived late):
+    /// our acknowledgement goes out every frame until one decodes.
+    missing: bool,
+    /// The acknowledgement last sent.
+    sent: Option<u64>,
+}
+
+/// Bases kept (the server keeps as many: `server::OWN_HISTORY`).
+const BASES: usize = 128;
+
+impl OwnStateBases {
+    /// The newest state held (0: none).
+    pub fn newest(&self) -> u64 {
+        self.states.iter().map(|(t, _)| *t).max().unwrap_or(0)
+    }
 }
 
 /// The rules hold our player as the server said: dead (only the look),
@@ -339,12 +382,18 @@ pub(super) fn plugin(app: &mut App) {
         .init_resource::<RawIntent>()
         .init_resource::<Smoothing>()
         .init_resource::<NetGraph>()
+        .init_resource::<OwnStateBases>()
+        .add_message::<OwnState>()
+        .add_systems(
+            PreUpdate,
+            rebuild_own_states.after(ClientSystems::Receive).run_if(client()),
+        )
         .add_systems(
             PreUpdate,
             // Only once in the game: while the server's map loads here, its
             // states are of a player on a map we don't have yet.
             receive_own_states
-                .after(ClientSystems::Receive)
+                .after(rebuild_own_states)
                 .run_if(client())
                 .run_if(resource_exists::<super::client::Joined>),
         )
@@ -383,6 +432,28 @@ pub(super) fn plugin(app: &mut App) {
         )
         .add_systems(Update, update_graph.run_if(client()))
         .add_systems(PostUpdate, send_commands.before(ClientSystems::Send).run_if(client()));
+    app.init_resource::<RateSettings>();
+    resource_cvar::<RateSettings, f32>(
+        app,
+        super::server::UPDATERATE_KEY,
+        "Updates a second you ask the server for (within its sv_minupdaterate..sv_maxupdaterate).",
+        |s| &mut s.updaterate,
+    );
+    resource_cvar::<RateSettings, f32>(
+        app,
+        super::server::RATE_KEY,
+        "Bandwidth you ask the server to keep within, bytes a second (within its sv_minrate..sv_maxrate).",
+        |s| &mut s.rate,
+    );
+    {
+        let mut console = app.world_mut().resource_mut::<crate::console::Console>();
+        for key in [super::server::UPDATERATE_KEY, super::server::RATE_KEY] {
+            console.archive(key);
+            console.userinfo(key);
+        }
+        console.set_range(super::server::UPDATERATE_KEY, 10.0, 100.0);
+        console.set_range(super::server::RATE_KEY, 1000.0, 100_000.0);
+    }
     resource_cvar::<PredictSettings, u8>(
         app,
         "cl_showerror",
@@ -423,6 +494,7 @@ pub(super) fn reset(world: &mut World) {
     world.insert_resource(RawIntent::default());
     world.insert_resource(Smoothing::default());
     world.insert_resource(NetGraph::default());
+    world.insert_resource(OwnStateBases::default());
 }
 
 /// Our own player, once it has a movement (from the server's state).
@@ -431,6 +503,47 @@ pub fn predicted_player(world: &mut World) -> Option<Entity> {
         .query_filtered::<Entity, (With<LocalPlayer>, With<MovementSlot>)>()
         .iter(world)
         .next()
+}
+
+/// The server's states of our player from their deltas, each against a
+/// state we hold (`OwnStateBases`), into `OwnState` messages. A delta
+/// whose base we no longer have is dropped: our acknowledgement says
+/// which we hold, and the server sends a whole state when it hasn't that
+/// one.
+pub(super) fn rebuild_own_states(
+    mut deltas: MessageReader<OwnStateDelta>,
+    mut bases: ResMut<OwnStateBases>,
+    mut out: MessageWriter<OwnState>,
+) {
+    for d in deltas.read() {
+        let base: &[u8] = if d.base == 0 {
+            &[]
+        } else {
+            match bases.states.iter().find(|(t, _)| *t == d.base) {
+                Some((_, b)) => b,
+                None => {
+                    bases.missing = true;
+                    continue;
+                }
+            }
+        };
+        let Some(bytes) = super::delta::decode(base, &d.delta) else {
+            continue;
+        };
+        let Ok(state) = postcard::from_bytes::<OwnState>(&bytes) else {
+            warn!("the server's state of our player didn't decode");
+            continue;
+        };
+        bases.missing = false;
+        if state.tick != d.tick || bases.states.iter().any(|(t, _)| *t == d.tick) {
+            continue;
+        }
+        bases.states.push_back((d.tick, bytes));
+        while bases.states.len() > BASES {
+            bases.states.pop_front();
+        }
+        out.write(state);
+    }
 }
 
 /// The server's states of our player: keep the newest, feed the clock
@@ -875,15 +988,37 @@ fn smooth_view(
 }
 
 /// New commands, with the last few again, to the server.
-fn send_commands(mut outgoing: ResMut<Outgoing>, clock: Res<CommandClock>, mut out: MessageWriter<UserCmds>) {
+/// Without new commands (not predicting yet: joining, after a map
+/// change), the acknowledgement alone when it changed or a delta's base
+/// is missing, so the server never keeps sending deltas we can't read.
+fn send_commands(
+    mut outgoing: ResMut<Outgoing>,
+    clock: Res<CommandClock>,
+    mut bases: ResMut<OwnStateBases>,
+    mut out: MessageWriter<UserCmds>,
+) {
+    let ack = bases.newest();
     if outgoing.fresh == 0 {
+        if bases.missing || bases.sent != Some(ack) || clock.tick.is_none() {
+            bases.sent = Some(ack);
+            out.write(UserCmds {
+                cmds: Vec::new(),
+                epoch: clock.jumps,
+                ack,
+            });
+        }
         return;
     }
+    bases.sent = Some(ack);
     let n = (outgoing.fresh + CMD_BACKUP).min(outgoing.cmds.len());
     let start = outgoing.cmds.len() - n;
     let cmds: Vec<NetCmd> = outgoing.cmds.iter().skip(start).cloned().collect();
     outgoing.fresh = 0;
-    out.write(UserCmds { cmds, epoch: clock.jumps });
+    out.write(UserCmds {
+        cmds,
+        epoch: clock.jumps,
+        ack,
+    });
 }
 
 /// The readout's transport numbers and error rate.

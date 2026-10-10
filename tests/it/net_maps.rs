@@ -277,6 +277,14 @@ fn changelevel_takes_two_clients_along() {
         assert!(stages(&p).ends_with(&[JoinStage::ChangingLevel, JoinStage::Verifying, JoinStage::LoadingMap, JoinStage::Joined]));
     }
     sim.ticks(120);
+    // Predicting again at once: the client started its own states over
+    // (`predict::OwnStateBases`), and says so even before it has commands
+    // to send, so the server sends it a whole state rather than deltas
+    // against one it dropped.
+    for i in 0..2 {
+        let g = sim.clients[i].app.world().resource::<mashup::net::predict::NetGraph>().clone();
+        assert!(g.checked >= 10, "client {i} predicts on beta: {} states compared", g.checked);
+    }
     // A new game on beta: the round restarted, scores gone, everyone at
     // beta's spawns (|y| ~ 768 units).
     let round = sim.server.app.world().resource::<RoundState>().clone();

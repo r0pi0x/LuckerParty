@@ -35,7 +35,7 @@ use mashup::{
         self,
         interp::InterpClock,
         memory::LinkConditions,
-        predict::{NetGraph, PredictionHistory},
+        predict::{NetGraph, PredictionHistory, RateSettings},
     },
     slots::Loadout,
 };
@@ -88,8 +88,22 @@ fn on_path(path: &BTreeMap<u64, Vec3>, at: f64) -> Option<Vec3> {
 #[test]
 fn others_are_drawn_smoothly_on_the_servers_path() {
     println!(" link             | frames | off path (max, mm) | step mean/max (mm) | zero steps | extrap/held | ahead");
-    for (latency, jitter, loss, seed) in [(50, 10, 0.0, 31), (100, 40, 0.1, 32), (150, 60, 0.2, 33)] {
-        let mut sim = NetSim::new(link(latency, jitter, loss), seed, 2, greybox);
+    // An update every tick, and without loss the game's 20 a second
+    // (CS:S's `cl_updaterate`) and 33.
+    for (latency, jitter, loss, seed, rate) in [
+        (50, 10, 0.0, 31, 66.0),
+        (50, 10, 0.0, 34, 20.0),
+        (80, 20, 0.0, 35, 33.0),
+        (100, 40, 0.1, 32, 66.0),
+        (150, 60, 0.2, 33, 66.0),
+    ] {
+        let mut sim = NetSim::new(link(latency, jitter, loss), seed, 2, move |app: &mut App| {
+            greybox(app);
+            app.insert_resource(RateSettings {
+                updaterate: rate,
+                ..default()
+            });
+        });
         sim.until_joined(600);
         sim.ticks(320);
         sim.set_frame(1.0 / FPS);
@@ -119,7 +133,20 @@ fn others_are_drawn_smoothly_on_the_servers_path() {
         let g = graph(&sim, 1);
         // Steady walking: after 1 s of frames (sped up, drawn 0.1 s +
         // latency behind) until the stop shows.
-        let steady = &drawn[(1.2 * FPS) as usize..(3.0 * FPS) as usize];
+        let mut steady = &drawn[(1.2 * FPS) as usize..(3.0 * FPS) as usize];
+        // Up to where the walker ran into a wall, if it did (the spawn
+        // point is the map's pick; the 3 s curve can reach one).
+        let first = steady[0].0.floor() as u64;
+        if let Some(blocked) = path
+            .range(first..)
+            .zip(path.range(first + 1..))
+            .find(|((_, a), (_, b))| a.distance(**b) < 0.01)
+            .map(|((t, _), _)| *t as f64)
+        {
+            let n = steady.iter().take_while(|d| d.0 < blocked - 1.0).count();
+            steady = &steady[..n];
+        }
+        assert!(steady.len() as f64 > FPS as f64, "{latency} ms: a second of steady walking ({} frames)", steady.len());
         let mut off_max = 0.0f32;
         for (at, p, ..) in steady {
             let want = on_path(&path, *at).expect("the render time is on the server's path");
@@ -142,13 +169,15 @@ fn others_are_drawn_smoothly_on_the_servers_path() {
             g.interp_held,
             g.interp_ahead
         );
-        let what = format!("{latency}±{jitter} ms, {:.0} % loss", loss * 100.0);
-        // On the server's path, up to the blend's rounding; with loss, a
-        // lost snapshot is bridged by a straight line between the two
-        // around it (the path wobbles a few mm in height), and an
-        // extrapolated frame may stray, not far.
+        let what = format!("{latency}±{jitter} ms, {:.0} % loss, {rate} updates/s", loss * 100.0);
+        // On the server's path, up to the network's 1/32 unit
+        // (`net::quant`) and the blend's rounding; with loss or fewer
+        // updates, a gap is bridged by a straight line between the two
+        // snapshots around it (the path wobbles a few mm in height), and
+        // an extrapolated frame may stray, not far.
         if loss == 0.0 && g.interp_extrapolated == 0 {
-            assert!(off_max < 1e-3, "{what}: {off_max} m off the server's path");
+            let bound = if rate >= 64.0 { 2e-3 } else { 1e-2 };
+            assert!(off_max < bound, "{what}: {off_max} m off the server's path");
         }
         assert!(off_max < 0.02, "{what}: {off_max} m off the server's path");
         // Moving every frame, about as far each frame (walking 6.35 m/s:
@@ -166,7 +195,7 @@ fn others_are_drawn_smoothly_on_the_servers_path() {
         sim.ticks(FPS as u64);
         let end = pos(sim.server.app.world(), theirs);
         let there = pos(sim.clients[1].app.world(), seen);
-        assert!(there.distance(end) < 1e-4, "{what}: drawn at {there}, the server has {end}");
+        assert!(there.distance(end) < 1e-3, "{what}: drawn at {there}, the server has {end}");
         assert!((g.interp_ms - 100.0).abs() < 1e-3, "{what}: cl_interp {}", g.interp_ms);
     }
 }
@@ -188,7 +217,8 @@ fn crouching_and_looking_others_are_drawn_from_snapshots() {
     let theirs = sim.character_of(0).unwrap();
     let world = sim.clients[1].app.world();
     let i = world.get::<Intent>(seen).unwrap();
-    assert!((i.yaw - 1.0).abs() < 1e-5 && (i.pitch + 0.25).abs() < 1e-5, "{} {}", i.yaw, i.pitch);
+    // Within the network's 16-bit angles and 1/32 unit (`net::quant`).
+    assert!((i.yaw - 1.0).abs() < 1e-4 && (i.pitch + 0.25).abs() < 1e-4, "{} {}", i.yaw, i.pitch);
     let s = world.get::<MovementState>(seen).unwrap();
     assert!(s.crouching, "drawn crouched");
     let server_eye = sim
@@ -198,7 +228,7 @@ fn crouching_and_looking_others_are_drawn_from_snapshots() {
         .get::<MovementState>(theirs)
         .unwrap()
         .eye_offset;
-    assert!(s.eye_offset.distance(server_eye) < 1e-5, "{} vs {server_eye}", s.eye_offset);
+    assert!(s.eye_offset.distance(server_eye) < 1e-3, "{} vs {server_eye}", s.eye_offset);
 }
 
 #[test]
@@ -222,8 +252,8 @@ fn a_teleport_is_drawn_at_once() {
         sim.step();
         drawn.push(pos(sim.clients[0].app.world(), seen).x);
     }
-    assert!((drawn[0] - x0).abs() < 1e-4, "{} vs {x0}", drawn[0]);
-    assert!((drawn.last().unwrap() - (x0 - 3.0)).abs() < 1e-4, "{drawn:?}");
+    assert!((drawn[0] - x0).abs() < 1e-3, "{} vs {x0}", drawn[0]);
+    assert!((drawn.last().unwrap() - (x0 - 3.0)).abs() < 1e-3, "{drawn:?}");
     // Nothing drawn in between.
     let smeared: Vec<f32> = drawn.iter().copied().filter(|x| *x < x0 - 0.01 && *x > x0 - 2.99).collect();
     assert!(smeared.is_empty(), "drawn in the gap: {smeared:?}");

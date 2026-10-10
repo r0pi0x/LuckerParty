@@ -44,7 +44,18 @@ fn link(latency_ms: u64, jitter_ms: u64, loss: f64) -> LinkConditions {
 /// A server and `clients` clients, joined, respawned and predicting with
 /// their clocks settled.
 fn joined(conditions: LinkConditions, seed: u64, clients: usize) -> NetSim {
-    let mut sim = NetSim::new(conditions, seed, clients, greybox);
+    joined_at(conditions, seed, clients, mashup::net::server::DEFAULT_UPDATERATE)
+}
+
+/// `joined`, the clients asking for `updaterate` updates a second.
+fn joined_at(conditions: LinkConditions, seed: u64, clients: usize, updaterate: f32) -> NetSim {
+    let mut sim = NetSim::new(conditions, seed, clients, move |app: &mut App| {
+        greybox(app);
+        app.insert_resource(mashup::net::predict::RateSettings {
+            updaterate,
+            ..default()
+        });
+    });
     sim.until_joined(600);
     // Respawn, the first states, the clock sync settling.
     sim.ticks(320);
@@ -129,20 +140,24 @@ fn run_script(sim: &mut NetSim, i: usize, steps: u32) -> Vec<Vec3> {
 
 #[test]
 fn without_loss_the_prediction_is_never_wrong() {
-    for (latency, seed) in [(50, 11), (100, 12), (150, 13)] {
-        let mut sim = joined(link(latency, 0, 0.0), seed, 1);
+    // At the game's update rate (CS:S's 20 a second), 33 and every tick:
+    // the server's states come less often, never differ.
+    for (latency, seed, rate) in [(50, 11, 20.0), (100, 12, 33.0), (150, 13, 66.0)] {
+        let mut sim = joined_at(link(latency, 0, 0.0), seed, 1, rate);
         reset_graph(&mut sim, 0);
         let theirs = sim.character_of(0).unwrap();
         let start = sim.server.app.world().get::<Transform>(theirs).unwrap().translation;
         let path = run_script(&mut sim, 0, 180);
         let g = graph(&sim, 0);
         println!(
-            "{latency} ms: {} states checked, {} errors, {} resyncs, lead {:.2} (target {:.2}), server buffer {}, missed {}",
+            "{latency} ms, {rate} updates/s: {} states checked, {} errors, {} resyncs, lead {:.2} (target {:.2}), server buffer {}, missed {}",
             g.checked, g.errors, g.resyncs, g.lead, g.target, g.buffered, g.missed
         );
         assert_eq!(g.errors, 0, "{latency} ms: prediction errors ({g:?})");
         assert_eq!(g.resyncs, 0, "{latency} ms: restarts");
-        assert!(g.checked >= 200, "{latency} ms: only {} states compared", g.checked);
+        // 260 ticks: a state each update.
+        let want = 200.0 * rate.min(64.0) / 64.0;
+        assert!(g.checked as f32 >= want, "{latency} ms: only {} states compared", g.checked);
         // It moved: walked, jumped (up), ducked.
         let far = path.iter().map(|p| p.distance(start)).fold(0.0, f32::max);
         assert!(far > 3.0, "{latency} ms: moved {far} m");
@@ -335,7 +350,7 @@ fn commands_cant_speed_a_player_up() {
                 ..default()
             })
             .collect();
-        sim.clients[0].app.world_mut().write_message(UserCmds { cmds, epoch: 0 });
+        sim.clients[0].app.world_mut().write_message(UserCmds { cmds, epoch: 0, ack: 0 });
         sim.step();
         let v = sim.server.app.world().get::<mashup::core::Velocity>(theirs).unwrap().0;
         fastest = fastest.max(Vec2::new(v.x, v.z).length());
@@ -377,5 +392,5 @@ fn a_clock_thrown_off_settles_in_one_jump() {
     reset_graph(&mut sim, 0);
     run_script(&mut sim, 0, 200);
     let g = graph(&sim, 0);
-    assert!(g.checked > 100 && g.errors <= 1, "{} errors in {}", g.errors, g.checked);
+    assert!(g.checked > 50 && g.errors <= 1, "{} errors in {}", g.errors, g.checked);
 }
