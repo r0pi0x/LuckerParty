@@ -547,9 +547,10 @@ struct ClientStats {
     /// Errors the server's own doing explains: teleports (spawns, a
     /// jump over 1 m) and inventory-only changes (buys, deaths' drops).
     server_events: u64,
-    /// Errors with another player within 1.5 m (pushing against others
-    /// drawn in the past: Source has them too) or hit in the last second
-    /// (damage's slowdown and blasts' pushes are the server's).
+    /// Errors with another player within 1.5 m or a physics prop within
+    /// 2.5 m (pushing against or standing on what a client draws in the
+    /// past: Source has them too) or hit in the last second (damage's
+    /// slowdown and blasts' pushes are the server's).
     contacts: u64,
     /// The server's count of ticks without our command, of commands too
     /// late, and the client's clock jumps (this connection).
@@ -836,9 +837,15 @@ impl Soak {
                 };
                 // The dead count too: on a crowded spawn one stands on
                 // another's box (the dead's are the server's to drop).
+                // Physics props too (crates, barrels: drawn in the past
+                // on a client, which stands on or bumps them elsewhere).
                 w.query_filtered::<(Entity, &Transform), With<NetCharacter>>()
                     .iter(w)
                     .any(|(e, t)| e != me && t.translation.distance(at) < 1.5)
+                    || w
+                        .query_filtered::<&GlobalTransform, With<NetProp>>()
+                        .iter(w)
+                        .any(|t| t.translation().distance(at) < 2.5)
             });
             // Hit lately (health down in the last second on the server):
             // damage slows and blasts push, the server's to say.
