@@ -45,6 +45,7 @@ pub mod interp;
 mod light_styles;
 pub mod live_sound;
 pub mod loading;
+pub mod lod;
 pub mod loose;
 pub mod material_fx;
 pub use material_fx::{DetailMode, MapSelfIllum, MapUvTransform};
@@ -566,6 +567,10 @@ pub struct MapModel {
     pub rig: Option<Arc<MapRig>>,
     /// What it breaks into, when it can break.
     pub breaks: Option<breakables::MapBreak>,
+    /// Its lower levels of detail after `meshes` (LOD 0), coarsest last:
+    /// drawn instead with distance and Video > Advanced's model detail
+    /// (`lod`).
+    pub lods: Vec<lod::MapLod>,
 }
 
 impl MapModel {
@@ -2179,7 +2184,12 @@ impl Plugin for MapPlugin {
             )
             .add_systems(
                 PostUpdate,
-                update_prop_shadows
+                (
+                    shadows::apply_shadow_detail,
+                    update_prop_shadows,
+                    shadows::update_character_blobs,
+                )
+                    .chain()
                     .run_if(resource_exists::<Assets<Mesh>>.and_then(resource_exists::<Assets<Image>>))
                     .after(bevy::transform::TransformSystems::Propagate)
                     // A rewritten shadow mesh is announced this frame:
@@ -2189,6 +2199,11 @@ impl Plugin for MapPlugin {
                     // late one empty ("cannot be extracted: already
                     // extracted", logged each time a moving prop stopped).
                     .before(bevy::asset::AssetEventSystems),
+            )
+            .add_systems(
+                PostUpdate,
+                // Props' levels of detail from where the eye is this frame.
+                lod::switch_lods.after(bevy::transform::TransformSystems::Propagate),
             )
             .add_systems(
                 PostUpdate,
@@ -2234,7 +2249,7 @@ fn spawn_map(
     mut rope_materials: Option<ResMut<Assets<RopeMaterial>>>,
     mut sprite_materials: Option<ResMut<Assets<SpriteMaterial>>>,
     mut prop_materials: Option<ResMut<Assets<PropMaterial>>>,
-    mut shadow_materials: Option<ResMut<Assets<shadows::ShadowMaterial>>>,
+    shadow_materials: Option<Res<Assets<shadows::ShadowMaterial>>>,
     mut water_materials: Option<ResMut<Assets<water::WaterMaterial>>>,
     mut bindposes: Option<ResMut<Assets<bevy::mesh::skinning::SkinnedMeshInverseBindposes>>>,
     mut beam_materials: Option<ResMut<Assets<beams::BeamMaterial>>>,
@@ -2438,6 +2453,7 @@ fn spawn_map(
     let mut cubemap_handles: Vec<Handle<Image>> = Vec::new();
     let mut texture_handles: Vec<Handle<Image>> = Vec::new();
     let mut rig_bindposes: HashMap<usize, Handle<bevy::mesh::skinning::SkinnedMeshInverseBindposes>> = HashMap::new();
+    let mut lod_parts: HashMap<usize, Vec<Vec<Handle<Mesh>>>> = HashMap::new();
     let mut envmap_variants: std::collections::HashMap<(usize, usize, bool, usize), Handle<PropMaterial>> =
         std::collections::HashMap::new();
 
@@ -3455,61 +3471,21 @@ fn spawn_map(
                 }
             }
         }
-        if let (Some(settings), Some(shadow_materials)) = (&data.shadows, shadow_materials.as_mut())
+        // Dynamic shadows: built by `shadows::apply_shadow_detail` as
+        // Video > Advanced's shadow detail asks (and again when it changes).
+        if let (Some(settings), true) = (&data.shadows, shadow_materials.is_some())
             && view == MapDebugView::Normal
         {
-            let built = shadows::build(&data, settings);
-            info!("prop shadows: {} casters reach the world", built.meshes.len());
-            let atlas = images.add(built.atlas.image());
-            let atlas_handle = atlas.clone();
-            let material = shadow_materials.add(shadows::ShadowMaterial {
-                params: shadows::ShadowParams {
-                    color: shadows::shadow_color(settings.color),
-                    texel: Vec2::new(1.0 / built.atlas.width as f32, 1.0 / built.atlas.height as f32),
-                    fog_color: fog_color(data.fog.as_ref()),
-                    fog_range: fog_range(data.fog.as_ref()),
-                },
-                atlas,
-            });
-            let mut entities = std::collections::HashMap::new();
-            for (prop, mesh) in built.meshes {
-                let clusters = match (visibility, bevy::camera::primitives::MeshAabb::compute_aabb(&mesh)) {
-                    // Physics props' shadows move with them: their
-                    // clusters follow the rebuilt mesh (`update_prop_shadows`).
-                    (Some(v), Some(aabb)) => {
-                        vis::box_clusters(v, Vec3::from(aabb.min()), Vec3::from(aabb.max()))
-                    }
-                    _ => Vec::new(),
-                };
-                let mut e = commands
-                    .spawn((
-                        Name::new(format!("Shadow of prop {prop}")),
-                        MapPart,
-                        PropShadow { prop },
-                        Mesh3d(meshes.add(mesh)),
-                        MeshMaterial3d(material.clone()),
-                        bevy::light::NotShadowCaster,
-                        Transform::default(),
-                        ChildOf(statics),
-                    ));
-                tag(&mut e, clusters);
-                entities.insert(prop, e.id());
-            }
-            commands.insert_resource(ShadowState {
+            commands.insert_resource(shadows::ShadowSource {
                 data: data.clone(),
                 settings: settings.clone(),
-                receivers: built.receivers,
-                atlas: built.atlas,
-                atlas_image: atlas_handle,
-                material,
-                built: built
-                    .cells
-                    .iter()
-                    .map(|c| (c.prop, (data.props[c.prop].translation, data.props[c.prop].rotation)))
-                    .collect(),
-                cells: built.cells.into_iter().map(|c| (c.prop, c)).collect(),
-                entities,
+                receivers: Arc::new(shadows::Receivers::new(data)),
                 root: statics,
+                fog_color: fog_color(data.fog.as_ref()),
+                fog_range: fog_range(data.fog.as_ref()),
+                tag: visibility.is_some(),
+                built: None,
+                blob_material: None,
             });
         }
     }
@@ -3531,10 +3507,11 @@ fn spawn_map(
         })
         .collect();
     info!(
-        "props: {} of {} models collide by their collision model, {} more as convex hulls",
+        "props: {} of {} models collide by their collision model, {} more as convex hulls; {} have levels of detail",
         data.models.iter().filter(|m| m.collision.is_some()).count(),
         data.models.len(),
         model_hulls.iter().filter(|h| h.is_some()).count(),
+        data.models.iter().filter(|m| !m.lods.is_empty()).count(),
     );
 
     for (i, prop) in data.props.iter().enumerate() {
@@ -3760,6 +3737,12 @@ fn spawn_map(
                 .is_none_or(|(part, choice)| model.body_choice(prop.body, part as usize) == choice)
         };
         let mut spawned_materials: Vec<Handle<PropMaterial>> = Vec::new();
+        // Levels of detail (`lod`): not for skinned models or the 3D
+        // skybox's props.
+        let leveled = !model.lods.is_empty() && model.rig.is_none() && !prop.skybox;
+        if leveled {
+            commands.entity(id).insert(lod::LodGroup::new(model.bounds, &model.lods));
+        }
         match (probe, meshes.as_mut(), lit_model_materials.get(prop.model)) {
             // Baked: own mesh copy with per-vertex light, unlit material
             // (texture x light, like the lightmapped world).
@@ -3789,27 +3772,28 @@ fn spawn_map(
                     let layer = layer_of(prop.skybox);
                     // Light baked per vertex when the prop has it (and it
                     // covers the mesh), else the probe on each normal.
-                    let baked = prop
-                        .vertex_light
-                        .as_ref()
-                        .filter(|v| m.source_vertices.len() == m.normals.len() && m.source_vertices.iter().all(|&i| (i as usize) < v.len()));
-                    let colors: Vec<[f32; 4]> = m
-                        .normals
-                        .iter()
-                        .enumerate()
-                        .map(|(i, n)| {
-                            if m.unlit {
-                                return [1.0, 1.0, 1.0, 1.0];
-                            }
-                            let l = match baked {
-                                Some(v) => Vec3::from(v[m.source_vertices[i] as usize]),
-                                None => probe.eval(prop.rotation * Vec3::from(*n)),
-                            } * probe_scale;
-                            [l.x, l.y, l.z, 1.0]
-                        })
-                        .collect();
+                    let colors = |m: &MapMesh| -> Vec<[f32; 4]> {
+                        let baked = prop.vertex_light.as_ref().filter(|v| {
+                            m.source_vertices.len() == m.normals.len()
+                                && m.source_vertices.iter().all(|&i| (i as usize) < v.len())
+                        });
+                        m.normals
+                            .iter()
+                            .enumerate()
+                            .map(|(i, n)| {
+                                if m.unlit {
+                                    return [1.0, 1.0, 1.0, 1.0];
+                                }
+                                let l = match baked {
+                                    Some(v) => Vec3::from(v[m.source_vertices[i] as usize]),
+                                    None => probe.eval(prop.rotation * Vec3::from(*n)),
+                                } * probe_scale;
+                                [l.x, l.y, l.z, 1.0]
+                            })
+                            .collect()
+                    };
                     let mut mesh = build_mesh(m, false);
-                    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+                    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors(m));
                     let skinned = inverse_bindposes.is_some() && m.joints.len() == m.positions.len();
                     if skinned {
                         mesh.insert_attribute(
@@ -3818,8 +3802,26 @@ fn spawn_map(
                         );
                         mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, m.joint_weights.clone());
                     }
+                    let handle = meshes.add(mesh);
+                    // Its lower levels, lit the same way (a level without
+                    // this mesh keeps the finer one's).
+                    let levels = (leveled && !skinned).then(|| {
+                        let mut levels = vec![handle.clone()];
+                        for l in &model.lods {
+                            let h = match l.meshes.get(mesh_index).and_then(Option::as_ref) {
+                                Some(lm) => {
+                                    let mut mesh = build_mesh(lm, false);
+                                    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors(lm));
+                                    meshes.add(mesh)
+                                }
+                                None => levels.last().cloned().unwrap_or_default(),
+                            };
+                            levels.push(h);
+                        }
+                        lod::LodMeshes(levels)
+                    });
                     let mut c = commands.spawn((
-                        Mesh3d(meshes.add(mesh)),
+                        Mesh3d(handle),
                         MeshMaterial3d(material),
                         layer,
                         PropMeshSlot { mesh: mesh_index },
@@ -3833,6 +3835,9 @@ fn spawn_map(
                     if let Some(range) = &fade_range {
                         c.insert(range.clone());
                     }
+                    if let Some(levels) = levels {
+                        c.insert(levels);
+                    }
                     if let (true, Some(inverse)) = (skinned, inverse_bindposes.clone()) {
                         c.insert((
                             bevy::mesh::skinning::SkinnedMesh {
@@ -3845,8 +3850,34 @@ fn spawn_map(
                     }
                 }
             }
-            _ => {
+            (_, meshes_here, _) => {
                 if let Some(parts) = model_parts.get(prop.model) {
+                    // The model's levels, shared by its props (built once).
+                    let levels = match (leveled, meshes_here) {
+                        (true, Some(meshes)) => Some(
+                            lod_parts
+                                .entry(prop.model)
+                                .or_insert_with(|| {
+                                    parts
+                                        .iter()
+                                        .enumerate()
+                                        .map(|(mesh_index, (mesh, _))| {
+                                            let mut levels = vec![mesh.clone()];
+                                            for l in &model.lods {
+                                                let h = match l.meshes.get(mesh_index).and_then(Option::as_ref) {
+                                                    Some(lm) => meshes.add(build_mesh(lm, false)),
+                                                    None => levels.last().cloned().unwrap_or_default(),
+                                                };
+                                                levels.push(h);
+                                            }
+                                            levels
+                                        })
+                                        .collect()
+                                })
+                                .clone(),
+                        ),
+                        _ => None,
+                    };
                     for (mesh_index, ((mesh, material), m)) in parts.iter().zip(&model.meshes).enumerate() {
                         let mut c = commands.spawn((
                             Mesh3d(mesh.clone()),
@@ -3862,6 +3893,9 @@ fn spawn_map(
                         ));
                         if let Some(range) = &fade_range {
                             c.insert(range.clone());
+                        }
+                        if let Some(levels) = levels.as_ref().and_then(|l| l.get(mesh_index)) {
+                            c.insert(lod::LodMeshes(levels.clone()));
                         }
                     }
                 }
@@ -4052,6 +4086,7 @@ pub fn unload_map(world: &mut World) {
     world.remove_resource::<SkyVis>();
     world.remove_resource::<vis::ActiveVisibility>();
     world.remove_resource::<ShadowState>();
+    world.remove_resource::<shadows::ShadowSource>();
     world.remove_resource::<sound::SoundBank>();
     world.remove_resource::<CharacterModels>();
     world.remove_resource::<CharacterBodies>();
@@ -4514,12 +4549,15 @@ pub struct PropEntity(pub usize);
 #[derive(Component, Debug, Clone, Copy)]
 pub struct PropHome(pub Transform);
 
-/// What it takes to redraw prop shadows when props move.
+/// What it takes to redraw prop shadows when props move (built by
+/// `shadows::apply_shadow_detail`): render-to-texture, or blobs (`blob`:
+/// one picture, only the meshes move).
 #[derive(Resource)]
 struct ShadowState {
     data: Arc<MapData>,
     settings: MapShadows,
-    receivers: shadows::Receivers,
+    receivers: Arc<shadows::Receivers>,
+    blob: bool,
     atlas: shadows::Atlas,
     atlas_image: Handle<Image>,
     material: Handle<shadows::ShadowMaterial>,
@@ -4584,16 +4622,21 @@ fn update_prop_shadows(
             continue;
         }
         state.built.insert(index.0, (t.translation, t.rotation));
-        let mesh = shadows::rebuild(
-            &state.data,
-            &state.settings,
-            &state.receivers,
-            &mut state.atlas,
-            &cell,
-            t.translation,
-            t.rotation,
-        );
-        redrawn.push(cell);
+        let mesh = if state.blob {
+            let frame = shadows::ShadowFrame::blob(model.bounds, t.translation, t.rotation, shadows::DOWN, state.settings.distance);
+            shadows::shadow_mesh(&frame, &state.receivers, shadows::BLOB_RECT)
+        } else {
+            redrawn.push(cell);
+            shadows::rebuild(
+                &state.data,
+                &state.settings,
+                &state.receivers,
+                &mut state.atlas,
+                &cell,
+                t.translation,
+                t.rotation,
+            )
+        };
         match (mesh, state.entities.get(&index.0).copied()) {
             (Some(mesh), Some(e)) => match shadow_meshes.get(e) {
                 // The same mesh asset, rewritten: a new handle every

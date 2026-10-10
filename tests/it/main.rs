@@ -45,6 +45,7 @@ mod objectives;
 mod pain_sounds;
 mod phy_spec;
 mod prediction;
+mod prop_lods;
 mod prop_shadows;
 mod radio;
 mod ragdoll;

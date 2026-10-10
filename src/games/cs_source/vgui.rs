@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use super::hud::{Kv, parse};
 use super::material::MaterialLoader;
 use crate::map::hud::{
-    GameHud, GameMenus, HudCoord, HudSprite, UiAlign, UiControl, UiFontSize, UiKind, UiLayout, layout_key,
+    CommandMenuItem, GameHud, GameMenus, HudCoord, HudSprite, UiAlign, UiControl, UiFontSize, UiKind, UiLayout, layout_key,
 };
 
 /// Read a `.res` file's root block with its `#base` files merged in (paths
@@ -221,6 +221,33 @@ const TEAM_MENU: &str = "resource/ui/teammenu.res";
 const SCOREBOARD: &str = "resource/ui/scoreboard.res";
 const SPECTATOR: &str = "resource/ui/spectator.res";
 const SPECTATOR_MENU: &str = "resource/ui/bottomspectator.res";
+/// The spectator menu's drop-downs' entries (command menu definitions).
+const SPECTATOR_OPTIONS: &str = "resource/spectatormenu.res";
+const SPECTATOR_MODES: &str = "resource/spectatormodes.res";
+
+/// A command menu definition's entries: its `menuitem` blocks in order,
+/// each with its label (`#token` resolved), command, toggle cvar and
+/// submenu.
+pub(crate) fn command_menu(root: &Kv, strings: &HashMap<String, String>) -> Vec<CommandMenuItem> {
+    root.items()
+        .iter()
+        .filter(|(k, v)| k.to_lowercase().starts_with("menuitem") && matches!(v, Kv::Block(_)))
+        .map(|(_, v)| {
+            let label = v.str("label").unwrap_or("").trim();
+            let label = match label.strip_prefix('#') {
+                Some(t) => strings.get(&t.to_lowercase()).cloned().unwrap_or_else(|| t.to_string()),
+                None => label.to_string(),
+            };
+            let text = |k: &str| v.str(k).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+            CommandMenuItem {
+                label,
+                command: text("command"),
+                toggle: text("toggle"),
+                items: command_menu(v, strings),
+            }
+        })
+        .collect()
+}
 /// The freeze cam's panel: its frame (`FreezePanelBG`), and what is
 /// inside it laid out in the frame (`FREEZE_PANEL_INNER`).
 const FREEZE_PANEL: &str = "resource/ui/freezepanel_basic.res";
@@ -345,6 +372,14 @@ pub(crate) fn load(materials: &mut MaterialLoader, hud: &mut GameHud, map: &str)
     menus.team = menus.layouts.contains_key(TEAM_MENU).then(|| TEAM_MENU.to_string());
     let have = |path: &str| menus.layouts.contains_key(path).then(|| path.to_string());
     (menus.scoreboard, menus.spectator, menus.spectator_menu) = (have(SCOREBOARD), have(SPECTATOR), have(SPECTATOR_MENU));
+    for (path, list) in [
+        (SPECTATOR_OPTIONS, &mut menus.spectator_options),
+        (SPECTATOR_MODES, &mut menus.spectator_modes),
+    ] {
+        if let Some(root) = read_res_at(materials, path) {
+            *list = command_menu(&root, &strings);
+        }
+    }
     menus.map_info = materials
         .read(&format!("maps/{}.txt", map.to_lowercase()))
         .map(|b| super::radio::decode(&b).replace('\r', "").trim().to_string())
@@ -465,5 +500,35 @@ mod tests {
         assert_eq!((f["Default"][1].tall, f["Default"][1].weight), (9.0, 400));
         assert!(f["Default"][1].antialias && !f["Default"][0].antialias);
         assert_eq!(f["MenuTitle"][0].family, "Verdana Bold");
+    }
+
+    /// A command menu definition (the spectator menu's): items in order,
+    /// labels localised, toggles, commands and submenus; comments and
+    /// other keys ignored.
+    #[test]
+    fn command_menus_read_their_items() {
+        let text = r##"// Command Menu Definition
+"spectatormenu.res"
+{
+    "menuitem1" { "label" "#Valve_Close" "command" "spec_menu 0" }
+    "menuitem2"
+    {
+        "label" "#Valve_Settings"
+        "menuitem21" { "label" "#Valve_Overview_Names" "toggle" "overview_names" }
+    }
+    "type" "menu"
+}"##;
+        let root = parse(text);
+        let root = root.items().iter().find_map(|(_, v)| matches!(v, Kv::Block(_)).then_some(v)).unwrap();
+        let strings = HashMap::from([
+            ("valve_close".to_string(), "Close".to_string()),
+            ("valve_settings".to_string(), "Settings".to_string()),
+        ]);
+        let items = command_menu(root, &strings);
+        assert_eq!(items.len(), 2);
+        assert_eq!((items[0].label.as_str(), items[0].command.as_deref()), ("Close", Some("spec_menu 0")));
+        assert_eq!(items[1].label, "Settings");
+        assert_eq!(items[1].items[0].toggle.as_deref(), Some("overview_names"));
+        assert_eq!(items[1].items[0].label, "Valve_Overview_Names", "an unknown token shows its name");
     }
 }

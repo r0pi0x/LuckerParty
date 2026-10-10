@@ -1003,6 +1003,7 @@ fn spectator_panel(
         Option<Res<crate::map::LoadedMapName>>,
     ),
     (rounds, fixed): (Option<Res<crate::rules::rounds::RoundState>>, Res<Time<Fixed>>),
+    menu: Option<Res<super::spectator_menu::SpectatorMenu>>,
     mut last: Local<Option<BarsShot>>,
     mut shown: ResMut<SpectatorBarsUp>,
     mut commands: Commands,
@@ -1090,6 +1091,7 @@ fn spectator_panel(
             .map(super::game_hud::clock_text),
         wins: rounds.map(|r| r.wins),
         size,
+        menu_open: menu.is_some_and(|m| m.0),
     };
     if last.as_ref() == Some(&shot) {
         return;
@@ -1115,6 +1117,9 @@ struct BarsShot {
     clock: Option<String>,
     wins: Option<[u32; 2]>,
     size: Vec2,
+    /// The spectator menu is open: its drop-downs take the bottom bar
+    /// (the player's name and the mode are in them).
+    menu_open: bool,
 }
 
 /// The bars' text by control name (lower case), None: as the layout has
@@ -1190,7 +1195,7 @@ fn draw_bars(
             menus,
         );
         if name == "playerlabel" {
-            s.visible = shot.about.target.is_some();
+            s.visible = shot.about.target.is_some() && !shot.menu_open;
         }
         if matches!(name.as_str(), "timerclock" | "timerlabel") && shot.clock.is_none() {
             s.visible = false;
@@ -1212,7 +1217,7 @@ fn draw_bars(
         });
     }
     // The camera mode, where the spectator menu's view list sits.
-    if let Some(mode) = shot.about.mode {
+    if let Some(mode) = shot.about.mode.filter(|_| !shot.menu_open) {
         let bar = menu_layout.and_then(|l| {
             let rects = l.rects(Rect::from_corners(Vec2::ZERO, shot.size), painter.scale);
             let frame = l.controls.iter().position(|c| c.name.eq_ignore_ascii_case("specmenu"))?;

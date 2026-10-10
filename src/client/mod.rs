@@ -32,6 +32,7 @@ pub mod options;
 pub mod frame_metrics;
 pub mod freeze_cam;
 pub mod perf;
+pub mod overview;
 pub mod radar;
 pub mod radio;
 pub mod game_text;
@@ -325,6 +326,7 @@ impl Plugin for ClientPlugin {
                 freeze_cam::FreezeCamPlugin,
                 audio::SoundOptionsPlugin,
                 gamma::GammaPlugin,
+                overview::OverviewPlugin,
             ))
             .add_systems(PostStartup, spawn_local_player)
             .add_systems(Update, camera_for_local_player)

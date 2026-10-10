@@ -95,7 +95,8 @@ impl Plugin for GameMenuPlugin {
                 )
                     .chain()
                     .in_set(MenuSystems),
-            );
+            )
+            .add_systems(Update, world_behind_dialogs.after(MenuSystems));
         crate::console::resource_cvar::<LoadingDetails, u8>(
             app,
             "mashup_loading_details",

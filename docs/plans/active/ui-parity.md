@@ -25,7 +25,7 @@ State machines the dialogs' models hold (unit-tested in
 
 | VGUI | Ours | Behaviour |
 |---|---|---|
-| `Frame` | `Windows`, `frame`, `VguiFrame`, `frames_pointer`, `place_frames`, `FrameBacking` | Over the game menu a frame hides the menu under it (its title and entries never show through the scheme's see-through frame colour: the frame is drawn over the part of the main menu's picture under it, or over black in a game; user request 2026-10-10); Drag by the title bar (26 scheme px; not the close box), kept wholly on screen; a press anywhere on a frame brings it to the front (`GlobalZIndex` by stacking rank, modal dialogs over their owner); close box (X) = the dialog's Cancel; sizeable frames (the server browser) resize from their edges (5 px) and bottom-right corner (18 px, the grip drawn), not under their minimum; centred the first time it opens in a session, then where it was left; nothing saved across runs |
+| `Frame` | `Windows`, `frame`, `VguiFrame`, `frames_pointer`, `place_frames`, `FrameBacking` | Over the game menu a frame hides the menu under it (its title and entries never show through the scheme's see-through frame colour: the frame is drawn over the part of the main menu's picture under it, or in a game over the world drawn again at 40 % (`WorldPicture`: the 3D view drawn into a picture while a dialog is open; black for the frame before it is ready); user requests 2026-10-10); Drag by the title bar (26 scheme px; not the close box), kept wholly on screen; a press anywhere on a frame brings it to the front (`GlobalZIndex` by stacking rank, modal dialogs over their owner); close box (X) = the dialog's Cancel; sizeable frames (the server browser) resize from their edges (5 px) and bottom-right corner (18 px, the grip drawn), not under their minimum; centred the first time it opens in a session, then where it was left; nothing saved across runs |
 | `ComboBox` | `ComboList`, `combo_box`, `combo_popup` | Click (or Space) opens the list under the box, the arrow button sunken while open; the pointer highlights an entry, a click picks it; Up/Down/PageUp/PageDown/Home/End, Enter picks, Esc or a click outside closes (the click is taken); the wheel scrolls the open list; closed and focused, Up/Down and the wheel step it (no wrapping) and a letter jumps; more than 10 entries scroll with a scroll bar; focused, its text shows selected |
 | `Slider` / `CCvarSlider` | `SliderDrag`, `SliderTrack`, `slider` | Press anywhere on the track and drag: the value follows the pointer while held (even as the dialog redraws); 11 tick marks under it; Left/Right (and Up/Down) step it when focused; `leftText` / `rightText` (Low / High) under its ends |
 | `TextEntry` | `Caret`, `text_entry`, `caret_from_click` | Caret drawn and kept in view (long text scrolls); click places the caret at the nearest char (`UiFonts::char_offsets` measures the face); Shift+arrows/Home/End select, Ctrl+A, Ctrl+C, Ctrl+X, Ctrl+V; typing replaces the selection; Tab to it selects all; numeric entries take digits only, `maxchars` kept; passwords show `*` and never copy |
@@ -83,9 +83,11 @@ from its `.res`, controls mashup lacks greyed.
 | | `VSync` | ComboBox | `mat_vsync` as Disabled / Enabled |
 | | `HDR` (hidden in the file, shown when the mod has HDR) | ComboBox | `mat_hdr_level` |
 | | `FovSlider` | CCvarSlider (`cvar_name fov_desired`, 75 to 90) | `fov_desired` (90): the world camera unzoomed (`options::PlayerFov`, `client::zoom_camera`); the view model zooms with it as with a scope (`viewmodel_fov` minus 90 minus it); a scope's zoom is its own; zoomed mouse scaling still divides by 90 |
+| | `ModelDetail` | ComboBox | `r_rootlod`: Low (2), Medium (1), High (0, the default): the finest level of detail props draw; they switch to coarser ones with distance (`map::lod`); at once |
+| | `ShadowDetail` | ComboBox | `r_shadowrendertotexture` and `r_flashlightdepthtexture` together: Low (0 0: blob shadows), Medium (1 0, the default: render-to-texture), High (1 1, as Medium: no flashlights); at once (`map::shadows`) |
 | | `TextureDetail` | ComboBox | `mat_picmip`: Low (2), Medium (1), High (0, the default), Very High (-1, as High): each map texture starts that many levels down its mips (`client::options::TextureSettings`), from the next map |
 | | `FilteringMode` | ComboBox | `mat_trilinear` and `mat_forceaniso` together: Bilinear (0 1, CS:S's default), Trilinear (1 1), Anisotropic 2X-16X (0 N); from the next map |
-| | `ModelDetail`, `ShaderDetail`, `ShadowDetail`, `ColorCorrection`, `MotionBlur`, `Multicore` | ComboBox | greyed (see below; the plan: docs/plans/active/video-settings.md) |
+| | `ShaderDetail`, `ColorCorrection`, `MotionBlur`, `Multicore` | ComboBox | greyed (see below; the plan: docs/plans/active/video-settings.md) |
 | Voice (`OptionsSubVoice.res`; the tab was missing) | `voice_modenable`, `VoiceReceive`, `MicBoost`, `TestMicrophone`, `MicMeter` | CheckButton / CCvarSlider / Button / ImagePanel | the tab, all greyed: mashup has no voice chat |
 | Multiplayer (`cstrike/resource/OptionsSubMultiplayer.res`) | `CrosshairColorComboBox` | ComboBox | `cl_crosshaircolor`: Green, Red, Blue, Yellow, Cyan, Custom (5) |
 | | `Red/Green/Blue Color Slider` | CCvarSlider | `cl_crosshaircolor_r`, `_g`, `_b` (50, 250, 50): the Custom colour |
@@ -99,6 +101,18 @@ from its `.res`, controls mashup lacks greyed.
 | | `ImportSprayImage`, `ResetStats`, `LogoImage` | Button / ImagePanel | greyed (see below) |
 | Multiplayer > Advanced (`MultiplayerAdvancedDialog.res`, 540 x 376; the list from the install's `cfg/user.scr`, else `cfg/user_default.scr`, read at run time) | `PanelListPanel` | CPanelListPanel | the script's options in its order, as Create Server's Game page reads `settings.scr` (`gameui::scr_settings`, one parser): BOOL a check box, LIST a drop-down, NUMBER / STRING a text entry; those mashup has: `mp_decals` (200: runtime decals drawn, the oldest first; a client cvar here as in Source), `cl_righthand`, `cl_c4progressbar` (1: the defuse bar); the rest greyed showing the script's default (`cl_clanid`, `cl_autowepswitch`, `hud_centerid`, `cl_autohelp`, `hud_takesshots`, `cl_disablefreezecam`, `cl_disablehtmlmotd`, `cl_cloud_settings`); without the install: ours, the weapon hand |
 | | `OK`, `Cancel` | Button | as CS:S's dialog: changes wait for OK, which sets those changed; Cancel (Esc, the X) drops them; modal over the options |
+
+### Spectator menu (`resource/ui/bottomspectator.res`; `client::spectator_menu`)
+
+| Control | `.res` class | Now |
+|---|---|---|
+| `settingscombo` | ComboBox | "Options": the install's `resource/spectatormenu.res` command menu (Close; Settings: No Rotation, Show Names, Show Health, Show Tracks, toggling `overview_locked`/`_names`/`_health`/`_tracks`; Overview: No / Small / Large Map, Zoom In / Out; Auto Director, greyed: none in mashup; Show Scores, `togglescores`), submenus opening beside their entry |
+| `playercombo`, `specprev`, `specnext` | ComboBox, Button | the players who may be watched; the watched one as "name (health)"; `<` `>` = `spec_prev` / `spec_next` |
+| `viewcombo` | ComboBox | the install's `resource/spectatormodes.res`: First Person, Chase Camera, Free Look (`spec_mode 4/5/6`) |
+
+Drawn with the shared widgets in the GameUI scheme (CS:S draws them in the
+client scheme); the lists open upward. The bar's own text (the player's
+name, the mode) is hidden while the menu is open.
 
 Lucker Party Options (ours, from our main-menu entries): zoom
 sensitivity ratio, room reverb (`dsp_volume`), crosshair scale, view
@@ -118,8 +132,8 @@ defaults are CS:S's (`client::options` tests
 | Mouse `MouseRaw` (`m_rawinput`) | mashup always reads raw device motion (Bevy's mouse motion, no OS acceleration); a check box that changed nothing would mislead |
 | Mouse `Joystick*` | no joystick or gamepad input |
 | Audio `ThirdPartySoundCredits`, Video `ThirdPartyVideoCredits` | links out (URLButton) |
-| Video > Advanced `ModelDetail`, `ShaderDetail` | one detail level: models draw LOD 0, one shader path (docs/plans/active/video-settings.md) |
-| Video > Advanced `ShadowDetail`, `ColorCorrection`, `MotionBlur` | the renderer has no switch for these (no blob shadows, colour correction or motion blur at all; same plan) |
+| Video > Advanced `ShaderDetail` | one shader path (docs/plans/active/video-settings.md) |
+| Video > Advanced `ColorCorrection`, `MotionBlur` | the renderer has neither (no colour correction or motion blur at all; same plan) |
 | Video > Advanced `Multicore` | Bevy always renders multi-threaded |
 | Voice (all) | no voice chat |
 | Multiplayer `ImportSprayImage`, `LogoImage` | no sprays |

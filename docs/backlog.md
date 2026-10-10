@@ -84,8 +84,9 @@ plan when work starts; delete them when done.
   the colour list, `cl_crosshairusealpha`'s and `mp_decals`' defaults):
   docs/plans/active/ui-parity.md.
 
-- Video > Advanced's and the Audio tab's remaining settings (model,
-  shader and shadow detail, colour correction, motion blur; speakers,
+- Video > Advanced's and the Audio tab's remaining settings (shader
+  detail, colour correction, motion blur; shadow and model detail done
+  2026-10-10, characters' render-to-texture shadows left; speakers,
   sound quality and captions beyond being saved): one by one, per
   docs/plans/active/video-settings.md.
 - Ladders (fixed 2026-10-10): standing on a ladder brush's top grabbed
@@ -97,7 +98,10 @@ plan when work starts; delete them when done.
   stock nav ladder climbed for more than a step period steps); a short
   climb right after a ground step hears none (the shared step timer,
   per the sounds spec), and holding walk or duck silences ladder steps
-  (our CS:S walk rule). Left: a CS:S capture of a ladder top and of a
+  (our CS:S walk rule). Confirmed in CS:S (de_train, feet on the ladder
+  brush's top at (1607, -114, -136), pitch 30 down): +forward walks off
+  the top (220 units in a second), a jump rises 52 units in 0.25 s (a
+  normal 302 jump), as ours now. Left: a capture of a
   de_train car ladder's steps (docs/tech-debt.md, movement); walked
   straight at from the nav foot, 37 of de_train's 41 ladders don't
   attach in our sim (a clip face flush with them wins the probe; bots
@@ -113,10 +117,15 @@ plan when work starts; delete them when done.
   (players, camera, join a team), the scoreboard's Spectators line,
   "*SPEC*" chat read by the dead and spectators, back on a team (in a
   freeze time at once), over the network (replicated, no team slot,
-  not counted for round ends). Left: the map overview mode
-  (`overview_mode`), the spectator menu in `bottomspectator.res`'s
-  drop-down look with its settings, CS:S's starting mode for a new
-  spectator, the game menu's Team dialog offering Spectate.
+  not counted for round ends). Second pass (2026-10-10): the spectator
+  menu is `bottomspectator.res`'s bar of drop-downs (Options from the
+  install's `spectatormenu.res`, the players with `<` `>`, the camera
+  from `spectatormodes.res`), the map overview (`overview_mode`: small
+  or large, zoom, names, health, tracks), the Esc menu's Team dialog
+  offers Spectate, and both team menus grey it under the server's
+  `mp_allowspectators 0`. Left: CS:S's starting mode for a new spectator
+  (no spec or capture; ours flies free), the overview's sizes and
+  defaults against a capture (docs/tech-debt.md), the auto director.
 
 - Decals persist across rounds (bullet holes, blood), as we believe CS:S
   does (players bind `r_cleardecals`, now there; `mashup_round_cleardecals

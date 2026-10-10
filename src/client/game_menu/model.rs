@@ -252,6 +252,9 @@ pub struct GameMenu {
     pub bots: [usize; 2],
     /// Everyone in the game now, by team (auto-assign).
     pub players: [usize; 2],
+    /// The server refuses spectators (`mp_allowspectators 0`): the Team
+    /// dialog's Spectate is greyed.
+    pub no_spectators: bool,
     /// The options dialog's tab.
     pub tab: Tab,
     /// The left-hand entries.
