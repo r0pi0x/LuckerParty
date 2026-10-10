@@ -17,6 +17,7 @@ pub mod first_run;
 pub mod fonts;
 pub mod game_hud;
 pub mod game_menu;
+pub mod gamma;
 pub mod hdr;
 pub mod hud_sprites;
 pub mod hud_text;
@@ -320,6 +321,7 @@ impl Plugin for ClientPlugin {
                 target_id::TargetIdPlugin,
                 freeze_cam::FreezeCamPlugin,
                 audio::SoundOptionsPlugin,
+                gamma::GammaPlugin,
             ))
             .add_systems(PostStartup, spawn_local_player)
             .add_systems(Update, camera_for_local_player)

@@ -211,7 +211,9 @@ pub(crate) fn key_actions(text: &str, strings: &HashMap<String, String>) -> Vec<
 }
 
 /// The options pages' and Create Server's layout files, by page.
-const OPTION_PAGES: [(&str, &str); 12] = [
+const OPTION_PAGES: [(&str, &str); 13] = [
+    // The video tab's brightness dialog (Adjust brightness levels...).
+    ("video_gamma", "resource/optionssubvideogammadlg.res"),
     ("keyboard", "resource/optionssubkeyboard.res"),
     // The keyboard tab's Advanced dialog.
     ("keyboard_advanced", "resource/optionssubkeyboardadvanceddlg.res"),
@@ -396,6 +398,19 @@ pub fn load(mount: &Mount) -> Option<GameUi> {
     for (page, file) in OPTION_PAGES {
         if let Some(root) = read_res_pc(&mut read, file) {
             let layout = super::vgui::layout(&root, &strings, &ui.colors, &mut |_| None);
+            // Its pictures (ImagePanel `image`, under materials/vgui/: the
+            // brightness dialog's `gamma`).
+            for c in &layout.controls {
+                if let Some(name) = c.keys.get("image").map(|n| n.to_lowercase())
+                    && !ui.option_images.contains_key(&name)
+                    && let Some(pic) = mount
+                        .read(&format!("materials/vgui/{name}.vtf"))
+                        .ok()
+                        .and_then(|b| decode_vtf(&b))
+                {
+                    ui.option_images.insert(name, pic);
+                }
+            }
             ui.options.insert(page.to_string(), layout);
         }
     }

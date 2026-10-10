@@ -2029,7 +2029,7 @@ fn draw(
         .map(|(t, token, ours)| (browser.text(token, ours), t.enabled()))
         .collect();
     let open = TABS.iter().position(|t| t.0 == browser.tab).unwrap_or(0);
-    widgets::tabs(&mut commands, f, &look, (tx, ty), &names, open, None, |i| {
+    widgets::tabs(&mut commands, f, &look, (tx, ty), &names, open, None, None, |i| {
         Hit(Target::Tab(TABS[i].0))
     });
     // The page: its box, then the list and buttons inside it.
@@ -2780,6 +2780,7 @@ fn add_server_dialog(commands: &mut Commands, root: Entity, look: &Look, b: &Ser
         &[(tab_text, true)],
         0,
         Some(110.0),
+        None,
         |_| (),
     );
     let (_, sy, _, sh) = rect_of(layout, "Servers", (0.0, 28.0, 526.0, 122.0));
