@@ -343,6 +343,29 @@ fn game_text(e: &super::world::LogicEntity) -> HudMessage {
     }
 }
 
+/// Why a class that has no logic does nothing (`Class::spawn` notes it),
+/// or None. `mapsweep` counts these classes as known.
+pub fn noted_class(class: &str) -> Option<&'static str> {
+    Some(match class {
+        // Not in CS:S: VScript (CS:GO on), HL2's NPC helpers; the game
+        // drops them at load.
+        "logic_script" | "ai_changetarget" => "entity classes CS:S doesn't have (dropped at load, as the game does)",
+        // A compile tool's entity (Propper builds models from brushes).
+        "propper_model" => "compile-time tool entities (nothing at run time)",
+        // HL2's usable ladders' dismount points: CS:S ladders are brush
+        // contents (movement.md), climbed without them.
+        "info_ladder_dismount" => "HL2 ladder dismount points (CS:S ladders are brush contents)",
+        // The map loader reads their keys for the detail props
+        // (`games::cs_source::detail`): nothing at run time.
+        "env_detail_controller" => "detail prop fade distances (read at load)",
+        "env_wind" => "env_wind (read at load for detail props' sway; no gusts, trees don't sway)",
+        // Without a parent it is inert (physics_constraints.md 10); with
+        // one, constraints resolve its name (`physics::body_by_key`).
+        "info_constraint_anchor" => "info_constraint_anchor (constraints resolve its name to its parent)",
+        _ => return None,
+    })
+}
+
 impl Class {
     /// The class state for a freshly spawned entity.
     pub(super) fn spawn(w: &mut LogicWorld, id: EntId) -> Class {
@@ -354,6 +377,13 @@ impl Class {
         }
         if let Some(class) = super::community::spawn(w, id, &lower) {
             return class;
+        }
+        // Classes that do nothing in CS:S, or nothing we draw: noted once
+        // per map (the audit counts them apart from unhandled ones).
+        if let Some(why) = noted_class(&lower) {
+            let detail = w.get(id).map(|e| e.classname.clone()).unwrap_or_default();
+            w.note(why, detail);
+            return Class::None;
         }
         let e = w.get(id).unwrap();
         match lower.as_str() {
@@ -459,7 +489,10 @@ impl Class {
             "func_door" | "func_door_rotating" => Class::Door(Box::new(Door::spawn(w, id))),
             "func_button" | "func_rot_button" => Class::Button(Box::new(Button::spawn(w, id))),
             "momentary_rot_button" => Class::Momentary(Box::new(movers::Momentary::spawn(w, id))),
-            "func_movelinear" => Class::MoveLinear(Box::new(MoveLinear::spawn(w, id))),
+            // func_water_analog moves like func_movelinear (public entity
+            // docs: movedir, movedistance, speed, startposition; Open,
+            // Close, SetPosition); its water follows (`map::water`).
+            "func_movelinear" | "func_water_analog" => Class::MoveLinear(Box::new(MoveLinear::spawn(w, id))),
             "func_rotating" => Class::Rotating(Box::new(Rotating::spawn(w, id))),
             // func_tanktrain: a track train that can be shot (public entity
             // docs); its health isn't kept.
@@ -487,6 +520,10 @@ impl Class {
             }
             "env_spritetrail" => Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::Trail)),
             "env_smokestack" => Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::SmokeStack)),
+            "color_correction" => {
+                Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::ColorCorrection))
+            }
+            "env_embers" => Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::Embers)),
             "info_particle_system" => {
                 Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::Particles))
             }
@@ -742,6 +779,20 @@ pub(super) fn class_input(
     let Some(class) = w.get(id).map(|e| e.class.clone()) else {
         return true;
     };
+    // Classes that do nothing here (`noted_class`): their inputs do
+    // nothing either (base inputs such as Kill still apply).
+    if matches!(class, Class::None)
+        && !matches!(
+            input,
+            "kill" | "killhierarchy" | "addoutput" | "fireuser1" | "fireuser2" | "fireuser3" | "fireuser4"
+        )
+        && let Some(e) = w.get(id)
+        && noted_class(&e.classname.to_ascii_lowercase()).is_some()
+    {
+        let detail = format!("{}.{input}", e.classname);
+        w.note("inputs to classes that do nothing here (see their note)", detail);
+        return true;
+    }
     let flags = w.get(id).map_or(0, |e| e.spawnflags);
     match class {
         Class::Relay(r) => match input {

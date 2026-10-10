@@ -95,10 +95,17 @@ impl Plugin for HdrPlugin {
             Core3d,
             // After Bevy's tone mapping (off on these cameras), so after
             // auto exposure and bloom, which run before it.
-            source_tonemap.after(tonemapping).in_set(Core3dSystems::PostProcess),
+            source_tonemap
+                .after(tonemapping)
+                .in_set(Core3dSystems::PostProcess)
+                .in_set(SourceTonemapSet),
         );
     }
 }
+
+/// The Source tone-map pass (post-processes after it order on this).
+#[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SourceTonemapSet;
 
 /// The `mat_hdr_level` a run starts with, for loading the `--map` before
 /// the console runs: the last `mat_hdr_level` in config.cfg, autoexec.cfg

@@ -31,7 +31,7 @@ mod systems;
 #[cfg(test)]
 mod tests;
 
-pub use self::{create_server::*, loading::*, main_menu::*, model::*};
+pub use self::{create_server::*, draw::MENU_Z, loading::*, main_menu::*, model::*};
 pub(in crate::client) use self::systems::*;
 use self::{draw::*, options_pages::*};
 
@@ -106,9 +106,9 @@ impl Plugin for GameMenuPlugin {
         app.console_command(
             "menu",
             "menu [main|newgame|game|bot|bots|team|options|keyboard|mouse|audio|video|voice|multiplayer|advanced|\
-             videoadvanced|mpadvanced|extras]: open the game menu (Esc) on a page (newgame: Create Server, game and \
+             videoadvanced|gamma|mpadvanced|extras]: open the game menu (Esc) on a page (newgame: Create Server, game and \
              bot its other pages; options: on a tab; advanced: the keyboard tab's Advanced dialog, videoadvanced the \
-             video tab's, mpadvanced the multiplayer tab's; extras: Lucker Party Options).",
+             video tab's, gamma its brightness dialog, mpadvanced the multiplayer tab's; extras: Lucker Party Options).",
             |w, a| {
                 let arg = a.first().map(|s| s.to_lowercase());
                 let tab = TABS.iter().find(|(t, ..)| Some(t.page()) == arg.as_deref()).map(|(t, ..)| *t);
@@ -118,7 +118,7 @@ impl Plugin for GameMenuPlugin {
                     Some("newgame" | "createserver" | "game" | "bot") => Page::NewGame,
                     Some("bots") => Page::Bots,
                     Some("team") => Page::Team,
-                    Some("options" | "settings" | "advanced" | "videoadvanced" | "mpadvanced") => Page::Settings,
+                    Some("options" | "settings" | "advanced" | "videoadvanced" | "gamma" | "mpadvanced") => Page::Settings,
                     Some("extras") => Page::Extras,
                     Some(p) => return Err(format!("no menu page \"{p}\"")),
                 };
@@ -137,6 +137,10 @@ impl Plugin for GameMenuPlugin {
                     Some("videoadvanced") => {
                         menu.set_tab(Tab::Video);
                         menu.press_action(&Action::VideoAdvanced);
+                    }
+                    Some("gamma") => {
+                        menu.set_tab(Tab::Video);
+                        menu.press_action(&Action::Gamma);
                     }
                     Some("mpadvanced") => {
                         menu.set_tab(Tab::Multiplayer);
@@ -201,6 +205,8 @@ pub enum Page {
     KeyboardAdvanced,
     /// The video tab's Advanced dialog (over the options).
     VideoAdvanced,
+    /// The video tab's brightness dialog (over the options).
+    Gamma,
     /// The multiplayer tab's Advanced dialog (over the options; its list
     /// from the install's `cfg/user.scr`).
     MultiplayerAdvanced,
@@ -219,6 +225,7 @@ impl Page {
             Page::Settings => "options",
             Page::KeyboardAdvanced => "keyboardadvanced",
             Page::VideoAdvanced => "videoadvanced",
+            Page::Gamma => "gamma",
             Page::MultiplayerAdvanced => "multiplayeradvanced",
             Page::Extras => "extras",
         }
@@ -226,6 +233,6 @@ impl Page {
 
     /// A dialog over the options (modal to them).
     fn over_options(self) -> bool {
-        matches!(self, Page::KeyboardAdvanced | Page::VideoAdvanced | Page::MultiplayerAdvanced)
+        matches!(self, Page::KeyboardAdvanced | Page::VideoAdvanced | Page::Gamma | Page::MultiplayerAdvanced)
     }
 }

@@ -6,6 +6,10 @@ use super::*;
 #[derive(Component)]
 pub(super) struct MenuRoot;
 
+/// The menu's own layer (its backdrop, title and entries): over the HUD
+/// (40-45), under every dialog's frame (`widgets::FRAME_Z` and up).
+pub const MENU_Z: i32 = 46;
+
 /// What a page is drawn with: the root (open lists' outside clicks), the
 /// look, the menu and its rows.
 pub(super) struct Ctx<'a> {
@@ -13,6 +17,8 @@ pub(super) struct Ctx<'a> {
     pub(super) look: &'a Look<'a>,
     pub(super) menu: &'a GameMenu,
     pub(super) rows: &'a [Row],
+    /// The options' pictures by name (`MenuUi::pictures`).
+    pub(super) pictures: &'a HashMap<String, Handle<Image>>,
 }
 
 /// A dialog's size in scheme pixels: the layout's frame when it has one.
@@ -32,6 +38,13 @@ pub(super) fn dialog_size(menu: &GameMenu, page: Page) -> (f32, f32) {
             .and_then(|u| u.options.get("video_advanced"))
             .and_then(|l| l.get("OptionsSubVideoAdvancedDlg"))
             .map_or((482.0, 358.0), |c| (c.wide, c.tall)),
+        Page::Gamma => menu
+            .ui
+            .0
+            .as_ref()
+            .and_then(|u| u.options.get("video_gamma"))
+            .and_then(|l| l.get("OptionsSubVideoGammaDlg"))
+            .map_or((290.0, 396.0), |c| (c.wide, c.tall)),
         Page::MultiplayerAdvanced => menu
             .ui
             .0
@@ -57,6 +70,7 @@ pub(super) fn draw(
     shown: Query<Entity, With<MenuRoot>>,
     windows_q: Query<&Window>,
     mut windows: ResMut<Windows>,
+    frame_backing: Option<ResMut<widgets::FrameBacking>>,
     mut last: Local<(Vec2, Option<Page>)>,
     mut commands: Commands,
 ) {
@@ -78,6 +92,21 @@ pub(super) fn draw(
     *last = (size, page);
     for e in &shown {
         commands.entity(e).despawn();
+    }
+    // Dialogs hide the menu under them: drawn over the main menu's
+    // picture, or in a game over black (the darkened game can't be drawn
+    // again under them).
+    let backing = match (menu.open, menu.in_game) {
+        (false, _) => None,
+        (true, false) => menu_ui
+            .as_ref()
+            .and_then(|u| u.background_sized(size))
+            .map(|(image, image_size)| widgets::Backing::Picture(image, image_size))
+            .or(Some(widgets::Backing::Color(Color::BLACK))),
+        (true, true) => Some(widgets::Backing::Color(Color::BLACK)),
+    };
+    if let Some(mut b) = frame_backing {
+        b.set_if_neq(widgets::FrameBacking(backing));
     }
     if !menu.open {
         return;
@@ -116,7 +145,7 @@ pub(super) fn draw(
             BackgroundColor(backdrop),
             // Over the HUD (40-45), under the frames (`widgets::FRAME_Z`),
             // the scoreboard and the console.
-            GlobalZIndex(46),
+            GlobalZIndex(MENU_Z),
         ))
         .id();
     if !menu.in_game
@@ -154,11 +183,14 @@ pub(super) fn draw(
         return;
     }
     let rows = menu.rows();
+    let no_pictures = HashMap::new();
+    let pictures = menu_ui.as_ref().map_or(&no_pictures, |u| &u.pictures);
     let ctx = Ctx {
         root,
         look: &look,
         menu: &menu,
         rows: &rows,
+        pictures,
     };
     // An Advanced dialog shows over the options.
     if menu.page.over_options() {
@@ -172,6 +204,7 @@ pub(super) fn draw(
             look: &look,
             menu: &under,
             rows: &under_rows,
+            pictures,
         };
         dialog(&mut commands, &c, Page::Settings);
     }
@@ -190,6 +223,7 @@ pub(super) fn dialog(commands: &mut Commands, ctx: &Ctx, page: Page) {
         Page::Settings => menu.text("#GameUI_Options", "Options"),
         Page::KeyboardAdvanced => menu.text("#GameUI_KeyboardAdvanced_Title", "Keyboard - Advanced"),
         Page::VideoAdvanced => menu.text("#GameUI_VideoAdvanced_Title", "Video - Advanced"),
+        Page::Gamma => menu.text("#GameUI_AdjustGamma_Title", "Adjust brightness levels"),
         Page::MultiplayerAdvanced => menu.text("#GameUI_MultiplayerAdvanced", "Multiplayer Advanced"),
         Page::Extras => "Lucker Party Options".into(),
     };
@@ -205,7 +239,10 @@ pub(super) fn dialog(commands: &mut Commands, ctx: &Ctx, page: Page) {
     match page {
         Page::Settings => {
             let names: Vec<(String, bool)> = TABS.iter().map(|(_, t, o)| (menu.text(t, o), true)).collect();
-            widgets::tabs(commands, frame, look, (8.0, 30.0), &names, menu.tab.index(), Some(96.0), |i| Hit(Target::Tab(i), 0));
+            // Each as wide as its words (VGUI's tabs), kept on the sheet.
+            widgets::tabs(commands, frame, look, (8.0, 30.0), &names, menu.tab.index(), None, Some(w - 16.0), |i| {
+                Hit(Target::Tab(i), 0)
+            });
             let content = sheet_page(commands, frame, look, (8.0, 57.0, w - 16.0, h - 57.0 - 36.0));
             if menu.tab == Tab::Keyboard {
                 keyboard_tab(commands, content, look, menu, ctx.rows);
@@ -216,7 +253,9 @@ pub(super) fn dialog(commands: &mut Commands, ctx: &Ctx, page: Page) {
         }
         Page::NewGame => {
             let names: Vec<(String, bool)> = CREATE_TABS.iter().map(|(t, o)| (menu.text(t, o), true)).collect();
-            widgets::tabs(commands, frame, look, (8.0, 30.0), &names, menu.create_tab, None, |i| Hit(Target::Tab(i), 0));
+            widgets::tabs(commands, frame, look, (8.0, 30.0), &names, menu.create_tab, None, Some(w - 16.0), |i| {
+                Hit(Target::Tab(i), 0)
+            });
             let size = (w - 16.0, h - 57.0 - 38.0);
             let content = sheet_page(commands, frame, look, (8.0, 57.0, size.0, size.1));
             if menu.create_tab == 1 {
@@ -226,7 +265,7 @@ pub(super) fn dialog(commands: &mut Commands, ctx: &Ctx, page: Page) {
             }
             dialog_buttons(commands, ctx, frame, (w, h), &[Action::Start, Action::Cancel]);
         }
-        Page::KeyboardAdvanced | Page::VideoAdvanced => {
+        Page::KeyboardAdvanced | Page::VideoAdvanced | Page::Gamma => {
             page_controls(commands, ctx, frame, (w, h));
         }
         Page::MultiplayerAdvanced => {
@@ -250,6 +289,11 @@ pub(super) fn dialog(commands: &mut Commands, ctx: &Ctx, page: Page) {
         _ => column(commands, ctx, frame, (16.0, 36.0, w - 32.0), false),
     }
 }
+
+/// Controls of the game's layouts left out on purpose (a deliberate
+/// difference, docs/plans/active/ui-parity.md): Virtual Reality Mode and
+/// its label (mashup won't support VR).
+pub const LEFT_OUT: [&str; 2] = ["VRMode", "VRModeLabel"];
 
 /// A property sheet's page: a raised box under its tabs.
 pub(super) fn sheet_page(commands: &mut Commands, frame: Entity, look: &Look, (x, y, w, h): (f32, f32, f32, f32)) -> Entity {
@@ -473,6 +517,14 @@ pub(super) fn page_controls(commands: &mut Commands, ctx: &Ctx, parent: Entity, 
                 action: Action::Cancel,
                 ..
             } if menu.page == Page::MultiplayerAdvanced => name.eq_ignore_ascii_case("Cancel"),
+            // The brightness dialog names them OKButton and Button1.
+            Row::Button {
+                action: Action::Ok, ..
+            } if menu.page == Page::Gamma => name.eq_ignore_ascii_case("OKButton"),
+            Row::Button {
+                action: Action::Cancel,
+                ..
+            } if menu.page == Page::Gamma => name == "Button1",
             Row::Button {
                 action: Action::Ok, ..
             } => name == "Button1" && menu.page.over_options(),
@@ -508,6 +560,9 @@ pub(super) fn page_controls(commands: &mut Commands, ctx: &Ctx, parent: Entity, 
         if row.is_none() && unworded.iter().any(|n| n.eq_ignore_ascii_case(&c.name)) {
             continue;
         }
+        if LEFT_OUT.iter().any(|n| n.eq_ignore_ascii_case(&c.name)) {
+            continue;
+        }
         let class = class_of(c);
         if let Some(i) = row {
             match &ctx.rows[i] {
@@ -525,6 +580,7 @@ pub(super) fn page_controls(commands: &mut Commands, ctx: &Ctx, parent: Entity, 
             continue;
         }
         let text = if c.text.starts_with('#') { "" } else { c.text.as_str() };
+        let picture = c.keys.get("image").and_then(|n| ctx.pictures.get(&n.to_lowercase()));
         match class.to_ascii_lowercase().as_str() {
             "label" => {
                 // Not over a control we draw (the video Advanced dialog's
@@ -605,6 +661,19 @@ pub(super) fn page_controls(commands: &mut Commands, ctx: &Ctx, parent: Entity, 
                 widgets::text_entry(commands, parent, look, (rect.0, rect.1, rect.2, rect.3.min(24.0)), "", None, false, false, ());
             }
             "crosshairimagepanelcs" => crosshair_preview(commands, parent, look, menu, rect),
+            "imagepanel" if picture.is_some() => {
+                // Its picture over its box, as the brightness dialog's
+                // test lines.
+                commands.spawn((
+                    place(look, rect.0, rect.1, rect.2, rect.3),
+                    ImageNode {
+                        image: picture.cloned().unwrap_or_default(),
+                        image_mode: NodeImageMode::Stretch,
+                        ..default()
+                    },
+                    ChildOf(parent),
+                ));
+            }
             "imagepanel" => {
                 commands.spawn((
                     Node {

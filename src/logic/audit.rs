@@ -95,6 +95,10 @@ pub struct MapAudit {
     pub jumps: Vec<String>,
     /// Usable brushes +use didn't find from any side: "class name".
     pub missed: Vec<String>,
+    /// Usable brushes whose surroundings moved the scripted player away
+    /// before it could press (a trigger_teleport or trigger_hurt around
+    /// them: the map keeps players out): "class name".
+    pub moved_away: Vec<String>,
     /// Entities parented to a mover that stay where they spawned:
     /// class -> entities.
     pub left_behind: BTreeMap<String, usize>,
@@ -401,7 +405,12 @@ fn run(entities: &[MapEntity], secs: f32, a: &mut MapAudit) {
                 }
                 Visit::Use(id) => {
                     let id = *id;
-                    let c = centre(&w, id);
+                    // Aimed at one of its pieces (a double door made as one
+                    // entity has nothing at its middle to aim at).
+                    let c = w
+                        .mover_solid(id)
+                        .and_then(|b| b.first().map(|b| (b.min + b.max) / 2.0))
+                        .unwrap_or_else(|| centre(&w, id));
                     let attempt = step / 2;
                     let dirs = [Vec3::X, -Vec3::X, Vec3::Y, -Vec3::Y];
                     let dir = dirs[attempt.min(3)];
@@ -410,17 +419,24 @@ fn run(entities: &[MapEntity], secs: f32, a: &mut MapAudit) {
                     let yaw = look.y.atan2(look.x).to_degrees();
                     let pitch = -(look.z / look.length().max(1e-3)).asin().to_degrees();
                     let press = step % 2 == 1;
-                    set_player(
-                        &mut w,
-                        eye - Vec3::new(0.0, 0.0, 64.0),
-                        Vec3::new(pitch, yaw, 0.0),
-                        press,
-                    );
+                    let at = eye - Vec3::new(0.0, 0.0, 64.0);
+                    set_player(&mut w, at, Vec3::new(pitch, yaw, 0.0), press);
                     step += 1;
                     w.frame(&NoCollision);
                     let found = w.use_presses.iter().any(|(_, f)| *f);
+                    // The map's triggers took the player away from it (a
+                    // teleport or a kill zone guarding a winner's room).
+                    let moved = w
+                        .player_mut(me)
+                        .is_some_and(|p| p.origin.distance(at) > 1.0 || !p.alive);
                     if press && found {
                         a.buttons_pressed += 1;
+                        step = 0;
+                        next += 1;
+                    } else if press && moved {
+                        if let Some(e) = w.get(id) {
+                            a.moved_away.push(format!("{} '{}'", e.classname, e.targetname));
+                        }
                         step = 0;
                         next += 1;
                     } else if step >= 8 {

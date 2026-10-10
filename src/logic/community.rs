@@ -2,8 +2,9 @@
 //! active/community-maps.md, "Map logic audit"), from the public entity
 //! documentation; our choices where it is silent are in docs/tech-debt.md:
 //! logic_measure_movement, point_teleport, logic_multicompare, env_shake,
-//! func_water_analog, env_shooter, point_push, env_texturetoggle,
-//! env_screenoverlay, point_camera (func_monitor is a func_brush).
+//! env_shooter, point_push, env_texturetoggle,
+//! env_screenoverlay, point_camera (func_monitor is a func_brush),
+//! env_viewpunch, env_muzzleflash.
 
 use bevy::prelude::*;
 
@@ -20,9 +21,6 @@ pub enum Extra {
     Teleport,
     MultiCompare(MultiCompare),
     Shake(Shake),
-    /// func_water_analog: water where it spawns (the map's swim volume);
-    /// its move inputs are accepted and don't move it (tech-debt).
-    WaterAnalog,
     /// env_shooter: Shoot throws its model as gibs.
     Shooter,
     /// point_push: pushes physics bodies (and players with flag 8)
@@ -37,6 +35,11 @@ pub enum Extra {
     Overlay {
         at: usize,
     },
+    /// env_viewpunch: ViewPunch kicks the view of players within its
+    /// radius (flag 1: all; flag 2: those in the air too).
+    ViewPunch,
+    /// env_muzzleflash: Fire flashes at it (the map draws it).
+    MuzzleFlash,
     /// point_camera: what monitors show while it is on; its field of view.
     Camera {
         on: bool,
@@ -114,7 +117,6 @@ pub(super) fn spawn(w: &LogicWorld, id: EntId, class: &str) -> Option<Class> {
             eye: e.kv_i("MeasureType") == 1,
         }),
         "point_teleport" => Extra::Teleport,
-        "func_water_analog" => Extra::WaterAnalog,
         "env_texturetoggle" => Extra::TextureToggle,
         "env_screenoverlay" => Extra::Overlay { at: 0 },
         "point_camera" => Extra::Camera {
@@ -122,6 +124,8 @@ pub(super) fn spawn(w: &LogicWorld, id: EntId, class: &str) -> Option<Class> {
             fov: e.kv("FOV").map_or(90.0, super::value::atof),
         },
         "env_shooter" | "env_rotorshooter" => Extra::Shooter,
+        "env_viewpunch" => Extra::ViewPunch,
+        "env_muzzleflash" => Extra::MuzzleFlash,
         "point_push" => Extra::Push {
             enabled: e.kv("enabled").is_none_or(|v| super::value::atoi(v) != 0),
         },
@@ -325,6 +329,29 @@ fn push(w: &mut LogicWorld, id: EntId) {
     }
 }
 
+/// env_viewpunch's ViewPunch (public entity docs): "punchangle" (pitch,
+/// yaw, roll degrees) added to the view punch of each player within
+/// "radius" (flag 1: every player), on the ground unless flag 2.
+fn view_punch(w: &mut LogicWorld, id: EntId) {
+    let Some(e) = w.get(id) else { return };
+    let angles = e.kv("punchangle").map_or(Vec3::ZERO, crate::map::entities::parse_vector);
+    let (all, air) = (e.has_flag(SF_VIEWPUNCH_ALL), e.has_flag(SF_VIEWPUNCH_AIR));
+    let (origin, radius) = (e.origin, e.kv_f("radius"));
+    let hit: Vec<Entity> = w
+        .players
+        .iter()
+        .filter(|p| p.alive && (air || p.on_ground) && (all || p.origin.distance(origin) <= radius))
+        .map(|p| p.entity)
+        .collect();
+    for player in hit {
+        w.effects.push(Effect::ViewPunch { player, angles });
+    }
+}
+
+/// env_viewpunch spawnflags (public entity docs).
+pub const SF_VIEWPUNCH_ALL: u32 = 1;
+pub const SF_VIEWPUNCH_AIR: u32 = 2;
+
 /// env_shooter's Shoot (public entity docs): its "m_iGibs" gibs of
 /// "shootmodel" leave its origin along its forward at "m_flVelocity",
 /// spread by "m_flVariance", spinning at "gibanglevelocity", for
@@ -485,8 +512,13 @@ pub(super) fn input(w: &mut LogicWorld, id: EntId, input: &str, value: &Value, a
                 m.scale = v;
             }
         }
-        (Extra::WaterAnalog, "open" | "close" | "setposition" | "setspeed") => {}
         (Extra::Shooter, "shoot") => shoot(w, id),
+        (Extra::ViewPunch, "viewpunch") => view_punch(w, id),
+        (Extra::MuzzleFlash, "fire") => {
+            if let Some(entity) = w.get(id).and_then(|e| e.map_index) {
+                w.effects.push(Effect::MuzzleFlash { entity });
+            }
+        }
         (Extra::Camera { .. }, "seton" | "setoff" | "setonandturnothersoff") => {
             if input == "setonandturnothersoff" {
                 for other in w.ids() {

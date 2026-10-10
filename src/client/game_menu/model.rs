@@ -72,6 +72,8 @@ pub enum Action {
     Advanced,
     /// The video tab's Advanced dialog.
     VideoAdvanced,
+    /// The video tab's brightness dialog (Adjust brightness levels...).
+    Gamma,
     /// The multiplayer tab's Advanced dialog.
     MultiplayerAdvanced,
     /// A dialog's OK: keep its changes, close it.
@@ -310,6 +312,7 @@ pub const GAME_ROWS: usize = 12;
 pub(super) fn advanced_button(action: &Action) -> Option<&'static str> {
     match action {
         Action::VideoAdvanced => Some("AdvancedButton"),
+        Action::Gamma => Some("GammaButton"),
         Action::MultiplayerAdvanced => Some("Advanced"),
         _ => None,
     }
@@ -321,6 +324,7 @@ pub(super) fn layout_name(page: Page, tab: Tab, create_tab: usize) -> Option<&'s
         Page::Settings => Some(tab.page()),
         Page::KeyboardAdvanced => Some("keyboard_advanced"),
         Page::VideoAdvanced => Some("video_advanced"),
+        Page::Gamma => Some("video_gamma"),
         Page::MultiplayerAdvanced => Some("multiplayer_advanced"),
         Page::NewGame => Some(["create_server", "create_game", "create_bot"][create_tab.min(2)]),
         _ => None,
@@ -646,7 +650,7 @@ impl GameMenu {
             Page::Team => self.team_rows(),
             Page::Settings if self.tab == Tab::Keyboard => self.keyboard_rows(),
             Page::Settings => self.options_rows(),
-            Page::KeyboardAdvanced | Page::VideoAdvanced => self.advanced_rows(),
+            Page::KeyboardAdvanced | Page::VideoAdvanced | Page::Gamma => self.advanced_rows(),
             Page::MultiplayerAdvanced => self.multiplayer_advanced_rows(),
             Page::Extras => self.extras_rows(),
         }
@@ -706,6 +710,7 @@ impl GameMenu {
             Page::Settings
             | Page::KeyboardAdvanced
             | Page::VideoAdvanced
+            | Page::Gamma
             | Page::MultiplayerAdvanced
             | Page::Extras => Some(Action::Ok),
             _ => None,
@@ -1141,10 +1146,11 @@ impl GameMenu {
         self.scroll = 0;
         match self.page {
             Page::Main => {}
-            Page::KeyboardAdvanced | Page::VideoAdvanced | Page::MultiplayerAdvanced => {
+            Page::KeyboardAdvanced | Page::VideoAdvanced | Page::Gamma | Page::MultiplayerAdvanced => {
                 let action = match self.page {
                     Page::KeyboardAdvanced => Action::Advanced,
                     Page::VideoAdvanced => Action::VideoAdvanced,
+                    Page::Gamma => Action::Gamma,
                     _ => Action::MultiplayerAdvanced,
                 };
                 self.page = Page::Settings;
@@ -1222,11 +1228,11 @@ impl GameMenu {
                 binds::bind_defaults(&mut self.binds, true);
                 out.lines.push("binddefaults".into());
             }
-            Action::Advanced | Action::VideoAdvanced => {
-                let (page, place) = if *action == Action::Advanced {
-                    (Page::KeyboardAdvanced, Place::KeyboardAdvanced)
-                } else {
-                    (Page::VideoAdvanced, Place::VideoAdvanced)
+            Action::Advanced | Action::VideoAdvanced | Action::Gamma => {
+                let (page, place) = match action {
+                    Action::Advanced => (Page::KeyboardAdvanced, Place::KeyboardAdvanced),
+                    Action::Gamma => (Page::Gamma, Place::Gamma),
+                    _ => (Page::VideoAdvanced, Place::VideoAdvanced),
                 };
                 self.advanced_before = self.snapshot(|s| s.place == place);
                 self.go_to(page);
@@ -1250,7 +1256,7 @@ impl GameMenu {
                 self.back();
             }
             Action::Ok => match self.page {
-                Page::KeyboardAdvanced | Page::VideoAdvanced => {
+                Page::KeyboardAdvanced | Page::VideoAdvanced | Page::Gamma => {
                     self.advanced_before.clear();
                     self.back();
                 }
@@ -1260,7 +1266,7 @@ impl GameMenu {
                 }
             },
             Action::Cancel => match self.page {
-                Page::KeyboardAdvanced | Page::VideoAdvanced => {
+                Page::KeyboardAdvanced | Page::VideoAdvanced | Page::Gamma => {
                     let before = std::mem::take(&mut self.advanced_before);
                     self.restore(before, out);
                     self.back();

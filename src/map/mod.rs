@@ -23,12 +23,14 @@ pub mod anim;
 pub mod decal;
 pub mod emitters;
 pub mod entities;
+pub mod fish;
 pub mod fire;
 pub mod fog;
 pub use entities::{MapBrushEntity, MapEntities, MapEntity, MapHull};
 pub mod beams;
-pub mod buoyancy;
 pub mod breakables;
+pub mod buoyancy;
+pub mod color_correction;
 pub mod contact_filter;
 pub mod controllers;
 pub mod copies;
@@ -37,33 +39,34 @@ pub use breakables::{
 };
 pub mod detail;
 mod dust;
+pub mod hearing;
 pub mod hud;
 pub mod interp;
 mod light_styles;
-pub mod hearing;
 pub mod live_sound;
-pub mod loose;
 pub mod loading;
+pub mod loose;
 pub mod material_fx;
 pub use material_fx::{DetailMode, MapSelfIllum, MapUvTransform};
+pub mod bot_profiles;
 pub mod merge;
 pub mod monitor;
-pub mod tint;
-pub mod probe_lit;
-pub mod radio;
-pub mod bot_profiles;
 pub mod nav;
 pub mod particles;
-pub mod psys;
-pub mod tracer;
+pub mod placed_ragdoll;
+pub mod probe_lit;
 pub mod prop_material;
 pub mod prop_physics;
+pub mod psys;
+pub mod radio;
 pub mod ragdoll;
+pub mod tint;
+pub mod tracer;
 pub use ragdoll::{MapCollisionHooks, MapRagdoll, MapRagdollBody, MapRagdollJoint, Ragdoll, RagdollBody, RagdollShot};
+pub mod room;
 pub mod rope_material;
 pub mod shadows;
 pub mod sound;
-pub mod room;
 pub mod soundscape;
 pub mod steam;
 pub use live_sound::{LiveSounds, SoundControl, SoundKey, StartSound};
@@ -1166,6 +1169,9 @@ pub struct MapProp {
     /// (prop_ragdoll) drawn as it lies. None: the reference pose, or its
     /// animations.
     pub pose: Option<Arc<Vec<(Quat, Vec3)>>>,
+    /// A map-placed ragdoll's bodies and joints (its model's `.phy`): it is
+    /// simulated from `pose` (`ragdoll::PlacedRagdoll`).
+    pub ragdoll: Option<Arc<MapRagdoll>>,
     pub translation: Vec3,
     pub rotation: Quat,
     pub solid: PropSolid,
@@ -1319,6 +1325,12 @@ pub struct MapData {
     pub smokestacks: Vec<emitters::MapSmokeStack>,
     /// point_tesla arcs (`emitters`).
     pub teslas: Vec<emitters::MapTesla>,
+    /// env_muzzleflash entities (`emitters::MuzzleFlashEmitter`).
+    pub muzzle_flashes: Vec<emitters::MapMuzzleFlash>,
+    /// env_embers volumes (`emitters::EmbersEmitter`).
+    pub embers: Vec<emitters::MapEmbers>,
+    /// color_correction entities (`color_correction`).
+    pub color_corrections: Vec<color_correction::MapColorCorrection>,
     /// Screen overlay materials maps name (env_screenoverlay): lower-case
     /// name and index into `textures`.
     pub screen_overlays: Vec<(String, usize)>,
@@ -1345,6 +1357,10 @@ pub struct MapData {
     pub visibility: Option<Arc<vis::MapVisibility>>,
     /// Water and slime volumes.
     pub water: Vec<MapWaterVolume>,
+    /// Water volumes of brush entities that can move (func_water_analog):
+    /// (index into `water`, index into `entities`); they follow the
+    /// entity's node (`water::move_water`).
+    pub water_movers: Vec<(usize, usize)>,
     /// The map's entities (keyvalues, brush volumes) for the logic layer,
     /// in the map's own order.
     pub entities: Vec<MapEntity>,
@@ -1586,6 +1602,15 @@ pub struct MapSprite {
 /// (`logic::ScreenFades::overlay`).
 #[derive(Resource, Clone, Debug, Default)]
 pub struct ScreenOverlayImages(pub HashMap<String, Handle<Image>>);
+
+/// A kick to a player's view from the map (env_viewpunch): pitch up and
+/// yaw left, radians, added to its view punch (the weapon layer's
+/// `ViewPunch`, which decays it as recoil).
+#[derive(Message, Clone, Copy, Debug, PartialEq)]
+pub struct ViewKick {
+    pub player: Entity,
+    pub angles: Vec2,
+}
 
 /// A drawn part of a map entity the logic switches (sprites, dust
 /// volumes): `on` shows a sprite or lets dust spawn motes; `exists` false
@@ -1857,7 +1882,7 @@ pub const SKYBOX_LAYER: usize = 1;
 pub struct SkyboxCamera;
 
 #[derive(Resource, Clone)]
-struct SkyCameraInfo(MapSkyCamera);
+pub(crate) struct SkyCameraInfo(pub(crate) MapSkyCamera);
 
 /// The map's sky visibility, when it has one (see `MapSkyVis`).
 #[derive(Resource)]
@@ -1931,7 +1956,7 @@ fn fall_out_of_map(
 
 /// The map's playable area (see `MapData::playable`).
 #[derive(Resource)]
-struct PlayableArea((Vec3, Vec3));
+pub(crate) struct PlayableArea(pub(crate) (Vec3, Vec3));
 
 /// The 3D skybox also exists where it was built, outside the playable area
 /// (as in Source, where you can noclip to it). Drawn there only while the
@@ -1969,7 +1994,7 @@ fn show_skybox_in_place(
 struct ActiveMapHas3dSky;
 
 /// Holds nothing: the sky camera's layer when only the 2D sky shows.
-const EMPTY_LAYER: usize = 31;
+pub(crate) const EMPTY_LAYER: usize = 31;
 
 /// The map's sky cubemap, for cameras to show.
 #[derive(Resource, Clone)]
@@ -2005,6 +2030,7 @@ impl Plugin for MapPlugin {
                 .insert_resource(ActiveMapLook(data.look.clone()));
         }
         ragdoll::plugin(app);
+        placed_ragdoll::plugin(app);
         app.add_plugins(light_styles::LightStylesPlugin);
         app.add_plugins((controllers::ControllersPlugin, buoyancy::BuoyancyPlugin, monitor::MonitorPlugin));
         app.add_plugins(sound::SoundPlugin)
@@ -2023,6 +2049,8 @@ impl Plugin for MapPlugin {
             .add_message::<prop_physics::PropAwakened>()
             .add_message::<GlassShatter>()
             .add_message::<emitters::TeslaSpark>()
+            .add_message::<emitters::MuzzleFlashFire>()
+            .add_message::<ViewKick>()
             .add_message::<GlassImpact>()
             .add_message::<breakables::FallingPane>()
             .add_message::<CollisionStart>()
@@ -2054,6 +2082,9 @@ impl Plugin for MapPlugin {
             )
             .add_systems(FixedPostUpdate, breakables::update_panes)
             .add_systems(FixedPostUpdate, prop_physics::wake_on_contact.after(PhysicsSystems::Writeback))
+            // Moving water follows its brush entity (before movement and
+            // buoyancy read it).
+            .add_systems(FixedUpdate, water::move_water.before(crate::core::SimSet::Movement))
             // What the logic switches: sprites and dust, lights, prop
             // skins, bodies and sequences.
             .add_systems(
@@ -2099,6 +2130,10 @@ impl Plugin for MapPlugin {
                             emitters::update_trails,
                             emitters::update_smokestacks,
                             emitters::update_teslas,
+                            color_correction::update,
+                            emitters::update_embers,
+                            emitters::update_muzzle_flashes,
+                            fish::swim,
                             psys::update_systems,
                         )
                             .after(particles::ParticleSet::Step)
@@ -2181,7 +2216,7 @@ impl Plugin for MapPlugin {
 /// Bevy adds `lightmap * lightmap_exposure` as light, then applies the
 /// camera's exposure. This cancels the default camera exposure (EV100 9.7)
 /// so a lightmap value of 1.0 shows a texture at its own brightness.
-const LIGHTMAP_EXPOSURE: f32 = 1.2 * 831.746_4; // 1.2 * 2^9.7
+pub(crate) const LIGHTMAP_EXPOSURE: f32 = 1.2 * 831.746_4; // 1.2 * 2^9.7
 
 /// Height of the capsule center above the feet, so spawns start standing.
 pub const SPAWN_LIFT: f32 = 1.0;
@@ -2627,6 +2662,7 @@ fn spawn_map(
                 water_materials,
                 &cubemaps,
                 sky_handle.as_ref(),
+                &|i| entity_nodes.get(i).copied().flatten(),
             );
         }
         // World meshes in chunks with tight bounds, tagged with the
@@ -3147,6 +3183,41 @@ fn spawn_map(
             if !data.particle_systems.defs.is_empty() {
                 commands.insert_resource(psys::ParticleSystemDefs(data.particle_systems.clone()));
             }
+            color_correction::spawn(&mut commands, data, root);
+            for (i, m) in data.muzzle_flashes.iter().enumerate() {
+                let mut e = commands.spawn((
+                    Name::new(format!("Muzzle flash {i}")),
+                    MapPart,
+                    emitters::MuzzleFlashEmitter(m.clone()),
+                    emitters::FollowsEntity,
+                    Transform::from_translation(m.position).with_rotation(m.rotation),
+                    Visibility::default(),
+                    ChildOf(root),
+                ));
+                if let Some(entity) = m.entity {
+                    e.insert(EntityPart { entity, on: true, exists: true });
+                }
+            }
+            for (i, m) in data.embers.iter().enumerate() {
+                let clusters = visibility.map(|v| vis::box_clusters(v, m.min, m.max)).unwrap_or_default();
+                let mut e = commands.spawn((
+                    Name::new(format!("Embers {i}")),
+                    MapPart,
+                    emitters::EmbersEmitter::new(m.clone(), i as u64 + 1),
+                    emitters::FollowsEntity,
+                    Transform::from_translation(m.origin),
+                    Visibility::default(),
+                    ChildOf(root),
+                ));
+                tag(&mut e, clusters);
+                if let Some(entity) = m.entity {
+                    e.insert(EntityPart {
+                        entity,
+                        on: m.start_on,
+                        exists: true,
+                    });
+                }
+            }
             for (i, t) in data.teslas.iter().enumerate() {
                 let mut e = commands.spawn((
                     Name::new(format!("Tesla {i}")),
@@ -3581,6 +3652,15 @@ fn spawn_map(
         }
         if let Some(index) = prop.entity {
             e.insert((PropEntity(index), PropHome(rider.map_or(placed, |r| r.1))));
+            // func_fish_pool's fish swim about its origin (`fish`).
+            if let Some(pool) = data.entities.get(index).filter(|p| p.classname().eq_ignore_ascii_case("func_fish_pool")) {
+                let range = pool.get("max_range").map_or(150.0, |v| v.trim().parse().unwrap_or(150.0));
+                e.insert(fish::Fish::new(
+                    entities::entity_to_engine(pool.origin(), data.entity_scale),
+                    range * data.entity_scale,
+                    i as u64 + 1,
+                ));
+            }
         }
         let solid = if rider.is_some() { PropSolid::None } else { prop.solid };
         match (solid, &model_colliders[prop.model]) {
@@ -3808,8 +3888,25 @@ fn spawn_map(
                 mesh_bodies: model.meshes.iter().map(|m| m.body).collect(),
                 shown: (prop.skin, prop.body),
             });
+            // A simulated ragdoll's bones follow its bodies.
+            if let (Some(rig), Some(ragdoll)) = (rig.filter(|_| !joints.is_empty() && !prop.skybox), &prop.ragdoll) {
+                let flags = prop
+                    .entity
+                    .and_then(|i| data.entities.get(i))
+                    .and_then(|e| e.get("spawnflags"))
+                    .map_or(0, |v| v.trim().parse().unwrap_or(0));
+                commands.entity(id).insert(placed_ragdoll::PlacedRagdoll::new(
+                    ragdoll.clone(),
+                    rig,
+                    prop.pose.clone(),
+                    joints,
+                    flags,
+                    rider.map_or(placed, |r| r.1),
+                ));
             // A posed ragdoll keeps its pose (no animation).
-            if let Some(rig) = rig.filter(|_| !joints.is_empty() && prop.pose.is_none()) {
+            } else if let Some(rig) =
+                rig.filter(|_| !joints.is_empty() && prop.pose.is_none() && prop.ragdoll.is_none())
+            {
                 commands.entity(id).insert(PropRig {
                     animator: anim::Animator::new(rig.animations.clone()),
                     joints,
@@ -3878,6 +3975,13 @@ fn spawn_map(
             commands.insert_resource(Gravity(Vec3::NEG_Y * g));
         }
         commands.insert_resource(MapWater(data.water.clone()));
+        commands.insert_resource(water::WaterMovers(
+            data.water_movers
+                .iter()
+                .filter(|(v, e)| *v < data.water.len() && entity_nodes.get(*e).copied().flatten().is_some())
+                .map(|&(v, e)| (v, e, data.water[v].brush.clone(), node_home(e)))
+                .collect(),
+        ));
         commands.insert_resource(fog::SceneFog(fog::world_fog(data.fog.as_ref())));
         commands.insert_resource(data.round_sounds.clone());
         if let Some(r) = &data.radio {
@@ -3992,6 +4096,7 @@ pub fn unload_map(world: &mut World) {
     world.remove_resource::<MapBrushTree>();
     world.remove_resource::<KillHeight>();
     world.remove_resource::<MapWater>();
+    world.remove_resource::<water::WaterMovers>();
     world.remove_resource::<RoundSounds>();
     world.remove_resource::<radio::RadioCommands>();
     world.remove_resource::<bot_profiles::BotProfiles>();

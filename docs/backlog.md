@@ -84,22 +84,10 @@ plan when work starts; delete them when done.
   the colour list, `cl_crosshairusealpha`'s and `mp_decals`' defaults):
   docs/plans/active/ui-parity.md.
 
-- Menu layering and Options (user, 2026-10-10): the main menu's logo
-  and entries draw over the Options window (and other dialogs): dialogs
-  must draw above the menu. The Options tabs overflow: "Multiplayer"
-  sticks out past the window's edge. Greyed or empty controls: Audio's
-  speaker configuration, sound quality, captioning and spoken language
-  have no drop-down items; Video's "Adjust brightness levels" does
-  nothing; remove "Virtual reality mode" (not a CS:S option we will
-  support; check whether the CS:S build we target shows it at all).
-  Write a plan (docs/plans/active/) to implement Video > Advanced's
-  settings (model/texture/shader detail, shadow detail, colour
-  correction, antialiasing, filtering, wait for vsync, motion blur,
-  multicore, HDR) and the audio settings, or decide per control.
-- Scoreboard while loading (user, 2026-10-10): holding Tab while a map
-  loads from the main menu shows the previous game's scoreboard over
-  the loading screen. The scoreboard (and other in-game HUD) must not
-  show while loading or in the main menu.
+- Video > Advanced's and the Audio tab's remaining settings (model,
+  shader and shadow detail, colour correction, motion blur; speakers,
+  sound quality and captions beyond being saved): one by one, per
+  docs/plans/active/video-settings.md.
 - Ladders (user, 2026-10-10): some ladders make no climbing sound (all
   should, by the surface/ladder sound rules: check which ladders are
   silent and why). At the top of a ladder, jumping up off it lands you
@@ -186,15 +174,21 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   ragdolls (drawn, not simulated), players' and brushes' render looks,
   water buoyancy (boats), motors and constraints, players riding karts,
   monitors, teslas, shooters, point_push, texture toggles, screen
-  overlays; the audit's noise noted once per map. Round 4 (2026-10-10,
-  to playtest): surf_nebula's dead ramp stops (static props without a
+  overlays; the audit's noise noted once per map. Round 3 (done
+  2026-10-10, to playtest): map ragdolls simulated (and sent to network
+  clients), moving water (func_water_analog, water on movers),
+  color_correction (`mat_colorcorrection`), embers, fish pools, muzzle
+  flashes, view punches, constraints breaking past their limits,
+  monitors' sky, 3D-skybox particles, +use through a usable parent; the
+  audit's +use misses were its own aim. Round 4 (2026-10-10, to
+  playtest): surf_nebula's dead ramp stops (static props without a
   collision model block nothing), detail props (grass and weeds),
   monitors with their camera's own fog, bots stepping aside on maps
-  without a navigation mesh. Top of what's left: map ragdolls simulated,
-  the remaining classes (env_embers, color_correction...), particle
-  looks checked against CS:S, and three probes on the reference server
-  (the plan's "Probes wanted": landing height, touch order of
-  overlapping triggers, static props without a collision model).
+  without a navigation mesh. Top of what's left: particle and ember
+  looks checked against CS:S, strike-generator env_beams, and three
+  probes on the reference server (the plan's "Probes wanted": landing
+  height, touch order of overlapping triggers, static props without a
+  collision model).
 
 ## 2b. HUD and debug views
 

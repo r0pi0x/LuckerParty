@@ -92,6 +92,7 @@ fn map() -> MapData {
     });
     data.props.push(MapProp {
         pose: None,
+        ragdoll: None,
         model: 0,
         translation: Vec3::new(0.0, half + 0.01, 0.0),
         rotation: Quat::IDENTITY,

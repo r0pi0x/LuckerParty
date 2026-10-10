@@ -100,6 +100,10 @@ pub struct Joint {
     /// Where the bodies are held together (entity space).
     pub anchor: Vec3,
     pub no_collide: bool,
+    /// "forcelimit" (lb) and "torquelimit" (lb·in): it breaks past them
+    /// (1.5; 0: never).
+    pub force_limit: f32,
+    pub torque_limit: f32,
 }
 
 /// A controller as the logic exports it (entity space): what pushes which
@@ -140,6 +144,9 @@ pub struct JointExport {
     pub anchor: Vec3,
     pub on: bool,
     pub no_collide: bool,
+    /// Break limits (lb, lb·in; 0: never).
+    pub force_limit: f32,
+    pub torque_limit: f32,
 }
 
 /// A point keyvalue's direction from the entity's origin (unit; zero
@@ -196,6 +203,14 @@ pub(super) fn spawn(e: &super::world::LogicEntity, class: &str) -> Option<Class>
                 body2: None,
                 anchor: e.origin,
                 no_collide: e.has_flag(SF_JOINT_NO_COLLIDE),
+                // The ragdoll constraint never breaks by itself (7).
+                force_limit: if class == "phys_ragdollconstraint" { 0.0 } else { e.kv_f("forcelimit").max(0.0) },
+                // The length constraint's torque limit is forced to 0 (5).
+                torque_limit: if matches!(class, "phys_ragdollconstraint" | "phys_lengthconstraint") {
+                    0.0
+                } else {
+                    e.kv_f("torquelimit").max(0.0)
+                },
             }))
         }
         _ => return None,
@@ -208,11 +223,25 @@ fn body_named(w: &LogicWorld, id: EntId) -> Option<EntId> {
 }
 
 /// The first entity named by `key` that has a physics body: a prop,
-/// physics brush or mover (physics_constraints.md 1.2).
+/// physics brush or mover (physics_constraints.md 1.2). An
+/// info_constraint_anchor of exactly that name with a parent stands for
+/// its parent's body (step 1; its offset and mass scale aren't kept: the
+/// constraint's own origin is the joint's point).
 fn body_by_key(w: &LogicWorld, id: EntId, key: &str) -> Option<EntId> {
     let name = w.get(id)?.kv(key)?.trim().to_string();
     if name.is_empty() {
         return None;
+    }
+    let has_body = |e: &super::world::LogicEntity| matches!(e.class, Class::Prop(_)) || super::movers::pusher(&e.class).is_some();
+    let anchor = w.ids().into_iter().rev().find_map(|a| {
+        let e = w.get(a)?;
+        (e.classname.eq_ignore_ascii_case("info_constraint_anchor") && e.targetname == name).then_some(())?;
+        let parent = e.kv("parentname").map(crate::map::entities::parent_name).filter(|p| !p.is_empty())?;
+        let body = w.find(parent)?;
+        w.get(body).is_some_and(has_body).then_some(body)
+    });
+    if anchor.is_some() {
+        return anchor;
     }
     w.ids().into_iter().find(|b| {
         w.get(*b).is_some_and(|e| {
@@ -407,6 +436,8 @@ impl LogicWorld {
                         anchor: j.anchor,
                         on: j.on,
                         no_collide: j.no_collide,
+                        force_limit: j.force_limit,
+                        torque_limit: j.torque_limit,
                     }),
                     Class::Motor(m) if e.has_flag(SF_MOTOR_HINGE) => Some(JointExport {
                         id,
@@ -416,6 +447,8 @@ impl LogicWorld {
                         anchor: e.origin,
                         on: true,
                         no_collide: e.has_flag(SF_MOTOR_NO_COLLIDE),
+                        force_limit: 0.0,
+                        torque_limit: 0.0,
                     }),
                     _ => None,
                 }

@@ -64,6 +64,9 @@ pub struct PropAwakened(pub Entity);
 
 /// Set a frozen prop moving; false if it isn't one (or already moves).
 pub fn enable_motion(world: &mut World, node: Entity) -> bool {
+    if super::placed_ragdoll::set_motion(world, node, true) {
+        return true;
+    }
     let Ok(mut e) = world.get_entity_mut(node) else {
         return false;
     };
@@ -102,6 +105,9 @@ pub fn enable_motion(world: &mut World, node: Entity) -> bool {
 
 /// Freeze a moving prop where it is.
 pub fn disable_motion(world: &mut World, node: Entity) {
+    if super::placed_ragdoll::set_motion(world, node, false) {
+        return;
+    }
     if let Ok(mut e) = world.get_entity_mut(node)
         && e.get::<RigidBody>().is_some_and(|b| b.is_dynamic())
     {
@@ -111,6 +117,9 @@ pub fn disable_motion(world: &mut World, node: Entity) {
 
 /// Wake a sleeping body (one that started asleep reports it).
 pub fn wake(world: &mut World, node: Entity) {
+    if super::placed_ragdoll::wake(world, node) {
+        return;
+    }
     let Ok(mut e) = world.get_entity_mut(node) else { return };
     if e.take::<StartAsleep>().is_some() {
         e.insert(RigidBody::Dynamic);

@@ -100,6 +100,8 @@ const HANDLED_ELSEWHERE: &[&str] = &[
     "prop_static",
     "prop_detail",
     "env_sun",
+    // Its fish are props the loader places; they swim (`map::fish`).
+    "func_fish_pool",
 ];
 
 struct Args {
@@ -339,7 +341,11 @@ fn sweep_map(name: &str, path: &Path, secs: f32, audit: bool) -> Row {
         Ok((none, log)) => {
             for class in none {
                 // Placed weapons: the weapon layer (`weapon::equip`).
-                if HANDLED_ELSEWHERE.contains(&class.as_str()) || class.starts_with("weapon_") {
+                // Known gaps the logic notes (`classes::noted_class`).
+                if HANDLED_ELSEWHERE.contains(&class.as_str())
+                    || class.starts_with("weapon_")
+                    || mashup::logic::classes::noted_class(&class).is_some()
+                {
                     continue;
                 }
                 *row.unsupported.entry(class).or_default() += 1;
@@ -877,6 +883,9 @@ fn write_audit(out: &Path, rows: &[Row]) -> std::io::Result<()> {
         }
         for s in &a.missed {
             raw += &format!("  +use missed {s}\n");
+        }
+        for s in &a.moved_away {
+            raw += &format!("  +use: the map moved the player away from {s}\n");
         }
         for (c, n) in &a.left_behind {
             raw += &format!("  left behind by its moving parent: {c} x{n}\n");

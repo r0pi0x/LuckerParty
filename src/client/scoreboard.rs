@@ -183,6 +183,13 @@ pub fn latency(bot: bool, ping: u16) -> String {
     if bot { "BOT".into() } else { ping.to_string() }
 }
 
+/// Whether the board shows when held: only in a game, never under the
+/// game menu (the main menu, the Esc menu or the loading dialog: GameUI
+/// has the keys there, and the last game's players may still be about).
+pub fn shown(held: bool, menu: Option<&super::game_menu::GameMenu>) -> bool {
+    held && menu.is_none_or(|m| m.in_game && !m.open && m.loading.is_none() && m.failure.is_none())
+}
+
 /// A scoreboard row.
 #[derive(Clone, Debug, PartialEq)]
 struct Row {
@@ -239,7 +246,10 @@ fn update(
         Option<Res<crate::map::LoadedMapName>>,
         Option<Res<crate::net::NetSettings>>,
     ),
-    rounds: Option<Res<crate::rules::rounds::RoundState>>,
+    (rounds, menu): (
+        Option<Res<crate::rules::rounds::RoundState>>,
+        Option<Res<super::game_menu::GameMenu>>,
+    ),
     mut last: Local<Option<Shot>>,
     mut commands: Commands,
 ) {
@@ -248,7 +258,14 @@ fn update(
         (Some(b), Some(m)) => super::binds::pressed(&b.binds, &keys, m, "+showscores"),
         _ => false,
     };
-    let show = (tab && !typing) || held.showscores;
+    let show = shown((tab && !typing) || held.showscores, menu.as_deref());
+    if !show && last.is_some() {
+        // Hidden: its rows go (the next game draws its own; a map
+        // unloading takes the last game's with it).
+        for e in roots.0.iter().chain(roots.1.iter().map(|(e, _)| e)) {
+            commands.entity(e).despawn_related::<Children>();
+        }
+    }
     let layout = hud
         .as_ref()
         .and_then(|h| h.0.menus.as_ref())
@@ -511,6 +528,61 @@ mod tests {
         assert_eq!(Status::Dead.icon(), Some("scoreboard_dead"));
         assert_eq!(Status::Defuser.icon(), Some("scoreboard_defuser"));
         assert_eq!(Status::None.icon(), None);
+    }
+
+    /// Held Tab shows the board in a game only: not over the main menu,
+    /// the Esc menu or the loading dialog, and its rows go when it hides.
+    #[test]
+    fn the_board_shows_only_in_a_game_and_drops_its_rows() {
+        use super::super::{console::HeldActions, fonts::UiFonts, game_menu::GameMenu};
+        let mut app = App::new();
+        let mut menu = GameMenu::default();
+        menu.in_game = true;
+        menu.open = false;
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<UiFonts>()
+            .insert_resource(HeldActions {
+                showscores: true,
+                ..default()
+            })
+            .insert_resource(menu)
+            .add_plugins(ScoreboardPlugin);
+        for (name, team) in [("Alice", 1), ("Bob", 2)] {
+            app.world_mut().spawn((Name::new(name), Team(team), Intent::default()));
+        }
+        let rows = |app: &mut App| -> usize {
+            let mut q = app.world_mut().query_filtered::<&Children, With<Column>>();
+            q.iter(app.world()).map(|c| c.len()).sum()
+        };
+        let visible = |app: &mut App| -> bool {
+            let mut q = app.world_mut().query_filtered::<&Visibility, With<Board>>();
+            q.iter(app.world()).any(|v| *v != Visibility::Hidden)
+        };
+        app.update();
+        app.update();
+        assert!(visible(&mut app), "held in a game");
+        assert!(rows(&mut app) >= 4, "a title and a row per team");
+        // A map loading from the main menu (the old game's players still
+        // about): hidden, its rows gone.
+        app.world_mut().resource_mut::<GameMenu>().loading = Some("de_dust2".into());
+        app.update();
+        app.update();
+        assert!(!visible(&mut app));
+        assert_eq!(rows(&mut app), 0, "the last game's rows are gone");
+        // The main menu (out of a game) and the Esc menu: hidden too.
+        let mut menu = app.world_mut().resource_mut::<GameMenu>();
+        menu.loading = None;
+        menu.in_game = false;
+        menu.open = true;
+        app.update();
+        assert!(!visible(&mut app));
+        let mut menu = app.world_mut().resource_mut::<GameMenu>();
+        menu.in_game = true;
+        app.update();
+        assert!(!visible(&mut app), "under the Esc menu");
+        app.world_mut().resource_mut::<GameMenu>().open = false;
+        app.update();
+        assert!(visible(&mut app), "back in the game");
     }
 
     #[test]

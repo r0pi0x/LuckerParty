@@ -47,6 +47,12 @@ pub enum PartKind {
     /// point_tesla: sparks at random intervals while on (TurnOn/TurnOff),
     /// DoSpark once (`beams`).
     Tesla,
+    /// color_correction: weighs in while enabled (Enable/Disable; its
+    /// fades are the map's: `map::color_correction`).
+    ColorCorrection,
+    /// env_embers: embers drift through its volume while on (flag 1
+    /// "Start On"; TurnOn/TurnOff/Toggle).
+    Embers,
 }
 
 /// A sprite or dust volume: shown (sprites) or spawning (dust) while on.
@@ -82,6 +88,8 @@ pub(super) fn spawn_part(w: &LogicWorld, id: EntId, kind: PartKind) -> Part {
         PartKind::SmokeStack => e.kv_i("InitialState") != 0,
         PartKind::Particles => e.kv_i("start_active") != 0,
         PartKind::Tesla => false,
+        PartKind::ColorCorrection => !e.kv("StartDisabled").is_some_and(|v| v.trim_start().starts_with('1')),
+        PartKind::Embers => e.has_flag(1),
     };
     Part {
         kind,
@@ -122,14 +130,19 @@ pub(super) fn input(w: &mut LogicWorld, id: EntId, input: &str, _value: &Value) 
                 (PartKind::Sprite, "showsprite")
                 | (PartKind::Dust | PartKind::Steam | PartKind::SmokeStack, "turnon")
                 | (PartKind::Particles, "start")
-                | (PartKind::Soundscape, "enable") => true,
+                | (PartKind::Soundscape | PartKind::ColorCorrection, "enable")
+                | (PartKind::Embers, "turnon") => true,
                 (PartKind::Sprite, "hidesprite")
                 | (PartKind::Dust | PartKind::Steam | PartKind::SmokeStack, "turnoff")
                 | (PartKind::Particles, "stop")
-                | (PartKind::Soundscape, "disable") => false,
+                | (PartKind::Soundscape | PartKind::ColorCorrection, "disable")
+                | (PartKind::Embers, "turnoff") => false,
                 (PartKind::Sprite, "togglesprite")
                 | (PartKind::Steam | PartKind::SmokeStack, "toggle")
-                | (PartKind::Soundscape, "toggleenabled") => !p.on,
+                | (PartKind::Soundscape, "toggleenabled")
+                | (PartKind::Embers, "toggle") => !p.on,
+                // The fades are the map's (tech-debt).
+                (PartKind::ColorCorrection, "setfadeinduration" | "setfadeoutduration") => p.on,
                 // A smoke stack's shape (particles_and_smoke.md 3.6): kept
                 // as placed (tech-debt).
                 (PartKind::SmokeStack, "jetlength" | "spreadspeed" | "speed" | "rate") => p.on,
