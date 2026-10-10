@@ -308,6 +308,8 @@ Only `Reflect`-registered types are visible; register new core components in
   by hitgroup, where shots test them (e.g. `+bot_stop 1 +bot_add 2
   +mashup_drawhitboxes 1` with `--screenshot` to check they follow the
   animated body).
+- `mashup_debughud 1` shows the top-left debug readout (movement mode,
+  speed, ground/crouch state and the debug keys); off by default.
 - `mashup_drawphys 1` outlines physics props by state (green moving,
   blue asleep, grey still or frozen; multiplayer props darker) and
   players' physics shadows (white, a yellow line to each prop the shadow

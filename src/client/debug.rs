@@ -27,12 +27,19 @@ impl Plugin for DebugPlugin {
         ))
         .init_resource::<DrawHitboxes>()
         .init_resource::<DrawPhys>()
+        .init_resource::<DebugHudOn>()
         .add_systems(Startup, (spawn_hud, hide_physics_gizmos, egui_takes_its_input, spawn_ui_camera))
         .add_systems(Update, (keys, update_hud, draw_hitboxes, draw_phys));
         crate::console::resource_cvar::<DrawHitboxes, u8>(
             app,
             "mashup_drawhitboxes",
             "1: outline characters' hitboxes (head red, chest yellow, stomach green, arms blue, legs cyan).",
+            |d| &mut d.0,
+        );
+        crate::console::resource_cvar::<DebugHudOn, u8>(
+            app,
+            "mashup_debughud",
+            "1: show the debug readout at the top left (movement, speed, ground, and the debug keys).",
             |d| &mut d.0,
         );
         crate::console::resource_cvar::<DrawPhys, u8>(
@@ -110,6 +117,10 @@ const UI_CAMERA_ORDER: isize = 100;
 
 #[derive(Resource, Default)]
 struct DrawPhys(u8);
+
+/// `mashup_debughud`: the top-left debug readout (off by default).
+#[derive(Resource, Default)]
+struct DebugHudOn(u8);
 
 /// A physics prop's state for `mashup_drawphys`.
 fn prop_state(rb: &RigidBody, sleeping: bool, asleep_since_spawn: bool) -> &'static str {
@@ -259,6 +270,7 @@ fn update_hud(
     mut hud: Single<&mut Text, With<DebugHud>>,
     player: Single<(&MovementSlot, &Velocity, &MovementState, &GlobalTransform), With<LocalPlayer>>,
     phys: Res<DrawPhys>,
+    on: Res<DebugHudOn>,
     props: Query<(
         &crate::map::PhysicsProp,
         &RigidBody,
@@ -269,11 +281,15 @@ fn update_hud(
 ) {
     let (slot, vel, state, at) = *player;
     let speed = Vec2::new(vel.x, vel.z).length();
-    let mut text = format!(
-        "movement: {}\nspeed: {speed:.2} m/s  vertical: {:.2}\nground: {}  crouch: {}  sprint: {}\n\n\
-         click: capture mouse  esc: menu\nV: noclip  F1: inspector  F2: debug UI  F3: collision",
-        slot.0, vel.y, state.on_ground, state.crouching, state.sprinting,
-    );
+    let mut text = if on.0 != 0 {
+        format!(
+            "movement: {}\nspeed: {speed:.2} m/s  vertical: {:.2}\nground: {}  crouch: {}  sprint: {}\n\n\
+             click: capture mouse  esc: menu\nV: noclip  F1: inspector  F2: debug UI  F3: collision",
+            slot.0, vel.y, state.on_ground, state.crouching, state.sprinting,
+        )
+    } else {
+        String::new()
+    };
     if phys.0 != 0 {
         // The physics props nearest the player.
         let me = at.translation();
