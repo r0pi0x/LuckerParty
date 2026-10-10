@@ -94,8 +94,8 @@ pub(super) fn draw(
         commands.entity(e).despawn();
     }
     // Dialogs hide the menu under them: drawn over the main menu's
-    // picture, or in a game over black (the darkened game can't be drawn
-    // again under them).
+    // picture, or in a game over the world drawn again, dimmed
+    // (`world_behind_dialogs`; black until its picture is ready).
     let backing = match (menu.open, menu.in_game) {
         (false, _) => None,
         (true, false) => menu_ui
@@ -103,7 +103,7 @@ pub(super) fn draw(
             .and_then(|u| u.background_sized(size))
             .map(|(image, image_size)| widgets::Backing::Picture(image, image_size))
             .or(Some(widgets::Backing::Color(Color::BLACK))),
-        (true, true) => Some(widgets::Backing::Color(Color::BLACK)),
+        (true, true) => Some(widgets::Backing::World(Color::BLACK)),
     };
     if let Some(mut b) = frame_backing {
         b.set_if_neq(widgets::FrameBacking(backing));

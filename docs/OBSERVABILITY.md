@@ -276,6 +276,13 @@ Only `Reflect`-registered types are visible; register new core components in
   watches one; pressing duck opens the spectator menu; the scoreboard lists
   spectators (`tests/it/spectate.rs::the_spectator_team`, over the
   network `tests/it/net_rules.rs::a_client_spectates_then_joins_a_team`).
+  `spec_menuinput <options|players|view> [entry [subentry]]` opens the
+  spectator menu's drop-down (screenshots) or picks an entry (0 first):
+  `--map cs_source:de_dust2 --window 1280x720 --frames 400 --screenshot
+  s.png +wait 30 +bot_add 1 +bot_add 2 +spectate +wait 120 +overview_mode 1
+  +spec_menuinput options 2` shows Options with its Overview submenu over
+  the small map (`overview_mode 2`, `overview_zoom 2`: the large one);
+  `tests/it/spectate.rs::the_spectator_menu_picks_the_camera_player_and_overview`.
 - Scoreboard: `++showscores` holds it from the start (`--map
   cs_source:de_dust2 --window 1280x720 --screenshot sb.png +bot_add 1
   +bot_add 2 ++showscores`); a dead player shows the skull icon,
@@ -899,6 +906,7 @@ cargo run --bin dump -- cs_source                      # counts and sizes by typ
 cargo run --bin dump -- cs_source --list --filter de_dust2
 cargo run --bin dump -- cs_source --filter materials/de_dust --extract
 cargo run --bin dump -- cs_source --sequences models/weapons/v_rif_ak47.mdl  # bones, sequences, activities
+cargo run --bin dump -- cs_source --lods models/props   # each model's LODs: switch point:triangles
 cargo run --bin dump -- combat_arms --archives         # per-archive title, entropy, file count
 cargo run --bin dump -- combat_arms --list --filter worlds2
 cargo run --bin dump -- combat_arms --filter worlds2/warehouse.dat --extract

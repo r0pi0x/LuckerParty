@@ -326,3 +326,73 @@ fn a_network_clients_freeze_cam_finds_its_killer() {
     let ok = sim.until(600, |s| phase(s) == SpecPhase::Watching);
     assert!(ok, "{:?}", phase(&sim));
 }
+
+/// The spectator menu (CS:S's bottom bar: Options, the players, the
+/// camera) driven as clicks would: the camera list sets the mode, the
+/// players list who is watched, `<` `>` step, and Options > Overview and
+/// Settings set the overview's cvars (toggles flip theirs).
+#[test]
+fn the_spectator_menu_picks_the_camera_player_and_overview() {
+    use mashup::client::{
+        overview::{OverviewSettings, OverviewStatePlugin},
+        spectator_menu::{SpectatorMenu, SpectatorMenuPlugin},
+    };
+    let mut sim = Sim::with(|app| {
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .add_plugins((SpectateStatePlugin, SpectatorMenuPlugin, OverviewStatePlugin));
+    });
+    let add = |sim: &mut Sim, x: f32, team: u8, name: &str| {
+        let e = sim.spawn_character(Vec3::new(x, 1.0, 0.0), placeholder::ID);
+        sim.app.world_mut().entity_mut(e).insert((Team(team), Name::new(name.to_string())));
+        e
+    };
+    let me = add(&mut sim, 0.0, 2, "Player");
+    sim.app.world_mut().entity_mut(me).insert(LocalPlayer);
+    add(&mut sim, 3.0, 2, "Bot 1");
+    add(&mut sim, -2.0, 1, "Bot 2");
+    console(&mut sim, "spectate");
+    sim.ticks(2);
+    assert_eq!(spec(&sim).effective_mode(), SpecMode::Roaming);
+    // Without a map overview its entries are greyed: none here.
+    console(&mut sim, "spec_menuinput options 2 1");
+    sim.ticks(2);
+    assert_eq!(sim.app.world().resource::<OverviewSettings>().mode, 0, "no overview to show");
+    sim.app.insert_resource(mashup::map::hud::ActiveOverview(
+        mashup::map::hud::MapOverview {
+            texture: 0,
+            origin: Vec2::splat(-20.0),
+            meters_per_pixel: 0.04,
+            rotate: false,
+            size: Vec2::splat(1024.0),
+        },
+        Handle::default(),
+    ));
+
+    // The camera list: its second entry is the chase camera
+    // (spectatormodes.res's order, ours without the install).
+    console(&mut sim, "spec_menuinput view 1");
+    sim.ticks(2);
+    assert!(sim.app.world().resource::<SpectatorMenu>().0, "open");
+    assert_eq!(spec(&sim).mode, SpecMode::Chase);
+    // The players list: the second one watched; `>` steps on.
+    console(&mut sim, "spec_menuinput players 1");
+    sim.ticks(2);
+    let s = spec(&sim);
+    assert_eq!(s.target, Some(s.watchable[1]));
+    // Options > Overview > Small Map, Zoom In; Settings > Show Names off.
+    console(&mut sim, "spec_menuinput options 2 1");
+    sim.ticks(2);
+    console(&mut sim, "spec_menuinput options 2 3");
+    sim.ticks(2);
+    console(&mut sim, "spec_menuinput options 1 1");
+    sim.ticks(2);
+    let o = *sim.app.world().resource::<OverviewSettings>();
+    assert_eq!(o.mode, 1, "small map");
+    assert!(o.zoom_to > 1.05, "zoomed in: {}", o.zoom_to);
+    assert_eq!(o.names, 0, "Show Names was on: off");
+    // Close.
+    console(&mut sim, "spec_menuinput options 0");
+    sim.ticks(3);
+    assert!(!sim.app.world().resource::<SpectatorMenu>().0);
+}

@@ -415,6 +415,16 @@ fn bots_and_team_pages_run_their_commands() {
     m.set_counts([0, 0], [3, 1]);
     click(&mut m, MainItem::Team);
     assert_eq!(press(&mut m, &[Input::Click(Target::Row(2), 0)]).lines, ["jointeam 3"]);
+
+    // Spectate, as CS:S's team menu; greyed when the server refuses
+    // spectators (`mp_allowspectators 0`).
+    let mut m = menu();
+    click(&mut m, MainItem::Team);
+    assert_eq!(press(&mut m, &[Input::Click(Target::Row(3), 0)]).lines, ["jointeam 1"]);
+    let mut m = menu();
+    m.no_spectators = true;
+    click(&mut m, MainItem::Team);
+    assert!(press(&mut m, &[Input::Click(Target::Row(3), 0)]).lines.is_empty(), "greyed");
 }
 
 /// Create Server driven as CS:S's: the map from its drop-down, bots
