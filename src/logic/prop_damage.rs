@@ -110,7 +110,7 @@ pub struct Prop {
 /// as physics props do: specs/source/physics_brushes.md 2).
 pub fn is_prop_class(classname: &str) -> bool {
     let c = classname.to_ascii_lowercase();
-    c.starts_with("prop_dynamic") || c.starts_with("prop_physics") || is_physbox(&c)
+    c.starts_with("prop_dynamic") || c.starts_with("prop_physics") || c == "prop_ragdoll" || is_physbox(&c)
 }
 
 /// func_physbox and func_physbox_multiplayer.
@@ -762,6 +762,11 @@ pub(super) fn prop_input(w: &mut LogicWorld, id: EntId, input: &str, value: &Val
                 motion: Motion::Disable,
             });
         }
+        // A map ragdoll (physics_brushes.md 6): its bodies aren't
+        // simulated, so motion inputs do nothing; FadeAndRemove removes it
+        // (at once: its fade isn't drawn).
+        "enablemotion" | "disablemotion" | "startragdollboogie" => {}
+        "fadeandremove" => w.kill(id),
         "enable" | "turnon" => prop(w, id).unwrap().visible = true,
         "disable" | "turnoff" => prop(w, id).unwrap().visible = false,
         "enablecollision" => prop(w, id).unwrap().solid = true,

@@ -346,6 +346,7 @@ fn restored_prop_contacts_join_islands_once() {
         ..default()
     });
     data.props.push(MapProp {
+        pose: None,
         model: 0,
         translation: to_engine(Vec3::new(300.0, 0.0, 0.0)),
         rotation: Quat::IDENTITY,

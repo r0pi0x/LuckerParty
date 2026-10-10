@@ -1160,6 +1160,11 @@ impl LightProbe {
 pub struct MapProp {
     /// Index into `MapData::models`.
     pub model: usize,
+    /// A fixed pose of its skeleton (each bone's local rotation and
+    /// position, the model's frames and units): a map-placed ragdoll
+    /// (prop_ragdoll) drawn as it lies. None: the reference pose, or its
+    /// animations.
+    pub pose: Option<Arc<Vec<(Quat, Vec3)>>>,
     pub translation: Vec3,
     pub rotation: Quat,
     pub solid: PropSolid,
@@ -3581,12 +3586,17 @@ fn spawn_map(
         let mut inverse_bindposes = None;
         if let (Some(rig), Some(bindposes)) = (rig, bindposes.as_mut()) {
             let root = commands.spawn((rig.root, Visibility::Inherited, ChildOf(id))).id();
-            for b in &rig.bones {
+            for (i, b) in rig.bones.iter().enumerate() {
                 let parent = b.parent.and_then(|p| joints.get(p).copied()).unwrap_or(root);
+                let (rotation, position) = prop
+                    .pose
+                    .as_ref()
+                    .and_then(|pose| pose.get(i).copied())
+                    .unwrap_or((b.rotation, b.position));
                 joints.push(
                     commands
                         .spawn((
-                            Transform::from_translation(b.position).with_rotation(b.rotation),
+                            Transform::from_translation(position).with_rotation(rotation),
                             Visibility::Inherited,
                             ChildOf(parent),
                         ))
@@ -3737,7 +3747,8 @@ fn spawn_map(
                 mesh_bodies: model.meshes.iter().map(|m| m.body).collect(),
                 shown: (prop.skin, prop.body),
             });
-            if let Some(rig) = rig.filter(|_| !joints.is_empty()) {
+            // A posed ragdoll keeps its pose (no animation).
+            if let Some(rig) = rig.filter(|_| !joints.is_empty() && prop.pose.is_none()) {
                 commands.entity(id).insert(PropRig {
                     animator: anim::Animator::new(rig.animations.clone()),
                     joints,

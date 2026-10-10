@@ -410,6 +410,19 @@ fn material_effects() {
             "a scrolling base texture"
         );
     }
+    // prop_ragdoll (physics_brushes.md 6) is drawn: without Hammer's pose
+    // it lies on the floor below it (not simulated).
+    if let Some(map) = load("gg_deagle7k") {
+        let ragdoll = map.entities.iter().position(|e| e.classname() == "prop_ragdoll");
+        let prop = map
+            .props
+            .iter()
+            .find(|p| p.entity.is_some() && p.entity == ragdoll)
+            .expect("drawn");
+        assert!(map.models[prop.model].rig.is_some());
+        // Its up (model +Z, engine +Y) lies flat.
+        assert!((prop.rotation * Vec3::Y).y.abs() < 1e-3, "{:?}", prop.rotation);
+    }
     if let Some(map) = load("surf_demise") {
         if let Some(bone) = meshes(&map).find(|m| m.material.contains("bonecolor")) {
             assert_eq!(bone.detail.map(|d| d.mode), Some(DetailMode::Source(8)));
