@@ -139,8 +139,13 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   at the blocks room).
 
 - The user's ~89 community maps (surf_, bhop_, kz_, gg_, mg_): swept with
-  `mapsweep` ([plans/active/community-maps.md](plans/active/community-maps.md),
-  results and what's left, ranked).
+  `mapsweep` and their map logic audited with `mapsweep --audit`
+  ([plans/active/community-maps.md](plans/active/community-maps.md),
+  results and what's left, ranked). Top of what's left: boats don't
+  float (no water buoyancy: mg_boatrace_scramble, mg_creative's boats),
+  players parented to karts (SetParent on players: mg_crazykart_v1_1),
+  players' render inputs (alpha/colour: invisibility power-ups), particle
+  systems and sprite trails.
 
 ## 2b. HUD and debug views
 

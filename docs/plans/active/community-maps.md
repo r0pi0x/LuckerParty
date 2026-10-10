@@ -166,6 +166,72 @@ entities before, 36 / 684 after; no map lost its load. Left of the four
 specs: prop_ragdoll (6 maps), env_spritetrail (8), strike-generator
 env_beams, parented (dynamic) spotlights and their dynamic light.
 
+## Map logic audit (2026-10-10)
+
+The user saw "a lot of broken features with entities and map logic".
+`mapsweep --audit` (`logic::audit`, docs/OBSERVABILITY.md) checks every
+output connection of the 89 maps against what the logic handles and runs
+a scripted player through every trigger and +use at every door and button,
+then a round restart. Raw output stays in `target/mapsweep/{before,after}/`
+(`audit.md`, `audit.txt`). Totals (89 maps, 20487 output connections):
+
+| | Before | After |
+|---|---|---|
+| Connections to inputs the target's class doesn't handle | 2856 (96 kinds) | 1578 (58 kinds) |
+| Connections to targets that match nothing | 46 | 46 (map bugs: the names exist nowhere) |
+| Entity classes nothing handles | 36 classes / 684 entities | 30 / 592 |
+| Children of movers left where they spawned | 440 (28 classes, 20 maps) | 0 |
+| Movers that jumped to their goal in one tick | (the before run counted round restarts too) | 0 |
+| Movers told to move that didn't | 0 | 0 |
+| Complaints the scripted runs logged | 2445 | 2096 |
+| Panics | 0 | 0 |
+
+Fixed, by maps affected (tests in `src/logic/community_tests.rs`,
+`logic::audit::tests`, `map::copies::tests`, `games::cs_source::sound`):
+
+| Problem | Maps | Fix |
+|---|---|---|
+| Entities parented to a mover stayed where they spawned: triggers on lifts and trains (teleports, hurts, pushes), teleport destinations, doors, buttons and fans on movers, path_tracks, sprites | 20 (440 entities) | `logic::anchors` links every child of a mover (and of placed weapons, physics brushes) and carries it each tick; mover children keep their own motion in the parent's frame (translation) and carry its velocity for riders |
+| Movers parented to anything were baked into the world (no node: func_rotating.Start, func_door.Open did nothing visible) | 5 | Mover classes always get a node (`cs_source::bsp::brush_entities`) |
+| SetSpeed 0 on a moving func_movelinear snapped it to its goal (lifts teleported) | 1 (120 connections) | A speed-0 move holds with its goal kept (`movers::Pusher::move_to`) |
+| Physics objects never touched triggers (spawnflag 8/64: boats on boosters and finish lines, karts) | 11+ maps have such triggers | `LogicWorld::touch_bodies`: physics props and func_physbox by their collider boxes; trigger_push impulses (`Effect::BodyVelocity`), trigger_teleport (`Effect::BodyTeleport`) |
+| AddOutput classname on players ignored (kz_/bhop_ stage marks for filter_activator_class) | 3 | `LogicWorld::player_classes`; AddOutput classname on entities renames them for filters |
+| AddOutput maxspeed, force, message, weapon_* on func_rotating, phys_thruster, ambient_generic, game_player_equip did nothing | 3 | Applied (`classes::class_keyvalue`; added sounds are loaded with the map) |
+| Color on brushes (selector buttons turning red once taken) | 3 | `map::tint` (rendercolor at load too) |
+| func_rot_button, momentary_rot_button, logic_measure_movement, point_teleport, logic_multicompare, env_shake unhandled | 1-3 each | `movers` (rotating buttons) and `logic::community` |
+| ForceSpawn of a template holding a func_physbox hung the game and filled memory (mg_creative_multigames_v8_ns's boats; found playing it) | 1+ | `map::copies::copy_node` no longer follows a body's own collider list |
+
+Play-check (live, windowed; `ent_dump` over the remote console,
+screenshots in this session's `target/playcheck/`):
+
+| Map | Mechanism | Result |
+|---|---|---|
+| mg_swag_multigames_v1 | Lifts (func_movelinear with SetSpeed 0 stops, a trigger_teleport parented to each) | Lifts stop between floors and go on; their teleports ride with them |
+| mg_lego_multigames_v2 | Minigame selector button (+use) | Pressed and locked; the spawn teleports retargeted (AddOutput target), the case picks |
+| mg_creative_multigames_v8_ns | Mode buttons; boat spawners | Buttons yellow -> red when taken; boats spawn (hung before) |
+| kz_bhop_izanami | Fall teleports filtered by name/class | A fall in a stage lands on its checkpoint |
+| mg_lt_galaxy_v5 | point_teleport moving a spinning 3D-skybox brush, weapon relays | Moves and keeps spinning; the scout relay equips |
+| mg_boatrace_scramble | Boats driven by thrusters through boost triggers | Fails: boats sit on the pool floor (no water buoyancy), thrust can't move them; triggers are ready for them |
+
+What still fails, ranked by maps affected (after):
+
+1. Visual entities not drawn: env_spritetrail (8 maps), info_particle_system
+   (7; its Start/Stop inputs on 2), env_smokestack (3), prop_ragdoll (6).
+2. Players' render inputs (rendermode/renderamt/rendercolor, Alpha, Color on
+   `!activator`: invisibility and team colours, 4 maps); brush Alpha.
+3. Physics: no water buoyancy (boats: mg_boatrace_scramble,
+   mg_creative_multigames_v8_ns), phys_motor (2), phys_constraint and
+   ballsocket (2), point_push (1).
+4. Players parented to things (SetParent/SetParentAttachment on players:
+   mg_crazykart_v1_1's karts), entities SetParent at run time (2 maps).
+5. Classes left: func_monitor/point_camera (2), point_tesla (2),
+   env_shooter (2), func_tanktrain (2), env_texturetoggle (1, 1056
+   connections), env_screenoverlay (1), func_water_analog (5: moving water),
+   func_reflective_glass, env_viewpunch.
+6. Noise rather than breakage: triggers naming a filter that doesn't exist
+   (5 maps, the game lets everyone through, as we do), `sm_say`/`ma_say`
+   plugin commands refused, VScript inputs (`RunScriptCode`, CS:GO only).
+
 ## Left, ranked by maps affected
 
 Generic, by maps affected (counts from the sweep after the fixes):
@@ -173,10 +239,12 @@ Generic, by maps affected (counts from the sweep after the fixes):
 1. **Visual entities not drawn**: env_spritetrail (8 maps),
    info_particle_system (7), env_smokestack (3), strike env_beams;
    prop_ragdoll (6) isn't placed (physics_brushes.md 6).
-2. **Unspecced classes**: logic_measure_movement (3 maps, 39),
-   func_rot_button, momentary_rot_button, phys_motor, phys_constraint/
-   ballsocket, point_teleport, point_push, env_texturetoggle,
-   env_screenoverlay, func_water_analog.
+2. **Unspecced classes** (logic_measure_movement, func_rot_button,
+   momentary_rot_button, point_teleport, logic_multicompare and env_shake
+   are in since the map logic audit, above): phys_motor,
+   phys_constraint/ballsocket, point_push, env_texturetoggle,
+   env_screenoverlay, func_water_analog, func_monitor/point_camera,
+   point_tesla, env_shooter.
 3. **env_tonemap_controller inputs** (15 maps: SetBloomScale,
    SetAutoExposureMin/Max): HDR look, logic logs them unhandled.
 4. **Triggers whose filtername names a missing filter** (5 maps, 341
