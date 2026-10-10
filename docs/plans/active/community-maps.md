@@ -642,6 +642,12 @@ Working down the course flows' list and the round-2 leftovers.
 | Monitors drew the map's fog | point_camera on mg_kommando, mg_lt_galaxy_v5 (fog off on both) | The camera's own fogEnable/fogColor/fogStart/fogEnd/fogMaxDensity (`LogicWorld::monitor_fog` -> `MonitorFog` -> the screen camera's `DistanceFog`, read by `fog.wgsl` as the view's fog; `community_tests::monitor_camera_fog_is_the_cameras_own`; test_hardware's monitors checked live, `monitors.png`) |
 | Bots stood on spawns and teleport destinations on maps without a navigation mesh | the 83 cached maps without one (6 pack a mesh) | `bot::aside`: they step off spawns and teleport destinations and out of teleport triggers to a clear spot within 320 units and wait; the console says once that the map has no mesh (`bot_nav::bots_stand_aside_without_a_nav_mesh` on bhop_flatzone). Full minigame AI stays out of scope |
 
+`mapsweep --audit` after (with round 3 merged): as round 3 left it, 22
+connections to inputs their class lacks (map mistakes), 46 to missing
+targets, 1 unhandled class (1 entity), 18 run-time complaints, 129 notes,
+0 movers failing; env_detail_controller and env_wind stay noted
+classes, their notes now saying the loader reads them.
+
 Course flows after (72 maps): every step passes; items 3309 -> 3330
 (of 4199 -> 4201; surf_botanica 177 -> 193 of 261, surf_nsz_fix 59 of
 64 -> 63 of 66, surf_sacrifice 61 -> 62: triggers the solid prop meshes

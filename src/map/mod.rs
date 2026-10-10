@@ -1203,6 +1203,9 @@ pub struct MapProp {
     pub skin: i32,
     /// Its body number (`MapModel::body_choice`).
     pub body: i32,
+    /// A detail model (the map's detail props: grass and bushes drawn as
+    /// models), not one of its static props.
+    pub detail: bool,
 }
 
 /// A physics prop's body (specs/cs_source/physics_props.md 3, 4).

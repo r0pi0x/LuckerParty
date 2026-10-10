@@ -276,7 +276,7 @@ fn detail_props_load() {
     let bushes = map
         .props
         .iter()
-        .filter(|p| p.fade == fade && p.solid == mashup::map::PropSolid::None && p.entity.is_none())
+        .filter(|p| p.detail && p.fade == fade && p.solid == mashup::map::PropSolid::None)
         .count();
     assert_eq!(bushes, 53, "its 53 detail bushes");
 }

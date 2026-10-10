@@ -784,6 +784,8 @@ struct PropPlacement {
     /// Its index in the static prop lump (static props): names its baked
     /// per-vertex light (`vhv::names`).
     static_index: Option<usize>,
+    /// A detail model (`detail`).
+    detail: bool,
 }
 
 pub fn add_static_props(
@@ -832,6 +834,7 @@ pub fn add_static_props(
             animated: false,
             enable_threshold: false,
             static_index: Some(static_index),
+            detail: false,
         });
     }
     // Detail models (`detail`): drawn like static props without
@@ -863,6 +866,7 @@ pub fn add_static_props(
             animated: false,
             enable_threshold: false,
             static_index: None,
+            detail: true,
         });
     }
     placements.extend(entity_props(bsp));
@@ -1008,6 +1012,7 @@ fn entity_props(bsp: &Bsp) -> Vec<PropPlacement> {
                         .is_some_and(|v| v > 0.0)
                 }),
                 static_index: None,
+                detail: false,
             })
         })
         .collect()
@@ -1063,6 +1068,7 @@ fn fish_pool_props(bsp: &Bsp) -> Vec<PropPlacement> {
                 animated: true,
                 enable_threshold: false,
                 static_index: None,
+                detail: false,
             });
         }
     }
@@ -1453,6 +1459,7 @@ fn place_props(
             entity: prop.entity,
             skin: prop.skin,
             body: prop.body,
+            detail: prop.detail,
         });
     }
     failed.sort();

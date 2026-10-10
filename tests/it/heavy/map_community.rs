@@ -211,7 +211,8 @@ fn first_hit(map: &MapData, o: Vec3, d: Vec3) -> Option<(f32, Vec3)> {
 fn baked_prop_vertex_light() {
     for name in ["mg_lt_galaxy_v5", "surf_nebula", "kz_ancient_ruins", "surf_demise"] {
         let Some(map) = load(name) else { continue };
-        let statics: Vec<_> = map.props.iter().filter(|p| p.entity.is_none()).collect();
+        // (Detail models aren't static props: no baked light of their own.)
+        let statics: Vec<_> = map.props.iter().filter(|p| p.entity.is_none() && !p.detail).collect();
         let baked: Vec<_> = statics.iter().filter(|p| p.vertex_light.is_some()).collect();
         // Per prop: the mean baked light over the mean probe light, per
         // channel; the median of each.

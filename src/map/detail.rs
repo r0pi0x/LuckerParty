@@ -182,6 +182,7 @@ pub fn material(props: &MapDetailProps, texture: Handle<Image>, fog: FogUniform)
 
 /// Spawn the map's detail sprites under `parent`; `tag` adds the
 /// visibility clusters of a cell's bounds.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
