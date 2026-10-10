@@ -989,7 +989,12 @@ question 3), chained destinations. `MASHUP_FLOW_TABLE=1 cargo test
 trigger's check (brushes, links, velocity before and after the
 movement and the logic). `heavy::map_surf` rides every open ramp of the
 cached surf maps (`MASHUP_SURF_MAPS=surf_a,surf_b` for some,
-`MASHUP_SURF_DEBUG=1` to list what the hull is near at each stop).
+`MASHUP_SURF_DEBUG=1` to list what the hull is near at each stop;
+`MASHUP_SLIDE_DEBUG=1`, read by the CS:S movement itself, prints every
+slide move's sweeps: position, velocity, fraction, start solid, the plane
+hit and whether it was a brush with its own surface or a physics
+collider, and when a full move's end tests solid, whether a brush did it.
+The lines just before a stop are its tick's).
 
 ## 6. Comparing with the real game (refcmp)
 

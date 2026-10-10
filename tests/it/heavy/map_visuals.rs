@@ -254,3 +254,29 @@ fn de_aztec_soundscapes_follow_the_touch_code() {
         "inside trigger {index}: {touches:?}"
     );
 }
+
+/// Detail props (the BSP's detail lump): cs_militia's grass, 3025 "cross"
+/// sprites (two blades each) and 8819 "tri" ones (three), fading out over
+/// its env_detail_controller's 800-1024 units; de_inferno's detail bushes
+/// are models, drawn as non-solid props with its controller's fade.
+#[test]
+fn detail_props_load() {
+    let Some(map) = load("cs_militia") else { return };
+    let d = map.detail_props.as_ref().expect("cs_militia detail sprites");
+    assert_eq!(d.quads.len(), 3025 * 2 + 8819 * 3);
+    assert_eq!(d.fade, Some((800.0 * 0.0254, 1024.0 * 0.0254)));
+    assert!(d.quads.iter().all(|q| q.billboard.is_none()), "shapes are fixed blades");
+    assert!(d.quads.iter().any(|q| q.sway > 0.0));
+    // Lit: the sprites take their baked light, not black.
+    assert!(d.quads.iter().filter(|q| q.light.iter().any(|c| *c > 0.05)).count() * 2 > d.quads.len());
+    assert!(!mashup::map::detail::cell_meshes(d).is_empty());
+    let Some(map) = load("de_inferno") else { return };
+    assert!(map.detail_props.is_none(), "models only");
+    let fade = Some((1024.0 * 0.0254, 1536.0 * 0.0254));
+    let bushes = map
+        .props
+        .iter()
+        .filter(|p| p.fade == fade && p.solid == mashup::map::PropSolid::None && p.entity.is_none())
+        .count();
+    assert_eq!(bushes, 53, "its 53 detail bushes");
+}

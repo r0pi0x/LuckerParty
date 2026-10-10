@@ -35,6 +35,7 @@ pub mod copies;
 pub use breakables::{
     BreakProp, BrushPanes, FallingPane, GlassImpact, GlassShatter, MapBreak, MapBreakPiece, PanePart, SpawnGibs,
 };
+pub mod detail;
 mod dust;
 pub mod hud;
 pub mod interp;
@@ -1307,6 +1308,8 @@ pub struct MapData {
     /// The world's fog (not the 3D skybox's, which `sky_camera` has).
     pub fog: Option<MapFog>,
     pub sprites: Vec<MapSprite>,
+    /// Detail props' sprites (grass, weeds): `detail`.
+    pub detail_props: Option<MapDetailProps>,
     pub dust: Vec<MapDust>,
     /// Steam jets (env_steam).
     pub steam: Vec<steam::MapSteam>,
@@ -1509,6 +1512,48 @@ pub struct MapDust {
     pub entity: Option<usize>,
     /// Spawning motes at map start.
     pub start_on: bool,
+}
+
+/// A map's detail sprites (Source detail props: grass and weeds over its
+/// ground), drawn by `detail` in a few merged meshes.
+#[derive(Clone, Debug)]
+pub struct MapDetailProps {
+    /// The sprite sheet, index into `MapData::textures`.
+    pub texture: usize,
+    pub quads: Vec<DetailQuad>,
+    /// Fade distances (start, gone), meters, when the map sets its own
+    /// (env_detail_controller); None: `detail::DEFAULT_FADE`.
+    pub fade: Option<(f32, f32)>,
+    /// The wind they sway in (env_wind): horizontal direction (engine) and
+    /// speed (m/s); None: still.
+    pub wind: Option<(Vec3, f32)>,
+}
+
+/// One detail sprite quad.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DetailQuad {
+    /// Engine space; the quad's foot.
+    pub origin: Vec3,
+    /// Corners from `origin` (bottom-left, top-left, top-right,
+    /// bottom-right), meters; unused for billboards.
+    pub corners: [Vec3; 4],
+    /// Facing the view instead of fixed corners.
+    pub billboard: Option<DetailBillboard>,
+    /// Texture coordinates of the four corners.
+    pub uv: [Vec2; 4],
+    /// Its baked light, linear lightmap units.
+    pub light: [f32; 3],
+    /// How much its top sways (0-1).
+    pub sway: f32,
+}
+
+/// A detail sprite facing the view: its rectangle (across, up) from the
+/// origin, meters; `vertical` turns only about the vertical axis.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DetailBillboard {
+    pub vertical: bool,
+    pub lo: Vec2,
+    pub hi: Vec2,
 }
 
 /// A camera-facing sprite (lamp glows): a quad parallel to the view plane,
@@ -2155,6 +2200,7 @@ fn spawn_map(
     mut water_materials: Option<ResMut<Assets<water::WaterMaterial>>>,
     mut bindposes: Option<ResMut<Assets<bevy::mesh::skinning::SkinnedMeshInverseBindposes>>>,
     mut beam_materials: Option<ResMut<Assets<beams::BeamMaterial>>>,
+    mut detail_materials: Option<ResMut<Assets<detail::DetailMaterial>>>,
 ) {
     let data = &pending.0;
     let view = pending.1;
@@ -2977,6 +3023,21 @@ fn spawn_map(
                 .collect();
         }
 
+        if view == MapDebugView::Normal
+            && let Some(props) = &data.detail_props
+            && let Some(detail_materials) = detail_materials.as_mut()
+        {
+            detail::spawn(
+                &mut commands,
+                meshes,
+                detail_materials,
+                props,
+                textures[props.texture].clone(),
+                fog::world_fog(data.fog.as_ref()),
+                statics,
+                |e, lo, hi| tag(e, visibility.map(|v| vis::box_clusters(v, lo, hi)).unwrap_or_default()),
+            );
+        }
         if view == MapDebugView::Normal {
             for (i, dust) in data.dust.iter().enumerate() {
                 let mesh = meshes.add(dust::empty_mesh());

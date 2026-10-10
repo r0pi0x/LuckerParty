@@ -458,3 +458,47 @@ fn probe_walk() {
         }
     }
 }
+
+/// Maps without a navigation mesh (most minigame and course maps): bots
+/// can't move around them, but step off the spawns and teleport
+/// destinations and out of teleport triggers instead of standing on them
+/// (bhop_flatzone ships no mesh). Skipped when the map isn't in the
+/// content cache.
+#[test]
+fn bots_stand_aside_without_a_nav_mesh() {
+    if !installed() {
+        return;
+    }
+    let Ok(map) = games::load_map("cs_source:bhop_flatzone") else {
+        eprintln!("skipping: bhop_flatzone not in the content cache");
+        return;
+    };
+    assert!(map.nav.is_none(), "bhop_flatzone ships no mesh");
+    let mut sim = Sim::new((MapPlugin::new(map), SourceMovementPlugin, CsWeaponsPlugin));
+    sim.set_tick_interval(TICK_INTERVAL);
+    sim.app.insert_resource(mashup::slots::Loadout { movement: movement::ID });
+    sim.ticks(2);
+    let bots: Vec<Entity> = (0..3)
+        .map(|_| mashup::bot::add_bot(sim.app.world_mut(), Team(2)).expect("bot"))
+        .collect();
+    let spawns: Vec<Vec3> = {
+        let w = sim.app.world_mut();
+        let mut q = w.query_filtered::<&Transform, With<mashup::core::SpawnPoint>>();
+        q.iter(w).map(|t| t.translation).collect()
+    };
+    let (spots, volumes) =
+        mashup::bot::aside::keep_clear(&spawns, sim.app.world().get_resource::<mashup::map::MapEntities>());
+    let starts: Vec<Vec3> = bots.iter().map(|b| feet(&sim, *b)).collect();
+    assert!(
+        starts.iter().any(|p| mashup::bot::aside::in_the_way(*p, &spots, &volumes)),
+        "bots start in the way"
+    );
+    sim.seconds(6.0);
+    for (b, start) in bots.iter().zip(&starts) {
+        let at = feet(&sim, *b);
+        assert!(
+            !mashup::bot::aside::in_the_way(at, &spots, &volumes),
+            "bot {b} still in the way at {at} (from {start})"
+        );
+    }
+}

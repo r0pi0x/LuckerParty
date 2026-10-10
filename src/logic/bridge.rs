@@ -1580,6 +1580,10 @@ fn sync_views(world: &mut World, logic: &Logic) {
             rotation_to_engine(entity_rotation(angles)) * Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2),
             fov,
         )
+    }), logic.world.monitor_fog().map(|f| crate::map::monitor::MonitorFog {
+        start: f.start * logic.scale,
+        end: f.end * logic.scale,
+        ..f
     }));
     if world.get_resource::<crate::map::monitor::MonitorCamera>() != Some(&monitor) {
         world.insert_resource(monitor);

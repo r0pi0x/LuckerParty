@@ -928,6 +928,40 @@ fn shooters_pushes_toggles_overlays_and_cameras() {
     assert!(!w.log.iter().any(|l| l.contains("unhandled")), "{:?}", w.log);
 }
 
+/// Monitors show a point_camera's own fog, not the map's: off unless it
+/// sets fogEnable, with its colour, range and max density.
+#[test]
+fn monitor_camera_fog_is_the_cameras_own() {
+    let mut w = world();
+    spawn(
+        &mut w,
+        &[
+            ("classname", "point_camera"),
+            ("targetname", "cam"),
+            ("fogEnable", "1"),
+            ("fogColor", "255 128 0"),
+            ("fogStart", "100"),
+            ("fogEnd", "900"),
+            ("fogMaxDensity", "0.5"),
+        ],
+    );
+    spawn(&mut w, &[("classname", "point_camera"), ("targetname", "plain")]);
+    spawn(
+        &mut w,
+        &[("classname", "func_monitor"), ("targetname", "mon"), ("target", "cam")],
+    );
+    w.activate();
+    let fog = w.monitor_fog().expect("a camera shows");
+    assert!(fog.enabled);
+    assert_eq!(fog.color, [1.0, 128.0 / 255.0, 0.0]);
+    assert_eq!((fog.start, fog.end, fog.max_density), (100.0, 900.0, 0.5));
+    w.queue_input("mon", "AddOutput", Value::Str("target plain".into()), 0.0, None);
+    run_to(&mut w, 2);
+    let fog = w.monitor_fog().expect("the plain camera shows");
+    assert!(!fog.enabled, "off by default");
+    assert_eq!((fog.start, fog.end, fog.max_density), (2048.0, 4096.0, 1.0));
+}
+
 #[test]
 fn point_push_and_tesla_think_while_on() {
     let mut w = world();

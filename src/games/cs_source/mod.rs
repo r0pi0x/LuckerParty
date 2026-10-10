@@ -6,6 +6,7 @@ pub mod beams;
 pub mod breakables;
 pub mod bsp;
 pub mod decals;
+pub mod detail;
 pub mod dust;
 pub mod fire;
 pub mod gameui;

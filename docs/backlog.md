@@ -186,9 +186,15 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   ragdolls (drawn, not simulated), players' and brushes' render looks,
   water buoyancy (boats), motors and constraints, players riding karts,
   monitors, teslas, shooters, point_push, texture toggles, screen
-  overlays; the audit's noise noted once per map. Top of what's left:
-  map ragdolls simulated, the remaining classes (env_embers, env_wind,
-  color_correction...), particle looks checked against CS:S.
+  overlays; the audit's noise noted once per map. Round 4 (2026-10-10,
+  to playtest): surf_nebula's dead ramp stops (static props without a
+  collision model block nothing), detail props (grass and weeds),
+  monitors with their camera's own fog, bots stepping aside on maps
+  without a navigation mesh. Top of what's left: map ragdolls simulated,
+  the remaining classes (env_embers, color_correction...), particle
+  looks checked against CS:S, and three probes on the reference server
+  (the plan's "Probes wanted": landing height, touch order of
+  overlapping triggers, static props without a collision model).
 
 ## 2b. HUD and debug views
 

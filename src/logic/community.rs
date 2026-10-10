@@ -185,6 +185,40 @@ impl LogicWorld {
     /// that is on and named by a shown func_monitor's target, with its
     /// origin, angles and field of view (entity space, degrees).
     pub fn monitor_camera(&self) -> Option<(Vec3, Vec3, f32)> {
+        let cam = self.active_monitor_camera()?;
+        let Some(Extra::Camera { fov, .. }) = extra(self, cam) else {
+            return None;
+        };
+        let (o, a) = self.parent_pose(Who::Ent(cam));
+        Some((o, a, *fov))
+    }
+
+    /// The fog of the camera monitors show (`monitor_camera`): its own
+    /// settings (public point_camera docs: fogEnable, fogColor, fogStart,
+    /// fogEnd, fogMaxDensity; defaults off, black, 2048, 4096, 1), not the
+    /// map's. Distances in entity units.
+    pub fn monitor_fog(&self) -> Option<crate::map::monitor::MonitorFog> {
+        let c = self.get(self.active_monitor_camera()?)?;
+        let num = |k: &str, d: f32| c.kv(k).map_or(d, super::value::atof);
+        let mut color = [0.0f32; 3];
+        for (slot, v) in color
+            .iter_mut()
+            .zip(c.kv("fogColor").unwrap_or("0 0 0").split_whitespace())
+        {
+            *slot = (super::value::atof(v) / 255.0).clamp(0.0, 1.0);
+        }
+        Some(crate::map::monitor::MonitorFog {
+            enabled: c.kv("fogEnable").is_some_and(|v| super::value::atoi(v) != 0),
+            color,
+            start: num("fogStart", 2048.0),
+            end: num("fogEnd", 4096.0),
+            max_density: num("fogMaxDensity", 1.0),
+        })
+    }
+
+    /// The point_camera monitors show: the first one that is on and named
+    /// by a shown func_monitor's target.
+    fn active_monitor_camera(&self) -> Option<EntId> {
         for id in self.ids() {
             let Some(e) = self.get(id) else { continue };
             if !e.classname.eq_ignore_ascii_case("func_monitor") {
@@ -198,12 +232,11 @@ impl LogicWorld {
             for cam in self.ids() {
                 let Some(c) = self.get(cam) else { continue };
                 if let Class::Extra(x) = &c.class
-                    && let Extra::Camera { on: true, fov } = **x
+                    && let Extra::Camera { on: true, .. } = **x
                     && !c.targetname.is_empty()
                     && super::world::name_matches(target, &c.targetname)
                 {
-                    let (o, a) = self.parent_pose(Who::Ent(cam));
-                    return Some((o, a, fov));
+                    return Some(cam);
                 }
             }
         }
