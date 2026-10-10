@@ -277,7 +277,12 @@ pub(super) fn spawn(w: &mut LogicWorld, id: EntId) -> Option<Ambient> {
         w.log.push(format!("ambient_generic: sentence '{}' is not supported (silent)", ambient.message));
     }
     if preset {
-        w.log.push("ambient_generic: presets are not supported (keys used instead)".into());
+        // The 27 GoldSrc preset rows aren't in our spec (sounds.md Open
+        // question 10): the entity's own keys play.
+        w.note(
+            "ambient_generic presets not applied (sounds.md Q10: the table isn't specified; its keys play)",
+            ambient.message.clone(),
+        );
     }
     Some(ambient)
 }

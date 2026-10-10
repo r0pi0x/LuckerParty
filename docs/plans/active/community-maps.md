@@ -415,6 +415,74 @@ What still fails, ranked by maps affected (after; `target/mapsweep/round2/audit.
    for the player's view; teslas and other effects inside a 3D skybox
    draw at their skybox place.
 
+## Map logic audit, round 3 (2026-10-10)
+
+Round 2's ranked list ("What still fails", above), top down (course
+flows on surf_/bhop_/kz_/gg_ maps were another session's). `mapsweep
+--audit` again over the 89 maps (raw output in this session's
+`target/mapsweep/round3/`; round 2's "after" is the "before" here):
+
+| | Before (round 2 after) | After |
+|---|---|---|
+| Connections to inputs the target's class doesn't handle | 31 (9 kinds) | 22 (5 kinds: map mistakes, below) |
+| Connections to targets that match nothing | 46 | 46 (the map's own) |
+| Entity classes nothing handles | 13 classes / 43 entities | 1 class / 1 entity (surf_happyhands' ambient_generic without a sound: removed, as the game does) |
+| Complaints the scripted runs logged | 103 (10 kinds) | 18 (7 kinds: map mistakes, sv_cheats/rcon refused) |
+| Notes (known, intended gaps, once per map) | 115 (7 kinds) | 129 (16 kinds) |
+| Usable brushes +use didn't find | 7 | 0 (5 visits where the map moves the player away, listed apart) |
+| Movers that didn't move / jumped / children left behind / panics | 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 |
+
+Fixed, by maps affected (tests: `tests/it/heavy/map_community.rs`
+`map_ragdolls_fall_and_take_shots`, `moving_water_follows_its_entity`,
+`visual_entities_load`; `tests/it/net_interp.rs`
+`map_ragdolls_are_drawn_as_the_server_simulates_them`;
+`tests/it/logic_physics.rs` (anchor, force limit); `src/logic/tests.rs`
+`use_reaches_a_usable_parent`, `water_analog_moves`;
+`src/logic/community_tests.rs`
+`view_punch_muzzle_flash_color_correction_and_noted_classes`;
+`map::color_correction`, `map::fish` unit tests):
+
+| Problem | Maps | Fix |
+|---|---|---|
+| Map ragdolls weren't simulated (drawn posed or lying) | 6 (10 ragdolls, all with a ragdoll `.phy`, all debris; none has a Hammer pose) | `map::placed_ragdoll`: the character ragdoll's bodies, joints, settling and repair from the first sequence at the entity's angles (or Hammer's pose); debris on the ragdoll layer: players pass, shots push the part they hit; 16384/65536, EnableMotion, DisableMotion, Wake; killed and remade at a round restart with the logic; parts sent to network clients (`net::ragdolls`, `NetRagdoll`) |
+| Usable brushes +use didn't find | 7 (3 maps) | None were +use's: crazykart's 5 stage buttons sit in the winner's room, whose triggers (trigger_hurt "hurt_spawn"/"hurt_all" around it) take the scripted player away before it presses (the flows test presses them as the winner); n64's spawn door is one func_door of four panels, and the audit aimed at the empty middle between them; the lego func_rotating is found now that the audit aims at one of its pieces. The audit now aims at a piece and lists "the map moved the player away" apart. Also fixed per doors_buttons.md: a hit brush that isn't usable tries its parent chain (`find_use`) |
+| Moving water stayed where it spawned | 3 (mg_jacks_multigames_v1's flood: up 635 units at 11/s; water parented to a spinning rotator on mg_3k_smash_lego_copter and to a door on mg_creative_multigames_v8_ns, whose surfaces were drawn at the world origin) | func_water_analog is a func_movelinear; its swim volume (`MapData::water_movers`, `water::move_water`) and surface (drawn under its node) follow the node, as water parented to a mover does: swimming, buoyancy, splashes and the under-water view all read the moved volume |
+| color_correction not applied | 2 (mg_lt_galaxy_v5, surf_demise) | `map::color_correction` (the pak's `.raw` 32³ tables, red fastest; weight by falloff distance, fades) blended into one 3D table; `client::color_correction` applies it after the tone map (`mat_colorcorrection`) |
+| env_embers not drawn | 2 (jacks' 6, 3 on; surf_stickybutt_alpha's shaft) | `emitters::EmbersEmitter` (TurnOn/TurnOff/Toggle) |
+| env_wind, env_detail_controller, info_ladder_dismount, propper_model, logic_script, ai_changetarget | 2, 3, 1, 1 (14), 1, 1 | Noted once per map (`classes::noted_class`), with their inputs: nothing to do in CS:S or nothing we draw (detail props aren't drawn; only kz_ancient_ruins has any) |
+| env_muzzleflash, env_viewpunch, func_fish_pool, info_constraint_anchor | 1 each (kommando, surreal, kommando, jacks) | Flash sprites on Fire; a view kick in its radius (`map::ViewKick`; its roll isn't kept); 20 goldfish swim about the pool (`map::fish`); constraints resolve an anchor's name to its parent's body (jacks' has no parent: inert, as in the game) |
+| Constraints never broke by force | 4 (the constraint maps) | Past forcelimit/torquelimit (avian's joint forces against the limit as a weight in the map's gravity) the joint goes, OnBreak fires (`controllers::JointBroke`) |
+| Monitors had no sky behind; skybox effects drawn tiny at their skybox place | monitors 2, skybox teslas 1 (galaxy's tower beams) | A monitor sky camera (2D sky and 3D skybox from the camera's place); particles outside the playable area go in a mesh on the sky camera's layer |
+| Player SetFogController (79 complaints), ambient_generic presets | 1, 2 | Noted: halloween's names no fog controller (nothing happens in the game either); the preset table isn't in sounds.md (Q10), the keys play |
+
+Play-check (live, windowed; screenshots in this session's
+`target/scratch/shots/`):
+
+| Map | Mechanism | Result |
+|---|---|---|
+| gg_deagle7k | prop_ragdoll (corpse, no pose) | Falls from its placed pose and lies spread on the floor (`deagle_ragdoll.png`) |
+| mg_jacks_multigames_v1 | `ent_fire water Open` | The flood rises up the lobby's steps (`jacks_flood_before.png`, `jacks_flood_after.png`) |
+| mg_lt_galaxy_v5 | color_correction | The station's reds go magenta, greys blue, the sun red and yellow; `mat_colorcorrection 0` shows the plain frame (`galaxy_cc_on.png`, `galaxy_cc_off.png`) |
+| surf_stickybutt_alpha | env_embers (pitch 90) | Cyan embers fall down the shaft (`stickybutt_embers.png`) |
+| mg_kommando | func_fish_pool | Goldfish swim in the pool (`kommando_fish.png`) |
+| mg_lt_galaxy_v5 | Monitors' sky, skybox tower teslas | Not seen: its point_camera is in a closed room (no sky to show), and the tower beams weren't on from where we looked; untested beyond the code |
+
+What still fails, ranked by maps affected (after; `target/mapsweep/round3/audit.md`):
+
+1. **Particle effects are interpretations** of the `.pcf` operators
+   (tech-debt row); embers' and muzzle flashes' looks are ours too.
+2. **Detail props aren't drawn** (kz_ancient_ruins' grass sprites; the
+   env_detail_controller and env_wind on the maps have nothing else to
+   act on).
+3. **Map mistakes the audit shows** (inputs CS:S entities don't have:
+   jacks' func_rotating AddOutput EntityTemplate, trigger_once and
+   env_soundscape PlaySound, func_breakable Open, math_counter Unlock;
+   AddOutput without a value; a track train without a path; a template
+   without members), sv_cheats/rcon refused on purpose.
+4. **Monitors** use the map's fog, not the point_camera's own keys; one
+   camera at a time.
+5. env_viewpunch's roll (surf_surreal's crash punch is all roll).
+
 ## Course flows (2026-10-10)
 
 The 30 surf_, bhop_ and kz_ maps and the 42 gg_ maps played through
@@ -564,14 +632,16 @@ What still blocks, by maps affected:
 
 Generic, by maps affected (counts from the sweep after the fixes):
 
-1. **Map ragdolls simulated** (6 maps; drawn posed or lying since
-   round 2) and strike-generator env_beams (visual_entities.md 4.2).
-2. **Classes still unhandled** (round 2's list, above): env_detail_controller,
-   env_embers, color_correction, env_wind, moving func_water_analog,
-   env_viewpunch, env_muzzleflash, func_fish_pool, info_constraint_anchor.
-3. **Particle operators checked against CS:S** (round 2 draws `.pcf`
-   effects by interpretation; tech-debt) and the
-   physics numbers (buoyancy, motors, constraint breaking) measured.
+1. **Strike-generator env_beams** (visual_entities.md 4.2); map ragdolls
+   and the round 2 classes are in since round 3 (above), detail props
+   aren't drawn (kz_ancient_ruins).
+2. **Particle operators checked against CS:S** (round 2 draws `.pcf`
+   effects by interpretation; tech-debt), round 3's embers and muzzle
+   flashes too, and the physics numbers (buoyancy, motors, constraint
+   break limits) measured.
+3. **Map mistakes** the audit lists (5 kinds of inputs CS:S entities
+   don't have, 7 kinds of run-time complaints): nothing to fix on our
+   side unless the game is seen to do something with them.
 4. **Players stuck after a shared teleport** (minigame flows, above).
 5. **Materials and textures** (sweep of the evening of 2026-10-08): 19
    textures missing over 10 maps (mostly `_rt_camera`, custom cubemaps,

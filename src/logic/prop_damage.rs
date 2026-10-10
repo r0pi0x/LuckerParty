@@ -729,6 +729,9 @@ pub(super) fn prop_break(w: &mut LogicWorld, id: EntId, breaker: Option<Who>, at
 /// Prop inputs; false when not one of them.
 pub(super) fn prop_input(w: &mut LogicWorld, id: EntId, input: &str, value: &Value, activator: Option<Who>) -> bool {
     let Some(p) = prop(w, id).cloned() else { return false };
+    let ragdoll = w
+        .get(id)
+        .is_some_and(|e| e.classname.eq_ignore_ascii_case("prop_ragdoll"));
     match input {
         "break" => prop_break(w, id, activator, Some(Who::Ent(id))),
         "sethealth" | "addhealth" | "removehealth" => {
@@ -762,9 +765,21 @@ pub(super) fn prop_input(w: &mut LogicWorld, id: EntId, input: &str, value: &Val
                 motion: Motion::Disable,
             });
         }
-        // A map ragdoll (physics_brushes.md 6): its bodies aren't
-        // simulated, so motion inputs do nothing; FadeAndRemove removes it
-        // (at once: its fade isn't drawn).
+        // A map ragdoll (physics_brushes.md 6.7): its parts pinned or
+        // set moving (`map::placed_ragdoll`); FadeAndRemove removes it (at
+        // once: its fade isn't drawn). StartRagdollBoogie is HL2's.
+        "enablemotion" if ragdoll => w.effects.push(Effect::PropMotion {
+            id,
+            motion: Motion::Enable,
+        }),
+        "disablemotion" if ragdoll => w.effects.push(Effect::PropMotion {
+            id,
+            motion: Motion::Disable,
+        }),
+        "wake" if ragdoll => w.effects.push(Effect::PropMotion {
+            id,
+            motion: Motion::Wake,
+        }),
         "enablemotion" | "disablemotion" | "startragdollboogie" => {}
         // Whether damage pushes the body: our pushes don't read it
         // (tech-debt).

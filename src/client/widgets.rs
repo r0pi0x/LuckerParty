@@ -40,6 +40,7 @@ impl Plugin for WidgetsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Windows>()
             .init_resource::<SliderDrag>()
+            .init_resource::<FrameBacking>()
             .add_systems(
                 PreUpdate,
                 (frames_pointer, slider_pointer).after(bevy::input::InputSystems),
@@ -311,20 +312,79 @@ pub struct VguiFrame {
     pub modal: bool,
 }
 
-/// Each drawn frame where `Windows` puts it, stacked in its order.
+/// What a frame hides of what's under it: the game menu's entries and
+/// title never show through a dialog's see-through colour. The frame is
+/// drawn over the picture behind them (the main menu's background, the
+/// part under the frame) or a solid colour (in a game, where the world
+/// behind can't be drawn again); None (no menu open): see-through.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct FrameBacking(pub Option<Backing>);
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Backing {
+    /// A picture stretched over the window, and its size in pixels.
+    Picture(Handle<Image>, Vec2),
+    Color(Color),
+}
+
+impl Backing {
+    /// The part of the picture under a frame at `pos`, `size` (window
+    /// pixels) in its own pixels.
+    pub fn crop(image: Vec2, screen: Vec2, pos: Vec2, size: Vec2) -> Rect {
+        let scale = image / screen.max(Vec2::ONE);
+        Rect::from_corners(pos * scale, (pos + size) * scale)
+    }
+}
+
+/// Each drawn frame where `Windows` puts it, stacked in its order, over
+/// `FrameBacking`.
+#[allow(clippy::type_complexity)]
 fn place_frames(
     mut windows: ResMut<Windows>,
+    backing: Res<FrameBacking>,
     screen: Query<&Window, With<PrimaryWindow>>,
-    mut frames: Query<(&VguiFrame, &mut Node, &mut GlobalZIndex)>,
+    mut frames: Query<(Entity, &VguiFrame, &mut Node, &mut GlobalZIndex, &mut BackgroundColor, Option<&mut ImageNode>)>,
+    mut commands: Commands,
 ) {
     let Some(win) = screen.iter().next() else { return };
     let screen = Vec2::new(win.width(), win.height());
-    for (f, mut node, mut z) in &mut frames {
+    for (e, f, mut node, mut z, mut bg, image) in &mut frames {
         let size = f.size * f.scale;
         let pos = match windows.bypass_change_detection().drag {
             Some(d) if d.id == f.id => windows.placed(f.id).map_or(Vec2::ZERO, |p| p.pos),
             _ => windows.bypass_change_detection().place(f.id, size, screen),
         };
+        // Under it: the backing (1 px in, the border's width).
+        let (base, picture) = match &backing.0 {
+            Some(Backing::Picture(handle, image_size)) => {
+                let drawn = windows.placed(f.id).map_or(size, |p| p.size);
+                let rect = Backing::crop(*image_size, screen, pos + 1.0, drawn - 2.0);
+                (Color::BLACK, Some((handle.clone(), rect)))
+            }
+            Some(Backing::Color(c)) => (*c, None),
+            None => (Color::NONE, None),
+        };
+        bg.set_if_neq(BackgroundColor(base));
+        match (picture, image) {
+            (Some((handle, rect)), Some(mut img)) => {
+                if img.image != handle || img.rect != Some(rect) {
+                    img.image = handle;
+                    img.rect = Some(rect);
+                }
+            }
+            (Some((handle, rect)), None) => {
+                commands.entity(e).insert(ImageNode {
+                    image: handle,
+                    rect: Some(rect),
+                    image_mode: NodeImageMode::Stretch,
+                    ..default()
+                });
+            }
+            (None, Some(_)) => {
+                commands.entity(e).remove::<ImageNode>();
+            }
+            (None, None) => {}
+        }
         let (left, top) = (px(pos.x), px(pos.y));
         if node.left != left || node.top != top {
             node.left = left;
@@ -1017,7 +1077,9 @@ pub fn frame(
                 ..place(look, -10_000.0 / look.s, 0.0, w, h)
             },
             bevel(look, true),
-            BackgroundColor(bg),
+            // What the frame hides (`FrameBacking`, set by `place_frames`),
+            // its see-through colour over it.
+            BackgroundColor(Color::NONE),
             VguiFrame {
                 id: spec.id,
                 size: Vec2::new(w, h),
@@ -1032,6 +1094,18 @@ pub fn frame(
             ChildOf(root),
         ))
         .id();
+    commands.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            left: px(0.0),
+            top: px(0.0),
+            width: percent(100.0),
+            height: percent(100.0),
+            ..default()
+        },
+        BackgroundColor(bg),
+        ChildOf(e),
+    ));
     let inset = look.number("Frame.TitleTextInsetX", 16.0);
     label(
         commands,
@@ -1736,15 +1810,18 @@ pub fn tabs<B: Bundle>(
     names: &[(String, bool)],
     open: usize,
     width: Option<f32>,
+    fit: Option<f32>,
     hit: impl Fn(usize) -> B,
 ) {
     let font = look.default_font();
+    let text: Vec<f32> = names
+        .iter()
+        .map(|(name, _)| look.fonts.char_offsets(&font, name).last().copied().unwrap_or(0.0) / look.s)
+        .collect();
+    let widths = tab_widths(&text, width, fit);
     let mut tx = x;
     for (i, (name, enabled)) in names.iter().enumerate() {
-        let tab_w = width.unwrap_or_else(|| {
-            let text_w = look.fonts.char_offsets(&font, name).last().copied().unwrap_or(0.0) / look.s;
-            (text_w + 24.0).max(56.0).round()
-        });
+        let tab_w = widths[i];
         let is_open = i == open;
         let (ty, th) = if is_open { (y, 27.0) } else { (y + 3.0, 24.0) };
         let mut e = commands.spawn((
@@ -1797,6 +1874,22 @@ pub fn tabs<B: Bundle>(
     }
 }
 
+/// Each tab's width in scheme pixels: `width` each, else its words'
+/// width (`text`) plus 12 on each side, at least 56; tabs that would
+/// reach past `fit` (the sheet's width) shrink in proportion so the last
+/// one ends inside it.
+pub fn tab_widths(text: &[f32], width: Option<f32>, fit: Option<f32>) -> Vec<f32> {
+    let natural: Vec<f32> = text
+        .iter()
+        .map(|t| width.unwrap_or_else(|| (t + 24.0).max(56.0).round()))
+        .collect();
+    let total: f32 = natural.iter().sum();
+    match fit {
+        Some(fit) if total > fit && total > 0.0 => natural.iter().map(|w| (w * fit / total).floor()).collect(),
+        _ => natural,
+    }
+}
+
 /// The wheel's notches this frame (up positive).
 pub fn wheel_notches(scroll: &bevy::input::mouse::AccumulatedMouseScroll) -> i32 {
     use bevy::input::mouse::MouseScrollUnit;
@@ -1812,6 +1905,72 @@ mod tests {
     use super::*;
 
     const SCREEN: Vec2 = Vec2::new(1280.0, 720.0);
+
+    /// A dialog's frame stacks over the game menu's layer and hides what
+    /// of the menu is under it: drawn over the main menu's picture (the
+    /// part under the frame), or over black in a game; no menu: see-through.
+    #[test]
+    fn frames_draw_over_the_menu_and_hide_it() {
+        assert!(crate::client::game_menu::MENU_Z < FRAME_Z, "frames over the menu's title and entries");
+        let mut app = App::new();
+        app.init_resource::<Windows>()
+            .init_resource::<FrameBacking>()
+            .add_systems(Update, place_frames);
+        let mut window = Window::default();
+        window.resolution.set(1280.0, 720.0);
+        app.world_mut().spawn((window, PrimaryWindow));
+        let frame = app
+            .world_mut()
+            .spawn((
+                VguiFrame {
+                    id: "options",
+                    size: Vec2::new(512.0, 406.0),
+                    scale: 1.0,
+                    sizeable: None,
+                    modal: false,
+                },
+                Node::default(),
+                GlobalZIndex(FRAME_Z),
+                BackgroundColor(Color::NONE),
+            ))
+            .id();
+        let picture = Handle::<Image>::default();
+        app.world_mut().resource_mut::<FrameBacking>().0 = Some(Backing::Picture(picture.clone(), Vec2::new(2560.0, 1440.0)));
+        app.update();
+        app.update();
+        let e = app.world().entity(frame);
+        assert!(e.get::<GlobalZIndex>().unwrap().0 >= FRAME_Z);
+        assert_eq!(e.get::<BackgroundColor>().unwrap().0, Color::BLACK, "opaque under the picture");
+        let image = e.get::<ImageNode>().expect("the picture under it");
+        // Centred: (384, 157) to (896, 563), 1 px in, at twice the size.
+        let rect = image.rect.unwrap();
+        assert_eq!((rect.min, rect.max), (Vec2::new(770.0, 316.0), Vec2::new(1790.0, 1124.0)));
+        // In a game: over black.
+        app.world_mut().resource_mut::<FrameBacking>().0 = Some(Backing::Color(Color::BLACK));
+        app.update();
+        app.update();
+        let e = app.world().entity(frame);
+        assert!(e.get::<ImageNode>().is_none());
+        assert_eq!(e.get::<BackgroundColor>().unwrap().0, Color::BLACK);
+        // No menu: see-through as the scheme says.
+        app.world_mut().resource_mut::<FrameBacking>().0 = None;
+        app.update();
+        assert_eq!(app.world().entity(frame).get::<BackgroundColor>().unwrap().0, Color::NONE);
+    }
+
+    #[test]
+    fn tabs_are_as_wide_as_their_words_and_stay_on_the_sheet() {
+        // The options' six tabs at their words' widths (Tahoma-like).
+        let words = [52.0, 38.0, 34.0, 33.0, 32.0, 70.0];
+        let w = tab_widths(&words, None, Some(496.0));
+        assert_eq!(w, [76.0, 62.0, 58.0, 57.0, 56.0, 94.0], "words plus 24, at least 56");
+        // Wider than the sheet (the 96 each the options drew before: 576
+        // in 496): shrunk so the last ends inside it.
+        let w = tab_widths(&words, Some(96.0), Some(496.0));
+        assert!(w.iter().sum::<f32>() <= 496.0, "{w:?}");
+        assert!(w.iter().all(|w| *w > 80.0));
+        assert_eq!(tab_widths(&[200.0], None, None), [224.0], "no sheet: as wide as it needs");
+    }
 
     #[test]
     fn a_frame_opens_centred_then_stays_where_it_was_dragged() {

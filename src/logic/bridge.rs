@@ -448,6 +448,13 @@ fn set_prop_shown(world: &mut World, node: Entity, visible: bool, solid: bool, e
     if !exists {
         e.remove::<Damageable>();
     }
+    // A map ragdoll's bodies follow (`map::placed_ragdoll::sync`).
+    if let Some(mut r) = e.get_mut::<crate::map::placed_ragdoll::PlacedRagdoll>()
+        && (r.gone == exists || r.solid != solid)
+    {
+        r.gone = !exists;
+        r.solid = solid;
+    }
 }
 
 /// Placed weapons the logic removed (`map::entities::RemovedWeapons`;
@@ -1380,6 +1387,17 @@ fn apply_effects(world: &mut World, effects: Vec<Effect>, scale: f32) {
             Effect::Tesla { entity } => {
                 world.write_message(crate::map::emitters::TeslaSpark { entity });
             }
+            Effect::MuzzleFlash { entity } => {
+                world.write_message(crate::map::emitters::MuzzleFlashFire { entity });
+            }
+            Effect::ViewPunch { player, angles } => {
+                // Source's pitch is down positive; ours up (radians). Roll
+                // isn't kept (tech-debt).
+                world.write_message(crate::map::ViewKick {
+                    player,
+                    angles: Vec2::new(-angles.x, angles.y) * std::f32::consts::PI / 180.0,
+                });
+            }
             Effect::BodyVelocity { id, velocity } => {
                 if let Some(node) = entity_node(world, id)
                     && let Some(mut v) = world.get_mut::<LinearVelocity>(node)
@@ -1533,6 +1551,10 @@ fn sync_controls(world: &mut World, logic: &Logic) {
             .find(|(p, _)| *p == id)
             .map(|(_, n)| *n)
     };
+    // The map's gravity (m/s²) turns break limits in pounds into forces.
+    let gravity = world
+        .get_resource::<avian3d::prelude::Gravity>()
+        .map_or(9.81, |g| g.0.length());
     let joints: Vec<BodyJoint> = logic
         .world
         .joints()
@@ -1562,6 +1584,11 @@ fn sync_controls(world: &mut World, logic: &Logic) {
                 anchor: entity_to_engine(j.anchor, s),
                 on: j.on,
                 no_collide: j.no_collide,
+                // Pounds as the weight of that mass in the map's gravity
+                // (kg = lb / 2.2; public docs: the weight that breaks it
+                // resting on it); torque lb·in the same, times units.
+                force_limit: j.force_limit / 2.2 * gravity,
+                torque_limit: j.torque_limit / 2.2 * gravity * s,
             })
         })
         .collect();
@@ -1943,7 +1970,11 @@ fn pre(world: &mut World) {
     });
 }
 
-fn post(world: &mut World, mut awake: Local<MessageCursor<crate::map::prop_physics::PropAwakened>>) {
+fn post(
+    world: &mut World,
+    mut awake: Local<MessageCursor<crate::map::prop_physics::PropAwakened>>,
+    mut broken: Local<MessageCursor<crate::map::controllers::JointBroke>>,
+) {
     // Props that started asleep and woke (map::prop_physics).
     let woke: Vec<Entity> = match world.get_resource::<Messages<crate::map::prop_physics::PropAwakened>>() {
         Some(m) => awake.read(m).map(|a| a.0).collect(),
@@ -1956,9 +1987,23 @@ fn post(world: &mut World, mut awake: Local<MessageCursor<crate::map::prop_physi
             .collect(),
         None => Vec::new(),
     };
+    // Constraints that passed their break limits (map::controllers).
+    let broke: Vec<EntId> = match world.get_resource::<Messages<crate::map::controllers::JointBroke>>() {
+        Some(m) => broken
+            .read(m)
+            .map(|b| EntId {
+                index: (b.0 & 0xffff_ffff) as u32,
+                generation: (b.0 >> 32) as u32,
+            })
+            .collect(),
+        None => Vec::new(),
+    };
     run_phase(world, |w, col| {
         for id in woke {
             w.prop_awakened(id);
+        }
+        for id in broke {
+            w.deliver(Who::Ent(id), "Break", super::Value::Void, None, Some(Who::Ent(id)));
         }
         w.touch_triggers(col);
         w.touch_breakables();

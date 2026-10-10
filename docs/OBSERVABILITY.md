@@ -137,7 +137,9 @@ Only `Reflect`-registered types are visible; register new core components in
   (`game`, `bot`: its other pages), `menu keyboard` (or `mouse`, `audio`,
   `video`, `voice`, `multiplayer`) opens the options on that tab, `menu
   advanced` the keyboard tab's Advanced dialog, `menu videoadvanced` the
-  video tab's, `menu mpadvanced` the multiplayer tab's (its list from the
+  video tab's, `menu gamma` its brightness dialog (with
+  `+mat_monitorgamma 1.6` or `2.6` before it: the whole frame lighter or
+  darker), `menu mpadvanced` the multiplayer tab's (its list from the
   install's `cfg/user.scr`), `menu extras` Lucker Party Options. `menuinput <input>` drives
   the open dialog as keys would (`focus <cvar|map|bots|botcount|botteam|
   difficulty|aspect>`, `open` a focused combo box's list, `down`, `up`, `enter`,
@@ -938,7 +940,10 @@ keyvalues no literal names and the spawnflags set, per handled class (to
 check against the code by hand); inputs aimed at brushes the loader baked
 into the world. Then a scripted run: one player stands in every trigger
 and presses +use at every door and button from four sides, then a round
-restart (doors and buttons only where +use can find them: a solid one);
+restart (doors and buttons only where +use can find them: a solid one;
+aimed at one of its pieces; a visit where the map's triggers move the
+player away before the press, a teleport or a kill zone guarding a
+room, is listed apart, not as a miss);
 it lists what the logic logged (complaints, and apart from them the
 notes: known, intended gaps the logic logs once per map,
 `LogicWorld::note`, such as VScript inputs, server plugin commands,

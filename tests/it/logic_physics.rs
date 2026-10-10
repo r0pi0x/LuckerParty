@@ -91,6 +91,7 @@ fn add_crate(data: &mut MapData, index: usize, at: Vec3) {
     });
     data.props.push(MapProp {
         pose: None,
+        ragdoll: None,
         model: data.models.len() - 1,
         translation: to_engine(at),
         rotation: Quat::IDENTITY,
@@ -373,6 +374,95 @@ fn a_ball_socket_holds_a_crate_until_it_breaks() {
     sim.seconds(2.0);
     let z = crate_at(&mut sim).z;
     assert!(z < 20.0, "fell once broken: {z}");
+}
+
+/// A constraint naming an info_constraint_anchor holds the anchor's
+/// parent (physics_constraints.md 1.2 step 1).
+#[test]
+fn a_constraint_through_an_anchor_holds_its_parent() {
+    let box_ = entity(
+        &[
+            ("classname", "prop_physics"),
+            ("targetname", "lamp"),
+            ("origin", "0 0 200"),
+        ],
+        Vec::new(),
+        false,
+    );
+    let anchor = entity(
+        &[
+            ("classname", "info_constraint_anchor"),
+            ("targetname", "hook"),
+            ("parentname", "lamp"),
+            ("origin", "0 0 216"),
+        ],
+        Vec::new(),
+        false,
+    );
+    let socket = entity(
+        &[
+            ("classname", "phys_ballsocket"),
+            ("origin", "0 0 232"),
+            ("attach1", "hook"),
+        ],
+        Vec::new(),
+        false,
+    );
+    let mut data = map(vec![box_, anchor, socket]);
+    add_crate(&mut data, 0, Vec3::new(0.0, 0.0, 200.0));
+    let mut sim = sim(data);
+    sim.seconds(2.0);
+    let z = crate_at(&mut sim).z;
+    assert!((z - 200.0).abs() < 8.0, "hangs through the anchor: {z}");
+}
+
+/// A force limit below the crate's weight (20 kg is 44 lb; the limit 30
+/// lb): the socket breaks by itself under the hanging crate (OnBreak,
+/// physics_constraints.md 1.5) and the crate falls; one above its weight
+/// (60 lb) holds.
+#[test]
+fn a_ball_socket_breaks_under_a_weight_past_its_force_limit() {
+    for (limit, breaks) in [("30", true), ("60", false)] {
+        let box_ = entity(
+            &[
+                ("classname", "prop_physics"),
+                ("targetname", "lamp"),
+                ("origin", "0 0 200"),
+            ],
+            Vec::new(),
+            false,
+        );
+        let socket = entity(
+            &[
+                ("classname", "phys_ballsocket"),
+                ("targetname", "socket"),
+                ("origin", "0 0 232"),
+                ("attach1", "lamp"),
+                ("forcelimit", limit),
+            ],
+            Vec::new(),
+            false,
+        );
+        let mut data = map(vec![box_, socket]);
+        add_crate(&mut data, 0, Vec3::new(0.0, 0.0, 200.0));
+        let mut sim = sim(data);
+        sim.app.world_mut().resource_mut::<Logic>().world.record = true;
+        sim.seconds(2.0);
+        let z = crate_at(&mut sim).z;
+        let fired = sim
+            .app
+            .world()
+            .resource::<Logic>()
+            .world
+            .fired
+            .iter()
+            .any(|(_, _, o)| o == "OnBreak");
+        if breaks {
+            assert!(fired && z < 20.0, "limit {limit}: broke and fell ({fired}, z {z})");
+        } else {
+            assert!(!fired && (z - 200.0).abs() < 8.0, "limit {limit}: holds ({fired}, z {z})");
+        }
+    }
 }
 
 /// phys_motor with "Hinge Object" (spawnflags 7, as surf_surreal's

@@ -745,7 +745,10 @@ pub fn convert_level(bsp: &Bsp, bytes: &[u8], name: &str, hdr: bool) -> (MapData
     data.brush_tree = Some(tree);
     data.trace_skip = trace_skip(bsp, &leaves);
     data.water = water_volumes(bsp, &leaves);
-    data.water.extend(analog_water_volumes(bsp, &leaves));
+    for (volume, entity) in analog_water_volumes(bsp, &leaves) {
+        data.water_movers.push((data.water.len(), entity));
+        data.water.push(volume);
+    }
     data.entities = map_entities(bsp, &leaves);
     restore_text_case(&mut data.entities, bytes);
     data.entity_scale = METERS_PER_UNIT;
@@ -837,6 +840,7 @@ pub const MOVERS: &[&str] = &[
     "func_rot_button",
     "momentary_rot_button",
     "func_movelinear",
+    "func_water_analog",
     "func_rotating",
     "func_tracktrain",
     "func_tanktrain",
@@ -1602,8 +1606,9 @@ pub fn water_volumes(bsp: &Bsp, leaves: &[RawLeaf]) -> Vec<crate::map::MapWaterV
 
 /// func_water_analog's water (public entity docs: a brush of water that
 /// can move like func_movelinear), where it spawns: a swimmable volume
-/// like the world's water. Its motion isn't followed (tech-debt).
-pub fn analog_water_volumes(bsp: &Bsp, leaves: &[RawLeaf]) -> Vec<crate::map::MapWaterVolume> {
+/// like the world's water, with its entity's index (the volume follows
+/// the entity's node as it moves: `map::water::move_water`).
+pub fn analog_water_volumes(bsp: &Bsp, leaves: &[RawLeaf]) -> Vec<(crate::map::MapWaterVolume, usize)> {
     let parse = |v: Option<&str>| {
         let n: Vec<f32> = v
             .unwrap_or("")
@@ -1618,28 +1623,38 @@ pub fn analog_water_volumes(bsp: &Bsp, leaves: &[RawLeaf]) -> Vec<crate::map::Ma
     };
     bsp.entities
         .iter()
-        .filter(|e| {
+        .enumerate()
+        .filter(|(_, e)| {
             e.prop("classname")
                 .is_some_and(|c| c.eq_ignore_ascii_case("func_water_analog"))
         })
-        .filter_map(|e| {
+        .filter_map(|(index, e)| {
             let model: usize = e.prop("model")?.strip_prefix('*')?.parse().ok()?;
             let (origin, angles) = (parse(e.prop("origin")), parse(e.prop("angles")));
             let rotation = Quat::from_rotation_z(angles.y.to_radians())
                 * Quat::from_rotation_y(angles.x.to_radians())
                 * Quat::from_rotation_x(angles.z.to_radians());
-            Some(brush_volumes_in(
-                bsp,
-                BrushFlags::WATER.union(BrushFlags::SLIME),
-                model_brushes(bsp, leaves, model),
-                Some((rotation, origin)),
-                false,
-            ))
+            Some(
+                brush_volumes_in(
+                    bsp,
+                    BrushFlags::WATER.union(BrushFlags::SLIME),
+                    model_brushes(bsp, leaves, model),
+                    Some((rotation, origin)),
+                    false,
+                )
+                .into_iter()
+                .map(move |v| (v, index)),
+            )
         })
         .flatten()
-        .map(|(i, points, planes)| crate::map::MapWaterVolume {
-            brush: map_brush(points, planes, false),
-            slime: !bsp.brushes[i].flags.contains(BrushFlags::WATER),
+        .map(|((i, points, planes), index)| {
+            (
+                crate::map::MapWaterVolume {
+                    brush: map_brush(points, planes, false),
+                    slime: !bsp.brushes[i].flags.contains(BrushFlags::WATER),
+                },
+                index,
+            )
         })
         .collect()
 }

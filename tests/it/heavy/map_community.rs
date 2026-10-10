@@ -410,8 +410,9 @@ fn material_effects() {
             "a scrolling base texture"
         );
     }
-    // prop_ragdoll (physics_brushes.md 6) is drawn: without Hammer's pose
-    // it lies on the floor below it (not simulated).
+    // prop_ragdoll (physics_brushes.md 6) is drawn and simulated: without
+    // Hammer's pose it starts from its first sequence at the entity's
+    // place and angles (`map_ragdolls_fall_and_take_shots` drops it).
     if let Some(map) = load("gg_deagle7k") {
         let ragdoll = map.entities.iter().position(|e| e.classname() == "prop_ragdoll");
         let prop = map
@@ -419,9 +420,9 @@ fn material_effects() {
             .iter()
             .find(|p| p.entity.is_some() && p.entity == ragdoll)
             .expect("drawn");
-        assert!(map.models[prop.model].rig.is_some());
-        // Its up (model +Z, engine +Y) lies flat.
-        assert!((prop.rotation * Vec3::Y).y.abs() < 1e-3, "{:?}", prop.rotation);
+        assert!(map.models[prop.model].rig.is_some() && prop.ragdoll.is_some());
+        let placed = cs_source::movement::to_engine(Vec3::new(-22.0, 1061.0, 29.0));
+        assert!(prop.translation.distance(placed) < 1e-3, "at its origin: {}", prop.translation);
     }
     if let Some(map) = load("surf_demise") {
         if let Some(bone) = meshes(&map).find(|m| m.material.contains("bonecolor")) {
@@ -650,6 +651,29 @@ fn sky_bottom_joins_the_sides() {
 #[test]
 fn visual_entities_load() {
     use mashup::map::MapAlpha;
+    // Round 3: color correction tables, embers, a muzzle flash.
+    for name in ["mg_lt_galaxy_v5", "surf_demise"] {
+        if let Some(map) = load(name) {
+            assert_eq!(map.color_corrections.len(), 1, "{name}: its .raw table from the pak");
+            let cc = &map.color_corrections[0];
+            assert!(cc.start_on && cc.max_falloff < 0.0 && cc.max_weight == 1.0, "{name}: everywhere");
+            assert_eq!(cc.lut.len(), 32 * 32 * 32 * 3);
+        }
+    }
+    if let Some(map) = load("mg_jacks_multigames_v1") {
+        assert_eq!(map.embers.len(), 6);
+        assert_eq!(map.embers.iter().filter(|e| e.start_on).count(), 3, "flag 1 starts on");
+    }
+    if let Some(map) = load("surf_stickybutt_alpha") {
+        assert_eq!(map.embers.len(), 1);
+        let e = &map.embers[0];
+        eprintln!("stickybutt embers {:?}..{:?}", e.min, e.max);
+        // Pitch 90: down.
+        assert!(e.velocity.y < 0.0 && e.velocity.x.abs() < 1e-4, "{}", e.velocity);
+    }
+    if let Some(map) = load("mg_kommando") {
+        assert_eq!(map.muzzle_flashes.len(), 1);
+    }
     if let Some(map) = load("gg_future") {
         assert_eq!(map.trails.len(), 4);
         assert!(map.trails.iter().all(|t| t.life == 10.0 && t.entity.is_some()));
@@ -698,6 +722,212 @@ fn visual_entities_load() {
                 .iter()
                 .filter(|m| m.render.is_some())
                 .all(|m| m.alpha == MapAlpha::Blend)
+        );
+    }
+}
+
+/// Map-placed ragdolls are simulated (physics_brushes.md 6): gg_deagle7k's
+/// corpse (debris, no Hammer pose) starts from its first sequence at the
+/// entity's angles, falls and settles on the floor, its drawn node with
+/// it; a shot through a part pushes that part; a round restart puts it
+/// back where it was placed.
+#[test]
+fn map_ragdolls_fall_and_take_shots() {
+    use mashup::map::{
+        RagdollShot,
+        placed_ragdoll::{PlacedRagdoll, SF_DEBRIS},
+    };
+    // The other maps' ragdolls (mattresses, a zombie, bloody humans,
+    // corpses) have theirs too.
+    for (name, n) in [
+        ("mg_boatrace_scramble", 4),
+        ("mg_escape_prison_beta", 1),
+        ("mg_jacks_multigames_v1", 2),
+        ("mg_n64_goldeneye_v2", 1),
+        ("surf_happyhands", 1),
+    ] {
+        if let Some(map) = load(name) {
+            assert_eq!(map.props.iter().filter(|p| p.ragdoll.is_some()).count(), n, "{name}");
+        }
+    }
+    let Some(map) = load("gg_deagle7k") else { return };
+    let placed = map.props.iter().filter(|p| p.ragdoll.is_some()).count();
+    assert_eq!(placed, 1, "the corpse has a ragdoll .phy");
+    let mut sim = Sim::new(MapPlugin::new(map));
+    sim.set_tick_interval(cs_source::TICK_INTERVAL);
+    sim.ticks(2);
+    let parts = |sim: &mut Sim| -> Vec<(Entity, Vec3)> {
+        let world = sim.app.world_mut();
+        let sims: Vec<Vec<Entity>> = world
+            .query::<&mashup::map::Ragdoll>()
+            .iter(world)
+            .filter(|r| r.placed)
+            .map(|r| r.bodies.clone())
+            .collect();
+        assert_eq!(sims.len(), 1, "one placed ragdoll simulated");
+        sims[0]
+            .iter()
+            .map(|b| (*b, world.get::<Transform>(*b).unwrap().translation))
+            .collect()
+    };
+    let flags = {
+        let world = sim.app.world_mut();
+        world.query::<&PlacedRagdoll>().single(world).unwrap().flags
+    };
+    assert!(flags & SF_DEBRIS != 0);
+    let start = parts(&mut sim);
+    assert!(start.len() > 5, "{} bodies", start.len());
+    sim.seconds(4.0);
+    let rest = parts(&mut sim);
+    let fell = start[0].1.y - rest[0].1.y;
+    assert!(fell > 0.05, "the pelvis fell {fell} m");
+    // At rest on the floor (not through it): within about a metre of
+    // where it was placed.
+    let floor_ok = rest.iter().all(|(_, p)| (p.y - start[0].1.y).abs() < 1.5);
+    assert!(floor_ok, "{rest:?}");
+    let node_y = {
+        let world = sim.app.world_mut();
+        world
+            .query_filtered::<&GlobalTransform, With<PlacedRagdoll>>()
+            .single(world)
+            .unwrap()
+            .translation()
+            .y
+    };
+    assert!((node_y - rest[0].1.y).abs() < 0.5, "the drawn node follows the pelvis");
+    // A shot through the highest part pushes it.
+    let (part, at) = *rest.iter().max_by(|a, b| a.1.y.total_cmp(&b.1.y)).unwrap();
+    sim.app.world_mut().write_message(RagdollShot::bullet(
+        at + Vec3::new(-2.0, 0.0, 0.0),
+        at + Vec3::new(2.0, 0.0, 0.0),
+    ));
+    sim.ticks(3);
+    let v = sim.app.world().get::<avian3d::prelude::LinearVelocity>(part).unwrap().0;
+    assert!(v.x > 0.1, "the shot part moves along the shot: {v}");
+    // A round restart: made again where it was placed.
+    sim.app.world_mut().resource_mut::<RoundRestarts>().0 += 1;
+    sim.ticks(3);
+    let again = parts(&mut sim);
+    assert!(
+        again[0].1.distance(start[0].1) < 0.2,
+        "back at {} (placed {})",
+        again[0].1,
+        start[0].1
+    );
+}
+
+/// Moving water (func_water_analog): mg_jacks_multigames_v1's flood
+/// ("water": up 635 units at 11 units/s on Open) rises, its swim volume
+/// with it; water parented to a mover (mg_3k_smash_lego_copter's "water"
+/// on the spinning "midrot") goes where its parent takes it.
+#[test]
+fn moving_water_follows_its_entity() {
+    use mashup::{
+        core::MapWater,
+        logic::{Logic, Value},
+        map::{entities::MapBrushEntity, water::WaterMovers},
+    };
+    let unit = cs_source::bsp::METERS_PER_UNIT;
+    if let Some(map) = load("mg_jacks_multigames_v1") {
+        let flood = map
+            .entities
+            .iter()
+            .position(|e| {
+                e.get("targetname") == Some("water") && e.classname().eq_ignore_ascii_case("func_water_analog")
+            })
+            .expect("the flood");
+        let mut sim = Sim::new(MapPlugin::new(map));
+        sim.set_tick_interval(cs_source::TICK_INTERVAL);
+        sim.ticks(2);
+        let volume = sim
+            .app
+            .world()
+            .resource::<WaterMovers>()
+            .0
+            .iter()
+            .find(|m| m.1 == flood)
+            .map(|m| m.0)
+            .expect("the flood's volume moves with it");
+        let top = |sim: &Sim| sim.app.world().resource::<MapWater>().0[volume].brush.max.y;
+        let before = top(&sim);
+        sim.app
+            .world_mut()
+            .resource_mut::<Logic>()
+            .world
+            .queue_input("water", "Open", Value::Void, 0.0, None);
+        sim.seconds(5.0);
+        let risen = (top(&sim) - before) / unit;
+        assert!((risen - 55.0).abs() < 4.0, "5 s at 11 units/s: rose {risen} units");
+        let node = {
+            let world = sim.app.world_mut();
+            world
+                .query::<(&MapBrushEntity, &GlobalTransform)>()
+                .iter(world)
+                .find(|(b, _)| b.0 == flood)
+                .map(|(_, g)| g.translation())
+                .expect("the flood's node")
+        };
+        let placed = -273.6 * unit;
+        assert!(
+            ((node.y - placed) / unit - risen).abs() < 2.0,
+            "its node rose with it: {}",
+            node.y / unit
+        );
+    }
+    if let Some(map) = load("mg_3k_smash_lego_copter") {
+        let water = map
+            .entities
+            .iter()
+            .position(|e| {
+                e.get("targetname") == Some("water") && e.classname().eq_ignore_ascii_case("func_water_analog")
+            })
+            .expect("the parented water");
+        let mut sim = Sim::new(MapPlugin::new(map));
+        sim.set_tick_interval(cs_source::TICK_INTERVAL);
+        sim.ticks(2);
+        let movers = sim.app.world().resource::<WaterMovers>().0.clone();
+        let volume = movers
+            .iter()
+            .find(|m| m.1 == water)
+            .map(|m| m.0)
+            .expect("its volume moves with it");
+        let at = |sim: &Sim| {
+            let b = &sim.app.world().resource::<MapWater>().0[volume].brush;
+            (b.min + b.max) / 2.0
+        };
+        let start = at(&sim);
+        // Its parent spins up when the game starts: start it.
+        sim.app
+            .world_mut()
+            .resource_mut::<Logic>()
+            .world
+            .queue_input("midrot", "Start", Value::Void, 0.0, None);
+        sim.seconds(3.0);
+        let node = {
+            let world = sim.app.world_mut();
+            world
+                .query::<(&MapBrushEntity, &GlobalTransform)>()
+                .iter(world)
+                .find(|(b, _)| b.0 == water)
+                .map(|(_, g)| g.compute_transform())
+                .expect("its node")
+        };
+        let (home_brush, home) = movers
+            .iter()
+            .find(|m| m.1 == water)
+            .map(|m| (m.2.clone(), m.3))
+            .unwrap();
+        let placed = (home_brush.min + home_brush.max) / 2.0;
+        let moved = node.translation.distance(home.translation) + node.rotation.angle_between(home.rotation);
+        if moved > 1e-3 {
+            assert!(at(&sim).distance(start) > 1e-3, "the volume moved with its node");
+        }
+        // Wherever the node is, the volume sits where the node puts it.
+        let expected = node.transform_point(home.to_matrix().inverse().transform_point3(placed));
+        assert!(
+            at(&sim).distance(expected) < 0.05,
+            "volume at {} vs {expected}",
+            at(&sim)
         );
     }
 }

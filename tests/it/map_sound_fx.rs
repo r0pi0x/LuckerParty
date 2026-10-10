@@ -139,6 +139,7 @@ fn add_crate(data: &mut MapData, index: usize) {
     });
     data.props.push(MapProp {
         pose: None,
+        ragdoll: None,
         model: data.models.len() - 1,
         translation: to_engine(Vec3::new(0.0, 0.0, 16.5)),
         rotation: Quat::IDENTITY,

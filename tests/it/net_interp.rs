@@ -442,6 +442,7 @@ fn crate_map() -> MapData {
     });
     data.props.push(MapProp {
         pose: None,
+        ragdoll: None,
         model: 0,
         translation: to_engine(Vec3::new(0.0, 0.0, 16.0)),
         rotation: Quat::IDENTITY,
@@ -539,4 +540,112 @@ fn physics_props_are_drawn_as_the_server_simulates_them() {
     sim.ticks(FPS as u64);
     let end = pos(sim.server.app.world(), theirs);
     assert!(pos(sim.clients[0].app.world(), ours).distance(end) < 1e-4, "landed where the server has it");
+}
+
+// --- Map ragdolls.
+
+/// The crate map with a two-part ragdoll (map entity 0, a prop_ragdoll,
+/// debris) dropped from 64 units: a torso box and a head box above it,
+/// held by a joint.
+fn ragdoll_map() -> MapData {
+    use mashup::map::{MapBone, MapRagdoll, MapRagdollBody, MapRagdollJoint, MapRig, anim::AnimSet};
+    use std::sync::Arc;
+    let mut data = crate_map();
+    data.entities[0].keyvalues = vec![
+        ("classname".into(), "prop_ragdoll".into()),
+        ("origin".into(), "0 0 64".into()),
+        ("spawnflags".into(), "4".into()),
+    ];
+    let cube = |h: f32| -> Vec<Vec3> {
+        (0..8)
+            .map(|k| Vec3::new([-h, h][k & 1], [-h, h][(k >> 1) & 1], [-h, h][(k >> 2) & 1]))
+            .collect()
+    };
+    let body = |bone: usize| MapRagdollBody {
+        bone,
+        pieces: vec![cube(6.0)],
+        mass: 10.0,
+        damping: 0.0,
+        rotdamping: 0.0,
+        inertia: 1.0,
+        surfaceprop: "flesh".into(),
+        friction: 0.8,
+        elasticity: 0.0,
+    };
+    let rig = MapRig {
+        bones: vec![
+            MapBone {
+                name: "torso".into(),
+                parent: None,
+                position: Vec3::ZERO,
+                rotation: Quat::IDENTITY,
+            },
+            MapBone {
+                name: "head".into(),
+                parent: Some(0),
+                position: Vec3::new(0.0, 0.0, 14.0),
+                rotation: Quat::IDENTITY,
+            },
+        ],
+        root: Transform::from_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)).with_scale(Vec3::splat(SCALE)),
+        animations: Arc::new(AnimSet::default()),
+    };
+    data.models[0] = MapModel {
+        bounds: (Vec3::splat(-0.5), Vec3::splat(0.5)),
+        rig: Some(Arc::new(rig)),
+        ..default()
+    };
+    let p = &mut data.props[0];
+    p.ragdoll = Some(Arc::new(MapRagdoll {
+        bodies: vec![body(0), body(1)],
+        joints: vec![MapRagdollJoint {
+            parent: 0,
+            child: 1,
+            limits: [(-0.5, 0.5); 3],
+        }],
+        collision_pairs: None,
+    }));
+    p.translation = to_engine(Vec3::new(0.0, 0.0, 64.0));
+    p.solid = PropSolid::None;
+    p.physics = None;
+    data
+}
+
+fn ragdoll_world(app: &mut App) {
+    app.add_plugins((MapPlugin::new(ragdoll_map()), SourceMovementPlugin))
+        .insert_resource(Loadout { movement: source::ID });
+}
+
+/// Each placed ragdoll part's position, in body order.
+fn ragdoll_parts(world: &mut World) -> Vec<(Entity, Vec3)> {
+    let bodies: Vec<Entity> = world
+        .query::<&mashup::map::Ragdoll>()
+        .iter(world)
+        .find(|r| r.placed)
+        .map(|r| r.bodies.clone())
+        .unwrap_or_default();
+    bodies.into_iter().map(|b| (b, pos(world, b))).collect()
+}
+
+/// A map ragdoll falls on the server; a client's copy doesn't simulate
+/// (its parts kinematic) and lands where the server's did
+/// (physics_brushes.md 6.10).
+#[test]
+fn map_ragdolls_are_drawn_as_the_server_simulates_them() {
+    let mut sim = NetSim::new(link(60, 15, 0.0), 73, 1, ragdoll_world);
+    sim.until_joined(600);
+    // Fallen and settled (asleep after 5 s still, ragdolls.md 6.1).
+    sim.ticks(900);
+    let server = ragdoll_parts(sim.server.app.world_mut());
+    let client = ragdoll_parts(sim.clients[0].app.world_mut());
+    assert_eq!((server.len(), client.len()), (2, 2), "both made it");
+    assert!(server[0].1.y < to_engine(Vec3::new(0.0, 0.0, 30.0)).y, "fell: {}", server[0].1);
+    for ((_, s), (b, c)) in server.iter().zip(&client) {
+        assert!(s.distance(*c) < 1e-3, "the client's part {c} where the server's is {s}");
+        assert_eq!(
+            sim.clients[0].app.world().get::<RigidBody>(*b),
+            Some(&RigidBody::Kinematic),
+            "the client doesn't simulate it"
+        );
+    }
 }

@@ -91,6 +91,8 @@ pub enum Place {
     KeyboardAdvanced,
     /// The video tab's Advanced dialog.
     VideoAdvanced,
+    /// The video tab's brightness dialog (Adjust brightness levels...).
+    Gamma,
     Extras,
 }
 
@@ -147,7 +149,7 @@ const fn range(min: f32, max: f32, step: f32, decimals: usize) -> SettingKind {
     }
 }
 
-use Place::{Extras, KeyboardAdvanced, Options, VideoAdvanced};
+use Place::{Extras, Gamma, KeyboardAdvanced, Options, VideoAdvanced};
 
 /// Every setting, in each place's order (the game's layouts place those
 /// with a `field`; a setting whose cvar mashup lacks shows greyed).
@@ -189,6 +191,51 @@ pub const SETTINGS: &[Setting] = &[
         "Mute sound when the game loses focus",
         SettingKind::Toggle,
     ),
+    // Its drop-downs, in CS:S's words; the values CS:S's code sets (the
+    // sound quality and captioning each set two cvars). Kept and saved;
+    // what each changes in mashup: `client::audio::SoundOptions`.
+    setting(
+        Options(Tab::Audio),
+        "snd_surround_speakers",
+        Some("SpeakerSetup"),
+        Some("#GameUI_SpeakerConfiguration"),
+        "Speaker configuration",
+        SettingKind::Choice(&[
+            ("0", "#GameUI_Headphones|Headphones"),
+            ("2", "#GameUI_2Speakers|2 Speakers"),
+            ("4", "#GameUI_4Speakers|4 Speakers"),
+            ("5", "#GameUI_5Speakers|5.1 Speakers"),
+            ("7", "#GameUI_7Speakers|7.1 Speakers"),
+        ]),
+    ),
+    setting(
+        Options(Tab::Audio),
+        "snd_pitchquality dsp_slow_cpu",
+        Some("SoundQuality"),
+        Some("#GameUI_SoundQuality"),
+        "Sound quality",
+        SettingKind::Choice(&[("0 1", "#GameUI_Low|Low"), ("0 0", "#GameUI_Medium|Medium"), ("1 0", "#GameUI_High|High")]),
+    ),
+    setting(
+        Options(Tab::Audio),
+        "closecaption cc_subtitles",
+        Some("CloseCaptionCheck"),
+        Some("#GameUI_Captioning"),
+        "Captioning",
+        SettingKind::Choice(&[
+            ("0 0", "#GameUI_NoClosedCaptions|No captions"),
+            ("1 1", "#GameUI_Subtitles|Subtitles (dialog only)"),
+            ("1 0", "#GameUI_SubtitlesAndSoundEffects|Closed Captions"),
+        ]),
+    ),
+    setting(
+        Options(Tab::Audio),
+        "mashup_spoken_language",
+        Some("AudioSpokenLanguage"),
+        Some("#GAMEUI_AudioSpokenLanguage"),
+        "Audio (spoken) language",
+        SettingKind::Choice(&[("english", "#GameUI_Language_English|English")]),
+    ),
     // Video (`OptionsSubVideo.res`).
     setting(Options(Tab::Video), "mashup_resolution", Some("Resolution"), Some("#GameUI_Resolution"), "Resolution", SettingKind::Resolution),
     setting(
@@ -224,9 +271,43 @@ pub const SETTINGS: &[Setting] = &[
             ("1 1", "#gameui_reflectall|Reflect all"),
         ]),
     ),
+    // Texture detail and filtering: each map texture takes them as it
+    // loads (`TextureSettings`; from the next map on).
+    setting(
+        VideoAdvanced,
+        "mat_picmip",
+        Some("TextureDetail"),
+        Some("#GameUI_Texture_Detail"),
+        "Texture detail (next map)",
+        SettingKind::Choice(&[
+            ("2", "#GameUI_Low|Low"),
+            ("1", "#GameUI_Medium|Medium"),
+            ("0", "#GameUI_High|High"),
+            ("-1", "#GameUI_Ultra|Very High"),
+        ]),
+    ),
+    setting(
+        VideoAdvanced,
+        "mat_trilinear mat_forceaniso",
+        Some("FilteringMode"),
+        Some("#GameUI_Filtering_Mode"),
+        "Filtering mode (next map)",
+        SettingKind::Choice(&[
+            ("0 1", "#GameUI_Bilinear|Bilinear"),
+            ("1 1", "#GameUI_Trilinear|Trilinear"),
+            ("0 2", "#GameUI_Anisotropic2X|Anisotropic 2X"),
+            ("0 4", "#GameUI_Anisotropic4X|Anisotropic 4X"),
+            ("0 8", "#GameUI_Anisotropic8X|Anisotropic 8X"),
+            ("0 16", "#GameUI_Anisotropic16X|Anisotropic 16X"),
+        ]),
+    ),
     setting(VideoAdvanced, "mat_vsync", Some("VSync"), Some("#GameUI_Wait_For_VSync"), "Wait for vertical sync", SettingKind::Toggle),
     setting(VideoAdvanced, "mat_hdr_level", Some("HDR"), Some("#GameUI_HDR"), "High dynamic range (next map)", SettingKind::Choice(HDR_LEVELS)),
     setting(VideoAdvanced, "fov_desired", Some("FovSlider"), Some("#GameUI_FOV"), "Field of view", range(75.0, 90.0, 1.0, 0)),
+    // The video tab's brightness dialog (`OptionsSubVideoGammaDlg.res`):
+    // the slider (LIGHT at its left) and the entry beside it
+    // (`VALUE_ENTRIES`). `client::gamma` applies it to the whole screen.
+    setting(Gamma, "mat_monitorgamma", Some("Gamma"), Some("#GameUI_Gamma"), "Gamma", range(1.6, 2.6, 0.05, 2)),
     // Voice (`OptionsSubVoice.res`): mashup has no voice chat.
     setting(Options(Tab::Voice), "voice_modenable", Some("voice_modenable"), Some("#GameUI_EnableVoice"), "Enable voice", SettingKind::Toggle),
     setting(Options(Tab::Voice), "voice_scale", Some("VoiceReceive"), Some("#GameUI_VoiceReceiveVolume"), "Voice receive volume", range(0.0, 1.0, 0.05, 2)),
@@ -325,8 +406,11 @@ pub const SETTINGS: &[Setting] = &[
 
 /// Text entries beside a slider that show its value (`fieldName` of the
 /// entry, the slider's cvar): VGUI's options pair them.
-pub const VALUE_ENTRIES: [(&str, &str); 2] =
-    [("SensitivityLabel", "sensitivity"), ("MouseAccelerationLabel", "m_customaccel_exponent")];
+pub const VALUE_ENTRIES: [(&str, &str); 3] = [
+    ("SensitivityLabel", "sensitivity"),
+    ("MouseAccelerationLabel", "m_customaccel_exponent"),
+    ("GammaEntry", "mat_monitorgamma"),
+];
 
 /// A setting's index in `SETTINGS` by its cvar (one of its cvars, for a
 /// control setting several).
@@ -554,9 +638,115 @@ impl Plugin for VideoPlugin {
                 Ok(())
             },
         );
+        app.init_resource::<TextureSettings>()
+            .add_systems(
+                PostUpdate,
+                apply_texture_settings
+                    .after(bevy::asset::AssetEventSystems)
+                    .run_if(resource_exists::<Assets<Image>>),
+            );
+        resource_cvar::<TextureSettings, i32>(
+            app,
+            "mat_picmip",
+            "Texture detail: 2 low, 1 medium, 0 high, -1 very high (as high: no larger textures). Each level skips \
+             a texture's largest mip. Applies from the next map load.",
+            |t| &mut t.picmip,
+        );
+        resource_cvar::<TextureSettings, u8>(
+            app,
+            "mat_trilinear",
+            "1: blend between mip levels (trilinear filtering). Applies from the next map load.",
+            |t| &mut t.trilinear,
+        );
+        resource_cvar::<TextureSettings, u16>(
+            app,
+            "mat_forceaniso",
+            "Anisotropic filtering: 1 off, 2, 4, 8 or 16 samples. Applies from the next map load.",
+            |t| &mut t.aniso,
+        );
         let mut console = app.world_mut().resource_mut::<Console>();
-        for name in ["mat_vsync", "mashup_fullscreen", "mashup_resolution", "mat_antialias", "fov_desired"] {
+        for name in [
+            "mat_vsync",
+            "mashup_fullscreen",
+            "mashup_resolution",
+            "mat_antialias",
+            "fov_desired",
+            "mat_picmip",
+            "mat_trilinear",
+            "mat_forceaniso",
+        ] {
             console.archive(name);
+        }
+    }
+}
+
+/// Video > Advanced's texture detail and filtering (`mat_picmip`,
+/// `mat_trilinear`, `mat_forceaniso`; CS:S's defaults: high, bilinear).
+/// Each map texture takes them as it loads (`apply_texture_settings`):
+/// the textures live only on the GPU once drawn, so a change shows from
+/// the next map load (CS:S's applies at once).
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct TextureSettings {
+    pub picmip: i32,
+    pub trilinear: u8,
+    pub aniso: u16,
+}
+
+impl Default for TextureSettings {
+    fn default() -> Self {
+        Self {
+            picmip: 0,
+            trilinear: 0,
+            aniso: 1,
+        }
+    }
+}
+
+impl TextureSettings {
+    /// Set a map texture's sampler: repeating, mipmapped and filtered
+    /// (the world's, models', water's; not the HUD's or UI's pictures,
+    /// which clamp, or pixel-art ones, which don't filter). Returns
+    /// whether it is one.
+    pub fn apply(&self, image: &mut Image) -> bool {
+        use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler};
+        let levels = image.texture_descriptor.mip_level_count;
+        let ImageSampler::Descriptor(d) = &mut image.sampler else {
+            return false;
+        };
+        if levels < 2
+            || d.address_mode_u != ImageAddressMode::Repeat
+            || d.mag_filter != ImageFilterMode::Linear
+            || d.min_filter != ImageFilterMode::Linear
+        {
+            return false;
+        }
+        let aniso = self.aniso.clamp(1, 16);
+        // The GPU filters anisotropically only with every filter linear.
+        d.mipmap_filter = if self.trilinear != 0 || aniso > 1 {
+            ImageFilterMode::Linear
+        } else {
+            ImageFilterMode::Nearest
+        };
+        d.anisotropy_clamp = aniso;
+        // Low and medium skip the largest one or two levels (never the
+        // last).
+        d.lod_min_clamp = self.picmip.clamp(0, levels as i32 - 1) as f32;
+        true
+    }
+}
+
+/// Each texture added this frame takes `TextureSettings` before it goes
+/// to the GPU (the render world takes it at the end of the frame).
+fn apply_texture_settings(
+    settings: Res<TextureSettings>,
+    mut events: MessageReader<AssetEvent<Image>>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    for event in events.read() {
+        if let AssetEvent::Added { id } = event
+            && let Some(image) = images.get_mut_untracked(*id)
+        {
+            settings.apply(image);
         }
     }
 }
@@ -741,6 +931,49 @@ mod tests {
         assert_eq!(s.step("4", 1, &[]), "0", "wraps like the other choices");
     }
 
+    /// Texture detail and filtering set a map texture's sampler; pictures
+    /// that clamp (HUD, UI) or have no mips are left alone.
+    #[test]
+    fn texture_settings_set_map_samplers() {
+        use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
+        let texture = |address, levels| {
+            let mut image = Image::default();
+            image.texture_descriptor.mip_level_count = levels;
+            image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+                address_mode_u: address,
+                address_mode_v: address,
+                mipmap_filter: ImageFilterMode::Linear,
+                ..ImageSamplerDescriptor::linear()
+            });
+            image
+        };
+        let sampler = |image: &Image| match &image.sampler {
+            ImageSampler::Descriptor(d) => (d.mipmap_filter, d.anisotropy_clamp, d.lod_min_clamp),
+            _ => panic!(),
+        };
+        // CS:S's defaults: bilinear (nearest mip), no anisotropy, full size.
+        let mut map = texture(ImageAddressMode::Repeat, 8);
+        assert!(TextureSettings::default().apply(&mut map));
+        assert_eq!(sampler(&map), (ImageFilterMode::Nearest, 1, 0.0));
+        // Low detail, anisotropic 8x (which needs the mip filter linear).
+        let low = TextureSettings {
+            picmip: 2,
+            trilinear: 0,
+            aniso: 8,
+        };
+        assert!(low.apply(&mut map));
+        assert_eq!(sampler(&map), (ImageFilterMode::Linear, 8, 2.0));
+        // Never past the last mip.
+        let mut small = texture(ImageAddressMode::Repeat, 2);
+        TextureSettings { picmip: 2, ..default() }.apply(&mut small);
+        assert_eq!(sampler(&small).2, 1.0);
+        // A HUD picture (clamped) and one without mips: untouched.
+        let mut hud = texture(ImageAddressMode::ClampToEdge, 8);
+        assert!(!low.apply(&mut hud));
+        assert_eq!(sampler(&hud), (ImageFilterMode::Linear, 1, 0.0));
+        assert!(!low.apply(&mut texture(ImageAddressMode::Repeat, 1)));
+    }
+
     #[test]
     fn steps_snap_to_the_grid() {
         let s = setting("sensitivity");
@@ -843,7 +1076,7 @@ mod tests {
 
     /// The cvars of the options' controls added for parity, with CS:S's
     /// defaults and a changed value.
-    const PARITY_CVARS: [(&str, &str, &str); 17] = [
+    const PARITY_CVARS: [(&str, &str, &str); 25] = [
         ("fov_desired", "90", "80"),
         ("cl_crosshairsize", "5", "3"),
         ("cl_crosshairthickness", "0.5", "1.5"),
@@ -861,6 +1094,14 @@ mod tests {
         ("mp_decals", "200", "50"),
         ("cl_c4progressbar", "1", "0"),
         ("volume", "0.5", "0.75"),
+        ("snd_surround_speakers", "2", "0"),
+        ("snd_pitchquality", "1", "0"),
+        ("dsp_slow_cpu", "0", "1"),
+        ("closecaption", "0", "1"),
+        ("cc_subtitles", "0", "1"),
+        ("mat_picmip", "0", "1"),
+        ("mat_trilinear", "0", "1"),
+        ("mat_forceaniso", "1", "8"),
     ];
 
     /// An app with every options cvar's owner registered (no window).

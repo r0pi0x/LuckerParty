@@ -79,6 +79,40 @@ pub struct BodyJoint {
     pub on: bool,
     /// The two bodies don't collide while it holds.
     pub no_collide: bool,
+    /// It breaks when its force (N) or torque (N·m) passes these
+    /// (physics_constraints.md 1.5; 0: never): `JointBroke`.
+    pub force_limit: f32,
+    pub torque_limit: f32,
+}
+
+/// A joint passed its break limit this step (`BodyJoint::key`): the logic
+/// breaks the constraint (OnBreak, removed).
+#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JointBroke(pub u64);
+
+/// A made joint's key and break limits.
+#[derive(Component, Clone, Copy, Debug)]
+struct JointLimits {
+    key: u64,
+    force: f32,
+    torque: f32,
+}
+
+/// Joints whose force or torque passed their limit this step go off and
+/// are reported once (the logic removes them).
+fn break_joints(
+    joints: Query<(Entity, &JointLimits, &avian3d::prelude::JointForces), Without<avian3d::prelude::JointDisabled>>,
+    mut broke: MessageWriter<JointBroke>,
+    mut commands: Commands,
+) {
+    for (e, l, f) in &joints {
+        let force = l.force > 0.0 && f.force().length() > l.force;
+        let torque = l.torque > 0.0 && f.torque().length() > l.torque;
+        if force || torque {
+            commands.entity(e).insert(avian3d::prelude::JointDisabled);
+            broke.write(JointBroke(l.key));
+        }
+    }
 }
 
 /// The joints that exist now.
@@ -119,10 +153,12 @@ impl Plugin for ControllersPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<BodyControllers>()
             .init_resource::<BodyJoints>()
+            .add_message::<JointBroke>()
             .add_systems(
                 FixedPostUpdate,
                 (sync_joints, apply).chain().before(PhysicsSystems::StepSimulation),
-            );
+            )
+            .add_systems(FixedPostUpdate, break_joints.after(PhysicsSystems::Writeback));
     }
 }
 
@@ -344,6 +380,16 @@ fn sync_joints(joints: Res<BodyJoints>, mut made: Local<MadeJoints>, mut command
         }
         if j.no_collide {
             e.insert(JointCollisionDisabled);
+        }
+        if j.force_limit > 0.0 || j.torque_limit > 0.0 {
+            e.insert((
+                avian3d::prelude::JointForces::new(),
+                JointLimits {
+                    key: j.key,
+                    force: j.force_limit,
+                    torque: j.torque_limit,
+                },
+            ));
         }
         if !j.on {
             e.insert(JointDisabled);

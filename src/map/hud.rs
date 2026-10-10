@@ -501,6 +501,9 @@ pub struct GameUi {
     /// The server browser's icons by name (`password`, `bots`, and their
     /// `_column` header versions).
     pub server_icons: HashMap<String, UiImage>,
+    /// Pictures the options' layouts show (an ImagePanel's `image`, lower
+    /// case: the brightness dialog's `gamma`).
+    pub option_images: HashMap<String, UiImage>,
 }
 
 /// An option of a GameUI options script (Create Server's Game page,
