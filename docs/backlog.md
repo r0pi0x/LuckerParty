@@ -96,6 +96,10 @@ plan when work starts; delete them when done.
   settings (model/texture/shader detail, shadow detail, colour
   correction, antialiasing, filtering, wait for vsync, motion blur,
   multicore, HDR) and the audio settings, or decide per control.
+- Scoreboard while loading (user, 2026-10-10): holding Tab while a map
+  loads from the main menu shows the previous game's scoreboard over
+  the loading screen. The scoreboard (and other in-game HUD) must not
+  show while loading or in the main menu.
 - Ladders (user, 2026-10-10): some ladders make no climbing sound (all
   should, by the surface/ladder sound rules: check which ladders are
   silent and why). At the top of a ladder, jumping up off it lands you
