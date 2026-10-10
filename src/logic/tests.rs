@@ -909,6 +909,36 @@ fn trigger_teleport() {
     assert_eq!(w.players[0].origin, Vec3::new(5.0, 3.0, 0.0));
 }
 
+/// The triggers a player overlaps are listed before their touches run:
+/// a trigger_multiple sharing a teleport's volume fires although the
+/// teleport (first in the list) moved the player away (mg_wipeout2's
+/// stage teleports score this way); at the destination the player
+/// re-links (a trigger there fires the same tick).
+#[test]
+fn teleport_keeps_the_other_touches() {
+    let mut w = world();
+    spawn_brush(&mut w, &[("classname", "trigger_teleport"), ("spawnflags", "1"), ("target", "d")], Vec3::ZERO, Vec3::splat(100.0));
+    let score = spawn_brush(
+        &mut w,
+        &[("classname", "trigger_multiple"), ("spawnflags", "1"), ("OnTrigger", "x,Use,,0,-1")],
+        Vec3::ZERO,
+        Vec3::splat(100.0),
+    );
+    let there = spawn_brush(
+        &mut w,
+        &[("classname", "trigger_multiple"), ("spawnflags", "1"), ("OnStartTouch", "x,Use,,0,-1")],
+        Vec3::new(950.0, -50.0, 0.0),
+        Vec3::new(1050.0, 50.0, 128.0),
+    );
+    spawn(&mut w, &[("classname", "info_teleport_destination"), ("targetname", "d"), ("origin", "1000 0 64")]);
+    w.activate();
+    player_at(&mut w, 0, Vec3::new(5.0, 3.0, 0.0));
+    run_to(&mut w, 0);
+    assert_eq!(w.players[0].origin, Vec3::new(1000.0, 0.0, 64.0));
+    assert_eq!(fired(&w, score, "OnTrigger"), vec![0], "the volume shared with the teleport");
+    assert_eq!(fired(&w, there, "OnStartTouch"), vec![0], "the destination's, the same tick");
+}
+
 #[test]
 fn trigger_gravity_and_filtered_trigger() {
     let mut w = world();
@@ -1225,6 +1255,29 @@ fn buttons() {
     let (mut w, b) = button_world(&[("spawnflags", "3072")]);
     use_at(&mut w, &[0, 8, 16], 20);
     assert_eq!(fired(&w, b, "OnUseLocked"), vec![0]);
+}
+
+/// "Touch Activates" (256): walking into the button presses it, again
+/// once it is back out; a locked one does nothing; without the flag a
+/// touch does nothing (mg_escape_prison_beta's gas trap).
+#[test]
+fn touch_activated_buttons() {
+    let (mut w, b) = button_world(&[("spawnflags", "257"), ("wait", "1")]);
+    run_to(&mut w, 2);
+    assert!(fired(&w, b, "OnPressed").is_empty(), "not touching yet");
+    // Against its face (x 96..104, z 56..72; the player box 32 wide).
+    player_at(&mut w, 0, Vec3::new(80.0, 0.0, 30.0));
+    run_to(&mut w, 100);
+    // Out again after its wait; still touched: pressed on the next tick.
+    assert_eq!(fired(&w, b, "OnPressed"), vec![3, 3 + 67 + 1]);
+    let (mut w, b) = button_world(&[("spawnflags", "1"), ("wait", "1")]);
+    player_at(&mut w, 0, Vec3::new(80.0, 0.0, 30.0));
+    run_to(&mut w, 20);
+    assert!(fired(&w, b, "OnPressed").is_empty(), "no touch flag");
+    let (mut w, b) = button_world(&[("spawnflags", "2305"), ("wait", "1")]);
+    player_at(&mut w, 0, Vec3::new(80.0, 0.0, 30.0));
+    run_to(&mut w, 20);
+    assert!(fired(&w, b, "OnPressed").is_empty(), "locked");
 }
 
 #[test]

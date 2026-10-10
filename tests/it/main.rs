@@ -91,6 +91,7 @@ mod heavy {
     mod map_net_weapons;
     mod net_soak;
     mod map_fire;
+    mod map_flows;
     mod map_hdr;
     mod map_loose;
     mod map_objectives;

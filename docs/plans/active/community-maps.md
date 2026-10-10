@@ -232,6 +232,15 @@ What still fails, ranked by maps affected (after):
    (5 maps, the game lets everyone through, as we do), `sm_say`/`ma_say`
    plugin commands refused, VScript inputs (`RunScriptCode`, CS:GO only).
 
+## Minigame flows (2026-10-10)
+
+The 17 mg_ maps played through headless as players meet them
+(`tests/it/heavy/map_flows.rs`: the whole game, rounds on, scripted
+characters on both teams pressing selectors, walking into teleports
+and arenas, dying; `MASHUP_FLOW_TABLE=1 ... -- --nocapture` prints a row
+per step). Per-map flows, results and fixes: below, filled in as the
+session goes.
+
 ## Left, ranked by maps affected
 
 Generic, by maps affected (counts from the sweep after the fixes):

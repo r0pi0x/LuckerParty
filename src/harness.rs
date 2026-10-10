@@ -75,6 +75,8 @@ impl Sim {
     }
 
     fn start(mut app: App) -> Self {
+        // Map logic's random picks repeat run to run.
+        app.insert_resource(crate::logic::LogicSeed(Some(0x9e37_79b9_7f4a_7c15)));
         app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
             1.0 / DEFAULT_TICK_HZ,
         )));

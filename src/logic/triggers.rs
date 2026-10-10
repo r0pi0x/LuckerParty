@@ -213,25 +213,42 @@ impl LogicWorld {
                 continue;
             }
             let who = Who::Player(self.players[i].entity);
-            for &t in &triggers {
+            // The triggers the box overlaps where it stands, then their
+            // touches in order: a teleport among them doesn't take the
+            // player out of the others' list (mg_wipeout2 scores with a
+            // trigger_multiple on its stage teleport); it re-links at the
+            // new place, a few times at most (chained teleports), each
+            // trigger touched once a tick.
+            let mut done: Vec<EntId> = Vec::new();
+            for _ in 0..4 {
                 let Some(p) = self.players.get(i) else { break };
+                let at = p.origin;
                 let (lo, hi) = (p.origin + p.mins, p.origin + p.maxs);
-                let Some(trigger) = trig(self, t) else { continue };
-                if !trigger.enabled || self.get(t).is_some_and(|e| e.killed) {
-                    continue;
-                }
-                if !trigger.brushes.iter().any(|b| box_touches(b, lo, hi)) {
-                    continue;
-                }
-                let trigger = trig_mut(self, t).unwrap();
-                match trigger.links.iter_mut().find(|(w, _)| *w == who) {
-                    Some(link) => link.1 = true,
-                    None => {
-                        trigger.links.push((who, true));
-                        start_touch(self, t, who);
+                let overlapped: Vec<EntId> = triggers
+                    .iter()
+                    .copied()
+                    .filter(|t| {
+                        !done.contains(t)
+                            && trig(self, *t)
+                                .is_some_and(|tr| tr.enabled && tr.brushes.iter().any(|b| box_touches(b, lo, hi)))
+                            && self.get(*t).is_some_and(|e| !e.killed)
+                    })
+                    .collect();
+                done.extend(&overlapped);
+                for t in overlapped {
+                    let Some(trigger) = trig_mut(self, t) else { continue };
+                    match trigger.links.iter_mut().find(|(w, _)| *w == who) {
+                        Some(link) => link.1 = true,
+                        None => {
+                            trigger.links.push((who, true));
+                            start_touch(self, t, who);
+                        }
                     }
+                    touch(self, t, who);
                 }
-                touch(self, t, who);
+                if self.players.get(i).is_none_or(|p| p.origin == at) {
+                    break;
+                }
             }
         }
         self.touch_bodies();

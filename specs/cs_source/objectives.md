@@ -652,6 +652,14 @@ hostages (dump with `sm_dump_netprops` and read with `GetEntProp`).
 14. **Q14 Tick rounding.** Is a 3 s plant done on tick 200 or 201, a 5 s
     defuse on 333 or 334, and does a defuse finishing on the same tick as
     the explosion win? Log tick numbers of begin/complete events in Q1/Q3.
+15. **Q15 One side only.** (Added by an implementation session, not from
+    the source.) With players on one team and nobody on the other (a lone
+    player; mg_ maps with one team's spawns: mg_lego_course,
+    mg_escape_prison_beta, mg_crazykart_v1_1 all T, mg_wipeout2 and
+    mg_boatrace_scramble all CT), what happens when they are all dead:
+    a draw and the next round at once, or nothing until the clock runs
+    out? We end the round as a draw (our reading). Test: probe server
+    alone on a team, `kill`, log the round end and its reason.
 
 ## Mapping to our engine
 

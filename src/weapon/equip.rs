@@ -161,6 +161,56 @@ pub(super) fn map_equipment(world: &mut World, mut seen: Local<(Option<usize>, u
     place_weapons(world, &entities, scale);
 }
 
+/// Placed weapons the map logic removed (`map::entities::RemovedWeapons`)
+/// leave the world: lying loose, the item goes; carried, its carrier
+/// loses it (Source deletes the entity). Only those newly removed: the
+/// list can still name last round's while a round restart re-places them.
+pub(super) fn remove_killed_weapons(world: &mut World, mut seen: Local<Vec<usize>>) {
+    let gone = world
+        .get_resource::<crate::map::entities::RemovedWeapons>()
+        .map(|r| r.0.clone())
+        .unwrap_or_default();
+    if gone == *seen {
+        return;
+    }
+    let new: Vec<usize> = gone.iter().copied().filter(|i| !seen.contains(i)).collect();
+    *seen = gone;
+    if new.is_empty() {
+        return;
+    }
+    let loose: Vec<(Entity, Entity)> = world
+        .query::<(Entity, &Loose, &MapWeapon)>()
+        .iter(world)
+        .filter(|(_, _, m)| new.contains(&m.0))
+        .map(|(e, l, _)| (e, l.weapon))
+        .collect();
+    for (e, w) in loose {
+        world.despawn(e);
+        if world.get::<Weapon>(w).is_some_and(|w| w.owner.is_none()) {
+            world.despawn(w);
+        }
+    }
+    let carried: Vec<(Entity, Entity)> = world
+        .query_filtered::<(Entity, &Weapon, &MapWeapon), Without<Loose>>()
+        .iter(world)
+        .filter(|(_, w, m)| new.contains(&m.0) && w.owner.is_some())
+        .map(|(e, w, _)| (e, w.owner.unwrap()))
+        .collect();
+    for (w, owner) in carried {
+        if let Some(mut inv) = world.get_mut::<Inventory>(owner) {
+            inv.weapons.retain(|x| *x != w);
+            if inv.active == Some(w) {
+                inv.active = None;
+                inv.wanted = inv.weapons.first().copied();
+            }
+            if inv.last == Some(w) {
+                inv.last = None;
+            }
+        }
+        world.despawn(w);
+    }
+}
+
 /// Put the map's `weapon_*` entities down as loose weapons (any placed
 /// before and still lying there go first).
 pub fn place_weapons(world: &mut World, entities: &[crate::map::MapEntity], scale: f32) {

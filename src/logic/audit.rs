@@ -293,7 +293,7 @@ enum Visit {
 }
 
 /// The centre of an entity's volumes (entity space), or its origin.
-fn centre(w: &LogicWorld, id: EntId) -> Vec3 {
+pub fn centre(w: &LogicWorld, id: EntId) -> Vec3 {
     let Some(e) = w.get(id) else { return Vec3::ZERO };
     let (origin, angles) = match pusher(&e.class) {
         Some(p) => (p.origin, p.angles),

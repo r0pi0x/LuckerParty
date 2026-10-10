@@ -38,7 +38,7 @@ mod tests;
 mod community_tests;
 
 pub(crate) use bridge::set_node_shown;
-pub use bridge::{CarriedMover, Logic, LogicPlugin, LogicSet, brush_to_engine, carry_player, mover_brushes_at};
+pub use bridge::{CarriedMover, Logic, LogicPlugin, LogicSeed, LogicSet, brush_to_engine, carry_player, mover_brushes_at};
 pub use hud::{HudEvent, HudMessage, HudMessages, HudShow, MapShake, ScreenFade, ScreenFades};
 pub use value::Value;
 pub use world::{BrushCollision, Collision, Delivery, Effect, EntId, LogicWorld, NoCollision, Player, Who};

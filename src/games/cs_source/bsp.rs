@@ -679,6 +679,7 @@ pub fn convert_level(bsp: &Bsp, bytes: &[u8], name: &str, hdr: bool) -> (MapData
     data.trace_skip = trace_skip(bsp, &leaves);
     data.water = water_volumes(bsp, &leaves);
     data.entities = map_entities(bsp, &leaves);
+    restore_text_case(&mut data.entities, bytes);
     data.entity_scale = METERS_PER_UNIT;
 
     let (mut lightmap, placements, white) = atlas.build();
@@ -1574,6 +1575,42 @@ fn brush_volumes_in(
         .collect()
 }
 
+/// Classes whose `message` is text shown to players (ambient_generic's is
+/// a sound name).
+const TEXT_MESSAGE_CLASSES: &[&str] = &["game_text", "env_hudhint", "env_message"];
+
+/// `vbsp` hands out the entity lump in lower case. Put back the map's own
+/// case where players read it: output connections (their parameters:
+/// `say` lines for point_servercommand, AddOutput `message` for
+/// game_text) and the `message` of the text classes. Names, classes,
+/// keys, model and sound paths stay lower case (matched without case
+/// anyway). Lower-casing keeps every byte in place, so the raw lump
+/// splits into the same entities and pairs.
+pub fn restore_text_case(entities: &mut [crate::map::MapEntity], bytes: &[u8]) {
+    let Some(entry) = bytes.get(8..16) else { return };
+    let ofs = i32::from_le_bytes(entry[0..4].try_into().unwrap()).max(0) as usize;
+    let len = i32::from_le_bytes(entry[4..8].try_into().unwrap()).max(0) as usize;
+    let Some(text) = bytes.get(ofs..ofs + len).and_then(|t| std::str::from_utf8(t).ok()) else {
+        return;
+    };
+    let raw = vbsp::Entities {
+        entities: text.to_string(),
+    };
+    for (e, r) in entities.iter_mut().zip(raw.iter()) {
+        let text_class = TEXT_MESSAGE_CLASSES.contains(&e.classname());
+        for ((k, v), (rk, rv)) in e.keyvalues.iter_mut().zip(r.properties()) {
+            if !k.eq_ignore_ascii_case(rk) || !v.eq_ignore_ascii_case(rv) {
+                // Not the same pair: the lumps disagree; leave the rest.
+                break;
+            }
+            let output = crate::map::entities::is_output_key(k.split('#').next().unwrap_or(""));
+            if output || (text_class && k == "message") {
+                *v = rv.to_string();
+            }
+        }
+    }
+}
+
 /// The map's entities for the logic layer (`MapData::entities`): every
 /// entity's keyvalues in lump order, with the brush volumes of brush
 /// entities in entity space (Source units), local to the entity: trigger
@@ -1888,6 +1925,35 @@ mod tonemap_tests {
         let lump = &out[ofs as usize..];
         assert!(std::str::from_utf8(lump).is_ok());
         assert!(String::from_utf8_lossy(lump).contains("E:?team ?"));
+    }
+
+    /// mg_ maps' announcements (`say @ Knife`, game_text) kept their case;
+    /// vbsp lower-cases the whole lump.
+    #[test]
+    fn text_keeps_the_maps_case() {
+        let text = "{\n\"classname\" \"game_text\"\n\"targetname\" \"Msg\"\n\"message\" \"Someone WON\"\n}\n\
+                    {\n\"classname\" \"func_button\"\n\"model\" \"*3\"\n\"OnPressed\" \"Cmd,Command,say @ Knife,0,-1\"\n}\n\
+                    {\n\"classname\" \"ambient_generic\"\n\"message\" \"Music/Song.mp3\"\n}\n\0";
+        let mut bytes = vec![0u8; 8 + 64 * 16];
+        let ofs = bytes.len() as i32;
+        bytes[8..12].copy_from_slice(&ofs.to_le_bytes());
+        bytes[12..16].copy_from_slice(&(text.len() as i32).to_le_bytes());
+        bytes.extend_from_slice(text.as_bytes());
+        let lower = vbsp::Entities {
+            entities: text.to_ascii_lowercase(),
+        };
+        let mut entities: Vec<MapEntity> = lower
+            .iter()
+            .map(|e| MapEntity {
+                keyvalues: e.properties().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+                ..default()
+            })
+            .collect();
+        restore_text_case(&mut entities, &bytes);
+        assert_eq!(entities[0].get("message"), Some("Someone WON"));
+        assert_eq!(entities[0].get("targetname"), Some("msg"), "names stay as matched");
+        assert_eq!(entities[1].get("onpressed"), Some("Cmd,Command,say @ Knife,0,-1"));
+        assert_eq!(entities[2].get("message"), Some("music/song.mp3"), "sound names stay");
     }
 
     fn entity(kv: &[(&str, &str)]) -> MapEntity {

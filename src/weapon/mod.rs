@@ -84,6 +84,7 @@ impl Plugin for WeaponPlugin {
                         // (a client hears it with its own player's state).
                         (
                             equip::map_equipment,
+                            equip::remove_killed_weapons,
                             give_starting_weapons,
                             equip::apply_equips,
                             drop::pick_up,

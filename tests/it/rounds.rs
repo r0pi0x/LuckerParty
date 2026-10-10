@@ -113,6 +113,48 @@ fn defenders_win_when_time_runs_out_and_buying_closes() {
     let _ = sim.app.world().get::<Intent>(t);
 }
 
+/// Players on one side only (a lone player, or a minigame map with one
+/// team's spawns): all of them dead is a draw at once, not a wait for
+/// the round clock; one still alive keeps the round going.
+#[test]
+fn one_side_all_dead_is_a_draw() {
+    let mut sim = Sim::new(());
+    let a = sim.spawn_character(Vec3::new(0.0, 1.0, 0.0), placeholder::ID);
+    let b = sim.spawn_character(Vec3::new(4.0, 1.0, 0.0), placeholder::ID);
+    for e in [a, b] {
+        sim.app.world_mut().entity_mut(e).insert(Team(1));
+    }
+    sim.app
+        .world_mut()
+        .resource_mut::<Console>()
+        .submit("mp_freezetime 0; mp_roundtime 5; mashup_rounds 1");
+    sim.ticks(3);
+    // The world kills them (falls, map hurts): no friendly fire.
+    let fall = |sim: &mut Sim, target: Entity| {
+        sim.app.world_mut().write_message(Damage {
+            force: Vec3::ZERO,
+            target,
+            attacker: None,
+            amount: 10.0,
+            point: Vec3::ZERO,
+            dir: Vec3::X,
+            hitgroup: Hitgroup::Generic,
+            kind: Default::default(),
+            weapon: None,
+        });
+        sim.ticks(2);
+    };
+    fall(&mut sim, a);
+    assert!(matches!(phase(&sim), Phase::Live { .. }), "one still alive: {:?}", phase(&sim));
+    fall(&mut sim, b);
+    match phase(&sim) {
+        Phase::Over { winner, .. } => assert_eq!(winner, None, "a draw"),
+        p => panic!("round not over: {p:?}"),
+    }
+    sim.seconds(5.2);
+    assert_eq!(sim.app.world().resource::<RoundState>().number, 2, "the next round");
+}
+
 /// Freeze time holds bots as it holds the player (CS:S freezes
 /// everyone): a bot that sees an enemy, and would strafe, stays put
 /// until the freeze ends.
