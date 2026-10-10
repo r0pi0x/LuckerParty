@@ -423,46 +423,104 @@ fn fake_lag_delays_what_the_client_receives() {
     net::disconnect(server.app.world_mut(), "done");
 }
 
-/// A changed value goes out once more after it settles
-/// (`net::server::resend_settled`), so a client that lost its last change
-/// gets it. The soak (tests/it/heavy/net_soak.rs) saw clients with 2-3 %
-/// loss keep a dead player's last health, a score one kill short or the
-/// old scores after a map change until the value changed again. Here the
-/// client's copy is spoiled by hand, as such a loss leaves it, right
-/// after the change arrived.
+/// A value that changes once on an entity whose other values change every
+/// tick (a body) survives a lost update, on a lossy link. replicon
+/// (0.44.3) holds back mutations until the update they follow arrives
+/// (reliable, resent after a loss), acknowledging them on arrival; when
+/// the update comes it applies the newest held-back mutation of each
+/// entity and drops the older ones as outdated. The newer ones, built
+/// after the acknowledgement came back, didn't carry the value: it was
+/// lost for good. The soak (tests/it/heavy/net_soak.rs) saw lossy clients
+/// keep a score one kill short, a dead player's last health, the old
+/// scores after a map change. Each cycle here: a shape change (an update),
+/// a value change two ticks later, a value changing every tick all along.
 #[test]
-fn a_settled_value_reaches_a_client_that_lost_it() {
+fn a_value_survives_held_back_mutations() {
+    let link = LinkConditions {
+        latency: Duration::from_millis(60),
+        jitter: Duration::from_millis(10),
+        loss: 0.1,
+    };
+    let mut sim = NetSim::new(link, 4243, 1, greybox);
+    sim.until_joined(600);
+    let e = sim
+        .server
+        .app
+        .world_mut()
+        .spawn((
+            bevy_replicon::prelude::Replicated,
+            net::NetScore::default(),
+            Health::default(),
+            Team(1),
+        ))
+        .id();
+    sim.ticks(30);
+    let mut stale = Vec::new();
+    for cycle in 0..40 {
+        for t in 0..60 {
+            {
+                let w = sim.server.app.world_mut();
+                // The body: a new value every tick.
+                w.get_mut::<Health>(e).unwrap().current = (cycle * 60 + t) as f32;
+                if t == 0 {
+                    if w.get::<Team>(e).is_some() {
+                        w.entity_mut(e).remove::<Team>();
+                    } else {
+                        w.entity_mut(e).insert(Team(1));
+                    }
+                }
+                if t == 2 {
+                    w.get_mut::<net::NetScore>(e).unwrap().kills += 1;
+                }
+            }
+            sim.step();
+        }
+        let want = sim.server.app.world().get::<net::NetScore>(e).unwrap().kills;
+        let w = sim.clients[0].app.world_mut();
+        let got: Vec<i32> = w
+            .query_filtered::<&net::NetScore, Without<NetCharacter>>()
+            .iter(w)
+            .map(|s| s.kills)
+            .collect();
+        if got != vec![want] {
+            stale.push((cycle, want, got));
+        }
+    }
+    println!("a cycle behind: {stale:?}");
+    assert!(stale.is_empty(), "the client was left a value behind: {stale:?}");
+}
+
+/// A changed value keeps going out with every update for
+/// `SETTLE_TICKS` after its last change (`net::server::resend_settled`),
+/// then stops. Here the client's copy is spoiled by hand, as a lost
+/// change leaves it: within the window it comes back at once; after it,
+/// nothing is sent any more (the value didn't change).
+#[test]
+fn a_changed_value_goes_out_for_a_while_then_stops() {
     let mut sim = NetSim::new(lan(), 31, 1, greybox);
     let host = host(&mut sim);
     sim.until_joined(200);
     sim.ticks(net::server::SETTLE_TICKS + 30);
     sim.server.app.world_mut().get_mut::<Health>(host).unwrap().current = 0.5;
     let theirs = seen_by(&mut sim, 0, net::HOST_ID).expect("the host's character on the client");
-    let arrived = sim.until(30, |s| s.clients[0].app.world().get::<Health>(theirs).map(|h| h.current) == Some(0.5));
-    assert!(arrived, "the change arrived");
-    // Its acknowledgement back at the server (until then it is sent with
-    // every update anyway).
-    sim.ticks(10);
-    sim.clients[0]
-        .app
-        .world_mut()
-        .get_mut::<Health>(theirs)
-        .unwrap()
-        .bypass_change_detection()
-        .current = 0.25;
-    let ok = sim.until(net::server::SETTLE_TICKS + 30, |s| {
-        s.clients[0].app.world().get::<Health>(theirs).map(|h| h.current) == Some(0.5)
-    });
-    assert!(ok, "the settled value was sent again");
-    // Once: spoiled again later, it stays spoiled (nothing changed since).
-    sim.ticks(10);
-    sim.clients[0]
-        .app
-        .world_mut()
-        .get_mut::<Health>(theirs)
-        .unwrap()
-        .bypass_change_detection()
-        .current = 0.25;
+    let health = |sim: &NetSim| sim.clients[0].app.world().get::<Health>(theirs).map(|h| h.current);
+    let spoil = |sim: &mut NetSim| {
+        sim.clients[0]
+            .app
+            .world_mut()
+            .get_mut::<Health>(theirs)
+            .unwrap()
+            .bypass_change_detection()
+            .current = 0.25;
+    };
+    assert!(sim.until(30, |s| health(s) == Some(0.5)), "the change arrived");
+    // Well after its acknowledgement is back, within the window.
+    sim.ticks(20);
+    spoil(&mut sim);
+    assert!(sim.until(10, |s| health(s) == Some(0.5)), "still sent with every update");
+    // After the window: no more.
+    sim.ticks(net::server::SETTLE_TICKS);
+    spoil(&mut sim);
     sim.ticks(net::server::SETTLE_TICKS * 2);
-    assert_eq!(sim.clients[0].app.world().get::<Health>(theirs).unwrap().current, 0.25, "sent once, not over and over");
+    assert_eq!(health(&sim), Some(0.25), "not sent for ever");
 }
