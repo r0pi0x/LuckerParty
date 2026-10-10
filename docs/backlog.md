@@ -84,6 +84,17 @@ plan when work starts; delete them when done.
   the colour list, `cl_crosshairusealpha`'s and `mp_decals`' defaults):
   docs/plans/active/ui-parity.md.
 
+- Spectator mode (user request 2026-10-10): the team menu's Spectate
+  button is greyed (no spectator team). Add CS:S's spectator team:
+  joining it from the team menu and `spectate`/`jointeam 1`, a
+  spectator with no body flying or following players, the spectator
+  menu and modes (free look, chase, in-eye, overview; duck opens
+  `bottomspectator.res`'s lists; Space/mouse buttons cycle targets and
+  modes as in CS:S), the spectator bars, `mp_allowspectators`,
+  scoreboard "Spectators" line, chat from spectators, joining a team
+  from spectating, and network play (spectators take no slot in
+  rounds, receive everything, aren't counted for round ends).
+
 - Decals persist across rounds (bullet holes, blood), as we believe CS:S
   does (players bind `r_cleardecals`, now there; `mashup_round_cleardecals
   1` clears them each round). Left: confirm the game keeps them.
