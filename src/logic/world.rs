@@ -489,6 +489,9 @@ pub struct LogicEntity {
     pub killed: bool,
     /// Index in the map's entity list, when it came from the map.
     pub map_index: Option<usize>,
+    /// Its render colour ("rendercolor", the Color input): a brush
+    /// entity's node is tinted by it.
+    pub render_color: [u8; 3],
 }
 
 impl LogicEntity {
@@ -858,6 +861,7 @@ impl LogicWorld {
         let spawnflags = get("spawnflags").map_or(0, atoi) as u32;
         let origin = get("origin").map_or(Vec3::ZERO, crate::map::entities::parse_vector);
         let angles = get("angles").map_or(Vec3::ZERO, crate::map::entities::parse_vector);
+        let render_color = get("rendercolor").map_or([255; 3], parse_color);
         let ent = LogicEntity {
             classname,
             targetname,
@@ -871,6 +875,7 @@ impl LogicWorld {
             next_think: None,
             killed: false,
             map_index: None,
+            render_color,
         };
         let index = self.slots.len() as u32;
         self.slots.push((0, Some(ent)));
@@ -1093,6 +1098,11 @@ impl LogicWorld {
     }
 
     /// Remove queued messages whose caller is `id` (CancelPending).
+    /// Messages waiting in the event queue.
+    pub fn queued(&self) -> usize {
+        self.queue.len()
+    }
+
     pub fn cancel_pending(&mut self, id: EntId) {
         self.queue.retain(|e| e.caller != Some(Who::Ent(id)));
     }
@@ -1347,6 +1357,28 @@ impl LogicWorld {
                     self.add_output(id, &s);
                 }
             }
+            // Every entity's render colour (entity_io.md, base inputs):
+            // brush entities with a node show it.
+            "color" => {
+                if let Some(s) = self.need_str(&value, input)
+                    && let Some(e) = self.get_mut(id)
+                {
+                    e.render_color = parse_color(&s);
+                }
+            }
+            // Render alpha (0-255): kept as the keyvalue; not drawn yet
+            // (docs/tech-debt.md).
+            "alpha" => {
+                if let Some(a) = self.need_int(&value, input)
+                    && let Some(e) = self.get_mut(id)
+                {
+                    let a = a.clamp(0, 255).to_string();
+                    match e.keyvalues.iter_mut().find(|(k, _)| k.eq_ignore_ascii_case("renderamt")) {
+                        Some(kv) => kv.1 = a,
+                        None => e.keyvalues.push(("renderamt".into(), a)),
+                    }
+                }
+            }
             "fireuser1" | "fireuser2" | "fireuser3" | "fireuser4" => {
                 let n = &input[8..];
                 self.fire_output(id, &format!("OnUser{n}"), activator, Value::Void);
@@ -1399,6 +1431,10 @@ impl LogicWorld {
             }
             "spawnflags" => {
                 e.spawnflags = atoi(&value) as u32;
+                true
+            }
+            "rendercolor" => {
+                e.render_color = parse_color(&value);
                 true
             }
             // Filters and classname targets see the new name; the entity
@@ -1467,6 +1503,13 @@ impl LogicWorld {
             super::classes::class_activate(self, id);
         }
     }
+}
+
+/// "r g b" (0-255 each; missing parts 255, as the game's colour keys).
+pub fn parse_color(s: &str) -> [u8; 3] {
+    let v: Vec<i32> = s.split_whitespace().map(atoi).collect();
+    let c = |i: usize| v.get(i).copied().unwrap_or(255).clamp(0, 255) as u8;
+    [c(0), c(1), c(2)]
 }
 
 fn add_connection(outputs: &mut Vec<(String, Vec<Connection>)>, key: &str, c: Connection) {

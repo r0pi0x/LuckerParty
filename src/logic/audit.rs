@@ -552,6 +552,133 @@ impl Tracker {
     }
 }
 
+/// Load a map's logic with one player at the first spawn, run it 2 s,
+/// send `fires` (target, input, value) with the player as activator,
+/// then run `secs` more: a line every half second (queued messages,
+/// output connections, what the logic logged), for chasing run-away map
+/// logic (`mapsweep --fire`). Stops early past 10 million connections.
+pub fn trace_fire(entities: &[MapEntity], fires: &[(String, String, Option<String>)], secs: f32) -> Vec<String> {
+    let mut w = LogicWorld::new(1.0 / 66.0);
+    w.load_map(entities);
+    let spawn = entities
+        .iter()
+        .find(|e| e.classname().to_ascii_lowercase().starts_with("info_player_"))
+        .map_or(Vec3::ZERO, |e| e.origin());
+    let me = Entity::from_raw_u32(1).unwrap();
+    w.players.push(Player::new(me, spawn));
+    let mut out = Vec::new();
+    for _ in 0..132 {
+        w.frame(&NoCollision);
+        w.effects.clear();
+    }
+    w.log.clear();
+    for (target, input, value) in fires {
+        let v = value.clone().map_or(Value::Void, Value::Str);
+        w.queue_input(target, input, v, 0.0, Some(Who::Player(me)));
+    }
+    let ticks = (secs / w.dt) as i64;
+    let mut effects: BTreeMap<String, usize> = BTreeMap::new();
+    for t in 0..ticks {
+        w.frame(&NoCollision);
+        for e in w.effects.drain(..) {
+            let name = format!("{e:?}");
+            let kind = if name.starts_with("ServerCommand") { name.clone() } else { name.split([' ', '{', '(']).next().unwrap_or("").to_string() };
+            *effects.entry(kind).or_default() += 1;
+        }
+        if t % 33 == 0 || t == ticks - 1 {
+            if !effects.is_empty() {
+                out.push(format!("  effects {:?}", std::mem::take(&mut effects)));
+            }
+            let conns: usize = w
+                .ids()
+                .iter()
+                .filter_map(|id| w.get(*id))
+                .map(|e| e.outputs.iter().map(|(_, c)| c.len()).sum::<usize>())
+                .sum();
+            out.push(format!("tick {}: {} queued, {conns} connections", w.tick, w.queued()));
+            let mut kinds: BTreeMap<String, usize> = BTreeMap::new();
+            for l in w.log.drain(..) {
+                *kinds.entry(l).or_default() += 1;
+            }
+            for (l, n) in kinds.into_iter().take(20) {
+                out.push(format!("  x{n} {l}"));
+            }
+            if conns > 10_000_000 {
+                out.push("stopped: connections run away".into());
+                break;
+            }
+        }
+    }
+    out
+}
+
+impl LogicWorld {
+    /// One line about an entity or player for `ent_dump`: class, name,
+    /// place, a mover's pose and velocity, what it follows.
+    pub fn describe(&self, who: Who) -> String {
+        match who {
+            Who::Player(p) => match self.player(p) {
+                Some(pl) => format!(
+                    "{} '{}' at {:.1} view {:.1} velocity {:.1}",
+                    self.class_of(who),
+                    self.name_of(who),
+                    pl.origin,
+                    pl.view,
+                    pl.velocity
+                ),
+                None => "player (gone)".into(),
+            },
+            Who::Ent(id) => {
+                let Some(e) = self.get(id) else { return "(gone)".into() };
+                let mut s = format!("{} '{}' origin {:.1} angles {:.1}", e.classname, e.targetname, e.origin, e.angles);
+                if let Some(p) = pusher(&e.class) {
+                    s += &format!(
+                        "; mover at {:.1} angles {:.1} velocity {:.1} avelocity {:.1} carried {:.1} {}{}",
+                        p.origin,
+                        p.angles,
+                        p.velocity,
+                        p.avelocity,
+                        p.carry,
+                        if p.visible { "shown" } else { "hidden" },
+                        if p.solid { " solid" } else { "" }
+                    );
+                }
+                if let Some((_, f)) = self.follows.iter().find(|(c, _)| *c == id) {
+                    s += &format!("; follows '{}'", self.get(f.parent).map_or("", |p| p.targetname.as_str()));
+                }
+                if let Class::Trigger(t) = &e.class
+                    && let Some(lo) = t.brushes.iter().map(|b| b.min).reduce(Vec3::min)
+                    && let Some(hi) = t.brushes.iter().map(|b| b.max).reduce(Vec3::max)
+                {
+                    s += &format!("; volume {lo:.0}..{hi:.0}{}", if t.enabled { "" } else { " (disabled)" });
+                }
+                if let Some((lo, hi)) = super::triggers::physics_body(self, id) {
+                    s += &format!("; body {lo:.0}..{hi:.0}");
+                }
+                // The class state, shortened (meshes and volumes left out).
+                let state = match &e.class {
+                    Class::Trigger(t) => format!("{:?} enabled {}", t.kind, t.enabled),
+                    Class::Door(d) => format!("door {:?} locked {}", d.state, d.locked),
+                    Class::Button(b) => format!("button {:?} locked {}", b.state, b.locked),
+                    Class::Relay(r) => format!("{r:?}"),
+                    Class::Timer(t) => format!("{t:?}"),
+                    Class::Counter(c) => format!("{c:?}"),
+                    Class::Branch { value } => format!("branch {value}"),
+                    Class::Compare { value, compare } => format!("compare {value} to {compare}"),
+                    Class::Case(c) => format!("{c:?}"),
+                    Class::Extra(x) => format!("{x:?}"),
+                    _ => String::new(),
+                };
+                if !state.is_empty() {
+                    s += "; ";
+                    s += &state.chars().take(300).collect::<String>();
+                }
+                s
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

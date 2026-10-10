@@ -193,7 +193,12 @@ Only `Reflect`-registered types are visible; register new core components in
   the logic layer (names, `*` wildcards, classnames; the local player is
   the activator), e.g. `+wait 30 +ent_fire logic_timer Disable +ent_fire
   computer0* Skin 2` in a `--screenshot` run on de_nuke (the `wait` lets
-  the map's logic load first). Logged at info level.
+  the map's logic load first). Logged at info level. `ent_dump <target>`
+  prints what the logic holds for each entity it reaches (class, name,
+  origin, a mover's pose, velocity and what carries it, a trigger's volume,
+  what it follows, a physics body's box, and the class state: door and
+  button states, relays, timers, counters, cases), entity space; e.g.
+  `ent_dump el_elevator*` over the remote console while a lift runs.
 - `mashup_drawnav 1` outlines the nav areas near you (2: all), coloured by
   place, with half-links toward their neighbours, and the mesh's ladders
   (yellow line, green cross where bots get on at the foot, orange where
@@ -885,7 +890,12 @@ children of movers that stay where they spawned, usable brushes +use
 didn't find, and panics. Physics props aren't simulated there (no
 bounds), so bodies never touch triggers in it. A unit test for it is in
 `logic::audit::tests`; small entity lists for the fixes it led to are in
-`src/logic/community_tests.rs`.
+`src/logic/community_tests.rs`. `--fire <target>,<input>[,<value>]`
+(repeatable) skips the sweep: it loads the filtered maps' logic with one
+player, sends those inputs and prints every half second the queued
+messages, output connections, effects by kind and logic log lines for
+`--secs` seconds, to chase run-away map logic headless (what one button
+of a minigame map sets off).
 
 The committed summary is in docs/plans/active/community-maps.md.
 

@@ -526,4 +526,30 @@ fn point_teleport_multicompare_and_shake() {
     assert_eq!(got(&w, mc, "FireUser2").len(), 1);
 }
 
+#[test]
+fn color_input_sets_the_render_colour() {
+    // mg_creative_multigames_v8_ns: yellow buttons turn red once pressed
+    // (OnPressed !self Color "255 0 0"); a round restart puts the map's
+    // colour back.
+    let mut w = world();
+    let b = spawn_brush(
+        &mut w,
+        &[("classname", "func_button"), ("targetname", "l"), ("rendercolor", "255 255 0"), ("spawnflags", "1024")],
+        Vec3::splat(-8.0),
+        Vec3::splat(8.0),
+    );
+    let wall = spawn(&mut w, &[("classname", "func_wall"), ("targetname", "w")]);
+    w.activate();
+    assert_eq!(w.get(b).unwrap().render_color, [255, 255, 0]);
+    assert_eq!(w.get(wall).unwrap().render_color, [255, 255, 255]);
+    w.queue_input("l", "Color", Value::Str("255 0 0".into()), 0.0, None);
+    w.queue_input("w", "AddOutput", Value::Str("rendercolor 0 128 255".into()), 0.0, None);
+    w.queue_input("w", "Alpha", Value::Str("300".into()), 0.0, None);
+    run_to(&mut w, 2);
+    assert_eq!(w.get(b).unwrap().render_color, [255, 0, 0]);
+    assert_eq!(w.get(wall).unwrap().render_color, [0, 128, 255]);
+    assert_eq!(w.get(wall).unwrap().kv("renderamt"), Some("255"));
+    assert!(!w.log.iter().any(|l| l.contains("unhandled") || l.contains("no effect")), "{:?}", w.log);
+}
+
 const DT: f32 = 0.015;

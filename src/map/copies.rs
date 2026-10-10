@@ -23,7 +23,11 @@ pub fn copy_node(world: &mut World, node: Entity, pose: Transform) -> Option<Ent
     world.get_entity(node).ok()?;
     let copy = world.entity_mut(node).clone_and_spawn_with_opt_out(|b| {
         b.linked_cloning(true)
-            .deny::<(BodyIslandNode, ColliderTreeProxyKey)>()
+            // A body's collider list is a linked relationship that holds
+            // the body itself when the body has its own collider (a
+            // func_physbox): followed, cloning never ends. The colliders
+            // under it are cloned as children and join the copy's body.
+            .deny::<(BodyIslandNode, ColliderTreeProxyKey, avian3d::prelude::RigidBodyColliders)>()
             .deny::<(MergedBrush, VisClusters, Occludee, FadeDistance)>()
             .deny::<bevy_replicon::prelude::Replicated>();
     });
@@ -52,5 +56,28 @@ fn show_merged_pieces(world: &mut World, original: Entity, copy: Entity) {
             e.remove::<MergedPiece>().insert(Visibility::Inherited);
         }
         show_merged_pieces(world, x, y);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use avian3d::prelude::{ColliderOf, RigidBody, RigidBodyColliders};
+
+    #[test]
+    fn a_body_with_its_own_collider_copies_once() {
+        // mg_creative_multigames_v8_ns's boats: a func_physbox is a body
+        // that is its own collider, so its collider list holds itself;
+        // copying one hung the game (cloning without end).
+        let mut world = World::new();
+        let body = world.spawn((RigidBody::Dynamic, Transform::default())).id();
+        world.entity_mut(body).insert(ColliderOf { body });
+        let child = world.spawn((Transform::default(), ChildOf(body))).id();
+        world.entity_mut(child).insert(ColliderOf { body });
+        assert_eq!(world.get::<RigidBodyColliders>(body).map(|c| c.len()), Some(2));
+        let copy = copy_node(&mut world, body, Transform::from_xyz(1.0, 0.0, 0.0)).unwrap();
+        assert_ne!(copy, body);
+        assert!(world.get::<MapCopy>(copy).is_some());
+        assert_eq!(world.get::<Children>(copy).map(|c| c.len()), Some(1), "its child copied once");
     }
 }

@@ -40,7 +40,10 @@ usage: mapsweep [options]
   --audit            also audit the map logic (mashup::logic::audit): connections whose
                      target or input is missing, outputs and keyvalues nothing reads, and a
                      scripted player's run through every trigger and button; writes
-                     audit.md, audit.txt";
+                     audit.md, audit.txt
+  --fire <t>,<in>[,<v>]  instead of sweeping: load the (filtered) maps' logic with a player, send
+                     these inputs (repeatable) and print the queue, connections and logic log
+                     every half second for --secs seconds (run-away map logic)";
 
 /// Entity classes the game or the map loader handles outside the logic
 /// layer (drawn, volumes, objectives, lighting and look, sound), or that
@@ -106,6 +109,8 @@ struct Args {
     shots: Option<PathBuf>,
     frames: u32,
     audit: bool,
+    /// --fire: inputs to send, then trace the logic (no sweep).
+    fire: Vec<(String, String, Option<String>)>,
 }
 
 fn parse() -> Result<Args, String> {
@@ -116,6 +121,7 @@ fn parse() -> Result<Args, String> {
         shots: None,
         frames: 600,
         audit: false,
+        fire: Vec::new(),
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -127,6 +133,14 @@ fn parse() -> Result<Args, String> {
             "--shots" => a.shots = Some(PathBuf::from(value()?)),
             "--frames" => a.frames = value()?.parse().map_err(|_| "--frames: not a number")?,
             "--audit" => a.audit = true,
+            "--fire" => {
+                let v = value()?;
+                let mut parts = v.splitn(3, ',');
+                let (Some(t), Some(i)) = (parts.next(), parts.next()) else {
+                    return Err("--fire <target>,<input>[,<value>]".into());
+                };
+                a.fire.push((t.to_string(), i.to_string(), parts.next().map(String::from)));
+            }
             "--help" | "-h" => return Err(String::new()),
             other => return Err(format!("unknown option {other}")),
         }
@@ -430,6 +444,20 @@ fn main() -> ExitCode {
     });
     maps.sort();
     // Panics are caught per map; keep their messages short.
+    if !args.fire.is_empty() {
+        for (name, _) in &maps {
+            eprintln!("== {name}");
+            match games::load_map(&format!("{}:{name}", cs_source::GAME)) {
+                Ok(map) => {
+                    for line in mashup::logic::audit::trace_fire(&map.entities, &args.fire, args.secs) {
+                        eprintln!("{line}");
+                    }
+                }
+                Err(e) => eprintln!("load error: {e}"),
+            }
+        }
+        return ExitCode::SUCCESS;
+    }
     std::panic::set_hook(Box::new(|info| {
         eprintln!("  panic: {info}");
     }));

@@ -131,6 +131,29 @@ impl Plugin for LogicPlugin {
                 Ok(None)
             },
         );
+        app.console_command(
+            "ent_dump",
+            "ent_dump <target>: print map entities' logic state (class, place, a mover's pose and \
+             speed, parent link), entity space.",
+            |w, a| {
+                let Some(target) = a.first() else {
+                    return Err("ent_dump <target>".into());
+                };
+                let logic = w.get_resource::<Logic>().ok_or("no map logic loaded")?;
+                let lines: Vec<String> = logic
+                    .world
+                    .resolve(target, None, None)
+                    .into_iter()
+                    .take(32)
+                    .map(|who| logic.world.describe(who))
+                    .collect();
+                Ok(Some(if lines.is_empty() {
+                    format!("no entity '{target}'")
+                } else {
+                    lines.join("\n")
+                }))
+            },
+        );
         crate::console::resource_cvar::<LogicRecord, u8>(
             app,
             "mashup_logic_record",
@@ -912,6 +935,12 @@ fn sync_movers(world: &mut World, logic: &mut Logic) {
             }
         }
         set_node_shown(&mut e, visible);
+        // Its render colour (rendercolor, the Color input).
+        let color = logic.world.get(id).map_or([255; 3], |e| e.render_color);
+        let tint = crate::map::tint::BrushTint(color);
+        if e.get::<crate::map::tint::BrushTint>().map_or(!tint.is_white(), |t| *t != tint) {
+            e.insert(tint);
+        }
         // Its brushes follow its pose: rebuilt (and the component written,
         // which movement reads) only when it moved or changed.
         let solids = logic.world.mover_solid(id);

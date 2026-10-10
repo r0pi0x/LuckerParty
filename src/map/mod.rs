@@ -44,6 +44,7 @@ pub mod loading;
 pub mod material_fx;
 pub use material_fx::{DetailMode, MapSelfIllum, MapUvTransform};
 pub mod merge;
+pub mod tint;
 pub mod probe_lit;
 pub mod radio;
 pub mod bot_profiles;
@@ -2060,6 +2061,7 @@ impl Plugin for MapPlugin {
                 PostUpdate,
                 // From this frame's camera, before visibility propagates.
                 (
+                    tint::apply_brush_tints,
                     merge::sync_merged_brushes,
                     tag_moved_brush_entities,
                     vis::cull,

@@ -8,7 +8,8 @@
 //! turned off by the logic (`vis::LogicHidden`), or shows broken panes
 //! (`BrushPanes`), its triangles leave the combined mesh and its own
 //! meshes are drawn again; when it is back as it started (a closed door,
-//! a round restart) it rejoins. The node itself (collider, logic, culling,
+//! a round restart) it rejoins. A node with a render colour other than
+//! white (`tint::BrushTint`) draws its own meshes too. The node itself (collider, logic, culling,
 //! decals) is unchanged either way.
 
 use std::{collections::HashMap, ops::Range};
@@ -168,6 +169,7 @@ pub(super) fn sync_merged_brushes(
         Has<BrushPanes>,
         &mut MergedBrush,
         &Children,
+        Option<&super::tint::BrushTint>,
     )>,
     mut pieces: Query<&mut Visibility, (With<MergedPiece>, Without<MergedChunk>)>,
     mut chunks: Query<(
@@ -183,8 +185,9 @@ pub(super) fn sync_merged_brushes(
 ) {
     let Some(mut meshes) = meshes else { return };
     dirty.clear();
-    for (t, hidden, panes, mut merged, children) in &mut nodes {
-        let want = !hidden && !panes && at_home(t, &merged.home);
+    for (t, hidden, panes, mut merged, children, tint) in &mut nodes {
+        // A tinted node draws its own (tinted) meshes.
+        let want = !hidden && !panes && at_home(t, &merged.home) && tint.is_none_or(|t| t.is_white());
         if merged.merged == want {
             continue;
         }
@@ -209,7 +212,7 @@ pub(super) fn sync_merged_brushes(
         let indices: Vec<u32> = c
             .parts
             .iter()
-            .filter(|(n, _)| nodes.get(*n).is_ok_and(|(_, _, _, m, _)| m.merged))
+            .filter(|(n, _)| nodes.get(*n).is_ok_and(|(_, _, _, m, _, _)| m.merged))
             .flat_map(|(_, r)| c.indices[r.clone()].iter().copied())
             .collect();
         if indices.is_empty() {
