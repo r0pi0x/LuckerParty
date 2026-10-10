@@ -137,7 +137,9 @@ Only `Reflect`-registered types are visible; register new core components in
   (`game`, `bot`: its other pages), `menu keyboard` (or `mouse`, `audio`,
   `video`, `voice`, `multiplayer`) opens the options on that tab, `menu
   advanced` the keyboard tab's Advanced dialog, `menu videoadvanced` the
-  video tab's, `menu mpadvanced` the multiplayer tab's (its list from the
+  video tab's, `menu gamma` its brightness dialog (with
+  `+mat_monitorgamma 1.6` or `2.6` before it: the whole frame lighter or
+  darker), `menu mpadvanced` the multiplayer tab's (its list from the
   install's `cfg/user.scr`), `menu extras` Lucker Party Options. `menuinput <input>` drives
   the open dialog as keys would (`focus <cvar|map|bots|botcount|botteam|
   difficulty|aspect>`, `open` a focused combo box's list, `down`, `up`, `enter`,

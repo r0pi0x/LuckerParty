@@ -12,7 +12,10 @@ tabs, Voice greyed), its three Advanced dialogs (Multiplayer > Advanced
 from the install's `cfg/user.scr`), the cvars behind its controls
 (second pass, 2026-10), Create Server, Find Servers (filters, Add Server,
 password), the loading dialog and the first-run dialog are done (first
-pass, 2026-10). What's left is at the end.
+pass, 2026-10); the brightness dialog, the Audio tab's drop-downs, Video >
+Advanced's texture detail and filtering, frames hiding the menu under
+them and the tabs kept on the sheet (third pass, 2026-10-10). What's
+left is at the end.
 
 ## Widget layer (`client::widgets`)
 
@@ -22,14 +25,14 @@ State machines the dialogs' models hold (unit-tested in
 
 | VGUI | Ours | Behaviour |
 |---|---|---|
-| `Frame` | `Windows`, `frame`, `VguiFrame`, `frames_pointer`, `place_frames` | Drag by the title bar (26 scheme px; not the close box), kept wholly on screen; a press anywhere on a frame brings it to the front (`GlobalZIndex` by stacking rank, modal dialogs over their owner); close box (X) = the dialog's Cancel; sizeable frames (the server browser) resize from their edges (5 px) and bottom-right corner (18 px, the grip drawn), not under their minimum; centred the first time it opens in a session, then where it was left; nothing saved across runs |
+| `Frame` | `Windows`, `frame`, `VguiFrame`, `frames_pointer`, `place_frames`, `FrameBacking` | Over the game menu a frame hides the menu under it (its title and entries never show through the scheme's see-through frame colour: the frame is drawn over the part of the main menu's picture under it, or over black in a game; user request 2026-10-10); Drag by the title bar (26 scheme px; not the close box), kept wholly on screen; a press anywhere on a frame brings it to the front (`GlobalZIndex` by stacking rank, modal dialogs over their owner); close box (X) = the dialog's Cancel; sizeable frames (the server browser) resize from their edges (5 px) and bottom-right corner (18 px, the grip drawn), not under their minimum; centred the first time it opens in a session, then where it was left; nothing saved across runs |
 | `ComboBox` | `ComboList`, `combo_box`, `combo_popup` | Click (or Space) opens the list under the box, the arrow button sunken while open; the pointer highlights an entry, a click picks it; Up/Down/PageUp/PageDown/Home/End, Enter picks, Esc or a click outside closes (the click is taken); the wheel scrolls the open list; closed and focused, Up/Down and the wheel step it (no wrapping) and a letter jumps; more than 10 entries scroll with a scroll bar; focused, its text shows selected |
 | `Slider` / `CCvarSlider` | `SliderDrag`, `SliderTrack`, `slider` | Press anywhere on the track and drag: the value follows the pointer while held (even as the dialog redraws); 11 tick marks under it; Left/Right (and Up/Down) step it when focused; `leftText` / `rightText` (Low / High) under its ends |
 | `TextEntry` | `Caret`, `text_entry`, `caret_from_click` | Caret drawn and kept in view (long text scrolls); click places the caret at the nearest char (`UiFonts::char_offsets` measures the face); Shift+arrows/Home/End select, Ctrl+A, Ctrl+C, Ctrl+X, Ctrl+V; typing replaces the selection; Tab to it selects all; numeric entries take digits only, `maxchars` kept; passwords show `*` and never copy |
 | `CheckButton` / `CCvarToggleCheckButton` / `CCvarNegateCheckButton` | `check_button` | Click on the box or its words, Space when focused |
 | `RadioButton` | `radio_button` | Round box; a click picks it in its group |
 | `Button` | `button`, `ButtonStyle`, `style_buttons` | Armed (hover) and depressed colours from the scheme (`Button.Armed*`, `Button.Depressed*`), sunken while held, disabled text engraved and no hit; the default button and the focused one ringed; a `ToggleButton` (Filters) stays sunken while on |
-| `PropertySheet` tabs | `tabs` | The open tab raised and joined to its page; Ctrl+Tab / Ctrl+Shift+Tab step them |
+| `PropertySheet` tabs | `tabs`, `tab_widths` | Each as wide as its words (plus 12 a side, at least 56), shrunk in proportion if they would pass the sheet's edge (the options' Multiplayer tab stuck out at 96 each); the open tab raised and joined to its page; Ctrl+Tab / Ctrl+Shift+Tab step them |
 | Tab order | `focus_step` | Tab / Shift+Tab walk the dialog's controls (the `.res` order); Enter presses the focused button or list row, else the dialog's default button (OK, Start, Connect); Space presses the focused control; Esc cancels |
 | `ListPanel` | `server_browser::server_list` | Sort by a header click, the sort arrow drawn at its right; drag a header's right edge to size the column; selected row in the scheme's colours; wheel; double-click |
 
@@ -62,18 +65,27 @@ from its `.res`, controls mashup lacks greyed.
 | Audio | `SFXSlider` | CCvarSlider | `volume` |
 | | `MusicSlider` | CCvarSlider | `snd_musicvolume` (1): sounds under `music/` and MP3s (`map::live_sound::is_music`) |
 | | `snd_mute_losefocus` | CCvarToggleCheckButton | `snd_mute_losefocus` (1): silent while the window is in the background (`client::audio`) |
-| | `SpeakerSetup`, `SoundQuality`, `CloseCaptionCheck`, `AudioSpokenLanguage` | ComboBox | greyed (see below) |
+| | `SpeakerSetup` | ComboBox | `snd_surround_speakers` (ours 2): Headphones (0), 2, 4, 5.1, 7.1 Speakers; kept and saved, the mixer stays stereo (docs/plans/active/video-settings.md, "Audio tab") |
+| | `SoundQuality` | ComboBox | `snd_pitchquality` and `dsp_slow_cpu` together: Low (0 1), Medium (0 0), High (1 0, the default); kept and saved, one mixer quality |
+| | `CloseCaptionCheck` | ComboBox | `closecaption` and `cc_subtitles` together: No captions (0 0, the default), Subtitles (1 1), Closed Captions (1 0); kept and saved, captions not drawn yet (needs a spec) |
+| | `AudioSpokenLanguage` | ComboBox | `mashup_spoken_language` (CS:S's is Steam's language, not a cvar): English, the voice files mashup mounts |
 | Video | `Resolution` | ComboBox | `mashup_resolution`: the monitor's modes in a drop-down, those of the aspect ratio picked |
 | | `AspectRatio` | ComboBox | Normal (4:3), Widescreen 16:9, Widescreen 16:10: filters the resolutions (from the size now; picking one of another ratio moves the size to that ratio's largest, as CS:S's list refills); no cvar |
 | | `DisplayModeCombo` | ComboBox | `mashup_fullscreen`: Full screen, Windowed (and Borderless) |
 | | `AdvancedButton` | Button | opens Video > Advanced |
-| | `GammaButton`, `VRMode` | Button / ComboBox | greyed (see below) |
+| | `GammaButton` | Button | opens the brightness dialog (below); the file has it disabled, CS:S enables it in code (in full screen; to confirm) |
+| | `VRMode`, `VRModeLabel` | ComboBox / Label | left out (a deliberate difference, below) |
+| Brightness (`OptionsSubVideoGammaDlg.res`, 290 x 396) | `Gamma` + `GammaEntry` | CCvarSlider (LIGHT / DARK) + TextEntry | `mat_monitorgamma` (2.2; 1.6 to 2.6): the whole frame raised to `mat_monitorgamma / 2.2` (`client::gamma`); the entry shows and sets it |
+| | `ImagePanel1` | ImagePanel (`image gamma`) | the install's `materials/vgui/gamma` test picture |
+| | `OKButton`, `Button1` | Button | OK (default) / Cancel (puts it back); modal over the options |
 | Video > Advanced (`OptionsSubVideoAdvancedDlg.res`, 482 x 358) | `AntialiasingMode` | ComboBox | `mat_antialias` (None, 2x, 4x MSAA) |
 | | `WaterDetail` | ComboBox | `r_waterforceexpensive` and `r_waterforcereflectentities` together: Simple reflections (0 0), Reflect world (1 0, the default), Reflect all (1 1) |
 | | `VSync` | ComboBox | `mat_vsync` as Disabled / Enabled |
 | | `HDR` (hidden in the file, shown when the mod has HDR) | ComboBox | `mat_hdr_level` |
 | | `FovSlider` | CCvarSlider (`cvar_name fov_desired`, 75 to 90) | `fov_desired` (90): the world camera unzoomed (`options::PlayerFov`, `client::zoom_camera`); the view model zooms with it as with a scope (`viewmodel_fov` minus 90 minus it); a scope's zoom is its own; zoomed mouse scaling still divides by 90 |
-| | `ModelDetail`, `TextureDetail`, `ShaderDetail`, `ShadowDetail`, `ColorCorrection`, `FilteringMode`, `MotionBlur`, `Multicore` | ComboBox | greyed (see below) |
+| | `TextureDetail` | ComboBox | `mat_picmip`: Low (2), Medium (1), High (0, the default), Very High (-1, as High): each map texture starts that many levels down its mips (`client::options::TextureSettings`), from the next map |
+| | `FilteringMode` | ComboBox | `mat_trilinear` and `mat_forceaniso` together: Bilinear (0 1, CS:S's default), Trilinear (1 1), Anisotropic 2X-16X (0 N); from the next map |
+| | `ModelDetail`, `ShaderDetail`, `ShadowDetail`, `ColorCorrection`, `MotionBlur`, `Multicore` | ComboBox | greyed (see below; the plan: docs/plans/active/video-settings.md) |
 | Voice (`OptionsSubVoice.res`; the tab was missing) | `voice_modenable`, `VoiceReceive`, `MicBoost`, `TestMicrophone`, `MicMeter` | CheckButton / CCvarSlider / Button / ImagePanel | the tab, all greyed: mashup has no voice chat |
 | Multiplayer (`cstrike/resource/OptionsSubMultiplayer.res`) | `CrosshairColorComboBox` | ComboBox | `cl_crosshaircolor`: Green, Red, Blue, Yellow, Cyan, Custom (5) |
 | | `Red/Green/Blue Color Slider` | CCvarSlider | `cl_crosshaircolor_r`, `_g`, `_b` (50, 250, 50): the Custom colour |
@@ -105,16 +117,9 @@ defaults are CS:S's (`client::options` tests
 |---|---|
 | Mouse `MouseRaw` (`m_rawinput`) | mashup always reads raw device motion (Bevy's mouse motion, no OS acceleration); a check box that changed nothing would mislead |
 | Mouse `Joystick*` | no joystick or gamepad input |
-| Audio `SpeakerSetup` (`snd_surround_speakers`) | the mixer is stereo only |
-| Audio `SoundQuality` | one mixer quality; nothing to pick |
-| Audio `CloseCaptionCheck` | no closed captions |
-| Audio `AudioSpokenLanguage` | one language (the install's English) |
 | Audio `ThirdPartySoundCredits`, Video `ThirdPartyVideoCredits` | links out (URLButton) |
-| Video `VRMode` | no VR (CS:S greys it too without a headset: `#GameUI_NoVRTooltip`) |
-| Video `GammaButton` | needs the gamma dialog (`OptionsSubVideoGammaDlg.res`) and `mat_monitorgamma` through the tonemapping; next pass |
-| Video > Advanced `ModelDetail`, `TextureDetail`, `ShaderDetail` | one detail level: models draw LOD 0, textures their full mips, one shader path |
-| Video > Advanced `ShadowDetail`, `ColorCorrection`, `MotionBlur` | the renderer has no switch for these (no colour correction or motion blur at all) |
-| Video > Advanced `FilteringMode` | texture filtering is fixed when textures load (no anisotropy switch yet) |
+| Video > Advanced `ModelDetail`, `ShaderDetail` | one detail level: models draw LOD 0, one shader path (docs/plans/active/video-settings.md) |
+| Video > Advanced `ShadowDetail`, `ColorCorrection`, `MotionBlur` | the renderer has no switch for these (no blob shadows, colour correction or motion blur at all; same plan) |
 | Video > Advanced `Multicore` | Bevy always renders multi-threaded |
 | Voice (all) | no voice chat |
 | Multiplayer `ImportSprayImage`, `LogoImage` | no sprays |
@@ -132,6 +137,13 @@ defaults are CS:S's (`client::options` tests
 - The options dialog applies each change at once (Cancel puts them
   back); CS:S's waits for OK or Apply. Its Advanced dialogs behave the
   same way, except Multiplayer > Advanced, which waits for OK as CS:S's.
+- Virtual Reality Mode (`VRMode` and its label on the video tab): left
+  out (user decision 2026-10-10: mashup won't support VR; CS:S greys it
+  without a headset). `game_menu::draw::LEFT_OUT` lists them.
+- Brightness works windowed too (CS:S's needs full screen for its
+  hardware gamma ramp; ours is a pass over the frame).
+- Texture detail and filtering apply from the next map load (the
+  textures live only on the GPU once drawn); CS:S's apply at once.
 
 #### Reference captures needed
 
@@ -220,14 +232,21 @@ resized (`+wait 30 +vgui_windows servers 40 30 760 520`). Second pass
 `video`, `voice`, `multiplayer` with `+cl_crosshaircolor 5
 +cl_crosshairdot 1 +cl_crosshairsize 8` before it), `videoadvanced`,
 `mpadvanced`, `advanced`, Create Server's map list open (`+menu
-newgame +menuinput open`: `< Random Map >` first) and `extras`.
+newgame +menuinput open`: `< Random Map >` first) and `extras`. Third
+pass (2026-10-10, layering and the empty controls): Options, Create
+Server and Find Servers over the main menu (the title hidden under the
+frames) and Options over the in-game Esc menu (`--map
+cs_source:de_dust2 +wait 60 +menu options`), the tabs inside the sheet,
+the Audio tab's drop-downs, the video tab without VR mode, `menu gamma`
+at `mat_monitorgamma` 1.6, 2.2 and 2.6, and de_dust2 at the three.
 
 ## Left
 
 - The console as CS:S's: a sizeable, movable VGUI frame (`CConsoleDialog`,
   no `.res`: its layout is code) instead of our drop-down.
-- The greyed controls whose features mashup may get (gamma, texture
-  filtering, Multiplayer > Advanced's auto-help). Its `cl_autowepswitch`,
+- The greyed controls whose features mashup may get (Video > Advanced:
+  docs/plans/active/video-settings.md; Multiplayer > Advanced's
+  auto-help). Its `cl_autowepswitch`,
   `hud_centerid` and `cl_disablefreezecam` work (`weapon::drop`,
   `client::target_id`, `client::freeze_cam`).
 - Reference captures of CS:S's dialogs to compare with (see the report

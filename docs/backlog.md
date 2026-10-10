@@ -84,22 +84,10 @@ plan when work starts; delete them when done.
   the colour list, `cl_crosshairusealpha`'s and `mp_decals`' defaults):
   docs/plans/active/ui-parity.md.
 
-- Menu layering and Options (user, 2026-10-10): the main menu's logo
-  and entries draw over the Options window (and other dialogs): dialogs
-  must draw above the menu. The Options tabs overflow: "Multiplayer"
-  sticks out past the window's edge. Greyed or empty controls: Audio's
-  speaker configuration, sound quality, captioning and spoken language
-  have no drop-down items; Video's "Adjust brightness levels" does
-  nothing; remove "Virtual reality mode" (not a CS:S option we will
-  support; check whether the CS:S build we target shows it at all).
-  Write a plan (docs/plans/active/) to implement Video > Advanced's
-  settings (model/texture/shader detail, shadow detail, colour
-  correction, antialiasing, filtering, wait for vsync, motion blur,
-  multicore, HDR) and the audio settings, or decide per control.
-- Scoreboard while loading (user, 2026-10-10): holding Tab while a map
-  loads from the main menu shows the previous game's scoreboard over
-  the loading screen. The scoreboard (and other in-game HUD) must not
-  show while loading or in the main menu.
+- Video > Advanced's and the Audio tab's remaining settings (model,
+  shader and shadow detail, colour correction, motion blur; speakers,
+  sound quality and captions beyond being saved): one by one, per
+  docs/plans/active/video-settings.md.
 - Ladders (user, 2026-10-10): some ladders make no climbing sound (all
   should, by the surface/ladder sound rules: check which ladders are
   silent and why). At the top of a ladder, jumping up off it lands you

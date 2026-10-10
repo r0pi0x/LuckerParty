@@ -1225,3 +1225,127 @@ fn the_voice_tab_is_there_and_greyed() {
     // No voice chat: only the dialog's buttons.
     assert!(m.rows().iter().all(|r| matches!(r, Row::Button { .. })));
 }
+
+/// The menu with the cvars of the Audio tab's drop-downs, the texture
+/// settings and the brightness.
+fn av_menu() -> GameMenu {
+    let mut m = GameMenu {
+        in_game: true,
+        ..default()
+    };
+    let cvars = |n: &str| match n {
+        "snd_surround_speakers" => Some("2".to_string()),
+        "snd_pitchquality" => Some("1".to_string()),
+        "dsp_slow_cpu" => Some("0".to_string()),
+        "closecaption" | "cc_subtitles" => Some("0".to_string()),
+        "mashup_spoken_language" => Some("english".to_string()),
+        "mat_picmip" => Some("0".to_string()),
+        "mat_trilinear" => Some("0".to_string()),
+        "mat_forceaniso" => Some("1".to_string()),
+        "mat_monitorgamma" => Some("2.2".to_string()),
+        n => get(n),
+    };
+    m.open(Page::Main, vec!["de_dust2".into()], None, cvars);
+    m
+}
+
+/// The Audio tab's speaker, quality, captioning and language drop-downs
+/// list CS:S's entries and set its cvars (quality and captioning two
+/// each).
+#[test]
+fn the_audio_tabs_drop_downs_have_their_entries() {
+    let mut m = av_menu();
+    click(&mut m, MainItem::Options);
+    press(&mut m, &[Input::Click(Target::Tab(2), 0)]);
+    assert_eq!(m.tab, Tab::Audio);
+    let entries = |m: &GameMenu, cvar: &str| match control(m, row_of(m, cvar)) {
+        Control::Combo { entries, selected, .. } => (entries, selected),
+        c => panic!("{c:?}"),
+    };
+    assert_eq!(
+        entries(&m, "snd_surround_speakers"),
+        (
+            ["Headphones", "2 Speakers", "4 Speakers", "5.1 Speakers", "7.1 Speakers"].map(String::from).to_vec(),
+            Some(1)
+        )
+    );
+    assert_eq!(entries(&m, "snd_pitchquality dsp_slow_cpu"), (["Low", "Medium", "High"].map(String::from).to_vec(), Some(2)));
+    assert_eq!(
+        entries(&m, "closecaption cc_subtitles"),
+        (
+            ["No captions", "Subtitles (dialog only)", "Closed Captions"].map(String::from).to_vec(),
+            Some(0)
+        )
+    );
+    assert_eq!(entries(&m, "mashup_spoken_language"), (vec!["English".to_string()], Some(0)));
+    let speakers = row_of(&m, "snd_surround_speakers");
+    let o = press(&mut m, &[Input::Click(Target::Row(speakers), 0), Input::Click(Target::ComboItem(0), 0)]);
+    assert_eq!(o.lines, ["snd_surround_speakers 0"], "headphones");
+    let quality = row_of(&m, "snd_pitchquality dsp_slow_cpu");
+    let o = press(&mut m, &[Input::Click(Target::Row(quality), 0), Input::Click(Target::ComboItem(0), 0)]);
+    assert_eq!(o.lines, ["snd_pitchquality 0", "dsp_slow_cpu 1"], "low");
+    let captions = row_of(&m, "closecaption cc_subtitles");
+    let o = press(&mut m, &[Input::Click(Target::Row(captions), 0), Input::Click(Target::ComboItem(1), 0)]);
+    assert_eq!(o.lines, ["closecaption 1", "cc_subtitles 1"], "subtitles");
+    let o = click_on(&mut m, |m| button(m, Action::Cancel));
+    assert_eq!(
+        o.lines,
+        ["snd_surround_speakers 2", "snd_pitchquality 1", "dsp_slow_cpu 0", "closecaption 0", "cc_subtitles 0"],
+        "Cancel puts them back"
+    );
+}
+
+/// Video > Advanced's texture detail and filtering drop-downs set CS:S's
+/// cvars.
+#[test]
+fn texture_detail_and_filtering_set_their_cvars() {
+    let mut m = av_menu();
+    click(&mut m, MainItem::Options);
+    press(&mut m, &[Input::Click(Target::Tab(3), 0)]);
+    click_on(&mut m, |m| button(m, Action::VideoAdvanced));
+    let detail = row_of(&m, "mat_picmip");
+    assert!(matches!(control(&m, detail), Control::Combo { selected: Some(2), text, .. } if text == "High"));
+    let o = press(&mut m, &[Input::Click(Target::Row(detail), 0), Input::Click(Target::ComboItem(0), 0)]);
+    assert_eq!(o.lines, ["mat_picmip 2"], "low");
+    let filter = row_of(&m, "mat_trilinear mat_forceaniso");
+    assert!(matches!(control(&m, filter), Control::Combo { selected: Some(0), text, .. } if text == "Bilinear"));
+    let o = press(&mut m, &[Input::Click(Target::Row(filter), 0), Input::Click(Target::ComboItem(4), 0)]);
+    assert_eq!(o.lines, ["mat_trilinear 0", "mat_forceaniso 8"], "anisotropic 8x");
+}
+
+/// "Adjust brightness levels..." opens the gamma dialog over the options:
+/// its slider and the entry beside it set `mat_monitorgamma`; Cancel
+/// puts it back.
+#[test]
+fn the_brightness_dialog_sets_the_gamma() {
+    let mut layout = UiLayout::default();
+    for (name, kind) in [("Gamma", "CCvarSlider"), ("GammaEntry", "TextEntry"), ("OKButton", "Button"), ("Button1", "Button")] {
+        layout
+            .controls
+            .push(UiControl::new(name, UiKind::Other(kind.into()), 0.0, 0.0, 100.0, 24.0));
+    }
+    let ui = GameUi {
+        options: HashMap::from([("video_gamma".to_string(), layout)]),
+        ..default()
+    };
+    let mut m = av_menu();
+    m.set_ui(Some(Arc::new(ui)));
+    click(&mut m, MainItem::Options);
+    press(&mut m, &[Input::Click(Target::Tab(3), 0)]);
+    let gamma_button = button(&m, Action::Gamma);
+    assert_eq!(crate::client::game_menu::label_of(&m.rows()[gamma_button]), "Adjust brightness levels...");
+    press(&mut m, &[Input::Click(Target::Row(gamma_button), 0)]);
+    assert_eq!(m.page, Page::Gamma);
+    let slider = row_of(&m, "mat_monitorgamma");
+    assert!(matches!(control(&m, slider), Control::Slider { .. }));
+    let entry = row_with(&m, Field::SettingText(setting("mat_monitorgamma")));
+    assert!(matches!(control(&m, entry), Control::Text { text, .. } if text == "2.20"));
+    // A step to the right: darker.
+    let o = press(&mut m, &[Input::Click(Target::Row(slider), 0), Input::Right]);
+    assert_eq!(o.lines, ["mat_monitorgamma 2.25"]);
+    let o = click_on(&mut m, |m| button(m, Action::Cancel));
+    assert_eq!(o.lines, ["mat_monitorgamma 2.2"], "as it was");
+    assert_eq!((m.page, m.focus), (Page::Settings, gamma_button));
+    // VR mode is left out of the video tab on purpose.
+    assert!(crate::client::game_menu::draw::LEFT_OUT.contains(&"VRMode"));
+}

@@ -332,6 +332,7 @@ impl GameMenu {
             Place::Options(tab) => tab.page(),
             Place::KeyboardAdvanced => "keyboard_advanced",
             Place::VideoAdvanced => "video_advanced",
+            Place::Gamma => "video_gamma",
             Place::Extras => return None,
         };
         self.ui.0.as_ref()?.options.get(name)
@@ -479,16 +480,22 @@ impl GameMenu {
             };
             rows.insert(at, row);
         }
-        let advanced = match self.tab {
-            Tab::Video => Some(Action::VideoAdvanced),
-            Tab::Multiplayer => Some(Action::MultiplayerAdvanced),
-            _ => None,
+        let buttons: &[Action] = match self.tab {
+            // Adjust brightness levels... and Advanced...
+            Tab::Video => &[Action::Gamma, Action::VideoAdvanced],
+            Tab::Multiplayer => &[Action::MultiplayerAdvanced],
+            _ => &[],
         };
-        if let Some(action) = advanced {
-            // Its Advanced... button, where the layout has it.
+        for action in buttons.iter().cloned() {
+            let label = if action == Action::Gamma {
+                self.text("#GameUI_AdjustGamma", "Adjust brightness levels...")
+            } else {
+                self.text("#GameUI_AdvancedEllipsis", "Advanced...")
+            };
+            // The button, where the layout has it.
             let name = advanced_button(&action).unwrap_or_default();
             let at = self.layout().and_then(|l| l.controls.iter().position(|c| c.name == name));
-            let b = Self::button_row(&self.text("#GameUI_AdvancedEllipsis", "Advanced..."), action);
+            let b = Self::button_row(&label, action);
             let before = at.map_or(rows.len(), |at| {
                 rows.iter()
                     .position(|r| self.row_order(r) > at)
@@ -502,10 +509,10 @@ impl GameMenu {
 
     /// An Advanced dialog's rows: its settings, OK, Cancel.
     pub(super) fn advanced_rows(&self) -> Vec<Row> {
-        let place = if self.page == Page::KeyboardAdvanced {
-            Place::KeyboardAdvanced
-        } else {
-            Place::VideoAdvanced
+        let place = match self.page {
+            Page::KeyboardAdvanced => Place::KeyboardAdvanced,
+            Page::Gamma => Place::Gamma,
+            _ => Place::VideoAdvanced,
         };
         let mut rows = self.place_rows(place);
         rows.push(self.ok_row());

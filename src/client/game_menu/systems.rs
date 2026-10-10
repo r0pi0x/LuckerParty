@@ -29,6 +29,8 @@ pub(super) struct MenuUi {
     /// The title's font, its height in scheme pixels and its line height
     /// in ems.
     pub(super) title_font: Option<(Handle<Font>, f32, f32)>,
+    /// The options' pictures by name (`GameUi::option_images`).
+    pub(super) pictures: HashMap<String, Handle<Image>>,
 }
 
 impl MenuUi {
@@ -38,6 +40,12 @@ impl MenuUi {
         let pic = ui.background_for(size.x / size.y.max(1.0))?;
         let i = ui.background_wide.as_ref().is_some_and(|w| std::ptr::eq(w, pic)) as usize;
         self.backgrounds[i].clone()
+    }
+
+    /// As `background`, with the picture's size in pixels.
+    pub(super) fn background_sized(&self, size: Vec2) -> Option<(Handle<Image>, Vec2)> {
+        let pic = self.ui.as_ref()?.background_for(size.x / size.y.max(1.0))?;
+        Some((self.background(size)?, Vec2::new(pic.width as f32, pic.height as f32)))
     }
 }
 
@@ -108,6 +116,11 @@ pub(super) fn ui_loaded(
         return;
     };
     ui.backgrounds = [&game_ui.background, &game_ui.background_wide].map(|p| p.as_ref().map(|p| ui_image(p, &mut images)));
+    ui.pictures = game_ui
+        .option_images
+        .iter()
+        .map(|(name, p)| (name.clone(), ui_image(p, &mut images)))
+        .collect();
     ui.title_font = game_ui
         .title_font
         .as_ref()
