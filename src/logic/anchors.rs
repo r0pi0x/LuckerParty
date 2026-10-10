@@ -9,15 +9,22 @@
 use bevy::prelude::*;
 
 use super::classes::Class;
-use super::world::{EntId, LogicWorld, place_hull};
+use super::world::{EntId, LogicWorld, Who, place_hull};
 use crate::map::entities::{anchor_class, entity_rotation, parent_name};
 
 /// A child's place relative to its parent (entity space).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Follow {
-    pub parent: EntId,
+    /// An entity, or a player (SetParent to `!activator`).
+    pub parent: Who,
     pub offset: Vec3,
     pub rotation: Quat,
+}
+
+/// A class the physics moves (func_physbox, physics props): what is
+/// parented to one follows its body.
+pub fn is_physics_body(classname: &str) -> bool {
+    super::prop_damage::is_physbox(classname) || classname.to_ascii_lowercase().starts_with("prop_physics")
 }
 
 /// Source-style angles (pitch, yaw, roll; degrees) of a rotation in
@@ -46,13 +53,12 @@ impl LogicWorld {
             let p = w.get(id)?.kv("parentname").map(parent_name)?;
             by_name.get(&p.to_ascii_lowercase()).copied().filter(|p| *p != id)
         };
-        // Entities something else moves: placed weapons and physics
-        // brushes (the physics), movers (their own logic).
+        // Entities something else moves: placed weapons, physics
+        // brushes and physics props (the physics), movers (their own
+        // logic).
         let moves = |w: &LogicWorld, id: EntId| {
             w.get(id).is_some_and(|e| {
-                anchor_class(&e.classname)
-                    || super::prop_damage::is_physbox(&e.classname)
-                    || super::movers::pusher(&e.class).is_some()
+                anchor_class(&e.classname) || is_physics_body(&e.classname) || super::movers::pusher(&e.class).is_some()
             })
         };
         // How many moving ancestors each entity has (0: stays put).
@@ -101,27 +107,90 @@ impl LogicWorld {
         // Parents before children.
         children.sort_by_key(|(d, ..)| *d);
         for (_, id, parent) in children {
-            let (po, pa) = self.parent_pose(parent);
-            let prot = entity_rotation(pa);
-            let e = self.get(id).unwrap();
-            let follow = Follow {
-                parent,
-                offset: prot.inverse() * (e.origin - po),
-                rotation: prot.inverse() * entity_rotation(e.angles),
-            };
-            self.follows.push((id, follow));
+            self.attach(id, Who::Ent(parent));
+        }
+    }
+
+    /// Parent `id` to `parent` where both are now (keeping its place
+    /// relative to the parent), replacing any parent it had.
+    pub fn attach(&mut self, id: EntId, parent: Who) {
+        let (po, pa) = self.parent_pose(parent);
+        let prot = entity_rotation(pa);
+        let Some(e) = self.get(id) else { return };
+        let follow = Follow {
+            parent,
+            offset: prot.inverse() * (e.origin - po),
+            rotation: prot.inverse() * entity_rotation(e.angles),
+        };
+        self.follows.retain(|(c, _)| *c != id);
+        self.follows.push((id, follow));
+    }
+
+    /// Unparent `id` (ClearParent): it stays where it is.
+    pub fn detach(&mut self, id: EntId) {
+        self.follows.retain(|(c, _)| *c != id);
+    }
+
+    /// The SetParent, SetParentAttachment, SetParentAttachmentMaintainOffset
+    /// and ClearParent inputs (entity_io.md base inputs). Attachments are
+    /// model points the logic doesn't know: the child keeps its offset
+    /// (tech-debt). True when handled.
+    pub(super) fn parent_input(
+        &mut self,
+        id: EntId,
+        input: &str,
+        value: &super::value::Value,
+        activator: Option<Who>,
+        caller: Option<Who>,
+    ) -> bool {
+        match input {
+            "setparent" => {
+                let name = value.to_str(|w| self.name_of(w)).unwrap_or_default();
+                if name.trim().is_empty() {
+                    self.detach(id);
+                    return true;
+                }
+                let found = self
+                    .resolve(name.trim(), activator, caller)
+                    .into_iter()
+                    .find(|w| *w != Who::Ent(id));
+                match found {
+                    Some(p) => self.attach(id, p),
+                    None => self.log.push(format!("SetParent: no entity named '{}'", name.trim())),
+                }
+                true
+            }
+            "clearparent" => {
+                self.detach(id);
+                true
+            }
+            // Snaps to the attachment: here the parent's origin.
+            "setparentattachment" => {
+                if let Some(i) = self.follows.iter().position(|(c, _)| *c == id) {
+                    self.follows[i].1.offset = Vec3::ZERO;
+                }
+                true
+            }
+            "setparentattachmentmaintainoffset" => true,
+            _ => false,
         }
     }
 
     /// Where a parent is now: a mover's pusher pose, else its origin and
-    /// angles.
-    pub fn parent_pose(&self, id: EntId) -> (Vec3, Vec3) {
-        match self.get(id) {
-            Some(e) => match super::movers::pusher(&e.class) {
-                Some(p) => (p.origin, p.angles),
-                None => (e.origin, e.angles),
+    /// angles; a player's origin and yaw.
+    pub fn parent_pose(&self, parent: Who) -> (Vec3, Vec3) {
+        match parent {
+            Who::Ent(id) => match self.get(id) {
+                Some(e) => match super::movers::pusher(&e.class) {
+                    Some(p) => (p.origin, p.angles),
+                    None => (e.origin, e.angles),
+                },
+                None => (Vec3::ZERO, Vec3::ZERO),
             },
-            None => (Vec3::ZERO, Vec3::ZERO),
+            Who::Player(p) => match self.player(p) {
+                Some(p) => (p.origin, Vec3::new(0.0, p.view.y, 0.0)),
+                None => (Vec3::ZERO, Vec3::ZERO),
+            },
         }
     }
 
@@ -139,16 +208,20 @@ impl LogicWorld {
     /// motion kept: translation only (tech-debt: a turning parent doesn't
     /// turn a mover child).
     pub fn follow_anchors(&mut self) {
+        self.follow_players();
         let follows = self.follows.clone();
         for (id, f) in follows {
-            if self.get(f.parent).is_none() {
+            if !self.exists(f.parent) {
                 continue;
             }
             let (po, pa) = self.parent_pose(f.parent);
-            let parent_velocity = self
-                .get(f.parent)
-                .and_then(|p| super::movers::pusher(&p.class))
-                .map_or(Vec3::ZERO, |p| p.velocity + p.carry);
+            let parent_velocity = match f.parent {
+                Who::Ent(p) => self
+                    .get(p)
+                    .and_then(|p| super::movers::pusher(&p.class))
+                    .map_or(Vec3::ZERO, |p| p.velocity + p.carry),
+                Who::Player(p) => self.player(p).map_or(Vec3::ZERO, |p| p.velocity),
+            };
             let prot = entity_rotation(pa);
             let origin = po + prot * f.offset;
             let rotation = prot * f.rotation;
@@ -189,6 +262,96 @@ impl LogicWorld {
         }
     }
 
+    /// Players parented to an entity (SetParent on a player: karts,
+    /// seats) stay at their place relative to it, carried with its
+    /// velocity when it is a mover; dead players are let go.
+    fn follow_players(&mut self) {
+        let follows = self.player_follows.clone();
+        for (p, f) in follows {
+            let alive = self.player(p).is_some_and(|p| p.alive);
+            if !alive || !self.exists(f.parent) {
+                if !alive || self.player(p).is_some() {
+                    self.player_follows.retain(|(q, _)| *q != p);
+                }
+                continue;
+            }
+            let (po, pa) = self.parent_pose(f.parent);
+            let origin = po + entity_rotation(pa) * f.offset;
+            let velocity = match f.parent {
+                Who::Ent(e) => self
+                    .get(e)
+                    .and_then(|e| super::movers::pusher(&e.class))
+                    .map_or(Vec3::ZERO, |m| m.velocity + m.carry),
+                Who::Player(_) => Vec3::ZERO,
+            };
+            if let Some(pl) = self.player_mut(p) {
+                pl.origin = origin;
+                pl.velocity = velocity;
+                pl.moved = true;
+            }
+        }
+    }
+
+    /// Player inputs that parent it (SetParent, SetParentAttachment,
+    /// SetParentAttachmentMaintainOffset, ClearParent); true when handled.
+    pub(super) fn player_parent_input(
+        &mut self,
+        p: bevy::ecs::entity::Entity,
+        input: &str,
+        value: &super::value::Value,
+        activator: Option<Who>,
+        caller: Option<Who>,
+    ) -> bool {
+        match input {
+            "setparent" => {
+                let name = value.to_str(|w| self.name_of(w)).unwrap_or_default();
+                self.player_follows.retain(|(q, _)| *q != p);
+                if name.trim().is_empty() {
+                    return true;
+                }
+                let parent = self
+                    .resolve(name.trim(), activator, caller)
+                    .into_iter()
+                    .find(|w| *w != Who::Player(p));
+                let Some(parent) = parent else {
+                    self.log.push(format!("SetParent: no entity named '{}'", name.trim()));
+                    return true;
+                };
+                let (po, pa) = self.parent_pose(parent);
+                let Some(origin) = self.player(p).map(|pl| pl.origin) else {
+                    return true;
+                };
+                let rotation = entity_rotation(pa);
+                self.player_follows.push((
+                    p,
+                    Follow {
+                        parent,
+                        offset: rotation.inverse() * (origin - po),
+                        rotation: Quat::IDENTITY,
+                    },
+                ));
+                true
+            }
+            "setparentattachment" => {
+                if let Some(i) = self.player_follows.iter().position(|(q, _)| *q == p) {
+                    self.player_follows[i].1.offset = Vec3::ZERO;
+                }
+                true
+            }
+            "setparentattachmentmaintainoffset" => true,
+            "clearparent" => {
+                self.player_follows.retain(|(q, _)| *q != p);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The entity a player is parented to.
+    pub fn player_parent(&self, p: bevy::ecs::entity::Entity) -> Option<Who> {
+        self.player_follows.iter().find(|(q, _)| *q == p).map(|(_, f)| f.parent)
+    }
+
     /// Whether `id` follows an anchored parent.
     pub fn follows_anchor(&self, id: EntId) -> bool {
         self.follows.iter().any(|(c, _)| *c == id)
@@ -202,13 +365,14 @@ impl LogicWorld {
             let Some((_, f)) = self.follows.iter().find(|(c, _)| *c == at) else {
                 return false;
             };
+            let Who::Ent(parent) = f.parent else { return false };
             if self
-                .get(f.parent)
+                .get(parent)
                 .is_some_and(|p| super::prop_damage::is_physbox(&p.classname))
             {
                 return true;
             }
-            at = f.parent;
+            at = parent;
         }
         false
     }

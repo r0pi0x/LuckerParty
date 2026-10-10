@@ -492,6 +492,21 @@ pub struct LogicEntity {
     /// Its render colour ("rendercolor", the Color input): a brush
     /// entity's node is tinted by it.
     pub render_color: [u8; 3],
+    /// Its render alpha and mode ("renderamt", "rendermode", the Alpha
+    /// input): a brush entity's node fades or adds by them.
+    pub render_alpha: u8,
+    pub render_mode: u8,
+}
+
+impl LogicEntity {
+    /// How it is drawn (`map::tint::RenderLook`).
+    pub fn render_look(&self) -> crate::map::tint::RenderLook {
+        crate::map::tint::RenderLook {
+            color: self.render_color,
+            alpha: self.render_alpha,
+            mode: self.render_mode,
+        }
+    }
 }
 
 impl LogicEntity {
@@ -602,11 +617,18 @@ pub struct LogicWorld {
     pub burning_players: Vec<Entity>,
     /// Entities parented to an anchor entity, parents first (`anchors`).
     pub follows: Vec<(EntId, super::anchors::Follow)>,
+    /// Players parented to an entity (`anchors`).
+    pub player_follows: Vec<(Entity, super::anchors::Follow)>,
     /// point_template's instance counter (`templates`): for the whole
     /// session, round restarts included.
     pub template_serial: u32,
     /// Players viewing through a point_viewcontrol, and which (`camera`).
     pub views: Vec<(Entity, EntId)>,
+    /// How players are drawn, for those a map changed (Alpha and Color
+    /// inputs, AddOutput rendermode/renderamt/rendercolor): invisibility
+    /// power-ups, team colours. They keep it across rounds, as the game's
+    /// player entities do.
+    pub player_looks: Vec<(Entity, crate::map::tint::RenderLook)>,
 }
 
 /// An env_global state.
@@ -670,6 +692,8 @@ impl LogicWorld {
             collision: None,
             burning_players: Vec::new(),
             follows: Vec::new(),
+            player_follows: Vec::new(),
+            player_looks: Vec::new(),
             template_serial: 0,
             views: Vec::new(),
         }
@@ -734,6 +758,7 @@ impl LogicWorld {
         fresh.players = std::mem::take(&mut self.players);
         fresh.player_names = std::mem::take(&mut self.player_names);
         fresh.player_classes = std::mem::take(&mut self.player_classes);
+        fresh.player_looks = std::mem::take(&mut self.player_looks);
         fresh.use_held = std::mem::take(&mut self.use_held);
         fresh.effects = std::mem::take(&mut self.effects);
         // Cameras are made again: their viewers see from their eyes
@@ -862,6 +887,8 @@ impl LogicWorld {
         let origin = get("origin").map_or(Vec3::ZERO, crate::map::entities::parse_vector);
         let angles = get("angles").map_or(Vec3::ZERO, crate::map::entities::parse_vector);
         let render_color = get("rendercolor").map_or([255; 3], parse_color);
+        let render_alpha = get("renderamt").map_or(255, |v| atoi(v).clamp(0, 255)) as u8;
+        let render_mode = get("rendermode").map_or(0, |v| atoi(v).clamp(0, 255)) as u8;
         let ent = LogicEntity {
             classname,
             targetname,
@@ -876,6 +903,8 @@ impl LogicWorld {
             killed: false,
             map_index: None,
             render_color,
+            render_alpha,
+            render_mode,
         };
         let index = self.slots.len() as u32;
         self.slots.push((0, Some(ent)));
@@ -1200,7 +1229,7 @@ impl LogicWorld {
         }
         let input = input.to_ascii_lowercase();
         match target {
-            Who::Player(p) => self.player_input(p, &input, value),
+            Who::Player(p) => self.player_input(p, &input, value, activator, caller),
             Who::Ent(id) => {
                 if self.get(id).is_none() {
                     return;
@@ -1247,7 +1276,10 @@ impl LogicWorld {
         v
     }
 
-    fn player_input(&mut self, p: Entity, input: &str, value: Value) {
+    fn player_input(&mut self, p: Entity, input: &str, value: Value, activator: Option<Who>, caller: Option<Who>) {
+        if self.player_parent_input(p, input, &value, activator, caller) {
+            return;
+        }
         match input {
             "sethealth" => {
                 if let Some(h) = self.need_float(&value, input) {
@@ -1294,6 +1326,18 @@ impl LogicWorld {
             "ignite" | "ignitelifetime" | "ignitenumhitboxfires" | "ignitehitboxfirescale" => {
                 super::fire::ignite_input(self, Who::Player(p), input, &value);
             }
+            "alpha" => {
+                if let Some(a) = self.need_int(&value, input) {
+                    self.player_look(p, |l| l.alpha = a.clamp(0, 255) as u8);
+                }
+            }
+            "color" => {
+                if let Some(c) = self.need_str(&value, input) {
+                    self.player_look(p, |l| l.color = parse_color(&c));
+                }
+            }
+            // A player has no outputs of its own to fire, and can't break.
+            "fireuser1" | "fireuser2" | "fireuser3" | "fireuser4" | "break" => {}
             _ => self.log.push(format!("player: unhandled input {input}")),
         }
     }
@@ -1344,11 +1388,31 @@ impl LogicWorld {
                     pl.teleported = true;
                 }
             }
+            "rendermode" => self.player_look(p, |l| l.mode = atoi(v).clamp(0, 255) as u8),
+            "renderamt" => self.player_look(p, |l| l.alpha = atoi(v).clamp(0, 255) as u8),
+            "rendercolor" => self.player_look(p, |l| l.color = parse_color(v)),
+            // Render effects (pulses, flicker): not drawn (tech-debt).
+            "renderfx" => {}
             _ => self.log.push(format!("player: AddOutput {key} not supported")),
         }
     }
 
+    /// Change how a player is drawn.
+    fn player_look(&mut self, p: Entity, f: impl FnOnce(&mut crate::map::tint::RenderLook)) {
+        let i = match self.player_looks.iter().position(|(e, _)| *e == p) {
+            Some(i) => i,
+            None => {
+                self.player_looks.push((p, crate::map::tint::RenderLook::default()));
+                self.player_looks.len() - 1
+            }
+        };
+        f(&mut self.player_looks[i].1);
+    }
+
     fn base_input(&mut self, id: EntId, input: &str, value: Value, activator: Option<Who>, caller: Option<Who>) {
+        if self.parent_input(id, input, &value, activator, caller) {
+            return;
+        }
         match input {
             "kill" | "killhierarchy" => self.kill(id),
             "use" => super::classes::class_use(self, id, activator, caller),
@@ -1366,14 +1430,18 @@ impl LogicWorld {
                     e.render_color = parse_color(&s);
                 }
             }
-            // Render alpha (0-255): kept as the keyvalue; not drawn yet
-            // (docs/tech-debt.md).
+            // Render alpha (0-255): brush entities with a node show it.
             "alpha" => {
                 if let Some(a) = self.need_int(&value, input)
                     && let Some(e) = self.get_mut(id)
                 {
-                    let a = a.clamp(0, 255).to_string();
-                    match e.keyvalues.iter_mut().find(|(k, _)| k.eq_ignore_ascii_case("renderamt")) {
+                    e.render_alpha = a.clamp(0, 255) as u8;
+                    let a = e.render_alpha.to_string();
+                    match e
+                        .keyvalues
+                        .iter_mut()
+                        .find(|(k, _)| k.eq_ignore_ascii_case("renderamt"))
+                    {
                         Some(kv) => kv.1 = a,
                         None => e.keyvalues.push(("renderamt".into(), a)),
                     }
@@ -1437,6 +1505,17 @@ impl LogicWorld {
                 e.render_color = parse_color(&value);
                 true
             }
+            "renderamt" => {
+                e.render_alpha = atoi(&value).clamp(0, 255) as u8;
+                true
+            }
+            "rendermode" => {
+                e.render_mode = atoi(&value).clamp(0, 255) as u8;
+                true
+            }
+            // Render effects (pulses, flicker, hologram): kept, not drawn
+            // (tech-debt).
+            "renderfx" => true,
             // Filters and classname targets see the new name; the entity
             // keeps behaving as its spawned class.
             "classname" => {

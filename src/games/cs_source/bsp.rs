@@ -14,7 +14,7 @@ use super::{
 };
 use crate::{
     core::Team,
-    map::{MapData, MapMesh},
+    map::{MapAlpha, MapData, MapMesh},
     mount::Mount,
 };
 
@@ -113,6 +113,10 @@ pub fn load_level_bytes(mount: &Mount, name: &str, bytes: Vec<u8>, hdr_level: u8
             mesh.blend_weights.clear();
         }
         mesh.alpha = r.alpha;
+        // An entity's translucent render mode replaces the material's.
+        if let Some((blend, _)) = mesh.render {
+            mesh.alpha = blend;
+        }
         mesh.double_sided = r.double_sided;
         mesh.surface = r.surfaceprop;
         mesh.envmap = r.envmap;
@@ -224,6 +228,8 @@ pub fn load_level_bytes(mount: &Mount, name: &str, bytes: Vec<u8>, hdr_level: u8
         .filter(|p| !p.0.is_empty());
     data.overview = super::hud::overview(&mut materials, name);
     data.particles = super::impact_effects::load_materials(&mut materials);
+    super::trails::add_trails_and_stacks(&bsp, &mut materials, &mut data);
+    super::pcf::add_particle_systems(&bsp, &mut materials, &mut data, name);
     timer.lap("characters, hud, particles");
     // What characters hold: the weapons' world models.
     if let Some(skeleton) = data.characters.first().map(|c| c.bones.clone()) {
@@ -522,7 +528,7 @@ pub fn convert_level(bsp: &Bsp, bytes: &[u8], name: &str, hdr: bool) -> (MapData
     let mut entity_face_slots: HashMap<usize, usize> = HashMap::new();
     let faces = world
         .faces()
-        .map(|f| (f, None, None, None))
+        .map(|f| (f, None, None, None, None))
         .chain(entities.iter().filter(|e| e.drawn).flat_map(|e| {
             bsp.models()
                 .nth(e.model)
@@ -533,13 +539,13 @@ pub fn convert_level(bsp: &Bsp, bytes: &[u8], name: &str, hdr: bool) -> (MapData
                 })
                 .map(|(f, index)| {
                     if e.mover {
-                        (f, Some((Quat::IDENTITY, Vec3::ZERO)), Some(e.entity), Some(index))
+                        (f, Some((Quat::IDENTITY, Vec3::ZERO)), Some(e.entity), Some(index), None)
                     } else {
-                        (f, Some(e.transform), None, Some(index))
+                        (f, Some(e.transform), None, Some(index), e.render)
                     }
                 })
         }));
-    for (face, transform, mover, face_index) in faces {
+    for (face, transform, mover, face_index, render) in faces {
         let in_world = transform.is_none();
         // Source-space position of a face vertex (brush entity models are
         // stored around their origin).
@@ -639,16 +645,21 @@ pub fn convert_level(bsp: &Bsp, bytes: &[u8], name: &str, hdr: bool) -> (MapData
         let material = tex.name().to_lowercase();
         // Meshes are per material and per part (world, 3D skybox, or a
         // mover entity).
-        let key = match mover {
+        let mut key = match mover {
             Some(i) => format!("{material}\u{2}{i:06}"),
             None if skybox => format!("{material}\u{1}skybox"),
             None => material.clone(),
         };
+        // Brush entities in a translucent render mode: meshes of their own.
+        if let Some((blend, a)) = render {
+            key = format!("{key}\u{3}{blend:?}{a}");
+        }
         let mesh = by_material.entry(key.clone()).or_insert_with(|| MapMesh {
             material: material.clone(),
             skybox,
             color: tex.debug_color(),
             entity: mover,
+            render,
             ..default()
         });
         let lm = pending_lm.entry(key).or_default();
@@ -754,6 +765,10 @@ pub struct BrushEntity {
     /// Moves or toggles (`MOVERS`): drawn and solid through its own node,
     /// not baked into the world.
     pub mover: bool,
+    /// Baked into the world in a translucent render mode (rendermode,
+    /// renderamt): its faces blend or add by this opacity. Movers get
+    /// theirs from the logic (`map::tint`).
+    pub render: Option<(MapAlpha, f32)>,
 }
 
 /// Brush entity classes the logic layer moves or toggles.
@@ -853,13 +868,19 @@ pub fn brush_entities(bsp: &Bsp) -> Vec<BrushEntity> {
             && !(class == "func_brush" && (num("Solidity") == Some(1.0) || (start_disabled && num("Solidity") != Some(2.0))))
             // func_rotating spawnflag 64: not solid.
             && !(class == "func_rotating" && (num("spawnflags").unwrap_or(0.0) as i32) & 64 != 0);
+        let look = crate::map::tint::RenderLook {
+            color: [255; 3],
+            alpha: num("renderamt").unwrap_or(255.0).clamp(0.0, 255.0) as u8,
+            mode: render_mode.clamp(0, 255) as u8,
+        };
         out.push(BrushEntity {
             model,
             transform: (rotation, origin),
-            drawn,
+            drawn: drawn && !look.invisible(),
             solid,
             entity: index,
             mover,
+            render: look.blend().filter(|_| !mover),
         });
     }
     out

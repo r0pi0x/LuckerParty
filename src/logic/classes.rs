@@ -94,6 +94,11 @@ pub enum Class {
     Thruster(Box<super::physics::Thruster>),
     /// phys_keepupright.
     Upright(Box<super::physics::Upright>),
+    /// phys_motor (`physics`).
+    Motor(Box<super::physics::Motor>),
+    /// phys_constraint, phys_ballsocket, phys_hinge, phys_slideconstraint,
+    /// phys_lengthconstraint, phys_ragdollconstraint (`physics`).
+    Joint(Box<super::physics::Joint>),
     /// momentary_rot_button (`movers`).
     Momentary(Box<movers::Momentary>),
     /// logic_measure_movement, point_teleport, logic_multicompare,
@@ -354,7 +359,15 @@ impl Class {
             }
             "env_lightglow" => Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::Glow)),
             "env_spark" => Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::Spark)),
-            "phys_thruster" | "phys_keepupright" => super::physics::spawn(e, &lower).unwrap_or_default(),
+            "phys_thruster"
+            | "phys_keepupright"
+            | "phys_motor"
+            | "phys_constraint"
+            | "phys_ballsocket"
+            | "phys_hinge"
+            | "phys_slideconstraint"
+            | "phys_lengthconstraint"
+            | "phys_ragdollconstraint" => super::physics::spawn(e, &lower).unwrap_or_default(),
             "logic_auto" => Class::Auto,
             "logic_relay" => Class::Relay(Relay {
                 enabled: !start_disabled,
@@ -455,6 +468,11 @@ impl Class {
             }
             "env_steam" | "env_steamjet" => {
                 Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::Steam))
+            }
+            "env_spritetrail" => Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::Trail)),
+            "env_smokestack" => Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::SmokeStack)),
+            "info_particle_system" => {
+                Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::Particles))
             }
             "env_soundscape" | "env_soundscape_proxy" => {
                 Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::Soundscape))
@@ -575,7 +593,7 @@ pub(super) fn class_activate(w: &mut LogicWorld, id: EntId) {
         Class::Prop(_) => super::prop_damage::activate(w, id),
         Class::Fire(_) | Class::FireSource(_) | Class::FireSensor(_) => super::fire::activate(w, id),
         Class::Maker(_) => super::templates::maker_activate(w, id),
-        Class::Thruster(_) | Class::Upright(_) => super::physics::activate(w, id),
+        Class::Thruster(_) | Class::Upright(_) | Class::Motor(_) | Class::Joint(_) => super::physics::activate(w, id),
         Class::Part(_) => super::beams::activate(w, id),
         Class::Extra(_) => super::community::activate(w, id),
         _ => {}
@@ -1059,7 +1077,9 @@ pub(super) fn class_input(
         | Class::Conveyor(_) => return super::game::input(w, id, input, value, activator, caller),
         Class::Template(_) | Class::Maker(_) => return super::templates::input(w, id, input, value, activator, caller),
         Class::Camera(_) => return super::camera::input(w, id, input, activator),
-        Class::Thruster(_) | Class::Upright(_) => return super::physics::input(w, id, input, value, activator),
+        Class::Thruster(_) | Class::Upright(_) | Class::Motor(_) | Class::Joint(_) => {
+            return super::physics::input(w, id, input, value, activator);
+        }
         Class::Extra(_) => return super::community::input(w, id, input, value, activator),
         Class::Flame(_) | Class::None | Class::Auto => return false,
     }

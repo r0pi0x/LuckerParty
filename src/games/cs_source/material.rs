@@ -569,6 +569,10 @@ impl<'a> MaterialLoader<'a> {
             vertex_alpha: sprite_card || flag("$vertexalpha"),
             no_depth: flag("$ignorez"),
             sequences,
+            overbright: keys
+                .get("$overbrightfactor")
+                .and_then(|v| v.trim().parse::<f32>().ok())
+                .unwrap_or(0.0),
         })
     }
 

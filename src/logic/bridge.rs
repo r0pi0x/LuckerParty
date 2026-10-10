@@ -478,6 +478,44 @@ fn sync_visuals(world: &mut World, logic: &Logic) {
             part.exists = want.1;
         }
     }
+    // Parts whose entity follows a parent go where it is now (a trail
+    // behind a spinning prop, a sprite on a lift). Their visibility
+    // clusters were where they spawned: dropped once they move.
+    let mut poses = logic.world.part_poses();
+    if !poses.is_empty() {
+        poses.sort_by_key(|p| p.0);
+        let scale = logic.scale;
+        let mut moved = Vec::new();
+        let mut parts =
+            world.query_filtered::<(Entity, &EntityPart, &mut Transform), With<crate::map::emitters::FollowsEntity>>();
+        for (e, part, mut t) in parts.iter_mut(world) {
+            let Ok(i) = poses.binary_search_by_key(&part.entity, |p| p.0) else {
+                continue;
+            };
+            let (_, origin, angles) = poses[i];
+            let at = crate::map::entities::entity_to_engine(origin, scale);
+            let rotation = crate::map::entities::rotation_to_engine(crate::map::entities::entity_rotation(angles));
+            if t.translation.distance_squared(at) > 1e-10 || t.rotation.dot(rotation).abs() < 1.0 - 1e-7 {
+                t.translation = at;
+                t.rotation = rotation;
+                moved.push(e);
+            }
+        }
+        for e in moved {
+            let mut part = world.entity_mut(e);
+            if part.take::<crate::map::vis::VisClusters>().is_some() && !part.contains::<LogicHidden>() {
+                part.insert(Visibility::Inherited);
+            }
+        }
+    }
+    // How players are drawn (invisibility, colours).
+    for (player, look) in &logic.world.player_looks {
+        if let Ok(mut e) = world.get_entity_mut(*player)
+            && e.get::<crate::map::tint::RenderLook>() != Some(look)
+        {
+            e.insert(*look);
+        }
+    }
     let styles = LightStyles {
         styles: logic.world.light_styles().to_vec(),
     };
@@ -936,9 +974,11 @@ fn sync_movers(world: &mut World, logic: &mut Logic) {
         }
         set_node_shown(&mut e, visible);
         // Its render colour (rendercolor, the Color input).
-        let color = logic.world.get(id).map_or([255; 3], |e| e.render_color);
-        let tint = crate::map::tint::BrushTint(color);
-        if e.get::<crate::map::tint::BrushTint>().map_or(!tint.is_white(), |t| *t != tint) {
+        let look = logic.world.get(id).map_or_else(Default::default, |e| e.render_look());
+        let tint = crate::map::tint::BrushTint(look);
+        if e.get::<crate::map::tint::BrushTint>()
+            .map_or(!tint.is_white(), |t| *t != tint)
+        {
             e.insert(tint);
         }
         // Its brushes follow its pose: rebuilt (and the component written,
@@ -1408,6 +1448,11 @@ fn sync_controls(world: &mut World, logic: &Logic) {
                     goal: entity_to_engine(goal, 1.0).normalize_or_zero(),
                     limit: limit.to_radians(),
                 },
+                L::Motor { axis, speed, spinup } => ControlKind::Motor {
+                    axis: entity_to_engine(axis, 1.0).normalize_or_zero(),
+                    speed: speed.to_radians(),
+                    spinup,
+                },
             };
             Some(BodyController {
                 key: (c.id.generation as u64) << 32 | c.id.index as u64,
@@ -1418,6 +1463,52 @@ fn sync_controls(world: &mut World, logic: &Logic) {
         .collect();
     if world.get_resource::<BodyControllers>().is_some_and(|b| b.0 != list) {
         world.insert_resource(BodyControllers(list));
+    }
+    // Constraints and motors' hinges.
+    use super::physics::JointKind as J;
+    use crate::map::controllers::{BodyJoint, BodyJoints, JointKind};
+    let node = |id: EntId| {
+        logic
+            .props
+            .iter()
+            .chain(&logic.nodes)
+            .find(|(p, _)| *p == id)
+            .map(|(_, n)| *n)
+    };
+    let joints: Vec<BodyJoint> = logic
+        .world
+        .joints()
+        .into_iter()
+        .filter_map(|j| {
+            let body2 = node(j.body2)?;
+            let body1 = match j.body1 {
+                Some(b) => Some(node(b)?),
+                None => None,
+            };
+            let dir = |v: Vec3| entity_to_engine(v, 1.0).normalize_or_zero();
+            Some(BodyJoint {
+                key: (j.id.generation as u64) << 32 | j.id.index as u64,
+                kind: match j.kind {
+                    J::Fixed => JointKind::Fixed,
+                    J::Ball => JointKind::Ball,
+                    J::Hinge { axis } => JointKind::Hinge { axis: dir(axis) },
+                    J::Slide { axis } => JointKind::Slide { axis: dir(axis) },
+                    J::Length { min, max, other } => JointKind::Length {
+                        min: min * s,
+                        max: max * s,
+                        other: entity_to_engine(other, s),
+                    },
+                },
+                body1,
+                body2,
+                anchor: entity_to_engine(j.anchor, s),
+                on: j.on,
+                no_collide: j.no_collide,
+            })
+        })
+        .collect();
+    if world.get_resource::<BodyJoints>().is_some_and(|b| b.0 != joints) {
+        world.insert_resource(BodyJoints(joints));
     }
 }
 
@@ -1586,9 +1677,10 @@ fn run_phase(world: &mut World, phase: impl FnOnce(&mut LogicWorld, &dyn Collisi
         logic.world.collision = static_collision(world, logic.scale);
     }
     prop_bounds(world, &mut logic);
-    follow_anchors(world, &mut logic);
     let players = snapshot(world, &logic);
     logic.world.players = players.clone();
+    // After the players are in: entities parented to a player follow it.
+    follow_anchors(world, &mut logic);
     {
         let col = WorldCollision {
             brushes: world.get_resource::<MapBrushes>(),
@@ -1650,12 +1742,12 @@ fn follow_anchors(world: &World, logic: &mut Logic) {
             }
         }
     }
-    // Physics brushes: where their bodies are.
+    // Physics brushes and props: where their bodies are.
     for (id, node) in &logic.props {
         if logic
             .world
             .get(*id)
-            .is_some_and(|e| super::prop_damage::is_physbox(&e.classname))
+            .is_some_and(|e| super::anchors::is_physics_body(&e.classname))
             && let Some(t) = world.get::<Transform>(*node)
         {
             let (o, a) = entity_pose(t);

@@ -553,3 +553,249 @@ fn color_input_sets_the_render_colour() {
 }
 
 const DT: f32 = 0.015;
+
+#[test]
+fn set_parent_at_run_time_follows_and_clear_parent_lets_go() {
+    // mg_creative_multigames_v8_ns parents a trail and a spinner to a
+    // box when it spawns (SetParent); mg_crazykart_v1_1 its particles.
+    let mut w = world();
+    let m = lift(&mut w);
+    let t = spawn(
+        &mut w,
+        &[("classname", "info_target"), ("targetname", "t"), ("origin", "10 0 0")],
+    );
+    w.activate();
+    w.link_anchored();
+    w.queue_input("t", "SetParent", Value::Str("m".into()), 0.0, None);
+    w.queue_input("m", "Open", Value::Void, 0.0, None);
+    for _ in 0..80 {
+        w.frame(&NoCollision);
+        w.follow_anchors();
+    }
+    let lifted = origin_of(&w, m).z;
+    assert!(lifted > 50.0, "{lifted}");
+    assert!((w.get(t).unwrap().origin - Vec3::new(10.0, 0.0, lifted)).length() < 1e-3);
+    w.queue_input("t", "ClearParent", Value::Void, 0.0, None);
+    w.frame(&NoCollision);
+    let left = w.get(t).unwrap().origin;
+    for _ in 0..20 {
+        w.frame(&NoCollision);
+        w.follow_anchors();
+    }
+    assert_eq!(w.get(t).unwrap().origin, left, "stays where it was let go");
+    // SetParentAttachment snaps to the parent (its origin here).
+    w.queue_input("t", "SetParent", Value::Str("m".into()), 0.0, None);
+    w.queue_input("t", "SetParentAttachment", Value::Str("primary".into()), 0.0, None);
+    w.frame(&NoCollision);
+    w.follow_anchors();
+    assert!((w.get(t).unwrap().origin - origin_of(&w, m)).length() < 1e-3);
+    assert!(!w.log.iter().any(|l| l.contains("unhandled")), "{:?}", w.log);
+}
+
+#[test]
+fn a_player_set_parent_rides_its_parent() {
+    // mg_crazykart_v1_1: a kart's starter trigger parents the player to
+    // the kart's seat (!activator SetParent, SetParentAttachment); the
+    // player rides along, and dying lets go.
+    let mut w = world();
+    let m = lift(&mut w);
+    let p = player_at(&mut w, 1, Vec3::new(0.0, 0.0, 0.0));
+    w.activate();
+    w.link_anchored();
+    w.queue_input(
+        "!activator",
+        "SetParent",
+        Value::Str("m".into()),
+        0.0,
+        Some(Who::Player(p)),
+    );
+    w.queue_input(
+        "!activator",
+        "SetParentAttachment",
+        Value::Str("primary".into()),
+        0.1,
+        Some(Who::Player(p)),
+    );
+    w.queue_input("m", "Open", Value::Void, 0.2, None);
+    for _ in 0..60 {
+        w.frame(&NoCollision);
+        w.follow_anchors();
+    }
+    assert_eq!(w.player_parent(p), Some(Who::Ent(m)));
+    let pl = w.player(p).unwrap();
+    assert!(
+        (pl.origin - origin_of(&w, m)).length() < 1e-3,
+        "{} vs {}",
+        pl.origin,
+        origin_of(&w, m)
+    );
+    assert!(pl.moved);
+    assert!(pl.velocity.z > 0.0, "carried up with the lift");
+    w.queue_input("!activator", "ClearParent", Value::Void, 0.0, Some(Who::Player(p)));
+    w.frame(&NoCollision);
+    assert_eq!(w.player_parent(p), None);
+    assert!(!w.log.iter().any(|l| l.contains("unhandled")), "{:?}", w.log);
+}
+
+#[test]
+fn render_inputs_on_players_and_brushes() {
+    // Invisibility power-ups (mg_swag_multigames_v1, surf_halloween_tf2,
+    // mg_lt_galaxy_v5): AddOutput rendermode/renderamt/rendercolor and the
+    // Alpha and Color inputs on !activator; brushes fade by Alpha.
+    use crate::map::tint::RenderLook;
+    let mut w = world();
+    let p = player_at(&mut w, 1, Vec3::ZERO);
+    let wall = spawn(
+        &mut w,
+        &[
+            ("classname", "func_brush"),
+            ("targetname", "w"),
+            ("rendermode", "1"),
+            ("renderamt", "120"),
+        ],
+    );
+    w.activate();
+    let me = Some(Who::Player(p));
+    w.queue_input("!activator", "AddOutput", Value::Str("rendermode 1".into()), 0.0, me);
+    w.queue_input("!activator", "AddOutput", Value::Str("renderamt 30".into()), 0.0, me);
+    w.queue_input("!activator", "Color", Value::Str("255 0 0".into()), 0.0, me);
+    w.queue_input("!activator", "AddOutput", Value::Str("renderfx 0".into()), 0.0, me);
+    w.queue_input("w", "Alpha", Value::Str("60".into()), 0.0, None);
+    run_to(&mut w, 2);
+    let look = w.player_looks.iter().find(|(e, _)| *e == p).unwrap().1;
+    assert_eq!(
+        look,
+        RenderLook {
+            color: [255, 0, 0],
+            alpha: 30,
+            mode: 1
+        }
+    );
+    assert!(look.blend().is_some());
+    let b = w.get(wall).unwrap().render_look();
+    assert_eq!((b.mode, b.alpha), (1, 60));
+    w.queue_input("!activator", "Alpha", Value::Str("255".into()), 0.0, me);
+    w.queue_input("!activator", "AddOutput", Value::Str("rendermode 0".into()), 0.0, me);
+    run_to(&mut w, 4);
+    assert!(w.player_looks[0].1.blend().is_none(), "visible again");
+    assert!(
+        !w.log
+            .iter()
+            .any(|l| l.contains("unhandled") || l.contains("not supported")),
+        "{:?}",
+        w.log
+    );
+}
+
+#[test]
+fn trails_smoke_stacks_and_particle_systems() {
+    // env_spritetrail (always drawn), env_smokestack (TurnOn/TurnOff,
+    // its shape inputs kept), info_particle_system (Start/Stop), and a
+    // trail parented to a lift reports where it is for drawing.
+    use crate::logic::visuals::PartKind;
+    let mut w = world();
+    lift(&mut w);
+    let trail = spawn(
+        &mut w,
+        &[
+            ("classname", "env_spritetrail"),
+            ("parentname", "m"),
+            ("origin", "5 0 0"),
+        ],
+    );
+    let stack = spawn(
+        &mut w,
+        &[
+            ("classname", "env_smokestack"),
+            ("targetname", "s"),
+            ("InitialState", "0"),
+        ],
+    );
+    let fx = spawn(
+        &mut w,
+        &[
+            ("classname", "info_particle_system"),
+            ("targetname", "fx"),
+            ("start_active", "1"),
+        ],
+    );
+    for (i, id) in [trail, stack, fx].into_iter().enumerate() {
+        w.get_mut(id).unwrap().map_index = Some(i + 1);
+    }
+    w.activate();
+    w.link_anchored();
+    let state = |w: &LogicWorld, i: usize| w.part_states().into_iter().find(|s| s.0 == i).map(|s| (s.1, s.2));
+    assert_eq!(state(&w, 1), Some((PartKind::Trail, true)));
+    assert_eq!(state(&w, 2), Some((PartKind::SmokeStack, false)));
+    assert_eq!(state(&w, 3), Some((PartKind::Particles, true)));
+    w.queue_input("s", "TurnOn", Value::Void, 0.0, None);
+    w.queue_input("s", "Rate", Value::Str("40".into()), 0.0, None);
+    w.queue_input("fx", "Stop", Value::Void, 0.0, None);
+    w.queue_input("m", "Open", Value::Void, 0.0, None);
+    for _ in 0..30 {
+        w.frame(&NoCollision);
+        w.follow_anchors();
+    }
+    assert_eq!(state(&w, 2), Some((PartKind::SmokeStack, true)));
+    assert_eq!(state(&w, 3), Some((PartKind::Particles, false)));
+    let poses = w.part_poses();
+    assert_eq!(poses.len(), 1, "{poses:?}");
+    assert_eq!(poses[0].0, 1);
+    assert!(poses[0].1.z > 1.0, "the trail rides the lift: {}", poses[0].1);
+    assert!(!w.log.iter().any(|l| l.contains("unhandled")), "{:?}", w.log);
+}
+
+#[test]
+fn constraints_and_motors_find_their_bodies() {
+    // gg_bk_warehouse_v1's lamps on ball sockets (attach1 only: held to
+    // the world), surf_surreal's motors with "Hinge Object".
+    use crate::logic::physics::JointKind;
+    let mut w = world();
+    let lamp = spawn(
+        &mut w,
+        &[
+            ("classname", "prop_physics"),
+            ("targetname", "lamp"),
+            ("origin", "0 0 100"),
+        ],
+    );
+    spawn(
+        &mut w,
+        &[
+            ("classname", "phys_ballsocket"),
+            ("targetname", "s"),
+            ("attach1", "lamp"),
+            ("origin", "0 0 132"),
+        ],
+    );
+    spawn(
+        &mut w,
+        &[
+            ("classname", "phys_motor"),
+            ("targetname", "mo"),
+            ("attach1", "lamp"),
+            ("origin", "0 0 100"),
+            ("axis", "0 0 200"),
+            ("speed", "50"),
+            ("spawnflags", "7"),
+        ],
+    );
+    spawn(&mut w, &[("classname", "phys_constraint"), ("attach1", "nothing")]);
+    w.activate();
+    let joints = w.joints();
+    assert_eq!(joints.len(), 2, "{joints:?}");
+    assert_eq!(joints[0].kind, JointKind::Ball);
+    assert_eq!((joints[0].body1, joints[0].body2), (None, lamp));
+    assert_eq!(joints[0].anchor, Vec3::new(0.0, 0.0, 132.0));
+    assert_eq!(joints[1].kind, JointKind::Hinge { axis: Vec3::Z });
+    let motors: Vec<_> = w.controls();
+    assert_eq!(motors.len(), 1);
+    w.queue_input("s", "TurnOff", Value::Void, 0.0, None);
+    w.queue_input("mo", "TurnOff", Value::Void, 0.0, None);
+    run_to(&mut w, 2);
+    assert!(!w.joints()[0].on);
+    assert!(w.controls().is_empty());
+    w.queue_input("s", "Break", Value::Void, 0.0, None);
+    run_to(&mut w, 4);
+    assert_eq!(w.joints().len(), 1, "broken: gone");
+}

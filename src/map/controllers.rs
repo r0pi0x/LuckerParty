@@ -41,6 +41,62 @@ pub enum ControlKind {
     /// phys_keepupright: turn the body's up (its entity +Z, engine local
     /// +Y) toward `goal` at most `limit` rad/s per step.
     Upright { goal: Vec3, limit: f32 },
+    /// phys_motor: spin about `axis` (world, unit) at `speed` rad/s,
+    /// reached over `spinup` seconds.
+    Motor { axis: Vec3, speed: f32, spinup: f32 },
+}
+
+/// What a joint holds (`BodyJoint`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum JointKind {
+    Fixed,
+    Ball,
+    Hinge {
+        axis: Vec3,
+    },
+    Slide {
+        axis: Vec3,
+    },
+    /// The bodies at most `max` (at least `min`) meters apart, from
+    /// `other` on the first to the anchor on the second.
+    Length {
+        min: f32,
+        max: f32,
+        other: Vec3,
+    },
+}
+
+/// A joint between two bodies (`body1` None: the world) at `anchor`
+/// (world, engine space), from a map constraint entity; the logic layer
+/// writes them (`BodyJoints`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct BodyJoint {
+    pub key: u64,
+    pub kind: JointKind,
+    pub body1: Option<Entity>,
+    pub body2: Entity,
+    pub anchor: Vec3,
+    pub on: bool,
+    /// The two bodies don't collide while it holds.
+    pub no_collide: bool,
+}
+
+/// The joints that exist now.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct BodyJoints(pub Vec<BodyJoint>);
+
+/// A spinning motor's change of angular velocity for one step of `h`
+/// seconds: the rate about `axis` moves toward `speed`, by at most
+/// speed/spinup per second (at once with no spin-up).
+pub fn motor_change(omega: Vec3, axis: Vec3, speed: f32, spinup: f32, h: f32) -> Vec3 {
+    let now = omega.dot(axis);
+    let step = if spinup > 0.0 {
+        speed.abs() / spinup * h
+    } else {
+        f32::INFINITY
+    };
+    let next = now + (speed - now).clamp(-step, step);
+    axis * (next - now)
 }
 
 /// The controllers on now (the logic layer writes it).
@@ -61,10 +117,12 @@ pub struct ControllersPlugin;
 
 impl Plugin for ControllersPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<BodyControllers>().add_systems(
-            FixedPostUpdate,
-            apply.before(PhysicsSystems::StepSimulation),
-        );
+        app.init_resource::<BodyControllers>()
+            .init_resource::<BodyJoints>()
+            .add_systems(
+                FixedPostUpdate,
+                (sync_joints, apply).chain().before(PhysicsSystems::StepSimulation),
+            );
     }
 }
 
@@ -190,6 +248,7 @@ fn apply(
                 (a * *scale * h, alpha * *scale * h)
             }
             ControlKind::Upright { goal, limit } => (Vec3::ZERO, upright_change(rotation, w.0, *goal, *limit, h)),
+            ControlKind::Motor { axis, speed, spinup } => (Vec3::ZERO, motor_change(w.0, *axis, *speed, *spinup, h)),
         };
         if dv == Vec3::ZERO && dw == Vec3::ZERO {
             continue;
@@ -199,5 +258,115 @@ fn apply(
         if sleeping {
             commands.entity(c.body).remove::<Sleeping>();
         }
+    }
+}
+
+/// The joint entities made for `BodyJoints`: by key, the joint, the
+/// static body standing in for the world, and what it was made from.
+#[derive(Default)]
+struct MadeJoints(std::collections::HashMap<u64, (Entity, Option<Entity>, BodyJoint)>);
+
+/// Make, switch and remove joint entities to match `BodyJoints`. A joint
+/// to the world holds its body to a static body at the anchor.
+fn sync_joints(joints: Res<BodyJoints>, mut made: Local<MadeJoints>, mut commands: Commands) {
+    use avian3d::prelude::{
+        DistanceJoint, FixedJoint, JointCollisionDisabled, JointDisabled, PrismaticJoint, RevoluteJoint, RigidBody,
+        SphericalJoint,
+    };
+    if !joints.is_changed() && joints.0.len() == made.0.len() {
+        return;
+    }
+    let wanted: std::collections::HashSet<u64> = joints.0.iter().map(|j| j.key).collect();
+    made.0.retain(|key, (joint, anchor, _)| {
+        let keep = wanted.contains(key);
+        if !keep {
+            commands.entity(*joint).try_despawn();
+            if let Some(a) = anchor {
+                commands.entity(*a).try_despawn();
+            }
+        }
+        keep
+    });
+    for j in &joints.0 {
+        if let Some((joint, _, was)) = made.0.get_mut(&j.key) {
+            if was.on != j.on {
+                if j.on {
+                    commands.entity(*joint).try_remove::<JointDisabled>();
+                } else {
+                    commands.entity(*joint).try_insert(JointDisabled);
+                }
+                was.on = j.on;
+            }
+            continue;
+        }
+        let world_body = j.body1.is_none().then(|| {
+            commands
+                .spawn((
+                    Name::new("Joint anchor"),
+                    super::MapPart,
+                    RigidBody::Static,
+                    Transform::from_translation(j.anchor),
+                ))
+                .id()
+        });
+        let Some(b1) = j.body1.or(world_body) else { continue };
+        let b2 = j.body2;
+        let basis = |from: Vec3, to: Vec3| Quat::from_rotation_arc(from, to.try_normalize().unwrap_or(from));
+        let mut e = commands.spawn((Name::new("Joint"), super::MapPart));
+        match j.kind {
+            JointKind::Fixed => {
+                e.insert(FixedJoint::new(b1, b2).with_anchor(j.anchor));
+            }
+            JointKind::Ball => {
+                e.insert(SphericalJoint::new(b1, b2).with_anchor(j.anchor));
+            }
+            JointKind::Hinge { axis } => {
+                e.insert(
+                    RevoluteJoint::new(b1, b2)
+                        .with_anchor(j.anchor)
+                        .with_basis(basis(Vec3::Z, axis))
+                        .with_hinge_axis(Vec3::Z),
+                );
+            }
+            JointKind::Slide { axis } => {
+                let mut p = PrismaticJoint::new(b1, b2)
+                    .with_anchor(j.anchor)
+                    .with_basis(basis(Vec3::X, axis));
+                p.slider_axis = Vec3::X;
+                e.insert(p);
+            }
+            JointKind::Length { min, max, other } => {
+                let mut d = DistanceJoint::new(b1, b2).with_limits(min.min(max), max);
+                d.anchor1 = avian3d::prelude::JointAnchor::FromGlobal(other);
+                d.anchor2 = avian3d::prelude::JointAnchor::FromGlobal(j.anchor);
+                e.insert(d);
+            }
+        }
+        if j.no_collide {
+            e.insert(JointCollisionDisabled);
+        }
+        if !j.on {
+            e.insert(JointDisabled);
+        }
+        let id = e.id();
+        made.0.insert(j.key, (id, world_body, j.clone()));
+    }
+}
+
+#[cfg(test)]
+mod motor_tests {
+    use super::*;
+
+    #[test]
+    fn motor_spins_up_over_its_time() {
+        // 100 deg/s over 1 s: a tenth of the way in 0.1 s.
+        let speed = 100f32.to_radians();
+        let dw = motor_change(Vec3::ZERO, Vec3::Y, speed, 1.0, 0.1);
+        assert!((dw.y - speed * 0.1).abs() < 1e-5);
+        // At speed: nothing; no spin-up: at once.
+        assert_eq!(motor_change(Vec3::Y * speed, Vec3::Y, speed, 1.0, 0.1), Vec3::ZERO);
+        assert!((motor_change(Vec3::ZERO, Vec3::Y, speed, 0.0, 0.1).y - speed).abs() < 1e-5);
+        // Other axes are left alone.
+        assert_eq!(motor_change(Vec3::X, Vec3::Y, 0.0, 1.0, 0.1), Vec3::ZERO);
     }
 }

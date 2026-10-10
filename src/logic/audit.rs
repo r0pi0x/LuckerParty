@@ -644,7 +644,7 @@ impl LogicWorld {
                     );
                 }
                 if let Some((_, f)) = self.follows.iter().find(|(c, _)| *c == id) {
-                    s += &format!("; follows '{}'", self.get(f.parent).map_or("", |p| p.targetname.as_str()));
+                    s += &format!("; follows '{}'", self.name_of(f.parent));
                 }
                 if let Class::Trigger(t) = &e.class
                     && let Some(lo) = t.brushes.iter().map(|b| b.min).reduce(Vec3::min)

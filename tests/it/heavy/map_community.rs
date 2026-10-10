@@ -626,3 +626,65 @@ fn sky_bottom_joins_the_sides() {
     }
     eprintln!("{decided} skies decide the bottom face");
 }
+
+/// Visual entities the logic audit found undrawn (community-maps.md, "Map
+/// logic audit, round 2"): gg_future's spinning laser trails
+/// (env_spritetrail), gg_nukkon_hdr's cooling-tower smoke
+/// (env_smokestack), the `.pcf` effects of info_particle_system from the
+/// install (surf_hellenic's env_fire_large) and from the map's own pak
+/// (mg_crazykart_v1_1's kart effects), and surf_demise's faint
+/// func_illusionary glass (rendermode 1, renderamt 20) drawn blended.
+#[test]
+fn visual_entities_load() {
+    use mashup::map::MapAlpha;
+    if let Some(map) = load("gg_future") {
+        assert_eq!(map.trails.len(), 4);
+        assert!(map.trails.iter().all(|t| t.life == 10.0 && t.entity.is_some()));
+    }
+    if let Some(map) = load("gg_nukkon_hdr") {
+        assert_eq!(map.smokestacks.len(), 4);
+        assert!(
+            map.smokestacks
+                .iter()
+                .all(|s| s.life().is_some_and(|l| (l - 10.0).abs() < 1e-3))
+        );
+    }
+    if let Some(map) = load("surf_hellenic") {
+        let ps = &map.particle_systems;
+        assert_eq!(ps.placed.len(), 160);
+        let fire = ps
+            .find("env_fire_large")
+            .expect("env_fire_large from the install's fire_01.pcf");
+        assert!(!ps.defs[fire].children.is_empty(), "its flames and embers");
+        assert!(ps.defs[fire].material.is_some());
+        assert!(
+            !map.warnings.iter().any(|w| w.contains("particle")),
+            "{:?}",
+            map.warnings
+        );
+    }
+    if let Some(map) = load("mg_crazykart_v1_1") {
+        let ps = &map.particle_systems;
+        assert_eq!(ps.placed.len(), 40);
+        assert!(ps.find("kart_boost").is_some(), "from the map's packed crazykart.pcf");
+        assert!(
+            !map.warnings.iter().any(|w| w.contains("particle")),
+            "{:?}",
+            map.warnings
+        );
+    }
+    if let Some(map) = load("surf_demise") {
+        let faint = map
+            .meshes
+            .iter()
+            .filter(|m| matches!(m.render, Some((MapAlpha::Blend, a)) if (a - 20.0 / 255.0).abs() < 1e-4))
+            .count();
+        assert!(faint > 0, "the func_illusionary glass is drawn faint");
+        assert!(
+            map.meshes
+                .iter()
+                .filter(|m| m.render.is_some())
+                .all(|m| m.alpha == MapAlpha::Blend)
+        );
+    }
+}

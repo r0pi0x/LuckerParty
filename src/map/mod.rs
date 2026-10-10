@@ -21,11 +21,13 @@ pub use crate::core::{
 
 pub mod anim;
 pub mod decal;
+pub mod emitters;
 pub mod entities;
 pub mod fire;
 pub mod fog;
 pub use entities::{MapBrushEntity, MapEntities, MapEntity, MapHull};
 pub mod beams;
+pub mod buoyancy;
 pub mod breakables;
 pub mod contact_filter;
 pub mod controllers;
@@ -50,6 +52,7 @@ pub mod radio;
 pub mod bot_profiles;
 pub mod nav;
 pub mod particles;
+pub mod psys;
 pub mod tracer;
 pub mod prop_material;
 pub mod prop_physics;
@@ -287,6 +290,21 @@ pub struct MapMesh {
     pub source_vertices: Vec<u32>,
     /// What part of a breakable window's look it is (`PaneLook`).
     pub pane_look: PaneLook,
+    /// A brush entity's translucent render mode (Source rendermode and
+    /// renderamt): blended or added, and its opacity (`tint::RenderLook`).
+    pub render: Option<(MapAlpha, f32)>,
+}
+
+impl MapMesh {
+    /// The colour multiplier of its entity's render mode (an added look
+    /// scales the colour, a blended one the alpha).
+    pub fn render_factor(&self) -> Vec4 {
+        match self.render {
+            Some((MapAlpha::Add, a)) => Vec4::new(a, a, a, 1.0),
+            Some((_, a)) => Vec4::new(1.0, 1.0, 1.0, a),
+            None => Vec4::ONE,
+        }
+    }
 }
 
 /// A window's looks (meshes of a brush entity drawn as panes,
@@ -1283,6 +1301,10 @@ pub struct MapData {
     pub dust: Vec<MapDust>,
     /// Steam jets (env_steam).
     pub steam: Vec<steam::MapSteam>,
+    /// Sprite trails (env_spritetrail) and smoke stacks (env_smokestack):
+    /// `emitters`.
+    pub trails: Vec<emitters::MapTrail>,
+    pub smokestacks: Vec<emitters::MapSmokeStack>,
     /// Beams (point_spotlight, env_laser, env_beam) and light glows
     /// (env_lightglow): `beams`.
     pub beams: Vec<beams::MapBeam>,
@@ -1339,6 +1361,9 @@ pub struct MapData {
     pub overview: Option<hud::MapOverview>,
     /// Materials for particle effects (impacts).
     pub particles: particles::MapParticles,
+    /// Data-driven particle systems and where the map runs them
+    /// (info_particle_system): `psys`.
+    pub particle_systems: Arc<psys::MapParticleSystems>,
     /// What characters see of what they hold (weapons' view models).
     pub view_models: Vec<MapViewModel>,
     /// The light at any point, for moving models.
@@ -1912,7 +1937,7 @@ impl Plugin for MapPlugin {
         }
         ragdoll::plugin(app);
         app.add_plugins(light_styles::LightStylesPlugin);
-        app.add_plugins(controllers::ControllersPlugin);
+        app.add_plugins((controllers::ControllersPlugin, buoyancy::BuoyancyPlugin));
         app.add_plugins(sound::SoundPlugin)
             .init_resource::<ShowLocalBody>()
             .init_resource::<vis::NoVis>()
@@ -2000,6 +2025,9 @@ impl Plugin for MapPlugin {
                     (
                         tracer::draw_tracers,
                         particles::step_particles.in_set(particles::ParticleSet::Step),
+                        (emitters::update_trails, emitters::update_smokestacks, psys::update_systems)
+                            .after(particles::ParticleSet::Step)
+                            .before(particles::ParticleSet::Draw),
                         particles::draw_particles
                             .run_if(
                                 resource_exists::<Assets<Mesh>>
@@ -2062,6 +2090,7 @@ impl Plugin for MapPlugin {
                 // From this frame's camera, before visibility propagates.
                 (
                     tint::apply_brush_tints,
+                    tint::apply_character_looks,
                     merge::sync_merged_brushes,
                     tag_moved_brush_entities,
                     vis::cull,
@@ -2614,7 +2643,7 @@ fn spawn_map(
                             Vec4::ONE
                         } else {
                             Vec4::new(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0)
-                        },
+                        } * m.render_factor(),
                         light_scale: data.look.light_scale,
                         lightmap_scale: if source_ldr { SOURCE_LIGHTMAP_SCALE } else { 1.0 },
                         bicubic: if data.look.bicubic_lightmaps { 1.0 } else { 0.0 },
@@ -2968,6 +2997,71 @@ fn spawn_map(
                     });
                 }
             }
+            // Sprite trails and smoke stacks: an entity each where its map
+            // entity is (moved with it), drawn through the particle pool.
+            for (i, t) in data.trails.iter().enumerate() {
+                let mut e = commands.spawn((
+                    Name::new(format!("Trail {i}")),
+                    MapPart,
+                    emitters::TrailEmitter::new(t.clone()),
+                    emitters::FollowsEntity,
+                    Transform::from_translation(t.position),
+                    Visibility::default(),
+                    ChildOf(root),
+                ));
+                if let Some(entity) = t.entity {
+                    e.insert(EntityPart { entity, on: true, exists: true });
+                }
+            }
+            for (i, p) in data.particle_systems.placed.iter().enumerate() {
+                let reach = Vec3::splat(256.0 * data.particle_systems.scale);
+                let clusters = visibility
+                    .map(|v| vis::box_clusters(v, p.position - reach, p.position + reach))
+                    .unwrap_or_default();
+                let mut e = commands.spawn((
+                    Name::new(format!("Particle system {i}")),
+                    MapPart,
+                    psys::SystemEmitter::new(p.clone(), i as u64 + 1),
+                    emitters::FollowsEntity,
+                    Transform::from_translation(p.position).with_rotation(p.rotation),
+                    Visibility::default(),
+                    ChildOf(root),
+                ));
+                tag(&mut e, clusters);
+                if let Some(entity) = p.entity {
+                    e.insert(EntityPart {
+                        entity,
+                        on: p.start_on,
+                        exists: true,
+                    });
+                }
+            }
+            if !data.particle_systems.defs.is_empty() {
+                commands.insert_resource(psys::ParticleSystemDefs(data.particle_systems.clone()));
+            }
+            for (i, s) in data.smokestacks.iter().enumerate() {
+                let reach = s.length + s.base_spread + s.end_size * 2.0;
+                let clusters = visibility
+                    .map(|v| vis::box_clusters(v, s.position - Vec3::splat(reach), s.position + Vec3::splat(reach)))
+                    .unwrap_or_default();
+                let mut e = commands.spawn((
+                    Name::new(format!("Smoke stack {i}")),
+                    MapPart,
+                    emitters::SmokeStackEmitter::new(s.clone(), i as u64 + 1),
+                    emitters::FollowsEntity,
+                    Transform::from_translation(s.position).with_rotation(s.rotation),
+                    Visibility::default(),
+                    ChildOf(root),
+                ));
+                tag(&mut e, clusters);
+                if let Some(entity) = s.entity {
+                    e.insert(EntityPart {
+                        entity,
+                        on: s.start_on,
+                        exists: true,
+                    });
+                }
+            }
         }
         if let Some(sprite_materials) = sprite_materials.as_mut()
             && view == MapDebugView::Normal
@@ -2991,6 +3085,7 @@ fn spawn_map(
                     // own bounds are a point: culling would drop the sprite
                     // as soon as its centre left the view.
                     bevy::camera::visibility::NoFrustumCulling,
+                    emitters::FollowsEntity,
                     Transform::from_translation(sprite.position),
                     ChildOf(root),
                 ));
@@ -3734,6 +3829,7 @@ pub fn unload_map(world: &mut World) {
     world.remove_resource::<surface_color::SurfaceColors>();
     world.remove_resource::<particles::ParticleAssets>();
     world.remove_resource::<particles::ParticleMaterials>();
+    world.remove_resource::<psys::ParticleSystemDefs>();
     if let Some(mut p) = world.get_resource_mut::<particles::Particles>() {
         p.groups.clear();
     }

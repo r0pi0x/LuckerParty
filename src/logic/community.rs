@@ -131,7 +131,7 @@ fn pose(w: &LogicWorld, who: Who, eye: bool) -> Option<(Vec3, Quat)> {
             Some((at, entity_rotation(angles)))
         }
         Who::Ent(id) => {
-            let (o, a) = w.parent_pose(id);
+            let (o, a) = w.parent_pose(Who::Ent(id));
             w.get(id)?;
             Some((o, entity_rotation(a)))
         }
@@ -179,7 +179,7 @@ pub(super) fn place(w: &mut LogicWorld, who: Who, origin: Vec3, angles: Vec3) {
                 });
                 return;
             }
-            let (o, _) = w.parent_pose(id);
+            let (o, _) = w.parent_pose(Who::Ent(id));
             let Some(e) = w.get_mut(id) else { return };
             let delta = origin - o;
             if super::movers::shift(&mut e.class, delta, Vec3::ZERO) {
