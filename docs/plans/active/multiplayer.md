@@ -1259,7 +1259,8 @@ with tests passing and something to see.
      compression): at most 112 KB/s received per client with twelve
      characters on links up to 150 ms and 3 % loss, 128 KB/s at 300 ms
      and 5 % (lowered to 18 and 27 at 20 updates a second in
-     "Bandwidth" below); prediction errors other than contacts with other players,
+     "Bandwidth" below, where the error rates below became per tick
+     played); prediction errors other than contacts with other players,
      hits and server teleports at most 2 % of states (5 % on the worst
      link), never more than 128 (2 s) in a row; settled values (health,
      team, score, name, the round, a client's own money, armour, weapons
@@ -1348,10 +1349,19 @@ with tests passing and something to see.
      | 3. `cl_updaterate` 33 | 14.5, 15.3, 17.1, 19.2, 16.9 | 31-36 | 0.16-0.74 (2.62) | 0 |
      | 3. `cl_updaterate` 20 (default) | 9.5, 10.0, 10.9, 13.1, 10.7 | 31-33 | 0.25-0.43 (3.11) | 0 |
 
-     The worst link's error rate is over ~500-1,100 states (it leaves
-     after 17 s) and moves 1.7-5 % from run to run; the others' stay in
-     the 0.2-1 % they had (runs of errors in a row: up to ~25, were up
-     to ~80). (1) `NetBody` on the wire (`net::quant`): positions to
+     Three more runs at the default: 9.2-11.6 KB/s (worst link
+     12.7-13.1), peaks 30-39 at joins and map changes; at 66 a second
+     with the default `rate` 30000: 25.4-27.8 (31.0), the rate choking
+     4-7 % of updates. Errors are per state compared, and a client compares one per
+     update: at 20 a second a third as many as before, while the
+     mispredictions themselves (a bump, a landing) are events seen once
+     whatever the rate, about as many a minute as before or fewer (the
+     worst link's 15-28 in its 17 s, 19-45 before); so the soak's budget
+     (2 %, 5 % on the worst link) is now per tick played (errors ×
+     updates a second / 64): four runs at 20 a second 0.06-0.55 % (worst
+     link 1.0-1.8 %), the worst link's per-state rate moving 3.1-5.9 %
+     on its ~480 states. Runs of errors in a row: up to ~25 (were up to
+     ~80). Settled values: none different in any run. (1) `NetBody` on the wire (`net::quant`): positions to
      1/32 unit, velocities to 1/8 unit/s, yaw and pitch in 16 bits, as
      varints: 45 → ~20 bytes; the server keeps the quantized values, so
      the soak's bodies-heard check stays exact. The own state is not

@@ -1630,8 +1630,16 @@ fn report(soak: &mut Soak, minutes: f64, real: Duration) {
             s.body_compared,
             s.body_off
         );
-        if rate > if worst_link { 5.0 } else { 2.0 } {
-            failures.push(format!("client {id}: {rate:.2} % of states mispredicted"));
+        // Per tick played, not per state compared: a misprediction is an
+        // event (a bump into someone, a landing), seen in one state
+        // whatever the update rate, and a client compares a state per
+        // update (20 a second by default: a third as many as ticks).
+        let hz = updaterate().unwrap_or(mashup::net::server::DEFAULT_UPDATERATE).min(64.0) as f64;
+        let per_tick = rate * hz / 64.0;
+        if per_tick > if worst_link { 5.0 } else { 2.0 } {
+            failures.push(format!(
+                "client {id}: {rate:.2} % of states mispredicted ({per_tick:.2} % of ticks)"
+            ));
         }
         // The plan's budget (multiplayer.md, "Soak" and "Bandwidth"):
         // with twelve characters, 10 KB/s plus 0.4 per update a second
@@ -1639,7 +1647,6 @@ fn report(soak: &mut Soak, minutes: f64, real: Duration) {
         // with one every tick: 27.5-33.5), half again on the worst link
         // (13, 19 and 49: loss makes replicon send values again until
         // acknowledged).
-        let hz = updaterate().unwrap_or(mashup::net::server::DEFAULT_UPDATERATE).min(64.0) as f64;
         let budget = (10.0 + 0.4 * hz) * if worst_link { 1.5 } else { 1.0 };
         if mean > budget {
             failures.push(format!("client {id}: {mean:.1} KB/s in (budget {budget:.0})"));

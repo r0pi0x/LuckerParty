@@ -670,11 +670,12 @@ address (what a "what is my IP" page shows); behind carrier-grade NAT
 work: one of the friends hosts, or a VPN (Tailscale, ZeroTier) puts
 everyone on one network. The host's upload carries every client: about
 10-13 KB/s (~0.1 Mbit/s) each with twelve characters at the default
-`cl_updaterate 20`, ~15-19 at 33, ~28-34 at an update every tick (more
-on lossy links, ~1.5×; joins and map changes burst to ~30-35 at 20,
-~150-230 at 66); a client caps what it is sent with `rate` (bytes a
-second, default 30000) and the host with `sv_maxrate` and
-`sv_maxupdaterate` (multiplayer.md, "Soak", "Bandwidth"). Both
+`cl_updaterate 20`, ~15-19 at 33, ~25-31 at 66 (held there by the
+default `rate` 30000; ~28-49 without it), more on lossy links (~1.3×);
+joins and map changes burst to ~30-40. A client caps what it is sent
+with `rate` (bytes a second) and `cl_updaterate`, the host with
+`sv_maxrate` and `sv_maxupdaterate` (multiplayer.md, "Soak",
+"Bandwidth"). Both
 games must be the same build (`status` shows the version); another build
 is refused with a message.
 
