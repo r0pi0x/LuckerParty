@@ -1052,6 +1052,7 @@ fn view_punch_muzzle_flash_color_correction_and_noted_classes() {
     w.queue_input("mf", "Fire", Value::Void, 0.0, None);
     w.queue_input("cc", "Enable", Value::Void, 0.0, None);
     w.queue_input("em", "TurnOff", Value::Void, 0.0, None);
+    w.queue_input("c1", "Activate", Value::Void, 0.0, None);
     run_to(&mut w, 2);
     let punches: Vec<(Entity, Vec3)> = w
         .effects

@@ -781,6 +781,20 @@ pub(super) fn class_input(
     let Some(class) = w.get(id).map(|e| e.class.clone()) else {
         return true;
     };
+    // Classes that do nothing here (`noted_class`): their inputs do
+    // nothing either (base inputs such as Kill still apply).
+    if matches!(class, Class::None)
+        && !matches!(
+            input,
+            "kill" | "killhierarchy" | "addoutput" | "fireuser1" | "fireuser2" | "fireuser3" | "fireuser4"
+        )
+        && let Some(e) = w.get(id)
+        && noted_class(&e.classname.to_ascii_lowercase()).is_some()
+    {
+        let detail = format!("{}.{input}", e.classname);
+        w.note("inputs to classes that do nothing here (see their note)", detail);
+        return true;
+    }
     let flags = w.get(id).map_or(0, |e| e.spawnflags);
     match class {
         Class::Relay(r) => match input {
