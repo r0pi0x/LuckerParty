@@ -415,6 +415,151 @@ What still fails, ranked by maps affected (after; `target/mapsweep/round2/audit.
    for the player's view; teslas and other effects inside a 3D skybox
    draw at their skybox place.
 
+## Course flows (2026-10-10)
+
+The 30 surf_, bhop_ and kz_ maps and the 42 gg_ maps played through
+headless (`tests/it/heavy/map_courses.rs`, one test per map; how it
+works and its switches: docs/OBSERVABILITY.md after "Minigame maps'
+flows"). Nothing is per map: every check is derived from the map's
+entities, so each row counts items (teleports, checkpoints, blocks,
+boosters...), and items the harness can't put a player into are "known"
+with the reason (890 of 4199, below). `heavy::map_surf` also rides every
+open ramp of 14 more surf maps. Each map's course, from its entities:
+
+| Map | Flow |
+|---|---|
+| bhop_addict_v2_3xl | T spawns only; 157 teleports to 46 stage starts; 109 "multihop" blocks (a trigger on each names the lander `activator` 0.09 s later and `default` at 0.1 s, over a teleport filtered by that name: stand still and you go back); 35 trigger_push boosters (600 sideways, 2500 up); 5 AWPs placed; a button spawns a template |
+| bhop_backport_css | CT only; 63 classic bhop blocks: func_doors that open when touched (flag 1024), drop at speed 25 and come back after 0.1 s, over 18 fail teleports to 8 starts |
+| bhop_flatzone | 23 teleports to 13 starts; plain blocks over teleport floors |
+| bhop_myztek | 115 teleports to 50 starts; stage triggers name the player `filter_tele_N`, the stage's fail teleports let only that name through (24 names); 46 multihop blocks; 15 booster pads (OnEndTouch basevelocity 0 0 300-420); a 1000 up push |
+| kz_11342 | CT only; every spawn stands in `tp_start` (all players land on one spot); 128 triggers set gravity 40 on entry and 1 on exit (no-jump zones) |
+| kz_ancient_ruins | 11 teleports (3 multihop), stage starts exactly on floors; a fade trigger whose env_fade moves the player (AddOutput origin); a start button |
+| kz_bhop_izanami | 479 teleports to 122 starts; 28 stage names, 101 multihop blocks; gravity 40/1 zones and negative-gravity lifts (-0.85); players renamed by class (`A1`, `A2`) for class filters; 3 pushes up; "Good job" game_text at the end |
+| kz_bhop_sakura | CT only; 95 teleports to 28 starts; 20 stage names; 13 multihop and anti-prespeed (`pre`, named after 0.8 s) triggers; 9 pushes up (1800-11000) |
+| kz_bhop_skodna | 213 teleports to 69 starts; 129 multihop blocks; 19 booster pads (OnEndTouch 0 0 400-600); gravity 40/1 zones and a 0.3 low-gravity pit walled by gravity 1 triggers; class marks (`player_can_use_booster`...) for class filters |
+| kz_hikari_od_nh_v2 | 89 teleports to 11 starts (CS:GO-era keys: flags 4097, UseLandmarkAngles); a climb start button |
+| kz_rockb1ock | CT only; 4 touch doors (wait 2), 5 teleports, a push, a hurt, a timer button |
+| surf_apollo | 139 teleports to 9 starts; stage triggers PressIn/PressOut 34 buttons (stage lights); basevelocity boosters and a gravity -1 zone |
+| surf_boreas | 21 teleports to one start; speedmod triggers; momentary_rot_buttons; a func_tanktrain (round 2's) |
+| surf_botanica | 232 teleports to 13 starts; gravity -1/1 zones; OnEndTouch boosters (0 0 2000, 0 -200 300) |
+| surf_demise, surf_threnody, surf_jive, surf_hellenic | teleports to 2-8 starts (hellenic: landmarks); gravity resets; jive: stage names; hellenic and jive: Momentum-mod timer triggers (not CS:S classes) |
+| surf_halloween_tf2 | 322 teleports, 318 filtered by team filters; landmark; particles, point_tesla (round 2's) |
+| surf_happyhands | 56 teleports; hud hints per stage; a push up; a wall toggle |
+| surf_holiday, surf_kismet, surf_sacrifice, surf_slob | boosters: pushes (2400-3000) and pads (OnStartTouch launch pads 2000 sideways on kismet; OnEndTouch lifts); slob: Momentum timer triggers |
+| surf_inferno | a `bonus` course: its start names the player, its boosters (basevelocity up to -4100 0 900) and gravity -1 zone let only `bonus` through |
+| surf_nebula | 52 teleports; stage triggers open and close 8 func_movelinear start gates; env_fades; ramps partly Propper-made props |
+| surf_nsz_fix | 45 teleports; speedmod triggers; trigger_gravity; buttons that lock (sounds) |
+| surf_sedona | 82 teleports to 21 starts (5 with landmarks); 20 pushes; buttons counting into math_counters that open a door; a tracktrain; CS:GO VScript and collectibles inputs (refused) |
+| surf_stickybutt_alpha | a bonus chain: each stage's end teleport needs the previous stage's name (`cp1`...`cp6`) and gives the next; a spawn trigger resets to `default`; 4 pushes |
+| surf_surreal | 35 teleports to 22 starts; buttons Display game_texts (the paintings); rotating doors, logic_timers; phys_motor (round 2's) |
+| gg_ (42 maps) | Arenas: spawns both sides, the default kit unless a game_player_equip gives one (gg_usp_deagle knife+usp, gg_future knife); placed weapons (gg_dinoiceworld 34, gg_iceworld_l33t 37); teleports (gg_mario_vs_wario 4, gg_tbr_water_basin 2, gg_usp_deagle's secret room); gates that rise when touched or by a trigger (gg_towerwars_v2), movelinear platforms (gg_fusion_trx, gg_ilu's buttons); breakables. The gungame itself (a weapon ladder per kill) is the GunGame server plugin's, not the map's |
+
+Steps passing, before -> after this session's fixes (72 maps, 375
+steps: 360 -> 375; items 3237 -> 3309 of 4199, 890 known). The gg_ maps
+passed every step before and after (spawns, kit, placed weapons,
+teleports, triggers, doors, buttons, rounds); the course maps:
+
+| Map | Steps | Before | After | Items before -> after | What failed before |
+|---|---|---|---|---|---|
+| bhop_addict_v2_3xl | 11 | 10 | 11 | 221 -> 222 of 266 | a stage start hung above its floor |
+| bhop_backport_css | 7 | 7 | 7 | 45 of 50 | |
+| bhop_flatzone | 6 | 6 | 6 | 34 of 37 | |
+| bhop_myztek | 10 | 9 | 10 | 193 -> 208 of 232 | booster pads 0.75 % weak (15) |
+| kz_11342 | 6 | 6 | 6 | 95 of 136 | |
+| kz_ancient_ruins | 9 | 8 | 9 | 17 -> 19 of 24 | two stage starts hung above their floors |
+| kz_bhop_izanami | 11 | 10 | 11 | 520 -> 522 of 751 | a stage start hung |
+| kz_bhop_sakura | 11 | 11 | 11 | 142 of 166 | |
+| kz_bhop_skodna | 10 | 8 | 10 | 369 -> 391 of 420 | three stage starts hung; booster pads weak (19) |
+| kz_hikari_od_nh_v2 | 6 | 6 | 6 | 97 of 103 | |
+| kz_rockb1ock | 9 | 9 | 9 | 19 of 20 | |
+| surf_apollo | 9 | 7 | 9 | 185 -> 197 of 213 | launch pads touched standing gave no speed at all; a teleport lost the velocity (hung at its source) |
+| surf_boreas | 7 | 7 | 7 | 33 of 33 | |
+| surf_botanica | 7 | 6 | 7 | 176 -> 177 of 261 | a lift pad weak |
+| surf_demise | 6 | 6 | 6 | 20 of 23 | |
+| surf_halloween_tf2 | 6 | 6 | 6 | 162 of 333 | |
+| surf_happyhands | 7 | 7 | 7 | 51 of 73 | |
+| surf_hellenic | 6 | 6 | 6 | 21 of 24 | |
+| surf_holiday | 7 | 6 | 7 | 16 -> 19 of 20 | lift pads weak |
+| surf_inferno | 7 | 6 | 7 | 11 -> 12 of 16 | the bonus launch pad gave nothing standing |
+| surf_jive | 5 | 5 | 5 | 77 of 89 | |
+| surf_kismet | 6 | 5 | 6 | 24 -> 28 of 36 | the start's launch pads (2000) gave nothing standing |
+| surf_nebula | 6 | 6 | 6 | 58 of 60 | |
+| surf_nsz_fix | 10 | 10 | 10 | 59 of 64 | |
+| surf_sacrifice | 6 | 5 | 6 | 59 -> 61 of 77 | pads gave nothing standing |
+| surf_sedona | 10 | 9 | 10 | 118 -> 119 of 142 | a stage start hung |
+| surf_slob | 7 | 6 | 7 | 48 -> 54 of 76 | pads weak or nothing |
+| surf_stickybutt_alpha | 8 | 8 | 8 | 28 of 76 | |
+| surf_surreal | 9 | 9 | 9 | 81 of 84 | |
+| surf_threnody | 5 | 5 | 5 | 108 of 136 | |
+
+The 890 known items: 502 triggers the harness finds no room for a
+standing player in (thin slabs inside blocks and floors, triggers in
+walls; not checked), 166 filtered teleports no name or class the map
+gives passes (mostly surf_halloween_tf2's team filters), 153 teleports
+overlapping another one (touch order, triggers.md open question 3), 42
+destinations inside another teleport (chained, as the spec says), 8 a
+map's missing destination, the rest single cases (gravity zones
+overlapping, a booster under a teleport, a multihop teleport below its
+block's top). Surf rides (`heavy::map_surf`): no ghost stop on 18 of 19
+cached surf maps (14 newly covered); surf_nebula is left out (below).
+
+Fixed, by maps affected (tests: `map_courses`, plus those named):
+
+| Problem | Maps | Fix |
+|---|---|---|
+| A player put exactly on a floor (teleport destinations at floor height, how kz and bhop maps place them) hung there: our sweeps found the box start solid (no ground, no fall, no jump), our stuck test didn't, so nothing moved it, for good | 6 seen (bhop_addict_v2_3xl, kz_ancient_ruins, kz_bhop_izanami, kz_bhop_skodna, surf_apollo, surf_sedona; 9 stage starts), any map with such a destination | Touching a plane within float noise (`SOLID_SKIN`) is touching from outside (`Tracer::sweep_brushes`; movement.md open question 18, our reading; `source_movement::feet_exactly_on_a_floor_stand`) |
+| `AddOutput basevelocity` on players (booster pads) added to the velocity at once and took the player off the ground: launch pads touched standing gave no speed at all, the rest were 0.75 % short | 9 (13 maps use them) | It sets the base velocity, which the next move takes in x (1 + dt/2) (triggers.md trigger_push step 1, open question 9; `map_logic::basevelocity_booster_launches_by_the_base_velocity_rule`) |
+| Classic bhop blocks (touch-open func_doors) didn't drop under a player who landed on them: a landing rests up to 2 units above what it stands on, past the 1-unit touch reach (found live on bhop_backport_css) | 2 (bhop_backport_css 63 blocks, kz_rockb1ock 4) | Standing on the door (its ground) touches it (`movers::touch_movers`; doors_buttons.md open question 9, our reading; `map_logic::landing_on_a_touch_door_opens_it`) |
+
+Play-check (live, windowed, dev build; remote console `setpos`,
+`+forward`, `+jump`, `ent_dump`; screenshots in this session's
+`target/agent/shots/`):
+
+| Map | Mechanism | Result |
+|---|---|---|
+| bhop_backport_css | Landing on a bhop block door | Before the door fix it stayed `Closed` under the player; after: it drops (25 u/s), the player falls into the teleport, is back at the start in 0.3 s, the door comes back up |
+| bhop_myztek | Multihop block; booster shaft | Landed and stood still 1.8 units above the block: not sent back (see below); one step on it: back at Tele04, view snapped to 270. The OnEndTouch pad launched a jump to about 120 units (57 without) |
+| kz_ancient_ruins | Stage 6 start exactly on its floor | Stands, jumps (53 up) and lands (hung in the air before) |
+| gg_towerwars_v2 | Gate trigger | Walking into it raises the gate to 190 (Open) |
+| surf_kismet | Start launch pad (OnStartTouch basevelocity 2000 0 0) | Landing on it launches the player 450 units along x in a quarter second, into the course's start teleport (the headless check got no speed from it before) |
+
+What still blocks, by maps affected:
+
+1. **The gungame mode** (42 gg_ maps): the weapon ladder (a new weapon
+   per kill, knife last) is the GunGame server plugin's; mashup has no
+   such mode, so these play as plain arenas with the default kit. A game
+   mode for Lucker Party, not map logic.
+2. **Touch order of overlapping triggers** (triggers.md open question
+   3): 153 teleports overlap another (kz_bhop_skodna's stage 7: a
+   filtered and an unfiltered one in one volume, surf_stickybutt_alpha's
+   bonus end, ...), 3 gravity zones (skodna's low-gravity pit walls). We
+   touch in entity order, each one; which wins in CS:S is unmeasured.
+3. **Landings rest up to 2 units above floors** (movement.md, ground
+   detection, no snap): a player who lands on a bhop block and stands
+   still can stay above a 1-unit trigger slab on its top (seen on
+   bhop_myztek: stood 1.8 above, not sent back until a step). Bhop
+   players keep moving, so it rarely shows; two bhop_addict_v2_3xl
+   blocks have their teleport entirely under the block's top, which a
+   standing player never overlaps (face contact, triggers.md open
+   question 1). Whether CS:S snaps a landing down is worth a probe.
+4. **Players teleported onto one spot stick in each other** (the
+   minigame flows' item 1): kz_11342 puts all 50 spawns in `tp_start`,
+   bhop_myztek's spawn room sends everyone to one start.
+5. **surf_nebula**: 13 of 84 ramp rides stop dead (some against its
+   Propper-made ramp props, some on brush ramps with nothing near:
+   `MASHUP_SURF_MAPS=surf_nebula MASHUP_SURF_DEBUG=1`); not chased.
+6. **Timers**: surf/kz timers are server plugins (and Momentum mod's
+   `trigger_momentum_timer_*` on 4 surf maps, not CS:S classes): start
+   and end zones run their map logic, no timer shows.
+7. Visual and physics entities on these maps (func_tanktrain on
+   surf_boreas, point_tesla and particles on surf_halloween_tf2 and
+   surf_hellenic, phys_motor on surf_surreal, func_water_analog on
+   gg_simpsons_dusty_2, spritetrails on bhop_addict, surf_stickybutt,
+   gg_future, gg_fy_tactic_fight) are round 2's (above); this session's
+   checks don't cover them.
+8. surf_sedona's CS:GO inputs (RunScriptCode, AddCollectible) are
+   refused, as CS:S would; its collectible counter doesn't count.
+
 ## Left, ranked by maps affected
 
 Generic, by maps affected (counts from the sweep after the fixes):

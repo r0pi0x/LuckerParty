@@ -968,6 +968,29 @@ names contain those. A live check of the same steps: run the game with
 +bot_add 1 ...`, then `setpos`, `setang`, `+use`/`-use`, `ent_dump` and
 `screenshot` over the remote console.
 
+Course maps (surf_, bhop_, kz_) and gungame arenas (gg_):
+`tests/it/heavy/map_courses.rs` plays each cached one with a scripted
+player (one test per map, the same `Flow` and table) and checks, from
+the map's own entities: spawns; every trigger_teleport (stood in with
+the name or class its filter wants: lands on the destination the same
+tick, velocity kept, view snapped; the player doesn't hang there
+afterwards); stage checkpoints (a trigger naming the player, then the
+stage's filtered fail teleport); touch-open doors (bhop blocks) moving
+and coming back; "multihop" blocks (landing on one sends the player
+back, a 2-tick touch doesn't); trigger_push and AddOutput basevelocity
+boosters (the velocity change against triggers.md); gravity and
+player_speedmod zones; what triggers set off; buttons; the next round.
+Each step's detail counts its items, with the ones it can't check
+("known") grouped by reason: no room for a player in the trigger,
+overlapping teleports or gravity zones (touch order, triggers.md open
+question 3), chained destinations. `MASHUP_FLOW_TABLE=1 cargo test
+--features dev --test it map_courses:: -- --nocapture` prints the rows;
+`MASHUP_COURSE_DEBUG=<entity index>` prints the ticks around that
+trigger's check (brushes, links, velocity before and after the
+movement and the logic). `heavy::map_surf` rides every open ramp of the
+cached surf maps (`MASHUP_SURF_MAPS=surf_a,surf_b` for some,
+`MASHUP_SURF_DEBUG=1` to list what the hull is near at each stop).
+
 ## 6. Comparing with the real game (refcmp)
 
 `refcmp` captures the same camera views in real CS:S and in mashup and

@@ -613,3 +613,12 @@ dt = 0.015. Brush sizes are the model bounding box.
    model surface pick (not traced in this pass); and whether the CS:S
    model doors behave the same (only cs_assault/de_port/cs_compound use
    them).
+9. **Touch Opens and a player standing on the door.** (Added by an
+   implementation session, not from the source.) Classic bhop blocks are
+   func_doors with flag 1024 moving down under the player. A landing can
+   rest up to 2 units above what the player stands on (movement.md,
+   ground detection), so a touch test by box contact alone can miss the
+   player standing on the door. We count a player whose ground is the
+   door as touching it (our reading). Test: probe server, bhop_backport
+   or a test map's touch-open door, land on it from a jump, read whether
+   it moves every time.

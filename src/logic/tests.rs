@@ -1520,7 +1520,8 @@ fn use_presses_say_whether_something_was_found() {
 // ------------------------------------------------- community map inputs
 
 /// What bhop, kz and surf maps send their players (found by the map sweep,
-/// docs/plans/active/community-maps.md): boosters add a base velocity once,
+/// docs/plans/active/community-maps.md): boosters set the base velocity
+/// (the next move takes it in; the player stays grounded until then),
 /// gravity and origin through AddOutput, a fall-damage filter.
 #[test]
 fn player_addoutput_and_damage_filter() {
@@ -1536,8 +1537,9 @@ fn player_addoutput_and_damage_filter() {
     let me = Some(Who::Player(p));
     w.deliver(Who::Player(p), "AddOutput", Value::Str("basevelocity 0 0 325".into()), me, None);
     let pl = w.player(p).unwrap();
-    assert_eq!(pl.velocity, Vec3::new(0.0, 0.0, 325.0));
-    assert!(pl.unground && !pl.on_ground);
+    assert_eq!(pl.base_velocity, Vec3::new(0.0, 0.0, 325.0));
+    assert_eq!(pl.velocity, Vec3::ZERO);
+    assert!(!pl.base_touched && !pl.unground && pl.on_ground);
     w.deliver(Who::Player(p), "AddOutput", Value::Str("gravity 0.5".into()), me, None);
     assert_eq!(w.player(p).unwrap().gravity, 0.5);
     w.deliver(Who::Player(p), "AddOutput", Value::Str("origin 10 20 30".into()), me, None);
