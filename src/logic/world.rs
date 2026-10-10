@@ -1367,8 +1367,8 @@ impl LogicWorld {
     /// A keyvalue set on a player through AddOutput (entity_io.md:
     /// AddOutput sets any field the class reads from a keyvalue). The
     /// ones maps use on `!activator`: its name, gravity, a base velocity
-    /// (bhop and surf boosters: added to the velocity once, as no trigger
-    /// keeps it up), health, origin (a teleport).
+    /// (bhop and surf boosters: the next move adds it to the velocity, as
+    /// no trigger keeps it up), health, origin (a teleport).
     fn player_keyvalue(&mut self, p: Entity, key: &str, v: &str) {
         let num = super::value::atof;
         match key {
@@ -1387,14 +1387,15 @@ impl LogicWorld {
                     pl.gravity = num(v);
                 }
             }
+            // The keyvalue is the base velocity itself, replaced. No
+            // trigger keeps it up, so the player's next move turns it into
+            // velocity, x (1 + dt/2) (triggers.md, trigger_push step 1);
+            // it doesn't take the player off the ground itself (only a
+            // resulting vz over 250 does: movement.md, per-tick order 7).
             "basevelocity" => {
                 let push = crate::map::entities::parse_vector(v);
                 if let Some(pl) = self.player_mut(p) {
-                    pl.velocity += push;
-                    if push.z > 0.0 {
-                        pl.on_ground = false;
-                        pl.unground = true;
-                    }
+                    pl.base_velocity = push;
                 }
             }
             "health" => self.effects.push(Effect::SetHealth {

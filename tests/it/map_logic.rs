@@ -57,8 +57,7 @@ fn map(entities: Vec<MapEntity>) -> MapData {
 fn sim(entities: Vec<MapEntity>, feet: Vec3, yaw: f32) -> (Sim, Entity) {
     let mut sim = Sim::new((MapPlugin::new(map(entities)), SourceMovementPlugin));
     sim.set_tick_interval(cs_source::TICK_INTERVAL);
-    // A unit above the ground, to land on it (exact contact reads as
-    // inside the brush).
+    // A unit above the ground, to land on it.
     let p = sim.spawn_character(to_engine(feet + Vec3::Z * 37.0), movement::ID);
     sim.intent(p).yaw = (yaw - 90.0).to_radians();
     sim.ticks(10);
@@ -194,6 +193,72 @@ fn trigger_push_is_a_conveyor_then_momentum() {
     }
     assert!(feet(&sim, p).x > 216.0, "left the push: {}", feet(&sim, p));
     assert!(peak > 250.0 && peak < 303.0, "momentum peak {peak}");
+}
+
+/// A kz booster pad: `!activator AddOutput basevelocity 0 0 400` when the
+/// player walks in. The keyvalue is the base velocity (replaced); the
+/// player's next move turns it into velocity x (1 + dt/2) (triggers.md,
+/// trigger_push step 1 and open question 9), which at over 250 takes it
+/// off the ground: 403 up, less that tick's gravity (12).
+#[test]
+fn basevelocity_booster_launches_by_the_base_velocity_rule() {
+    let pad = entity(
+        &[
+            ("classname", "trigger_multiple"),
+            ("spawnflags", "1"),
+            ("wait", "1"),
+            ("OnStartTouch", "!activator,AddOutput,basevelocity 0 0 400,0,-1"),
+        ],
+        vec![hull(Vec3::new(200.0, -64.0, 0.0), Vec3::new(264.0, 64.0, 16.0))],
+        false,
+    );
+    let (mut sim, p) = sim(vec![pad], Vec3::ZERO, 0.0);
+    sim.app.world_mut().get_mut::<Transform>(p).unwrap().translation = to_engine(Vec3::new(232.0, 0.0, 37.0));
+    let mut peak = 0.0f32;
+    let mut rise = 0.0f32;
+    for _ in 0..30 {
+        sim.ticks(1);
+        peak = peak.max(to_source(sim.velocity(p)).z);
+        rise = rise.max(feet(&sim, p).z);
+    }
+    let dt = cs_source::TICK_INTERVAL as f32;
+    let want = 400.0 * (1.0 + dt / 2.0) - 800.0 * dt;
+    assert!((peak - want).abs() < 0.5, "launch speed {peak}, want {want}");
+    assert!(rise > 80.0, "rose {rise}");
+}
+
+/// A classic bhop block: a func_door with "Touch Opens" (1024) moving
+/// down under whoever lands on it (bhop_backport_css: speed 25, lip 4,
+/// wait 0.1). A landing can rest up to 2 units above the block (ground
+/// found within 2), out of reach of a box-contact touch: standing on the
+/// door counts as touching it (doors_buttons.md open question 9).
+#[test]
+fn landing_on_a_touch_door_opens_it() {
+    let door = entity(
+        &[
+            ("classname", "func_door"),
+            ("origin", "300 0 8"),
+            ("movedir", "90 0 0"),
+            ("lip", "4"),
+            ("speed", "25"),
+            ("wait", "0.1"),
+            ("spawnflags", "1024"),
+        ],
+        vec![hull(Vec3::new(-32.0, -32.0, -8.0), Vec3::new(32.0, 32.0, 8.0))],
+        true,
+    );
+    for drop in [20.0, 23.0, 27.0, 31.0] {
+        let (mut sim, p) = sim(vec![door.clone()], Vec3::ZERO, 0.0);
+        let start = mover_origin(&mut sim, 0);
+        sim.app.world_mut().get_mut::<Transform>(p).unwrap().translation =
+            to_engine(Vec3::new(300.0, 0.0, 16.0 + drop + 36.0));
+        let mut lowest = start.z;
+        for _ in 0..60 {
+            sim.ticks(1);
+            lowest = lowest.min(mover_origin(&mut sim, 0).z);
+        }
+        assert!(lowest < start.z - 2.0, "dropped from {drop}: the block stayed at {lowest} (from {})", start.z);
+    }
 }
 
 fn node(sim: &mut Sim, index: usize) -> Entity {

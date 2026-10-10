@@ -53,6 +53,13 @@ fn test_map(mut commands: Commands) {
         Vec3::new(-256.0, CEILING_Y - 256.0, 86.0),
         Vec3::new(256.0, CEILING_Y + 256.0, 120.0),
     );
+    // A floor far from the origin (kz_ancient_ruins' stage 6 start: a
+    // teleport destination exactly on its top).
+    solid(
+        &mut brushes,
+        Vec3::new(-7504.0, -13272.0, -12912.0),
+        Vec3::new(-6952.0, -12744.0, -12784.0),
+    );
     commands.insert_resource(MapBrushes(brushes));
 }
 
@@ -122,6 +129,28 @@ fn close(actual: f32, expected: f32, tol: f32, what: &str) {
         (actual - expected).abs() <= tol,
         "{what}: got {actual}, expected {expected} (±{tol})"
     );
+}
+
+/// Feet put exactly on a floor (a teleport destination at floor height,
+/// the usual way kz and bhop maps place them) stand on it, near the
+/// origin and far from it, where the floor's height in meters isn't exact
+/// in f32: before, a box starting a float's noise inside the floor's plane
+/// was solid to the sweeps (no ground, no fall) but not to the stuck test,
+/// and hung in the air for good. Our choice where the spec is silent
+/// (movement.md, open question 18): touching within that noise is
+/// touching, not inside.
+#[test]
+fn feet_exactly_on_a_floor_stand() {
+    for feet in [Vec3::new(0.0, -3000.0, 0.0), Vec3::new(-7188.0, -12812.0, -12784.0)] {
+        let mut me = Player::at(feet);
+        me.sim.ticks(3);
+        assert!(me.state().on_ground, "{feet}: not on the ground");
+        close(me.feet().z, feet.z, 0.05, "feet height");
+        // And can walk off.
+        me.sim.intent(me.p).move_axis = Vec2::Y;
+        me.sim.ticks(20);
+        assert!(me.speed() > 100.0, "{feet}: can't walk ({})", me.speed());
+    }
 }
 
 #[test]

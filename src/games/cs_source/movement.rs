@@ -624,6 +624,7 @@ impl Tracer<'_, '_, '_> {
     /// up) read as entering it again and the player stopped dead.
     fn sweep_brushes(&self, half: Vec3, from: Vec3, delta: Vec3) -> BrushHit {
         let eps = TRACE_BACKOFF * METERS_PER_UNIT;
+        let touch = SOLID_SKIN * METERS_PER_UNIT;
         let to = from + delta;
         let mut out = BrushHit {
             ladder: false,
@@ -651,7 +652,18 @@ impl Tracer<'_, '_, '_> {
             let mut last_crossed = -1.0f32;
             for (n, d) in &b.planes {
                 let dist = d + n.abs().dot(half);
-                let d1 = n.dot(from) - dist;
+                let mut d1 = n.dot(from) - dist;
+                // A box touching the plane within float noise (feet put
+                // exactly on a floor: a teleport destination at floor
+                // height) touches it from outside, as the stuck test sees
+                // it (`SOLID_SKIN`), instead of starting inside the brush:
+                // the sweeps then meet the plane at once (ground found)
+                // rather than finding the box start solid, which hung the
+                // player above the floor. Our choice; the spec is silent
+                // (movement.md, open question 18).
+                if d1 <= 0.0 && d1 > -touch {
+                    d1 = f32::MIN_POSITIVE;
+                }
                 let d2 = d1 + n.dot(delta);
                 gets_out |= d2 > 0.0;
                 starts_out |= d1 > 0.0;
