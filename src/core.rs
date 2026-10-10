@@ -601,6 +601,15 @@ pub struct RemotePlayer;
 #[reflect(Component)]
 pub struct Connecting;
 
+/// On CS:S's spectator team (`spectate`, `jointeam 1`): no team of its
+/// own (`Team(0)`), dead, not solid, no health and no weapons, so it has
+/// no body; the rules neither spawn it nor count it for a round's end
+/// (`rules::join_spectators`). Its client watches others or flies free
+/// (`client::spectate`). Replicated, so every client lists it.
+#[derive(Component, Reflect, Default, Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[reflect(Component)]
+pub struct Spectating;
+
 /// Number of fixed ticks simulated so far. Tests and tools use it to step
 /// the simulation by exact ticks.
 #[derive(Resource, Reflect, Default, Clone, Copy, Debug)]
@@ -1237,6 +1246,7 @@ impl Plugin for CorePlugin {
             .register_type::<SpawnPoint>()
             .register_type::<LocalPlayer>()
             .register_type::<Connecting>()
+            .register_type::<Spectating>()
             .register_type::<SimTick>()
             .init_resource::<SimTick>()
             .init_resource::<SimClock>()

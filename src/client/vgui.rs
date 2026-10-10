@@ -34,11 +34,13 @@ impl Plugin for VguiPlugin {
 pub struct VguiOpen {
     pub buy: bool,
     pub team: bool,
+    /// The spectator menu (`spectator_menu`).
+    pub spectator: bool,
 }
 
 impl VguiOpen {
     pub fn any(&self) -> bool {
-        self.buy || self.team
+        self.buy || self.team || self.spectator
     }
 }
 

@@ -271,7 +271,11 @@ Only `Reflect`-registered types are visible; register new core components in
   1280x720 --screenshot spec.png --frames 400 +mashup_rounds 1
   +mp_freezetime 0 +bot_add 2 +bot_add 2 +wait 60 +mashup_hurtme chest
   500` (the death cam ends 2 s after the death, then a teammate is
-  watched in first person, with their crosshair).
+  watched in first person, with their crosshair). The spectator team:
+  `+spectate` (or `+jointeam 1`) flies free at once; `spec_player <name>`
+  watches one; pressing duck opens the spectator menu; the scoreboard lists
+  spectators (`tests/it/spectate.rs::the_spectator_team`, over the
+  network `tests/it/net_rules.rs::a_client_spectates_then_joins_a_team`).
 - Scoreboard: `++showscores` holds it from the start (`--map
   cs_source:de_dust2 --window 1280x720 --screenshot sb.png +bot_add 1
   +bot_add 2 ++showscores`); a dead player shows the skull icon,
@@ -994,7 +998,12 @@ question 3), chained destinations. `MASHUP_FLOW_TABLE=1 cargo test
 trigger's check (brushes, links, velocity before and after the
 movement and the logic). `heavy::map_surf` rides every open ramp of the
 cached surf maps (`MASHUP_SURF_MAPS=surf_a,surf_b` for some,
-`MASHUP_SURF_DEBUG=1` to list what the hull is near at each stop).
+`MASHUP_SURF_DEBUG=1` to list what the hull is near at each stop;
+`MASHUP_SLIDE_DEBUG=1`, read by the CS:S movement itself, prints every
+slide move's sweeps: position, velocity, fraction, start solid, the plane
+hit and whether it was a brush with its own surface or a physics
+collider, and when a full move's end tests solid, whether a brush did it.
+The lines just before a stop are its tick's).
 
 ## 6. Comparing with the real game (refcmp)
 

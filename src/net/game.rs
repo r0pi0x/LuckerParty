@@ -329,17 +329,23 @@ fn receive_buys(mut requests: MessageReader<FromClient<BuyRequest>>, players: Qu
     }
 }
 
-/// A client asked for a team (`rules::join_team`).
+/// A client asked for a team (`rules::join_team`), or the spectators
+/// (team 0: `rules::join_spectators`).
 fn receive_teams(mut requests: MessageReader<FromClient<TeamRequest>>, players: Query<&Player>, mut commands: Commands) {
     for r in requests.read() {
         let Some(client) = r.client_id.entity() else { continue };
         let Ok(p) = players.get(client) else { continue };
         let (character, team) = (p.character, r.message.team);
         commands.queue(move |w: &mut World| {
-            if !(1..=2).contains(&team) || w.get_entity(character).is_err() {
+            if team > 2 || w.get_entity(character).is_err() {
                 return;
             }
-            if let Err(text) = crate::rules::join_team(w, character, Team(team)) {
+            let joined = if team == 0 {
+                crate::rules::join_spectators(w, character)
+            } else {
+                crate::rules::join_team(w, character, Team(team))
+            };
+            if let Err(text) = joined {
                 notify(w, client, text);
             }
         });

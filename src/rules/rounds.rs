@@ -462,6 +462,7 @@ fn start_round(world: &mut World, s: &RoundSettings, now: f64, fresh: bool) {
             With<Health>,
             Without<Hostage>,
             Without<crate::core::Connecting>,
+            Without<crate::core::Spectating>,
         )>()
         .iter(world)
         .collect();

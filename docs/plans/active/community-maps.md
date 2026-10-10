@@ -411,8 +411,8 @@ What still fails, ranked by maps affected (after; `target/mapsweep/round2/audit.
    (inputs CS:S entities don't have: trigger_once PlaySound,
    env_soundscape PlaySound, func_breakable Open; AddOutput without a
    value; a track train without a path; a template without members).
-6. **Monitors**: one camera at a time, no 3D skybox or fog in it, culled
-   for the player's view; teslas and other effects inside a 3D skybox
+6. **Monitors**: one camera at a time, no 3D skybox or fog in it (both
+   since rounds 3 and 4), culled for the player's view; teslas and other effects inside a 3D skybox
    draw at their skybox place.
 
 ## Map logic audit, round 3 (2026-10-10)
@@ -471,16 +471,15 @@ What still fails, ranked by maps affected (after; `target/mapsweep/round3/audit.
 
 1. **Particle effects are interpretations** of the `.pcf` operators
    (tech-debt row); embers' and muzzle flashes' looks are ours too.
-2. **Detail props aren't drawn** (kz_ancient_ruins' grass sprites; the
-   env_detail_controller and env_wind on the maps have nothing else to
-   act on).
+2. ~~**Detail props aren't drawn**~~ (drawn since round 4, below; the
+   env_detail_controller and env_wind keys feed them).
 3. **Map mistakes the audit shows** (inputs CS:S entities don't have:
    jacks' func_rotating AddOutput EntityTemplate, trigger_once and
    env_soundscape PlaySound, func_breakable Open, math_counter Unlock;
    AddOutput without a value; a track train without a path; a template
    without members), sv_cheats/rcon refused on purpose.
-4. **Monitors** use the map's fog, not the point_camera's own keys; one
-   camera at a time.
+4. **Monitors** use the map's fog, not the point_camera's own keys
+   (their own since round 4, below); one camera at a time.
 5. env_viewpunch's roll (surf_surreal's crash punch is all roll).
 
 ## Course flows (2026-10-10)
@@ -569,7 +568,8 @@ destinations inside another teleport (chained, as the spec says), 8 a
 map's missing destination, the rest single cases (gravity zones
 overlapping, a booster under a teleport, a multihop teleport below its
 block's top). Surf rides (`heavy::map_surf`): no ghost stop on 18 of 19
-cached surf maps (14 newly covered); surf_nebula is left out (below).
+cached surf maps (14 newly covered); surf_nebula is left out (below;
+all 19 since round 4).
 
 Fixed, by maps affected (tests: `map_courses`, plus those named):
 
@@ -601,7 +601,9 @@ What still blocks, by maps affected:
    3): 153 teleports overlap another (kz_bhop_skodna's stage 7: a
    filtered and an unfiltered one in one volume, surf_stickybutt_alpha's
    bonus end, ...), 3 gravity zones (skodna's low-gravity pit walls). We
-   touch in entity order, each one; which wins in CS:S is unmeasured.
+   touch in entity order, each one; which wins in CS:S is unmeasured
+   (round 4: no public source settles it; the probe is under "Probes
+   wanted").
 3. **Landings rest up to 2 units above floors** (movement.md, ground
    detection, no snap): a player who lands on a bhop block and stands
    still can stay above a 1-unit trigger slab on its top (seen on
@@ -609,13 +611,14 @@ What still blocks, by maps affected:
    players keep moving, so it rarely shows; two bhop_addict_v2_3xl
    blocks have their teleport entirely under the block's top, which a
    standing player never overlaps (face contact, triggers.md open
-   question 1). Whether CS:S snaps a landing down is worth a probe.
+   question 1). Whether CS:S snaps a landing down is worth a probe
+   (round 4: the spec says it doesn't, and we match it; the probe is
+   under "Probes wanted").
 4. **Players teleported onto one spot stick in each other** (the
    minigame flows' item 1): kz_11342 puts all 50 spawns in `tp_start`,
    bhop_myztek's spawn room sends everyone to one start.
-5. **surf_nebula**: 13 of 84 ramp rides stop dead (some against its
-   Propper-made ramp props, some on brush ramps with nothing near:
-   `MASHUP_SURF_MAPS=surf_nebula MASHUP_SURF_DEBUG=1`); not chased.
+5. ~~**surf_nebula**: 13 of 84 ramp rides stop dead~~ (round 4: its
+   ramp props have no collision model; fixed below).
 6. **Timers**: surf/kz timers are server plugins (and Momentum mod's
    `trigger_momentum_timer_*` on 4 surf maps, not CS:S classes): start
    and end zones run their map logic, no timer shows.
@@ -628,13 +631,74 @@ What still blocks, by maps affected:
 8. surf_sedona's CS:GO inputs (RunScriptCode, AddCollectible) are
    refused, as CS:S would; its collectible counter doesn't count.
 
+## Round 4 (2026-10-10)
+
+Working down the course flows' list and the round-2 leftovers.
+
+| Problem | Maps | Fix (tests) |
+|---|---|---|
+| 13 of surf_nebula's 84 ramp rides stopped dead. `MASHUP_SLIDE_DEBUG` (new: every slide move's sweeps) showed each stop: a full move whose end tested solid against a prop's collider, or a sweep starting inside one. The props are its Propper ramp models (91 of its 230 static props), which ship no collision model; they sit a hair off player-clip ramps that are the real surfaces, and we collided with their triangle meshes | surf_nebula (91 props); kz_hikari_od_nh_v2 (206 props), gg_fy_tactic_fight (55), surf_halloween_tf2 (44) have such props too | A static prop set to collide by its physics model blocks nothing without one (our reading of the public prop_static docs; tech-debt, probe below). `heavy::map_surf` rides all 19 cached surf maps now (5 to 88 open ramps each, 0 ghost stops), surf_nebula included |
+| Detail props not drawn (the BSP's detail lump: grass, weeds, bushes) | 7 cached maps and 3 stock with sprites (cs_militia, cs_compound, de_port), de_inferno, de_nuke, de_train and gg_churches with detail models; kz_ancient_ruins' lump is LZMA-compressed | `games::cs_source::detail` reads the `dprp` lump (compressed or not); sprites and their cross and tri shapes become `MapDetailProps`, drawn by `map::detail` in one mesh per 1024-unit cell (a few draw calls; the vertex shader turns facing sprites, sways tops in env_wind, fades by distance, dithered); detail models become non-solid static props; env_detail_controller's fade, else cl_detaildist/cl_detailfade's defaults (`map_visuals::detail_props_load`, `map_community::detail_sprites_on_community_maps`, unit tests). Screenshots (this session's `target/agent/keep/`): `militia_grass.png`, `ruins_grass.png` |
+| Monitors drew the map's fog | point_camera on mg_kommando, mg_lt_galaxy_v5 (fog off on both) | The camera's own fogEnable/fogColor/fogStart/fogEnd/fogMaxDensity (`LogicWorld::monitor_fog` -> `MonitorFog` -> the screen camera's `DistanceFog`, read by `fog.wgsl` as the view's fog; `community_tests::monitor_camera_fog_is_the_cameras_own`; test_hardware's monitors checked live, `monitors.png`) |
+| Bots stood on spawns and teleport destinations on maps without a navigation mesh | the 83 cached maps without one (6 pack a mesh) | `bot::aside`: they step off spawns and teleport destinations and out of teleport triggers to a clear spot within 320 units and wait; the console says once that the map has no mesh (`bot_nav::bots_stand_aside_without_a_nav_mesh` on bhop_flatzone). Full minigame AI stays out of scope |
+
+`mapsweep --audit` after (with round 3 merged): as round 3 left it, 22
+connections to inputs their class lacks (map mistakes), 46 to missing
+targets, 1 unhandled class (1 entity), 18 run-time complaints, 129 notes,
+0 movers failing; env_detail_controller and env_wind stay noted
+classes, their notes now saying the loader reads them.
+
+Course flows after (72 maps): every step passes; items 3309 -> 3330
+(of 4199 -> 4201; surf_botanica 177 -> 193 of 261, surf_nsz_fix 59 of
+64 -> 63 of 66, surf_sacrifice 61 -> 62: triggers the solid prop meshes
+left no room in). Known: 475 no room for a player (502 before), 166
+filtered, 153 overlapping teleports, 42 chained. Minigame flows: 17 of
+17 maps pass.
+
+Looked at, not changed:
+
+- **Landing height** (movement.md, ground detection and staying on the
+  ground): a player is on ground when a 2-unit drop test finds a floor,
+  and the test doesn't move the origin; only a ground move (speed 1 or
+  more) snaps it down. So a player who drops straight onto a floor and
+  stands still rests where the test caught it, up to 2 units above
+  (the spec lists it as a quirk to keep); one landing with any
+  horizontal speed is snapped on its first ground tick. We do exactly
+  this (`Mover::categorize`, `stay_on_ground`), so nothing changed:
+  bhop_myztek's stand-still above a multihop slab and bhop_addict's
+  teleports under a block's top are what the spec predicts, unless CS:S
+  differs (probe A).
+- **Touch order of overlapping triggers** (triggers.md open question
+  3): the spec leaves the engine's enumeration open and no public page
+  settles it; we touch in entity order (probe B).
+
+Probes wanted (the reference server; not run here):
+
+- A, landing height (movecmp): a flat brush floor at z = 0. `setpos` the
+  feet at z = 1.0, 1.5, 1.9 and 2.5 with no velocity and no input; read
+  `getpos` every tick for half a second. Spec: 1.0-1.9 stay put (on
+  ground at once), 2.5 falls 0.098, 0.391 (z 2.11), then is caught at
+  z 1.62 and stays. Then drop from z = 40 and read the resting z. Repeat
+  with a 1-unit trigger_multiple slab on the floor (OnStartTouch ->
+  point_servercommand `say`): does a player resting 1.6 above the floor
+  set it off? Compare with mashup's movecmp run of the same.
+- B, touch order: two trigger_teleports filling one volume, A (lower
+  entity index) to `dest_a`, B to `dest_b`; `setpos` into the volume,
+  read `getpos` (which destination). Again with the entity order swapped
+  (recompiled), with the two volumes in different BSP leaves, with one
+  filtered by name, and a trigger_push overlapping a teleport (is the
+  push felt before the teleport?).
+- C, static props without a collision model: a prop_static of a model
+  with no `.phy`, solid "Use VPhysics"; walk into it holding +forward
+  and read `getpos` (stops or passes through).
+
 ## Left, ranked by maps affected
 
 Generic, by maps affected (counts from the sweep after the fixes):
 
 1. **Strike-generator env_beams** (visual_entities.md 4.2); map ragdolls
-   and the round 2 classes are in since round 3 (above), detail props
-   aren't drawn (kz_ancient_ruins).
+   and the round 2 classes are in since round 3, detail props since
+   round 4 (above).
 2. **Particle operators checked against CS:S** (round 2 draws `.pcf`
    effects by interpretation; tech-debt), round 3's embers and muzzle
    flashes too, and the physics numbers (buoyancy, motors, constraint

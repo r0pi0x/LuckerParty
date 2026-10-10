@@ -355,12 +355,10 @@ pub fn noted_class(class: &str) -> Option<&'static str> {
         // HL2's usable ladders' dismount points: CS:S ladders are brush
         // contents (movement.md), climbed without them.
         "info_ladder_dismount" => "HL2 ladder dismount points (CS:S ladders are brush contents)",
-        // Detail props (grass sprites) aren't drawn (tech-debt): their
-        // fade distances have nothing to fade. Two of the three maps
-        // with one have no detail props at all.
-        "env_detail_controller" => "detail prop fade distances (detail props aren't drawn)",
-        // Wind sways detail props and trees, which we don't draw.
-        "env_wind" => "env_wind (nothing drawn sways: detail props and trees aren't drawn)",
+        // The map loader reads their keys for the detail props
+        // (`games::cs_source::detail`): nothing at run time.
+        "env_detail_controller" => "detail prop fade distances (read at load)",
+        "env_wind" => "env_wind (read at load for detail props' sway; no gusts, trees don't sway)",
         // Without a parent it is inert (physics_constraints.md 10); with
         // one, constraints resolve its name (`physics::body_by_key`).
         "info_constraint_anchor" => "info_constraint_anchor (constraints resolve its name to its parent)",

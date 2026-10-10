@@ -1,12 +1,12 @@
-//! The team menu (M, or `chooseteam`): terrorists, counter-terrorists or
-//! auto-assign (the smaller team), joined through `jointeam`. With the
+//! The team menu (M, or `chooseteam`): terrorists, counter-terrorists,
+//! auto-assign (the smaller team) or spectate, joined through `jointeam`. With the
 //! game's own layout (`map::hud::GameMenus::team`, CS:S's
 //! `resource/ui/teammenu.res`) it is drawn as the game draws it
 //! (`super::vgui`): the team buttons with their number keys, clickable
 //! with the mouse (free while it is open), beside the map's description.
-//! Spectating has no team here yet, so its button is greyed, and the VIP
-//! button (VIP maps only) is hidden. Without the layout, a plain list: 1
-//! terrorists, 2 counter-terrorists, 5 auto-assign, 0 closes.
+//! The VIP button (VIP maps only) is hidden. Without the layout, a plain
+//! list: 1 terrorists, 2 counter-terrorists, 5 auto-assign, 6 spectate,
+//! 0 closes.
 
 use bevy::{prelude::*, window::CursorOptions};
 
@@ -47,8 +47,7 @@ fn layout(menus: &GameMenus) -> Option<&UiLayout> {
 }
 
 /// What we make of the game's controls: the map's description in its
-/// `MapInfo`; no VIP button (VIP maps only), no spectating (no spectator
-/// team yet).
+/// `MapInfo`; no VIP button (VIP maps only).
 fn shown(c: &UiControl, map_info: Option<&str>) -> Shown {
     let mut s = Shown::of(c);
     if c.kind == UiKind::RichText && c.name.eq_ignore_ascii_case("MapInfo") {
@@ -56,9 +55,6 @@ fn shown(c: &UiControl, map_info: Option<&str>) -> Shown {
     }
     if c.name.eq_ignore_ascii_case("vipbutton") {
         s.visible = false;
-    }
-    if c.command.as_deref().is_some_and(|cmd| cmd.trim() == "jointeam 1") {
-        s.enabled = false;
     }
     s
 }
@@ -130,6 +126,8 @@ fn keys(
         Some(3)
     } else if keys.just_pressed(KeyCode::Digit5) {
         Some(auto_team(count(1), count(2)))
+    } else if keys.just_pressed(KeyCode::Digit6) {
+        Some(1)
     } else {
         None
     };
@@ -189,7 +187,7 @@ fn draw(
     let scale = h / 480.0;
     commands.spawn((
         MenuText,
-        Text::new("SELECT A TEAM\n\n1  Terrorists\n2  Counter-Terrorists\n\n5  Auto-assign\n\n0  Close"),
+        Text::new("SELECT A TEAM\n\n1  Terrorists\n2  Counter-Terrorists\n\n5  Auto-assign\n6  Spectate\n\n0  Close"),
         // As a HudMenu: the client scheme's Default.
         fonts.client("Default", h, 12.0),
         TextColor(Color::srgb_u8(255, 176, 0)),
@@ -357,14 +355,15 @@ mod tests {
             press(&mut app, KeyCode::KeyM);
             assert!(app.world().resource::<TeamMenu>().0);
             if game_look {
-                // The game's menu frees the mouse; its keys still work, and
-                // spectating (no team for it yet) does nothing.
+                // The game's menu frees the mouse; its keys still work.
                 app.world_mut().resource_mut::<VguiOpen>().team = true;
                 let mut q = app.world_mut().query::<&mut CursorOptions>();
                 super::super::input::release_cursor(&mut q.single_mut(app.world_mut()).unwrap());
-                press(&mut app, KeyCode::Digit6);
-                assert!(app.world().resource::<TeamMenu>().0);
             }
+            // Spectate.
+            press(&mut app, KeyCode::Digit6);
+            assert!(!app.world().resource::<TeamMenu>().0);
+            press(&mut app, KeyCode::KeyM);
             press(&mut app, KeyCode::Digit5);
             assert!(!app.world().resource::<TeamMenu>().0);
             if game_look {
@@ -374,7 +373,7 @@ mod tests {
             }
             press(&mut app, KeyCode::KeyM);
             press(&mut app, KeyCode::Digit1);
-            assert_eq!(app.world().resource::<Joined>().0, ["3", "2"], "game look: {game_look}");
+            assert_eq!(app.world().resource::<Joined>().0, ["1", "3", "2"], "game look: {game_look}");
         }
     }
 
@@ -386,7 +385,7 @@ mod tests {
         assert_eq!(line("vguicancel", count), None);
         let mut spec = UiControl::new("specbutton", UiKind::Button, 0.0, 0.0, 1.0, 1.0);
         spec.command = Some("jointeam 1".into());
-        assert!(!shown(&spec, None).enabled);
+        assert!(shown(&spec, None).enabled, "spectating works");
         assert!(!shown(&UiControl::new("vipbutton", UiKind::Button, 0.0, 0.0, 1.0, 1.0), None).visible);
         let info = UiControl::new("MapInfo", UiKind::RichText, 0.0, 0.0, 1.0, 1.0);
         assert_eq!(shown(&info, Some("Dust II")).text.as_deref(), Some("Dust II"));

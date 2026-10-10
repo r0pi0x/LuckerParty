@@ -209,7 +209,22 @@ pub fn load_level_bytes(mount: &Mount, name: &str, bytes: Vec<u8>, hdr_level: u8
         (&data.collision_positions, &data.collision_indices),
     );
     timer.lap("occluders");
-    super::props::add_static_props(&bsp, &mut materials, &lighting, &occluders, &mut data, hdr_lighting);
+    // Detail props (grass, weeds): models as static props, sprites as
+    // `MapDetailProps`.
+    let detail = super::detail::read(&bytes).unwrap_or_default();
+    let detail_fade = super::detail::controller_fade(&bsp)
+        .unwrap_or((super::detail::DETAIL_DIST - super::detail::DETAIL_FADE, super::detail::DETAIL_DIST));
+    super::props::add_static_props(
+        &bsp,
+        &mut materials,
+        &lighting,
+        &occluders,
+        &mut data,
+        hdr_lighting,
+        &super::detail::model_entries(&detail),
+        detail_fade,
+    );
+    data.detail_props = super::detail::detail_props(&detail, &bsp, |m| materials.resolve(m).texture);
     timer.lap("props");
     super::ropes::add_ropes(&bsp, &mut materials, &lighting, &occluders, &mut data);
     // The same query at run time, for view models (spec view_models.md 9).

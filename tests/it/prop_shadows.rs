@@ -116,6 +116,7 @@ fn map() -> MapData {
         entity: None,
         skin: 0,
         body: 0,
+        detail: false,
     });
     data
 }

@@ -120,6 +120,83 @@ fn dead_players_watch_their_team_then_play_again() {
     assert!(!s.active() && s.target.is_none());
 }
 
+/// CS:S's spectator team in single player: `spectate` takes the local
+/// player out of play with no body (no team, dead, not solid, no
+/// weapons, no death counted), flying free; it watches anyone (not only
+/// a team, `mp_forcecamera` aside), cycles players and modes and picks
+/// one by name; rounds neither spawn it nor end for it; `jointeam`
+/// brings it back (in a freeze time at once). `mp_allowspectators 0`
+/// refuses it.
+#[test]
+fn the_spectator_team() {
+    use mashup::{core::Spectating, rules::{Dead, Score}, weapon::Inventory};
+    let mut sim = Sim::new(SpectateStatePlugin);
+    let add = |sim: &mut Sim, x: f32, team: u8, name: &str| {
+        let e = sim.spawn_character(Vec3::new(x, 1.0, 0.0), placeholder::ID);
+        sim.app.world_mut().entity_mut(e).insert((Team(team), Name::new(name.to_string())));
+        e
+    };
+    let me = add(&mut sim, 0.0, 2, "Player");
+    sim.app.world_mut().entity_mut(me).insert(LocalPlayer);
+    let mate = add(&mut sim, 3.0, 2, "Bot 1");
+    let enemy = add(&mut sim, -2.0, 1, "Bot 2");
+    console(&mut sim, "mp_freezetime 1; mp_roundtime 0.1; mashup_rounds 1");
+    sim.seconds(1.5);
+    assert!(matches!(sim.app.world().resource::<RoundState>().phase, Phase::Live { .. }));
+
+    console(&mut sim, "mp_allowspectators 0; spectate");
+    assert!(sim.app.world().get::<Spectating>(me).is_none(), "refused");
+    console(&mut sim, "mp_allowspectators 1; jointeam 1");
+    let w = sim.app.world();
+    assert!(w.get::<Spectating>(me).is_some());
+    assert_eq!(w.get::<Team>(me), Some(&Team(0)), "no team");
+    assert!(w.get::<Dead>(me).is_some());
+    assert!(w.get::<Inventory>(me).is_none_or(|i| i.weapons.is_empty()), "no weapons");
+    assert!(w.get::<Score>(me).is_none_or(|s| s.deaths == 0), "no death counted");
+    let s = spec(&sim);
+    assert_eq!(s.phase, SpecPhase::Watching, "no death cam");
+    assert_eq!(s.effective_mode(), SpecMode::Roaming, "flying free");
+
+    // Anyone may be watched, by keys or by name.
+    console(&mut sim, "spec_player Bot 2");
+    assert_eq!(spec(&sim).target, Some(enemy));
+    assert_eq!(spec(&sim).effective_mode(), SpecMode::InEye, "picking someone follows them");
+    console(&mut sim, "spec_next");
+    let next = spec(&sim).target;
+    assert!(next == Some(mate) || next == Some(enemy));
+    assert_ne!(next, Some(enemy), "cycles to the other");
+    console(&mut sim, "spec_mode");
+    assert_eq!(spec(&sim).mode, SpecMode::Chase);
+    assert_eq!(spec(&sim).watchable.len(), 2);
+
+    // The round goes on without it (its old team still has a player);
+    // the next one doesn't spawn it.
+    sim.seconds(1.0);
+    assert!(matches!(sim.app.world().resource::<RoundState>().phase, Phase::Live { .. }));
+    kill(&mut sim, enemy, mate);
+    let mut ok = false;
+    for _ in 0..4000 {
+        sim.ticks(1);
+        if matches!(sim.app.world().resource::<RoundState>().phase, Phase::Freeze { .. }) {
+            ok = true;
+            break;
+        }
+    }
+    assert!(ok, "the next round");
+    sim.ticks(2);
+    assert!(sim.app.world().get::<Dead>(me).is_some(), "rounds don't spawn spectators");
+    assert!(sim.app.world().get::<Spectating>(me).is_some());
+
+    // Joining a team in the freeze time: playing at once.
+    console(&mut sim, "jointeam 2");
+    sim.ticks(2);
+    let w = sim.app.world();
+    assert!(w.get::<Spectating>(me).is_none());
+    assert_eq!(w.get::<Team>(me), Some(&Team(1)));
+    assert!(w.get::<Dead>(me).is_none(), "in this round");
+    assert_eq!(spec(&sim).phase, SpecPhase::Alive);
+}
+
 /// A rounds game with the local player (CT) between a teammate 3 m away
 /// and an enemy 8 m away, the camera's systems running.
 fn freeze_sim() -> (Sim, Entity, Entity, Entity) {

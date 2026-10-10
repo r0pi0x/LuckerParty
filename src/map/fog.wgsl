@@ -17,6 +17,23 @@
     mesh_view_bindings::view,
     view_transformations::position_world_to_view,
 }
+#ifdef DISTANCE_FOG
+#import bevy_pbr::mesh_view_bindings::fog
+#endif
+
+// A view with Source fog of its own (a monitor's camera: map::monitor,
+// `SOURCE_VIEW_FOG`) carries it as Bevy's linear distance fog, marked by
+// the directional light exponent: colour (alpha 1 when on), start and end
+// meters, max density in the directional light colour's red.
+const SOURCE_VIEW_FOG: f32 = -7.0;
+
+fn view_fog() -> bool {
+#ifdef DISTANCE_FOG
+    return fog.mode == 1u && fog.directional_light_exponent == SOURCE_VIEW_FOG;
+#else
+    return false;
+#endif
+}
 
 fn range_amount(range: vec4<f32>, depth: f32) -> f32 {
     let f = clamp(min(range.z, (depth - range.x) / (range.y - range.x)), 0.0, 1.0);
@@ -42,6 +59,17 @@ fn source_fog(
     world: vec3<f32>,
 ) -> vec4<f32> {
     let depth = -position_world_to_view(world).z;
+    // The view's own fog replaces the scene's, water fog included (that
+    // follows the player's eye).
+#ifdef DISTANCE_FOG
+    if view_fog() {
+        if fog.base_color.a < 0.5 {
+            return vec4<f32>(0.0);
+        }
+        let r = vec4<f32>(fog.be.x, fog.be.y, fog.directional_light_color.r, 0.0);
+        return vec4<f32>(fog.base_color.rgb, range_amount(r, depth));
+    }
+#endif
     if water_color.w > 0.5 && world.y < water_range.w {
         if water_color.w > 1.5 {
             return vec4<f32>(water_color.rgb, height_amount(water_range, world, depth));

@@ -21,7 +21,7 @@ use bevy::{input::mouse::AccumulatedMouseMotion, prelude::*, window::CursorOptio
 use super::view::{CameraMode, FreeCam, camera_offset};
 use crate::{
     console::{ConsoleAppExt, resource_cvar},
-    core::{Died, Health, Intent, LocalPlayer, MovementState, Team},
+    core::{Died, Health, Intent, LocalPlayer, MovementState, Spectating, Team},
     map::{
         ViewModelAnchor, ViewModelSource,
         interp::{EyeView, RenderedView},
@@ -150,6 +150,9 @@ pub struct Me {
     pub position: Vec3,
     /// The freeze cam's travel and hold, seconds; None: disabled.
     pub freeze: Option<(f32, f32)>,
+    /// On the spectator team (`core::Spectating`): watching starts free
+    /// (no death cam), and anyone may be watched (`team` is None).
+    pub spectator: bool,
 }
 
 /// Spectator requests from keys and console commands.
@@ -159,6 +162,9 @@ pub struct SpecInput {
     pub set_mode: Option<SpecMode>,
     /// +1 next target, -1 previous.
     pub target_step: i32,
+    /// Watch this one (`spec_player`, the spectator menu's list), when it
+    /// may be watched.
+    pub pick: Option<Entity>,
 }
 
 /// The local player's spectator state.
@@ -170,6 +176,9 @@ pub struct Spectator {
     pub target: Option<Entity>,
     /// When the target was last seen no longer watchable (dead).
     target_lost: Option<f64>,
+    /// Who may be watched now, in cycling order (the spectator menu's
+    /// list).
+    pub watchable: Vec<Entity>,
     /// Requests waiting for the next step.
     pub pending: SpecInput,
 }
@@ -272,7 +281,12 @@ impl Spectator {
         if self.phase == SpecPhase::Alive {
             self.target = None;
             self.target_lost = None;
-            self.phase = if me.killed {
+            // Joining the spectators: flying free where you were (ours;
+            // CS:S's starting mode not checked).
+            if me.spectator {
+                self.mode = SpecMode::Roaming;
+            }
+            self.phase = if me.killed && !me.spectator {
                 SpecPhase::DeathCam {
                     since: now,
                     killer: me.killer,
@@ -316,6 +330,7 @@ impl Spectator {
             self.mode = self.mode.next();
         }
         let allowed = allowed(living, me.team, force);
+        self.watchable.clone_from(&allowed);
         match self.target {
             Some(t) if allowed.contains(&t) => self.target_lost = None,
             Some(_) => {
@@ -328,7 +343,14 @@ impl Spectator {
             }
             None => {}
         }
-        if input.target_step != 0 {
+        if let Some(p) = input.pick.filter(|p| allowed.contains(p)) {
+            self.target = Some(p);
+            self.target_lost = None;
+            // Picking someone to watch while flying free follows them.
+            if self.mode == SpecMode::Roaming {
+                self.mode = SpecMode::InEye;
+            }
+        } else if input.target_step != 0 {
             self.target = cycle(&allowed, self.target, input.target_step).or(self.target);
             self.target_lost = None;
         } else if self.target.is_none() {
@@ -419,6 +441,20 @@ impl Plugin for SpectateStatePlugin {
         .console_command("spec_prev", "Spectate the previous player.", |w, _| {
             w.resource_mut::<Spectator>().pending.target_step = -1;
             Ok(None)
+        })
+        .console_command("spec_player", "spec_player <name>: spectate that player.", |w, a| {
+            let want = a.join(" ");
+            if want.is_empty() {
+                return Err("spec_player <name>".into());
+            }
+            let found = w
+                .query_filtered::<(Entity, &Name), (With<Intent>, Without<LocalPlayer>, Without<Hostage>)>()
+                .iter(w)
+                .find(|(_, n)| n.as_str().eq_ignore_ascii_case(&want))
+                .map(|(e, _)| e)
+                .ok_or_else(|| format!("no player called {want}"))?;
+            w.resource_mut::<Spectator>().pending.pick = Some(found);
+            Ok(None)
         });
     }
 }
@@ -448,7 +484,7 @@ pub struct SpectatePlugin;
 
 impl Plugin for SpectatePlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(SpectateCameraPlugin)
+        app.add_plugins((SpectateCameraPlugin, super::spectator_menu::SpectatorMenuPlugin))
             .init_resource::<SpectatorBarsUp>()
             .add_systems(
                 Update,
@@ -500,7 +536,7 @@ type Living<'a> = (
 #[allow(clippy::type_complexity)]
 fn track(
     time: Res<Time>,
-    local: Option<Single<(&Transform, Option<&Team>, Has<Dead>), With<LocalPlayer>>>,
+    local: Option<Single<(&Transform, Option<&Team>, Has<Dead>, Has<Spectating>), With<LocalPlayer>>>,
     characters: Query<Living, (With<Intent>, Without<LocalPlayer>, Without<Hostage>)>,
     killed: Res<KilledBy>,
     force: Res<ForceCamera>,
@@ -508,14 +544,15 @@ fn track(
     mut spec: ResMut<Spectator>,
 ) {
     let Some(local) = local else { return };
-    let (at, team, dead) = *local;
+    let (at, team, dead, spectator) = *local;
     let me = Me {
         dead,
         killed: killed.0.is_some(),
         killer: killed.0.flatten(),
-        team: team.copied(),
+        team: team.copied().filter(|_| !spectator),
         position: at.translation,
         freeze: freeze.timing(),
+        spectator,
     };
     let mut living: Vec<(String, Candidate)> = characters
         .iter()
@@ -1250,6 +1287,7 @@ mod tests {
             team: Some(Team(2)),
             position: Vec3::ZERO,
             freeze: None,
+            spectator: false,
         }
     }
 

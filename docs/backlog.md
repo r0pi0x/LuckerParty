@@ -88,29 +88,35 @@ plan when work starts; delete them when done.
   shader and shadow detail, colour correction, motion blur; speakers,
   sound quality and captions beyond being saved): one by one, per
   docs/plans/active/video-settings.md.
-- Ladders (user, 2026-10-10): some ladders make no climbing sound (all
-  should, by the surface/ladder sound rules: check which ladders are
-  silent and why). At the top of a ladder, jumping up off it lands you
-  on the ladder brush's top, where you can't walk forward (only
-  sideways) and a jump launches you far into the air: not CS:S's
-  behaviour. Audit standing on top of ladder brushes (func_ladder /
-  ladder-textured brushes: are they solid at the top, does our ladder
-  code still think we're on it, the jump's ladder push-off) against the
-  movement spec and a CS:S capture.
+- Ladders (fixed 2026-10-10): standing on a ladder brush's top grabbed
+  it as a ladder (its upward face carries the ladder flag): walking
+  forward looking down stopped and a jump added the jump-off push. The
+  probe now ignores ladder faces 0.7 or more vertical (our choice, the
+  spec is silent; 36 stock ladder tops before, 0 now:
+  `heavy::map_ladders`). Silent ladders: none found in the sim (every
+  stock nav ladder climbed for more than a step period steps); a short
+  climb right after a ground step hears none (the shared step timer,
+  per the sounds spec), and holding walk or duck silences ladder steps
+  (our CS:S walk rule). Left: a CS:S capture of a ladder top and of a
+  de_train car ladder's steps (docs/tech-debt.md, movement); walked
+  straight at from the nav foot, 37 of de_train's 41 ladders don't
+  attach in our sim (a clip face flush with them wins the probe; bots
+  sidestep), worth comparing with CS:S.
 - `kill` (fixed 2026-10-10): it moved you to a spawn alive; it is now
   CS:S's suicide, so a lone player can end a round. Left: a network
   client's `kill` should be a request to the server.
 
-- Spectator mode (user request 2026-10-10): the team menu's Spectate
-  button is greyed (no spectator team). Add CS:S's spectator team:
-  joining it from the team menu and `spectate`/`jointeam 1`, a
-  spectator with no body flying or following players, the spectator
-  menu and modes (free look, chase, in-eye, overview; duck opens
-  `bottomspectator.res`'s lists; Space/mouse buttons cycle targets and
-  modes as in CS:S), the spectator bars, `mp_allowspectators`,
-  scoreboard "Spectators" line, chat from spectators, joining a team
-  from spectating, and network play (spectators take no slot in
-  rounds, receive everything, aren't counted for round ends).
+- Spectator mode (done 2026-10-10): CS:S's spectator team (team menu's
+  Spectate, `spectate`, `jointeam 1`, `mp_allowspectators`): no body,
+  free look first, chase and first person on anyone, `spec_next`/
+  `spec_prev`/`spec_mode`/`spec_player`, duck opens our spectator menu
+  (players, camera, join a team), the scoreboard's Spectators line,
+  "*SPEC*" chat read by the dead and spectators, back on a team (in a
+  freeze time at once), over the network (replicated, no team slot,
+  not counted for round ends). Left: the map overview mode
+  (`overview_mode`), the spectator menu in `bottomspectator.res`'s
+  drop-down look with its settings, CS:S's starting mode for a new
+  spectator, the game menu's Team dialog offering Spectate.
 
 - Decals persist across rounds (bullet holes, blood), as we believe CS:S
   does (players bind `r_cleardecals`, now there; `mashup_round_cleardecals
@@ -174,15 +180,21 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   ragdolls (drawn, not simulated), players' and brushes' render looks,
   water buoyancy (boats), motors and constraints, players riding karts,
   monitors, teslas, shooters, point_push, texture toggles, screen
-  overlays; the audit's noise noted once per map. Top of what's left:
-  Round 3 (done 2026-10-10, to playtest): map ragdolls simulated (and
-  sent to network clients), moving water (func_water_analog, water on
-  movers), color_correction (`mat_colorcorrection`), embers, fish pools,
-  muzzle flashes, view punches, constraints breaking past their limits,
+  overlays; the audit's noise noted once per map. Round 3 (done
+  2026-10-10, to playtest): map ragdolls simulated (and sent to network
+  clients), moving water (func_water_analog, water on movers),
+  color_correction (`mat_colorcorrection`), embers, fish pools, muzzle
+  flashes, view punches, constraints breaking past their limits,
   monitors' sky, 3D-skybox particles, +use through a usable parent; the
-  audit's +use misses were its own aim. Top of what's left: particle and
-  ember looks checked against CS:S, detail props (kz_ancient_ruins),
-  strike-generator env_beams.
+  audit's +use misses were its own aim. Round 4 (2026-10-10, to
+  playtest): surf_nebula's dead ramp stops (static props without a
+  collision model block nothing), detail props (grass and weeds),
+  monitors with their camera's own fog, bots stepping aside on maps
+  without a navigation mesh. Top of what's left: particle and ember
+  looks checked against CS:S, strike-generator env_beams, and three
+  probes on the reference server (the plan's "Probes wanted": landing
+  height, touch order of overlapping triggers, static props without a
+  collision model).
 
 ## 2b. HUD and debug views
 
@@ -202,11 +214,11 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   head (`sprites/radio`, hidden by walls), and
   text chat (Y / U, `say`, `say_team`). The buy and team menus draw in the game's VGUI look from its `.res` files
   (`client/vgui.rs`). Left: the class menu (`classmenu_*.res`, needs player
-  models per class), spectating from the team menu (no spectator team),
+  models per class),
   the scoreboard's row spacing (16 units, a guess) and dead rows' look
   checked against CS:S, its map time left beside the clock (no
-  `mp_timelimit`), the spectator menu (duck: `bottomspectator.res`'s
-  lists) and the freeze cam panel (`freezepanel_basic.res`),
+  `mp_timelimit`), the spectator menu in `bottomspectator.res`'s look
+  (ours is two plain lists; duck opens it) and the freeze cam panel (`freezepanel_basic.res`),
   autobuy / rebuy / favourites, checking the widescreen placement against
   the game, other game messages in the chat (team joins, bomb pickups
   and drops are in), bots' answers checked against a bot behaviour spec

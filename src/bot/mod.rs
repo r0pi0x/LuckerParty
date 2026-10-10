@@ -12,6 +12,7 @@
 //! a grenade it carries at a remembered enemy or at the site it walks to
 //! (`grenades`), and it looks away from flashes about to go off.
 
+pub mod aside;
 mod grenades;
 mod look;
 pub mod objectives;
@@ -55,7 +56,15 @@ impl Plugin for BotPlugin {
         );
         app.add_systems(
             FixedUpdate,
-            (hear, tactics::update, radio::obey, objectives::goals, think, objectives::act)
+            (
+                hear,
+                tactics::update,
+                radio::obey,
+                objectives::goals,
+                think,
+                objectives::act,
+                aside::step_aside,
+            )
                 .chain()
                 // Before the rules: they hold everyone's intents in the
                 // freeze time and the dead's (`rules::rounds::hold_frozen`).

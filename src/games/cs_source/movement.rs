@@ -337,6 +337,10 @@ const LADDER_REACH: f32 = 2.0;
 const LADDER_SPEED: f32 = 200.0;
 const LADDER_JUMP_OFF: f32 = 270.0;
 const LADDER_BACK_OFF: f32 = 200.0;
+/// A ladder face whose normal is this steep or steeper (|z|) is a ladder
+/// brush's top or bottom, not something to climb: ours, the spec is
+/// silent (docs/tech-debt.md). The walkable-floor limit.
+const LADDER_MAX_NORMAL_Z: f32 = 0.7;
 const WATER_FEET_PROBE: f32 = 1.0;
 const SWIM_SINK: f32 = 60.0;
 const SWIM_WISH_SCALE: f32 = 0.8;
@@ -1038,6 +1042,12 @@ impl Mover<'_, '_, '_, '_> {
     }
 
     fn slide_move(&mut self) {
+        // `MASHUP_SLIDE_DEBUG=1`: every sweep printed (docs/OBSERVABILITY.md,
+        // the surf rides).
+        fn dbg_slide() -> bool {
+            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *ON.get_or_init(|| std::env::var("MASHUP_SLIDE_DEBUG").is_ok())
+        }
         let primal = self.v;
         let mut original = self.v;
         let mut planes: Vec<Vec3> = Vec::with_capacity(MAX_CLIP_PLANES);
@@ -1048,7 +1058,20 @@ impl Mover<'_, '_, '_, '_> {
                 break;
             }
             let end = self.feet + self.v * time_left;
-            let tr = self.trace.sweep_by(self.me.ducked, self.feet, self.v * time_left);            all_fraction += tr.fraction;
+            let tr = self.trace.sweep_by(self.me.ducked, self.feet, self.v * time_left);
+            all_fraction += tr.fraction;
+            if dbg_slide() {
+                let hit = match tr.surface {
+                    Some(HitSurface::Collider(e)) => format!("collider {e}"),
+                    Some(HitSurface::Brush(i)) => format!("brush {i}"),
+                    None => "-".to_string(),
+                };
+                eprintln!(
+                    "    slide: feet {:.3} v {:.2} frac {:.5} start_solid {} normal {:.4} ({hit}) planes {planes:?} \
+                     ground {}",
+                    self.feet, self.v, tr.fraction, tr.start_solid, tr.normal, self.me.on_ground
+                );
+            }
             if tr.start_solid && tr.fraction == 0.0 && self.trace.solid(self.me.ducked, end) {
                 self.v = Vec3::ZERO;
                 return;
@@ -1057,6 +1080,15 @@ impl Mover<'_, '_, '_, '_> {
                 // A full sweep is re-tested at its end (it can end inside
                 // terrain); partial ones aren't.
                 if tr.fraction >= 1.0 && self.trace.solid(self.me.ducked, tr.end) {
+                    if dbg_slide() {
+                        let (lo, hi) = self.trace.hull(self.me.ducked);
+                        let full = hi - lo;
+                        let brush = self.trace.in_brush(
+                            Vec3::new(full.x, full.z, full.y) * METERS_PER_UNIT / 2.0,
+                            to_engine(tr.end + (lo + hi) / 2.0),
+                        );
+                        eprintln!("    slide: end {:.3} solid (brush {brush})", tr.end);
+                    }
                     self.v = Vec3::ZERO;
                     break;
                 }
@@ -1451,7 +1483,11 @@ impl Mover<'_, '_, '_, '_> {
         let tr = self
             .trace
             .sweep(self.me.ducked, self.feet, self.feet + dir * LADDER_REACH);
-        if !tr.hit() || !tr.ladder {
+        // A ladder brush's top is a floor (standing on it, looking down
+        // while walking must not grab it: the ladder velocity along a
+        // vertical normal leaves only sideways movement, and the jump-off
+        // push would add to a jump).
+        if !tr.hit() || !tr.ladder || tr.normal.z.abs() >= LADDER_MAX_NORMAL_Z {
             self.me.ladder = None;
             return;
         }

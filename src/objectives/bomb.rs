@@ -942,32 +942,36 @@ pub(super) fn remember_buttons(q: Query<(Entity, &Intent)>, mut last: ResMut<Las
 fn on_death(mut died: MessageReader<Died>, mut commands: Commands) {
     for d in died.read() {
         let who = d.entity;
-        commands.queue(move |w: &mut World| {
-            if let Some(a) = w.entity_mut(who).take::<Arming>() {
-                w.write_message(WeaponEvent {
-                    owner: who,
-                    weapon: a.weapon,
-                    kind: WeaponEventKind::ArmingStopped,
-                    replay: false,
-                });
-            }
-            if let Some(bomb) = carried_bomb(w, who) {
-                drop::drop_this(w, who, bomb, false);
-            }
-            if w.entity_mut(who).take::<DefuseKit>().is_some()
-                && let Some(t) = w.get::<Transform>(who).copied()
-            {
-                let model = w.resource::<BombRules>().kit_model.clone();
-                let mut kit = w.spawn((
-                    Name::new("Defusal kit"),
-                    LooseKit,
-                    Transform::from_translation(t.translation),
-                ));
-                if let Some(m) = model {
-                    kit.insert(LooseItem(m));
-                }
-            }
+        commands.queue(move |w: &mut World| drop_objective_items(w, who));
+    }
+}
+
+/// `who` leaves play (killed, or off to the spectators): it stops arming
+/// and drops the bomb and its defusal kit where it stands.
+pub fn drop_objective_items(w: &mut World, who: Entity) {
+    if let Some(a) = w.entity_mut(who).take::<Arming>() {
+        w.write_message(WeaponEvent {
+            owner: who,
+            weapon: a.weapon,
+            kind: WeaponEventKind::ArmingStopped,
+            replay: false,
         });
+    }
+    if let Some(bomb) = carried_bomb(w, who) {
+        drop::drop_this(w, who, bomb, false);
+    }
+    if w.entity_mut(who).take::<DefuseKit>().is_some()
+        && let Some(t) = w.get::<Transform>(who).copied()
+    {
+        let model = w.resource::<BombRules>().kit_model.clone();
+        let mut kit = w.spawn((
+            Name::new("Defusal kit"),
+            LooseKit,
+            Transform::from_translation(t.translation),
+        ));
+        if let Some(m) = model {
+            kit.insert(LooseItem(m));
+        }
     }
 }
 

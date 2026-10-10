@@ -808,7 +808,7 @@ pub struct BuyRequest {
 }
 
 /// Client -> server: put me on this team (`jointeam`: our team number,
-/// 1 terrorists, 2 counter-terrorists).
+/// 1 terrorists, 2 counter-terrorists; 0 the spectators).
 #[derive(Message, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct TeamRequest {
     pub team: u8,
@@ -982,6 +982,7 @@ impl Plugin for NetPlugin {
         .replicate::<NetCharacter>()
         .replicate::<NetBody>()
         .replicate::<Team>()
+        .replicate::<crate::core::Spectating>()
         .replicate::<Health>()
         .replicate::<NetMover>()
         // Every value a client receives also goes into its snapshot
