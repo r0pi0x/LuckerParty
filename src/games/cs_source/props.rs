@@ -833,6 +833,7 @@ pub fn add_static_props(
         });
     }
     placements.extend(entity_props(bsp));
+    placements.extend(fish_pool_props(bsp));
     place_props(bsp, materials, lighting, occluders, data, placements, hdr);
 }
 
@@ -977,6 +978,62 @@ fn entity_props(bsp: &Bsp) -> Vec<PropPlacement> {
             })
         })
         .collect()
+}
+
+/// func_fish_pool (public entity docs): "fish_count" fish of its "model"
+/// spread around its origin within "max_range" (they swim there:
+/// `map::fish`). Placed as dynamic props of the pool's entity.
+fn fish_pool_props(bsp: &Bsp) -> Vec<PropPlacement> {
+    let parse = |v: &str| -> Option<[f32; 3]> {
+        let mut it = v.split_whitespace().filter_map(|p| p.parse::<f32>().ok());
+        Some([it.next()?, it.next()?, it.next()?])
+    };
+    let mut out = Vec::new();
+    for (index, e) in bsp.entities.iter().enumerate() {
+        if !e.prop("classname").is_some_and(|c| c.eq_ignore_ascii_case("func_fish_pool")) {
+            continue;
+        }
+        let (Some(model), Some([x, y, z])) = (e.prop("model"), e.prop("origin").and_then(parse)) else {
+            continue;
+        };
+        let count = e.prop("fish_count").and_then(|v| v.trim().parse::<usize>().ok()).unwrap_or(10).min(64);
+        let range = e.prop("max_range").and_then(|v| v.trim().parse::<f32>().ok()).unwrap_or(150.0);
+        for i in 0..count {
+            // A fixed spread (golden angle), within the range, a little
+            // above and below the origin.
+            let a = i as f32 * 2.399_963;
+            let r = range * 0.8 * ((i as f32 + 0.5) / count as f32).sqrt();
+            let dz = ((i % 5) as f32 - 2.0) * range * 0.05;
+            out.push(PropPlacement {
+                model: model.to_lowercase(),
+                skin: e.prop("skin").and_then(|s| s.trim().parse().ok()).unwrap_or(0),
+                origin: vbsp::Vector {
+                    x: x + r * a.cos(),
+                    y: y + r * a.sin(),
+                    z: z + dz,
+                },
+                angles: vbsp::Angles {
+                    pitch: 0.0,
+                    yaw: a.to_degrees() + 90.0,
+                    roll: 0.0,
+                },
+                solid: PropSolid::None,
+                lighting_origin: None,
+                class: Some("func_fish_pool".to_string()),
+                spawnflags: 0,
+                massscale: 0.0,
+                physicsmode: 0,
+                fade: None,
+                parent: None,
+                entity: Some(index),
+                body: 0,
+                animated: true,
+                enable_threshold: false,
+                static_index: None,
+            });
+        }
+    }
+    out
 }
 
 /// A model's first sequence at its start, bone-local (rotation, position)

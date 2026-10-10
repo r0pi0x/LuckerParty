@@ -23,6 +23,7 @@ pub mod anim;
 pub mod decal;
 pub mod emitters;
 pub mod entities;
+pub mod fish;
 pub mod fire;
 pub mod fog;
 pub use entities::{MapBrushEntity, MapEntities, MapEntity, MapHull};
@@ -2087,6 +2088,7 @@ impl Plugin for MapPlugin {
                             color_correction::update,
                             emitters::update_embers,
                             emitters::update_muzzle_flashes,
+                            fish::swim,
                             psys::update_systems,
                         )
                             .after(particles::ParticleSet::Step)
@@ -3589,6 +3591,15 @@ fn spawn_map(
         }
         if let Some(index) = prop.entity {
             e.insert((PropEntity(index), PropHome(rider.map_or(placed, |r| r.1))));
+            // func_fish_pool's fish swim about its origin (`fish`).
+            if let Some(pool) = data.entities.get(index).filter(|p| p.classname().eq_ignore_ascii_case("func_fish_pool")) {
+                let range = pool.get("max_range").map_or(150.0, |v| v.trim().parse().unwrap_or(150.0));
+                e.insert(fish::Fish::new(
+                    entities::entity_to_engine(pool.origin(), data.entity_scale),
+                    range * data.entity_scale,
+                    i as u64 + 1,
+                ));
+            }
         }
         let solid = if rider.is_some() { PropSolid::None } else { prop.solid };
         match (solid, &model_colliders[prop.model]) {

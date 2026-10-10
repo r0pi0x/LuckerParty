@@ -100,6 +100,8 @@ const HANDLED_ELSEWHERE: &[&str] = &[
     "prop_static",
     "prop_detail",
     "env_sun",
+    // Its fish are props the loader places; they swim (`map::fish`).
+    "func_fish_pool",
 ];
 
 struct Args {
