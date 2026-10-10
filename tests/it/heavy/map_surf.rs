@@ -4,7 +4,7 @@
 //! lighting only, is fullbright as in CS:S. Each test skips maps that
 //! aren't in the cache.
 
-use bevy::prelude::*;
+use bevy::{ecs::system::RunSystemOnce, prelude::*};
 use mashup::{
     core::{MapBrush, MapBrushes, MapTerrain, Velocity},
     games::{
@@ -168,7 +168,81 @@ fn ride(sim: &mut Sim, brushes: &[MapBrush], r: &Ramp, strafe: bool) -> Vec<Stri
             // Where the box was heading: a step on from where it stopped,
             // lifted off the ramp a little.
             let ahead = pos + prev.1.normalize_or_zero() * 8.0 + r.normal * 2.0;
-            if !blocked(brushes, ahead, HALF) {
+            // Props (static ones are mesh colliders) count as real
+            // geometry too.
+            let centre = to_engine(ahead);
+            let prop = sim
+                .app
+                .world_mut()
+                .run_system_once(
+                    move |q: avian3d::prelude::SpatialQuery,
+                          chars: Query<Entity, With<mashup::core::Intent>>,
+                          bodies: Query<(), With<mashup::core::MapBrushCollider>>| {
+                        let shape = avian3d::prelude::Collider::cuboid(
+                            HALF.x * 2.0 * 0.0254,
+                            HALF.z * 2.0 * 0.0254,
+                            HALF.y * 2.0 * 0.0254,
+                        );
+                        let filter = avian3d::prelude::SpatialQueryFilter::from_excluded_entities(chars.iter())
+                            .with_mask(mashup::core::SOLID_LAYERS);
+                        q.shape_intersections(&shape, centre, Quat::IDENTITY, &filter)
+                            .into_iter()
+                            .any(|e| !bodies.contains(e))
+                    },
+                )
+                .unwrap_or(false);
+            // And brush entities (func_brush, doors, movelinears).
+            let movers: Vec<MapBrush> = {
+                let world = sim.app.world_mut();
+                let mut q = world.query::<&mashup::core::MovingSolid>();
+                q.iter(world)
+                    .filter(|m| m.solid)
+                    .flat_map(|m| m.brushes.clone())
+                    .collect()
+            };
+            if std::env::var("MASHUP_SURF_DEBUG").is_ok() {
+                // The real hull (62 high, its centre 5 below the transform).
+                let c = to_engine(pos - Vec3::Z * 5.0);
+                let h = Vec3::new(16.0, 31.0, 16.0) * 0.0254;
+                let hits = sim
+                    .app
+                    .world_mut()
+                    .run_system_once(
+                        move |q: avian3d::prelude::SpatialQuery,
+                              chars: Query<Entity, With<mashup::core::Intent>>,
+                              names: Query<(Option<&Name>, Has<mashup::core::MapBrushCollider>)>| {
+                            let shape = avian3d::prelude::Collider::cuboid(
+                                h.x * 2.0 - 0.0005,
+                                h.y * 2.0 - 0.0005,
+                                h.z * 2.0 - 0.0005,
+                            );
+                            let filter = avian3d::prelude::SpatialQueryFilter::from_excluded_entities(chars.iter())
+                                .with_mask(mashup::core::SOLID_LAYERS);
+                            q.shape_intersections(&shape, c, Quat::IDENTITY, &filter)
+                                .into_iter()
+                                .map(|e| format!("{e} {:?}", names.get(e).ok().map(|(n, b)| (n.map(|n| n.to_string()), b))))
+                                .collect::<Vec<_>>()
+                        },
+                    )
+                    .unwrap_or_default();
+                eprintln!("  ramp {} stop: colliders {hits:?}", r.brush);
+                for (i, b) in brushes.iter().enumerate() {
+                    if b.max.cmpgt(c - h * 2.0).all() && b.min.cmplt(c + h * 2.0).all() {
+                        let seps: Vec<f32> = b
+                            .planes
+                            .iter()
+                            .map(|(n, d)| (n.dot(c) - (d + n.abs().dot(h))) / 0.0254)
+                            .collect();
+                        let worst = seps.iter().copied().fold(f32::MIN, f32::max);
+                        eprintln!(
+                            "  ramp {} stop: brush {i} ({} planes) deepest separation {worst:.4}: {seps:.3?}",
+                            r.brush,
+                            b.planes.len()
+                        );
+                    }
+                }
+            }
+            if !prop && !blocked(brushes, ahead, HALF) && !blocked(&movers, ahead, HALF) {
                 ghosts.push(format!(
                     "ramp {} ({:?}), strafe {strafe}, tick {tick}: speed {:.0} -> {:.0} at {pos:.1}",
                     r.brush,
@@ -191,7 +265,50 @@ fn ride(sim: &mut Sim, brushes: &[MapBrush], r: &Ramp, strafe: bool) -> Vec<Stri
 /// along a ramp read as going into it again (`Tracer::sweep_brushes`).
 #[test]
 fn surfing_keeps_speed_on_surf_maps() {
-    for name in ["surf_sedona", "surf_boreas", "surf_apollo", "surf_jive"] {
+    rides(&["surf_sedona", "surf_boreas", "surf_apollo", "surf_jive"], 15);
+}
+
+/// The other surf maps of the cache, the same rides (course flows,
+/// community-maps.md); some have few long open ramps (short or boxed-in
+/// ones, curved displacement ramps), so no minimum. Left out: surf_nebula,
+/// where 13 of 84 rides still stop (some against its Propper-made ramp
+/// props, some on brush ramps with nothing in the way: open; run it with
+/// `MASHUP_SURF_MAPS=surf_nebula MASHUP_SURF_DEBUG=1`, which also lists
+/// what the hull is near at each stop).
+#[test]
+fn surfing_keeps_speed_on_the_other_surf_maps() {
+    rides(
+        &[
+            "surf_botanica",
+            "surf_demise",
+            "surf_halloween_tf2",
+            "surf_happyhands",
+            "surf_hellenic",
+            "surf_holiday",
+            "surf_inferno",
+            "surf_kismet",
+            "surf_nsz_fix",
+            "surf_sacrifice",
+            "surf_slob",
+            "surf_stickybutt_alpha",
+            "surf_surreal",
+            "surf_threnody",
+        ],
+        0,
+    );
+}
+
+/// Every open ramp of each map ridden with and without strafing: no ghost
+/// stop, and at least `min_ramps` ramps found on each.
+fn rides(maps: &[&str], min_ramps: usize) {
+    let mut failed = Vec::new();
+    // `MASHUP_SURF_MAPS=surf_a,surf_b`: those instead.
+    let chosen: Vec<String> = match std::env::var("MASHUP_SURF_MAPS") {
+        Ok(only) => only.split(',').map(String::from).collect(),
+        Err(_) => maps.iter().map(|m| m.to_string()).collect(),
+    };
+    for name in &chosen {
+        let name = name.as_str();
         let Some(map) = cached(name) else { continue };
         let mut sim = Sim::new((MapPlugin::new(map), SourceMovementPlugin));
         sim.app.insert_resource(SourceMovementConfig::default());
@@ -215,9 +332,12 @@ fn surfing_keeps_speed_on_surf_maps() {
             .flat_map(|(r, strafe)| ride(&mut sim, &solids, r, strafe))
             .collect();
         eprintln!("{name}: {} open ramps, {} ghost stops", ramps.len(), ghosts.len());
-        assert!(ramps.len() >= 15, "{name}: only {} open ramps found", ramps.len());
-        assert!(ghosts.is_empty(), "{name}: {ghosts:#?}");
+        if ramps.len() < min_ramps {
+            failed.push(format!("{name}: only {} open ramps found", ramps.len()));
+        }
+        failed.extend(ghosts.into_iter().map(|g| format!("{name}: {g}")));
     }
+    assert!(failed.is_empty(), "{failed:#?}");
 }
 
 /// surf_sedona has HDR lighting only (no LDR lightmap lump, its LDR face
