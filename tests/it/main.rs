@@ -13,6 +13,7 @@
 
 mod animation;
 mod architecture;
+mod auto_switch;
 mod bot_grenades;
 mod console_commands;
 mod cs_grenades;
@@ -55,6 +56,7 @@ mod source_movement_css;
 mod source_movement_ladder_water;
 mod source_movement_tricks;
 mod spectate;
+mod target_id;
 mod teams;
 mod view_model_spec;
 mod view_models;

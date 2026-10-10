@@ -35,6 +35,14 @@ use crate::{
 /// Seconds the death cam shows your killer (or your body) before
 /// spectating starts. CS:S's feels about this long; not measured.
 pub const DEATH_CAM_SECONDS: f64 = 2.0;
+/// `spec_freeze_traveltime` and `spec_freeze_time` defaults, seconds
+/// (guesses; docs/tech-debt.md).
+pub const FREEZE_TRAVEL: f32 = 0.4;
+pub const FREEZE_HOLD: f32 = 4.0;
+/// How far from the killer's eye the freeze cam stops, CS:S units (at
+/// most; nearer when the death cam was nearer). A guess.
+const FREEZE_DISTANCE: f32 = 128.0;
+const UNIT: f32 = 0.0254;
 /// Seconds the camera stays on a target that died before moving on (a
 /// guess at CS:S's, which lingers on the body a moment).
 pub const TARGET_DEATH_HOLD: f64 = 2.0;
@@ -109,6 +117,15 @@ pub enum SpecPhase {
     Alive,
     /// Just died: looking at the killer (or your body) since `since`.
     DeathCam { since: f64, killer: Option<Entity> },
+    /// Then CS:S's freeze cam (`cl_disablefreezecam 0`, killed by someone
+    /// alive): since `since` the camera travels toward the killer for
+    /// `travel` seconds, then the picture holds still `hold` seconds.
+    FreezeCam {
+        since: f64,
+        killer: Entity,
+        travel: f32,
+        hold: f32,
+    },
     /// Following a target (or roaming).
     Watching,
 }
@@ -131,6 +148,8 @@ pub struct Me {
     pub killer: Option<Entity>,
     pub team: Option<Team>,
     pub position: Vec3,
+    /// The freeze cam's travel and hold, seconds; None: disabled.
+    pub freeze: Option<(f32, f32)>,
 }
 
 /// Spectator requests from keys and console commands.
@@ -164,6 +183,35 @@ pub struct ForceCamera(pub u8);
 impl Default for ForceCamera {
     fn default() -> Self {
         Self(1)
+    }
+}
+
+/// The freeze cam's settings (CS:S's cvars): `cl_disablefreezecam`
+/// (Multiplayer > Advanced "Disable freeze cam", default 0),
+/// `spec_freeze_traveltime` (seconds to zoom toward the killer) and
+/// `spec_freeze_time` (seconds the picture holds). The two times are
+/// guesses (docs/tech-debt.md): no spec or capture gives CS:S's.
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct FreezeCamSettings {
+    pub disabled: u8,
+    pub travel: f32,
+    pub hold: f32,
+}
+
+impl Default for FreezeCamSettings {
+    fn default() -> Self {
+        Self {
+            disabled: 0,
+            travel: FREEZE_TRAVEL,
+            hold: FREEZE_HOLD,
+        }
+    }
+}
+
+impl FreezeCamSettings {
+    /// Travel and hold, None when disabled.
+    pub fn timing(&self) -> Option<(f32, f32)> {
+        (self.disabled == 0).then_some((self.travel.max(0.0), self.hold.max(0.0)))
     }
 }
 
@@ -233,9 +281,31 @@ impl Spectator {
                 SpecPhase::Watching
             };
         }
-        if let SpecPhase::DeathCam { since, .. } = self.phase {
+        if let SpecPhase::DeathCam { since, killer } = self.phase {
             // The death cam plays out; keys wait for it.
             if now - since < DEATH_CAM_SECONDS {
+                return;
+            }
+            // The freeze cam, on a killer still alive.
+            let alive = |k: Entity| living.iter().any(|c| c.entity == k);
+            match (me.freeze, killer.filter(|k| alive(*k))) {
+                (Some((travel, hold)), Some(killer)) => {
+                    self.phase = SpecPhase::FreezeCam {
+                        since: now,
+                        killer,
+                        travel,
+                        hold,
+                    };
+                    return;
+                }
+                _ => self.phase = SpecPhase::Watching,
+            }
+        }
+        if let SpecPhase::FreezeCam {
+            since, travel, hold, ..
+        } = self.phase
+        {
+            if now - since < (travel + hold) as f64 {
                 return;
             }
             self.phase = SpecPhase::Watching;
@@ -294,7 +364,29 @@ impl Plugin for SpectateStatePlugin {
         app.init_resource::<Spectator>()
             .init_resource::<ForceCamera>()
             .init_resource::<KilledBy>()
+            .init_resource::<FreezeCamSettings>()
             .add_systems(Update, (remember_killer, track).chain().in_set(SpectateSet));
+        resource_cvar::<FreezeCamSettings, u8>(
+            app,
+            "cl_disablefreezecam",
+            "1: no freeze cam after you are killed (the death cam goes straight to spectating).",
+            |f| &mut f.disabled,
+        );
+        resource_cvar::<FreezeCamSettings, f32>(
+            app,
+            "spec_freeze_traveltime",
+            "Seconds the freeze cam takes to zoom toward your killer.",
+            |f| &mut f.travel,
+        );
+        resource_cvar::<FreezeCamSettings, f32>(
+            app,
+            "spec_freeze_time",
+            "Seconds the freeze cam's picture holds still.",
+            |f| &mut f.hold,
+        );
+        app.world_mut()
+            .resource_mut::<crate::console::Console>()
+            .archive("cl_disablefreezecam");
         resource_cvar::<ForceCamera, u8>(
             app,
             "mp_forcecamera",
@@ -335,20 +427,33 @@ impl Plugin for SpectateStatePlugin {
 #[derive(SystemSet, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SpectateSet;
 
+/// The state and where the camera goes (`SpecView`), without a window
+/// (tests).
+pub struct SpectateCameraPlugin;
+
+impl Plugin for SpectateCameraPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_plugins(SpectateStatePlugin)
+            .init_resource::<SpecView>()
+            .init_resource::<ChaseOrbit>()
+            .add_systems(
+                Update,
+                (place_camera, show_through_eyes).chain().after(track).in_set(SpectateSet),
+            );
+    }
+}
+
 /// Everything: state, keys, camera, HUD.
 pub struct SpectatePlugin;
 
 impl Plugin for SpectatePlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(SpectateStatePlugin)
-            .init_resource::<SpecView>()
+        app.add_plugins(SpectateCameraPlugin)
             .init_resource::<SpectatorBarsUp>()
-            .init_resource::<ChaseOrbit>()
             .add_systems(
                 Update,
                 (
                     keys.before(super::input::grab_cursor).before(track),
-                    (place_camera, show_through_eyes).chain().after(track).in_set(SpectateSet),
                     spectator_panel.after(place_camera),
                 ),
             );
@@ -399,6 +504,7 @@ fn track(
     characters: Query<Living, (With<Intent>, Without<LocalPlayer>, Without<Hostage>)>,
     killed: Res<KilledBy>,
     force: Res<ForceCamera>,
+    freeze: Res<FreezeCamSettings>,
     mut spec: ResMut<Spectator>,
 ) {
     let Some(local) = local else { return };
@@ -409,6 +515,7 @@ fn track(
         killer: killed.0.flatten(),
         team: team.copied(),
         position: at.translation,
+        freeze: freeze.timing(),
     };
     let mut living: Vec<(String, Candidate)> = characters
         .iter()
@@ -527,37 +634,21 @@ fn place_camera(
         (true, Some(m), Some(s)) => s.look_delta(m.delta),
         _ => Vec2::ZERO,
     };
-    let look_at = |from: Vec3, to: Vec3| Transform::from_translation(from).looking_at(to, Vec3::Y).rotation;
     let mode = spec.effective_mode();
     let pose = match spec.phase {
         SpecPhase::Alive => None,
         SpecPhase::DeathCam { since, killer } => {
-            let eye = at.translation + own.eye_offset;
-            let start = Quat::from_euler(EulerRot::YXZ, intent.yaw, intent.pitch, 0.0);
-            let killer = killer.filter(|k| *k != me).and_then(|k| watched.get(k).ok()).map(drawn);
-            // Back from the body, away from the killer (or behind where
-            // you faced), and up; looking at the killer or the body.
-            let (away, focus) = match killer {
-                Some((t, e)) => {
-                    let focus = t + e.eye_offset;
-                    ((eye - focus).with_y(0.0).normalize_or(start * Vec3::Z), focus)
-                }
-                None => {
-                    let body = ragdolls
-                        .iter()
-                        .find(|r| r.owner == me)
-                        .and_then(|r| r.bodies.first())
-                        .and_then(|b| bodies.get(*b).ok())
-                        .map_or(at.translation, |g| g.translation());
-                    ((start * Vec3::Z).with_y(0.0).normalize_or(Vec3::Z), body)
-                }
-            };
+            let dc = death_cam(me, at, own.eye_offset, intent, killer, &watched, &ragdolls, &bodies, &spatial, &characters);
             let s = ((time.elapsed_secs_f64() - since) as f32 / DEATH_CAM_MOVE).clamp(0.0, 1.0);
-            let s = s * s * (3.0 - 2.0 * s);
-            let to = sweep(&spatial, eye, away * DEATH_CAM_BACK + Vec3::Y * DEATH_CAM_UP, &characters);
-            let p = eye.lerp(to, s);
-            let end = if focus.distance(p) > 1e-3 { look_at(p, focus) } else { start };
-            Some((p, start.slerp(end, s)))
+            Some(dc.at(s))
+        }
+        SpecPhase::FreezeCam {
+            since, killer, travel, ..
+        } => {
+            let dc = death_cam(me, at, own.eye_offset, intent, Some(killer), &watched, &ragdolls, &bodies, &spatial, &characters);
+            let (from, _) = dc.at(1.0);
+            let s = ((time.elapsed_secs_f64() - since) as f32 / travel.max(1e-3)).clamp(0.0, 1.0);
+            Some(freeze_pose(from, dc.focus, s, &spatial, &characters))
         }
         SpecPhase::Watching => {
             let target = spec.target.and_then(|t| watched.get(t).ok()).map(drawn);
@@ -623,6 +714,98 @@ fn place_camera(
         .then_some(spec.target)
         .flatten();
     view.set_if_neq(SpecView { pose, in_eye });
+}
+
+/// The death cam's path: from the eye back (away from the killer, or
+/// behind where you faced) and up, turning from where you looked to the
+/// killer's eye (or your body).
+struct DeathCamPath {
+    eye: Vec3,
+    to: Vec3,
+    start: Quat,
+    focus: Vec3,
+}
+
+impl DeathCamPath {
+    /// The pose `s` (0..1, eased) of the way along.
+    fn at(&self, s: f32) -> (Vec3, Quat) {
+        let s = s * s * (3.0 - 2.0 * s);
+        let p = self.eye.lerp(self.to, s);
+        let end = if self.focus.distance(p) > 1e-3 {
+            Transform::from_translation(p).looking_at(self.focus, Vec3::Y).rotation
+        } else {
+            self.start
+        };
+        (p, self.start.slerp(end, s))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn death_cam(
+    me: Entity,
+    at: &Transform,
+    eye_offset: Vec3,
+    intent: &Intent,
+    killer: Option<Entity>,
+    watched: &Query<Watched>,
+    ragdolls: &Query<&Ragdoll>,
+    bodies: &Query<&GlobalTransform>,
+    spatial: &SpatialQuery,
+    characters: &Query<Entity, With<Intent>>,
+) -> DeathCamPath {
+    let eye = at.translation + eye_offset;
+    let start = Quat::from_euler(EulerRot::YXZ, intent.yaw, intent.pitch, 0.0);
+    let killer = killer.filter(|k| *k != me).and_then(|k| watched.get(k).ok()).map(drawn);
+    let (away, focus) = match killer {
+        Some((t, e)) => {
+            let focus = t + e.eye_offset;
+            ((eye - focus).with_y(0.0).normalize_or(start * Vec3::Z), focus)
+        }
+        None => {
+            let body = ragdolls
+                .iter()
+                .find(|r| r.owner == me)
+                .and_then(|r| r.bodies.first())
+                .and_then(|b| bodies.get(*b).ok())
+                .map_or(at.translation, |g| g.translation());
+            ((start * Vec3::Z).with_y(0.0).normalize_or(Vec3::Z), body)
+        }
+    };
+    let to = sweep(spatial, eye, away * DEATH_CAM_BACK + Vec3::Y * DEATH_CAM_UP, characters);
+    DeathCamPath { eye, to, start, focus }
+}
+
+/// The freeze cam `s` (0..1) of the way from the death cam's end toward
+/// the killer's eye (`freeze_end`, pulled in where the world is in the
+/// way), looking at it.
+fn freeze_pose(
+    from: Vec3,
+    focus: Vec3,
+    s: f32,
+    spatial: &SpatialQuery,
+    characters: &Query<Entity, With<Intent>>,
+) -> (Vec3, Quat) {
+    let to = freeze_end(from, focus);
+    let to = sweep(spatial, from, to - from, characters);
+    let s = s * s * (3.0 - 2.0 * s);
+    let p = from.lerp(to, s);
+    let look = if focus.distance(p) > 1e-3 {
+        Transform::from_translation(p).looking_at(focus, Vec3::Y).rotation
+    } else {
+        Quat::IDENTITY
+    };
+    (p, look)
+}
+
+/// Where the freeze cam stops: on the line from `from` to the killer's
+/// eye `focus`, `FREEZE_DISTANCE` from it (no farther than `from` was).
+pub fn freeze_end(from: Vec3, focus: Vec3) -> Vec3 {
+    let d = FREEZE_DISTANCE * UNIT;
+    let gap = from.distance(focus);
+    if gap <= d {
+        return from;
+    }
+    focus + (from - focus) / gap * d
 }
 
 /// `from + offset`, pulled in if the world is in the way.
@@ -734,6 +917,11 @@ fn hud_text(
     };
     match spec.phase {
         SpecPhase::Alive => SpecHudText::default(),
+        SpecPhase::FreezeCam { killer, .. } => SpecHudText {
+            target: who.contains(killer).then(|| about(killer)),
+            killed_by: true,
+            ..default()
+        },
         SpecPhase::DeathCam { killer, .. } => SpecHudText {
             target: killer.filter(|k| who.contains(*k)).map(about),
             killed_by: true,
@@ -823,7 +1011,9 @@ fn spectator_panel(
         let bars = m.layouts.get(m.spectator.as_ref()?)?;
         Some((m, bars, m.spectator_menu.as_ref().and_then(|k| m.layouts.get(k))))
     });
-    let active = spec.active();
+    // The freeze cam shows its own panel over its picture: no bars (nor
+    // in the picture it takes).
+    let active = spec.active() && !matches!(spec.phase, SpecPhase::FreezeCam { .. });
     // The plain panel, without the game's layout.
     let line = if layouts.is_some() { String::new() } else { about.plain() };
     vis.set_if_neq(if line.is_empty() {
@@ -1059,6 +1249,7 @@ mod tests {
             killer: killed.then(|| e(9)),
             team: Some(Team(2)),
             position: Vec3::ZERO,
+            freeze: None,
         }
     }
 

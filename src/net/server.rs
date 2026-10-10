@@ -439,6 +439,7 @@ fn admit(world: &mut World, client: Entity, msg: Join) {
     }
     let name = clean_name(&msg.name, id);
     let character = spawn_player(world, id, &name);
+    set_userinfo(world, character, &msg.userinfo);
     world.entity_mut(client).insert((
         AuthorizedClient,
         Player {
@@ -468,6 +469,22 @@ fn password_ok(world: &World, client: Entity) -> bool {
     let id = world.get::<NetworkId>(client).map(|n| n.get());
     let data = id.and_then(|id| world.get_resource::<super::udp::UdpServer>()?.user_data(id));
     super::query::password_of(data.as_ref()) == *want
+}
+
+/// A remote player's userinfo (`core::UserInfo`), bounded: at most 64
+/// keys of 64 bytes, values of 256.
+pub(super) fn set_userinfo(world: &mut World, character: Entity, values: &[(String, String)]) {
+    let info = crate::core::UserInfo(
+        values
+            .iter()
+            .filter(|(k, v)| k.len() <= 64 && v.len() <= 256)
+            .take(64)
+            .map(|(k, v)| (k.to_lowercase(), v.clone()))
+            .collect(),
+    );
+    if let Ok(mut e) = world.get_entity_mut(character) {
+        e.insert(info);
+    }
 }
 
 /// A printable name of at most 32 characters, or "Player <id>".

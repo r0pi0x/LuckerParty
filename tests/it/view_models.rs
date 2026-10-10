@@ -10,7 +10,7 @@ use mashup::{
     games::cs_source::{
         TICK_INTERVAL,
         view_anim::ViewAnimPlugin,
-        weapons::{AK47, AUG, AWP, CsWeaponsPlugin, ELITE, GLOCK, KNIFE, M3, M4A1},
+        weapons::{AK47, AUG, AWP, CsWeaponsPlugin, ELITE, GLOCK, KNIFE, M3, M4A1, TMP},
     },
     greybox::{self, GreyboxMapPlugin},
     harness::Sim,
@@ -125,6 +125,15 @@ fn sim() -> Sim {
                 ("stab_miss", "ACT_VM_MISSCENTER", 61, 40.0, false),
                 ("midslash1", "ACT_VM_HITCENTER", 66, 55.0, false),
                 ("midslash2", "ACT_VM_HITCENTER", 66, 55.0, false),
+            ],
+        ),
+        // v_smg_tmp: its idle sways 5 s (dump --sequences: up to 8.7 deg).
+        view_model(
+            TMP,
+            &[
+                ("idle1", "ACT_VM_IDLE", 61, 12.0, false),
+                ("draw", "ACT_VM_DRAW", 31, 36.0, false),
+                ("shoot1", "ACT_VM_PRIMARYATTACK", 16, 30.0, false),
             ],
         ),
         // Parts of v_rif_m4a1, v_pist_glock18 and v_pist_deagle (dump
@@ -274,20 +283,79 @@ fn knife_draws_slashes_and_stabs() {
     let (key, act, _) = view(&sim, p);
     assert_eq!(key.as_deref(), Some(KNIFE));
     assert_eq!(act.as_deref(), Some("ACT_VM_DRAW"));
+    // The draw's last frame holds (no idle yet: `knife_holds_still`).
     sim.seconds(1.1);
-    assert_eq!(activity(&sim, p), "ACT_VM_IDLE");
+    assert_eq!(activity(&sim, p), "ACT_VM_DRAW");
     // A slash at nothing: CS:S has no slash-miss sequence, so a slash.
     sim.intent(p).fire = true;
     sim.ticks(1);
     sim.intent(p).fire = false;
     assert!(view(&sim, p).2.unwrap().starts_with("midslash"));
     sim.seconds(1.5);
-    assert_eq!(activity(&sim, p), "ACT_VM_IDLE");
+    assert_eq!(activity(&sim, p), "ACT_VM_HITCENTER");
     // A stab at nothing.
     sim.intent(p).secondary = true;
     sim.ticks(1);
     sim.intent(p).secondary = false;
     assert_eq!(view(&sim, p).2.as_deref(), Some("stab_miss"));
+}
+
+/// Where the view model's sequence is: its activity and cycle.
+fn at(sim: &Sim, p: Entity) -> (String, f32) {
+    let v = sim.app.world().get::<ViewAnimator>(p).unwrap();
+    (activity(sim, p), v.animator.as_ref().unwrap().cycle)
+}
+
+/// CS:S's knife holds still after it is drawn (captures 2, 6 and 10 s
+/// after drawing it are identical): the draw's last frame holds; its
+/// 12.5 s idle (which turns the blade from 3.4 s in) waits `KNIFE_IDLE`
+/// after the draw or the last attack.
+#[test]
+fn knife_holds_still() {
+    let mut sim = sim();
+    let p = sim.spawn_character(greybox::SPAWNS[0], placeholder::ID);
+    sim.ticks(2);
+    sim.intent(p).select = Some(2);
+    sim.ticks(1);
+    sim.intent(p).select = None;
+    sim.ticks(1);
+    assert_eq!(activity(&sim, p), "ACT_VM_DRAW");
+    for t in [2.0, 6.0, 10.0] {
+        sim.seconds(if t == 2.0 { 2.0 } else { 4.0 });
+        assert_eq!(at(&sim, p), ("ACT_VM_DRAW".into(), 1.0), "at {t} s");
+    }
+    // After KNIFE_IDLE it idles once, then holds the idle's last frame
+    // until the next.
+    let idle = mashup::games::cs_source::view_anim::KNIFE_IDLE as f64;
+    sim.seconds(idle - 10.0 + 0.1);
+    let (act, cycle) = at(&sim, p);
+    assert_eq!(act, "ACT_VM_IDLE");
+    assert!(cycle < 0.05, "{cycle}");
+    sim.seconds(13.0);
+    assert_eq!(at(&sim, p), ("ACT_VM_IDLE".into(), 1.0));
+    // A slash puts the wait back.
+    sim.intent(p).fire = true;
+    sim.ticks(1);
+    sim.intent(p).fire = false;
+    sim.seconds(idle - 1.0);
+    assert_eq!(at(&sim, p), ("ACT_VM_HITCENTER".into(), 1.0));
+}
+
+/// A non-looping idle that moves (the TMP's 5 s sway) plays TimeToIdle
+/// (2 s) after the draw and then holds until its IdleInterval (20 s)
+/// from its start: not again and again.
+#[test]
+fn idles_repeat_after_their_interval() {
+    let mut sim = sim();
+    let p = holding(&mut sim, TMP);
+    sim.seconds(1.5);
+    assert_eq!(activity(&sim, p), "ACT_VM_IDLE");
+    sim.seconds(6.0);
+    assert_eq!(at(&sim, p), ("ACT_VM_IDLE".into(), 1.0), "played once, holding");
+    sim.seconds(10.0);
+    assert_eq!(at(&sim, p).1, 1.0, "still holding before 20 s");
+    sim.seconds(4.0);
+    assert!(at(&sim, p).1 < 0.5, "again after 20 s");
 }
 
 #[test]

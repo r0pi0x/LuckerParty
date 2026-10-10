@@ -221,6 +221,10 @@ const TEAM_MENU: &str = "resource/ui/teammenu.res";
 const SCOREBOARD: &str = "resource/ui/scoreboard.res";
 const SPECTATOR: &str = "resource/ui/spectator.res";
 const SPECTATOR_MENU: &str = "resource/ui/bottomspectator.res";
+/// The freeze cam's panel: its frame (`FreezePanelBG`), and what is
+/// inside it laid out in the frame (`FREEZE_PANEL_INNER`).
+const FREEZE_PANEL: &str = "resource/ui/freezepanel_basic.res";
+const FREEZE_PANEL_INNER: &str = "resource/ui/freezepanel_basic.res#inner";
 
 /// A path with its `..` segments resolved (`vgui/../vgui/x` -> `vgui/x`).
 fn resolve_dots(path: &str) -> String {
@@ -322,6 +326,20 @@ pub(crate) fn load(materials: &mut MaterialLoader, hud: &mut GameHud, map: &str)
             menus.buy.insert(team, path.to_string());
         } else if menus.layouts.contains_key(BUY_FALLBACK) {
             menus.buy.insert(team, BUY_FALLBACK.to_string());
+        }
+    }
+    if let Some(root) = read_res_at(materials, FREEZE_PANEL) {
+        let outer = layout(&root, &strings, &colors, &mut |_| None);
+        let frame = root
+            .items()
+            .iter()
+            .find(|(k, c)| k.eq_ignore_ascii_case("FreezePanelBG") && matches!(c, Kv::Block(_)))
+            .map(|(_, c)| c);
+        if let Some(frame) = frame {
+            let inner = layout(frame, &strings, &colors, &mut |_| None);
+            menus.layouts.insert(FREEZE_PANEL.into(), outer);
+            menus.layouts.insert(FREEZE_PANEL_INNER.into(), inner);
+            menus.freeze_panel = Some((FREEZE_PANEL.into(), FREEZE_PANEL_INNER.into()));
         }
     }
     menus.team = menus.layouts.contains_key(TEAM_MENU).then(|| TEAM_MENU.to_string());

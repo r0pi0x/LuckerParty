@@ -70,6 +70,17 @@ potentially visible from anywhere inside it (PVS, run-length encoded).
   surface, often in solid: looking it up there turned culling off for the
   whole map whenever any reflecting water lay below the eye. The
   view-model and sky cameras draw only their own layers and are ignored.
+  Cost (2026-10-09, playtest build, `refcmp bench` on de_port's 24
+  views, with and without `+r_WaterDrawReflection 0`; instruction counts,
+  since the box was loaded): views facing away from the water are the
+  same (render world 16.4M vs 15.4M instructions per frame), views with
+  the water in sight pay 25-45% more render-world instructions (all
+  views: 34.0M vs 26.6M; main world 8.3M vs 7.4M) and 112 more meshes on
+  average; GPU time stays about 1 ms at 1280x720 either way, so the
+  reflection keeps the spec's 1024x1024 target. The cheaper settings are
+  the game's: `r_WaterDrawReflection 0`, or a material without
+  `$reflecttexture` ("Simple reflections" alone still reflects, as
+  `$forceexpensive` defaults on: water.md open question 1).
 - Meshes of entities with their own node (movers, breakables) stay whole;
   the node is tagged by the clusters its meshes' bounds touch, found again
   whenever it moves (`map::tag_moved_brush_entities`, from its

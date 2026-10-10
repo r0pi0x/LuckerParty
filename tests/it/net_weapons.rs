@@ -638,6 +638,64 @@ fn dropping_asks_the_server_and_picking_up_is_its() {
     assert_eq!(ids(sim.clients[0].app.world(), local), ids(sim.server.app.world(), me));
 }
 
+/// `cl_autowepswitch` over the net: the client's setting rides its join
+/// and later changes (Source's setinfo) into the server's `UserInfo` for
+/// its character, and the server's pickup draws the heavier weapon only
+/// with it on; the client's prediction follows.
+#[test]
+fn auto_switch_rides_the_clients_userinfo() {
+    let mut sim = joined(link(60, 0, 0.0), 51, 1);
+    let me = sim.character_of(0).unwrap();
+    let flag = |sim: &NetSim| {
+        sim.server
+            .app
+            .world()
+            .get::<mashup::core::UserInfo>(me)
+            .and_then(|u| u.flag("cl_autowepswitch"))
+    };
+    assert_eq!(flag(&sim), Some(true), "the default came with the join");
+    let active = |w: &World, e: Entity| -> Option<&'static str> {
+        let a = w.get::<Inventory>(e)?.active?;
+        Some(w.get::<Weapon>(a)?.id)
+    };
+    // Drop the rifle (the pistol is drawn), step away, walk back over it.
+    let round = |sim: &mut NetSim| {
+        place(sim, 0, Vec3::new(0.0, 1.0, 12.0), 0.0);
+        sim.ticks(60);
+        mashup::console::execute(sim.clients[0].app.world_mut(), &["drop".into()], 0);
+        sim.ticks(20);
+        place(sim, 0, Vec3::new(8.0, 1.0, 12.0), 0.0);
+        sim.ticks(160);
+        assert_ne!(active(sim.server.app.world(), me), Some(AK47));
+        let loose = {
+            let w = sim.server.app.world_mut();
+            w.query::<(&mashup::map::loose::LooseItem, &Transform)>()
+                .iter(w)
+                .find(|(l, _)| l.0 == AK47)
+                .map(|(_, t)| t.translation)
+                .unwrap()
+        };
+        place(sim, 0, loose + Vec3::Y * 0.9, 0.0);
+        sim.ticks(120);
+        let local = sim.local_player(0).unwrap();
+        (
+            active(sim.server.app.world(), me),
+            active(sim.clients[0].app.world(), local),
+        )
+    };
+    assert_eq!(round(&mut sim), (Some(AK47), Some(AK47)), "drawn: 25 outweighs the pistol's 5");
+    mashup::console::execute(
+        sim.clients[0].app.world_mut(),
+        &["cl_autowepswitch".into(), "0".into()],
+        0,
+    );
+    sim.ticks(20);
+    assert_eq!(flag(&sim), Some(false), "the change reached the server");
+    let (server, client) = round(&mut sim);
+    assert!(server.is_some() && server != Some(AK47), "kept the pistol: {server:?}");
+    assert_eq!(client, server);
+}
+
 #[test]
 fn bots_shoot_players_over_the_net() {
     let mut sim = joined(link(80, 0, 0.0), 49, 1);

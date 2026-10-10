@@ -562,6 +562,25 @@ pub struct SpawnPoint {
 #[reflect(Component)]
 pub struct LocalPlayer;
 
+/// A player's own settings the simulation reads (Source's userinfo: the
+/// client cvars marked `console::Console::userinfo`, e.g.
+/// `cl_autowepswitch`). The local player's come from its console; a
+/// network server's remote players' from their clients (`net`, as `name`
+/// is sent). Characters without one (bots) use each setting's default
+/// behaviour, as its reader says.
+#[derive(Component, Reflect, Default, Clone, Debug, PartialEq)]
+#[reflect(Component)]
+pub struct UserInfo(pub std::collections::BTreeMap<String, String>);
+
+impl UserInfo {
+    /// A setting as a number (`Some(n != 0)`), None when unset or not a
+    /// number.
+    pub fn flag(&self, key: &str) -> Option<bool> {
+        let v = self.0.get(key)?;
+        v.trim().parse::<f32>().ok().map(|n| n != 0.0)
+    }
+}
+
 /// A character a person plays from another machine (a network server's
 /// client): not this machine's `LocalPlayer`, and not a computer player.
 #[derive(Component, Reflect, Default, Clone, Copy, Debug)]
@@ -1078,6 +1097,11 @@ impl SightBlocker {
     }
 }
 
+/// `mp_playerid` (the server's, sent to clients): whose names the target
+/// ID shows: 0 everyone's, 1 teammates' only, 2 nobody's.
+#[derive(Resource, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlayerIdMode(pub u8);
+
 /// Whether characters on the same team hurt each other (CS:S
 /// `mp_friendlyfire`, default 0). Team 0 (no team) is never friendly.
 #[derive(Resource, Default, Clone, Copy, Debug, PartialEq, Eq)]
@@ -1190,6 +1214,7 @@ impl Plugin for CorePlugin {
             .register_type::<MovementState>()
             .register_type::<Health>()
             .register_type::<Team>()
+            .register_type::<UserInfo>()
             .register_type::<Seed>()
             .register_type::<MaxSpeed>()
             .register_type::<BaseVelocity>()
