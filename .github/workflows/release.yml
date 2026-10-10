@@ -1,0 +1,83 @@
+# Release builds: on a version tag (v*), build the game and the dedicated
+# server for Windows and Linux, zip each with dist/README.txt and attach
+# them to a GitHub Release. Nothing from other games is packaged: the game
+# loads them from the player's own install at run time.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build and attach to (e.g. v0.1.0-playtest1)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: never
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+            exe: .exe
+          - os: ubuntu-latest
+            platform: linux
+            exe: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Linux build dependencies
+        if: matrix.platform == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release --locked --bin mashup --bin mashup_server
+      - name: Package
+        shell: bash
+        run: |
+          name="LuckerParty-${TAG}-${{ matrix.platform }}"
+          mkdir -p "pkg/$name"
+          cp "target/release/mashup${{ matrix.exe }}" "target/release/mashup_server${{ matrix.exe }}" "pkg/$name/"
+          cp dist/README.txt "pkg/$name/README.txt"
+          cp LICENSE-MIT LICENSE-APACHE "pkg/$name/" 2>/dev/null || true
+          cd pkg
+          if [ "${{ matrix.platform }}" = windows ]; then
+            7z a -tzip "$name.zip" "$name" > /dev/null
+          else
+            strip "$name/mashup" "$name/mashup_server"
+            zip -qr "$name.zip" "$name"
+          fi
+          ls -l "$name.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform }}
+          path: pkg/*.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: zips
+          merge-multiple: true
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1 \
+            || gh release create "$TAG" -R "$GITHUB_REPOSITORY" --prerelease --title "Lucker Party $TAG" \
+                 --notes "Playtest build. Needs Counter-Strike: Source installed through Steam; see README.txt in the zip."
+          gh release upload "$TAG" zips/*.zip -R "$GITHUB_REPOSITORY" --clobber
