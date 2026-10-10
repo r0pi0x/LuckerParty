@@ -1311,6 +1311,59 @@ fn use_reach() {
     assert_eq!(fired(&w, b, "OnPressed").len(), 1);
 }
 
+/// +use on a brush parented to a button presses the button
+/// (doors_buttons.md "+use: finding what to use": a hit entity that isn't
+/// usable tries its parent, grandparent...).
+#[test]
+fn use_reaches_a_usable_parent() {
+    let mut w = world();
+    // The button itself out of reach (200 ahead), a panel parented to it
+    // 60 ahead.
+    let b = spawn_brush(
+        &mut w,
+        &[
+            ("classname", "func_button"),
+            ("targetname", "b"),
+            ("origin", "204 0 64"),
+            ("spawnflags", "1025"),
+        ],
+        Vec3::new(-4.0, -8.0, -8.0),
+        Vec3::new(4.0, 8.0, 8.0),
+    );
+    spawn_brush(
+        &mut w,
+        &[("classname", "func_brush"), ("parentname", "b"), ("origin", "64 0 64")],
+        Vec3::new(-4.0, -16.0, -16.0),
+        Vec3::new(4.0, 16.0, 16.0),
+    );
+    w.activate();
+    player_at(&mut w, 0, Vec3::ZERO);
+    use_at(&mut w, &[0], 2);
+    assert_eq!(fired(&w, b, "OnPressed").len(), 1);
+}
+
+/// func_water_analog moves like func_movelinear (mg_jacks_multigames_v1's
+/// rising flood: movedir up, 635 units at 11 units/s).
+#[test]
+fn water_analog_moves() {
+    let mut w = world();
+    let water = spawn(
+        &mut w,
+        &[
+            ("classname", "func_water_analog"),
+            ("targetname", "water"),
+            ("movedir", "-90 0 0"),
+            ("movedistance", "635"),
+            ("speed", "11"),
+        ],
+    );
+    w.activate();
+    w.queue_input("water", "Open", Value::Void, 0.0, None);
+    run_to(&mut w, 660);
+    let z = origin_of(&w, water).z;
+    assert!((z - 110.0).abs() < 2.0, "10 s up at 11 units/s: {z}");
+}
+
 #[test]
 fn movelinear() {
     let mut w = world();

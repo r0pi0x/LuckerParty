@@ -27,8 +27,8 @@ pub mod fire;
 pub mod fog;
 pub use entities::{MapBrushEntity, MapEntities, MapEntity, MapHull};
 pub mod beams;
-pub mod buoyancy;
 pub mod breakables;
+pub mod buoyancy;
 pub mod contact_filter;
 pub mod controllers;
 pub mod copies;
@@ -36,33 +36,34 @@ pub use breakables::{
     BreakProp, BrushPanes, FallingPane, GlassImpact, GlassShatter, MapBreak, MapBreakPiece, PanePart, SpawnGibs,
 };
 mod dust;
+pub mod hearing;
 pub mod hud;
 pub mod interp;
 mod light_styles;
-pub mod hearing;
 pub mod live_sound;
-pub mod loose;
 pub mod loading;
+pub mod loose;
 pub mod material_fx;
 pub use material_fx::{DetailMode, MapSelfIllum, MapUvTransform};
+pub mod bot_profiles;
 pub mod merge;
 pub mod monitor;
-pub mod tint;
-pub mod probe_lit;
-pub mod radio;
-pub mod bot_profiles;
 pub mod nav;
 pub mod particles;
-pub mod psys;
-pub mod tracer;
+pub mod placed_ragdoll;
+pub mod probe_lit;
 pub mod prop_material;
 pub mod prop_physics;
+pub mod psys;
+pub mod radio;
 pub mod ragdoll;
+pub mod tint;
+pub mod tracer;
 pub use ragdoll::{MapCollisionHooks, MapRagdoll, MapRagdollBody, MapRagdollJoint, Ragdoll, RagdollBody, RagdollShot};
+pub mod room;
 pub mod rope_material;
 pub mod shadows;
 pub mod sound;
-pub mod room;
 pub mod soundscape;
 pub mod steam;
 pub use live_sound::{LiveSounds, SoundControl, SoundKey, StartSound};
@@ -1165,6 +1166,9 @@ pub struct MapProp {
     /// (prop_ragdoll) drawn as it lies. None: the reference pose, or its
     /// animations.
     pub pose: Option<Arc<Vec<(Quat, Vec3)>>>,
+    /// A map-placed ragdoll's bodies and joints (its model's `.phy`): it is
+    /// simulated from `pose` (`ragdoll::PlacedRagdoll`).
+    pub ragdoll: Option<Arc<MapRagdoll>>,
     pub translation: Vec3,
     pub rotation: Quat,
     pub solid: PropSolid,
@@ -1342,6 +1346,10 @@ pub struct MapData {
     pub visibility: Option<Arc<vis::MapVisibility>>,
     /// Water and slime volumes.
     pub water: Vec<MapWaterVolume>,
+    /// Water volumes of brush entities that can move (func_water_analog):
+    /// (index into `water`, index into `entities`); they follow the
+    /// entity's node (`water::move_water`).
+    pub water_movers: Vec<(usize, usize)>,
     /// The map's entities (keyvalues, brush volumes) for the logic layer,
     /// in the map's own order.
     pub entities: Vec<MapEntity>,
@@ -1960,6 +1968,7 @@ impl Plugin for MapPlugin {
                 .insert_resource(ActiveMapLook(data.look.clone()));
         }
         ragdoll::plugin(app);
+        placed_ragdoll::plugin(app);
         app.add_plugins(light_styles::LightStylesPlugin);
         app.add_plugins((controllers::ControllersPlugin, buoyancy::BuoyancyPlugin, monitor::MonitorPlugin));
         app.add_plugins(sound::SoundPlugin)
@@ -2009,6 +2018,9 @@ impl Plugin for MapPlugin {
             )
             .add_systems(FixedPostUpdate, breakables::update_panes)
             .add_systems(FixedPostUpdate, prop_physics::wake_on_contact.after(PhysicsSystems::Writeback))
+            // Moving water follows its brush entity (before movement and
+            // buoyancy read it).
+            .add_systems(FixedUpdate, water::move_water.before(crate::core::SimSet::Movement))
             // What the logic switches: sprites and dust, lights, prop
             // skins, bodies and sequences.
             .add_systems(
@@ -2581,6 +2593,7 @@ fn spawn_map(
                 water_materials,
                 &cubemaps,
                 sky_handle.as_ref(),
+                &|i| entity_nodes.get(i).copied().flatten(),
             );
         }
         // World meshes in chunks with tight bounds, tagged with the
@@ -3747,8 +3760,25 @@ fn spawn_map(
                 mesh_bodies: model.meshes.iter().map(|m| m.body).collect(),
                 shown: (prop.skin, prop.body),
             });
+            // A simulated ragdoll's bones follow its bodies.
+            if let (Some(rig), Some(ragdoll)) = (rig.filter(|_| !joints.is_empty() && !prop.skybox), &prop.ragdoll) {
+                let flags = prop
+                    .entity
+                    .and_then(|i| data.entities.get(i))
+                    .and_then(|e| e.get("spawnflags"))
+                    .map_or(0, |v| v.trim().parse().unwrap_or(0));
+                commands.entity(id).insert(placed_ragdoll::PlacedRagdoll::new(
+                    ragdoll.clone(),
+                    rig,
+                    prop.pose.clone(),
+                    joints,
+                    flags,
+                    rider.map_or(placed, |r| r.1),
+                ));
             // A posed ragdoll keeps its pose (no animation).
-            if let Some(rig) = rig.filter(|_| !joints.is_empty() && prop.pose.is_none()) {
+            } else if let Some(rig) =
+                rig.filter(|_| !joints.is_empty() && prop.pose.is_none() && prop.ragdoll.is_none())
+            {
                 commands.entity(id).insert(PropRig {
                     animator: anim::Animator::new(rig.animations.clone()),
                     joints,
@@ -3817,6 +3847,13 @@ fn spawn_map(
             commands.insert_resource(Gravity(Vec3::NEG_Y * g));
         }
         commands.insert_resource(MapWater(data.water.clone()));
+        commands.insert_resource(water::WaterMovers(
+            data.water_movers
+                .iter()
+                .filter(|(v, e)| *v < data.water.len() && entity_nodes.get(*e).copied().flatten().is_some())
+                .map(|&(v, e)| (v, e, data.water[v].brush.clone(), node_home(e)))
+                .collect(),
+        ));
         commands.insert_resource(fog::SceneFog(fog::world_fog(data.fog.as_ref())));
         commands.insert_resource(data.round_sounds.clone());
         if let Some(r) = &data.radio {
@@ -3931,6 +3968,7 @@ pub fn unload_map(world: &mut World) {
     world.remove_resource::<MapBrushTree>();
     world.remove_resource::<KillHeight>();
     world.remove_resource::<MapWater>();
+    world.remove_resource::<water::WaterMovers>();
     world.remove_resource::<RoundSounds>();
     world.remove_resource::<radio::RadioCommands>();
     world.remove_resource::<bot_profiles::BotProfiles>();

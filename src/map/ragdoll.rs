@@ -233,6 +233,40 @@ pub struct Ragdoll {
     born: f64,
     /// Ticks in a row some joint was pulled apart beyond the tolerance.
     error_ticks: u32,
+    /// A map-placed ragdoll (`placed_ragdoll::PlacedRagdoll`): `owner` is
+    /// its prop node, `model` unused.
+    pub placed: bool,
+}
+
+impl Ragdoll {
+    /// A map-placed ragdoll's simulation (`placed_ragdoll`).
+    pub(super) fn placed(
+        node: Entity,
+        bodies: Vec<Entity>,
+        joints: Vec<Entity>,
+        parents: Vec<Option<(usize, Vec3)>>,
+        scale: f32,
+        root: Vec3,
+        now: f64,
+    ) -> Self {
+        Self {
+            owner: node,
+            model: usize::MAX,
+            bodies,
+            joints,
+            visual: None,
+            parents,
+            scale,
+            death_pose: None,
+            repairs: 0,
+            last_root: root,
+            last_moved: now,
+            // Shots push it from the first tick.
+            born: now - 1.0,
+            error_ticks: 0,
+            placed: true,
+        }
+    }
 }
 
 /// A rigid body of a ragdoll: which one and which of its bodies.
@@ -638,22 +672,9 @@ pub fn spawn_ragdoll(
     let mut bodies = Vec::with_capacity(ragdoll.bodies.len());
     for (i, body) in ragdoll.bodies.iter().enumerate() {
         let (rot, pos) = b1.world(body.bone);
-        let hulls: Vec<_> = body
-            .pieces
-            .iter()
-            .filter_map(|p| Collider::convex_hull(p.iter().map(|v| *v * scale).collect()))
-            .map(|c| (Vec3::ZERO, Quat::IDENTITY, c))
-            .collect();
-        let collider = if hulls.is_empty() {
-            Collider::sphere(0.05)
-        } else {
-            Collider::compound(hulls)
-        };
-        let unit = collider.mass_properties(1.0);
-        let density = if unit.mass > 0.0 { body.mass / unit.mass } else { 1.0 };
-        let principal = unit.principal_angular_inertia * density * body.inertia.max(0.01);
-        let frame = rot * unit.local_inertial_frame;
-        let centre = pos + rot * unit.center_of_mass;
+        let shape = BodyShape::new(body, scale);
+        let (principal, frame) = (shape.principal, rot * shape.frame);
+        let centre = pos + rot * shape.centre;
         // Bone velocities (2.6), then the death impulse (2.5): the hit
         // body takes all of it, every other body its mass share at the
         // hit body's origin.
@@ -673,42 +694,17 @@ pub fn spawn_ragdoll(
             let local = frame.inverse() * torque;
             w += frame * (local / principal.max(Vec3::splat(1e-6)));
         }
-        bodies.push(
-            commands
-                .spawn((
-                    Name::new(format!("Ragdoll body {i}")),
-                    RagdollBody {
-                        ragdoll: ragdoll_entity,
-                        index: i,
-                        collides: masks[i],
-                    },
-                    MapPart,
-                    Transform::from_translation(pos).with_rotation(rot),
-                    RigidBody::Dynamic,
-                    collider,
-                    Mass(body.mass),
-                    AngularInertia::new_with_local_frame(principal, unit.local_inertial_frame),
-                    CenterOfMass(unit.center_of_mass),
-                    LinearVelocity(v),
-                    AngularVelocity(w),
-                    LinearDamping(body.damping),
-                    AngularDamping(body.rotdamping),
-                    (
-                        MaxLinearSpeed(MAX_LINEAR_SPEED),
-                        MaxAngularSpeed(MAX_ANGULAR_SPEED),
-                        Friction::new(body.friction),
-                        Restitution::new(body.elasticity),
-                        // Its own ragdoll's bodies too: `MapCollisionHooks`
-                        // keeps the listed pairs.
-                        CollisionLayers::new(RAGDOLL_LAYER, LayerMask::DEFAULT | RAGDOLL_LAYER),
-                        ActiveCollisionHooks::FILTER_PAIRS,
-                        // Its surface (scrape sounds; what it sounds like
-                        // to what touches it).
-                        crate::core::PropSurface(body.surfaceprop.clone()),
-                    ),
-                ))
-                .id(),
-        );
+        bodies.push(spawn_body(
+            commands,
+            ragdoll_entity,
+            i,
+            body,
+            shape,
+            masks[i],
+            Transform::from_translation(pos).with_rotation(rot),
+            (v, w),
+            CollisionLayers::new(RAGDOLL_LAYER, LayerMask::DEFAULT | RAGDOLL_LAYER),
+        ));
     }
     // Joints: the child's bind-pose place and orientation in the parent's
     // bone frame (1.2).
@@ -756,8 +752,94 @@ pub fn spawn_ragdoll(
         last_moved: now,
         born: now,
         error_ticks: 0,
+        placed: false,
     });
     ragdoll_entity
+}
+
+/// A ragdoll body's collider and mass frame.
+pub(super) struct BodyShape {
+    collider: Collider,
+    /// Principal moments of inertia (kg m²), with the body's inertia scale.
+    principal: Vec3,
+    /// The principal axes in the body's frame.
+    frame: Quat,
+    /// Its mass centre in the body's frame, m.
+    centre: Vec3,
+}
+
+impl BodyShape {
+    /// `body`'s convex pieces scaled from skeleton units to meters.
+    pub(super) fn new(body: &MapRagdollBody, scale: f32) -> Self {
+        let hulls: Vec<_> = body
+            .pieces
+            .iter()
+            .filter_map(|p| Collider::convex_hull(p.iter().map(|v| *v * scale).collect()))
+            .map(|c| (Vec3::ZERO, Quat::IDENTITY, c))
+            .collect();
+        let collider = if hulls.is_empty() {
+            Collider::sphere(0.05)
+        } else {
+            Collider::compound(hulls)
+        };
+        let unit = collider.mass_properties(1.0);
+        let density = if unit.mass > 0.0 { body.mass / unit.mass } else { 1.0 };
+        Self {
+            principal: unit.principal_angular_inertia * density * body.inertia.max(0.01),
+            frame: unit.local_inertial_frame,
+            centre: unit.center_of_mass,
+            collider,
+        }
+    }
+}
+
+/// Spawn ragdoll `ragdoll`'s body `i` at `at` moving at `(v, w)`.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn spawn_body(
+    commands: &mut Commands,
+    ragdoll: Entity,
+    i: usize,
+    body: &MapRagdollBody,
+    shape: BodyShape,
+    collides: u32,
+    at: Transform,
+    (v, w): (Vec3, Vec3),
+    layers: CollisionLayers,
+) -> Entity {
+    commands
+        .spawn((
+            Name::new(format!("Ragdoll body {i}")),
+            RagdollBody {
+                ragdoll,
+                index: i,
+                collides,
+            },
+            MapPart,
+            at,
+            RigidBody::Dynamic,
+            shape.collider,
+            Mass(body.mass),
+            AngularInertia::new_with_local_frame(shape.principal, shape.frame),
+            CenterOfMass(shape.centre),
+            LinearVelocity(v),
+            AngularVelocity(w),
+            LinearDamping(body.damping),
+            AngularDamping(body.rotdamping),
+            (
+                MaxLinearSpeed(MAX_LINEAR_SPEED),
+                MaxAngularSpeed(MAX_ANGULAR_SPEED),
+                Friction::new(body.friction),
+                Restitution::new(body.elasticity),
+                // Its own ragdoll's bodies too: `MapCollisionHooks`
+                // keeps the listed pairs.
+                layers,
+                ActiveCollisionHooks::FILTER_PAIRS,
+                // Its surface (scrape sounds; what it sounds like
+                // to what touches it).
+                crate::core::PropSurface(body.surfaceprop.clone()),
+            ),
+        ))
+        .id()
 }
 
 /// Ragdolls go at a round restart (spec 6.4) and when their owner is
@@ -771,6 +853,9 @@ fn remove_ragdolls(
 ) {
     let restart = restarts.is_some_and(|r| r.is_changed() && !r.is_added());
     for (e, r) in &ragdolls {
+        if r.placed {
+            continue;
+        }
         if restart {
             despawn_ragdoll(&mut commands, e, r);
             continue;
@@ -803,12 +888,17 @@ fn despawn_ragdoll(commands: &mut Commands, e: Entity, r: &Ragdoll) {
 /// trace first hit that ragdoll (a blast: 4000 × the trace's length at the
 /// pelvis's mass centre), waking it and restarting its settle timer. A
 /// ragdoll made this tick is left alone (the killing hit already pushed it).
+/// A map-placed ragdoll takes the push on the part the shot hit
+/// (physics_brushes.md 6.6); pinned, it doesn't move; asleep since it
+/// spawned, the shot wakes it.
+#[allow(clippy::type_complexity)]
 fn shoot_ragdolls(
     mut shots: MessageReader<RagdollShot>,
     spatial: SpatialQuery,
     parts: Query<&RagdollBody>,
     mut ragdolls: Query<&mut Ragdoll>,
-    mut forces: Query<Forces>,
+    mut placed: Query<&mut super::placed_ragdoll::PlacedRagdoll>,
+    mut bodies: ParamSet<(Query<Forces>, Query<(&mut LinearVelocity, &ComputedMass, &RigidBody)>)>,
     time: Res<Time>,
 ) {
     let now = time.elapsed_secs_f64();
@@ -816,8 +906,9 @@ fn shoot_ragdolls(
     for shot in shots.read() {
         let Ok(dir) = Dir3::new(shot.to - shot.from) else { continue };
         let length = shot.from.distance(shot.to);
-        // The nearest hit on each ragdoll (a blast names its own).
-        let mut first: Vec<(Entity, f32)> = shot.ragdoll.map(|r| (r, 0.0)).into_iter().collect();
+        // The nearest hit on each ragdoll (a blast names its own): its
+        // distance and the body.
+        let mut first: Vec<(Entity, f32, usize)> = shot.ragdoll.map(|r| (r, 0.0, 0)).into_iter().collect();
         let hits = if shot.ragdoll.is_some() {
             Vec::new()
         } else {
@@ -825,23 +916,52 @@ fn shoot_ragdolls(
         };
         for hit in hits {
             let Ok(part) = parts.get(hit.entity) else { continue };
-            match first.iter_mut().find(|(r, _)| *r == part.ragdoll) {
-                Some((_, d)) => *d = d.min(hit.distance),
-                None => first.push((part.ragdoll, hit.distance)),
+            match first.iter_mut().find(|(r, ..)| *r == part.ragdoll) {
+                Some((_, d, b)) => {
+                    if hit.distance < *d {
+                        (*d, *b) = (hit.distance, part.index);
+                    }
+                }
+                None => first.push((part.ragdoll, hit.distance, part.index)),
             }
         }
-        for (ragdoll, distance) in first {
+        for (ragdoll, distance, index) in first {
             let Ok(mut r) = ragdolls.get_mut(ragdoll) else { continue };
             if r.born >= now {
                 continue;
             }
-            let Some(mut pelvis) = r.bodies.first().and_then(|b| forces.get_mut(*b).ok()) else {
-                continue;
-            };
+            let index = if r.placed { index } else { 0 };
+            let Some(&body) = r.bodies.get(index) else { continue };
+            if r.placed
+                && let Ok(mut p) = placed.get_mut(r.owner)
+            {
+                if p.pinned {
+                    continue;
+                }
+                // Held still since it spawned: woken, the push becomes
+                // the part's velocity (it isn't simulated this tick yet).
+                if p.asleep {
+                    p.asleep = false;
+                    if let Ok((mut v, m, rb)) = bodies.p1().get_mut(body)
+                        && rb.is_static()
+                    {
+                        let push = if shot.blast {
+                            (shot.to - shot.from) * 4000.0
+                        } else {
+                            *dir * BULLET_PUSH
+                        };
+                        v.0 += push * m.inverse();
+                        r.last_moved = now;
+                        continue;
+                    }
+                }
+            }
+            let mut forces = bodies.p0();
+            let Ok(mut part) = forces.get_mut(body) else { continue };
             if shot.blast {
-                pelvis.apply_linear_impulse((shot.to - shot.from) * 4000.0);
+                part.apply_linear_impulse((shot.to - shot.from) * 4000.0);
             } else {
-                pelvis.apply_linear_impulse_at_point(*dir * BULLET_PUSH, shot.from + *dir * distance);
+                part.apply_linear_impulse_at_point(*dir * BULLET_PUSH, shot.from + *dir * distance);
             }
             r.last_moved = now;
         }
@@ -1001,7 +1121,7 @@ fn adopt_bodies(
     mut commands: Commands,
 ) {
     for mut r in &mut ragdolls {
-        if r.visual.is_some() {
+        if r.visual.is_some() || r.placed {
             continue;
         }
         let Ok(children) = owners.get(r.owner) else { continue };

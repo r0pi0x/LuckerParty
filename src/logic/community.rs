@@ -2,7 +2,7 @@
 //! active/community-maps.md, "Map logic audit"), from the public entity
 //! documentation; our choices where it is silent are in docs/tech-debt.md:
 //! logic_measure_movement, point_teleport, logic_multicompare, env_shake,
-//! func_water_analog, env_shooter, point_push, env_texturetoggle,
+//! env_shooter, point_push, env_texturetoggle,
 //! env_screenoverlay, point_camera (func_monitor is a func_brush).
 
 use bevy::prelude::*;
@@ -20,9 +20,6 @@ pub enum Extra {
     Teleport,
     MultiCompare(MultiCompare),
     Shake(Shake),
-    /// func_water_analog: water where it spawns (the map's swim volume);
-    /// its move inputs are accepted and don't move it (tech-debt).
-    WaterAnalog,
     /// env_shooter: Shoot throws its model as gibs.
     Shooter,
     /// point_push: pushes physics bodies (and players with flag 8)
@@ -114,7 +111,6 @@ pub(super) fn spawn(w: &LogicWorld, id: EntId, class: &str) -> Option<Class> {
             eye: e.kv_i("MeasureType") == 1,
         }),
         "point_teleport" => Extra::Teleport,
-        "func_water_analog" => Extra::WaterAnalog,
         "env_texturetoggle" => Extra::TextureToggle,
         "env_screenoverlay" => Extra::Overlay { at: 0 },
         "point_camera" => Extra::Camera {
@@ -452,7 +448,6 @@ pub(super) fn input(w: &mut LogicWorld, id: EntId, input: &str, value: &Value, a
                 m.scale = v;
             }
         }
-        (Extra::WaterAnalog, "open" | "close" | "setposition" | "setspeed") => {}
         (Extra::Shooter, "shoot") => shoot(w, id),
         (Extra::Camera { .. }, "seton" | "setoff" | "setonandturnothersoff") => {
             if input == "setonandturnothersoff" {

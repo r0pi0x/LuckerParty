@@ -878,6 +878,9 @@ fn write_audit(out: &Path, rows: &[Row]) -> std::io::Result<()> {
         for s in &a.missed {
             raw += &format!("  +use missed {s}\n");
         }
+        for s in &a.moved_away {
+            raw += &format!("  +use: the map moved the player away from {s}\n");
+        }
         for (c, n) in &a.left_behind {
             raw += &format!("  left behind by its moving parent: {c} x{n}\n");
         }

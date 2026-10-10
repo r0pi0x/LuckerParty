@@ -923,7 +923,8 @@ fn entity_props(bsp: &Bsp) -> Vec<PropPlacement> {
             let [pitch, yaw, roll] = e.prop("angles").and_then(parse).unwrap_or([0.0; 3]);
             // prop_dynamic: solid 0 = not solid, otherwise the physics model.
             let solid = if ragdoll {
-                // Drawn as it lies; its bodies aren't simulated (tech-debt).
+                // Its parts are bodies of their own when its model has a
+                // ragdoll (`map::ragdoll::PlacedRagdoll`).
                 PropSolid::None
             } else if physics || door || e.prop("solid").is_none_or(|s| s.trim() != "0") {
                 PropSolid::Mesh
@@ -976,6 +977,19 @@ fn entity_props(bsp: &Bsp) -> Vec<PropPlacement> {
             })
         })
         .collect()
+}
+
+/// A model's first sequence at its start, bone-local (rotation, position)
+/// in the skeleton's frame and units: where a map ragdoll without Hammer's
+/// pose starts (physics_brushes.md 6.1). None without animations.
+fn first_sequence_pose(rig: &crate::map::MapRig) -> Option<Vec<(Quat, Vec3)>> {
+    let set = &rig.animations;
+    if set.sequences.is_empty() || set.defaults.len() != rig.bones.len() {
+        return None;
+    }
+    let mut pose = set.defaults.clone();
+    set.accumulate(&mut pose, 0, 0.0, 1.0, &set.default_params());
+    Some(pose)
 }
 
 /// A ragdoll model's pose from Hammer's "angleOverride" (pairs of a
@@ -1281,11 +1295,31 @@ fn place_props(
             })
             .flatten();
         let ragdoll = prop.class.as_deref() == Some("prop_ragdoll");
+        // Its bodies and joints from the model's `.phy` (6.2): simulated
+        // from the pose (`map::ragdoll::PlacedRagdoll`).
+        let simulated = ragdoll
+            .then(|| {
+                let rig = data.models[model].rig.as_ref()?;
+                let bytes = materials.read(&format!("{}.phy", prop.model.trim_end_matches(".mdl")))?;
+                let phy = super::phy::parse_ragdoll(&bytes)
+                    .map_err(|e| warn!("{}: ragdoll: {e}", prop.model))
+                    .ok()?;
+                self::ragdoll(&phy, &rig.bones, &surfaces, &prop.model).map(std::sync::Arc::new)
+            })
+            .flatten();
+        // Without Hammer's pose a simulated ragdoll starts from its first
+        // sequence's pose at the entity's origin and angles (6.1).
+        let hammer_posed = pose.is_some();
+        let pose = match (pose, &simulated) {
+            (None, Some(_)) => data.models[model].rig.as_deref().and_then(first_sequence_pose),
+            (pose, _) => pose,
+        };
         let (translation, rotation) = match (&pose, ragdoll) {
+            _ if hammer_posed => (translation, Quat::IDENTITY),
+            _ if simulated.is_some() => (translation, rotation),
             (Some(_), _) => (translation, Quat::IDENTITY),
-            // No pose from Hammer: the game drops it from its first
-            // sequence's pose and it falls in a heap. Not simulated here,
-            // it lies on its back on the floor below (tech-debt).
+            // No pose from Hammer and no ragdoll in the model to simulate
+            // (Open question 7): it lies on its back on the floor below.
             (None, true) => {
                 let down = translation - Vec3::Y * 1024.0 * METERS_PER_UNIT;
                 let f = data
@@ -1305,6 +1339,7 @@ fn place_props(
         };
         data.props.push(MapProp {
             pose: pose.map(std::sync::Arc::new),
+            ragdoll: simulated,
             model,
             translation,
             rotation,

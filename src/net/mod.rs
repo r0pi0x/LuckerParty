@@ -44,6 +44,7 @@ pub mod movers;
 pub mod predict;
 pub mod props;
 pub mod query;
+pub mod ragdolls;
 pub mod server;
 pub mod udp;
 pub mod weapons;
@@ -549,6 +550,16 @@ pub struct NetProp {
     pub flags: u16,
 }
 
+/// A map-placed ragdoll's parts (`map::placed_ragdoll`): each body's
+/// position and rotation (x, y, z, then the quaternion's x, y, z, w;
+/// engine space), at most `ragdolls::MAX_PARTS`, by its node's
+/// `map::PropIndex` (`ragdolls`).
+#[derive(Component, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct NetRagdoll {
+    pub index: u32,
+    pub parts: Vec<[f32; 7]>,
+}
+
 /// A placed weapon's anchor (`map::entities::MapAnchor`): its pose, by
 /// the anchor's map entity index (`anchors`).
 #[derive(Component, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -981,6 +992,8 @@ impl Plugin for NetPlugin {
         .set_receive_fns::<NetProp>(interp::write_snapshot::<NetProp>, interp::remove_snapshots::<NetProp>)
         .replicate::<NetAnchor>()
         .set_receive_fns::<NetAnchor>(interp::write_snapshot::<NetAnchor>, interp::remove_snapshots::<NetAnchor>)
+        .replicate::<NetRagdoll>()
+        .set_receive_fns::<NetRagdoll>(interp::write_snapshot::<NetRagdoll>, interp::remove_snapshots::<NetRagdoll>)
         // Weapons (slice 4).
         .replicate::<NetHeld>()
         .replicate::<NetItem>()
@@ -1030,6 +1043,7 @@ impl Plugin for NetPlugin {
         movers::plugin(app);
         props::plugin(app);
         anchors::plugin(app);
+        ragdolls::plugin(app);
         weapons::plugin(app);
         game::plugin(app);
         chat::plugin(app);

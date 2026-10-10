@@ -147,8 +147,9 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   water buoyancy (boats), motors and constraints, players riding karts,
   monitors, teslas, shooters, point_push, texture toggles, screen
   overlays; the audit's noise noted once per map. Top of what's left:
-  map ragdolls simulated, the remaining classes (env_embers, env_wind,
-  color_correction...), particle looks checked against CS:S.
+  the remaining classes (env_embers, env_wind, color_correction...),
+  particle looks checked against CS:S. Round 3 (2026-10-10): map
+  ragdolls simulated, moving water, +use reaching a usable parent.
 
 ## 2b. HUD and debug views
 

@@ -459,7 +459,10 @@ impl Class {
             "func_door" | "func_door_rotating" => Class::Door(Box::new(Door::spawn(w, id))),
             "func_button" | "func_rot_button" => Class::Button(Box::new(Button::spawn(w, id))),
             "momentary_rot_button" => Class::Momentary(Box::new(movers::Momentary::spawn(w, id))),
-            "func_movelinear" => Class::MoveLinear(Box::new(MoveLinear::spawn(w, id))),
+            // func_water_analog moves like func_movelinear (public entity
+            // docs: movedir, movedistance, speed, startposition; Open,
+            // Close, SetPosition); its water follows (`map::water`).
+            "func_movelinear" | "func_water_analog" => Class::MoveLinear(Box::new(MoveLinear::spawn(w, id))),
             "func_rotating" => Class::Rotating(Box::new(Rotating::spawn(w, id))),
             // func_tanktrain: a track train that can be shot (public entity
             // docs); its health isn't kept.

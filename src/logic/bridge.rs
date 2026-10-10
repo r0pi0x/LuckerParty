@@ -448,6 +448,13 @@ fn set_prop_shown(world: &mut World, node: Entity, visible: bool, solid: bool, e
     if !exists {
         e.remove::<Damageable>();
     }
+    // A map ragdoll's bodies follow (`map::placed_ragdoll::sync`).
+    if let Some(mut r) = e.get_mut::<crate::map::placed_ragdoll::PlacedRagdoll>()
+        && (r.gone == exists || r.solid != solid)
+    {
+        r.gone = !exists;
+        r.solid = solid;
+    }
 }
 
 /// Placed weapons the logic removed (`map::entities::RemovedWeapons`;

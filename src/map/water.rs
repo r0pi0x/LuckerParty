@@ -488,6 +488,92 @@ pub struct WaterSurface {
     pub skybox: bool,
 }
 
+/// A water surface that moves with its brush entity's node: its bounds in
+/// the node's frame (`WaterSurface`'s follow the node: `move_water`).
+#[derive(Component, Clone, Copy, Debug)]
+pub struct MovingWaterSurface {
+    pub min: Vec3,
+    pub max: Vec3,
+}
+
+/// The map's water volumes that move with a brush entity
+/// (`MapData::water_movers`): each volume's index, its entity's, its brush
+/// where the map placed it and the entity's placed transform.
+#[derive(Resource, Clone, Debug, Default)]
+pub struct WaterMovers(pub Vec<(usize, usize, crate::map::MapBrush, Transform)>);
+
+/// Moving water (func_water_analog, water parented to a mover): each
+/// volume follows its entity's node, as placed relative to where the map
+/// put it (planes and bounds turned and moved), and each surface's world
+/// bounds follow its node.
+#[allow(clippy::type_complexity)]
+pub fn move_water(
+    movers: Option<Res<WaterMovers>>,
+    water: Option<ResMut<crate::core::MapWater>>,
+    nodes: Query<(&super::MapBrushEntity, &GlobalTransform)>,
+    mut surfaces: Query<(&MovingWaterSurface, &mut WaterSurface, &GlobalTransform)>,
+) {
+    for (m, mut s, g) in &mut surfaces {
+        let (min, max) = transformed_bounds(&g.compute_transform(), m.min, m.max);
+        if s.min != min || s.max != max {
+            s.min = min;
+            s.max = max;
+        }
+    }
+    let (Some(movers), Some(mut water)) = (movers, water) else {
+        return;
+    };
+    if movers.0.is_empty() {
+        return;
+    }
+    let by_entity: std::collections::HashMap<usize, Transform> =
+        nodes.iter().map(|(b, g)| (b.0, g.compute_transform())).collect();
+    for (volume, entity, home_brush, home) in &movers.0 {
+        let Some(now) = by_entity.get(entity) else { continue };
+        let moved = Transform::from_matrix(now.to_matrix() * home.to_matrix().inverse());
+        let brush = place_brush(home_brush, &moved);
+        if let Some(v) = water.bypass_change_detection().0.get_mut(*volume)
+            && (v.brush.min != brush.min || v.brush.max != brush.max || v.brush.planes != brush.planes)
+        {
+            v.brush = brush;
+            water.set_changed();
+        }
+    }
+}
+
+/// A box's bounds after a transform.
+fn transformed_bounds(t: &Transform, min: Vec3, max: Vec3) -> (Vec3, Vec3) {
+    (0..8)
+        .map(|k| {
+            t.transform_point(Vec3::new(
+                if k & 1 == 0 { min.x } else { max.x },
+                if k & 2 == 0 { min.y } else { max.y },
+                if k & 4 == 0 { min.z } else { max.z },
+            ))
+        })
+        .fold((Vec3::MAX, Vec3::MIN), |(a, b), p| (a.min(p), b.max(p)))
+}
+
+/// A brush moved by a rigid transform: each plane n.p = d becomes
+/// (R n).p = d + (R n).t.
+pub fn place_brush(b: &crate::map::MapBrush, t: &Transform) -> crate::map::MapBrush {
+    let (min, max) = transformed_bounds(t, b.min, b.max);
+    crate::map::MapBrush {
+        planes: b
+            .planes
+            .iter()
+            .map(|(n, d)| {
+                let n = t.rotation * *n;
+                (n, d + n.dot(t.translation))
+            })
+            .collect(),
+        min,
+        max,
+        ladder: b.ladder,
+        surface: b.surface.clone(),
+    }
+}
+
 /// The reflection camera.
 #[derive(Component)]
 pub struct WaterReflectionCamera;
@@ -653,6 +739,7 @@ pub(super) fn spawn_surfaces(
     materials: &mut Assets<WaterMaterial>,
     cubemaps: &[Handle<Image>],
     sky: Option<&Handle<Image>>,
+    node_of: &dyn Fn(usize) -> Option<Entity>,
 ) {
     if data.water_materials.is_empty() {
         return;
@@ -662,6 +749,9 @@ pub(super) fn spawn_surfaces(
     let mut normal_images: std::collections::HashMap<Vec<usize>, Handle<Image>> = Default::default();
     for m in data.meshes.iter() {
         let Some(index) = m.water else { continue };
+        // A brush entity's water (func_water_analog, or water parented to
+        // a mover): drawn under its node, its positions relative to it.
+        let node = m.entity.and_then(node_of);
         let top = &data.water_materials[index];
         let (mut min, mut max) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
         for p in &m.positions {
@@ -766,7 +856,10 @@ pub(super) fn spawn_surfaces(
             // world's faces are (`vis::split_mesh`): one mesh holds a
             // material's surfaces in every room, and other rooms' water
             // showed through the sky.
-            let vis = data.visibility.as_deref().filter(|_| !super::merged_world());
+            let vis = data
+                .visibility
+                .as_deref()
+                .filter(|_| !super::merged_world() && node.is_none());
             for (chunk, clusters) in super::vis::split_mesh(mesh, vis, super::vis::chunk_size()) {
                 let (min, max) = chunk
                     .positions
@@ -800,8 +893,11 @@ pub(super) fn spawn_surfaces(
                     })),
                     bevy::light::NotShadowCaster,
                     Transform::default(),
-                    ChildOf(root),
+                    ChildOf(node.unwrap_or(root)),
                 ));
+                if node.is_some() {
+                    e.insert(MovingWaterSurface { min, max });
+                }
                 if !clusters.is_empty() {
                     e.insert(super::vis::VisClusters::new(clusters));
                 }

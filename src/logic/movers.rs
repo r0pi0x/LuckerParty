@@ -1979,20 +1979,35 @@ impl LogicWorld {
             let (lo, hi) = (Vec3::splat(-half), Vec3::splat(half));
             let world = col.sweep(lo, hi, eye, to);
             let mut best: Option<(f32, Option<EntId>)> = None;
+            let mut hit_index = None;
             for (idx, brushes) in self.solids.iter().enumerate() {
                 let Some(brushes) = brushes else { continue };
                 let f = super::world::sweep_brushes(brushes.iter(), lo, hi, eye, to);
                 if f < 1.0 && best.is_none_or(|(b, _)| f < b) {
                     let id = usable.iter().copied().find(|u| u.index as usize == idx);
                     best = Some((f, id));
+                    hit_index = Some(idx);
                 }
             }
             let (f, id) = best?;
             (f <= world).then_some(())?;
-            let id = id?;
+            // Not usable itself: its parent, grandparent... (a brush
+            // parented to a button presses the button).
+            let id = id.or_else(|| {
+                let hit = hit_index?;
+                let mut at = self.ids().into_iter().find(|i| i.index as usize == hit)?;
+                for _ in 0..16 {
+                    let parent = self.get(at)?.kv("parentname").filter(|p| !p.is_empty())?;
+                    at = self.find(parent)?;
+                    if usable.contains(&at) {
+                        return Some(at);
+                    }
+                }
+                None
+            })?;
             // Reach is measured to the hit entity itself (its nearest
             // point), not to the centre of the swept box.
-            let brushes = self.solids.get(id.index as usize)?.as_ref()?;
+            let brushes = self.solids.get(hit_index?)?.as_ref()?;
             let lo = brushes.iter().fold(Vec3::MAX, |a, b| a.min(b.min));
             let hi = brushes.iter().fold(Vec3::MIN, |a, b| a.max(b.max));
             let _ = f;
