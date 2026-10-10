@@ -84,8 +84,8 @@ plan when work starts; delete them when done.
   the colour list, `cl_crosshairusealpha`'s and `mp_decals`' defaults):
   docs/plans/active/ui-parity.md.
 
-- Video > Advanced's and the Audio tab's remaining settings (model
-  and shader detail, colour correction, motion blur; shadow detail done
+- Video > Advanced's and the Audio tab's remaining settings (shader
+  detail, colour correction, motion blur; shadow and model detail done
   2026-10-10, characters' render-to-texture shadows left; speakers,
   sound quality and captions beyond being saved): one by one, per
   docs/plans/active/video-settings.md.

@@ -1075,6 +1075,7 @@ fn shadow_detail_sets_cs_s_shadow_cvars() {
     let shadows = |n: &str| match n {
         "r_shadowrendertotexture" => Some("1".to_string()),
         "r_flashlightdepthtexture" => Some("0".to_string()),
+        "r_rootlod" => Some("0".to_string()),
         n => get(n),
     };
     m.open(Page::Main, vec!["de_dust2".into()], None, shadows);
@@ -1088,6 +1089,10 @@ fn shadow_detail_sets_cs_s_shadow_cvars() {
     assert_eq!(o.lines, ["r_shadowrendertotexture 0", "r_flashlightdepthtexture 0"], "Low: blobs");
     let o = press(&mut m, &[Input::Click(Target::Row(s), 0), Input::Click(Target::ComboItem(2), 0)]);
     assert_eq!(o.lines, ["r_shadowrendertotexture 1", "r_flashlightdepthtexture 1"], "High");
+    // Model detail: r_rootlod 2 / 1 / 0.
+    let d = row_of(&m, "r_rootlod");
+    let o = press(&mut m, &[Input::Click(Target::Row(d), 0), Input::Click(Target::ComboItem(0), 0)]);
+    assert_eq!(o.lines, ["r_rootlod 2"], "Low");
 }
 
 #[test]

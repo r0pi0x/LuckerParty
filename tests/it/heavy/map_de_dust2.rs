@@ -2799,3 +2799,29 @@ fn view_models_face_outward() {
     }
     assert!(knives > 0, "the knife's view models load");
 }
+
+/// Model detail (`map::lod`): models keep their `.vtx` levels of detail,
+/// each coarser than the one before, aligned to LOD 0's meshes, with
+/// rising switch points.
+#[test]
+fn models_keep_their_levels_of_detail() {
+    let Some(map) = dust2() else { return };
+    let tris = |meshes: &mut dyn Iterator<Item = &mashup::map::MapMesh>| meshes.map(|m| m.indices.len() / 3).sum::<usize>();
+    let leveled: Vec<_> = map.models.iter().enumerate().filter(|(_, m)| !m.lods.is_empty()).collect();
+    assert!(leveled.len() >= 10, "{} models with levels", leveled.len());
+    for (i, m) in &leveled {
+        let mut last = (tris(&mut m.meshes.iter()), 0.0);
+        for l in &m.lods {
+            assert_eq!(l.meshes.len(), m.meshes.len(), "model {i}: one slot per LOD 0 mesh");
+            let n = tris(&mut l.meshes.iter().flatten());
+            assert!(n <= last.0, "model {i}: {n} triangles after {}", last.0);
+            assert!(l.switch > last.1, "model {i}: switch points rise");
+            last = (n, l.switch);
+        }
+    }
+    // Where one stands (for screenshots of the switch).
+    if let Some(p) = map.props.iter().find(|p| !map.models[p.model].lods.is_empty() && !p.skybox) {
+        let s = mashup::games::cs_source::movement::to_source(p.translation);
+        eprintln!("a prop with levels at setpos {:.0} {:.0} {:.0}", s.x, s.y, s.z);
+    }
+}

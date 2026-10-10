@@ -271,6 +271,20 @@ pub const SETTINGS: &[Setting] = &[
             ("1 1", "#gameui_reflectall|Reflect all"),
         ]),
     ),
+    // Model detail: the finest level of detail props draw (`map::lod`;
+    // at once).
+    setting(
+        VideoAdvanced,
+        "r_rootlod",
+        Some("ModelDetail"),
+        Some("#GameUI_Model_Detail"),
+        "Model detail",
+        SettingKind::Choice(&[
+            ("2", "#GameUI_Low|Low"),
+            ("1", "#GameUI_Medium|Medium"),
+            ("0", "#GameUI_High|High"),
+        ]),
+    ),
     // Shadow detail: Low blob shadows, Medium render-to-texture, High as
     // Medium (no flashlights in CS:S); rebuilt at once
     // (`map::shadows::apply_shadow_detail`).
@@ -653,6 +667,20 @@ impl Plugin for VideoPlugin {
                 Ok(())
             },
         );
+        app.init_resource::<crate::map::lod::ModelSettings>();
+        resource_cvar::<crate::map::lod::ModelSettings, u8>(
+            app,
+            "r_rootlod",
+            "Model detail: the finest level of detail models draw, 0 high, 1 medium, 2 low (models with fewer \
+             levels draw their coarsest). Applies at once.",
+            |s| &mut s.root_lod,
+        );
+        resource_cvar::<crate::map::lod::ModelSettings, i32>(
+            app,
+            "r_lod",
+            "-1: models draw the level of detail their size on screen asks for; n: always level n.",
+            |s| &mut s.lod,
+        );
         app.init_resource::<crate::map::shadows::ShadowSettings>();
         resource_cvar::<crate::map::shadows::ShadowSettings, u8>(
             app,
@@ -709,6 +737,7 @@ impl Plugin for VideoPlugin {
             "mat_picmip",
             "mat_trilinear",
             "mat_forceaniso",
+            "r_rootlod",
             "r_shadows",
             "r_shadowrendertotexture",
             "r_flashlightdepthtexture",

@@ -1,8 +1,8 @@
 # Plan: Video > Advanced and the Audio tab's settings, one by one
 
 Status: started 2026-10-10. Done: antialiasing, filtering, texture
-detail, wait for vsync, water detail, HDR, field of view, shadow detail
-(Video > Advanced); brightness (`mat_monitorgamma`, the video tab's gamma
+detail, wait for vsync, water detail, HDR, field of view, shadow detail,
+model detail (Video > Advanced); brightness (`mat_monitorgamma`, the video tab's gamma
 dialog); the Audio tab's drop-downs filled and saved. The rest stay
 greyed in the dialog until their row below is done (the greyed list:
 docs/plans/active/ui-parity.md).
@@ -18,7 +18,7 @@ were taken from the options' behaviour and want a reference capture
 
 | Control | CS:S's cvars (default) | What it means in our renderer | Cost | Tests | Status |
 |---|---|---|---|---|---|
-| Model detail (`ModelDetail`: Low, Medium, High) | `r_rootlod` 2 / 1 / 0 (0) | Models draw their `.vtx` LOD 0 only. Low/Medium would load LOD 2 / 1 as the root (the `.vtx` has them; the MDL reader keeps only LOD 0) and draw those at every distance. Also CS:S's distance LOD switching (`r_lod`, -1: by screen size) we don't do. | Medium: the MDL/VTX reader keeps the other LODs' strip groups; the prop builder picks one. Applies on map load. | MDL test: a model's LOD 1 has fewer triangles; a map loaded at `r_rootlod 1` draws them | Greyed |
+| Model detail (`ModelDetail`: Low, Medium, High) | `r_rootlod` 2 / 1 / 0 (0); `r_lod` (-1) | Props' models keep every `.vtx` level of detail (`MapModel::lods`, aligned to LOD 0's meshes; baked per-vertex light reaches the lower levels' extra vertices from the nearest LOD 0 vertex) and draw the one their screen-size metric asks for (`map::lod`: view height at the model over its diameter against each level's switch point, our reading), never finer than `r_rootlod`; `r_lod n` forces one. At once (CS:S's `r_rootlod` waits for a map load). Not for skinned (animated) props or the 3D skybox's. de_dust2: 21 of 68 prop models have levels. | Done | `map::lod` unit test, `prop_lods` scenario, `heavy::map_de_dust2::models_keep_their_levels_of_detail`, menu test | Done 2026-10-10 |
 | Texture detail (`TextureDetail`: Low, Medium, High, Very High) | `mat_picmip` 2 / 1 / 0 / -1 (0) | Each map texture's sampler starts `mat_picmip` levels down its mip chain (`lod_min_clamp`): Low and Medium look as CS:S's smaller textures. -1 is as 0 (no larger textures). The full texture still loads (no memory saved). | Done (cheap). Applies from the next map load (`client::options::TextureSettings`). | `client::options` unit test (sampler clamp), menu test (the drop-down writes the cvar) | Done 2026-10-10 |
 | Shader detail (`ShaderDetail`: Low, High) | `mat_reducefillrate` 1 / 0 (0) | One shader path. Low in Source drops some per-pixel work (detail textures, some env maps, phong on low-end paths: to spec). | Medium: spec first (which features `mat_reducefillrate` drops), then a material key. | Shader spec test per feature | Greyed; needs a spec |
 | Water detail (`WaterDetail`) | `r_waterforceexpensive`, `r_waterforcereflectentities` (1 0) | Simple reflections, reflect world, reflect all (`map::water`). | Done | menu test `water_detail_sets_both_water_cvars` | Done |
@@ -46,7 +46,9 @@ were taken from the options' behaviour and want a reference capture
 
 1. Shadow detail Low (blob shadows): done 2026-10-10. Next there:
    characters' render-to-texture shadows (their silhouette each frame).
-2. Model detail: the MDL reader's LODs (helps low-end playtesters).
+2. Model detail: done 2026-10-10 (with distance switching). Left: a
+   spec or capture of Source's LOD metric; characters' and view
+   models' LODs.
 3. Colour correction: with a spec, for the community maps that use it.
 4. Shader detail and motion blur: with specs.
 5. Captions: spec session first.

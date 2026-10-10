@@ -45,6 +45,7 @@ pub mod interp;
 mod light_styles;
 pub mod live_sound;
 pub mod loading;
+pub mod lod;
 pub mod loose;
 pub mod material_fx;
 pub use material_fx::{DetailMode, MapSelfIllum, MapUvTransform};
@@ -566,6 +567,10 @@ pub struct MapModel {
     pub rig: Option<Arc<MapRig>>,
     /// What it breaks into, when it can break.
     pub breaks: Option<breakables::MapBreak>,
+    /// Its lower levels of detail after `meshes` (LOD 0), coarsest last:
+    /// drawn instead with distance and Video > Advanced's model detail
+    /// (`lod`).
+    pub lods: Vec<lod::MapLod>,
 }
 
 impl MapModel {
@@ -2197,6 +2202,11 @@ impl Plugin for MapPlugin {
             )
             .add_systems(
                 PostUpdate,
+                // Props' levels of detail from where the eye is this frame.
+                lod::switch_lods.after(bevy::transform::TransformSystems::Propagate),
+            )
+            .add_systems(
+                PostUpdate,
                 // After propagation, so it sees this frame's (interpolated)
                 // eye rather than the last physics tick's; before frusta.
                 follow_sky_camera
@@ -2443,6 +2453,7 @@ fn spawn_map(
     let mut cubemap_handles: Vec<Handle<Image>> = Vec::new();
     let mut texture_handles: Vec<Handle<Image>> = Vec::new();
     let mut rig_bindposes: HashMap<usize, Handle<bevy::mesh::skinning::SkinnedMeshInverseBindposes>> = HashMap::new();
+    let mut lod_parts: HashMap<usize, Vec<Vec<Handle<Mesh>>>> = HashMap::new();
     let mut envmap_variants: std::collections::HashMap<(usize, usize, bool, usize), Handle<PropMaterial>> =
         std::collections::HashMap::new();
 
@@ -3496,10 +3507,11 @@ fn spawn_map(
         })
         .collect();
     info!(
-        "props: {} of {} models collide by their collision model, {} more as convex hulls",
+        "props: {} of {} models collide by their collision model, {} more as convex hulls; {} have levels of detail",
         data.models.iter().filter(|m| m.collision.is_some()).count(),
         data.models.len(),
         model_hulls.iter().filter(|h| h.is_some()).count(),
+        data.models.iter().filter(|m| !m.lods.is_empty()).count(),
     );
 
     for (i, prop) in data.props.iter().enumerate() {
@@ -3725,6 +3737,12 @@ fn spawn_map(
                 .is_none_or(|(part, choice)| model.body_choice(prop.body, part as usize) == choice)
         };
         let mut spawned_materials: Vec<Handle<PropMaterial>> = Vec::new();
+        // Levels of detail (`lod`): not for skinned models or the 3D
+        // skybox's props.
+        let leveled = !model.lods.is_empty() && model.rig.is_none() && !prop.skybox;
+        if leveled {
+            commands.entity(id).insert(lod::LodGroup::new(model.bounds, &model.lods));
+        }
         match (probe, meshes.as_mut(), lit_model_materials.get(prop.model)) {
             // Baked: own mesh copy with per-vertex light, unlit material
             // (texture x light, like the lightmapped world).
@@ -3754,27 +3772,28 @@ fn spawn_map(
                     let layer = layer_of(prop.skybox);
                     // Light baked per vertex when the prop has it (and it
                     // covers the mesh), else the probe on each normal.
-                    let baked = prop
-                        .vertex_light
-                        .as_ref()
-                        .filter(|v| m.source_vertices.len() == m.normals.len() && m.source_vertices.iter().all(|&i| (i as usize) < v.len()));
-                    let colors: Vec<[f32; 4]> = m
-                        .normals
-                        .iter()
-                        .enumerate()
-                        .map(|(i, n)| {
-                            if m.unlit {
-                                return [1.0, 1.0, 1.0, 1.0];
-                            }
-                            let l = match baked {
-                                Some(v) => Vec3::from(v[m.source_vertices[i] as usize]),
-                                None => probe.eval(prop.rotation * Vec3::from(*n)),
-                            } * probe_scale;
-                            [l.x, l.y, l.z, 1.0]
-                        })
-                        .collect();
+                    let colors = |m: &MapMesh| -> Vec<[f32; 4]> {
+                        let baked = prop.vertex_light.as_ref().filter(|v| {
+                            m.source_vertices.len() == m.normals.len()
+                                && m.source_vertices.iter().all(|&i| (i as usize) < v.len())
+                        });
+                        m.normals
+                            .iter()
+                            .enumerate()
+                            .map(|(i, n)| {
+                                if m.unlit {
+                                    return [1.0, 1.0, 1.0, 1.0];
+                                }
+                                let l = match baked {
+                                    Some(v) => Vec3::from(v[m.source_vertices[i] as usize]),
+                                    None => probe.eval(prop.rotation * Vec3::from(*n)),
+                                } * probe_scale;
+                                [l.x, l.y, l.z, 1.0]
+                            })
+                            .collect()
+                    };
                     let mut mesh = build_mesh(m, false);
-                    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+                    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors(m));
                     let skinned = inverse_bindposes.is_some() && m.joints.len() == m.positions.len();
                     if skinned {
                         mesh.insert_attribute(
@@ -3783,8 +3802,26 @@ fn spawn_map(
                         );
                         mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, m.joint_weights.clone());
                     }
+                    let handle = meshes.add(mesh);
+                    // Its lower levels, lit the same way (a level without
+                    // this mesh keeps the finer one's).
+                    let levels = (leveled && !skinned).then(|| {
+                        let mut levels = vec![handle.clone()];
+                        for l in &model.lods {
+                            let h = match l.meshes.get(mesh_index).and_then(Option::as_ref) {
+                                Some(lm) => {
+                                    let mut mesh = build_mesh(lm, false);
+                                    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors(lm));
+                                    meshes.add(mesh)
+                                }
+                                None => levels.last().cloned().unwrap_or_default(),
+                            };
+                            levels.push(h);
+                        }
+                        lod::LodMeshes(levels)
+                    });
                     let mut c = commands.spawn((
-                        Mesh3d(meshes.add(mesh)),
+                        Mesh3d(handle),
                         MeshMaterial3d(material),
                         layer,
                         PropMeshSlot { mesh: mesh_index },
@@ -3798,6 +3835,9 @@ fn spawn_map(
                     if let Some(range) = &fade_range {
                         c.insert(range.clone());
                     }
+                    if let Some(levels) = levels {
+                        c.insert(levels);
+                    }
                     if let (true, Some(inverse)) = (skinned, inverse_bindposes.clone()) {
                         c.insert((
                             bevy::mesh::skinning::SkinnedMesh {
@@ -3810,8 +3850,34 @@ fn spawn_map(
                     }
                 }
             }
-            _ => {
+            (_, meshes_here, _) => {
                 if let Some(parts) = model_parts.get(prop.model) {
+                    // The model's levels, shared by its props (built once).
+                    let levels = match (leveled, meshes_here) {
+                        (true, Some(meshes)) => Some(
+                            lod_parts
+                                .entry(prop.model)
+                                .or_insert_with(|| {
+                                    parts
+                                        .iter()
+                                        .enumerate()
+                                        .map(|(mesh_index, (mesh, _))| {
+                                            let mut levels = vec![mesh.clone()];
+                                            for l in &model.lods {
+                                                let h = match l.meshes.get(mesh_index).and_then(Option::as_ref) {
+                                                    Some(lm) => meshes.add(build_mesh(lm, false)),
+                                                    None => levels.last().cloned().unwrap_or_default(),
+                                                };
+                                                levels.push(h);
+                                            }
+                                            levels
+                                        })
+                                        .collect()
+                                })
+                                .clone(),
+                        ),
+                        _ => None,
+                    };
                     for (mesh_index, ((mesh, material), m)) in parts.iter().zip(&model.meshes).enumerate() {
                         let mut c = commands.spawn((
                             Mesh3d(mesh.clone()),
@@ -3827,6 +3893,9 @@ fn spawn_map(
                         ));
                         if let Some(range) = &fade_range {
                             c.insert(range.clone());
+                        }
+                        if let Some(levels) = levels.as_ref().and_then(|l| l.get(mesh_index)) {
+                            c.insert(lod::LodMeshes(levels.clone()));
                         }
                     }
                 }

@@ -385,6 +385,16 @@ Only `Reflect`-registered types are visible; register new core components in
   -5 140 0` with `+noclip +god`); with the eye a few units above a surface
   (`+setpos 700 2700 258 +setang 20 140 0`) the strip under the waterline
   shows the water's height fog.
+- Shadow and model detail (Video > Advanced; CS:S cvars, at once):
+  `r_shadowrendertotexture 0` swaps props' silhouette shadows for blobs
+  (`r_shadows 0`: none; the log line `prop shadows (Blob): N casters
+  reach the world`); characters' blobs show in third person
+  (`+thirdperson +setang 45 120 0`). `r_rootlod 2` (Low) draws props'
+  coarsest levels, `r_lod n` forces one; de_dust2's pots at `+noclip
+  +setpos 160 2760 60 +setang 10 0 0` show it (`magick compare` of two
+  shots finds the props that switched). The map's log line `props: ...;
+  N have levels of detail` counts the models with levels; `dump --lods`
+  lists each model's.
 - Pickups: `mashup_debug_pickup 1` prints (console and log) why the
   loose weapon nearest the local player is or isn't taken, once per
   change: `pickup Player: cs_source:weapon_ak47: dropped 0.4 s ago,
