@@ -436,6 +436,7 @@ fn restored_prop_contacts_join_islands_once() {
         entity: Some(0),
         skin: 0,
         body: 0,
+        detail: false,
     });
     let mut sim = Sim::new((MapPlugin::new(data), SourceMovementPlugin));
     sim.set_tick_interval(cs_source::TICK_INTERVAL);

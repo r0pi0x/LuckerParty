@@ -6,7 +6,10 @@
 //! culled for the player's own view (`vis`), as the rest of the map. The
 //! sky shows behind it as in the main view: a sky camera of its own
 //! (`ScreenSkyCamera`) draws the 2D sky and the 3D skybox from the
-//! monitor camera's place scaled into it, first.
+//! monitor camera's place scaled into it, first. Its fog is the
+//! point_camera's own (`MonitorFog`), not the map's: the screen camera
+//! carries it as a `DistanceFog` that the map's shaders read as the
+//! view's fog in place of their own (`fog.wgsl`, `view_fog`).
 
 use bevy::{
     camera::RenderTarget,
@@ -24,8 +27,45 @@ pub struct MonitorScreen(pub Handle<Image>);
 
 /// Where the active monitor camera is (engine space, looking down -Z) and
 /// its vertical field of view (degrees); None: no monitor shows anything.
+/// With it, its fog (None: none).
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
-pub struct MonitorCamera(pub Option<(Vec3, Quat, f32)>);
+pub struct MonitorCamera(pub Option<(Vec3, Quat, f32)>, pub Option<MonitorFog>);
+
+/// A point_camera's own fog (public entity docs): on or off, colour (sRGB
+/// 0-1), start and end (meters here; the logic gives entity units) and max
+/// density.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct MonitorFog {
+    pub enabled: bool,
+    pub color: [f32; 3],
+    pub start: f32,
+    pub end: f32,
+    pub max_density: f32,
+}
+
+/// `DistanceFog::directional_light_exponent` marking a view's fog as
+/// Source fog for the map's shaders (`fog.wgsl`): its colour alpha 1 when
+/// on, its linear start and end in meters, its max density in the
+/// directional light colour's red (alpha 0, so Bevy's own scattering stays
+/// off).
+pub const SOURCE_VIEW_FOG: f32 = -7.0;
+
+impl MonitorFog {
+    /// The fog as the screen camera's `DistanceFog` (`SOURCE_VIEW_FOG`),
+    /// distances scaled to meters by `scale`.
+    pub fn distance_fog(&self, scale: f32) -> bevy::pbr::DistanceFog {
+        let [r, g, b] = self.color;
+        bevy::pbr::DistanceFog {
+            color: Color::srgba(r, g, b, if self.enabled { 1.0 } else { 0.0 }),
+            directional_light_color: Color::linear_rgba(self.max_density, 0.0, 0.0, 0.0),
+            directional_light_exponent: SOURCE_VIEW_FOG,
+            falloff: bevy::pbr::FogFalloff::Linear {
+                start: self.start * scale,
+                end: self.end * scale,
+            },
+        }
+    }
+}
 
 /// Our camera drawing into `MonitorScreen`.
 #[derive(Component)]
@@ -73,6 +113,8 @@ fn drive_screen_camera(
         }
         return;
     };
+    // The camera's fog, else none (not the map's).
+    let fog = want.1.unwrap_or_default().distance_fog(1.0);
     let Some((at, rotation, fov)) = want.0 else {
         for (_, mut c, ..) in cameras.iter_mut().chain(skies.iter_mut()) {
             if c.is_active {
@@ -151,9 +193,12 @@ fn drive_screen_camera(
         ..default()
     });
     match cameras.single_mut() {
-        Ok((_, mut c, mut t, mut p)) => {
+        Ok((e, mut c, mut t, mut p)) => {
             if !c.is_active {
                 c.is_active = true;
+            }
+            if want.is_changed() {
+                commands.entity(e).insert(fog);
             }
             t.set_if_neq(Transform::from_translation(at).with_rotation(rotation));
             let fov_now = match &*p {
@@ -182,6 +227,7 @@ fn drive_screen_camera(
                     ..default()
                 },
                 RenderTarget::Image(screen.0.clone().into()),
+                fog,
                 projection,
                 Transform::from_translation(at).with_rotation(rotation),
             ));

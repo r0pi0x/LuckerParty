@@ -270,11 +270,14 @@ fn surfing_keeps_speed_on_surf_maps() {
 
 /// The other surf maps of the cache, the same rides (course flows,
 /// community-maps.md); some have few long open ramps (short or boxed-in
-/// ones, curved displacement ramps), so no minimum. Left out: surf_nebula,
-/// where 13 of 84 rides still stop (some against its Propper-made ramp
-/// props, some on brush ramps with nothing in the way: open; run it with
-/// `MASHUP_SURF_MAPS=surf_nebula MASHUP_SURF_DEBUG=1`, which also lists
-/// what the hull is near at each stop).
+/// ones, curved displacement ramps), so no minimum. surf_nebula's 13 stops
+/// of 84 rides were its Propper ramp models, which ship no collision
+/// model: we collided with their meshes, a hair off the player-clip ramps
+/// under them, and the box ended inside a mesh (static props without a
+/// collision model block nothing now). To see why a ride stops:
+/// `MASHUP_SURF_MAPS=<map> MASHUP_SURF_DEBUG=1` lists what the hull is
+/// near at each stop, and `MASHUP_SLIDE_DEBUG=1` prints every slide move's
+/// sweeps (docs/OBSERVABILITY.md).
 #[test]
 fn surfing_keeps_speed_on_the_other_surf_maps() {
     rides(
@@ -287,6 +290,7 @@ fn surfing_keeps_speed_on_the_other_surf_maps() {
             "surf_holiday",
             "surf_inferno",
             "surf_kismet",
+            "surf_nebula",
             "surf_nsz_fix",
             "surf_sacrifice",
             "surf_slob",
@@ -390,3 +394,4 @@ fn surf_sedona_is_fullbright() {
     assert!(lit * 2 > lm.rgb.len(), "HDR lighting read");
     assert!(wild * 1000 < lm.rgb.len(), "{wild} wild luxels");
 }
+

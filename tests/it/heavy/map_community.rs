@@ -211,7 +211,8 @@ fn first_hit(map: &MapData, o: Vec3, d: Vec3) -> Option<(f32, Vec3)> {
 fn baked_prop_vertex_light() {
     for name in ["mg_lt_galaxy_v5", "surf_nebula", "kz_ancient_ruins", "surf_demise"] {
         let Some(map) = load(name) else { continue };
-        let statics: Vec<_> = map.props.iter().filter(|p| p.entity.is_none()).collect();
+        // (Detail models aren't static props: no baked light of their own.)
+        let statics: Vec<_> = map.props.iter().filter(|p| p.entity.is_none() && !p.detail).collect();
         let baked: Vec<_> = statics.iter().filter(|p| p.vertex_light.is_some()).collect();
         // Per prop: the mean baked light over the mean probe light, per
         // channel; the median of each.
@@ -723,6 +724,27 @@ fn visual_entities_load() {
                 .filter(|m| m.render.is_some())
                 .all(|m| m.alpha == MapAlpha::Blend)
         );
+    }
+}
+
+/// Detail sprites on community maps: kz_ancient_ruins' detail lump is
+/// LZMA-compressed and its sprite sheet packed in the map; its
+/// env_detail_controller fades them out over 1648-2048 units (a negative
+/// start is the end less cl_detailfade's 400). mg_kommando's sprites face
+/// the view, turning about the vertical only.
+#[test]
+fn detail_sprites_on_community_maps() {
+    if let Some(map) = load("kz_ancient_ruins") {
+        let d = map.detail_props.as_ref().expect("kz_ancient_ruins detail sprites");
+        assert!(!d.quads.is_empty());
+        assert_eq!(d.fade, Some((1648.0 * 0.0254, 2048.0 * 0.0254)));
+        assert!(map.textures[d.texture].width > 1, "its packed sheet");
+    }
+    if let Some(map) = load("mg_kommando") {
+        let d = map.detail_props.as_ref().expect("mg_kommando detail sprites");
+        assert_eq!(d.quads.len(), 846);
+        assert!(d.quads.iter().all(|q| q.billboard.is_some_and(|b| b.vertical)));
+        assert_eq!(d.fade, None, "no controller: cl_detaildist and cl_detailfade");
     }
 }
 

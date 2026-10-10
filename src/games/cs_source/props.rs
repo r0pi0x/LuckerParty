@@ -784,6 +784,8 @@ struct PropPlacement {
     /// Its index in the static prop lump (static props): names its baked
     /// per-vertex light (`vhv::names`).
     static_index: Option<usize>,
+    /// A detail model (`detail`).
+    detail: bool,
 }
 
 pub fn add_static_props(
@@ -793,6 +795,8 @@ pub fn add_static_props(
     occluders: &Occluders,
     data: &mut MapData,
     hdr: bool,
+    detail_models: &[(String, Vec3, Vec3)],
+    detail_fade: (f32, f32),
 ) {
     let mut placements = Vec::new();
     for (static_index, prop) in bsp.static_props().enumerate() {
@@ -830,6 +834,39 @@ pub fn add_static_props(
             animated: false,
             enable_threshold: false,
             static_index: Some(static_index),
+            detail: false,
+        });
+    }
+    // Detail models (`detail`): drawn like static props without
+    // collision, fading as detail props do.
+    for (model, origin, angles) in detail_models {
+        placements.push(PropPlacement {
+            model: model.clone(),
+            skin: 0,
+            origin: vbsp::Vector {
+                x: origin.x,
+                y: origin.y,
+                z: origin.z,
+            },
+            angles: vbsp::Angles {
+                pitch: angles.x,
+                yaw: angles.y,
+                roll: angles.z,
+            },
+            solid: PropSolid::None,
+            lighting_origin: None,
+            class: None,
+            spawnflags: 0,
+            massscale: 0.0,
+            physicsmode: 0,
+            fade: Some(detail_fade),
+            parent: None,
+            entity: None,
+            body: 0,
+            animated: false,
+            enable_threshold: false,
+            static_index: None,
+            detail: true,
         });
     }
     placements.extend(entity_props(bsp));
@@ -975,6 +1012,7 @@ fn entity_props(bsp: &Bsp) -> Vec<PropPlacement> {
                         .is_some_and(|v| v > 0.0)
                 }),
                 static_index: None,
+                detail: false,
             })
         })
         .collect()
@@ -1030,6 +1068,7 @@ fn fish_pool_props(bsp: &Bsp) -> Vec<PropPlacement> {
                 animated: true,
                 enable_threshold: false,
                 static_index: None,
+                detail: false,
             });
         }
     }
@@ -1236,11 +1275,18 @@ fn place_props(
         // Physics props need a collision model (spec section 2.3): without
         // one, prop_physics stays visible but not solid, and the
         // multiplayer variant is removed at spawn.
+        // So do static props that collide by their physics model ("Use
+        // VPhysics"): without one they block nothing (public prop_static
+        // docs; our reading, docs/tech-debt.md). Maps whose props are
+        // visuals only rely on it: surf_nebula's Propper ramp models ship
+        // no collision model and sit on player-clip ramps that are the
+        // real surface (their meshes as colliders stopped surfers dead).
         let mut solid = prop.solid;
         if data.models[model].collision.is_none() {
             match prop.class.as_deref() {
                 Some("prop_physics_multiplayer") => continue,
                 Some(c) if c.starts_with("prop_physics") => solid = PropSolid::None,
+                None if solid == PropSolid::Mesh => solid = PropSolid::None,
                 _ => {}
             }
         }
@@ -1413,6 +1459,7 @@ fn place_props(
             entity: prop.entity,
             skin: prop.skin,
             body: prop.body,
+            detail: prop.detail,
         });
     }
     failed.sort();

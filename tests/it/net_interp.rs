@@ -466,6 +466,7 @@ fn crate_map() -> MapData {
         entity: Some(0),
         skin: 0,
         body: 0,
+        detail: false,
     });
     data
 }

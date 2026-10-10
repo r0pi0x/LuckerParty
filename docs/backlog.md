@@ -180,15 +180,21 @@ Plan: [plans/active/custom-maps.md](plans/active/custom-maps.md).
   ragdolls (drawn, not simulated), players' and brushes' render looks,
   water buoyancy (boats), motors and constraints, players riding karts,
   monitors, teslas, shooters, point_push, texture toggles, screen
-  overlays; the audit's noise noted once per map. Top of what's left:
-  Round 3 (done 2026-10-10, to playtest): map ragdolls simulated (and
-  sent to network clients), moving water (func_water_analog, water on
-  movers), color_correction (`mat_colorcorrection`), embers, fish pools,
-  muzzle flashes, view punches, constraints breaking past their limits,
+  overlays; the audit's noise noted once per map. Round 3 (done
+  2026-10-10, to playtest): map ragdolls simulated (and sent to network
+  clients), moving water (func_water_analog, water on movers),
+  color_correction (`mat_colorcorrection`), embers, fish pools, muzzle
+  flashes, view punches, constraints breaking past their limits,
   monitors' sky, 3D-skybox particles, +use through a usable parent; the
-  audit's +use misses were its own aim. Top of what's left: particle and
-  ember looks checked against CS:S, detail props (kz_ancient_ruins),
-  strike-generator env_beams.
+  audit's +use misses were its own aim. Round 4 (2026-10-10, to
+  playtest): surf_nebula's dead ramp stops (static props without a
+  collision model block nothing), detail props (grass and weeds),
+  monitors with their camera's own fog, bots stepping aside on maps
+  without a navigation mesh. Top of what's left: particle and ember
+  looks checked against CS:S, strike-generator env_beams, and three
+  probes on the reference server (the plan's "Probes wanted": landing
+  height, touch order of overlapping triggers, static props without a
+  collision model).
 
 ## 2b. HUD and debug views
 

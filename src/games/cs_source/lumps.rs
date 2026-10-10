@@ -56,7 +56,7 @@ pub fn inflate(mut bytes: Vec<u8>) -> Vec<u8> {
 }
 
 /// One lump's data from its Source LZMA header.
-fn decompress(raw: &[u8]) -> Option<Vec<u8>> {
+pub(super) fn decompress(raw: &[u8]) -> Option<Vec<u8>> {
     let actual = u32::from_le_bytes(raw[4..8].try_into().ok()?);
     let packed = u32::from_le_bytes(raw[8..12].try_into().ok()?) as usize;
     let stream = raw.get(12..17 + packed)?;

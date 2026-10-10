@@ -163,6 +163,7 @@ fn add_crate(data: &mut MapData, index: usize) {
         entity: Some(index),
         skin: 0,
         body: 0,
+        detail: false,
     });
 }
 
