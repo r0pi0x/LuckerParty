@@ -69,6 +69,28 @@ pub(super) fn plugin(app: &mut App) {
                 .map(Some)
         },
     );
+    // Each replicated value goes out once more after it settles
+    // (`resend_settled`).
+    app.add_systems(
+        FixedLast,
+        (
+            resend_settled::<NetCharacter>,
+            resend_settled::<NetBody>,
+            resend_settled::<Team>,
+            resend_settled::<Health>,
+            resend_settled::<super::NetMover>,
+            resend_settled::<super::NetProp>,
+            resend_settled::<super::NetAnchor>,
+            resend_settled::<super::NetHeld>,
+            resend_settled::<super::NetItem>,
+            resend_settled::<super::NetSmoke>,
+            resend_settled::<super::NetRound>,
+            resend_settled::<super::NetScore>,
+            resend_settled::<super::NetBomb>,
+            resend_settled::<super::NetHostage>,
+        )
+            .run_if(in_state(ServerState::Running)),
+    );
     app.add_observer(join)
         .add_observer(left)
         .add_systems(Update, drop_refused.run_if(in_state(ServerState::Running)))
@@ -207,6 +229,68 @@ pub const MAX_AHEAD: u64 = 64;
 pub struct OwnStateOut {
     state: Option<OwnState>,
     sent: u64,
+}
+
+impl OwnStateOut {
+    /// The newest state captured (sent or to be sent).
+    pub fn state(&self) -> Option<&OwnState> {
+        self.state.as_ref()
+    }
+}
+
+/// Ticks a replicated value must hold still before it is sent once more
+/// (`resend_settled`): about a second.
+pub const SETTLE_TICKS: u64 = 64;
+
+/// A replicated value's last change and our resend of it.
+#[derive(Default)]
+pub struct Settling {
+    changed_at: u64,
+    /// The change tick our own resend left (not a change to resend).
+    ours: Option<bevy::ecs::change_detection::Tick>,
+    done: bool,
+}
+
+/// Each replicated value that changed is sent once more when it has held
+/// still for `SETTLE_TICKS`: its last change reaches a client even if
+/// that one was lost. Without it, clients with 2-3 % loss in the soak
+/// (tests/it/heavy/net_soak.rs) kept a dead player's last health, a
+/// score one kill short (the new game's 0/0 after a map change for every
+/// player at once), a body where it stood before a respawn, until the
+/// value changed again: replicon (0.44.3) took the value as delivered
+/// (where it went missing isn't pinned down: docs/tech-debt.md, net).
+/// A value that keeps changing (a moving body) isn't sent again until it
+/// stops; values as spawned arrive reliably and aren't either.
+pub fn resend_settled<C: Component<Mutability = bevy::ecs::component::Mutable>>(
+    clock: Res<SimClock>,
+    mut q: Query<(Entity, &mut C), With<Replicated>>,
+    mut state: Local<bevy::ecs::entity::EntityHashMap<Settling>>,
+) {
+    let now = clock.tick;
+    state.retain(|e, _| q.contains(*e));
+    for (e, mut c) in &mut q {
+        let s = state.entry(e).or_default();
+        if c.is_added() {
+            *s = Settling {
+                changed_at: now,
+                ours: None,
+                done: true,
+            };
+            continue;
+        }
+        if c.is_changed() && Some(c.last_changed()) != s.ours {
+            *s = Settling {
+                changed_at: now,
+                ours: None,
+                done: false,
+            };
+        }
+        if !s.done && now >= s.changed_at + SETTLE_TICKS {
+            c.set_changed();
+            s.ours = Some(c.last_changed());
+            s.done = true;
+        }
+    }
 }
 
 /// Start serving the loaded map on `hostport` (a listen server: this

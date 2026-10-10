@@ -89,6 +89,7 @@ mod heavy {
     mod map_de_port;
     mod map_net_changelevel;
     mod map_net_weapons;
+    mod net_soak;
     mod map_fire;
     mod map_hdr;
     mod map_loose;

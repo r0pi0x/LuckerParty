@@ -317,6 +317,62 @@ fn netcode_over_loopback() {
     net::disconnect(server.app.world_mut(), "done");
 }
 
+/// A client that goes quiet for 20 s (putting a big map in on a slow or
+/// busy machine) is still connected after: both ends wait 30 s
+/// (`net::client::TIMEOUT_SECONDS`, Source's `cl_timeout`). With
+/// netcode's fixed 15 s the live soak's clients were all dropped after
+/// a `changelevel` that took one 17 s.
+#[test]
+fn a_client_quiet_for_20_s_stays_connected() {
+    let make = || {
+        mashup::harness::Sim::with(|app| {
+            app.add_plugins(net::NetPlugin);
+            greybox(app);
+        })
+    };
+    let mut server = make();
+    {
+        let world = server.app.world_mut();
+        let mut s = world.resource_mut::<NetSettings>();
+        s.hostport = 0;
+        s.maxplayers = 4;
+    }
+    let addr = net::server::listen(server.app.world_mut()).expect("listen");
+    let mut client = make();
+    let to = std::net::SocketAddr::from(([127, 0, 0, 1], addr.port()));
+    net::client::connect(client.app.world_mut(), to).expect("connect");
+    let joined = |client: &mut mashup::harness::Sim| {
+        let world = client.app.world_mut();
+        world.contains_resource::<Joined>() && world.query_filtered::<(), With<LocalPlayer>>().iter(world).count() == 1
+    };
+    let mut ok = false;
+    for _ in 0..400 {
+        server.app.update();
+        client.app.update();
+        std::thread::sleep(Duration::from_millis(1));
+        if joined(&mut client) {
+            ok = true;
+            break;
+        }
+    }
+    assert!(ok, "joined over UDP");
+    // 20 s of the server's time without a word from the client.
+    let frames = (20.0 * mashup::DEFAULT_TICK_HZ) as u32;
+    for _ in 0..frames {
+        server.app.update();
+    }
+    for _ in 0..100 {
+        server.app.update();
+        client.app.update();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(joined(&mut client), "still in the game: {:?}", client.app.world().get_resource::<LastDisconnect>());
+    let status = net::status(server.app.world_mut());
+    assert!(status.contains("players : 1 (4 max)"), "{status}");
+    net::disconnect(client.app.world_mut(), "Disconnect by user.");
+    net::disconnect(server.app.world_mut(), "done");
+}
+
 /// `net_fakelag` on a client's UDP transport: the round trip grows by it,
 /// and the game still joins and predicts.
 #[test]
@@ -365,4 +421,48 @@ fn fake_lag_delays_what_the_client_receives() {
     );
     net::disconnect(client.app.world_mut(), "done");
     net::disconnect(server.app.world_mut(), "done");
+}
+
+/// A changed value goes out once more after it settles
+/// (`net::server::resend_settled`), so a client that lost its last change
+/// gets it. The soak (tests/it/heavy/net_soak.rs) saw clients with 2-3 %
+/// loss keep a dead player's last health, a score one kill short or the
+/// old scores after a map change until the value changed again. Here the
+/// client's copy is spoiled by hand, as such a loss leaves it, right
+/// after the change arrived.
+#[test]
+fn a_settled_value_reaches_a_client_that_lost_it() {
+    let mut sim = NetSim::new(lan(), 31, 1, greybox);
+    let host = host(&mut sim);
+    sim.until_joined(200);
+    sim.ticks(net::server::SETTLE_TICKS + 30);
+    sim.server.app.world_mut().get_mut::<Health>(host).unwrap().current = 0.5;
+    let theirs = seen_by(&mut sim, 0, net::HOST_ID).expect("the host's character on the client");
+    let arrived = sim.until(30, |s| s.clients[0].app.world().get::<Health>(theirs).map(|h| h.current) == Some(0.5));
+    assert!(arrived, "the change arrived");
+    // Its acknowledgement back at the server (until then it is sent with
+    // every update anyway).
+    sim.ticks(10);
+    sim.clients[0]
+        .app
+        .world_mut()
+        .get_mut::<Health>(theirs)
+        .unwrap()
+        .bypass_change_detection()
+        .current = 0.25;
+    let ok = sim.until(net::server::SETTLE_TICKS + 30, |s| {
+        s.clients[0].app.world().get::<Health>(theirs).map(|h| h.current) == Some(0.5)
+    });
+    assert!(ok, "the settled value was sent again");
+    // Once: spoiled again later, it stays spoiled (nothing changed since).
+    sim.ticks(10);
+    sim.clients[0]
+        .app
+        .world_mut()
+        .get_mut::<Health>(theirs)
+        .unwrap()
+        .bypass_change_detection()
+        .current = 0.25;
+    sim.ticks(net::server::SETTLE_TICKS * 2);
+    assert_eq!(sim.clients[0].app.world().get::<Health>(theirs).unwrap().current, 0.25, "sent once, not over and over");
 }

@@ -89,12 +89,29 @@ pub const GREYBOX: &str = "greybox";
 /// state is compared bit for bit and feeds the next tick (the movement's
 /// own state keeps the sign). Network games only: single player keeps
 /// its values as they were.
+///
+/// The physics' copy of the position (`Position`) is set to the same
+/// value: the physics takes a moved transform only when it moved more
+/// than its tolerance, and writes its own copy back after its step, so a
+/// stale copy (e.g. a client's from before the server's state was put
+/// over its transform) would undo a small correction every tick: a
+/// player standing still 1 ULP away from the server's spot (below the
+/// physics' 0.01 mm tolerance) mispredicted on every tick (found by the
+/// soak, tests/it/heavy/net_soak.rs).
 pub fn canonical_position(world: &mut World, e: Entity) {
-    if let Some(mut t) = world.get_mut::<Transform>(e) {
-        let canonical = t.translation + Vec3::ZERO;
-        if canonical.to_array().map(f32::to_bits) != t.translation.to_array().map(f32::to_bits) {
-            t.translation = canonical;
-        }
+    let Some(mut t) = world.get_mut::<Transform>(e) else { return };
+    let canonical = t.translation + Vec3::ZERO;
+    if canonical.to_array().map(f32::to_bits) != t.translation.to_array().map(f32::to_bits) {
+        t.translation = canonical;
+    }
+    if let Some(mut p) = world.get_mut::<avian3d::prelude::Position>(e)
+        && p.0.to_array().map(f32::to_bits) != canonical.to_array().map(f32::to_bits)
+    {
+        // Unmarked: a changed `Position` would win over the next tick's
+        // moved transform in the physics' sync (avian's
+        // `transform_to_position` keeps a position changed since its last
+        // step), putting the player a tick behind.
+        p.bypass_change_detection().0 = canonical;
     }
 }
 
@@ -106,10 +123,9 @@ pub struct NetSettings {
     /// Players a server takes, the host's own included on a listen
     /// server (Source's `maxplayers`; 1 is single player).
     pub maxplayers: u32,
-    /// This player's name (Source's `name`).
+    /// This player's name (Source's `name`). (The server's name,
+    /// `hostname`, is `query::Hosting`'s.)
     pub name: String,
-    /// The server's name, shown to joining players (Source's `hostname`).
-    pub hostname: String,
 }
 
 impl Default for NetSettings {
@@ -118,7 +134,6 @@ impl Default for NetSettings {
             hostport: DEFAULT_PORT,
             maxplayers: 1,
             name: "Player".into(),
-            hostname: "Lucker Party".into(),
         }
     }
 }
@@ -1163,12 +1178,6 @@ fn commands(app: &mut App) {
         |s| &mut s.maxplayers,
     );
     resource_cvar::<NetSettings, String>(app, "name", "Your player name.", |s| &mut s.name);
-    resource_cvar::<NetSettings, String>(
-        app,
-        "hostname",
-        "The server's name, shown to players joining it.",
-        |s| &mut s.hostname,
-    );
     app.console_command(
         "connect",
         "connect <ip[:port]>: join a server (port 27015 unless given).",

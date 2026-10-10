@@ -49,6 +49,13 @@ pub struct Link {
     /// Data packets dropped so far.
     pub lost: u64,
     pub delivered: u64,
+    /// Conditions for one client's packets (both ways) in place of
+    /// `conditions`: a mix of good and bad links on one server.
+    pub per_client: std::collections::HashMap<u64, LinkConditions>,
+    /// Data bytes sent to each client and from each client (lost ones
+    /// included: what each end put on the wire).
+    pub bytes_to: std::collections::HashMap<u64, u64>,
+    pub bytes_from: std::collections::HashMap<u64, u64>,
 }
 
 impl Link {
@@ -60,6 +67,9 @@ impl Link {
             in_flight: Vec::new(),
             lost: 0,
             delivered: 0,
+            per_client: Default::default(),
+            bytes_to: Default::default(),
+            bytes_from: Default::default(),
         }))
     }
 
@@ -80,16 +90,19 @@ impl Link {
         // retries) always arrives, the handshake at once, a disconnect after
         // the latency; data may be lost or jittered.
         let mut at = self.now;
-        match kind {
+        let conditions = self.per_client.get(&client).copied().unwrap_or(self.conditions);
+        match &kind {
             Kind::Connect => {}
-            Kind::Disconnect => at += self.conditions.latency,
-            Kind::Data(_) => {
-                if self.random() < self.conditions.loss {
+            Kind::Disconnect => at += conditions.latency,
+            Kind::Data(bytes) => {
+                let counter = if to_server { &mut self.bytes_from } else { &mut self.bytes_to };
+                *counter.entry(client).or_default() += bytes.len() as u64;
+                if self.random() < conditions.loss {
                     self.lost += 1;
                     return;
                 }
-                let jitter = self.conditions.jitter.mul_f64(self.random());
-                at += self.conditions.latency + jitter;
+                let jitter = conditions.jitter.mul_f64(self.random());
+                at += conditions.latency + jitter;
             }
         }
         self.in_flight.push(Packet {

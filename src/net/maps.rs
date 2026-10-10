@@ -294,7 +294,7 @@ pub(super) fn welcome(world: &mut World, you: u64) -> Welcome {
         allow_download: dl.allow != 0,
         tick_nanos: world.resource::<Time<Fixed>>().timestep().as_nanos() as u64,
         you,
-        server_name: settings.hostname.clone(),
+        server_name: world.resource::<super::query::Hosting>().hostname.clone(),
         players: players as u32,
         max_players: settings.maxplayers,
     }

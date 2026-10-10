@@ -227,3 +227,28 @@ fn favorites_and_history_persist() {
     assert_eq!(loaded.history[0].last_played, 1_760_000_000);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// `hostname` is one setting: what the console sets is the name in
+/// `status`, server lists and the joining dialog. (Two cvars answered to
+/// the name, the console's replacing the lists' one: a dedicated
+/// server's `+hostname` changed nothing players saw; found by the soak.)
+/// No other cvar name is registered twice either.
+#[test]
+fn hostname_is_one_setting() {
+    let mut sim = Sim::with(|app| {
+        app.add_plugins((
+            net::NetPlugin,
+            GreyboxMapPlugin,
+            mashup::map::MapPlugin::empty(),
+            SourceMovementPlugin,
+            mashup::games::cs_source::weapons::CsWeaponsPlugin,
+        ))
+        .insert_resource(Loadout { movement: source::ID });
+    });
+    let replaced = sim.app.world().resource::<Console>().replaced.clone();
+    assert!(replaced.is_empty(), "cvars registered twice: {replaced:?}");
+    sim.app.world_mut().resource_mut::<Console>().submit("hostname \"Soak test\"");
+    sim.ticks(2);
+    // What `status`, the server lists and `Welcome` read.
+    assert_eq!(sim.app.world().resource::<Hosting>().hostname, "Soak test");
+}

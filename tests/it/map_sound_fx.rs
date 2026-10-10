@@ -335,3 +335,49 @@ fn soundscapes_follow_enable_and_disable() {
     sim.ticks(4);
     assert_eq!(current(&sim), Some(1));
 }
+
+/// Several sounds for one source's channel in one frame (a network
+/// client gets them in a burst after a stall): the last one plays, each
+/// one before it is stopped once. They were despawned twice, a Bevy
+/// warning each time (hundreds in a 17-minute live soak; multiplayer.md,
+/// "Soak").
+#[test]
+fn a_burst_on_one_channel_replaces_cleanly() {
+    let mut s = MapSounds::default();
+    s.clips.push(clip());
+    s.entries.insert(
+        "weapon.shot".into(),
+        MapSoundEntry {
+            waves: vec![0],
+            volume: Interval::fixed(1.0),
+            pitch: Interval::fixed(100.0),
+            level: SoundLevel::Db(75.0),
+            channel: 1,
+            dry: false,
+        },
+    );
+    let mut sim = Sim::new((MapPlugin::new(map(Vec::new(), s)), SourceMovementPlugin));
+    sim.app.set_error_handler(bevy::ecs::error::panic);
+    sim.app.init_asset::<mashup::map::live_sound::LiveClip>();
+    sim.ticks(2);
+    let shooter = sim.app.world_mut().spawn(Transform::default()).id();
+    let shot = || mashup::map::PlaySound {
+        entry: "Weapon.Shot".into(),
+        at: Some(Vec3::ZERO),
+        volume: None,
+        pitch: None,
+        source: Some(shooter),
+        channel: Some(1),
+    };
+    let playing = |sim: &mut Sim| {
+        let w = sim.app.world_mut();
+        w.query::<&AudioPlayer<mashup::map::live_sound::LiveClip>>().iter(w).count()
+    };
+    for burst in [1, 3, 2, 4] {
+        for _ in 0..burst {
+            sim.app.world_mut().write_message(shot());
+        }
+        sim.app.update();
+        assert_eq!(playing(&mut sim), 1, "one sound on the channel after a burst of {burst}");
+    }
+}

@@ -111,6 +111,23 @@ pub struct Flood {
 /// counts it if so. Real time: a stalled tick doesn't open the gate.
 fn allowed(world: &mut World, who: Entity, radio: bool) -> bool {
     let now = world.resource::<Time<Real>>().elapsed_secs_f64();
+    // Forget speakers that are gone (players who left), as a new one
+    // comes: the maps stay as long as the players.
+    let known = {
+        let flood = world.resource::<Flood>();
+        if radio { flood.radio.contains_key(&who) } else { flood.chat.contains_key(&who) }
+    };
+    if !known {
+        let gone: Vec<Entity> = {
+            let flood = world.resource::<Flood>();
+            flood.chat.keys().chain(flood.radio.keys()).copied().filter(|e| world.get_entity(*e).is_err()).collect()
+        };
+        let mut flood = world.resource_mut::<Flood>();
+        for e in gone {
+            flood.chat.remove(&e);
+            flood.radio.remove(&e);
+        }
+    }
     let mut flood = world.resource_mut::<Flood>();
     let (map, burst, rate) = if radio {
         (&mut flood.radio, RADIO_BURST, RADIO_PER_SECOND)
@@ -460,5 +477,22 @@ mod tests {
         assert_eq!(clean_say("  hi\u{7}there \n"), "hithere");
         assert_eq!(clean_say(&"x".repeat(300)).len(), MAX_SAY);
         assert_eq!(clean_say(&"é".repeat(100)).len(), 126);
+    }
+
+    /// The flood allowances of players who left are forgotten (the soak's
+    /// joins and leaves grew them for ever).
+    #[test]
+    fn flood_forgets_who_left() {
+        let mut world = World::new();
+        world.init_resource::<Time<Real>>();
+        world.init_resource::<Flood>();
+        let ids: Vec<Entity> = (0..50).map(|_| world.spawn_empty().id()).collect();
+        for &e in &ids {
+            assert!(allowed(&mut world, e, false));
+            assert!(allowed(&mut world, e, true));
+            world.despawn(e);
+        }
+        let flood = world.resource::<Flood>();
+        assert!(flood.chat.len() <= 1 && flood.radio.len() <= 1, "{} {}", flood.chat.len(), flood.radio.len());
     }
 }
