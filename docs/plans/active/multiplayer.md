@@ -1252,7 +1252,7 @@ with tests passing and something to see.
    driven through `mashup/console` for 17 minutes with three map
    changes, screenshots every ~2 minutes.
    - **Budget** (set here; the 26 KB/s of §2 was an estimate before
-     compression): at most 96 KB/s received per client with twelve
+     compression): at most 112 KB/s received per client with twelve
      characters on links up to 150 ms and 3 % loss, 128 KB/s at 300 ms
      and 5 %; prediction errors other than contacts with other players,
      hits and server teleports at most 2 % of states (5 % on the worst
@@ -1264,7 +1264,8 @@ with tests passing and something to see.
      no Bevy errors (failed commands).
    - Measured (30 game minutes, 54 rounds, dev build): 711,000 settled
      values compared per client, none different; bandwidth 73-79 KB/s
-     per client (92 at 300 ms/5 %), peaks ~290-330 KB/s at joins and map
+     per client (92 at 300 ms/5 %; 82-98 and 105-108 since changed
+     values go out for a second, fix (1)), peaks ~290-330 KB/s at joins and map
      changes; own state ~490-650 bytes a tick, `NetBody` 45 bytes per
      character a tick; prediction errors 0.36-0.82 % of states plus
      ~2 % from contacts with others, props and hits, the longest run
@@ -1280,10 +1281,18 @@ with tests passing and something to see.
      server log.
    - Found and fixed: (1) a replicated value's last change could be
      lost for good on a lossy link (a dead player's last health, a score
-     one kill short, every player's 0/0 after a map change; replicon took
-     it as delivered): each value goes out once more after it settles
-     (`net::server::resend_settled`; test `net::a_settled_value_reaches_
-     a_client_that_lost_it`, the soak's settled-value check); (2) a
+     one kill short, every player's 0/0 after a map change). replicon
+     (0.44.3) holds a client's mutations back until the (reliable) update
+     they follow arrives, acknowledging them on arrival; when a lost
+     update is resent it applies each entity's newest held-back mutation
+     and drops the older ones, and the newer ones, built after the
+     acknowledgement, left the value out. Each changed value now goes out
+     with every update until it has held still for a second
+     (`net::server::resend_settled`; tests `net::a_value_survives_held_
+     back_mutations`, `net::a_changed_value_goes_out_for_a_while_then_
+     stops`, the soak's settled-value check). A first version sent it
+     once more after a second, which the same race could eat: the soak
+     was flaky (a run in five or so); (2) a
      client's physics copy of its own position (`Position`) stayed stale
      after a correction below the physics' 0.01 mm tolerance, so dead
      players mispredicted on every tick (`net::canonical_position` sets
@@ -1311,8 +1320,8 @@ with tests passing and something to see.
      client's copy despawned) was a failed command (unit test
      `loose::tests::an_item_gone_in_the_same_frame_is_no_error`);
      `NetSim` gave a joining client the id of one that had left.
-   - Not fixed (docs/tech-debt.md, net): where replicon loses the value
-     in (1); bandwidth well over the §2 estimate (no deltas for the own
+   - Not fixed (docs/tech-debt.md, net): replicon's dropping of held-back
+     mutations itself (worked around in (1), ~12 KB/s); bandwidth well over the §2 estimate (no deltas for the own
      state, unquantized bodies, an update every tick); mispredictions
      when walking into other players and when hit; a dedicated server
      making ragdolls and silent looping sounds; 3-4 s client stalls

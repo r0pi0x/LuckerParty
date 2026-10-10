@@ -1576,10 +1576,11 @@ fn report(soak: &mut Soak, minutes: f64, real: Duration) {
         if rate > if worst_link { 5.0 } else { 2.0 } {
             failures.push(format!("client {id}: {rate:.2} % of states mispredicted"));
         }
-        // The plan's budget (multiplayer.md, "Soak"): 96 KB/s a client
-        // with twelve characters (measured 71-84), 128 on the worst link
-        // (loss makes replicon send values again until acknowledged).
-        if mean > if worst_link { 128.0 } else { 96.0 } {
+        // The plan's budget (multiplayer.md, "Soak"): 112 KB/s a client
+        // with twelve characters (measured 82-98), 128 on the worst link
+        // (105-108: loss makes replicon send values again until
+        // acknowledged).
+        if mean > if worst_link { 128.0 } else { 112.0 } {
             failures.push(format!("client {id}: {mean:.1} KB/s in"));
         }
         if s.mismatches > 0 {

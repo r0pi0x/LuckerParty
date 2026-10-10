@@ -664,7 +664,7 @@ address (what a "what is my IP" page shows); behind carrier-grade NAT
 (a public address the router's WAN side doesn't have) forwarding can't
 work: one of the friends hosts, or a VPN (Tailscale, ZeroTier) puts
 everyone on one network. The host's upload carries every client: about
-80 KB/s (0.65 Mbit/s) each with twelve characters, more on lossy links
+90 KB/s (0.7 Mbit/s) each with twelve characters, more on lossy links
 (multiplayer.md, "Soak"). Both
 games must be the same build (`status` shows the version); another build
 is refused with a message.
