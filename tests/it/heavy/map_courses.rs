@@ -55,11 +55,18 @@ impl Tally {
         let pass = self.total - self.failed.len() - self.known.len();
         let mut detail = format!("{pass}/{}", self.total);
         if !self.known.is_empty() {
-            detail += &format!(
-                "; known ({}): {}",
-                self.known.len(),
-                self.known[..self.known.len().min(3)].join("; ")
-            );
+            // By reason (the text after the item's name, numbers out).
+            let mut reasons: Vec<(String, usize)> = Vec::new();
+            for k in &self.known {
+                let why = k.split_once(": ").map_or(k.as_str(), |(_, w)| w);
+                let why: String = why.split(' ').filter(|w| !w.starts_with('#')).collect::<Vec<_>>().join(" ");
+                match reasons.iter_mut().find(|(r, _)| *r == why) {
+                    Some(r) => r.1 += 1,
+                    None => reasons.push((why, 1)),
+                }
+            }
+            let reasons: Vec<String> = reasons.iter().map(|(r, n)| format!("{n} {r}")).collect();
+            detail += &format!("; known ({}: {})", self.known.len(), reasons.join(", "));
         }
         if !self.failed.is_empty() {
             detail += &format!(": {}", self.failed[..self.failed.len().min(4)].join("; "));

@@ -227,6 +227,40 @@ fn basevelocity_booster_launches_by_the_base_velocity_rule() {
     assert!(rise > 80.0, "rose {rise}");
 }
 
+/// A classic bhop block: a func_door with "Touch Opens" (1024) moving
+/// down under whoever lands on it (bhop_backport_css: speed 25, lip 4,
+/// wait 0.1). A landing can rest up to 2 units above the block (ground
+/// found within 2), out of reach of a box-contact touch: standing on the
+/// door counts as touching it (doors_buttons.md open question 9).
+#[test]
+fn landing_on_a_touch_door_opens_it() {
+    let door = entity(
+        &[
+            ("classname", "func_door"),
+            ("origin", "300 0 8"),
+            ("movedir", "90 0 0"),
+            ("lip", "4"),
+            ("speed", "25"),
+            ("wait", "0.1"),
+            ("spawnflags", "1024"),
+        ],
+        vec![hull(Vec3::new(-32.0, -32.0, -8.0), Vec3::new(32.0, 32.0, 8.0))],
+        true,
+    );
+    for drop in [20.0, 23.0, 27.0, 31.0] {
+        let (mut sim, p) = sim(vec![door.clone()], Vec3::ZERO, 0.0);
+        let start = mover_origin(&mut sim, 0);
+        sim.app.world_mut().get_mut::<Transform>(p).unwrap().translation =
+            to_engine(Vec3::new(300.0, 0.0, 16.0 + drop + 36.0));
+        let mut lowest = start.z;
+        for _ in 0..60 {
+            sim.ticks(1);
+            lowest = lowest.min(mover_origin(&mut sim, 0).z);
+        }
+        assert!(lowest < start.z - 2.0, "dropped from {drop}: the block stayed at {lowest} (from {})", start.z);
+    }
+}
+
 fn node(sim: &mut Sim, index: usize) -> Entity {
     let world = sim.app.world_mut();
     let mut q = world.query::<(Entity, &MapBrushEntity)>();
