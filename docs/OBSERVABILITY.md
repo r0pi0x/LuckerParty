@@ -226,7 +226,10 @@ Only `Reflect`-registered types are visible; register new core components in
   +bot_add 2 +bot_add 2 +bot_add 2 +mashup_drawbots 1 +bot_debug 1
   +noclip +setpos -400 3000 1200 +setang 89 90 0`. Headless round
   statistics (winners, kills, time to first contact, and every spot where
-  a bot walked a route without getting anywhere for 4 s, summed up):
+  a bot walked a route without getting anywhere for 4 s, summed up; and
+  per round whether the bomb was planted, defused or exploded and what
+  each team carried at the start (primaries, helmets, kits), with deaths
+  per team by place at the end):
   `MASHUP_BOT_MAP=de_dust2 MASHUP_BOT_ROUNDS=8 cargo test --features dev
   --test it bot_rounds:: -- --ignored --nocapture`. To look at such a spot:
   `MASHUP_NAV_MAP=de_nuke MASHUP_NAV_AT=11.4,-15.2,34.4 cargo test

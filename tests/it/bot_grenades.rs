@@ -274,3 +274,89 @@ fn bots_buy_grenades_with_money_left() {
         assert!(grenade_of(&sim, r, id).is_none());
     }
 }
+
+/// Every grenade a bot throws calls "Fire in the hole" to its team, as
+/// a player's throw does (`weapon::grenade`).
+#[test]
+fn a_bots_throw_calls_fire_in_the_hole() {
+    let mut sim = sim();
+    let (bot, _) = setup(
+        &mut sim,
+        Vec3::new(1.0, 0.9, 1.0),
+        Vec3::new(0.0, 0.9, -24.0),
+        HEGRENADE,
+    );
+    let mut cursor = sim
+        .app
+        .world()
+        .resource::<Messages<mashup::core::Radio>>()
+        .get_cursor_current();
+    let mut calls = 0;
+    let mut thrown = false;
+    for _ in 0..(4.0 / TICK_INTERVAL) as usize {
+        sim.ticks(1);
+        let w = sim.app.world_mut();
+        thrown |= w.query::<&Projectile>().iter(w).next().is_some();
+        let radio = w.resource::<Messages<mashup::core::Radio>>();
+        calls += cursor
+            .read(radio)
+            .filter(|c| c.sender == bot && c.command == "fireinhole")
+            .count();
+    }
+    assert!(thrown, "threw");
+    assert_eq!(calls, 1, "one \"Fire in the hole\" for one throw");
+}
+
+/// A flash that would pop in a teammate's face isn't thrown (playtest:
+/// bots flashed their own team). The teammate stands between the bot and
+/// a remembered enemy in the open, looking that way; another throw with
+/// the teammate behind the bot, looking away, still happens.
+#[test]
+fn bots_never_flash_a_teammate() {
+    use mashup::core::Blinded;
+    let at = Vec3::new(1.0, 0.9, 1.0);
+    // Where an enemy was last heard, in the open 21 m off.
+    let lead = Vec3::new(10.0, 0.0, -18.0);
+    let run = |mate_at: Vec3, mate_yaw: f32| -> (f32, bool) {
+        let mut sim = sim();
+        let (bot, _) = setup(&mut sim, at, Vec3::new(0.0, 0.9, -24.0), FLASHBANG);
+        let mate = sim.spawn_character(mate_at, placeholder::ID);
+        sim.app.world_mut().entity_mut(mate).insert(Team(1));
+        sim.intent(mate).yaw = mate_yaw;
+        // (Before a tick: `setup` left it a lead behind the crate.)
+        let now = sim.app.world().resource::<Time>().elapsed_secs_f64();
+        sim.app.world_mut().get_mut::<Bot>(bot).unwrap().lead = Some((lead, now));
+        let (mut worst, mut thrown) = (0.0f32, false);
+        for _ in 0..(5.0 / TICK_INTERVAL) as usize {
+            sim.ticks(1);
+            let now = sim.app.world().resource::<Time>().elapsed_secs_f64();
+            if let Some(b) = sim.app.world().get::<Blinded>(mate) {
+                worst = worst.max((b.end - now) as f32);
+            }
+            let w = sim.app.world_mut();
+            thrown |= w.query::<&Projectile>().iter(w).next().is_some();
+            // Keep the lead fresh.
+            let now = w.resource::<Time>().elapsed_secs_f64();
+            if let Some(mut b) = w.get_mut::<Bot>(bot) {
+                b.lead = Some((lead, now));
+            }
+        }
+        (worst, thrown)
+    };
+    // In front, looking at where it would pop (yaw 0 looks down -Z).
+    let (blind, thrown) = run(Vec3::new(6.0, 0.9, -6.0), 0.0);
+    eprintln!("teammate in front: blinded for {blind:.2} s, flash thrown {thrown}");
+    assert!(
+        blind <= TEAM_FLASH_TIME,
+        "the teammate was blinded {blind:.2} s"
+    );
+    // Behind the bot, looking away: thrown (the bot isn't afraid of every
+    // teammate).
+    let (blind, thrown) = run(Vec3::new(-2.0, 0.9, 20.0), std::f32::consts::PI);
+    eprintln!("teammate behind, looking away: blinded for {blind:.2} s, flash thrown {thrown}");
+    assert!(thrown, "thrown with the teammate out of harm's way");
+    assert!(blind <= TEAM_FLASH_TIME, "{blind:.2} s");
+}
+
+/// `bot::grenades::TEAM_FLASH_TIME`: blindness a teammate may get, s.
+const TEAM_FLASH_TIME: f32 = 1.5;

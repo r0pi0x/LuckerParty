@@ -116,7 +116,7 @@ impl BotRadio {
 
     /// Keep `call` for when the team's turn comes, unless a more urgent
     /// one (earlier in `CALLS`) waits already.
-    fn hold(&mut self, call: &'static str, now: f64) {
+    pub(super) fn hold(&mut self, call: &'static str, now: f64) {
         let rank = |c: &str| CALLS.iter().position(|x| *x == c).unwrap_or(CALLS.len());
         if self.pending.is_none_or(|(c, _)| rank(call) <= rank(c)) {
             self.pending = Some((call, now));

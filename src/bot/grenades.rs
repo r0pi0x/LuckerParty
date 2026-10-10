@@ -249,6 +249,50 @@ pub(super) const FLASH_REACT: f32 = 0.6;
 /// Flashes farther than this aren't watched, m.
 pub(super) const FLASH_WATCH: f32 = 25.0;
 
+/// A teammate as a thrower sees it: eye, view direction, velocity, and
+/// whether it is a person (who may turn toward a flash any moment).
+#[derive(Clone, Copy, Debug)]
+pub struct MateView {
+    pub eye: Vec3,
+    pub look: Vec3,
+    pub velocity: Vec3,
+    pub person: bool,
+}
+
+/// A flash that would blind a teammate longer than this is not thrown
+/// (ours: a teammate facing away at arm's length gets 1.25 s by
+/// `games::cs_source::grenades::flash_model`, which is allowed), s.
+pub const TEAM_FLASH_TIME: f32 = 1.5;
+/// Teammates are checked where they stand and where they will be this
+/// long ahead at their speed (at most), s.
+pub const TEAM_FLASH_AHEAD: f32 = 1.5;
+/// A re-aimed flash goes this much farther along the throw, m.
+pub(super) const FLASH_DEEPER: f32 = 3.0;
+
+/// Whether the flash `plan` would blind any of `mates` (by the game's
+/// `model`) for longer than `TEAM_FLASH_TIME`: from where each stands and
+/// where it walks to by the pop, if `sight` (a clear line) reaches its eye.
+/// People are taken as looking at least sideways at it (facing 0) since
+/// they turn any moment; bots as they look now.
+pub fn flashes_mate(
+    plan: &GrenadePlan,
+    model: crate::weapon::grenade::FlashModel,
+    mates: &[MateView],
+    sight: &dyn Fn(Vec3, Vec3) -> bool,
+) -> bool {
+    let ahead = (plan.time + PIN_HOLD as f32).min(TEAM_FLASH_AHEAD);
+    mates.iter().any(|m| {
+        [m.eye, m.eye + m.velocity.with_y(0.0) * ahead].into_iter().any(|eye| {
+            let to = plan.pop - eye;
+            let mut facing = m.look.dot(to.normalize_or_zero());
+            if m.person {
+                facing = facing.max(0.0);
+            }
+            model(to.length(), facing).is_some_and(|(_, hold, fade)| hold + fade > TEAM_FLASH_TIME) && sight(plan.pop, eye)
+        })
+    })
+}
+
 /// Weapons, and the grenade part of those that are grenades.
 pub(super) type Arms<'w, 's> = Query<'w, 's, (&'static Weapon, Option<&'static Throwable>)>;
 
@@ -556,6 +600,61 @@ mod tests {
         )
         .expect("a plan");
         assert!(plan.error > 2.0, "{}", plan.error);
+    }
+
+    /// CS:S's flash model's shape (`games::cs_source::grenades::
+    /// flash_model`): 1500 units, full within 60 degrees, a quarter facing
+    /// away, up to 5 s.
+    fn model(distance: f32, facing: f32) -> Option<(f32, f32, f32)> {
+        let r = distance / UNIT;
+        if r >= 1500.0 {
+            return None;
+        }
+        let s = (1.0 - (r / 1500.0).powi(2)) * (0.25 + 0.75 * (facing + 0.5).clamp(0.0, 1.0));
+        let time = 5.0 * s;
+        (s >= 0.05).then(|| ((2.0 * s).min(1.0), time - time.min(3.0), time.min(3.0)))
+    }
+
+    #[test]
+    fn flashes_spare_teammates_who_would_be_blinded() {
+        let plan = GrenadePlan {
+            kind: GrenadeKind::Flash,
+            target: Vec3::new(0.0, 1.5, -15.0),
+            yaw: 0.0,
+            pitch: 0.0,
+            start: Vec3::ZERO,
+            velocity: Vec3::ZERO,
+            points: vec![],
+            pop: Vec3::new(0.0, 1.5, -15.0),
+            time: 1.5,
+            error: 0.0,
+        };
+        let clear = |_: Vec3, _: Vec3| true;
+        let wall = |_: Vec3, _: Vec3| false;
+        let mate = |eye: Vec3, look: Vec3, person: bool| MateView {
+            eye,
+            look,
+            velocity: Vec3::ZERO,
+            person,
+        };
+        let at = Vec3::new(2.0, 1.6, -3.0);
+        // A bot teammate looking at where it pops: blinded.
+        assert!(flashes_mate(&plan, model, &[mate(at, Vec3::NEG_Z, false)], &clear));
+        // Behind a wall from it: not.
+        assert!(!flashes_mate(&plan, model, &[mate(at, Vec3::NEG_Z, false)], &wall));
+        // A bot looking away: a short white at most, allowed.
+        assert!(!flashes_mate(&plan, model, &[mate(at, Vec3::Z, false)], &clear));
+        // A person looking away may turn: spared all the same.
+        assert!(flashes_mate(&plan, model, &[mate(at, Vec3::Z, true)], &clear));
+        // Far beyond its reach: fine.
+        let far = Vec3::new(0.0, 1.6, 30.0);
+        assert!(!flashes_mate(&plan, model, &[mate(far, Vec3::NEG_Z, true)], &clear));
+        // Running into it from out of reach: counted where it will be.
+        let runner = MateView {
+            velocity: Vec3::new(0.0, 0.0, -6.0),
+            ..mate(Vec3::new(0.0, 1.6, 25.0), Vec3::NEG_Z, false)
+        };
+        assert!(flashes_mate(&plan, model, &[runner], &clear));
     }
 
     #[test]

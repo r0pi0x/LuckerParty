@@ -502,3 +502,61 @@ fn bots_stand_aside_without_a_nav_mesh() {
         );
     }
 }
+
+/// de_nuke's double doors (chained `func_door_rotating` pairs, opened by
+/// use): a bot walks through each, both ways (backlog: bots stalled at the
+/// door into A from Inside). `MASHUP_BOT_CASE="door 2"` runs one.
+#[test]
+fn nuke_doors_are_passable() {
+    if !installed() {
+        return;
+    }
+    let mut sim = sim("de_nuke");
+    let (doors, scale) = {
+        let map = sim.app.world().resource::<mashup::map::MapEntities>();
+        let doors: Vec<(Vec3, Vec3)> = map
+            .entities
+            .iter()
+            .filter(|e| e.classname() == "func_door_rotating" && !e.hulls.is_empty())
+            .map(|e| {
+                let rot = mashup::map::entities::entity_rotation(e.angles());
+                e.hulls
+                    .iter()
+                    .flat_map(|h| &h.points)
+                    .map(|p| rot * *p + e.origin())
+                    .fold((Vec3::MAX, Vec3::MIN), |(lo, hi), p| (lo.min(p), hi.max(p)))
+            })
+            .collect();
+        (doors, map.scale)
+    };
+    // Pairs: doors whose boxes touch make one doorway.
+    let mut ways: Vec<(Vec3, Vec3)> = Vec::new();
+    for (lo, hi) in doors {
+        match ways.iter_mut().find(|w| w.0.cmple(hi + 8.0).all() && w.1.cmpge(lo - 8.0).all()) {
+            Some(w) => *w = (w.0.min(lo), w.1.max(hi)),
+            None => ways.push((lo, hi)),
+        }
+    }
+    let only = std::env::var("MASHUP_BOT_CASE").ok();
+    let trace = std::env::var("MASHUP_BOT_TRACE").is_ok();
+    let mut failed = Vec::new();
+    for (k, (lo, hi)) in ways.iter().enumerate() {
+        let size = *hi - *lo;
+        let centre = Vec3::new((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0, lo.z);
+        // Through the doorway's thin side, 2.5 m out either way.
+        let out = if size.x < size.y { Vec3::X } else { Vec3::Y } * (2.5 / 0.0254);
+        let a = mashup::map::entities::entity_to_engine(centre + out, scale);
+        let b = mashup::map::entities::entity_to_engine(centre - out, scale);
+        for (what, from, to) in [(format!("door {k} in"), a, b), (format!("door {k} out"), b, a)] {
+            if only.as_ref().is_some_and(|o| !what.contains(o.as_str())) {
+                continue;
+            }
+            let took = walk(&mut sim, from, to, 8.0, 0.5, trace);
+            eprintln!("de_nuke, {what} ({from:.1} to {to:.1}): {took:?}");
+            if took.is_none() {
+                failed.push(what);
+            }
+        }
+    }
+    assert!(failed.is_empty(), "bots didn't get through: {failed:?}");
+}

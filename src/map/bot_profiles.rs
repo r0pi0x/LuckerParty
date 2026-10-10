@@ -5,7 +5,8 @@
 //! `Default` block, `Template <name>` blocks, then one block per bot,
 //! `<Template>[+<Template>...] <Name>`, each block `Key = Value` lines up
 //! to `End`; a profile takes Default's values, then each template's in
-//! order, then its own.
+//! order, then its own. Bots buy by a profile's `WeaponPreference` lines
+//! (`bot::buy`): a block that lists any replaces the inherited list.
 
 use bevy::prelude::*;
 
@@ -43,6 +44,9 @@ pub struct BotProfile {
     /// The team it joins (our numbers: 1 terrorists, 2 counter-terrorists);
     /// None: either.
     pub team: Option<u8>,
+    /// Weapons it buys first, best first, as the file names them
+    /// (lowercase; "none" possible).
+    pub weapons: Vec<String>,
 }
 
 /// The game's bot profiles, in the file's order (a resource while a map
@@ -51,10 +55,11 @@ pub struct BotProfile {
 pub struct BotProfiles(pub Vec<BotProfile>);
 
 /// The attributes a block sets that naming uses.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 struct Attrs {
     difficulty: Option<u8>,
     team: Option<Option<u8>>,
+    weapons: Option<Vec<String>>,
 }
 
 impl Attrs {
@@ -62,6 +67,7 @@ impl Attrs {
         Attrs {
             difficulty: self.difficulty.or(base.difficulty),
             team: self.team.or(base.team),
+            weapons: self.weapons.or(base.weapons),
         }
     }
 }
@@ -105,10 +111,10 @@ impl BotProfiles {
                     Some((Block::Default, a)) => default = a,
                     Some((Block::Template(name), a)) => templates.push((name, a)),
                     Some((Block::Profile { name, bases }, own)) => {
-                        let mut a = default;
+                        let mut a = default.clone();
                         for b in &bases {
                             if let Some((_, t)) = templates.iter().find(|(n, _)| n.eq_ignore_ascii_case(b)) {
-                                a = t.over(a);
+                                a = t.clone().over(a);
                             }
                         }
                         let a = own.over(a);
@@ -116,6 +122,7 @@ impl BotProfiles {
                             name,
                             difficulty: a.difficulty.unwrap_or(difficulty::NORMAL),
                             team: a.team.flatten(),
+                            weapons: a.weapons.unwrap_or_default(),
                         });
                     }
                     None => {}
@@ -127,6 +134,10 @@ impl BotProfiles {
                     match key.trim().to_ascii_lowercase().as_str() {
                         "difficulty" => attrs.difficulty = Some(difficulty_bits(value)),
                         "team" => attrs.team = Some(team_of(value)),
+                        "weaponpreference" => attrs
+                            .weapons
+                            .get_or_insert_with(Vec::new)
+                            .push(value.trim().to_ascii_lowercase()),
                         _ => {}
                     }
                 }
@@ -203,6 +214,8 @@ End
 
 Rifle Charlie
 \tTeam = T
+\tWeaponPreference = AWP
+\tWeaponPreference = ak47
 End
 
 Top Delta
@@ -215,6 +228,10 @@ End
         let p = BotProfiles::parse(FILE);
         let got: Vec<(&str, u8, Option<u8>)> = p.0.iter().map(|p| (p.name.as_str(), p.difficulty, p.team)).collect();
         use difficulty::*;
+        let weapons: Vec<&[String]> = p.0.iter().map(|p| &p.weapons[..]).collect();
+        assert_eq!(weapons[0], ["m4a1"], "Rifle's");
+        assert!(weapons[1].is_empty());
+        assert_eq!(weapons[2], ["awp", "ak47"], "its own replace Rifle's");
         assert_eq!(
             got,
             [

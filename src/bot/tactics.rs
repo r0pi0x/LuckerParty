@@ -110,6 +110,10 @@ pub struct Site {
     /// Ranked hold spots for defenders [0] (watching the attackers'
     /// approaches) and for attackers who took it [1].
     pub holds: [Vec<Hold>; 2],
+    /// Per attackers' approach (`approaches[0]`, same order): where a
+    /// smoke lands to cut the sight line from the best defender hold
+    /// watching it (`smoke_spot`), if there is such a spot.
+    pub smokes: Vec<Option<Vec3>>,
 }
 
 /// A team's plan for the round.
@@ -356,7 +360,7 @@ pub fn approaches(nav: &NavMesh, from: usize, site_area: usize) -> Vec<Vec3> {
 
 /// Hold candidates around a site: hiding spots in areas within
 /// `SITE_RADIUS`, plus area middles when there are few spots.
-fn candidates(nav: &NavMesh, site_area: usize) -> Vec<Candidate> {
+pub(super) fn candidates(nav: &NavMesh, site_area: usize) -> Vec<Candidate> {
     use crate::map::nav::flags;
     let near = nav.within(site_area, SITE_RADIUS);
     let mut out: Vec<Candidate> = near
@@ -381,6 +385,41 @@ fn candidates(nav: &NavMesh, site_area: usize) -> Vec<Candidate> {
         }));
     }
     out
+}
+
+/// A smoke spot lies this share of the way from an approach to the hold
+/// watching it (tried in order), kept this far from the approach, m.
+const SMOKE_SHARES: [f32; 3] = [0.5, 0.35, 0.65];
+const SMOKE_FROM: (f32, f32) = (3.0, 12.0);
+/// A smoke spot is used if the sight line passes within this of the cloud's
+/// middle (this high over where the grenade rests), m.
+const SMOKE_CUT: f32 = 2.0;
+const SMOKE_LIFT: f32 = 1.0;
+
+/// Where a smoke grenade lands to hide `approach` (feet) from a defender
+/// at `hold` (feet): a point on the mesh along the way between them whose
+/// cloud covers the sight line (eye 1.6 m at the hold, 1.2 m at the
+/// approach), not on the approach itself (ours: CS:S bots' lineups aren't
+/// public). None if the floor between them never lies under that line.
+pub fn smoke_spot(nav: &NavMesh, approach: Vec3, hold: Vec3) -> Option<Vec3> {
+    let (eye, seen) = (hold + Vec3::Y * 1.6, approach + Vec3::Y * 1.2);
+    let length = approach.distance(hold);
+    if length < SMOKE_FROM.0 * 1.5 {
+        return None;
+    }
+    SMOKE_SHARES.iter().find_map(|share| {
+        let d = (length * share).clamp(SMOKE_FROM.0, SMOKE_FROM.1.min(length - 1.0));
+        let p = approach + (hold - approach) * (d / length);
+        let floor = match nav.area_at(p + Vec3::Y * 0.5) {
+            Some(a) => nav.areas[a].closest_point(p),
+            None => nav.areas[nav.nearest_area(p)?].closest_point(p),
+        };
+        let cloud = floor + Vec3::Y * SMOKE_LIFT;
+        // The sight line's nearest point to the cloud.
+        let line = eye - seen;
+        let t = ((cloud - seen).dot(line) / line.length_squared()).clamp(0.0, 1.0);
+        (cloud.distance(seen + line * t) < SMOKE_CUT).then_some(floor)
+    })
 }
 
 fn mean(points: &[Vec3]) -> Option<Vec3> {
@@ -425,12 +464,20 @@ fn build_map(
         let approaches = from.map(|f| f.map(|f| approaches(nav, f, area)).unwrap_or_default());
         let cands = candidates(nav, area);
         let holds = [0, 1].map(|side| choose_holds(&cands, &approaches[side], HOLDS_PER_SITE, point, sees));
+        let smokes = approaches[0]
+            .iter()
+            .map(|a| {
+                let watcher = holds[0].iter().find(|h| h.watch.contains(a))?;
+                smoke_spot(nav, *a, watcher.spot)
+            })
+            .collect();
         tactics.sites.push(Site {
             name,
             point,
             area,
             approaches,
             holds,
+            smokes,
         });
     }
     info!(
@@ -850,6 +897,7 @@ mod tests {
                 area: 0,
                 approaches: default(),
                 holds: [vec![hold(1.0), hold(2.0), hold(3.0), hold(4.0)], vec![hold(9.0)]],
+                smokes: Vec::new(),
             });
         }
         let e = |i: u32| Entity::from_raw_u32(i + 1).unwrap();
@@ -943,6 +991,27 @@ mod tests {
         assert_eq!(holds[0].watch.len(), 2);
         let holds = choose_holds(&cands[5..], &[], 1, Vec3::ONE, &mut sees);
         assert_eq!(holds[0].watch, [Vec3::ONE]);
+    }
+
+    #[test]
+    fn smokes_land_between_the_approach_and_the_hold() {
+        // One long floor, x 0..30, and a raised ledge (2 m) at x 30..34.
+        let m = NavMesh {
+            areas: vec![area(1, 0.0, -3.0, 30.0, 3.0, 0.0, 0), area(2, 30.0, -3.0, 34.0, 3.0, 2.0, 0)],
+            ..default()
+        };
+        let (approach, hold) = (Vec3::new(2.0, 0.0, 0.0), Vec3::new(22.0, 0.0, 0.0));
+        let at = smoke_spot(&m, approach, hold).expect("a spot");
+        // Off the approach, on the way to the hold, on the floor.
+        assert!(at.x >= 2.0 + SMOKE_FROM.0 && at.x < 22.0 - 1.0, "{at}");
+        assert!(at.z.abs() < 0.01 && at.y == 0.0, "{at}");
+        assert!(at.distance(approach) <= SMOKE_FROM.1 + 0.01, "{at}");
+        // Too close together for a smoke between them.
+        assert_eq!(smoke_spot(&m, approach, approach + Vec3::X * 3.0), None);
+        // A hold up on the ledge still gets one on the floor below the
+        // line (the line rises 2 m over 30 m).
+        let at = smoke_spot(&m, approach, Vec3::new(32.0, 2.0, 0.0)).expect("a spot");
+        assert!(at.y == 0.0 && at.x > 5.0, "{at}");
     }
 
     #[test]

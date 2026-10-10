@@ -13,6 +13,7 @@
 //! (`grenades`), and it looks away from flashes about to go off.
 
 pub mod aside;
+pub mod buy;
 mod grenades;
 mod look;
 pub mod objectives;
@@ -35,7 +36,7 @@ use crate::{
     weapon::{Inventory, grenade::Projectile},
 };
 
-pub use grenades::{GrenadePlan, follow, plan_throw};
+pub use grenades::{GrenadePlan, MateView, flashes_mate, follow, plan_throw};
 pub use tactics::{Hold, Role, Tactics};
 
 pub struct BotPlugin;
@@ -46,6 +47,7 @@ impl Plugin for BotPlugin {
             .init_resource::<BotQuota>()
             .init_resource::<radio::TeamCalls>()
             .init_resource::<Tactics>()
+            .init_resource::<objectives::Retake>()
             .add_message::<crate::core::Radio>();
         // Bots are the server's (`core::authoritative`).
         app.add_systems(
@@ -72,6 +74,8 @@ impl Plugin for BotPlugin {
                 .before(crate::weapon::SelectWeapons)
                 .run_if(crate::core::authoritative),
         );
+        // What they want from the shop (`weapon::economy::autobuy`).
+        app.add_systems(FixedUpdate, buy::wishes.run_if(crate::core::authoritative));
         // A network server keeps the bots at the quota (`keep_quota`).
         app.add_systems(
             Update,
@@ -466,6 +470,9 @@ pub struct Bot {
     next_toss_check: f64,
     /// Looking away from a flash; flashes already noticed.
     avert: Option<grenades::Avert>,
+    /// Flashes it held back this life since they would have blinded a
+    /// teammate (`grenades::flashes_mate`).
+    flashes_held: u32,
     watched: Vec<Entity>,
     /// What it said on the radio lately.
     radio: radio::BotRadio,
@@ -513,9 +520,17 @@ pub struct Bot {
     activity: Activity,
     dead: bool,
     /// Where its objective is (feet; a bomb target to plant at, the
-    /// planted bomb to defuse or guard): walked to before anything else
+    /// planted bomb to defuse): walked to before anything else
     /// (`objectives`).
     pub objective: Option<Vec3>,
+    /// A spot `objectives` keeps it at, with what it does there (falling
+    /// back for a retake, covering a defuse, guarding a planted bomb), and
+    /// whether it is there.
+    guard: Option<(Hold, Activity)>,
+    guard_at: bool,
+    /// Spots given up on the way (a teammate in the way): `objectives`
+    /// gives the next one.
+    pub(super) guard_skip: usize,
     /// Carries the bomb (`objectives`): the attackers' group follows it.
     pub carrying: bool,
     /// Sent somewhere from outside (`bot_goto`, tests): walked to before
@@ -546,6 +561,10 @@ pub enum Activity {
     Roaming,
     /// Going where it was sent (`Bot::move_to`).
     Sent,
+    /// Falling back to gather for a retake (`objectives::Retake`).
+    Retaking,
+    /// Covering a teammate's defuse, or guarding a planted bomb.
+    Covering,
     /// Carrying out a teammate's radio command (`Bot::order`).
     Obeying,
 }
@@ -625,6 +644,9 @@ impl Bot {
         self.toss = None;
         self.plan = None;
         self.avert = None;
+        self.guard = None;
+        self.guard_at = false;
+        self.guard_skip = 0;
         self.site = self.orders.site;
         self.hold = self.orders.hold.clone();
         self.hold_since = None;
@@ -644,6 +666,11 @@ impl Bot {
     /// The grenade throw planned or carried out lately.
     pub fn grenade_plan(&self) -> Option<&GrenadePlan> {
         self.plan.as_ref().map(|(p, _)| p)
+    }
+
+    /// Flashes held back so far since they would have blinded a teammate.
+    pub fn flashes_held(&self) -> u32 {
+        self.flashes_held
     }
 
     /// Throwing a grenade now.
@@ -904,6 +931,10 @@ fn think(
         Option<Res<crate::core::FreezeTime>>,
         Option<Res<crate::objectives::RoundOpen>>,
         Query<&crate::weapon::Hitscan>,
+        Query<
+            (Entity, &Transform, &Team, &Health, &Intent, &MovementState, Option<&crate::core::Velocity>),
+            Without<Bot>,
+        >,
     ),
 ) {
     let brushes = brushes.as_deref().map_or(&[][..], |b| &b.0[..]);
@@ -939,6 +970,33 @@ fn think(
             .cast_shape_predicate(&shape, a, Quat::IDENTITY, dir, &config, &filter, &not_character)
             .map(|h| (a + *dir * h.distance, h.normal1.normalize_or_zero()))
     };
+    // Where every living character looks (teammates a flash must spare).
+    // (With the bot's number, 0 for a person: who gives way in a door.)
+    let view = |e: Entity, t: &Transform, team: &Team, intent: &Intent, state: &MovementState, v: Vec3, number: u32| {
+        (
+            e,
+            *team,
+            grenades::MateView {
+                eye: t.translation + state.eye_offset,
+                look: intent.look_rotation() * Vec3::NEG_Z,
+                velocity: v,
+                person: number == 0,
+            },
+            number,
+        )
+    };
+    let views: Vec<(Entity, Team, grenades::MateView, u32)> = bots
+        .iter()
+        .filter(|b| b.6.current > 0.0)
+        .map(|(e, b, intent, t, state, team, _, _, _, v, _)| view(e, t, team, intent, state, v.0, b.number.max(1)))
+        .chain(
+            round
+                .3
+                .iter()
+                .filter(|p| p.3.current > 0.0)
+                .map(|(e, t, team, _, intent, state, v)| view(e, t, team, intent, state, v.map_or(Vec3::ZERO, |v| v.0), 0)),
+        )
+        .collect();
     for (me, mut bot, mut intent, t, state, team, health, blinded, mut inv, velocity, punch) in &mut bots {
         if health.current <= 0.0 {
             bot.target = None;
@@ -1223,24 +1281,35 @@ fn think(
         {
             bot.next_toss_check = now + grenades::TOSS_CHECK;
             if now >= bot.next_toss {
-                // Gathering before the site: flashes and smokes onto where
-                // the group comes onto it.
+                // Gathering before the site: flashes onto where the group
+                // comes onto it, smokes between there and the defenders
+                // watching it (`tactics::smoke_spot`).
                 let staging = plan.is_some_and(|p| p.staging && p.site == bot.site);
                 let site = bot.site.and_then(|s| tactics.sites.get(s));
+                let approach = |s: &tactics::Site| {
+                    s.approaches[0]
+                        .iter()
+                        .copied()
+                        .enumerate()
+                        .min_by(|a, b| a.1.distance(feet).total_cmp(&b.1.distance(feet)))
+                };
+                let smoke = |s: &tactics::Site| {
+                    approach(s).map_or(s.point, |(i, a)| s.smokes.get(i).copied().flatten().unwrap_or(a))
+                };
                 let objective = match bot.activity {
-                    _ if staging => site.and_then(|s| {
-                        s.approaches[0]
-                            .iter()
-                            .copied()
-                            .min_by(|a, b| a.distance(feet).total_cmp(&b.distance(feet)))
-                            .or(Some(s.point))
-                    }),
-                    Activity::ToSite | Activity::Following | Activity::Waiting => site.map(|s| s.point),
-                    Activity::Roaming if bot.roam_objective => bot.roam,
+                    _ if staging => site.map(|s| (approach(s).map_or(s.point, |a| a.1), smoke(s))),
+                    Activity::ToSite | Activity::Following | Activity::Waiting => site.map(|s| (s.point, smoke(s))),
+                    Activity::Roaming if bot.roam_objective => bot.roam.map(|r| (r, r)),
                     _ => None,
                 };
+                let mates: Vec<grenades::MateView> = views
+                    .iter()
+                    .filter(|v| v.0 != me && v.1 == *team)
+                    .map(|v| v.2)
+                    .collect();
+                let sight = |a: Vec3, b: Vec3| world_trace(a, b).is_none();
                 consider_throw(
-                    &mut bot, inv, &arms, &cfg, eye, feet, objective, staging, now, dt, &box_trace,
+                    &mut bot, inv, &arms, &cfg, eye, feet, objective, staging, &mates, &sight, now, dt, &box_trace,
                 );
             }
         }
@@ -1331,6 +1400,22 @@ fn think(
                     dir += push * (1.0 - d / PERSONAL_SPACE) * SEPARATION;
                 }
             }
+            // Teammates in the way (`give_way`): keep right of one coming
+            // the other way (and wait for it, giving way), step round one
+            // standing there, don't run into one walking ahead.
+            let mut pace = step.pace;
+            if step.rungs.is_none() && step.climb.is_none() {
+                let mine = views.iter().find(|v| v.0 == me).map_or(0, |v| v.3);
+                let feet_eye = t.translation + state.eye_offset;
+                for v in views.iter().filter(|v| v.0 != me && v.1 == *team) {
+                    let rel = v.2.eye - feet_eye;
+                    let Some(way) = give_way(step.dir, rel, v.2.velocity, mine, v.3, bot.number) else {
+                        continue;
+                    };
+                    dir += way.side;
+                    pace = pace.min(way.pace);
+                }
+            }
             let dir = dir.with_y(0.0).normalize_or(step.dir);
             let rot = intent.yaw_rotation();
             let (fwd, right) = (rot * Vec3::NEG_Z, rot * Vec3::X);
@@ -1386,7 +1471,7 @@ fn think(
                 {
                     Vec2::Y
                 }
-                _ => axis / axis.abs().max_element().max(1e-3) * step.pace,
+                _ => axis / axis.abs().max_element().max(1e-3) * pace,
             };
             // Walking into something: press use now and then (doors),
             // jump it every so often (ledges).
@@ -1481,6 +1566,77 @@ fn think(
             intent.use_key = false;
         }
     }
+}
+
+/// Teammates within this ahead (flat, m), and within this of the line
+/// walked, are in the way (`give_way`).
+const WAY_AHEAD: f32 = 2.2;
+const WAY_WIDE: f32 = 0.9;
+/// Faster than this toward the walker: coming the other way; slower than
+/// this: standing (m/s).
+const ONCOMING: f32 = 1.0;
+const STANDING: f32 = 0.6;
+/// How hard it steps aside, and the share of full speed it keeps while
+/// giving way, behind someone slower, or passing one standing.
+const SIDESTEP: f32 = 1.2;
+const YIELD_PACE: f32 = 0.15;
+const BEHIND_PACE: f32 = 0.5;
+
+/// How a walker gives way to a teammate (ours; CS:S's bots do too, how
+/// isn't public).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Way {
+    /// Added to the walking direction (flat).
+    pub side: Vec3,
+    /// Share of full speed at most.
+    pub pace: f32,
+}
+
+/// What a bot walking `dir` (flat, unit) does about a teammate at `rel`
+/// (its eye less the bot's, so the same height counts) moving at
+/// `velocity`: nothing if it isn't in the way; coming the other way, both
+/// keep right, and the one who gives way (to a person always, else to the
+/// lower bot number; `mine` and `theirs` are bot numbers, 0 a person)
+/// nearly stops; standing there, it steps round on the side with more of
+/// the way (`number`'s parity breaks a tie); walking ahead the same way,
+/// it slows down rather than shove.
+pub fn give_way(dir: Vec3, rel: Vec3, velocity: Vec3, mine: u32, theirs: u32, number: u32) -> Option<Way> {
+    if rel.y.abs() > 1.2 {
+        return None;
+    }
+    let flat = rel.with_y(0.0);
+    let ahead = flat.dot(dir);
+    let right = dir.cross(Vec3::Y);
+    let across = flat.dot(right);
+    if ahead <= 0.0 || ahead > WAY_AHEAD || across.abs() > WAY_WIDE {
+        return None;
+    }
+    let v = velocity.with_y(0.0);
+    let toward = -v.dot(dir);
+    if toward > ONCOMING {
+        let yields = theirs == 0 || (mine != 0 && mine > theirs);
+        return Some(Way {
+            side: right * SIDESTEP,
+            pace: if yields { YIELD_PACE } else { 1.0 },
+        });
+    }
+    if v.length() < STANDING {
+        let side = if across.abs() > 0.05 {
+            -across.signum()
+        } else if number % 2 == 0 {
+            1.0
+        } else {
+            -1.0
+        };
+        return Some(Way {
+            side: right * side * SIDESTEP,
+            pace: 1.0,
+        });
+    }
+    Some(Way {
+        side: Vec3::ZERO,
+        pace: if ahead < WAY_AHEAD * 0.6 { BEHIND_PACE } else { 1.0 },
+    })
 }
 
 /// A climb with no mesh ladder is walked straight on once the way there
@@ -1625,6 +1781,29 @@ fn choose_goal(
     if let Some(at) = bot.objective {
         bot.activity = Activity::ToSite;
         return Some(at);
+    }
+    // A spot the bomb keeps it at: there, watching; an enemy remembered
+    // near it, after them.
+    bot.guard_at = false;
+    if let Some((g, act)) = bot.guard.clone() {
+        if let Some((at, _)) = bot.lead
+            && at.distance(g.spot) < CHASE_HOLD
+        {
+            bot.activity = Activity::Chasing;
+            return Some(at);
+        }
+        bot.activity = act;
+        if (g.spot - feet).xz().length() > objectives::GUARD_NEAR || (g.spot.y - feet.y).abs() > 1.5 {
+            // A teammate keeps it from the spot (one defusing in a
+            // corner): the next spot.
+            if bot.blocked > HOLD_BLOCKED && mates.iter().any(|m| m.distance(feet) < 1.6) {
+                bot.guard_skip += 1;
+                bot.blocked = 0.0;
+            }
+            return Some(g.spot);
+        }
+        bot.guard_at = true;
+        return None;
     }
     // A teammate's radio command.
     if let Some(goal) = radio::order_goal(bot, feet) {
@@ -1795,8 +1974,14 @@ fn choose_look(
             return p;
         }
     }
-    if bot.activity == Activity::Holding
-        && let Some(n) = bot.hold.as_ref().map(|h| h.watch.len())
+    let watching = if bot.guard_at {
+        bot.guard.as_ref().map(|g| &g.0)
+    } else if bot.activity == Activity::Holding {
+        bot.hold.as_ref()
+    } else {
+        None
+    };
+    if let Some(n) = watching.map(|h| h.watch.len())
         && n > 0
     {
         if now >= bot.watch.1 {
@@ -1808,7 +1993,7 @@ fn choose_look(
             };
             bot.watch = (i, now + 2.5 + 3.0 * bot.rand() as f64);
         }
-        let h = bot.hold.as_ref().unwrap();
+        let h = if bot.guard_at { &bot.guard.as_ref().unwrap().0 } else { bot.hold.as_ref().unwrap() };
         return h.watch[bot.watch.0 % n] + Vec3::Y * WATCH_LIFT;
     }
     if let Some(spot) = look::corner(bot, nav, eye, feet, walk, looking, now, los) {
@@ -1831,8 +2016,10 @@ fn choose_look(
 const FLASHED_AIM: f32 = 6.0;
 
 /// Maybe start a grenade throw: at the remembered enemy (an HE or a
-/// flash), else at the objective being walked to (a smoke or a flash),
-/// if an arc ends close enough to it.
+/// flash), else at the objective being walked to (`objective`: where a
+/// flash goes, and where a smoke goes), if an arc ends close enough to it.
+/// A flash that would blind a teammate (`grenades::flashes_mate`) is aimed
+/// deeper once, else not thrown.
 #[allow(clippy::too_many_arguments)]
 fn consider_throw(
     bot: &mut Bot,
@@ -1841,13 +2028,15 @@ fn consider_throw(
     cfg: &BotConfig,
     eye: Vec3,
     feet: Vec3,
-    objective: Option<Vec3>,
+    objective: Option<(Vec3, Vec3)>,
     staging: bool,
+    mates: &[grenades::MateView],
+    sight: &dyn Fn(Vec3, Vec3) -> bool,
     now: f64,
     dt: f32,
     sweep: &dyn Fn(Vec3, Vec3, f32) -> Option<(Vec3, Vec3)>,
 ) {
-    use crate::weapon::grenade::GrenadeKind;
+    use crate::weapon::grenade::{GrenadeEffect, GrenadeKind};
     let held = grenades::held(inv, arms);
     if held.is_empty() {
         return;
@@ -1859,56 +2048,76 @@ fn consider_throw(
     };
     // Only where an enemy was lately (it moves on, or died).
     let lead = bot.lead.filter(|(_, when)| now - when <= grenades::TOSS_LEAD_MEMORY);
-    let (target, kinds) = match (lead, objective) {
+    // What to throw where, in order of preference.
+    let choices: [(GrenadeKind, Vec3); 2] = match (lead, objective) {
         (Some((at, _)), _) if in_range(at) => {
             if !(always || bot.rand() < grenades::TOSS_CHANCE_LEAD) {
                 return;
             }
             // Mostly an HE when there's a choice.
             if bot.rand() < 0.65 {
-                (at, [GrenadeKind::Blast, GrenadeKind::Flash])
+                [(GrenadeKind::Blast, at), (GrenadeKind::Flash, at)]
             } else {
-                (at, [GrenadeKind::Flash, GrenadeKind::Blast])
+                [(GrenadeKind::Flash, at), (GrenadeKind::Blast, at)]
             }
         }
-        (_, Some(at)) if staging && in_range(at) => {
+        (_, Some((at, smoke))) if staging && (in_range(at) || in_range(smoke)) => {
             if !(always || bot.rand() < grenades::TOSS_CHANCE_STAGING) {
                 return;
             }
-            (at, [GrenadeKind::Flash, GrenadeKind::Smoke])
+            [(GrenadeKind::Flash, at), (GrenadeKind::Smoke, smoke)]
         }
-        (None, Some(at)) if in_range(at) => {
+        (None, Some((at, smoke))) if in_range(at) || in_range(smoke) => {
             if !(always || bot.rand() < grenades::TOSS_CHANCE_OBJECTIVE) {
                 return;
             }
-            (at, [GrenadeKind::Smoke, GrenadeKind::Flash])
+            [(GrenadeKind::Smoke, smoke), (GrenadeKind::Flash, at)]
         }
         _ => return,
     };
-    let Some((weapon, t)) = kinds
-        .iter()
-        .find_map(|k| held.iter().find(|(_, t)| t.effect.kind() == *k))
-    else {
+    let Some((weapon, t, target)) = choices.iter().filter(|(_, at)| in_range(*at)).find_map(|(k, at)| {
+        held.iter()
+            .find(|(_, t)| t.effect.kind() == *k)
+            .map(|(w, t)| (*w, *t, *at))
+    }) else {
         return;
     };
     let kind = t.effect.kind();
-    let plan = grenades::plan_throw(
-        kind,
-        &t.throw,
-        &t.flight,
-        grenades::fuse_time(t.fuse, t.flight.check_interval, dt),
-        kind == GrenadeKind::Smoke,
-        eye,
-        target + Vec3::Y * grenades::aim_lift(kind),
-        &mut |a, b| sweep(a, b, t.flight.half),
-    );
+    let plan_at = |target: Vec3| {
+        grenades::plan_throw(
+            kind,
+            &t.throw,
+            &t.flight,
+            grenades::fuse_time(t.fuse, t.flight.check_interval, dt),
+            kind == GrenadeKind::Smoke,
+            eye,
+            target + Vec3::Y * grenades::aim_lift(kind),
+            &mut |a, b| sweep(a, b, t.flight.half),
+        )
+        .filter(|p| p.error <= grenades::tolerance(kind))
+    };
+    let mut plan = plan_at(target);
+    if let GrenadeEffect::Flash(fl) = &t.effect {
+        let blinds = |p: &grenades::GrenadePlan| grenades::flashes_mate(p, fl.model, mates, sight);
+        if plan.as_ref().is_some_and(blinds) {
+            // Deeper, popping farther from the team (often out of its
+            // sight); else not at all.
+            let deeper = target + (target - feet).with_y(0.0).normalize_or_zero() * grenades::FLASH_DEEPER;
+            plan = plan_at(deeper).filter(|p| !blinds(p));
+            if plan.is_none() {
+                bot.flashes_held += 1;
+                bot.next_toss = now + 1.0;
+                return;
+            }
+        }
+    }
     match plan {
-        Some(plan) if plan.error <= grenades::tolerance(kind) => {
+        Some(plan) => {
             let (lo, hi) = grenades::TOSS_COOLDOWN;
             bot.next_toss = now + lo + (hi - lo) * bot.rand() as f64;
             bot.plan = Some((plan.clone(), now + grenades::PLAN_SHOWN));
             bot.toss = Some(grenades::Toss {
-                weapon: *weapon,
+                weapon,
                 previous: inv.active,
                 plan,
                 started: now,
@@ -1917,7 +2126,7 @@ fn consider_throw(
             });
         }
         // No good arc from here: look again in a while.
-        _ => bot.next_toss = now + 2.0,
+        None => bot.next_toss = now + 2.0,
     }
 }
 
@@ -2391,6 +2600,34 @@ fn wrap(a: f32) -> f32 {
 mod tests {
     use super::*;
     use crate::bot::path::tests::two_ways;
+
+    #[test]
+    fn teammates_give_way_in_doors() {
+        let dir = Vec3::NEG_Z;
+        let right = dir.cross(Vec3::Y);
+        let ahead = Vec3::new(0.0, 0.0, -1.5);
+        // Coming the other way: both keep right; the higher number (and any
+        // bot facing a person) nearly stops.
+        let toward = Vec3::Z * 5.0;
+        let w = give_way(dir, ahead, toward, 3, 2, 3).unwrap();
+        assert!(w.side.dot(right) > 0.0 && w.pace < 0.5, "{w:?}");
+        let w = give_way(dir, ahead, toward, 2, 3, 2).unwrap();
+        assert!(w.side.dot(right) > 0.0 && w.pace == 1.0, "{w:?}");
+        assert!(give_way(dir, ahead, toward, 1, 0, 1).unwrap().pace < 0.5, "people first");
+        // Standing in the way, a little to the left: round it on the right.
+        let w = give_way(dir, ahead + Vec3::X * -0.2, Vec3::ZERO, 2, 3, 2).unwrap();
+        assert!(w.side.dot(right) > 0.0, "{w:?}");
+        let w = give_way(dir, ahead + Vec3::X * 0.2, Vec3::ZERO, 2, 3, 2).unwrap();
+        assert!(w.side.dot(right) < 0.0, "{w:?}");
+        // Walking ahead the same way, close: slow down, no sidestep.
+        let w = give_way(dir, Vec3::new(0.0, 0.0, -0.9), Vec3::NEG_Z * 2.0, 2, 3, 2).unwrap();
+        assert_eq!(w.side, Vec3::ZERO);
+        assert!(w.pace < 1.0);
+        // Behind, beside, far ahead or a floor up: not in the way.
+        for rel in [Vec3::Z * 1.0, Vec3::X * 1.5, Vec3::NEG_Z * 4.0, Vec3::new(0.0, 2.0, -1.0)] {
+            assert_eq!(give_way(dir, rel, Vec3::ZERO, 2, 3, 2), None, "{rel}");
+        }
+    }
 
     /// A bot that keeps failing to cross a link walks around it, and
     /// goes back to the short way once the memory runs out.

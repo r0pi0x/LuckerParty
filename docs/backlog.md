@@ -386,27 +386,31 @@ a first bot are in.
   `MASHUP_BOT_TRACE_CASE` to trace one inside the whole map's run.
 - A CS:S bot behaviour spec (nav spec open questions 2-4) to check our
   team play against: path costs, how bots pick sites, hold and rotate,
-  what they say. Ours (`bot::tactics`) plants and defuses only through
-  `bot::objectives`' simple hooks (carrier to the nearest target,
-  defenders straight to a planted bomb: no guarding, covering a defuse,
-  or retaking), leads no hostages, buys no kits, has no buy strategy beyond autobuy, no sniper spots
+  what they say. Ours (`bot::tactics`) plants through `bot::objectives`
+  (carrier to the nearest target); after a plant the defenders fall back
+  to a rally point, gather and retake together, one defusing while the
+  others cover it, and the terrorists guard the bomb from cover spots
+  (`bot::objectives::Retake`). Left: leading hostages, no sniper spots
   (the spot flags are loaded), no crouching at hold spots, no lurkers or
-  split attacks, and only uses approach data it computes (v9 files'
-  approach records are skipped). Bots don't step around each other
-  beyond pushing apart (a bot short of a taken hold spot holds where it
-  is). Balance (15 rounds 5v5, after the staging/rotation/retake pass):
-  terrorists won 10/15 on de_dust2 and 11/15 on de_nuke, counter-
-  terrorists (the attackers there) 9/15 on cs_office: now leaning to
-  the attackers on bomb maps; next: defenders falling back to retake
-  instead of dying one by one on a lost site, and a measured reaction
-  time.
-- Grenades, beyond the first pass: lineups from the nav mesh's hiding and
-  approach spots (smokes cutting sight lines rather than landing on the
-  objective point), flashes thrown around corners so they pop out of the
-  thrower's view without turning, not flashing teammates, running and
-  jump throws (carried velocity in the plan), "Fire in the hole" radio.
-- Movement: gap jumps, avoiding teammates in doorways, the door into A
-  from Inside on de_nuke (bots now and then stall at it).
+  split attacks, no falling back before a plant (a site lost with the
+  bomb not yet down), and only approach data it computes (v9 files'
+  approach records are skipped). Buying (`bot::buy`, `economy::
+  autobuy_rolling`): profile weapon preferences, eco and pistol rounds,
+  kits; left: team-wide eco/force decisions.
+- Balance (15 rounds 5v5, `bot_rounds::dust2_bot_round_stats`; runs
+  aren't repeatable, so one 15-round run moves by several rounds):
+  before this pass terrorists won 13/15 on de_dust2, 8/15 on de_nuke and
+  9/15 on cs_office (defenders there); next: a measured reaction time.
+- Grenades, beyond the first pass: flashes thrown around corners so they
+  pop out of the thrower's view without turning, running and jump throws
+  (carried velocity in the plan). Done: no team flashes
+  (`grenades::flashes_mate`), smokes cutting sight lines
+  (`tactics::smoke_spot`), "Fire in the hole" (every throw).
+- Movement: gap jumps. Teammates now give way in doors (`bot::give_way`;
+  `tests/it/bot_manners.rs`). de_nuke's door into A from Inside: a lone
+  bot gets through all three door pairs both ways in about a second
+  (`bot_nav::nuke_doors_are_passable`), so the stalls seen in play are
+  most likely bots shouldering each other there (not reproduced alone).
 
 ## 5. Console, remaining
 

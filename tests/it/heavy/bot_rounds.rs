@@ -13,6 +13,8 @@ use mashup::{
     bot::{Activity, Bot, BotConfig, Role, Tactics, tactics::Scenario},
     console::Console,
     core::{Health, Team},
+    objectives::bomb::{BombOutcome, BombState},
+    weapon::{Armor, Inventory, Weapon, economy::DefuseKit},
     games::{
         self,
         cs_source::{
@@ -252,16 +254,47 @@ fn dust2_bot_round_stats() {
     let mut kills_total = 0;
     let mut played = 0;
     let mut sites: Vec<String> = Vec::new();
+    // Bomb rounds: planted, defused, exploded; buying at the round's
+    // start per team (T, CT): primaries, helmets, kits, bots; eco rounds
+    // (a team with no primary bought, of rounds with money spent).
+    let mut bombs = [0u32; 3];
+    let mut bought = [[0u32; 4]; 2];
+    let mut buys: Vec<String> = Vec::new();
     let step = 0.1;
     let trace = std::env::var("MASHUP_BOT_TRACE").is_ok();
     let mut t = 0.0f64;
     let limit = rounds as f64 * 150.0;
     let mut stuck = StuckWatch::default();
+    // Deaths by team and place (where the bots lose their fights).
+    let mut was_alive: std::collections::HashMap<Entity, bool> = Default::default();
+    let mut deaths: std::collections::BTreeMap<(u8, String), u32> = Default::default();
     while played < rounds && t < limit {
         sim.seconds(step);
         t += step;
         if matches!(sim.app.world().resource::<RoundState>().phase, Phase::Live { .. }) {
             stuck.check(&sim, &bots, t);
+        }
+        {
+            let w = sim.app.world();
+            let nav = w.get_resource::<mashup::map::nav::NavMesh>();
+            let mut fallen = Vec::new();
+            for &b in &bots {
+                let alive = w.get::<Health>(b).is_some_and(|h| h.current > 0.0);
+                if was_alive.insert(b, alive) == Some(true) && !alive {
+                    fallen.push(b);
+                }
+            }
+            for e in fallen {
+                let (Some(team), Some(tr)) = (w.get::<Team>(e), w.get::<Transform>(e)) else {
+                    continue;
+                };
+                let at = tr.translation - Vec3::Y * 0.9;
+                let place = nav
+                    .and_then(|n| n.area_at(at + Vec3::Y * 0.1).or_else(|| n.nearest_area(at)))
+                    .and_then(|a| nav.unwrap().areas[a].place)
+                    .map_or("?".to_string(), |p| nav.unwrap().places[p].clone());
+                *deaths.entry((team.0, place)).or_default() += 1;
+            }
         }
         if trace && (t * 10.0).round() as u64 % 40 == 0 {
             eprintln!("-- round {}", played + 1);
@@ -273,6 +306,33 @@ fn dust2_bot_round_stats() {
                 if live_at.is_none() {
                     live_at = Some(since);
                     contact = None;
+                    let w = sim.app.world_mut();
+                    let mut round_buy = [[0u32; 4]; 2];
+                    for &b in &bots {
+                        let team = w.get::<Team>(b).map_or(0, |t| t.0) as usize;
+                        if !(1..=2).contains(&team) {
+                            continue;
+                        }
+                        let primary = w.get::<Inventory>(b).is_some_and(|i| {
+                            i.weapons.iter().any(|x| w.get::<Weapon>(*x).is_some_and(|x| x.slot == 0))
+                        });
+                        let helmet = w.get::<Armor>(b).is_some_and(|a| a.helmet && a.amount > 0.0);
+                        let kit = w.get::<DefuseKit>(b).is_some();
+                        let k = &mut round_buy[team - 1];
+                        k[0] += primary as u32;
+                        k[1] += helmet as u32;
+                        k[2] += kit as u32;
+                        k[3] += 1;
+                    }
+                    for t in 0..2 {
+                        for k in 0..4 {
+                            bought[t][k] += round_buy[t][k];
+                        }
+                    }
+                    buys.push(format!(
+                        "T {}/{}/{} CT {}/{}/{}",
+                        round_buy[0][0], round_buy[0][1], round_buy[0][2], round_buy[1][0], round_buy[1][1], round_buy[1][2]
+                    ));
                     let tac = sim.app.world().resource::<Tactics>();
                     sites.push(
                         tac.team(tac.attackers)
@@ -315,12 +375,28 @@ fn dust2_bot_round_stats() {
                         contacts.push(c);
                     }
                     lengths.push(now - since);
+                    let bomb = w.resource::<BombState>();
+                    let bomb_note = match (bomb.planted.is_some() || bomb.outcome.is_some(), bomb.outcome) {
+                        (_, Some(BombOutcome::Defused)) => "defused",
+                        (_, Some(BombOutcome::Exploded)) => "exploded",
+                        (true, None) => "planted",
+                        _ => "-",
+                    };
+                    if bomb_note != "-" {
+                        bombs[0] += 1;
+                    }
+                    match bomb.outcome {
+                        Some(BombOutcome::Defused) => bombs[1] += 1,
+                        Some(BombOutcome::Exploded) => bombs[2] += 1,
+                        None => {}
+                    }
                     stats.push(format!(
-                        "round {played}: attackers to {}, winner {:?}, {:.1} s, contact {}, kills {k}, alive T {alive_t} CT {alive_ct}",
+                        "round {played}: attackers to {}, winner {:?}, {:.1} s, contact {}, kills {k}, alive T {alive_t} CT {alive_ct}, bomb {bomb_note}, bought (primary/helmet/kit) {}",
                         sites.last().unwrap(),
                         winner.map(|t| if t.0 == 1 { "T" } else { "CT" }),
                         now - since,
                         contact.map_or("none".into(), |c| format!("{c:.1} s")),
+                        buys.last().map_or("", |b| b.as_str()),
                     ));
                     eprintln!("{}", stats.last().unwrap());
                 }
@@ -344,6 +420,26 @@ fn dust2_bot_round_stats() {
         mean(&contacts),
         contacts.len()
     );
+    eprintln!(
+        "{map}: bomb planted {} defused {} exploded {}; bought per round start (bot-rounds): T primary {}/{} helmet {} kit {}, CT primary {}/{} helmet {} kit {}",
+        bombs[0],
+        bombs[1],
+        bombs[2],
+        bought[0][0],
+        bought[0][3],
+        bought[0][1],
+        bought[0][2],
+        bought[1][0],
+        bought[1][3],
+        bought[1][1],
+        bought[1][2],
+    );
+    for team in [1u8, 2] {
+        let mut v: Vec<(&String, &u32)> = deaths.iter().filter(|d| d.0.0 == team).map(|d| (&d.0.1, d.1)).collect();
+        v.sort_by(|a, b| b.1.cmp(a.1));
+        let list: Vec<String> = v.iter().take(6).map(|(p, n)| format!("{p} {n}")).collect();
+        eprintln!("{map}: {} deaths: {}", if team == 1 { "T" } else { "CT" }, list.join(", "));
+    }
     stuck.report(&map);
     assert!(played > 0, "no round finished");
 }
@@ -430,4 +526,158 @@ impl StuckWatch {
             eprintln!("  {n:3} x {place} at {at:.1} toward {next:.1}");
         }
     }
+}
+
+/// Smokes go where they cut a defender's sight line onto the site, not on
+/// the site's middle (`tactics::smoke_spot`): for each approach that has
+/// one, the cloud covers the line from the hold watching it.
+#[test]
+fn dust2_smokes_cut_sight_lines_onto_the_sites() {
+    if !installed() {
+        return;
+    }
+    let (sim, _) = sim("de_dust2", 0, 0);
+    let t = sim.app.world().resource::<Tactics>();
+    let cuts = |cloud: Vec3, hold: Vec3, approach: Vec3| {
+        let (eye, seen) = (hold + Vec3::Y * 1.6, approach + Vec3::Y * 1.2);
+        let line = eye - seen;
+        let c = cloud + Vec3::Y;
+        let k = ((c - seen).dot(line) / line.length_squared()).clamp(0.0, 1.0);
+        c.distance(seen + line * k) < 2.0
+    };
+    let (mut with, mut cut, mut old_cut, mut lines) = (0, 0, 0, 0);
+    for s in &t.sites {
+        assert_eq!(s.smokes.len(), s.approaches[0].len(), "{}", s.name);
+        for (i, a) in s.approaches[0].iter().enumerate() {
+            let Some(hold) = s.holds[0].iter().find(|h| h.watch.contains(a)) else {
+                continue;
+            };
+            lines += 1;
+            // Before: smokes went on the site's middle.
+            old_cut += cuts(s.point, hold.spot, *a) as u32;
+            let Some(spot) = s.smokes[i] else { continue };
+            with += 1;
+            cut += cuts(spot, hold.spot, *a) as u32;
+            eprintln!(
+                "{} approach {a:.1}: hold {:.1}, smoke {spot:.1} ({:.1} m from the approach)",
+                s.name,
+                hold.spot,
+                spot.distance(*a)
+            );
+            assert!(spot.distance(*a) > 2.5, "not on the approach itself");
+        }
+    }
+    eprintln!("dust2: {lines} watched approaches, {with} with a smoke spot, {cut} cut (site middle: {old_cut})");
+    assert!(lines >= 3, "{lines}");
+    assert!(with * 2 >= lines, "{with} of {lines} approaches have a smoke spot");
+    assert_eq!(cut, with);
+}
+
+/// A bomb planted at A, the defenders there dead (the site lost): the
+/// rest fall back to a rally point, go in together and defuse it, the
+/// others covering the one defusing (`bot::objectives::Retake`), rather
+/// than walking in one by one.
+#[test]
+fn dust2_defenders_retake_together() {
+    if !installed() {
+        return;
+    }
+    use avian3d::prelude::Position;
+    use mashup::{
+        games::cs_source::{movement::to_engine, objectives::C4},
+        weapon::give,
+    };
+    let (mut sim, cts) = sim("de_dust2", 0, 5);
+    sim.app.world_mut().resource_mut::<BotConfig>().grenades = 0;
+    sim.app
+        .world_mut()
+        .resource_mut::<Console>()
+        .submit("mp_c4timer 45");
+    // Spread over both sites.
+    sim.seconds(20.0);
+    for &b in &cts {
+        let wants = sim.app.world().get::<mashup::weapon::economy::BotBuying>(b);
+        assert!(wants.is_some_and(|w| w.kit), "counter-terrorists want kits on a bomb map");
+    }
+    // A terrorist (not a bot) plants in A's box, then leaves the map.
+    let lift = 36.0 * 0.0254;
+    let t = sim.spawn_character(to_engine(Vec3::new(1160.0, 2480.0, 100.0)) + Vec3::Y * (lift + 0.05), movement::ID);
+    // (Unhurt by the defenders at A who see it.)
+    sim.app.world_mut().entity_mut(t).insert((Team(1), mashup::core::God));
+    sim.seconds(0.5);
+    give(sim.app.world_mut(), t, C4).unwrap();
+    sim.seconds(1.2);
+    sim.intent(t).fire = true;
+    sim.seconds(3.2);
+    sim.intent(t).fire = false;
+    let bomb = {
+        let w = sim.app.world_mut();
+        w.query::<(&mashup::objectives::bomb::PlantedBomb, &Transform)>()
+            .iter(w)
+            .map(|(_, t)| t.translation)
+            .next()
+            .expect("planted")
+    };
+    // Out of the way (no one to fight).
+    let away = Vec3::new(0.0, -50.0, 0.0);
+    sim.app.world_mut().get_mut::<Transform>(t).unwrap().translation = away;
+    if let Some(mut p) = sim.app.world_mut().get_mut::<Position>(t) {
+        p.0 = away;
+    }
+    // The defenders at A lost it.
+    let cts: Vec<Entity> = cts
+        .into_iter()
+        .filter(|&b| {
+            let lost = feet(&sim, b).distance(bomb) < 25.0;
+            if lost {
+                sim.app.world_mut().get_mut::<Health>(b).unwrap().current = 0.0;
+            }
+            !lost
+        })
+        .collect();
+    assert!(cts.len() >= 2, "{} defenders left", cts.len());
+    let trace = std::env::var("MASHUP_BOT_TRACE").is_ok();
+    let start: Vec<f32> = cts.iter().map(|&b| feet(&sim, b).distance(bomb)).collect();
+    let mut arrived: Vec<Option<f64>> = vec![None; cts.len()];
+    let mut crowding = 0.0f64;
+    let step = 0.25;
+    let mut time = 0.0;
+    let mut outcome = None;
+    while time < 46.0 {
+        sim.seconds(step);
+        time += step;
+        let near: Vec<f32> = cts.iter().map(|&b| feet(&sim, b).distance(bomb)).collect();
+        for (i, d) in near.iter().enumerate() {
+            if arrived[i].is_none() && *d < 10.0 {
+                arrived[i] = Some(time);
+            }
+        }
+        // Someone defusing: how many stand on the bomb with it.
+        let defusing = sim
+            .app
+            .world_mut()
+            .query::<&mashup::objectives::bomb::PlantedBomb>()
+            .iter(sim.app.world())
+            .any(|b| b.defuse.is_some());
+        if defusing {
+            crowding += step * near.iter().filter(|d| **d < 1.5).count().saturating_sub(1) as f64;
+        }
+        if trace && (time * 4.0) as u32 % 4 == 0 {
+            trace_bots(&sim, &cts, time);
+        }
+        outcome = sim.app.world().resource::<mashup::objectives::bomb::BombState>().outcome;
+        if outcome.is_some() {
+            break;
+        }
+    }
+    let times: Vec<f64> = arrived.iter().flatten().copied().collect();
+    let spread = times.iter().copied().fold(f64::MIN, f64::max) - times.iter().copied().fold(f64::MAX, f64::min);
+    eprintln!(
+        "retake: start {start:.1?} m from the bomb; within 10 m at {arrived:.1?} s (spread {spread:.1} s); \
+         others on the bomb while defusing {crowding:.1} s; outcome {outcome:?} at {time:.1} s"
+    );
+    assert_eq!(outcome, Some(mashup::objectives::bomb::BombOutcome::Defused));
+    assert_eq!(times.len(), cts.len(), "{arrived:?}");
+    assert!(spread < 6.0, "they came in {spread:.1} s apart");
+    assert!(crowding < 3.0, "others stood on the bomb {crowding:.1} s while it was defused");
 }

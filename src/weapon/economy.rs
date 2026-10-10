@@ -402,21 +402,38 @@ pub fn grenade_kinds(registry: &WeaponRegistry) -> Vec<(&'static str, GrenadeKin
 }
 
 /// Chance a bot buys each grenade it can afford after its gun and armour
-/// (ours; CS:S's bot buying isn't public): an HE, a flash (a second one
-/// at half the chance), a smoke.
+/// when it has no `BotBuying` of its own (ours; CS:S's bot buying isn't
+/// public): an HE, a flash (a second one at half the chance), a smoke.
 pub const BOT_GRENADE_CHANCE: [(GrenadeKind, f32); 3] = [
     (GrenadeKind::Blast, 0.6),
     (GrenadeKind::Flash, 0.5),
     (GrenadeKind::Smoke, 0.3),
 ];
 
-/// What a computer player buys with its money: a primary its team may buy
-/// and afford (if it has none), picked at random by `Prices::bot_weights`
-/// among the dearer half of those, ammo for its guns, armour with what's
-/// left, then now and then grenades (`BOT_GRENADE_CHANCE`). CS:S's own
-/// bots weigh preferences and difficulty; this is the simple version.
+/// What a computer player wants from the shop (set by its brain: `bot::
+/// buy`): preferred primaries in order (empty: the game's
+/// `Prices::bot_weights`), the chance of each grenade (HE, flash, smoke),
+/// and whether it wants a defusal kit.
+#[derive(Component, Clone, Debug, PartialEq)]
+pub struct BotBuying {
+    pub prefs: Vec<&'static str>,
+    pub grenades: [f32; 3],
+    pub kit: bool,
+}
+
+/// Bots' buying rules (ours, after CS:S bots as seen in play; their code
+/// isn't public): a primary is bought only with this much left for
+/// kevlar after it (else the bot saves: an eco round), money...
+pub const BOT_ARMOUR_RESERVE: u32 = 650;
+/// ...unless it has no more than this (pistol-round money): then kevlar, pistol ammo
+/// and grenades with the rest.
+pub const BOT_PISTOL_MONEY: u32 = 1000;
+/// Saving, it still buys a kit (if it wants one) with at least this.
+pub const BOT_ECO_KIT_MONEY: u32 = 1500;
+
+/// What a computer player buys with its money (`autobuy_rolling`), with a
+/// roll per bot and round.
 pub fn autobuy(world: &mut World, owner: Entity) {
-    // A roll per bot and round.
     let round = world
         .get_resource::<crate::core::RoundRestarts>()
         .map_or(0, |r| r.0 as u64);
@@ -430,11 +447,61 @@ pub fn autobuy(world: &mut World, owner: Entity) {
     });
 }
 
-/// `autobuy` with the given dice (each roll in 0..1).
-pub fn autobuy_rolling(world: &mut World, owner: Entity, roll: &mut dyn FnMut() -> f32) {
-    autobuy_gun_and_armour(world, owner, roll);
+/// How a bot's round of buying went (`autobuy_rolling`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BuyKind {
+    /// It had a primary already: armour, ammo, kit, grenades.
+    Kept,
+    /// Bought a primary, then the rest.
+    Full,
+    /// Pistol-round money: kevlar, pistol ammo and grenades.
+    Pistol,
+    /// Saved its money (an eco round).
+    Eco,
+}
+
+/// What a computer player buys (`BotBuying`, else plain defaults): with a
+/// primary already, armour, ammo, a kit and grenades; else its first
+/// preferred primary (or one picked by `Prices::bot_weights` among the
+/// dearer half) it can afford with `BOT_ARMOUR_RESERVE` left, then ammo, a
+/// helmet with kevlar when it can (else kevlar), a kit if it wants one,
+/// and grenades by the chances. Short of any primary it saves: nothing but
+/// a kit with `BOT_ECO_KIT_MONEY`; with pistol-round money
+/// (`BOT_PISTOL_MONEY`), kevlar, pistol ammo and grenades. Each roll in 0..1.
+pub fn autobuy_rolling(world: &mut World, owner: Entity, roll: &mut dyn FnMut() -> f32) -> BuyKind {
+    let wish = world.get::<BotBuying>(owner).cloned();
+    let kind = autobuy_gun(world, owner, wish.as_ref(), roll);
+    let money = |world: &World| world.get::<Money>(owner).map_or(u32::MAX, |m| m.0);
+    let kit = wish.as_ref().is_some_and(|w| w.kit);
+    if kind == BuyKind::Eco {
+        if kit && money(world) >= BOT_ECO_KIT_MONEY {
+            let _ = buy(world, owner, "defuser");
+        }
+        return kind;
+    }
+    // Ammo for what it carries, before armour (a gun is no use empty);
+    // a pistol round's money goes on kevlar first.
+    if kind == BuyKind::Pistol {
+        let _ = buy(world, owner, "vest");
+        let _ = buy(world, owner, "secammo");
+    } else {
+        let _ = buy(world, owner, "primammo");
+        let _ = buy(world, owner, "secammo");
+        let _ = buy(world, owner, "vesthelm").or_else(|_| buy(world, owner, "vest"));
+        if kit {
+            let _ = buy(world, owner, "defuser");
+        }
+    }
     let grenades = grenade_kinds(world.resource::<WeaponRegistry>());
-    for (kind, chance) in BOT_GRENADE_CHANCE {
+    let chances: [(GrenadeKind, f32); 3] = match &wish {
+        Some(w) => [
+            (GrenadeKind::Blast, w.grenades[0]),
+            (GrenadeKind::Flash, w.grenades[1]),
+            (GrenadeKind::Smoke, w.grenades[2]),
+        ],
+        None => BOT_GRENADE_CHANCE,
+    };
+    for (kind, chance) in chances {
         let Some((id, _, max)) = grenades.iter().find(|g| g.1 == kind) else {
             continue;
         };
@@ -445,26 +512,44 @@ pub fn autobuy_rolling(world: &mut World, owner: Entity, roll: &mut dyn FnMut() 
             }
         }
     }
+    kind
 }
 
-fn autobuy_gun_and_armour(world: &mut World, owner: Entity, roll: &mut dyn FnMut() -> f32) {
+fn autobuy_gun(world: &mut World, owner: Entity, wish: Option<&BotBuying>, roll: &mut dyn FnMut() -> f32) -> BuyKind {
     let prices = world.resource::<Prices>().clone();
     let slots = weapon_slots(world.resource::<WeaponRegistry>());
     let team = world.get::<crate::core::Team>(owner).map(|t| t.0);
-    let money = world.get::<Money>(owner).map_or(0, |m| m.0);
+    let has_money = world.get::<Money>(owner).is_some();
+    let money = world.get::<Money>(owner).map_or(u32::MAX, |m| m.0);
     let held: Vec<u8> = world
         .get::<Inventory>(owner)
         .map(|i| i.weapons.iter().filter_map(|w| world.get::<Weapon>(*w)).map(|w| w.slot).collect())
         .unwrap_or_default();
-    if !held.contains(&0) {
-        let weight = |id: &str| prices.bot_weights.get(id).copied().unwrap_or(1.0);
-        let mut can: Vec<(&'static str, u32)> = slots
+    if held.contains(&0) {
+        return BuyKind::Kept;
+    }
+    // Free buying (no money) keeps nothing back.
+    let reserve = if has_money { BOT_ARMOUR_RESERVE.min(prices.vest) } else { 0 };
+    let ok = |id: &str, price: u32| {
+        price.saturating_add(reserve) <= money && prices.team_only.get(id).is_none_or(|t| Some(*t) == team)
+    };
+    let primaries: Vec<(&'static str, u32)> = slots
+        .iter()
+        .filter(|(_, slot)| *slot == 0)
+        .filter_map(|(id, _)| Some((*id, *prices.weapons.get(id)?)))
+        .collect();
+    // The profile's preferences in order: the first it can afford.
+    let preferred = wish.and_then(|w| {
+        w.prefs
             .iter()
-            .filter(|(_, slot)| *slot == 0)
-            .filter_map(|(id, _)| Some((*id, *prices.weapons.get(id)?)))
-            .filter(|(id, price)| {
-                *price <= money && prices.team_only.get(id).is_none_or(|t| Some(*t) == team) && weight(id) > 0.0
-            })
+            .find_map(|p| primaries.iter().find(|(id, price)| id == p && ok(id, *price)))
+    });
+    let chosen = preferred.copied().or_else(|| {
+        let weight = |id: &str| prices.bot_weights.get(id).copied().unwrap_or(1.0);
+        let mut can: Vec<(&'static str, u32)> = primaries
+            .iter()
+            .copied()
+            .filter(|(id, price)| ok(id, *price) && weight(id) > 0.0)
             .collect();
         // The dearer half (rounded up): spend the money, but not always on
         // the single dearest thing.
@@ -472,18 +557,22 @@ fn autobuy_gun_and_armour(world: &mut World, owner: Entity, roll: &mut dyn FnMut
         can.truncate(can.len().div_ceil(2));
         let total: f32 = can.iter().map(|(id, _)| weight(id)).sum();
         let mut pick = roll() * total;
-        let chosen = can.iter().find(|(id, _)| {
-            pick -= weight(id);
-            pick < 0.0
-        });
-        if let Some((id, _)) = chosen.or(can.last()) {
+        can.iter()
+            .find(|(id, _)| {
+                pick -= weight(id);
+                pick < 0.0
+            })
+            .or(can.last())
+            .copied()
+    });
+    match chosen {
+        Some((id, _)) => {
             let _ = buy(world, owner, id);
+            BuyKind::Full
         }
+        None if money <= BOT_PISTOL_MONEY => BuyKind::Pistol,
+        None => BuyKind::Eco,
     }
-    // Ammo for what it carries, before armour (a gun is no use empty).
-    let _ = buy(world, owner, "primammo");
-    let _ = buy(world, owner, "secammo");
-    let _ = buy(world, owner, "vesthelm").or_else(|_| buy(world, owner, "vest"));
 }
 
 #[cfg(test)]
@@ -537,14 +626,20 @@ mod tests {
         buy(&mut w, p, "vesthelm").unwrap();
         assert_eq!(w.get::<Money>(p), Some(&Money(1000)));
         assert_eq!(w.get::<Armor>(p).map(|a| a.helmet), Some(true));
-        // A bot with 2700: the rifle (2500), not armour (200 left).
-        w.entity_mut(p).insert(Money(2700));
+        // A bot with 2700: saves (the rifle would leave nothing for
+        // kevlar); with 3200 the rifle (2500) and kevlar (650).
         let rifle = w.get::<Inventory>(p).unwrap().weapons.clone();
         for r in rifle {
             w.get_mut::<Inventory>(p).unwrap().weapons.retain(|x| *x != r);
         }
-        autobuy(&mut w, p);
-        assert_eq!(w.get::<Money>(p), Some(&Money(200)));
+        w.entity_mut(p).remove::<Armor>();
+        w.entity_mut(p).insert(Money(2700));
+        assert_eq!(autobuy_rolling(&mut w, p, &mut || 0.0), BuyKind::Eco);
+        assert_eq!(w.get::<Money>(p), Some(&Money(2700)));
+        w.entity_mut(p).insert(Money(3200));
+        assert_eq!(autobuy_rolling(&mut w, p, &mut || 0.0), BuyKind::Full);
+        assert_eq!(w.get::<Money>(p), Some(&Money(50)));
+        assert_eq!(w.get::<Armor>(p).map(|a| a.helmet), Some(false));
         w.insert_resource(BuyWindow(Err("buy time is over".into())));
         assert_eq!(buy(&mut w, p, "vest").unwrap_err(), "buy time is over");
     }
