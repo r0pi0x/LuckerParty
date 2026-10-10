@@ -21,7 +21,8 @@ along, late joiners get the whole state, maps downloaded (connection or
 `sv_downloadurl`) and checked, the loading dialog for joining and map
 changes; slice 8 done (2026-10-09): server queries on the game port
 (A2S_INFO's layout), LAN discovery, the Find Servers dialog with
-favourites, history and passwords. Recommendation:
+favourites, history and passwords; a soak before playing with friends
+(item 10, 2026-10-09). Recommendation:
 **bevy_replicon + renet (netcode over UDP)** for transport and
 replication; **our own Source-style prediction, interpolation and lag
 compensation** on top. Slices below; slice 0 is refactoring that pays off
@@ -1234,6 +1235,67 @@ with tests passing and something to see.
    user's decision: multiplayer stays standard CS:S — servers, Find
    Servers, `connect`, map rotation by the server's cvars). Revisit if
    Lucker Party later needs parties, minigame rotation or NAT relays.
+10. **[x] Soak before playing with friends** (2026-10-09). Headless:
+   `tests/it/heavy/net_soak.rs` (docs/OBSERVABILITY.md, "Soak"): a server
+   on de_dust2 with four clients on their own links (0, 50, 150 ms with
+   2 % loss, 300 ms with 5 % loss), bots filling to twelve, scripted
+   players (walk, jump, duck, shoot at whoever they see, buy, grenades,
+   drop and pick up, plant and defuse, chat, radio, names), one client
+   leaving and another joining, `changelevel` to the greybox, a
+   community map from the content cache (gg_fy_tactic_fight) and back to
+   de_dust2; 3 game minutes by default, 30 with `MASHUP_SOAK_MINUTES=30`.
+   Live: `mashup_server` on 27111 (de_dust2, rounds, `bot_quota 10`
+   fill) and three windowed clients (0, 100 ms, 200 ms with 3 % loss)
+   driven through `mashup/console` for 17 minutes with three map
+   changes, screenshots every ~2 minutes.
+   - **Budget** (set here; the 26 KB/s of §2 was an estimate before
+     compression): at most 96 KB/s received per client with twelve
+     characters on links up to 150 ms and 3 % loss, 128 KB/s at 300 ms
+     and 5 %; prediction errors other than contacts with other players,
+     hits and server teleports at most 2 % of states (5 % on the worst
+     link), never more than 40 in a row; settled values (health, team,
+     score, name, the round, a client's own money, armour, weapons and
+     ammo) and others' bodies the server's; entity counts level from
+     round to round and between visits of a map; no Bevy errors.
+   - Measured (3 game minutes, dev build): bandwidth 71-84 KB/s per
+     client (96 at 300 ms/5 %), peaks ~200-290 KB/s at joins and map
+     changes; own state ~490 bytes a tick, `NetBody` 45 bytes per
+     character a tick; prediction errors 0.2-1.2 % of states
+     (3.5 % at 300 ms/5 %) plus 1-4 % from contacts and hits; server
+     frame 2-7 ms mean (~4 ms per tick, debug build, a loaded machine);
+     entities per round flat (de_dust2 ~1,100 on each side, greybox
+     ~550-590, the community map ~640-700) and de_dust2's second visit
+     within a few dozen of its first. Live (17 minutes): clients at a
+     60 fps median, 61-66 KB/s in (p90 ~85, max 140), server status
+     showing every client's pings and commands; no errors in the
+     server log.
+   - Found and fixed: (1) a replicated value's last change could be
+     lost for good on a lossy link (a dead player's last health, a score
+     one kill short, every player's 0/0 after a map change; replicon took
+     it as delivered): each value goes out once more after it settles
+     (`net::server::resend_settled`; test `net::a_settled_value_reaches_
+     a_client_that_lost_it`, the soak's settled-value check); (2) a
+     client's physics copy of its own position (`Position`) stayed stale
+     after a correction below the physics' 0.01 mm tolerance, so dead
+     players mispredicted on every tick (`net::canonical_position` sets
+     it, unmarked; the soak checks dead players' sub-tolerance errors);
+     (3) `hostname` was two cvars, the server lists' and `status`'s one
+     never set by the console (`+hostname` on a dedicated server changed
+     nothing players saw; test `net_query::hostname_is_one_setting`,
+     `console::Console::replaced` lists any cvar registered twice); (4)
+     several sounds for one source's channel in a frame (a client's
+     burst after a stall) overlapped and the old one was despawned once
+     per message, a warning each (hundreds a client in the live soak;
+     test `map_sound_fx::a_burst_on_one_channel_replaces_cleanly`); (5)
+     chat and radio flood allowances were kept for every player who ever
+     spoke (unit test `chat::tests::flood_forgets_who_left`); `NetSim`
+     gave a joining client the id of one that had left.
+   - Not fixed (docs/tech-debt.md, net): where replicon loses the value
+     in (1); bandwidth well over the §2 estimate (no deltas for the own
+     state, unquantized bodies, an update every tick); mispredictions
+     when walking into other players and when hit; a dedicated server
+     making ragdolls and silent looping sounds; 3-4 s client stalls
+     putting a map in.
 
 ## 6. Open questions for the user
 

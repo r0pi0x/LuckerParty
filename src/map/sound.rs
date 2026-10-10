@@ -394,6 +394,13 @@ fn play_sounds(
         *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
         (*seed >> 40) as f32 / (1u64 << 24) as f32
     };
+    // Sounds stopped this run, and the ones started this run by source and
+    // channel: several messages for one source's channel in a frame (a
+    // network client gets a burst after a stall) replace each other, and
+    // each old sound is stopped once (it was despawned twice: a warning
+    // each time, hundreds in a 17-minute live soak).
+    let mut stopped: Vec<Entity> = Vec::new();
+    let mut started: Vec<((Entity, u8), Entity)> = Vec::new();
     for m in messages.read() {
         let Some(entry) = bank.0.entry(&m.entry) else {
             continue;
@@ -425,12 +432,17 @@ fn play_sounds(
         // Replace whatever this source plays on this channel.
         if let (Some(source), Some(channel)) = (m.source, m.channel) {
             for (e, p, sink) in &playing {
-                if p.source == Some(source) && p.channel == Some(channel) {
+                if p.source == Some(source) && p.channel == Some(channel) && !stopped.contains(&e) {
                     if let Some(sink) = sink {
                         sink.stop();
                     }
-                    commands.entity(e).despawn();
+                    stopped.push(e);
+                    // The audio backend may despawn a finished one first.
+                    commands.entity(e).try_despawn();
                 }
+            }
+            if let Some(i) = started.iter().position(|(k, _)| *k == (source, channel)) {
+                commands.entity(started.swap_remove(i).1).despawn();
             }
         }
         let once = MapSoundClip {
@@ -439,16 +451,21 @@ fn play_sounds(
         };
         let gains = Arc::new(Gains::new(left, right).with_send(send));
         let handle = sources.add(LiveClip::new(once, gains, hearing.mix.clone()).with_room(&room));
-        commands.spawn((
-            AudioPlayer(handle),
-            PlaybackSettings::DESPAWN
-                .with_volume(Volume::Linear(1.0))
-                .with_speed(pitch / 100.0),
-            Playing {
-                source: m.source,
-                channel: m.channel,
-            },
-        ));
+        let e = commands
+            .spawn((
+                AudioPlayer(handle),
+                PlaybackSettings::DESPAWN
+                    .with_volume(Volume::Linear(1.0))
+                    .with_speed(pitch / 100.0),
+                Playing {
+                    source: m.source,
+                    channel: m.channel,
+                },
+            ))
+            .id();
+        if let (Some(source), Some(channel)) = (m.source, m.channel) {
+            started.push(((source, channel), e));
+        }
     }
 }
 

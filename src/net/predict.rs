@@ -230,6 +230,10 @@ pub struct NetGraph {
     /// Position error of the last and the worst prediction error, m.
     pub last_error: f32,
     pub worst_error: f32,
+    /// The predicted components that differed in the last error, and its
+    /// server tick.
+    pub last_differing: Vec<&'static str>,
+    pub last_error_tick: u64,
     /// Commands run again after corrections.
     pub replayed: u64,
     /// Errors in the last second (real time) and their worst, m.
@@ -631,6 +635,8 @@ fn reconcile(world: &mut World, player: Entity, server: OwnState) {
         warn!("the server's state of our player didn't decode: {e}");
         return;
     }
+    // The physics' copy of the position too (`canonical_position`).
+    super::canonical_position(world, player);
     // What it stands on isn't in the blob (an entity): the mover by its
     // map index, so the replay carries it as the server did.
     super::movers::restore_ground(world, player, server.ground);
@@ -718,6 +724,8 @@ fn reconcile(world: &mut World, player: Entity, server: OwnState) {
             graph.errors += 1;
             graph.last_error = dist;
             graph.worst_error = graph.worst_error.max(dist);
+            graph.last_differing = names.clone();
+            graph.last_error_tick = server.tick;
             graph.recent.push_back((now, dist));
             if world.resource::<PredictSettings>().showerror > 0 {
                 info!(

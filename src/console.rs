@@ -132,6 +132,10 @@ pub struct Console {
     pub dirty: bool,
     /// Lines printed since startup (the output keeps only the last ones).
     pub printed: u64,
+    /// Cvars registered again under a name taken (the later one replaced
+    /// the earlier): two settings answering to one name, a bug
+    /// (`hostname` had two, so the server's name couldn't be set).
+    pub replaced: Vec<String>,
 }
 
 const MAX_OUTPUT: usize = 4000;
@@ -139,7 +143,9 @@ const MAX_ALIAS_DEPTH: usize = 32;
 
 impl Console {
     pub fn add_cvar(&mut self, cvar: Cvar) {
-        self.cvars.insert(cvar.name.to_lowercase(), cvar);
+        if let Some(old) = self.cvars.insert(cvar.name.to_lowercase(), cvar) {
+            self.replaced.push(old.name);
+        }
     }
 
     /// Mark a cvar to be saved in config.cfg.

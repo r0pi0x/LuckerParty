@@ -412,18 +412,58 @@ let a = sim.character_of(0).unwrap();           // the server's copy
 
 `net::status(world)` is the `status` text; `net::LastDisconnect` says why
 a game ended. `netcode_over_loopback` covers the real UDP transport.
+`NetSim::set_conditions(i, ...)` gives client `i` a link of its own (a
+mix of good and bad links on one server), `remove_client(i)` makes it
+leave (ids are never given out again, as real clients' random ones
+aren't); the link counts the data bytes it carried to and from each
+client (`Link::bytes_to`, `bytes_from`: bandwidth per client).
 
 Prediction (`tests/it/net_prediction.rs`): a client's `net::predict::NetGraph`
 counts the server states it compared (`checked`), the ones that differed
-from its prediction (`errors`, `last_error`/`worst_error` in m) and
-restarts (`resyncs`); `CommandClock` has the command tick and the lead
+from its prediction (`errors`, `last_error`/`worst_error` in m, which
+components differed in the last one: `last_differing`, at server tick
+`last_error_tick`) and restarts (`resyncs`); `CommandClock` has the command tick and the lead
 the server reports; the server's `net::server::CommandBuffer` on a
 player's character has its queued commands, `missed`, `late` and `early`
 counts. `PredictionHistory` holds the client's predicted ticks not yet
 confirmed: compare them with the server's state at the same tick
 (`PredictedComponents::encode`), never the two worlds' present (the
-client runs ahead). `cargo test --features dev --test it net_prediction
+client runs ahead); `PredictedComponents::parts` splits a state blob by
+component to see what differs (the soak's `MASHUP_SOAK_DIAGNOSE`
+decodes positions and velocities). `cargo test --features dev --test it net_prediction
 -- --nocapture` prints the numbers per latency, jitter and loss.
+
+**Soak** (`tests/it/heavy/net_soak.rs`, multiplayer.md "Soak"): a
+server on de_dust2 with four clients on their own links (0, 50, 150 ms
+with 2 % loss, 300 ms with 5 % loss; one leaves, another joins), bots
+filling to twelve, scripted players (walking, shooting, buying,
+grenades, drops, the bomb planted and defused, chat, radio, names) and
+three map changes (greybox, a community map from the content cache,
+de_dust2), checking all along: settled values the server's on every
+client, others' bodies as the server had them at that tick, prediction
+errors by kind (contacts with others and hits are the server's to say;
+runs of errors in a row are bugs), entity counts per round and map
+visit, memory, bandwidth and the server's frame time; Bevy errors
+(failed commands) are counted too. `MASHUP_SOAK_MINUTES` (3 by default,
+30 for the long run), `MASHUP_SOAK_COMMUNITY=<map>`;
+`MASHUP_SOAK_DIAGNOSE=1` prints what differed in the first prediction
+errors of each kind and in each long run of them,
+`MASHUP_SOAK_TRACE_HEALTH=1` every health change on the server and each
+client by step. It prints the summary tables (`cargo test --features dev
+--test it heavy::net_soak -- --nocapture`; ~1 real minute per game minute
+in the dev build).
+
+A live soak (real processes, this box): `mashup_server -port 27111 +map
+de_dust2 +maxplayers 12 +mashup_rounds 1 +bot_quota_mode fill +bot_quota
+10 +bot_join_after_player 0 +sv_cheats 1` with its stdin on a fifo
+(`changelevel` mid-run), three `mashup --window 800x450 +name LiveN
++mashup_perf_log 1 +connect 127.0.0.1:27111` with their own
+`MASHUP_REMOTE_PORT` (two with `+net_fakelag 100 +net_fakejitter 10`,
+`+net_fakelag 200 +net_fakejitter 20 +net_fakeloss 3`), each driven
+through `mashup/console` (`+forward`/`-forward`, `setang`, `+attack`,
+`buy`, `drop`, `say`, radio names, `screenshot`, `name`); RSS from
+`/proc/<pid>/status`; then grep the logs for `WARN`, `ERROR` and `hitch:`
+and read the server's `status` (missed commands per player).
 
 Interpolation and movers (`tests/it/net_interp.rs`, at 240 frames a
 second with `NetSim::set_frame(1.0 / 240.0)`): `net::interp::InterpClock`
@@ -574,7 +614,15 @@ public network), add a rule in an administrator PowerShell:
 `New-NetFirewallRule -DisplayName "mashup" -Direction Inbound -Protocol UDP -LocalPort 27015 -Action Allow`
 (use the port you host on). Clients need no rule. Find the host's address
 with `ipconfig` (IPv4 Address) and join with `connect 192.168.x.y:27015`.
-Over the internet the host forwards that UDP port on its router. Both
+Over the internet the host forwards that UDP port on its router (UDP
+only, to the host's LAN address; a fixed LAN address or a DHCP
+reservation keeps the rule pointing at it) and gives friends its public
+address (what a "what is my IP" page shows); behind carrier-grade NAT
+(a public address the router's WAN side doesn't have) forwarding can't
+work: one of the friends hosts, or a VPN (Tailscale, ZeroTier) puts
+everyone on one network. The host's upload carries every client: about
+80 KB/s (0.65 Mbit/s) each with twelve characters, more on lossy links
+(multiplayer.md, "Soak"). Both
 games must be the same build (`status` shows the version); another build
 is refused with a message.
 

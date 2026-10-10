@@ -785,6 +785,12 @@ impl PredictedComponents {
             .collect()
     }
 
+    /// A blob's parts by component name (None: absent), in its order:
+    /// for tools that look inside a prediction error.
+    pub fn parts<'a>(&self, blob: &'a [u8]) -> Result<Vec<(&'static str, Option<&'a [u8]>)>, String> {
+        Ok(self.net_order().into_iter().map(|(n, _)| n).zip(self.split(blob)?).collect())
+    }
+
     /// The networked components by name.
     fn net_order(&self) -> Vec<(&'static str, NetCodec)> {
         let mut v: Vec<(&'static str, NetCodec)> = self.0.iter().filter_map(|c| Some((c.name, c.net?))).collect();

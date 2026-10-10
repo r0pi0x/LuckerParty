@@ -366,3 +366,47 @@ fn fake_lag_delays_what_the_client_receives() {
     net::disconnect(client.app.world_mut(), "done");
     net::disconnect(server.app.world_mut(), "done");
 }
+
+/// A changed value goes out once more after it settles
+/// (`net::server::resend_settled`), so a client that lost its last change
+/// gets it. The soak (tests/it/heavy/net_soak.rs) saw clients with 2-3 %
+/// loss keep a dead player's last health, a score one kill short or the
+/// old scores after a map change until the value changed again. Here the
+/// client's copy is spoiled by hand, as such a loss leaves it, right
+/// after the change arrived.
+#[test]
+fn a_settled_value_reaches_a_client_that_lost_it() {
+    let mut sim = NetSim::new(lan(), 31, 1, greybox);
+    let host = host(&mut sim);
+    sim.until_joined(200);
+    sim.ticks(net::server::SETTLE_TICKS + 30);
+    sim.server.app.world_mut().get_mut::<Health>(host).unwrap().current = 0.5;
+    let theirs = seen_by(&mut sim, 0, net::HOST_ID).expect("the host's character on the client");
+    let arrived = sim.until(30, |s| s.clients[0].app.world().get::<Health>(theirs).map(|h| h.current) == Some(0.5));
+    assert!(arrived, "the change arrived");
+    // Its acknowledgement back at the server (until then it is sent with
+    // every update anyway).
+    sim.ticks(10);
+    sim.clients[0]
+        .app
+        .world_mut()
+        .get_mut::<Health>(theirs)
+        .unwrap()
+        .bypass_change_detection()
+        .current = 0.25;
+    let ok = sim.until(net::server::SETTLE_TICKS + 30, |s| {
+        s.clients[0].app.world().get::<Health>(theirs).map(|h| h.current) == Some(0.5)
+    });
+    assert!(ok, "the settled value was sent again");
+    // Once: spoiled again later, it stays spoiled (nothing changed since).
+    sim.ticks(10);
+    sim.clients[0]
+        .app
+        .world_mut()
+        .get_mut::<Health>(theirs)
+        .unwrap()
+        .bypass_change_detection()
+        .current = 0.25;
+    sim.ticks(net::server::SETTLE_TICKS * 2);
+    assert_eq!(sim.clients[0].app.world().get::<Health>(theirs).unwrap().current, 0.25, "sent once, not over and over");
+}
