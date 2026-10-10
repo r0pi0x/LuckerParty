@@ -551,10 +551,12 @@ What still blocks, by maps affected:
 6. **Timers**: surf/kz timers are server plugins (and Momentum mod's
    `trigger_momentum_timer_*` on 4 surf maps, not CS:S classes): start
    and end zones run their map logic, no timer shows.
-7. Round 2's: func_tanktrain (surf_boreas), point_tesla and particles
-   (surf_halloween_tf2, surf_hellenic), phys_motor (surf_surreal),
-   func_water_analog (gg_simpsons_dusty_2), env_spritetrail (bhop_addict,
-   surf_stickybutt, gg_future, gg_fy_tactic_fight), smokestacks.
+7. Visual and physics entities on these maps (func_tanktrain on
+   surf_boreas, point_tesla and particles on surf_halloween_tf2 and
+   surf_hellenic, phys_motor on surf_surreal, func_water_analog on
+   gg_simpsons_dusty_2, spritetrails on bhop_addict, surf_stickybutt,
+   gg_future, gg_fy_tactic_fight) are round 2's (above); this session's
+   checks don't cover them.
 8. surf_sedona's CS:GO inputs (RunScriptCode, AddCollectible) are
    refused, as CS:S would; its collectible counter doesn't count.
 
