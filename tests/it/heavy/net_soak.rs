@@ -22,7 +22,11 @@
 //!   server's frame time stay level.
 //!
 //! `MASHUP_SOAK_MINUTES` sets the game time (default 3; 30 for the long
-//! run), `MASHUP_SOAK_COMMUNITY` the community map. A summary table is
+//! run), `MASHUP_SOAK_COMMUNITY` the community map,
+//! `MASHUP_SOAK_UPDATERATE` and `MASHUP_SOAK_RATE` the clients'
+//! `cl_updaterate` and `rate` (the bandwidth budget follows the update
+//! rate), `MASHUP_SOAK_DUMP=<file>` keeps what the server sends each
+//! client (to try compression on). A summary table is
 //! printed: `MASHUP_SOAK_MINUTES=30 cargo test --release --features dev
 //! --test it heavy::net_soak -- --nocapture`. Skipped without a CS:S
 //! install.
@@ -146,6 +150,43 @@ fn community_map() -> Option<String> {
         .into_iter()
         .find(|n| has(n))
         .map(|n| format!("cs_source:{n}"))
+}
+
+/// `MASHUP_SOAK_UPDATERATE`, `MASHUP_SOAK_RATE`: every client's
+/// `cl_updaterate` and `rate` (default: the game's).
+fn soak_env(key: &str) -> Option<f32> {
+    std::env::var(key).ok()?.parse().ok()
+}
+
+fn updaterate() -> Option<f32> {
+    soak_env("MASHUP_SOAK_UPDATERATE")
+}
+
+/// `MASHUP_SOAK_DUMP=<file>`: what the server sends each client in a
+/// frame (its messages one after another), as records of the client's
+/// entity bits (u64), a length (u32) and the bytes, little-endian, up to
+/// 64 MB: to try compression on (docs/plans/active/multiplayer.md,
+/// "Bandwidth").
+fn dump_messages(path: String) -> impl FnMut(Res<bevy_replicon::shared::backend::server_messages::ServerMessages>) {
+    use std::io::Write;
+    let mut file = std::io::BufWriter::new(std::fs::File::create(path).expect("dump file"));
+    let mut written = 0usize;
+    move |messages| {
+        let mut per: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
+        for (client, _, bytes) in messages.iter_sent() {
+            per.entry(client.to_bits()).or_default().extend_from_slice(bytes);
+        }
+        for (client, bytes) in per {
+            if written > 64 << 20 {
+                return;
+            }
+            written += bytes.len() + 12;
+            let _ = file.write_all(&client.to_le_bytes());
+            let _ = file.write_all(&(bytes.len() as u32).to_le_bytes());
+            let _ = file.write_all(&bytes);
+        }
+        let _ = file.flush();
+    }
 }
 
 /// Resident memory of this process, MB (Linux; None elsewhere).
@@ -638,9 +679,17 @@ impl Soak {
     fn add_client(&mut self, conditions: LinkConditions) {
         let n = self.stats.len() + 1;
         let name = format!("Soaker {n}");
-        let i = self
-            .sim
-            .add_client(|w| w.resource_mut::<NetSettings>().name = name.clone());
+        let rate = updaterate();
+        let i = self.sim.add_client(|w| {
+            w.resource_mut::<NetSettings>().name = name.clone();
+            let mut settings = w.resource_mut::<mashup::net::predict::RateSettings>();
+            if let Some(r) = rate {
+                settings.updaterate = r;
+            }
+            if let Some(r) = soak_env("MASHUP_SOAK_RATE") {
+                settings.rate = r;
+            }
+        });
         self.sim.set_conditions(i, conditions);
         let id = self.sim.client_id(i);
         self.brains.push(Brain::new(id, self.step));
@@ -1245,9 +1294,9 @@ impl Soak {
                 let off = Vec3::from(*server).distance(Vec3::from(origin));
                 stats.body_compared += 1;
                 stats.body_worst = stats.body_worst.max(off);
-                // A body off for longer than a value takes to settle
-                // and be sent again (`resend_settled`) plus a round trip
-                // is lost for good; shorter, a loss being repaired.
+                // A body off for longer than two seconds is lost for
+                // good; shorter, a loss being repaired (a resent update
+                // and the mutations held back behind it).
                 let run = self.body_runs.entry((id, *s)).or_insert(None);
                 if off <= 0.01 {
                     *run = None;
@@ -1256,7 +1305,7 @@ impl Soak {
                     stats.body_off_loading += 1;
                 } else {
                     let (since, counted) = run.get_or_insert((step, false));
-                    if !*counted && step - *since >= mashup::net::server::SETTLE_TICKS + 64 {
+                    if !*counted && step - *since >= 128 {
                         *counted = true;
                         stats.body_off += 1;
                         if self.examples.len() < 30 {
@@ -1346,6 +1395,14 @@ fn soak_four_clients_and_bots_over_map_changes() {
         }
     };
     let mut sim = NetSim::new(LinkConditions::default(), 97, 0, setup);
+    if let Ok(path) = std::env::var("MASHUP_SOAK_DUMP") {
+        sim.server.app.add_systems(
+            PostUpdate,
+            dump_messages(path)
+                .after(mashup::net::server::pace_messages)
+                .before(bevy_replicon::prelude::ServerSystems::SendPackets),
+        );
+    }
     {
         let w = sim.server.app.world_mut();
         let data = maps.get(DUST2);
@@ -1576,12 +1633,16 @@ fn report(soak: &mut Soak, minutes: f64, real: Duration) {
         if rate > if worst_link { 5.0 } else { 2.0 } {
             failures.push(format!("client {id}: {rate:.2} % of states mispredicted"));
         }
-        // The plan's budget (multiplayer.md, "Soak"): 112 KB/s a client
-        // with twelve characters (measured 82-98), 128 on the worst link
-        // (105-108: loss makes replicon send values again until
+        // The plan's budget (multiplayer.md, "Soak" and "Bandwidth"):
+        // with twelve characters, 10 KB/s plus 0.4 per update a second
+        // (18 at the game's 20: measured 9.5-11; 23 at 33: 14.5-17; 36
+        // with one every tick: 27.5-33.5), half again on the worst link
+        // (13, 19 and 49: loss makes replicon send values again until
         // acknowledged).
-        if mean > if worst_link { 128.0 } else { 112.0 } {
-            failures.push(format!("client {id}: {mean:.1} KB/s in"));
+        let hz = updaterate().unwrap_or(mashup::net::server::DEFAULT_UPDATERATE).min(64.0) as f64;
+        let budget = (10.0 + 0.4 * hz) * if worst_link { 1.5 } else { 1.0 };
+        if mean > budget {
+            failures.push(format!("client {id}: {mean:.1} KB/s in (budget {budget:.0})"));
         }
         if s.mismatches > 0 {
             failures.push(format!(
@@ -1689,17 +1750,23 @@ fn report(soak: &mut Soak, minutes: f64, real: Duration) {
     }
     {
         let w = soak.server();
-        let own: Vec<usize> = w
+        let own: Vec<(usize, usize)> = w
             .query::<&mashup::net::server::OwnStateOut>()
             .iter(w)
-            .filter_map(|o| o.state().map(|s| postcard::to_allocvec(s).unwrap().len()))
+            .map(|o| o.last_sizes)
             .collect();
+        let pacing: Vec<(u64, u64)> = w
+            .query::<&mashup::net::server::UpdatePacing>()
+            .iter(w)
+            .map(|p| (p.sent, p.choked))
+            .collect();
+        println!("updates sent, choked per client: {pacing:?} (cl_updaterate {:?})", updaterate());
         let bodies: Vec<usize> = w
             .query::<&NetBody>()
             .iter(w)
             .map(|b| postcard::to_allocvec(b).unwrap().len())
             .collect();
-        println!("\nsizes: OwnState {own:?} bytes, NetBody {bodies:?} bytes");
+        println!("\nsizes: OwnState (delta, whole) {own:?} bytes, NetBody {bodies:?} bytes");
     }
     for (id, s) in &soak.stats {
         if s.dead_drift > 0 {

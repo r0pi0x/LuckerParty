@@ -147,8 +147,9 @@ fn looks_replicate_to_others() {
     let other = seen_by(&mut sim, 1, 1).unwrap();
     let world = sim.clients[1].app.world();
     let i = world.get::<mashup::core::Intent>(other).unwrap();
+    // Within the network's 16-bit angles (`net::quant`).
     assert!(
-        (i.yaw - 1.0).abs() < 1e-6 && (i.pitch + 0.25).abs() < 1e-6,
+        (i.yaw - 1.0).abs() < 1e-4 && (i.pitch + 0.25).abs() < 1e-4,
         "{} {}",
         i.yaw,
         i.pitch
@@ -432,7 +433,9 @@ fn fake_lag_delays_what_the_client_receives() {
 /// after the acknowledgement came back, didn't carry the value: it was
 /// lost for good. The soak (tests/it/heavy/net_soak.rs) saw lossy clients
 /// keep a score one kill short, a dead player's last health, the old
-/// scores after a map change. Each cycle here: a shape change (an update),
+/// scores after a map change. The client now applies the older held-back
+/// values too, each component in tick order (`net::ordered`). Each cycle
+/// here: a shape change (an update),
 /// a value change two ticks later, a value changing every tick all along.
 #[test]
 fn a_value_survives_held_back_mutations() {
@@ -490,37 +493,89 @@ fn a_value_survives_held_back_mutations() {
     assert!(stale.is_empty(), "the client was left a value behind: {stale:?}");
 }
 
-/// A changed value keeps going out with every update for
-/// `SETTLE_TICKS` after its last change (`net::server::resend_settled`),
-/// then stops. Here the client's copy is spoiled by hand, as a lost
-/// change leaves it: within the window it comes back at once; after it,
-/// nothing is sent any more (the value didn't change).
+
+/// Each client gets updates at its own `cl_updaterate` (within the
+/// server's `sv_minupdaterate` and `sv_maxupdaterate`) and no more than
+/// its `rate` allows (`net::server::UpdatePacing`): a client asking for
+/// 20 hears a tick about every 50 ms, one asking for 66 every tick, one
+/// whose `rate` is below what its updates take is choked (updates
+/// skipped); all predict without errors and see the host where the
+/// server has it.
 #[test]
-fn a_changed_value_goes_out_for_a_while_then_stops() {
-    let mut sim = NetSim::new(lan(), 31, 1, greybox);
+fn updates_follow_each_clients_rate() {
+    let mut sim = NetSim::new(lan(), 61, 0, greybox);
     let host = host(&mut sim);
-    sim.until_joined(200);
-    sim.ticks(net::server::SETTLE_TICKS + 30);
-    sim.server.app.world_mut().get_mut::<Health>(host).unwrap().current = 0.5;
-    let theirs = seen_by(&mut sim, 0, net::HOST_ID).expect("the host's character on the client");
-    let health = |sim: &NetSim| sim.clients[0].app.world().get::<Health>(theirs).map(|h| h.current);
-    let spoil = |sim: &mut NetSim| {
-        sim.clients[0]
-            .app
-            .world_mut()
-            .get_mut::<Health>(theirs)
-            .unwrap()
-            .bypass_change_detection()
-            .current = 0.25;
+    sim.server
+        .app
+        .world_mut()
+        .resource_mut::<mashup::console::Console>()
+        .submit("sv_minrate 0");
+    for (updaterate, rate) in [(20.0, 30000.0), (66.0, 1e6), (66.0, 1500.0)] {
+        sim.add_client(move |w| {
+            *w.resource_mut::<net::predict::RateSettings>() = net::predict::RateSettings { updaterate, rate };
+        });
+    }
+    sim.until_joined(600);
+    // The host walks.
+    let walk = |sim: &mut NetSim, axis: Vec2| {
+        sim.server.app.world_mut().get_mut::<mashup::core::Intent>(host).unwrap().move_axis = axis;
     };
-    assert!(sim.until(30, |s| health(s) == Some(0.5)), "the change arrived");
-    // Well after its acknowledgement is back, within the window.
-    sim.ticks(20);
-    spoil(&mut sim);
-    assert!(sim.until(10, |s| health(s) == Some(0.5)), "still sent with every update");
-    // After the window: no more.
-    sim.ticks(net::server::SETTLE_TICKS);
-    spoil(&mut sim);
-    sim.ticks(net::server::SETTLE_TICKS * 2);
-    assert_eq!(health(&sim), Some(0.25), "not sent for ever");
+    walk(&mut sim, Vec2::Y);
+    sim.ticks(320);
+    let sent = |sim: &NetSim, i: usize| {
+        let id = sim.client_id(i);
+        sim.link.lock().unwrap().bytes_to.get(&id).copied().unwrap_or(0)
+    };
+    let before: Vec<u64> = (0..3).map(|i| sent(&sim, i)).collect();
+    for c in &mut sim.clients {
+        *c.app.world_mut().resource_mut::<net::predict::NetGraph>() = default();
+    }
+    sim.ticks(320);
+    let world = sim.server.app.world_mut();
+    let pacing: Vec<(u64, net::server::UpdatePacing)> = world
+        .query::<(&net::server::UpdatePacing, &bevy_replicon::shared::backend::connected_client::NetworkId)>()
+        .iter(world)
+        .map(|(p, id)| (id.get(), p.clone()))
+        .collect();
+    for i in 0..3 {
+        let g = sim.clients[i].app.world().resource::<net::predict::NetGraph>().clone();
+        let bytes = sent(&sim, i) - before[i];
+        let p = &pacing.iter().find(|(id, _)| *id == sim.client_id(i)).unwrap().1;
+        println!(
+            "client {i}: updates every {:.1} ms, {} sent, {} choked, {:.2} KB/s, prediction {} wrong of {}",
+            g.update_ms,
+            p.sent,
+            p.choked,
+            bytes as f64 / 5.0 / 1000.0,
+            g.errors,
+            g.checked
+        );
+        match i {
+            0 => {
+                // 20 for client 1's 64 (one a tick).
+                let ratio = p.sent as f64 / pacing.iter().find(|(id, _)| *id == sim.client_id(1)).unwrap().1.sent as f64;
+                assert!((ratio - 20.0 / 64.0).abs() < 0.02, "client 0: {ratio} of client 1's updates");
+                assert!((g.update_ms - 50.0).abs() < 8.0, "client 0: every {} ms", g.update_ms);
+            }
+            1 => assert!(p.choked == 0 && g.update_ms < 25.0, "client 1: every {} ms", g.update_ms),
+            _ => {
+                assert!(p.choked > 0, "client 2 choked");
+                // Fewer bytes than client 1 at the same update rate (the
+                // rate counts the messages, not the transport's headers
+                // and acknowledgements).
+                let full = sent(&sim, 1) - before[1];
+                assert!((bytes as f64) < full as f64 * 0.75, "client 2: {bytes} bytes in 5 s, client 1 {full}");
+            }
+        }
+        assert_eq!(g.errors, 0, "client {i}: prediction errors ({:?})", g.last_differing);
+        assert!(g.checked > 20, "client {i}: {} states compared", g.checked);
+    }
+    walk(&mut sim, Vec2::ZERO);
+    sim.ticks(120);
+    let end = sim.server.app.world().get::<Transform>(host).unwrap().translation;
+    for i in 0..3 {
+        let seen = seen_by(&mut sim, i, net::HOST_ID).unwrap();
+        let at = sim.clients[i].app.world().get::<Transform>(seen).unwrap().translation;
+        assert!(at.distance(end) < 1e-3, "client {i} draws the host at {at}, the server has {end}");
+    }
 }

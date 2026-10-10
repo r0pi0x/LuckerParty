@@ -469,7 +469,12 @@ errors by kind (contacts with others and hits are the server's to say;
 runs of errors in a row are bugs), entity counts per round and map
 visit, memory, bandwidth and the server's frame time; Bevy errors
 (failed commands) are counted too. `MASHUP_SOAK_MINUTES` (3 by default,
-30 for the long run), `MASHUP_SOAK_COMMUNITY=<map>`;
+30 for the long run), `MASHUP_SOAK_COMMUNITY=<map>`,
+`MASHUP_SOAK_UPDATERATE`/`MASHUP_SOAK_RATE` (the clients' `cl_updaterate`
+and `rate`; the bandwidth budget follows the update rate; it prints each
+client's updates sent and choked, and the own state's delta and whole
+sizes), `MASHUP_SOAK_DUMP=<file>` (what the server sends each client per
+frame, to try compression on);
 `MASHUP_SOAK_DIAGNOSE=1` prints what differed in the first prediction
 errors of each kind and in each long run of them,
 `MASHUP_SOAK_TRACE_HEALTH=1` every health change on the server and each
@@ -647,8 +652,12 @@ address (what a "what is my IP" page shows); behind carrier-grade NAT
 (a public address the router's WAN side doesn't have) forwarding can't
 work: one of the friends hosts, or a VPN (Tailscale, ZeroTier) puts
 everyone on one network. The host's upload carries every client: about
-90 KB/s (0.7 Mbit/s) each with twelve characters, more on lossy links
-(multiplayer.md, "Soak"). Both
+10-13 KB/s (~0.1 Mbit/s) each with twelve characters at the default
+`cl_updaterate 20`, ~15-19 at 33, ~28-34 at an update every tick (more
+on lossy links, ~1.5×; joins and map changes burst to ~30-35 at 20,
+~150-230 at 66); a client caps what it is sent with `rate` (bytes a
+second, default 30000) and the host with `sv_maxrate` and
+`sv_maxupdaterate` (multiplayer.md, "Soak", "Bandwidth"). Both
 games must be the same build (`status` shows the version); another build
 is refused with a message.
 

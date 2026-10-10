@@ -35,14 +35,17 @@ pub mod chat;
 pub mod client;
 pub mod cvars;
 pub mod decals;
+pub mod delta;
 pub mod game;
 pub mod http;
 pub mod interp;
 pub mod maps;
 pub mod memory;
 pub mod movers;
+pub mod ordered;
 pub mod predict;
 pub mod props;
+pub mod quant;
 pub mod query;
 pub mod ragdolls;
 pub mod server;
@@ -56,6 +59,7 @@ use bevy_replicon::prelude::*;
 use bevy_replicon_renet::{RenetChannelsExt, RenetClient, RenetServer, RepliconRenetPlugins, renet::ConnectionConfig};
 use serde::{Deserialize, Serialize};
 
+use self::ordered::OrderedAppExt;
 use crate::{
     console::{ConsoleAppExt, resource_cvar},
     core::{Health, NetRole, Team},
@@ -73,7 +77,7 @@ pub const PROTOCOL_ID: u64 = 0x4C55_434B_4552_5059;
 /// This build's network version. A server refuses clients of another
 /// version. Bump the suffix when the protocol changes in a way the
 /// replicon protocol hash can't see (a field added to a message).
-pub const NET_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/net10");
+pub const NET_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/net11");
 
 /// The owner id of the listen server's own player (`NetCharacter::owner`).
 /// Remote clients' ids are never 0.
@@ -395,17 +399,34 @@ pub struct UserCmds {
     /// the newest epoch only, so commands sent before a jump never steer
     /// the clock after it.
     pub epoch: u32,
+    /// The newest own state (`OwnState::tick`) this client holds (0:
+    /// none): the server sends the next ones as deltas against it
+    /// (`OwnStateDelta`).
+    pub ack: u64,
 }
 
 /// Commands each `UserCmds` repeats besides the new ones.
 pub const CMD_BACKUP: usize = 3;
 
-/// Server -> the client a character belongs to, each frame it ran ticks:
-/// the server's state of that client's own player after a tick (its
+/// Server -> the client a character belongs to, at its update rate
+/// (`server::UpdatePacing`): its `OwnState` as a delta (`delta`) against
+/// the one with tick `base` (0: against nothing), which the client said
+/// it holds (`UserCmds::ack`), as Source's snapshots are deltas against
+/// the last acknowledged one. The client rebuilds the exact bytes
+/// (`predict::rebuild_own_states`), so its comparison stays bit for bit.
+/// Unreliable; only the newest matters.
+#[derive(Message, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct OwnStateDelta {
+    pub tick: u64,
+    pub base: u64,
+    pub delta: Vec<u8>,
+}
+
+/// The server's state of a client's own player after a tick (its
 /// predicted components, `core::PredictedComponents::encode`), which the
 /// client compares with what it predicted for that tick, and how the
-/// client's commands are arriving (the clock sync: `lead`). Unreliable;
-/// only the newest matters.
+/// client's commands are arriving (the clock sync: `lead`). Sent as an
+/// `OwnStateDelta`; a client message (`Messages<OwnState>`) once rebuilt.
 #[derive(Message, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct OwnState {
     /// The server tick this state is after.
@@ -470,8 +491,10 @@ pub struct NetCharacter {
 /// What clients draw a character from, written by the server every tick
 /// from the simulation (`server::write_bodies`): position, velocity, look,
 /// eye height and movement flags. A client keeps them by server tick
-/// (`interp::Snapshots`) and draws others between two of them.
-#[derive(Component, Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+/// (`interp::Snapshots`) and draws others between two of them. Sent
+/// quantized (`quant`: 1/32 unit, 16-bit angles); the server keeps the
+/// quantized values (`NetBody::quantized`).
+#[derive(Component, Clone, Debug, Default, PartialEq)]
 pub struct NetBody {
     pub origin: [f32; 3],
     pub velocity: [f32; 3],
@@ -488,6 +511,13 @@ pub mod body_flags {
     pub const CROUCHING: u8 = 1 << 1;
     pub const ON_LADDER: u8 = 1 << 2;
     pub const DEAD: u8 = 1 << 3;
+    /// Two bits counting the server's teleports of the body (a move no
+    /// body makes in a tick: `map::interp::SNAP_SPEED`), as Source marks
+    /// a teleport so clients don't interpolate across it: a client draws
+    /// the newer snapshot at once when the count changed between two,
+    /// however far apart in time they are (`cl_updaterate`, a loss).
+    pub const TELEPORTS: u8 = 3 << 4;
+    pub const TELEPORT_ONE: u8 = 1 << 4;
 }
 
 /// A moving brush's motion state (doors, platforms, trains, rotating and
@@ -948,94 +978,114 @@ impl Plugin for NetPlugin {
                     auth_method: AuthMethod::Custom,
                 })
                 .set(ServerPlugin {
-                    // A mutate message every tick, empty or not: a client
-                    // learns that what didn't change held still at that
-                    // tick (`interp`), and when ticks arrive (its clock).
+                    // A mutate message with every update, empty or not: a
+                    // client learns that what didn't change held still at
+                    // that tick (`interp`), and when ticks arrive (its
+                    // clock). Each client's are paced: `server::UpdatePacing`.
                     track_mutate_messages: true,
                     ..ServerPlugin::new(FixedPostUpdate)
                 }),
             RepliconRenetPlugins,
-        ))
-        // The protocol, in the same order everywhere. `Join` and
-        // `Refused` come first so another build can still read them.
-        .add_client_event::<Join>(Channel::Ordered)
-        .add_server_event::<Refused>(Channel::Ordered)
-        .make_event_independent::<Refused>()
-        .add_server_event::<Welcome>(Channel::Ordered)
-        .make_event_independent::<Welcome>()
-        // Maps (slice 7).
-        .add_server_event::<ChangingLevel>(Channel::Ordered)
-        .make_event_independent::<ChangingLevel>()
-        .add_server_event::<ChangeLevel>(Channel::Ordered)
-        .make_event_independent::<ChangeLevel>()
-        .add_client_message::<Loaded>(Channel::Ordered)
-        .add_client_message::<MapRequest>(Channel::Ordered)
-        .add_client_message::<MapAck>(Channel::Unreliable)
-        .add_server_message::<MapChunk>(Channel::Ordered)
-        .make_message_independent::<MapChunk>()
-        .add_server_message::<MapDenied>(Channel::Ordered)
-        .make_message_independent::<MapDenied>()
-        .add_client_message::<UserCmds>(Channel::Unreliable)
-        .add_server_message::<OwnState>(Channel::Unreliable)
-        // Holds no entities: no need to wait for replication.
-        .make_message_independent::<OwnState>()
-        .replicate::<NetCharacter>()
-        .replicate::<NetBody>()
-        .replicate::<Team>()
-        .replicate::<crate::core::Spectating>()
-        .replicate::<Health>()
-        .replicate::<NetMover>()
-        // Every value a client receives also goes into its snapshot
-        // buffer, by the server tick it is from.
-        .set_receive_fns::<NetBody>(interp::write_snapshot::<NetBody>, interp::remove_snapshots::<NetBody>)
-        .set_receive_fns::<NetMover>(interp::write_snapshot::<NetMover>, interp::remove_snapshots::<NetMover>)
-        .replicate::<NetProp>()
-        .set_receive_fns::<NetProp>(interp::write_snapshot::<NetProp>, interp::remove_snapshots::<NetProp>)
-        .replicate::<NetAnchor>()
-        .set_receive_fns::<NetAnchor>(interp::write_snapshot::<NetAnchor>, interp::remove_snapshots::<NetAnchor>)
-        .replicate::<NetRagdoll>()
-        .set_receive_fns::<NetRagdoll>(interp::write_snapshot::<NetRagdoll>, interp::remove_snapshots::<NetRagdoll>)
-        // Weapons (slice 4).
-        .replicate::<NetHeld>()
-        .replicate::<NetItem>()
-        .set_receive_fns::<NetItem>(interp::write_snapshot::<NetItem>, interp::remove_snapshots::<NetItem>)
-        .replicate::<NetSmoke>()
-        .add_mapped_server_message::<FireBullets>(Channel::Unreliable)
-        .add_mapped_server_message::<WeaponFx>(Channel::Unreliable)
-        .add_server_message::<Detonation>(Channel::Unreliable)
-        .make_message_independent::<Detonation>()
-        .add_server_message::<Senses>(Channel::Ordered)
-        .make_message_independent::<Senses>()
-        .add_client_message::<DropRequest>(Channel::Ordered)
-        .add_mapped_server_message::<Killed>(Channel::Ordered)
-        .add_mapped_server_message::<HitConfirm>(Channel::Unordered)
-        // Game rules (slice 5).
-        .replicate::<NetRound>()
-        .replicate::<NetScore>()
-        .replicate::<NetBomb>()
-        .replicate::<NetHostage>()
-        .add_client_message::<BuyRequest>(Channel::Ordered)
-        .add_client_message::<TeamRequest>(Channel::Ordered)
-        .add_client_message::<SayRequest>(Channel::Ordered)
-        .add_client_message::<RadioRequest>(Channel::Ordered)
-        .add_server_message::<Notice>(Channel::Ordered)
-        .make_message_independent::<Notice>()
-        .add_mapped_server_message::<ChatMessage>(Channel::Ordered)
-        .add_mapped_server_message::<RadioCall>(Channel::Ordered)
-        .add_mapped_server_message::<ObjectiveNews>(Channel::Ordered)
-        .add_server_message::<RoundOver>(Channel::Ordered)
-        .add_mapped_server_message::<ServerSound>(Channel::Unreliable)
-        .add_server_message::<CvarValues>(Channel::Ordered)
-        .make_message_independent::<CvarValues>()
-        .add_client_message::<NameRequest>(Channel::Ordered)
-        .add_client_message::<UserInfoRequest>(Channel::Ordered)
-        .add_server_message::<NameChanged>(Channel::Ordered)
-        .make_message_independent::<NameChanged>()
-        .add_server_message::<MapHud>(Channel::Ordered)
-        .init_resource::<NetSettings>()
-        .init_resource::<NetVersion>()
-        .add_message::<NetEvent>()
-        .add_systems(Update, log_events);
+        ));
+        // Replicated values in tick order, held-back ones too (`ordered`).
+        ordered::plugin(app);
+        app
+            // The protocol, in the same order everywhere. `Join` and
+            // `Refused` come first so another build can still read them.
+            .add_client_event::<Join>(Channel::Ordered)
+            .add_server_event::<Refused>(Channel::Ordered)
+            .make_event_independent::<Refused>()
+            .add_server_event::<Welcome>(Channel::Ordered)
+            .make_event_independent::<Welcome>()
+            // Maps (slice 7).
+            .add_server_event::<ChangingLevel>(Channel::Ordered)
+            .make_event_independent::<ChangingLevel>()
+            .add_server_event::<ChangeLevel>(Channel::Ordered)
+            .make_event_independent::<ChangeLevel>()
+            .add_client_message::<Loaded>(Channel::Ordered)
+            .add_client_message::<MapRequest>(Channel::Ordered)
+            .add_client_message::<MapAck>(Channel::Unreliable)
+            .add_server_message::<MapChunk>(Channel::Ordered)
+            .make_message_independent::<MapChunk>()
+            .add_server_message::<MapDenied>(Channel::Ordered)
+            .make_message_independent::<MapDenied>()
+            .add_client_message::<UserCmds>(Channel::Unreliable)
+            .add_server_message::<OwnStateDelta>(Channel::Unreliable)
+            // Holds no entities: no need to wait for replication.
+            .make_message_independent::<OwnStateDelta>()
+            .replicate::<NetCharacter>()
+            .ordered::<NetCharacter>()
+            .replicate::<NetBody>()
+            .replicate::<Team>()
+            .ordered::<Team>()
+            .replicate::<crate::core::Spectating>()
+            .ordered::<crate::core::Spectating>()
+            .replicate::<Health>()
+            .ordered::<Health>()
+            .replicate::<NetMover>()
+            // Every value a client receives also goes into its snapshot
+            // buffer, by the server tick it is from.
+            .set_receive_fns::<NetBody>(interp::write_snapshot::<NetBody>, interp::remove_snapshots::<NetBody>)
+            .ordered_with::<NetBody>(interp::write_snapshot::<NetBody>, interp::remove_snapshots::<NetBody>)
+            .set_receive_fns::<NetMover>(interp::write_snapshot::<NetMover>, interp::remove_snapshots::<NetMover>)
+            .ordered_with::<NetMover>(interp::write_snapshot::<NetMover>, interp::remove_snapshots::<NetMover>)
+            .replicate::<NetProp>()
+            .set_receive_fns::<NetProp>(interp::write_snapshot::<NetProp>, interp::remove_snapshots::<NetProp>)
+            .ordered_with::<NetProp>(interp::write_snapshot::<NetProp>, interp::remove_snapshots::<NetProp>)
+            .replicate::<NetAnchor>()
+            .set_receive_fns::<NetAnchor>(interp::write_snapshot::<NetAnchor>, interp::remove_snapshots::<NetAnchor>)
+            .ordered_with::<NetAnchor>(interp::write_snapshot::<NetAnchor>, interp::remove_snapshots::<NetAnchor>)
+            .replicate::<NetRagdoll>()
+            .set_receive_fns::<NetRagdoll>(interp::write_snapshot::<NetRagdoll>, interp::remove_snapshots::<NetRagdoll>)
+            .ordered_with::<NetRagdoll>(interp::write_snapshot::<NetRagdoll>, interp::remove_snapshots::<NetRagdoll>)
+            // Weapons (slice 4).
+            .replicate::<NetHeld>()
+            .ordered::<NetHeld>()
+            .replicate::<NetItem>()
+            .set_receive_fns::<NetItem>(interp::write_snapshot::<NetItem>, interp::remove_snapshots::<NetItem>)
+            .ordered_with::<NetItem>(interp::write_snapshot::<NetItem>, interp::remove_snapshots::<NetItem>)
+            .replicate::<NetSmoke>()
+            .ordered::<NetSmoke>()
+            .add_mapped_server_message::<FireBullets>(Channel::Unreliable)
+            .add_mapped_server_message::<WeaponFx>(Channel::Unreliable)
+            .add_server_message::<Detonation>(Channel::Unreliable)
+            .make_message_independent::<Detonation>()
+            .add_server_message::<Senses>(Channel::Ordered)
+            .make_message_independent::<Senses>()
+            .add_client_message::<DropRequest>(Channel::Ordered)
+            .add_mapped_server_message::<Killed>(Channel::Ordered)
+            .add_mapped_server_message::<HitConfirm>(Channel::Unordered)
+            // Game rules (slice 5).
+            .replicate::<NetRound>()
+            .ordered::<NetRound>()
+            .replicate::<NetScore>()
+            .ordered::<NetScore>()
+            .replicate::<NetBomb>()
+            .ordered::<NetBomb>()
+            .replicate::<NetHostage>()
+            .ordered::<NetHostage>()
+            .add_client_message::<BuyRequest>(Channel::Ordered)
+            .add_client_message::<TeamRequest>(Channel::Ordered)
+            .add_client_message::<SayRequest>(Channel::Ordered)
+            .add_client_message::<RadioRequest>(Channel::Ordered)
+            .add_server_message::<Notice>(Channel::Ordered)
+            .make_message_independent::<Notice>()
+            .add_mapped_server_message::<ChatMessage>(Channel::Ordered)
+            .add_mapped_server_message::<RadioCall>(Channel::Ordered)
+            .add_mapped_server_message::<ObjectiveNews>(Channel::Ordered)
+            .add_server_message::<RoundOver>(Channel::Ordered)
+            .add_mapped_server_message::<ServerSound>(Channel::Unreliable)
+            .add_server_message::<CvarValues>(Channel::Ordered)
+            .make_message_independent::<CvarValues>()
+            .add_client_message::<NameRequest>(Channel::Ordered)
+            .add_client_message::<UserInfoRequest>(Channel::Ordered)
+            .add_server_message::<NameChanged>(Channel::Ordered)
+            .make_message_independent::<NameChanged>()
+            .add_server_message::<MapHud>(Channel::Ordered)
+            .init_resource::<NetSettings>()
+            .init_resource::<NetVersion>()
+            .add_message::<NetEvent>()
+            .add_systems(Update, log_events);
         app.world_mut().resource_mut::<ProtocolHasher>().add_custom(NET_VERSION);
         server::plugin(app);
         client::plugin(app);

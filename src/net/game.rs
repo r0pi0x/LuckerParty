@@ -85,6 +85,7 @@ pub(super) fn plugin(app: &mut App) {
         )
             .chain()
             .after(ClientSystems::Receive)
+            .after(super::predict::rebuild_own_states)
             .run_if(client()),
     )
     .add_systems(

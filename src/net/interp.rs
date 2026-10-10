@@ -8,9 +8,11 @@
 //!   entity's `Snapshots`, keyed by the server tick it is from
 //!   (replicon's message tick, which the server keeps equal to its
 //!   `SimClock::tick`: `server::lock_replication_tick`). The server sends
-//!   a mutate message every tick even when nothing changed
+//!   a mutate message with every update (each client's `cl_updaterate`:
+//!   `server::UpdatePacing`) even when nothing changed
 //!   (`track_mutate_messages`), so a tick heard without a value for an
-//!   entity is a tick it held still at (`Snapshots::hold`).
+//!   entity is a tick it held still at (`Snapshots::hold`). Values a
+//!   lossy link delivers late still go in at their tick (`ordered`).
 //! - **The render clock.** When ticks arrive (`MutateTickReceived`) gives
 //!   the server's clock as seen here (`InterpClock`: an average of tick
 //!   time less arrival time, eased in at most 5 % of real time so it never
@@ -161,7 +163,8 @@ pub enum Around<'a, T> {
 
 /// Replicon's write for a component a client buffers (`NetPlugin`):
 /// the value goes into the entity's `Snapshots` by its message tick, and
-/// is the component's (newest) value as usual.
+/// is the component's value as usual if it is the newest (an older one
+/// held back by replicon only fills in its tick: `ordered`).
 pub fn write_snapshot<C: Component<Mutability = Mutable> + Clone>(
     ctx: &mut WriteCtx,
     rule_fns: &RuleFns<C>,
@@ -170,10 +173,14 @@ pub fn write_snapshot<C: Component<Mutability = Mutable> + Clone>(
 ) -> Result<()> {
     let value: C = rule_fns.deserialize(ctx, message)?;
     let tick = ctx.message_tick.get() as u64;
+    let newest = super::ordered::newest::<C>(ctx, entity);
     if let Some(mut s) = entity.get_mut::<Snapshots<C>>() {
         s.push(tick, value.clone());
-    } else {
+    } else if newest {
         entity.insert(Snapshots::new(tick, value.clone()));
+    }
+    if !newest {
+        return Ok(());
     }
     if let Some(mut c) = entity.get_mut::<C>() {
         *c = value;
@@ -463,8 +470,9 @@ pub(super) fn draw_others(
             Around::Between((ta, a), (tb, b), f) => {
                 let (a, b) = (Drawn::of(a), Drawn::of(b));
                 let far = SNAP_SPEED * step as f32 * (tb - ta) as f32;
-                let teleport = a.origin.distance(b.origin) > far
-                    || (a.flags & body_flags::DEAD) != (b.flags & body_flags::DEAD);
+                let changed = |bits: u8| (a.flags & bits) != (b.flags & bits);
+                let teleport =
+                    a.origin.distance(b.origin) > far || changed(body_flags::DEAD) || changed(body_flags::TELEPORTS);
                 if teleport {
                     let tb = *tb;
                     if buf.snapped != tb {

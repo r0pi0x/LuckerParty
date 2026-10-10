@@ -668,7 +668,8 @@ fn server_cvars_reach_clients_and_prediction_uses_them() {
     sim.ticks(40);
     let g = sim.clients[0].app.world().resource::<NetGraph>().clone();
     println!("air strafing at sv_airaccelerate 100: {} errors in {} compared", g.errors, g.checked);
-    assert!(g.checked > 300);
+    // A state each update (20 a second: CS:S's `cl_updaterate`).
+    assert!(g.checked > 90);
     assert_eq!(g.errors, 0);
     // Cheat commands need the server's sv_cheats 1 (replicated).
     let last = |sim: &NetSim| {
