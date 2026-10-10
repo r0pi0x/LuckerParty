@@ -410,8 +410,9 @@ fn material_effects() {
             "a scrolling base texture"
         );
     }
-    // prop_ragdoll (physics_brushes.md 6) is drawn: without Hammer's pose
-    // it lies on the floor below it (not simulated).
+    // prop_ragdoll (physics_brushes.md 6) is drawn and simulated: without
+    // Hammer's pose it starts from its first sequence at the entity's
+    // place and angles (`map_ragdolls_fall_and_take_shots` drops it).
     if let Some(map) = load("gg_deagle7k") {
         let ragdoll = map.entities.iter().position(|e| e.classname() == "prop_ragdoll");
         let prop = map
@@ -419,9 +420,9 @@ fn material_effects() {
             .iter()
             .find(|p| p.entity.is_some() && p.entity == ragdoll)
             .expect("drawn");
-        assert!(map.models[prop.model].rig.is_some());
-        // Its up (model +Z, engine +Y) lies flat.
-        assert!((prop.rotation * Vec3::Y).y.abs() < 1e-3, "{:?}", prop.rotation);
+        assert!(map.models[prop.model].rig.is_some() && prop.ragdoll.is_some());
+        let placed = cs_source::movement::to_engine(Vec3::new(-22.0, 1061.0, 29.0));
+        assert!(prop.translation.distance(placed) < 1e-3, "at its origin: {}", prop.translation);
     }
     if let Some(map) = load("surf_demise") {
         if let Some(bone) = meshes(&map).find(|m| m.material.contains("bonecolor")) {
