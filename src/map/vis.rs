@@ -860,7 +860,12 @@ pub(crate) fn cull(
             Has<super::water::WaterReflectionCamera>,
             Option<&super::water::ReflectionClusters>,
         ),
-        (With<Camera3d>, Without<super::SkyboxCamera>, Without<super::ViewModelCamera>),
+        (
+            With<Camera3d>,
+            Without<super::monitor::ScreenCamera>,
+            Without<super::SkyboxCamera>,
+            Without<super::ViewModelCamera>,
+        ),
     >,
     mut queries: ParamSet<(
         Query<(), Changed<VisClusters>>,
@@ -1042,6 +1047,7 @@ pub(crate) fn fade_windows(
         (&GlobalTransform, &Camera),
         (
             With<Camera3d>,
+            Without<super::monitor::ScreenCamera>,
             Without<super::SkyboxCamera>,
             Without<super::ViewModelCamera>,
             Without<super::water::WaterReflectionCamera>,

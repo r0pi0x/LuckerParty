@@ -121,6 +121,38 @@ pub fn load_level_bytes(mount: &Mount, name: &str, bytes: Vec<u8>, hdr_level: u8
         mesh.surface = r.surfaceprop;
         mesh.envmap = r.envmap;
     }
+    // Brush entities an env_texturetoggle targets: their textures' frames.
+    let toggled: std::collections::HashSet<usize> = {
+        let targets: std::collections::HashSet<String> = bsp
+            .entities
+            .iter()
+            .filter(|e| {
+                e.prop("classname")
+                    .is_some_and(|c| c.eq_ignore_ascii_case("env_texturetoggle"))
+            })
+            .filter_map(|e| e.prop("target").map(|t| t.trim().to_ascii_lowercase()))
+            .collect();
+        bsp.entities
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| {
+                e.prop("targetname")
+                    .is_some_and(|n| targets.contains(&n.trim().to_ascii_lowercase()))
+            })
+            .map(|(i, _)| i)
+            .collect()
+    };
+    for mesh in &mut data.meshes {
+        if mesh.entity.is_none_or(|e| !toggled.contains(&e)) {
+            continue;
+        }
+        if let Some(base) = materials.material_value(&mesh.material, "$basetexture") {
+            let frames = materials.texture_frames(&base, true);
+            if frames.len() > 1 {
+                mesh.frames = frames;
+            }
+        }
+    }
     timer.lap("world materials");
     // Broken windows' cracked and jagged-edge looks.
     super::breakables::add_window_looks(&mut materials, &data.entities, &mut data.meshes);
@@ -231,6 +263,7 @@ pub fn load_level_bytes(mount: &Mount, name: &str, bytes: Vec<u8>, hdr_level: u8
     super::trails::add_trails_and_stacks(&bsp, &mut materials, &mut data);
     super::pcf::add_particle_systems(&bsp, &mut materials, &mut data, name);
     super::props::add_attachment_keys(&materials, &mut data);
+    data.camera_texture = materials.camera_texture;
     timer.lap("characters, hud, particles");
     // What characters hold: the weapons' world models.
     if let Some(skeleton) = data.characters.first().map(|c| c.bones.clone()) {
@@ -279,6 +312,28 @@ pub fn load_level_bytes(mount: &Mount, name: &str, bytes: Vec<u8>, hdr_level: u8
     for set in super::breakables::load_gibs(&mut materials, &data.entities, &mut data.warnings) {
         if !data.gibs.iter().any(|g| g.name.eq_ignore_ascii_case(&set.name)) {
             data.gibs.push(set);
+        }
+    }
+    // env_shooter's models, each a gib list of its own (named by path).
+    for e in &data.entities {
+        if !e.classname().eq_ignore_ascii_case("env_shooter") {
+            continue;
+        }
+        let Some(path) = e
+            .get("shootmodel")
+            .map(|p| p.trim().to_ascii_lowercase().replace('\\', "/"))
+        else {
+            continue;
+        };
+        if path.is_empty() || data.gibs.iter().any(|g| g.name.eq_ignore_ascii_case(&path)) {
+            continue;
+        }
+        match super::props::load_shell(&mut materials, &path) {
+            Ok(m) => data.gibs.push(crate::map::breakables::MapGibSet {
+                name: path,
+                models: vec![m],
+            }),
+            Err(e) => data.warnings.push(e),
         }
     }
     data.gib_physics = Some(super::breakables::gib_physics());
@@ -690,6 +745,7 @@ pub fn convert_level(bsp: &Bsp, bytes: &[u8], name: &str, hdr: bool) -> (MapData
     data.brush_tree = Some(tree);
     data.trace_skip = trace_skip(bsp, &leaves);
     data.water = water_volumes(bsp, &leaves);
+    data.water.extend(analog_water_volumes(bsp, &leaves));
     data.entities = map_entities(bsp, &leaves);
     data.entity_scale = METERS_PER_UNIT;
 
@@ -782,6 +838,8 @@ pub const MOVERS: &[&str] = &[
     "func_movelinear",
     "func_rotating",
     "func_tracktrain",
+    "func_tanktrain",
+    "func_monitor",
     "func_brush",
     "func_wall_toggle",
     "func_conveyor",
@@ -1533,6 +1591,50 @@ pub fn brush_hulls_indexed(bsp: &Bsp, leaves: &[RawLeaf]) -> Vec<(usize, Vec<[f3
 pub fn water_volumes(bsp: &Bsp, leaves: &[RawLeaf]) -> Vec<crate::map::MapWaterVolume> {
     brush_volumes(bsp, leaves, BrushFlags::WATER.union(BrushFlags::SLIME))
         .into_iter()
+        .map(|(i, points, planes)| crate::map::MapWaterVolume {
+            brush: map_brush(points, planes, false),
+            slime: !bsp.brushes[i].flags.contains(BrushFlags::WATER),
+        })
+        .collect()
+}
+
+/// func_water_analog's water (public entity docs: a brush of water that
+/// can move like func_movelinear), where it spawns: a swimmable volume
+/// like the world's water. Its motion isn't followed (tech-debt).
+pub fn analog_water_volumes(bsp: &Bsp, leaves: &[RawLeaf]) -> Vec<crate::map::MapWaterVolume> {
+    let parse = |v: Option<&str>| {
+        let n: Vec<f32> = v
+            .unwrap_or("")
+            .split_whitespace()
+            .filter_map(|x| x.parse().ok())
+            .collect();
+        if n.len() >= 3 {
+            Vec3::new(n[0], n[1], n[2])
+        } else {
+            Vec3::ZERO
+        }
+    };
+    bsp.entities
+        .iter()
+        .filter(|e| {
+            e.prop("classname")
+                .is_some_and(|c| c.eq_ignore_ascii_case("func_water_analog"))
+        })
+        .filter_map(|e| {
+            let model: usize = e.prop("model")?.strip_prefix('*')?.parse().ok()?;
+            let (origin, angles) = (parse(e.prop("origin")), parse(e.prop("angles")));
+            let rotation = Quat::from_rotation_z(angles.y.to_radians())
+                * Quat::from_rotation_y(angles.x.to_radians())
+                * Quat::from_rotation_x(angles.z.to_radians());
+            Some(brush_volumes_in(
+                bsp,
+                BrushFlags::WATER.union(BrushFlags::SLIME),
+                model_brushes(bsp, leaves, model),
+                Some((rotation, origin)),
+                false,
+            ))
+        })
+        .flatten()
         .map(|(i, points, planes)| crate::map::MapWaterVolume {
             brush: map_brush(points, planes, false),
             slime: !bsp.brushes[i].flags.contains(BrushFlags::WATER),

@@ -1,8 +1,9 @@
 //! What map entities put on the local player's screen
 //! (specs/source/game_entities.md 3, 5): env_fade's fades (a full-screen
-//! colour over the 3D view and HUD text, `logic::ScreenFades`) and
+//! colour over the 3D view and HUD text, `logic::ScreenFades`),
 //! env_hudhint's key hint (the hint line, `chat::Hint`, with `%command%`
-//! replaced by the key bound to it). A respawn clears the fades.
+//! replaced by the key bound to it) and env_screenoverlay's picture over
+//! the 3D view (public entity docs). A respawn clears the fades.
 
 use bevy::prelude::*;
 
@@ -12,12 +13,15 @@ use crate::logic::ScreenFades;
 #[derive(Component)]
 struct FadeNode;
 
+#[derive(Component)]
+struct OverlayNode(String);
+
 pub struct MapScreenPlugin;
 
 impl Plugin for MapScreenPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ScreenFades>()
-            .add_systems(Update, (clear_on_spawn, draw_fade, show_hint));
+            .add_systems(Update, (clear_on_spawn, draw_fade, draw_overlay, show_hint));
     }
 }
 
@@ -79,6 +83,50 @@ fn draw_fade(
             vis.set_if_neq(Visibility::Hidden);
         }
         (None, Err(_)) => {}
+    }
+}
+
+/// The map's screen overlay (env_screenoverlay) over the whole 3D view,
+/// under the fades and the HUD, until its time runs out.
+fn draw_overlay(
+    time: Res<Time>,
+    fades: Res<ScreenFades>,
+    images: Option<Res<crate::map::ScreenOverlayImages>>,
+    mut nodes: Query<(Entity, &OverlayNode, &mut Visibility)>,
+    mut commands: Commands,
+) {
+    let now = time.elapsed_secs_f64();
+    let want = fades
+        .overlay
+        .as_ref()
+        .filter(|(_, at, secs)| *secs <= 0.0 || now < at + *secs as f64)
+        .and_then(|(name, ..)| Some((name.clone(), images.as_ref()?.0.get(name)?.clone())));
+    let mut shown = false;
+    for (e, node, mut vis) in &mut nodes {
+        match &want {
+            Some((name, _)) if *name == node.0 => {
+                vis.set_if_neq(Visibility::Inherited);
+                shown = true;
+            }
+            _ => commands.entity(e).despawn(),
+        }
+    }
+    if let (Some((name, image)), false) = (want, shown) {
+        commands.spawn((
+            Name::new("Screen overlay"),
+            OverlayNode(name),
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(0.0),
+                top: Val::Px(0.0),
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                ..default()
+            },
+            ImageNode::new(image),
+            GlobalZIndex(20),
+            Pickable::IGNORE,
+        ));
     }
 }
 

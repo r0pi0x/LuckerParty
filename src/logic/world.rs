@@ -361,7 +361,16 @@ pub enum Effect {
     },
     /// env_spark's sparks: where (entity space), the direction (zero:
     /// none) and the magnitude.
-    Spark { at: Vec3, dir: Vec3, magnitude: f32 },
+    Spark {
+        at: Vec3,
+        dir: Vec3,
+        magnitude: f32,
+    },
+    /// A point_tesla sparks: the map draws its arcs (its entity, by map
+    /// index).
+    Tesla {
+        entity: usize,
+    },
     /// Push a physics body (env_entity_maker's PostSpawnSpeed): add
     /// `velocity` (entity space, units/s) to the entity's body.
     BodyVelocity {
@@ -496,6 +505,8 @@ pub struct LogicEntity {
     /// input): a brush entity's node fades or adds by them.
     pub render_alpha: u8,
     pub render_mode: u8,
+    /// The frame its animated textures show (env_texturetoggle).
+    pub texture_frame: u32,
 }
 
 impl LogicEntity {
@@ -905,6 +916,7 @@ impl LogicWorld {
             render_color,
             render_alpha,
             render_mode,
+            texture_frame: 0,
         };
         let index = self.slots.len() as u32;
         self.slots.push((0, Some(ent)));

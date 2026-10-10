@@ -1,7 +1,8 @@
 //! Map effects drawn through the particle pool (`particles`), for any
 //! game: sprite trails (Source's env_spritetrail, specs/source/
-//! visual_entities.md 5) and smoke stacks (env_smokestack,
-//! specs/source/particles_and_smoke.md 3). Each is an entity of its own
+//! visual_entities.md 5), smoke stacks (env_smokestack,
+//! specs/source/particles_and_smoke.md 3) and tesla arcs (point_tesla,
+//! public entity docs). Each is an entity of its own
 //! (`TrailEmitter`, `SmokeStackEmitter`) whose transform is where its map
 //! entity is (the logic moves it when the entity follows a parent:
 //! `FollowsEntity`); each frame it adds what it shows as a one-frame
@@ -93,6 +94,139 @@ impl MapSmokeStack {
     pub fn opacity(&self, t: f32) -> f32 {
         let a = 0.5 - 0.5 * (std::f32::consts::TAU * t).cos();
         self.alpha * if t <= 0.5 { a } else { a * a }
+    }
+}
+
+/// A point_tesla (public entity docs): arcs from its origin to surfaces
+/// within its radius, each spark a random number of them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MapTesla {
+    pub entity: Option<usize>,
+    pub position: Vec3,
+    pub material: usize,
+    /// sRGB 0-1.
+    pub color: Vec3,
+    /// Meters.
+    pub radius: f32,
+    /// Arc widths (meters), lives (seconds) and counts, each a range.
+    pub width: (f32, f32),
+    pub life: (f32, f32),
+    pub beams: (u32, u32),
+}
+
+/// One spark of a point_tesla (the logic times them).
+#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TeslaSpark {
+    /// The entity (index into `MapData::entities`).
+    pub entity: usize,
+}
+
+struct Arc {
+    to: Vec3,
+    width: f32,
+    age: f32,
+    life: f32,
+}
+
+/// A point_tesla's live arcs.
+#[derive(Component)]
+pub struct TeslaEmitter {
+    pub tesla: MapTesla,
+    arcs: Vec<Arc>,
+    rng: ParticleRng,
+}
+
+/// Segments an arc is drawn in (jagged, redrawn every frame).
+pub const TESLA_SEGMENTS: usize = 8;
+
+impl TeslaEmitter {
+    pub fn new(tesla: MapTesla, seed: u64) -> Self {
+        Self {
+            tesla,
+            arcs: Vec::new(),
+            rng: ParticleRng::new(seed),
+        }
+    }
+
+    pub fn count(&self) -> usize {
+        self.arcs.len()
+    }
+
+    /// A spark from `from`: its arcs to where `trace` (a fraction along a
+    /// segment, if it hits) finds a surface within the radius, four
+    /// directions tried per arc; none in reach: the radius into the air.
+    pub fn spark(&mut self, from: Vec3, trace: impl Fn(Vec3, Vec3) -> Option<f32>) {
+        let t = self.tesla.clone();
+        let n = self.rng.int(t.beams.0 as i32, t.beams.1.max(t.beams.0) as i32).max(0);
+        for _ in 0..n {
+            // Up to four tries for a surface; none in reach: into the air.
+            let mut end = from;
+            for _ in 0..4 {
+                let dir = loop {
+                    let v = self.rng.vec3(-1.0, 1.0);
+                    if v.length_squared() > 1e-4 && v.length_squared() <= 1.0 {
+                        break v.normalize();
+                    }
+                };
+                let to = from + dir * t.radius;
+                end = to;
+                if let Some(f) = trace(from, to) {
+                    end = from.lerp(to, f);
+                    break;
+                }
+            }
+            if end.distance_squared(from) > 1e-6 {
+                self.arcs.push(Arc {
+                    to: end,
+                    width: self.rng.float(t.width.0, t.width.1.max(t.width.0)),
+                    age: 0.0,
+                    life: self.rng.float(t.life.0, t.life.1.max(t.life.0)).max(0.05),
+                });
+            }
+        }
+    }
+
+    /// Age the arcs by `dt`; the dead ones go.
+    pub fn step(&mut self, dt: f32) {
+        for a in &mut self.arcs {
+            a.age += dt;
+        }
+        self.arcs.retain(|a| a.age < a.life);
+    }
+
+    /// The arcs as jagged camera-facing strips (a new zigzag each frame),
+    /// fading over their life.
+    pub fn quads(&mut self, from: Vec3, eye: Vec3) -> Vec<Particle> {
+        let mut out = Vec::new();
+        let (material, color) = (self.tesla.material, self.tesla.color);
+        let arcs: Vec<(Vec3, f32, f32)> = self
+            .arcs
+            .iter()
+            .map(|a| (a.to, a.width, 1.0 - a.age / a.life))
+            .collect();
+        for (to, width, left) in arcs {
+            let length = from.distance(to);
+            let mut points = vec![from];
+            for k in 1..TESLA_SEGMENTS {
+                let along = from.lerp(to, k as f32 / TESLA_SEGMENTS as f32);
+                points.push(along + self.rng.vec3(-1.0, 1.0) * length * 0.08);
+            }
+            points.push(to);
+            for pair in points.windows(2) {
+                let (a, b) = (pair[0], pair[1]);
+                let mid = (a + b) * 0.5;
+                let side = (b - a).cross(mid - eye).normalize_or_zero() * width * 0.5;
+                let mut p = Particle::new(mid, 1.0, material, 0.0);
+                p.color = color;
+                p.alpha = left;
+                p.shape = Shape::Quad {
+                    corners: [a - side, b - side, b + side, a + side],
+                    rect: [0.0, 0.0, 1.0, 1.0],
+                };
+                out.push(p);
+            }
+        }
+        out
     }
 }
 
@@ -317,6 +451,7 @@ type EyeQuery<'w, 's> = Query<
     &'static GlobalTransform,
     (
         With<Camera3d>,
+        Without<super::monitor::ScreenCamera>,
         Without<super::SkyboxCamera>,
         Without<super::ViewModelCamera>,
         Without<super::water::WaterReflectionCamera>,
@@ -358,6 +493,37 @@ pub(super) fn update_trails(
             continue;
         }
         let quads = t.quads(at, eye);
+        if !quads.is_empty() {
+            pool.add(frame_group(quads));
+        }
+    }
+}
+
+/// Teslas spark when the logic says (`TeslaSpark`), their arcs traced
+/// against the world; arcs age and crackle.
+pub(super) fn update_teslas(
+    time: Res<Time>,
+    eyes: EyeQuery,
+    mut sparks: MessageReader<TeslaSpark>,
+    mut teslas: Query<(&mut TeslaEmitter, &GlobalTransform, Option<&Visibility>)>,
+    world: super::particles::WorldTracer,
+    mut pool: ResMut<Particles>,
+) {
+    use super::particles::WorldTrace;
+    let dt = time.delta_secs().min(0.1);
+    let fired: Vec<usize> = sparks.read().map(|s| s.entity).collect();
+    let eye = eyes.iter().next().map(|e| e.translation());
+    for (mut t, at, visibility) in &mut teslas {
+        let from = at.translation();
+        if t.tesla.entity.is_some_and(|e| fired.contains(&e)) {
+            t.spark(from, |a, b| world.trace(a, b).map(|(f, _)| f));
+        }
+        t.step(dt);
+        let Some(eye) = eye else { continue };
+        if visibility == Some(&Visibility::Hidden) || t.count() == 0 {
+            continue;
+        }
+        let quads = t.quads(from, eye);
         if !quads.is_empty() {
             pool.add(frame_group(quads));
         }
@@ -536,5 +702,40 @@ mod tests {
         // engine +Z.
         let p = e.puffs[0].position;
         assert!((p - Vec3::Z).length() < 1e-3, "{p}");
+    }
+}
+
+#[cfg(test)]
+mod tesla_tests {
+    use super::*;
+
+    #[test]
+    fn a_spark_arcs_to_surfaces_and_the_arcs_die() {
+        let mut t = TeslaEmitter::new(
+            MapTesla {
+                entity: Some(0),
+                position: Vec3::ZERO,
+                material: 0,
+                color: Vec3::ONE,
+                radius: 2.0,
+                width: (0.1, 0.2),
+                life: (0.3, 0.3),
+                beams: (6, 8),
+            },
+            5,
+        );
+        // Nothing within reach: arcs into the air, the radius long.
+        t.spark(Vec3::ZERO, |_, _| None);
+        assert!((6..=8).contains(&t.count()), "{}", t.count());
+        assert!(t.arcs.iter().all(|a| (a.to.length() - 2.0).abs() < 1e-4));
+        t.step(1.0);
+        // A wall everywhere at half the radius.
+        t.spark(Vec3::ZERO, |_, _| Some(0.5));
+        assert!((6..=8).contains(&t.count()), "{}", t.count());
+        assert!(t.arcs.iter().all(|a| (a.to.length() - 1.0).abs() < 1e-4));
+        let q = t.quads(Vec3::ZERO, Vec3::new(0.0, 0.0, 5.0));
+        assert_eq!(q.len(), t.count() * TESLA_SEGMENTS);
+        t.step(0.31);
+        assert_eq!(t.count(), 0);
     }
 }

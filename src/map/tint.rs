@@ -75,15 +75,22 @@ impl RenderLook {
     }
 }
 
-/// A brush entity node's look (white, normal: as the material is).
+/// A brush entity node's look (white, normal: as the material is) and
+/// the texture frame its animated textures show (env_texturetoggle; 0:
+/// the first).
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BrushTint(pub RenderLook);
+pub struct BrushTint(pub RenderLook, pub u32);
 
 impl BrushTint {
     pub fn is_white(&self) -> bool {
-        self.0.is_plain()
+        self.0.is_plain() && self.1 == 0
     }
 }
+
+/// A brush entity mesh's texture frames (its base texture's, when it has
+/// several and something can pick one).
+#[derive(Component, Clone, Debug)]
+pub struct TextureFrames(pub Vec<Handle<Image>>);
 
 /// A tinted mesh's own material, to go back to (white) or tint again.
 #[derive(Component, Clone, Debug)]
@@ -108,7 +115,11 @@ fn looked_world(mut m: WorldMaterial, look: &RenderLook) -> WorldMaterial {
 #[allow(clippy::type_complexity)]
 pub(super) fn apply_brush_tints(
     nodes: Query<(&BrushTint, &Children), Changed<BrushTint>>,
-    mut world_parts: Query<(&mut MeshMaterial3d<WorldMaterial>, Option<&UntintedWorld>)>,
+    mut world_parts: Query<(
+        &mut MeshMaterial3d<WorldMaterial>,
+        Option<&UntintedWorld>,
+        Option<&TextureFrames>,
+    )>,
     mut standard_parts: Query<(&mut MeshMaterial3d<StandardMaterial>, Option<&UntintedStandard>)>,
     world_materials: Option<ResMut<Assets<WorldMaterial>>>,
     standard_materials: Option<ResMut<Assets<StandardMaterial>>>,
@@ -121,7 +132,7 @@ pub(super) fn apply_brush_tints(
         let look = tint.0;
         let f = look.factor();
         for child in children.iter() {
-            if let Ok((mut mat, own)) = world_parts.get_mut(child) {
+            if let Ok((mut mat, own, frames)) = world_parts.get_mut(child) {
                 let own = match own {
                     Some(o) => o.0.clone(),
                     None => {
@@ -131,7 +142,10 @@ pub(super) fn apply_brush_tints(
                 };
                 if tint.is_white() {
                     mat.0 = own;
-                } else if let Some(m) = wm.get(&own).cloned() {
+                } else if let Some(mut m) = wm.get(&own).cloned() {
+                    if let Some(f) = frames.filter(|f| !f.0.is_empty()) {
+                        m.base = Some(f.0[tint.1 as usize % f.0.len()].clone());
+                    }
                     mat.0 = wm.add(looked_world(m, &look));
                 }
             } else if let Ok((mut mat, own)) = standard_parts.get_mut(child) {

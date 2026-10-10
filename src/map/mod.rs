@@ -46,6 +46,7 @@ pub mod loading;
 pub mod material_fx;
 pub use material_fx::{DetailMode, MapSelfIllum, MapUvTransform};
 pub mod merge;
+pub mod monitor;
 pub mod tint;
 pub mod probe_lit;
 pub mod radio;
@@ -293,6 +294,9 @@ pub struct MapMesh {
     /// A brush entity's translucent render mode (Source rendermode and
     /// renderamt): blended or added, and its opacity (`tint::RenderLook`).
     pub render: Option<(MapAlpha, f32)>,
+    /// Its base texture's frames (indices into `MapData::textures`), when a
+    /// map entity can pick one (env_texturetoggle; `tint::TextureFrames`).
+    pub frames: Vec<usize>,
 }
 
 impl MapMesh {
@@ -1305,6 +1309,15 @@ pub struct MapData {
     /// `emitters`.
     pub trails: Vec<emitters::MapTrail>,
     pub smokestacks: Vec<emitters::MapSmokeStack>,
+    /// point_tesla arcs (`emitters`).
+    pub teslas: Vec<emitters::MapTesla>,
+    /// Screen overlay materials maps name (env_screenoverlay): lower-case
+    /// name and index into `textures`.
+    pub screen_overlays: Vec<(String, usize)>,
+    /// The monitor screen texture (Source `_rt_camera`, index into
+    /// `textures`): drawn with what the active point_camera sees
+    /// (`monitor`).
+    pub camera_texture: Option<usize>,
     /// Beams (point_spotlight, env_laser, env_beam) and light glows
     /// (env_lightglow): `beams`.
     pub beams: Vec<beams::MapBeam>,
@@ -1517,6 +1530,12 @@ pub struct MapSprite {
     /// Shown at map start.
     pub start_on: bool,
 }
+
+/// The loaded map's screen overlay pictures (env_screenoverlay), by
+/// lower-case material name; the client draws the one the logic shows
+/// (`logic::ScreenFades::overlay`).
+#[derive(Resource, Clone, Debug, Default)]
+pub struct ScreenOverlayImages(pub HashMap<String, Handle<Image>>);
 
 /// A drawn part of a map entity the logic switches (sprites, dust
 /// volumes): `on` shows a sprite or lets dust spawn motes; `exists` false
@@ -1871,7 +1890,7 @@ struct PlayableArea((Vec3, Vec3));
 #[allow(clippy::type_complexity)]
 fn show_skybox_in_place(
     area: Option<Res<PlayableArea>>,
-    cameras: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<SkyboxCamera>, Without<ViewModelCamera>, Without<water::WaterReflectionCamera>)>,
+    cameras: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<monitor::ScreenCamera>, Without<SkyboxCamera>, Without<ViewModelCamera>, Without<water::WaterReflectionCamera>)>,
     mut parts: Query<&mut bevy::camera::visibility::RenderLayers, Without<Camera>>,
     mut outside_before: Local<Option<bool>>,
 ) {
@@ -1937,7 +1956,7 @@ impl Plugin for MapPlugin {
         }
         ragdoll::plugin(app);
         app.add_plugins(light_styles::LightStylesPlugin);
-        app.add_plugins((controllers::ControllersPlugin, buoyancy::BuoyancyPlugin));
+        app.add_plugins((controllers::ControllersPlugin, buoyancy::BuoyancyPlugin, monitor::MonitorPlugin));
         app.add_plugins(sound::SoundPlugin)
             .init_resource::<ShowLocalBody>()
             .init_resource::<vis::NoVis>()
@@ -1953,6 +1972,7 @@ impl Plugin for MapPlugin {
             .add_message::<breakables::BreakProp>()
             .add_message::<prop_physics::PropAwakened>()
             .add_message::<GlassShatter>()
+            .add_message::<emitters::TeslaSpark>()
             .add_message::<GlassImpact>()
             .add_message::<breakables::FallingPane>()
             .add_message::<CollisionStart>()
@@ -2025,7 +2045,12 @@ impl Plugin for MapPlugin {
                     (
                         tracer::draw_tracers,
                         particles::step_particles.in_set(particles::ParticleSet::Step),
-                        (emitters::update_trails, emitters::update_smokestacks, psys::update_systems)
+                        (
+                            emitters::update_trails,
+                            emitters::update_smokestacks,
+                            emitters::update_teslas,
+                            psys::update_systems,
+                        )
                             .after(particles::ParticleSet::Step)
                             .before(particles::ParticleSet::Draw),
                         particles::draw_particles
@@ -2374,6 +2399,9 @@ fn spawn_map(
             .iter()
             .enumerate()
             .map(|(i, t)| {
+                if Some(i) == data.camera_texture {
+                    return monitor::screen_image(images);
+                }
                 let mut image = to_image(t, &data.look);
                 if hud.contains(&i) {
                     clamp_edges(&mut image);
@@ -2381,6 +2409,17 @@ fn spawn_map(
                 images.add(image)
             })
             .collect();
+        if let Some(i) = data.camera_texture {
+            commands.insert_resource(monitor::MonitorScreen(textures[i].clone()));
+        }
+        if !data.screen_overlays.is_empty() {
+            commands.insert_resource(ScreenOverlayImages(
+                data.screen_overlays
+                    .iter()
+                    .map(|(name, t)| (name.clone(), textures[*t].clone()))
+                    .collect(),
+            ));
+        }
         let cubemaps: Vec<Handle<Image>> = data.cubemaps.iter().map(|c| images.add(cube_image(c))).collect();
         cubemap_handles = cubemaps.clone();
         texture_handles = textures.clone();
@@ -2794,6 +2833,9 @@ fn spawn_map(
                 if merged.is_some() {
                     part.insert((merge::MergedPiece, Visibility::Hidden));
                 }
+                if !m.frames.is_empty() {
+                    part.insert(tint::TextureFrames(m.frames.iter().map(|f| textures[*f].clone()).collect()));
+                }
                 if m.pane_look != PaneLook::Whole {
                     part.insert((PanePart(m.pane_look), Visibility::Hidden));
                 }
@@ -3038,6 +3080,20 @@ fn spawn_map(
             }
             if !data.particle_systems.defs.is_empty() {
                 commands.insert_resource(psys::ParticleSystemDefs(data.particle_systems.clone()));
+            }
+            for (i, t) in data.teslas.iter().enumerate() {
+                let mut e = commands.spawn((
+                    Name::new(format!("Tesla {i}")),
+                    MapPart,
+                    emitters::TeslaEmitter::new(t.clone(), i as u64 + 1),
+                    emitters::FollowsEntity,
+                    Transform::from_translation(t.position),
+                    Visibility::default(),
+                    ChildOf(root),
+                ));
+                if let Some(entity) = t.entity {
+                    e.insert(EntityPart { entity, on: true, exists: true });
+                }
             }
             for (i, s) in data.smokestacks.iter().enumerate() {
                 let reach = s.length + s.base_spread + s.end_size * 2.0;
@@ -3830,6 +3886,9 @@ pub fn unload_map(world: &mut World) {
     world.remove_resource::<particles::ParticleAssets>();
     world.remove_resource::<particles::ParticleMaterials>();
     world.remove_resource::<psys::ParticleSystemDefs>();
+    world.remove_resource::<ScreenOverlayImages>();
+    world.remove_resource::<monitor::MonitorScreen>();
+    world.insert_resource(monitor::MonitorCamera::default());
     if let Some(mut p) = world.get_resource_mut::<particles::Particles>() {
         p.groups.clear();
     }
@@ -4672,7 +4731,7 @@ pub(crate) struct GlowSprite {
 #[allow(clippy::type_complexity)]
 fn glow_visibility(
     query: SpatialQuery,
-    cameras: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<SkyboxCamera>, Without<ViewModelCamera>, Without<water::WaterReflectionCamera>)>,
+    cameras: Query<(&GlobalTransform, &Camera), (With<Camera3d>, Without<monitor::ScreenCamera>, Without<SkyboxCamera>, Without<ViewModelCamera>, Without<water::WaterReflectionCamera>)>,
     ignored: Query<Entity, With<crate::core::Intent>>,
     mut glows: Query<
         (
@@ -4915,7 +4974,7 @@ fn attach_sky(
     sky_camera: Option<Res<SkyCameraInfo>>,
     cameras: Query<
         (Entity, Has<SkyboxCamera>),
-        (With<Camera3d>, Without<bevy::light::Skybox>, Without<ViewModelCamera>),
+        (With<Camera3d>, Without<monitor::ScreenCamera>, Without<bevy::light::Skybox>, Without<ViewModelCamera>),
     >,
 ) {
     let Some(sky) = sky else { return };
@@ -5128,7 +5187,7 @@ fn follow_sky_camera(
             Entity,
             &Camera,
         ),
-        (With<Camera3d>, Without<SkyboxCamera>, Without<ViewModelCamera>, Without<water::WaterReflectionCamera>),
+        (With<Camera3d>, Without<monitor::ScreenCamera>, Without<SkyboxCamera>, Without<ViewModelCamera>, Without<water::WaterReflectionCamera>),
     >,
     mut sky: Query<
         (

@@ -975,7 +975,8 @@ fn sync_movers(world: &mut World, logic: &mut Logic) {
         set_node_shown(&mut e, visible);
         // Its render colour (rendercolor, the Color input).
         let look = logic.world.get(id).map_or_else(Default::default, |e| e.render_look());
-        let tint = crate::map::tint::BrushTint(look);
+        let frame = logic.world.get(id).map_or(0, |e| e.texture_frame);
+        let tint = crate::map::tint::BrushTint(look, frame);
         if e.get::<crate::map::tint::BrushTint>()
             .map_or(!tint.is_white(), |t| *t != tint)
         {
@@ -1334,6 +1335,9 @@ fn apply_effects(world: &mut World, effects: Vec<Effect>, scale: f32) {
                     magnitude,
                 });
             }
+            Effect::Tesla { entity } => {
+                world.write_message(crate::map::emitters::TeslaSpark { entity });
+            }
             Effect::BodyVelocity { id, velocity } => {
                 if let Some(node) = entity_node(world, id)
                     && let Some(mut v) = world.get_mut::<LinearVelocity>(node)
@@ -1527,6 +1531,17 @@ fn sync_controls(world: &mut World, logic: &Logic) {
 /// Players viewing through a point_viewcontrol see from it
 /// (`core::MapView`: a camera's pose, looking down -Z).
 fn sync_views(world: &mut World, logic: &Logic) {
+    // What monitors show (`map::monitor`).
+    let monitor = crate::map::monitor::MonitorCamera(logic.world.monitor_camera().map(|(origin, angles, fov)| {
+        (
+            entity_to_engine(origin, logic.scale),
+            rotation_to_engine(entity_rotation(angles)) * Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2),
+            fov,
+        )
+    }));
+    if world.get_resource::<crate::map::monitor::MonitorCamera>() != Some(&monitor) {
+        world.insert_resource(monitor);
+    }
     for (p, origin, angles) in logic.world.camera_views() {
         let view = crate::core::MapView {
             origin: entity_to_engine(origin, logic.scale),

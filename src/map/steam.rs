@@ -198,6 +198,7 @@ pub(super) fn update_steam(
         &GlobalTransform,
         (
             With<Camera3d>,
+            Without<super::monitor::ScreenCamera>,
             Without<SkyboxCamera>,
             Without<super::ViewModelCamera>,
             Without<super::water::WaterReflectionCamera>,

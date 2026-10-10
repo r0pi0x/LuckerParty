@@ -116,7 +116,16 @@ pub(super) const MIN_DYNAMIC_VERTICES: usize = 64;
 #[allow(clippy::type_complexity)]
 pub(super) fn update_dust(
     time: Res<Time>,
-    cameras: Query<&GlobalTransform, (With<Camera3d>, Without<SkyboxCamera>, Without<super::ViewModelCamera>, Without<super::water::WaterReflectionCamera>)>,
+    cameras: Query<
+        &GlobalTransform,
+        (
+            With<Camera3d>,
+            Without<super::monitor::ScreenCamera>,
+            Without<SkyboxCamera>,
+            Without<super::ViewModelCamera>,
+            Without<super::water::WaterReflectionCamera>,
+        ),
+    >,
     mut emitters: Query<(&mut DustEmitter, Option<&super::EntityPart>, Option<&Visibility>)>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {

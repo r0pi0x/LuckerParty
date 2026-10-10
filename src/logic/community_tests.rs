@@ -827,3 +827,148 @@ fn set_parent_attachment_snaps_to_the_models_attachment() {
     // (10, 0, 30) turned 90 degrees: (0, 10, 30) from (100, 0, 0).
     assert!((at - Vec3::new(100.0, 10.0, 30.0)).length() < 1e-3, "{at}");
 }
+
+#[test]
+fn shooters_pushes_toggles_overlays_and_cameras() {
+    // env_shooter (mg_kommando's shell casings), point_push (mg_lt_galaxy's
+    // black hole), env_texturetoggle (mg_crazykart's item boxes),
+    // env_screenoverlay (mg_swag's team screens), point_camera with a
+    // func_monitor (mg_lt_galaxy's spectator screens), func_water_analog
+    // and func_tanktrain.
+    let mut w = world();
+    spawn(
+        &mut w,
+        &[
+            ("classname", "env_shooter"),
+            ("targetname", "shells"),
+            ("shootmodel", "models/shells/shell_762nato.mdl"),
+            ("m_iGibs", "3"),
+            ("m_flVelocity", "100"),
+            ("m_flGibLife", "2"),
+        ],
+    );
+    let toggled = spawn(&mut w, &[("classname", "func_door"), ("targetname", "items")]);
+    spawn(
+        &mut w,
+        &[
+            ("classname", "env_texturetoggle"),
+            ("targetname", "tt"),
+            ("target", "items"),
+        ],
+    );
+    spawn(
+        &mut w,
+        &[
+            ("classname", "env_screenoverlay"),
+            ("targetname", "ov"),
+            ("OverlayName1", "a/one"),
+            ("OverlayTime1", "1"),
+            ("OverlayName2", "a/two"),
+            ("OverlayTime2", "-1"),
+        ],
+    );
+    spawn(
+        &mut w,
+        &[
+            ("classname", "point_camera"),
+            ("targetname", "cam"),
+            ("origin", "1 2 3"),
+            ("FOV", "70"),
+            ("spawnflags", "1"),
+        ],
+    );
+    spawn(
+        &mut w,
+        &[("classname", "func_monitor"), ("targetname", "mon"), ("target", "cam")],
+    );
+    spawn(&mut w, &[("classname", "func_water_analog"), ("targetname", "water")]);
+    spawn(&mut w, &[("classname", "func_tanktrain"), ("targetname", "tank")]);
+    w.activate();
+    assert_eq!(w.monitor_camera(), None, "the camera starts off");
+    w.queue_input("shells", "Shoot", Value::Void, 0.0, None);
+    w.queue_input("tt", "SetTextureIndex", Value::Str("2".into()), 0.0, None);
+    w.queue_input("ov", "StartOverlays", Value::Void, 0.0, None);
+    w.queue_input("cam", "SetOn", Value::Void, 0.0, None);
+    w.queue_input("water", "Open", Value::Void, 0.0, None);
+    w.queue_input("tank", "Toggle", Value::Void, 0.0, None);
+    run_to(&mut w, 2);
+    let gibs: Vec<_> = w
+        .effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::Gibs { set, pieces, .. } => Some((set.clone(), pieces.len())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(gibs, vec![("models/shells/shell_762nato.mdl".to_string(), 3)]);
+    assert_eq!(w.get(toggled).unwrap().texture_frame, 2);
+    let overlays = |w: &LogicWorld| -> Vec<String> {
+        w.effects
+            .iter()
+            .filter_map(|e| match e {
+                Effect::Hud {
+                    what: crate::logic::hud::HudShow::Overlay { material, .. },
+                    ..
+                } => Some(material.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(overlays(&w), vec!["a/one".to_string()]);
+    assert_eq!(w.monitor_camera(), Some((Vec3::new(1.0, 2.0, 3.0), Vec3::ZERO, 70.0)));
+    w.effects.clear();
+    // After its second, the next overlay; it stays.
+    run_to(&mut w, 80);
+    assert_eq!(overlays(&w), vec!["a/two".to_string()]);
+    w.queue_input("tt", "IncrementTextureIndex", Value::Void, 0.0, None);
+    w.queue_input("mon", "Disable", Value::Void, 0.0, None);
+    run_to(&mut w, 82);
+    assert_eq!(w.get(toggled).unwrap().texture_frame, 3);
+    assert_eq!(w.monitor_camera(), None, "no monitor shows it");
+    assert!(!w.log.iter().any(|l| l.contains("unhandled")), "{:?}", w.log);
+}
+
+#[test]
+fn point_push_and_tesla_think_while_on() {
+    let mut w = world();
+    let p = player_at(&mut w, 1, Vec3::new(100.0, 0.0, 0.0));
+    spawn(
+        &mut w,
+        &[
+            ("classname", "point_push"),
+            ("targetname", "push"),
+            ("magnitude", "200"),
+            ("radius", "512"),
+            ("spawnflags", "8"),
+            ("enabled", "0"),
+        ],
+    );
+    let tesla = spawn(
+        &mut w,
+        &[
+            ("classname", "point_tesla"),
+            ("targetname", "tesla"),
+            ("interval_min", "0.1"),
+            ("interval_max", "0.1"),
+            ("m_SoundName", "DoSpark"),
+        ],
+    );
+    w.get_mut(tesla).unwrap().map_index = Some(7);
+    w.activate();
+    run_to(&mut w, 10);
+    assert_eq!(w.player(p).unwrap().velocity, Vec3::ZERO, "off at spawn");
+    w.queue_input("push", "Enable", Value::Void, 0.0, None);
+    w.queue_input("tesla", "TurnOn", Value::Void, 0.0, None);
+    w.effects.clear();
+    run_to(&mut w, 80);
+    // Pushed away from it (+X), less than the full 200 u/s² at 100 of 512.
+    let v = w.player(p).unwrap().velocity;
+    assert!(v.x > 50.0 && v.y.abs() < 1e-3, "{v}");
+    let sparks = w
+        .effects
+        .iter()
+        .filter(|e| matches!(e, Effect::Tesla { entity: 7 }))
+        .count();
+    assert!((8..=12).contains(&sparks), "{sparks}");
+    assert!((crate::logic::community::push_strength(200.0, 512.0, 256.0, true) - 100.0).abs() < 1e-3);
+}

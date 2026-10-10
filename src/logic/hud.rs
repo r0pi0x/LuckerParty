@@ -198,6 +198,9 @@ pub struct ScreenFades {
     pub fades: Vec<(ScreenFade, f64)>,
     /// The key hint text and when it came (empty: hidden).
     pub hint: Option<(String, f64)>,
+    /// The screen overlay material shown (lower case), since when and for
+    /// how long (seconds; 0 or less: until replaced).
+    pub overlay: Option<(String, f64, f32)>,
 }
 
 impl ScreenFades {
@@ -253,6 +256,12 @@ pub enum HudShow {
     Fade(ScreenFade),
     /// The key hint panel's text (env_hudhint); empty hides it.
     Hint(String),
+    /// A full-screen overlay material (env_screenoverlay) for `secs`
+    /// seconds (0 or less: until replaced); an empty name takes it away.
+    Overlay {
+        material: String,
+        secs: f32,
+    },
 }
 
 /// Show a `HudShow` on this client's HUD at `now` (`Time` elapsed).
@@ -261,5 +270,9 @@ pub fn show_on_hud(world: &mut World, what: HudShow, now: f64) {
         HudShow::Text(m) => world.get_resource_or_init::<HudMessages>().show(m, now),
         HudShow::Fade(f) => world.get_resource_or_init::<ScreenFades>().show(f, now),
         HudShow::Hint(text) => world.get_resource_or_init::<ScreenFades>().hint = Some((text, now)),
+        HudShow::Overlay { material, secs } => {
+            world.get_resource_or_init::<ScreenFades>().overlay =
+                (!material.is_empty()).then(|| (material.to_ascii_lowercase(), now, secs));
+        }
     }
 }

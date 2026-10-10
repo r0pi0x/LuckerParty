@@ -44,6 +44,9 @@ pub enum PartKind {
     SmokeStack,
     /// info_particle_system: its effect runs while on (Start/Stop).
     Particles,
+    /// point_tesla: sparks at random intervals while on (TurnOn/TurnOff),
+    /// DoSpark once (`beams`).
+    Tesla,
 }
 
 /// A sprite or dust volume: shown (sprites) or spawning (dust) while on.
@@ -78,6 +81,7 @@ pub(super) fn spawn_part(w: &LogicWorld, id: EntId, kind: PartKind) -> Part {
         PartKind::Trail => true,
         PartKind::SmokeStack => e.kv_i("InitialState") != 0,
         PartKind::Particles => e.kv_i("start_active") != 0,
+        PartKind::Tesla => false,
     };
     Part {
         kind,
@@ -105,7 +109,12 @@ pub(super) fn spawn_light(w: &mut LogicWorld, id: EntId) -> Light {
 /// Sprite, dust and light inputs; false when not one of them.
 pub(super) fn input(w: &mut LogicWorld, id: EntId, input: &str, _value: &Value) -> bool {
     match w.get(id).map(|e| e.class.clone()) {
-        Some(Class::Part(p)) if matches!(p.kind, PartKind::Beam | PartKind::Glow | PartKind::Spark) => {
+        Some(Class::Part(p))
+            if matches!(
+                p.kind,
+                PartKind::Beam | PartKind::Glow | PartKind::Spark | PartKind::Tesla
+            ) =>
+        {
             super::beams::input(w, id, input)
         }
         Some(Class::Part(p)) => {

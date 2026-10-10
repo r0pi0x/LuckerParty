@@ -1,6 +1,7 @@
-//! Sprite trails (env_spritetrail, specs/source/visual_entities.md 5) and
+//! Sprite trails (env_spritetrail, specs/source/visual_entities.md 5),
 //! smoke stacks (env_smokestack, specs/source/particles_and_smoke.md 3)
-//! from the map's entities into `map::emitters`. Their materials join the
+//! and teslas (point_tesla, public entity docs) from the map's entities
+//! into `map::emitters`. Their materials join the
 //! map's particle materials (the pool draws them): a trail in an additive
 //! render mode gets an additive copy of its sprite.
 
@@ -117,6 +118,36 @@ pub fn add_trails_and_stacks(bsp: &Bsp, materials: &mut MaterialLoader, data: &m
                 end_width: end.map(|w| w * METERS_PER_UNIT),
                 color,
                 alpha,
+            });
+        } else if class.eq_ignore_ascii_case("env_screenoverlay") {
+            for n in 1..=10 {
+                let Some(name) = key(&e, &format!("OverlayName{n}")).map(|v| v.trim().to_ascii_lowercase()) else {
+                    continue;
+                };
+                if name.is_empty() || data.screen_overlays.iter().any(|(o, _)| *o == name) {
+                    continue;
+                }
+                if let Some(t) = materials.resolve(&material_name(&name)).texture {
+                    data.screen_overlays.push((name, t));
+                }
+            }
+        } else if class.eq_ignore_ascii_case("point_tesla") {
+            let sprite = key(&e, "texture").unwrap_or("sprites/physbeam");
+            let Some(material) = particle_material(materials, data, sprite, Some(ParticleBlend::Additive)) else {
+                continue;
+            };
+            let range = |a: &str, b: &str| (num(a).unwrap_or(0.0), num(b).unwrap_or(0.0));
+            let (w0, w1) = range("thick_min", "thick_max");
+            let (b0, b1) = range("beamcount_min", "beamcount_max");
+            data.teslas.push(crate::map::emitters::MapTesla {
+                entity: Some(index),
+                position: engine(origin),
+                material,
+                color: vec3(key(&e, "m_Color")).unwrap_or(Vec3::splat(255.0)) / 255.0,
+                radius: num("m_flRadius").unwrap_or(200.0) * METERS_PER_UNIT,
+                width: (w0 * METERS_PER_UNIT, w1 * METERS_PER_UNIT),
+                life: range("lifetime_min", "lifetime_max"),
+                beams: (b0.max(0.0) as u32, b1.max(0.0) as u32),
             });
         } else if class.eq_ignore_ascii_case("env_smokestack") {
             let name = key(&e, "SmokeMaterial").unwrap_or(SMOKESTACK_MATERIAL);

@@ -359,6 +359,7 @@ impl Class {
             }
             "env_lightglow" => Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::Glow)),
             "env_spark" => Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::Spark)),
+            "point_tesla" => Class::Part(super::visuals::spawn_part(w, id, super::visuals::PartKind::Tesla)),
             "phys_thruster"
             | "phys_keepupright"
             | "phys_motor"
@@ -453,9 +454,13 @@ impl Class {
             "momentary_rot_button" => Class::Momentary(Box::new(movers::Momentary::spawn(w, id))),
             "func_movelinear" => Class::MoveLinear(Box::new(MoveLinear::spawn(w, id))),
             "func_rotating" => Class::Rotating(Box::new(Rotating::spawn(w, id))),
-            "func_tracktrain" => Class::Train(Box::new(Train::spawn(w, id))),
+            // func_tanktrain: a track train that can be shot (public entity
+            // docs); its health isn't kept.
+            "func_tracktrain" | "func_tanktrain" => Class::Train(Box::new(Train::spawn(w, id))),
             "path_track" => Class::PathTrack(PathTrack::spawn(w, id)),
-            "func_brush" => Class::Brush(Box::new(Toggle::spawn_brush(w, id))),
+            // func_monitor is a func_brush showing a point_camera's view
+            // (`community::monitor_camera`).
+            "func_brush" | "func_monitor" => Class::Brush(Box::new(Toggle::spawn_brush(w, id))),
             "ambient_generic" => super::ambient::spawn(w, id).map_or(Class::None, |a| Class::Ambient(Box::new(a))),
             "func_breakable" | "func_breakable_surf" => {
                 Class::Breakable(Box::new(super::breakables::Breakable::spawn(w, id)))

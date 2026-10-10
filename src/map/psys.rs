@@ -960,6 +960,7 @@ pub(super) fn update_systems(
         &GlobalTransform,
         (
             With<Camera3d>,
+            Without<super::monitor::ScreenCamera>,
             Without<super::SkyboxCamera>,
             Without<super::ViewModelCamera>,
             Without<super::water::WaterReflectionCamera>,
