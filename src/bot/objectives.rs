@@ -50,6 +50,9 @@ pub const ON_IT_QUIET: f64 = 3.0;
 /// Guard and cover spots: hiding spots that see the bomb, at least this
 /// far from it, m.
 pub const GUARD_MIN: f32 = 3.0;
+/// The defuser is the nearest defender, one with a kit counted this much
+/// nearer, m.
+pub const KIT_LEAD: f32 = 10.0;
 /// The rally point lies this far along the way (by the mesh) from the
 /// bomb toward the defenders, m.
 pub const RALLY_BACK: f32 = 15.0;
@@ -243,21 +246,14 @@ pub(super) fn goals(
             retake.defuser = bots
                 .iter()
                 .filter(|x| *x.4 == rules.defuser_team && x.5.current > 0.0)
-                .min_by(|x, y| {
-                    let score = |x: &(Entity, &Bot, &Transform, Option<&MovementState>, &Team, &Health, Option<&Inventory>, bool)| {
-                        x.2.translation.distance(at) - if x.7 { 10.0 } else { 0.0 }
-                    };
-                    score(x).total_cmp(&score(y))
-                })
+                .map(|x| (x.0, x.2.translation.distance(at) - if x.7 { KIT_LEAD } else { 0.0 }))
+                .min_by(|x, y| x.1.total_cmp(&y.1))
                 .map(|x| x.0);
         }
     }
-    // Rank among the living of each side (bot number order), for spots.
-    let mut ranks: Vec<(Team, u32, Entity)> = bots
-        .iter()
-        .filter(|x| x.5.current > 0.0)
-        .map(|x| (*x.4, x.1.number, x.0))
-        .collect();
+    // Rank in each side (bot number order, the dead too, so spots stay
+    // put as bots die), for spots.
+    let mut ranks: Vec<(Team, u32, Entity)> = bots.iter().map(|x| (*x.4, x.1.number, x.0)).collect();
     ranks.sort_by_key(|r| (r.0.0, r.1));
     let rank = |e: Entity, team: Team| {
         ranks
@@ -292,20 +288,17 @@ pub(super) fn goals(
                 }
                 None
             } else if retake.went.is_none() {
-                {
-                    let mut watch = vec![b];
-                    if let Some(s) = retake.site.and_then(|s| tactics.sites.get(s)) {
-                        watch.extend(s.approaches[1].iter().copied().filter(|a| a.distance(retake.rally) > 3.0));
-                    }
-                    bot.guard = Some((
-                        Hold {
-                            spot: retake.rally,
-                            watch,
-                        },
-                        Activity::Retaking,
-                    ));
-                    None
+                // Gathering: watching toward the bomb and the other ways in.
+                let mut watch = vec![b];
+                if let Some(s) = retake.site.and_then(|s| tactics.sites.get(s)) {
+                    watch.extend(s.approaches[1].iter().copied().filter(|a| a.distance(retake.rally) > 3.0));
                 }
+                let spot = Hold {
+                    spot: retake.rally,
+                    watch,
+                };
+                bot.guard = Some((spot, Activity::Retaking));
+                None
             } else if retake.defuser == Some(e) || retake.covers.is_empty() {
                 Some(b)
             } else {

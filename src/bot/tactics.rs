@@ -60,9 +60,11 @@ pub const STAGE_ROUTE: f32 = 24.0;
 const STAGE_GROUP: f32 = 7.0;
 const STAGE_MIN: f64 = 2.0;
 const STAGE_MAX: f64 = 8.0;
-/// An "enemy spotted" from a defender at its site moves the nearest
-/// defender from another site there, this many per round.
-const ROTATE_MAX: usize = 1;
+/// An "enemy spotted" (or "need backup", "taking fire") from a defender
+/// at its site moves the nearest defenders from the other sites there,
+/// this many per round, keeping `ROTATE_ANCHOR` behind.
+const ROTATE_MAX: usize = 2;
+const ROTATE_ANCHOR: usize = 1;
 /// Radio calls bring teammates within this, m.
 const ASSIST_RANGE: f32 = 60.0;
 /// A link a bot got stuck on is avoided by every bot for this long per
@@ -773,7 +775,7 @@ pub(super) fn update(
     // enemies at its site brings some from the other sites.
     let calls: Vec<Radio> = radio.read().cloned().collect();
     for call in &calls {
-        if call.command != "enemyspot" {
+        if !matches!(call.command.as_str(), "enemyspot" | "needbackup" | "takingfire") {
             continue;
         }
         let Ok((_, caller, t, team, _)) = bots.get(call.sender) else {
@@ -803,25 +805,26 @@ pub(super) fn update(
         let Some(plan) = tactics.teams.iter_mut().find(|p| p.team == team) else {
             continue;
         };
-        if plan.rotated >= ROTATE_MAX {
-            continue;
-        }
-        let Some(&(e, _)) = others.iter().min_by(|a, b| a.1.total_cmp(&b.1)) else {
-            continue;
-        };
-        plan.rotated += 1;
-        // A hold at the site nobody has.
-        let taken: Vec<Vec3> = bots.iter().filter_map(|(_, b, ..)| b.hold.as_ref().map(|h| h.spot)).collect();
-        let hold = tactics.sites[site].holds[0]
-            .iter()
-            .find(|h| taken.iter().all(|t| t.distance(h.spot) > 1.0))
-            .cloned();
-        if let Ok((_, mut bot, ..)) = bots.get_mut(e) {
-            debug!("bots: defender {e} rotates to site {site}");
-            bot.site = Some(site);
-            bot.hold = hold;
-            bot.hold_since = None;
-            bot.hunting = false;
+        let mut others = others;
+        others.sort_by(|a, b| a.1.total_cmp(&b.1));
+        let go = ROTATE_MAX
+            .saturating_sub(plan.rotated)
+            .min(others.len().saturating_sub(ROTATE_ANCHOR));
+        plan.rotated += go;
+        for &(e, _) in others.iter().take(go) {
+            // A hold at the site nobody has.
+            let taken: Vec<Vec3> = bots.iter().filter_map(|(_, b, ..)| b.hold.as_ref().map(|h| h.spot)).collect();
+            let hold = tactics.sites[site].holds[0]
+                .iter()
+                .find(|h| taken.iter().all(|t| t.distance(h.spot) > 1.0))
+                .cloned();
+            if let Ok((_, mut bot, ..)) = bots.get_mut(e) {
+                debug!("bots: defender {e} rotates to site {site}");
+                bot.site = Some(site);
+                bot.hold = hold;
+                bot.hold_since = None;
+                bot.hunting = false;
+            }
         }
     }
     for call in &calls {

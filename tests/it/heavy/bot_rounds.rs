@@ -6,7 +6,10 @@
 //! stuck (no progress for 4 s while walking a route, summed up by spot;
 //! `tests/it/heavy/bot_nav.rs` has the tools to look at one):
 //! `MASHUP_BOT_MAP=de_nuke MASHUP_BOT_ROUNDS=8 cargo test --features dev
-//! --test it bot_rounds:: -- --ignored --nocapture`.
+//! --test it bot_rounds:: -- --ignored --nocapture` (`MASHUP_BOT_CONSOLE`:
+//! console commands to run first, e.g. "bot_grenades 0"). Runs aren't
+//! repeatable (the same build gives other winners), so compare 30 rounds
+//! or more.
 
 use bevy::prelude::*;
 use mashup::{
@@ -245,6 +248,10 @@ fn dust2_bot_round_stats() {
         .world_mut()
         .resource_mut::<Console>()
         .submit("mp_freezetime 2; mp_roundtime 2; mashup_rounds 1");
+    // More settings to try (`MASHUP_BOT_CONSOLE="bot_grenades 0"`).
+    if let Ok(more) = std::env::var("MASHUP_BOT_CONSOLE") {
+        sim.app.world_mut().resource_mut::<Console>().submit(&more);
+    }
     sim.ticks(3);
     let mut stats: Vec<String> = Vec::new();
     let (mut contact, mut live_at, mut last_kills) = (None::<f64>, None::<f64>, 0i32);
@@ -267,6 +274,9 @@ fn dust2_bot_round_stats() {
     let mut stuck = StuckWatch::default();
     // Deaths by team and place (where the bots lose their fights).
     let mut was_alive: std::collections::HashMap<Entity, bool> = Default::default();
+    // What each bot was doing last before a fight (when it fell).
+    let mut doing: std::collections::HashMap<Entity, Activity> = Default::default();
+    let mut deaths_doing: std::collections::BTreeMap<(u8, String), u32> = Default::default();
     let mut deaths: std::collections::BTreeMap<(u8, String), u32> = Default::default();
     while played < rounds && t < limit {
         sim.seconds(step);
@@ -283,6 +293,13 @@ fn dust2_bot_round_stats() {
                 if was_alive.insert(b, alive) == Some(true) && !alive {
                     fallen.push(b);
                 }
+                // (Not "fighting": what it was at when the fight came.)
+                if alive
+                    && let Some(x) = w.get::<Bot>(b)
+                    && !matches!(x.activity(), Activity::Fighting | Activity::Throwing | Activity::Averting)
+                {
+                    doing.insert(b, x.activity());
+                }
             }
             for e in fallen {
                 let (Some(team), Some(tr)) = (w.get::<Team>(e), w.get::<Transform>(e)) else {
@@ -294,6 +311,8 @@ fn dust2_bot_round_stats() {
                     .and_then(|a| nav.unwrap().areas[a].place)
                     .map_or("?".to_string(), |p| nav.unwrap().places[p].clone());
                 *deaths.entry((team.0, place)).or_default() += 1;
+                let what = doing.get(&e).map_or("?".to_string(), |a| format!("{a:?}"));
+                *deaths_doing.entry((team.0, what)).or_default() += 1;
             }
         }
         if trace && (t * 10.0).round() as u64 % 40 == 0 {
@@ -439,6 +458,11 @@ fn dust2_bot_round_stats() {
         v.sort_by(|a, b| b.1.cmp(a.1));
         let list: Vec<String> = v.iter().take(6).map(|(p, n)| format!("{p} {n}")).collect();
         eprintln!("{map}: {} deaths: {}", if team == 1 { "T" } else { "CT" }, list.join(", "));
+        let mut v: Vec<(&String, &u32)> =
+            deaths_doing.iter().filter(|d| d.0.0 == team).map(|d| (&d.0.1, d.1)).collect();
+        v.sort_by(|a, b| b.1.cmp(a.1));
+        let list: Vec<String> = v.iter().map(|(p, n)| format!("{p} {n}")).collect();
+        eprintln!("{map}: {} deaths while: {}", if team == 1 { "T" } else { "CT" }, list.join(", "));
     }
     stuck.report(&map);
     assert!(played > 0, "no round finished");
@@ -476,6 +500,8 @@ impl StuckWatch {
                     | Activity::Assisting
                     | Activity::Hunting
                     | Activity::Roaming
+                    | Activity::Retaking
+                    | Activity::Covering
             ) && bot.route_left() > 1.0;
             let entry = self.samples.entry(b).or_default();
             if h.current <= 0.0 || !walking {

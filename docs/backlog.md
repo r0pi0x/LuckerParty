@@ -397,15 +397,27 @@ a first bot are in.
   approach records are skipped). Buying (`bot::buy`, `economy::
   autobuy_rolling`): profile weapon preferences, eco and pistol rounds,
   kits; left: team-wide eco/force decisions.
-- Balance (15 rounds 5v5, `bot_rounds::dust2_bot_round_stats`; runs
-  aren't repeatable, so one 15-round run moves by several rounds):
-  before this pass terrorists won 13/15 on de_dust2, 8/15 on de_nuke and
-  9/15 on cs_office (defenders there); next: a measured reaction time.
+- Balance (5v5, `bot_rounds::dust2_bot_round_stats`; runs aren't
+  repeatable, one 15-round run swings by 3-4 rounds, so 30-round runs
+  summed): terrorists won, before this pass / after (retakes, buying,
+  two defenders rotating): de_dust2 43/60 (72 %) / 85/120 (71 %),
+  de_nuke 30/60 (50 %) / 52/90 (58 %), cs_office (terrorists defend)
+  31/60 (52 %) / 44/90 (49 %). de_dust2 stays terrorist-sided: counter-
+  terrorists die mostly at B, and while chasing, answering calls or
+  walking to holds rather than holding (the stats print deaths by place
+  and by what the bot was doing). Tried and dropped: defenders not
+  leaving their site to answer calls and not chasing beyond it (de_dust2
+  26/30 to the terrorists), no grenades at all (25/30). Next: why B
+  falls (its hold spots, the B boxes spot bots get stuck on), a measured
+  reaction time.
 - Grenades, beyond the first pass: flashes thrown around corners so they
   pop out of the thrower's view without turning, running and jump throws
   (carried velocity in the plan). Done: no team flashes
   (`grenades::flashes_mate`), smokes cutting sight lines
   (`tactics::smoke_spot`), "Fire in the hole" (every throw).
+- de_nuke's vents: the stats' stuck spots are mostly bots dropping
+  through the A hatches into the ducts (20.7, -9.9, 35.2 and 11.7, -9.9,
+  35.3, engine m) and in the ducts; not looked at in this pass.
 - Movement: gap jumps. Teammates now give way in doors (`bot::give_way`;
   `tests/it/bot_manners.rs`). de_nuke's door into A from Inside: a lone
   bot gets through all three door pairs both ways in about a second

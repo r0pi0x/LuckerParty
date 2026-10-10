@@ -229,9 +229,13 @@ Only `Reflect`-registered types are visible; register new core components in
   a bot walked a route without getting anywhere for 4 s, summed up; and
   per round whether the bomb was planted, defused or exploded and what
   each team carried at the start (primaries, helmets, kits), with deaths
-  per team by place at the end):
+  per team by place and by what the bot was doing before the fight at
+  the end; `MASHUP_BOT_CONSOLE="bot_grenades 0"` runs console commands
+  first):
   `MASHUP_BOT_MAP=de_dust2 MASHUP_BOT_ROUNDS=8 cargo test --features dev
-  --test it bot_rounds:: -- --ignored --nocapture`. To look at such a spot:
+  --test it bot_rounds:: -- --ignored --nocapture`. Runs aren't
+  repeatable (the same build gives other winners), so compare win rates
+  over 30 rounds or more. To look at such a spot:
   `MASHUP_NAV_MAP=de_nuke MASHUP_NAV_AT=11.4,-15.2,34.4 cargo test
   --features dev --test it bot_nav::nav_near -- --ignored --nocapture` prints
   the nav areas, links, ladders, ladder brushes and entities (breakables
