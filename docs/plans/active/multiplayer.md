@@ -1257,12 +1257,16 @@ with tests passing and something to see.
      score, name, the round, a client's own money, armour, weapons and
      ammo) and others' bodies the server's; entity counts level from
      round to round and between visits of a map; no Bevy errors.
-   - Measured (3 game minutes, dev build): bandwidth 71-84 KB/s per
-     client (96 at 300 ms/5 %), peaks ~200-290 KB/s at joins and map
-     changes; own state ~490 bytes a tick, `NetBody` 45 bytes per
-     character a tick; prediction errors 0.2-1.2 % of states
-     (3.5 % at 300 ms/5 %) plus 1-4 % from contacts and hits; server
-     frame 2-7 ms mean (~4 ms per tick, debug build, a loaded machine);
+   - Measured (30 game minutes, 54 rounds, dev build): 711,000 settled
+     values compared per client, none different; bandwidth 73-79 KB/s
+     per client (92 at 300 ms/5 %), peaks ~290-330 KB/s at joins and map
+     changes; own state ~490-650 bytes a tick, `NetBody` 45 bytes per
+     character a tick; prediction errors 0.36-0.82 % of states plus
+     ~2 % from contacts with others and hits, the longest run 18-83 in
+     a row (the long ones with the inventory changing: server-side
+     pickups and drops); server frame 2-16 ms mean a minute (debug
+     build on a machine at load 20-35 and swapping: wall times aren't
+     comparable from minute to minute);
      entities per round flat (de_dust2 ~1,100 on each side, greybox
      ~550-590, the community map ~640-700) and de_dust2's second visit
      within a few dozen of its first. Live (17 minutes): clients at a
@@ -1283,10 +1287,19 @@ with tests passing and something to see.
      never set by the console (`+hostname` on a dedicated server changed
      nothing players saw; test `net_query::hostname_is_one_setting`,
      `console::Console::replaced` lists any cvar registered twice); (4)
+     netcode's fixed 15 s timeout dropped every client of the live soak
+     after a `changelevel` that took one 17 s to put de_dust2 in (a
+     loaded machine): the token is made with Source's 30 s
+     (`net::client::TIMEOUT_SECONDS`; test `net::a_client_quiet_for_
+     20_s_stays_connected`); (5) a client that got characters before
+     the map's models (joining from the main menu, the greybox) drew
+     them as capsules over the models for good (`client::hud`'s
+     capsules now follow the map; unit test `capsule_bodies_follow_the_
+     map`); (6)
      several sounds for one source's channel in a frame (a client's
      burst after a stall) overlapped and the old one was despawned once
      per message, a warning each (hundreds a client in the live soak;
-     test `map_sound_fx::a_burst_on_one_channel_replaces_cleanly`); (5)
+     test `map_sound_fx::a_burst_on_one_channel_replaces_cleanly`); (7)
      chat and radio flood allowances were kept for every player who ever
      spoke (unit test `chat::tests::flood_forgets_who_left`); `NetSim`
      gave a joining client the id of one that had left.

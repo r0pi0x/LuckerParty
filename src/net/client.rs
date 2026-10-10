@@ -218,6 +218,10 @@ pub enum JoinFailure {
 /// a failure to show.
 pub const BY_USER: &str = "Disconnect by user.";
 
+/// Seconds without a packet before either end of a UDP connection gives
+/// up (Source's `cl_timeout` default).
+pub const TIMEOUT_SECONDS: i32 = 30;
+
 /// Connect to a server over UDP (netcode).
 pub fn connect(world: &mut World, server: SocketAddr) -> Result<(), String> {
     let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).map_err(|e| format!("UDP socket: {e}"))?;
@@ -231,13 +235,26 @@ pub fn connect(world: &mut World, server: SocketAddr) -> Result<(), String> {
             break n;
         }
     };
-    let auth = ClientAuthentication::Unsecure {
-        client_id: id,
-        protocol_id: PROTOCOL_ID,
-        server_addr: server,
-        // The password (`password`) for a server that wants one.
-        user_data: Some(super::query::user_data(&world.resource::<super::query::JoinPassword>().0)),
-    };
+    // netcode's "unsecure" connection as `ClientAuthentication::Unsecure`
+    // makes it (an unencrypted token), but with Source's 30 s timeout
+    // (`cl_timeout`) instead of its fixed 15 s: a client putting a big map
+    // in on a slow or busy machine went quiet for longer and was dropped
+    // by both ends (the live soak, multiplayer.md "Soak"). The server
+    // takes each client's timeout from its token.
+    // The password (`password`) for a server that wants one.
+    let user_data = super::query::user_data(&world.resource::<super::query::JoinPassword>().0);
+    let token = renetcode::ConnectToken::generate(
+        now,
+        PROTOCOL_ID,
+        300,
+        id,
+        TIMEOUT_SECONDS,
+        vec![server],
+        Some(&user_data),
+        &[0; renetcode::NETCODE_KEY_BYTES],
+    )
+    .map_err(|e| e.to_string())?;
+    let auth = ClientAuthentication::Secure { connect_token: token };
     let transport = super::udp::UdpClient::new(now, auth, socket).map_err(|e| e.to_string())?;
     start(world, id)?;
     world.insert_resource(transport);

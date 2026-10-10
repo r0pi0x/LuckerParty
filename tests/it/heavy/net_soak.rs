@@ -149,10 +149,20 @@ fn community_map() -> Option<String> {
 }
 
 /// Resident memory of this process, MB (Linux; None elsewhere).
+/// Resident plus swapped-out memory of this process, MB (Linux; None
+/// elsewhere): resident alone drops when a busy machine swaps.
 fn rss_mb() -> Option<f64> {
-    let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
-    let pages: f64 = statm.split_whitespace().nth(1)?.parse().ok()?;
-    Some(pages * 4096.0 / 1e6)
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let kb = |key: &str| -> Option<f64> {
+        status
+            .lines()
+            .find(|l| l.starts_with(key))?
+            .split_whitespace()
+            .nth(1)?
+            .parse()
+            .ok()
+    };
+    Some((kb("VmRSS:")? + kb("VmSwap:").unwrap_or(0.0)) / 1000.0)
 }
 
 struct Rng(u64);
@@ -588,6 +598,8 @@ struct Soak {
     /// Each client's character's health and when it last went down.
     hurt: HashMap<Entity, (f32, u64)>,
     level_changed_at: u64,
+    /// Since when each client has heard each body off the server's.
+    body_runs: HashMap<(u64, Entity), Option<(u64, bool)>>,
     shapes: HashMap<Entity, String>,
     examples: Vec<String>,
     /// Settled values a client had wrong: (client, field, whose) ->
@@ -994,7 +1006,8 @@ impl Soak {
         }
         if step % (64 * 30) == 0 {
             if let Some(mb) = rss_mb() {
-                self.rss.push((step, self.map.clone(), mb));
+                let visit = self.visits.get(&self.map).copied().unwrap_or(0);
+                self.rss.push((step, format!("{} #{visit}", self.map), mb));
             }
         }
         // Rounds: sample entity counts a second into each freeze.
@@ -1225,15 +1238,25 @@ impl Soak {
                 let off = Vec3::from(*server).distance(Vec3::from(origin));
                 stats.body_compared += 1;
                 stats.body_worst = stats.body_worst.max(off);
-                if off > 0.01 && step < self.level_changed_at + 128 {
+                // A body off for longer than a value takes to settle
+                // and be sent again (`resend_settled`) plus a round trip
+                // is lost for good; shorter, a loss being repaired.
+                let run = self.body_runs.entry((id, *s)).or_insert(None);
+                if off <= 0.01 {
+                    *run = None;
+                } else if step < self.level_changed_at + 128 {
                     // While everyone loads the new map (reported apart).
                     stats.body_off_loading += 1;
-                } else if off > 0.01 {
-                    stats.body_off += 1;
-                    if self.examples.len() < 30 {
-                        self.examples.push(format!(
-                            "step {step} client {id}: body {s:?} at tick {tick} off by {off:.3} m"
-                        ));
+                } else {
+                    let (since, counted) = run.get_or_insert((step, false));
+                    if !*counted && step - *since >= mashup::net::server::SETTLE_TICKS + 64 {
+                        *counted = true;
+                        stats.body_off += 1;
+                        if self.examples.len() < 30 {
+                            self.examples.push(format!(
+                                "step {step} client {id}: body {s:?} at tick {tick} off by {off:.3} m since step {since}"
+                            ));
+                        }
                     }
                 }
             }
@@ -1341,6 +1364,7 @@ fn soak_four_clients_and_bots_over_map_changes() {
         trace: HashMap::new(),
         hurt: HashMap::new(),
         level_changed_at: 0,
+        body_runs: HashMap::new(),
         shapes: HashMap::new(),
         examples: Vec::new(),
         mismatch_runs: BTreeMap::new(),
@@ -1584,8 +1608,22 @@ fn report(soak: &mut Soak, minutes: f64, real: Duration) {
             sum / ticks.max(1) as f64
         );
     }
+    // Within a visit of a map (after its first minute), memory may not
+    // climb: a leak grows with rounds, not with maps loaded.
+    let mut by_visit: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    for (_, visit, mb) in &soak.rss {
+        by_visit.entry(visit.clone()).or_default().push(*mb);
+    }
+    for (visit, mb) in &by_visit {
+        if mb.len() >= 6 {
+            let (first, last) = (mb[2], mb[mb.len() - 1]);
+            if last > first * 1.1 + 100.0 {
+                failures.push(format!("memory on {visit} grew from {first:.0} to {last:.0} MB"));
+            }
+        }
+    }
     println!(
-        "\nmemory (process RSS, MB): {:?}",
+        "\nmemory (process resident + swapped, MB): {:?}",
         soak.rss
             .iter()
             .map(|(s, m, mb)| format!("{:.1}min {m} {mb:.0}", *s as f64 / 3840.0))

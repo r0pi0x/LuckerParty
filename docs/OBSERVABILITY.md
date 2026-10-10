@@ -614,6 +614,8 @@ public network), add a rule in an administrator PowerShell:
 `New-NetFirewallRule -DisplayName "mashup" -Direction Inbound -Protocol UDP -LocalPort 27015 -Action Allow`
 (use the port you host on). Clients need no rule. Find the host's address
 with `ipconfig` (IPv4 Address) and join with `connect 192.168.x.y:27015`.
+Both ends give up after 30 s without a packet (Source's `cl_timeout`;
+`net::client::TIMEOUT_SECONDS`), so a slow map load doesn't drop anyone.
 Over the internet the host forwards that UDP port on its router (UDP
 only, to the host's LAN address; a fixed LAN address or a DHCP
 reservation keeps the rule pointing at it) and gives friends its public

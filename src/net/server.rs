@@ -244,7 +244,7 @@ pub const SETTLE_TICKS: u64 = 64;
 
 /// A replicated value's last change and our resend of it.
 #[derive(Default)]
-struct Settling {
+pub struct Settling {
     changed_at: u64,
     /// The change tick our own resend left (not a change to resend).
     ours: Option<bevy::ecs::change_detection::Tick>,

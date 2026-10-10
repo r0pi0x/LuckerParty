@@ -317,6 +317,62 @@ fn netcode_over_loopback() {
     net::disconnect(server.app.world_mut(), "done");
 }
 
+/// A client that goes quiet for 20 s (putting a big map in on a slow or
+/// busy machine) is still connected after: both ends wait 30 s
+/// (`net::client::TIMEOUT_SECONDS`, Source's `cl_timeout`). With
+/// netcode's fixed 15 s the live soak's clients were all dropped after
+/// a `changelevel` that took one 17 s.
+#[test]
+fn a_client_quiet_for_20_s_stays_connected() {
+    let make = || {
+        mashup::harness::Sim::with(|app| {
+            app.add_plugins(net::NetPlugin);
+            greybox(app);
+        })
+    };
+    let mut server = make();
+    {
+        let world = server.app.world_mut();
+        let mut s = world.resource_mut::<NetSettings>();
+        s.hostport = 0;
+        s.maxplayers = 4;
+    }
+    let addr = net::server::listen(server.app.world_mut()).expect("listen");
+    let mut client = make();
+    let to = std::net::SocketAddr::from(([127, 0, 0, 1], addr.port()));
+    net::client::connect(client.app.world_mut(), to).expect("connect");
+    let joined = |client: &mut mashup::harness::Sim| {
+        let world = client.app.world_mut();
+        world.contains_resource::<Joined>() && world.query_filtered::<(), With<LocalPlayer>>().iter(world).count() == 1
+    };
+    let mut ok = false;
+    for _ in 0..400 {
+        server.app.update();
+        client.app.update();
+        std::thread::sleep(Duration::from_millis(1));
+        if joined(&mut client) {
+            ok = true;
+            break;
+        }
+    }
+    assert!(ok, "joined over UDP");
+    // 20 s of the server's time without a word from the client.
+    let frames = (20.0 * mashup::DEFAULT_TICK_HZ) as u32;
+    for _ in 0..frames {
+        server.app.update();
+    }
+    for _ in 0..100 {
+        server.app.update();
+        client.app.update();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(joined(&mut client), "still in the game: {:?}", client.app.world().get_resource::<LastDisconnect>());
+    let status = net::status(server.app.world_mut());
+    assert!(status.contains("players : 1 (4 max)"), "{status}");
+    net::disconnect(client.app.world_mut(), "Disconnect by user.");
+    net::disconnect(server.app.world_mut(), "done");
+}
+
 /// `net_fakelag` on a client's UDP transport: the round trip grows by it,
 /// and the game still joins and predicts.
 #[test]
