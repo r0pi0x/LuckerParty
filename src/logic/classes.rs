@@ -1058,7 +1058,9 @@ pub(super) fn class_input(
                         player: p,
                         command: ok,
                     }),
-                    None => w.log.push(format!("point_clientcommand: refused '{line}' (not allowed)")),
+                    // Outside the allowlist (client settings such as
+                    // cl_detaildist): refused on purpose, noted once.
+                    None => w.note("client commands not on the allowlist (refused)", line.clone()),
                 }
             }
             _ => return false,
