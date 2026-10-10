@@ -584,6 +584,41 @@ fn blasts_push_loose_weapons() {
     assert!(went.x > 0.5, "thrown away from the blast: {went}");
 }
 
+/// `phys_pushscale` multiplies a shot's push (physics_props.md 5;
+/// minigame maps set 900 for knife football): the same shot at scale 3
+/// leaves the item well over twice as fast (the floor's friction and
+/// the solver take some).
+#[test]
+fn push_scale_multiplies_shot_pushes() {
+    use avian3d::prelude::LinearVelocity;
+    use mashup::weapon::{drop::drop_weapon, give};
+    let speed = |scale: &str| {
+        let (mut sim, p) = armed_sim();
+        let item = drop_weapon(sim.app.world_mut(), p, false).expect("dropped");
+        sim.app.world_mut().get_mut::<Transform>(item).unwrap().translation = Vec3::new(0.0, 0.1, -2.0);
+        give(sim.app.world_mut(), p, mashup::games::cs_source::weapons::M4A1).unwrap();
+        sim.app
+            .world_mut()
+            .resource_mut::<mashup::console::Console>()
+            .submit(format!("phys_pushscale {scale}"));
+        sim.seconds(2.0);
+        let start = sim.position(item);
+        let eye = sim.position(p) + sim.state(p).eye_offset;
+        let d = start - eye;
+        {
+            let mut i = sim.intent(p);
+            i.yaw = (-d.x).atan2(-d.z);
+            i.pitch = d.y.atan2(d.xz().length());
+            i.fire = true;
+        }
+        sim.ticks(2);
+        sim.app.world().get::<LinearVelocity>(item).unwrap().0.length()
+    };
+    let (one, three) = (speed("1"), speed("3"));
+    assert!(one > 0.1, "pushed: {one}");
+    assert!(three > 2.2 * one && three < 3.2 * one, "{one} -> {three}");
+}
+
 /// Bullets hit loose weapons and push them (the gun's impulse at the hit;
 /// dropped weapons are physics objects).
 #[test]

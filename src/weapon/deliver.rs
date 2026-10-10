@@ -52,6 +52,7 @@ pub(super) struct World<'w, 's> {
     play: MessageWriter<'w, PlaySound>,
     first: Res<'w, FirstTimePredicted>,
     role: Option<Res<'w, NetRole>>,
+    push_scale: Option<Res<'w, super::PushScale>>,
 }
 
 impl World<'_, '_> {
@@ -519,10 +520,11 @@ impl Shot<'_, '_, '_> {
         if impulse == Vec3::ZERO || !self.w.first.0 || !self.w.authoritative() {
             return;
         }
+        let scale = self.w.push_scale.as_ref().map_or(1.0, |s| s.0);
         if let Ok((rb, mut forces)) = self.w.bodies.get_mut(body)
             && rb.is_dynamic()
         {
-            forces.apply_linear_impulse_at_point(impulse, at);
+            forces.apply_linear_impulse_at_point(impulse * scale, at);
         }
     }
 

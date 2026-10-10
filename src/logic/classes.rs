@@ -230,7 +230,8 @@ pub const SETTING_BOUNDS: &[(&str, f32, f32)] = &[
     ("mp_friendlyfire", 0.0, 1.0),
     ("mp_freezetime", 0.0, 60.0),
     ("mp_timelimit", 0.0, 1000.0),
-    ("phys_pushscale", 0.0, 100.0),
+    // mg_ maps' football sets 900.
+    ("phys_pushscale", 0.0, 1000.0),
     ("phys_timescale", 0.0, 10.0),
 ];
 

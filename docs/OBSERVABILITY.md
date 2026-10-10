@@ -949,6 +949,21 @@ of a minigame map sets off).
 
 The committed summary is in docs/plans/active/community-maps.md.
 
+Minigame maps' flows end to end: `tests/it/heavy/map_flows.rs` plays
+each cached mg_ map headless (the whole game, rounds on) with scripted
+characters on both teams (`Flow`: `press` +uses an entity from each
+side until it fires, `touch` stands players in a trigger, `kill`,
+`said`/`said_ever` read the console, `got` the inputs delivered) and
+checks each step: chooser teleports, selector buttons, retargeted
+teleports, loadouts, announcements, round ends and what the next round
+resets. `MASHUP_FLOW_TABLE=1 cargo test --features dev --test it
+map_flows:: -- --nocapture` prints a row per step (pass, FAIL, known),
+`MASHUP_FLOW_TRACE=<name,...>` the outputs and inputs of entities whose
+names contain those. A live check of the same steps: run the game with
+`MASHUP_REMOTE_PORT`, `-port` (not 27015), `+mashup_rounds 1 +jointeam 2
++bot_add 1 ...`, then `setpos`, `setang`, `+use`/`-use`, `ent_dump` and
+`screenshot` over the remote console.
+
 ## 6. Comparing with the real game (refcmp)
 
 `refcmp` captures the same camera views in real CS:S and in mashup and

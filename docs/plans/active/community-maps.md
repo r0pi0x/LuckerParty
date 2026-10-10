@@ -236,10 +236,100 @@ What still fails, ranked by maps affected (after):
 
 The 17 mg_ maps played through headless as players meet them
 (`tests/it/heavy/map_flows.rs`: the whole game, rounds on, scripted
-characters on both teams pressing selectors, walking into teleports
-and arenas, dying; `MASHUP_FLOW_TABLE=1 ... -- --nocapture` prints a row
-per step). Per-map flows, results and fixes: below, filled in as the
-session goes.
+characters on both teams pressing selectors with +use, standing in
+teleports and arenas, getting loadouts, dying, and the next round
+bringing the selection back; `MASHUP_FLOW_TABLE=1 cargo test --features
+dev --test it map_flows:: -- --nocapture` prints a row per step,
+`MASHUP_FLOW_TRACE=<names>` the inputs and outputs of those entities).
+Each map's flow, from its entities:
+
+| Map | Flow |
+|---|---|
+| mg_lego_multigames_v2 | First into the spawn hall's centre (`telepot_winner`) goes to the selection room; 16 game buttons (one locks all, says the game, retargets the hall's team teleports); dropping back through the centre turns the teleports on; arenas hand out weapons and health on arrival (knife: 35 hp); a 210 s time limit hurt per game; round ends by elimination |
+| mg_creative_multigames_v8_ns | Intro camera; first into the hall's laser pole (`tel_sala`) chooses: language (English/Spanish: `mp_restartgame 2`, remembered through a kept func_brush and a physics prop falling into a trigger), then one of 16 modes in 60 s (buttons turn red and lock; the mode relay says it, kills the hall's placed weapons, retargets `st`/`sc`, sets health and loadout through `thp`/`wep`); auto-pick timer; 6 min rounds |
+| mg_jacks_multigames_v1 | Random spawn mode at map start (climb, surf or normal course to the lobby); selection room of 11 games (one locks all `button_*`, says it, retargets and turns on 7 team teleporters); leaving the teleporter's volume hands out the game's weapons |
+| mg_lt_galaxy_v5 | Countdown, vote at 20 s: 12 pads count who stands on them (math_counter, logic_case setting meter speeds); the first meter at the top starts its game: team teleports, countdown, `[START]`; winners get the winner's loadout, 15 s to the round end |
+| mg_swag_multigames_v1 | Spawn room floor opens; first down the middle drop is the chooser (a template spawns 15 game buttons in the game room); a timer picks at random if nobody does; team teleports retarget; arenas equip on arrival; announcements are SourceMod `sm_say` (refused, as on a server without it) |
+| mg_randomizer_v5 | 5 s into each round a logic_case picks one of 16 round types: says it, turns on the spawns' weapon triggers |
+| mg_n64_goldeneye_v2 | Central room; a player there cancels the bots' auto-start; a weapon button opens the spawn door and its wing's door; 20 s later a beam kills whoever stayed |
+| mg_wipeout, mg_wipeout2 | Obstacle courses in tiers: stage-end teleports score (game_score), holding pens fill teleport slots (AddOutput target); wipeout2 has CT spawns only |
+| mg_lego_course | T spawns only; spawn door opens at 5 s, AFK hurt at 45 s, random breakable floors, finish line scores |
+| mg_escape_prison_beta | T spawns only; trap course (axes, grinders, presses, a touch-activated gas trap) to a bomb site; the last stretch sets a 15 s bomb timer |
+| mg_crazykart_v1_1 | T spawns only; random stage, or the last winner (a player named `winner`) picks; countdown; karts (players parented to physics props: another session's) |
+| mg_boatrace_scramble | CT spawns only; lobby (glass doors, bowling), jetty starts the lights, start wall drops at 30 s; each boat's starter hands its game_ui (boats need water buoyancy: another session's) |
+| mg_item_battle_v4b | P228 at spawn; glass walls break at 8 s ("Fight!"); item knives give powers (OnPlayerPickup hands a game_ui; secondary attack drives it) |
+| mg_kommando, mg_starwars_v1 | Vehicle sandboxes: a button hands the presser a vehicle's game_ui (movement keys into logic_compares into thrusters) |
+| mg_3k_smash_lego_copter | Jump into the middle: survive 90 s of block spawners, then a random ending (a logic_case presses one of four buttons) |
+
+Steps passing, before -> after this session's fixes (17 maps, 141
+steps: 114 -> 141; the one "known" row is below):
+
+| Map | Steps | Before | After | What failed before |
+|---|---|---|---|---|
+| mg_3k_smash_lego_copter | 5 | 3 | 5 | announcements lower-cased |
+| mg_boatrace_scramble | 7 | 5 | 7 | everyone dead: no round end (one team only) |
+| mg_crazykart_v1_1 | 6 | 2 | 6 | announcements lower-cased (stage picks, countdown) |
+| mg_creative_multigames_v8_ns | 15 | 13 | 15 | mode announcement lower-cased; the hall's placed weapons stayed when the mode killed them |
+| mg_escape_prison_beta | 6 | 4 | 6 | the touch-activated gas trap; no round end (one team only) |
+| mg_item_battle_v4b | 9 | 7 | 9 | "Fight!" lower-cased; known: an env_fire burns the start glass at load |
+| mg_jacks_multigames_v1 | 13 | 12 | 13 | game announcement lower-cased |
+| mg_kommando | 5 | 4 | 5 | intro lower-cased |
+| mg_lego_course | 7 | 5 | 7 | AFK warning lower-cased; no round end (one team only) |
+| mg_lego_multigames_v2 | 13 | 12 | 13 | game announcement lower-cased |
+| mg_lt_galaxy_v5 | 10 | 7 | 10 | vote countdown, game and `[START]` lower-cased |
+| mg_n64_goldeneye_v2 | 7 | 7 | 7 | |
+| mg_randomizer_v5 | 7 | 6 | 7 | round type lower-cased (and every map load picked the same first round) |
+| mg_starwars_v1 | 5 | 5 | 5 | |
+| mg_swag_multigames_v1 | 11 | 11 | 11 | (its `sm_say` lines are refused either way) |
+| mg_wipeout | 8 | 8 | 8 | |
+| mg_wipeout2 | 7 | 3 | 7 | intro lower-cased; stage scores lost to the stage teleport; no round end (one team only) |
+
+Fixed, by maps affected (tests: `map_flows`, plus the unit tests named):
+
+| Problem | Maps | Fix |
+|---|---|---|
+| Every `say` line, game_text and hint shown in lower case: vbsp lower-cases the whole entity lump | 13 of 17 mg_ (every map with announcements) | Output connections and text classes' `message` get the map's case back from the raw lump (`cs_source::bsp::restore_text_case`, `text_keeps_the_maps_case`) |
+| Players on one side only (one team's spawns): all dead waited for the round clock (5 min) | 5 (lego_course, escape_prison, crazykart, wipeout2, boatrace) | A draw and the next round (`rules::rounds`, objectives.md Q15, our reading; `rounds::one_side_all_dead_is_a_draw`) |
+| The map logic's dice had one fixed seed: every map load made the same random picks | 10 mg_ use PickRandom (randomizer's first round type, crazykart's stage, jacks' spawn mode...) | A clock seed per map load; the harness fixes it (`logic::LogicSeed`) |
+| A teleport took the player out of the other triggers sharing its volume (the touch list was re-tested after each touch) | mg_wipeout2's stage scores (any map scoring on a teleport) | Overlapped triggers listed first, then touched (triggers.md "Per-tick order"); a teleport re-links at the destination (`teleport_keeps_the_other_touches`) |
+| Placed weapons the logic killed stayed in the world | mg_creative_multigames_v8_ns (every mode clears the hall's) | `map::entities::RemovedWeapons` from the bridge, `weapon::equip::remove_killed_weapons` (loose or carried) |
+| `phys_pushscale` missing (football: the map sets 900, hits barely moved the ball); maps' value clamped at 100 | 4 (creative, lego_multigames, swag, randomizer) | `weapon::PushScale` multiplies shot, swing and blast pushes (physics_props.md 5; `ragdoll::push_scale_multiplies_shot_pushes`); bound 1000 |
+| func_button "Touch Activates" (256) did nothing | 1 (escape_prison's gas trap) | Pressed by a player against it (doors_buttons.md; `touch_activated_buttons`) |
+
+Play-check (live, windowed, 5 bots, rounds on; screenshots in this
+session's `target/playcheck/`): mg_lego_multigames_v2 (chooser ->
+selection room, Knife: arena, knife, 35 hp; round end, buttons and
+teleports reset; Football next round), mg_creative_multigames_v8_ns
+(intro camera, chooser, English: `mp_restartgame` and the language kept,
+Pirate War: buttons red, ships, 400 hp), mg_jacks_multigames_v1 (surf
+spawn mode, Mp5Deagle: buttons locked, arena, deagle), mg_lt_galaxy_v5
+(vote pad, meter climbs, bunnyhop course), mg_swag_multigames_v1
+(drop to the game room, timeout pick: Airdrop arena, knife),
+mg_n64_goldeneye_v2 (knife wing button: spawn and wing doors open; the
+beam kills the bots who stayed; next round). All flowed.
+
+What still blocks, by maps affected:
+
+1. **Players teleported onto one destination stay stuck in each other**
+   (every selector map sends a team to one info_teleport_destination;
+   seen live on all six). Players are solid boxes to each other and the
+   stuck nudges (movement.md) are a few units. CS:S likely does the same
+   (servers run "noblock" plugins for it); unmeasured. Not round 2's: a
+   movement spec question (two players teleported onto one spot: can
+   they walk apart?) and then, per "parity first", an opt-in
+   no-block toggle.
+2. **Bots don't play minigames**: they stand or wander (no nav mesh on
+   most mg_ maps); rounds end only by map hurts or the clock.
+3. **SourceMod/Mani announcements** (`sm_say`, `ma_csay`): refused, as a
+   server without the plugin would (swag, boatrace winners, item_battle).
+4. mg_item_battle_v4b's start glass burns at load: an env_fire (flags 4,
+   8) touches the glass brush's arena-wide box (fire.md 2.3 step 7), so
+   the walls are gone before "Fight!"; a fire spec question (line of
+   sight or bounds for brush entities).
+5. Round 2's (noted, not done here): crazykart's karts (players
+   parented), boatrace's and creative's boats (buoyancy), item powers'
+   visuals (spritetrails, particles), `mp_flashlight`/`sv_alltalk`
+   unknown settings (logged).
 
 ## Left, ranked by maps affected
 
